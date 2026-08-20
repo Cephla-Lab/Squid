@@ -60,6 +60,15 @@ class StreamHandler:
     def set_display_fps(self, fps):
         self.fps_display = fps
 
+    def force_next_display(self):
+        """Exempt the next frame from display-fps throttling.
+
+        Used by single-frame captures (snap), where dropping the one frame that
+        was acquired because it arrived too soon after the previous one would
+        leave the user staring at a stale image.
+        """
+        self.timestamp_last_display = 0
+
     def set_save_fps(self, fps):
         self.fps_save = fps
 

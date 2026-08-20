@@ -88,6 +88,9 @@ class QtStreamHandler(QObject):
     def set_display_fps(self, fps):
         self._handler.set_display_fps(fps)
 
+    def force_next_display(self):
+        self._handler.force_next_display()
+
     def set_save_fps(self, fps):
         self._handler.set_save_fps(fps)
 

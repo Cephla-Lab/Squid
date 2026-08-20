@@ -39,6 +39,9 @@ class LiveController(QObject):
         self.currentConfiguration: Optional[AcquisitionChannel] = None
         self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
+        # True only for the duration of a single snap(). The stream handler gates
+        # frames on live/snapping, so a snapped frame needs this to reach the display.
+        self.is_snapping = False
         self.control_illumination = control_illumination
         self.illumination_on = False
         self.use_internal_timer_for_hardware_trigger = (
@@ -405,6 +408,74 @@ class LiveController(QObject):
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
+
+    def snap(self):
+        """Acquire exactly one frame using the current live configuration.
+
+        Same trigger/illumination path as live, but the illumination is turned off
+        as soon as the frame has been read, so a light-sensitive sample only sees a
+        single exposure instead of a free-running stream. The frame reaches the
+        display through the normal camera callbacks.
+
+        Does nothing while live is running - the sample is already being exposed.
+
+        Returns True if a frame was captured.
+        """
+        if self.is_live:
+            self._log.debug("snap() called while live is running, ignoring.")
+            return False
+
+        self._check_laser_engine_warn_only()
+
+        was_streaming = self.camera.get_is_streaming()
+        if not was_streaming:
+            self.camera.start_streaming()
+        self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
+
+        if self.for_displacement_measurement:
+            self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
+
+        # read_frame() returns as soon as the frame is stored, which can be just
+        # before the callbacks that put it on screen run. This event lets us hold
+        # is_snapping (which gates those callbacks) until they have actually run.
+        frame_propagated = threading.Event()
+        callback_id = self.camera.add_frame_callback(lambda _frame: frame_propagated.set())
+        self.is_snapping = True
+        got_frame = False
+        try:
+            if self.trigger_mode == TriggerMode.HARDWARE:
+                # The microcontroller strobes the illumination for the exposure, so
+                # don't also turn it on here.
+                self.trigger_ID = self.trigger_ID + 1
+                self.camera.send_trigger(self.camera.get_exposure_time())
+            elif self.trigger_mode == TriggerMode.SOFTWARE:
+                if self.control_illumination and not self.illumination_on:
+                    self.turn_on_illumination()
+                self.trigger_ID = self.trigger_ID + 1
+                self.camera.send_trigger(self.camera.get_exposure_time())
+            else:
+                # CONTINUOUS: the camera free-runs, so there is no trigger to send.
+                # Illumination is on for one frame period plus whatever is left of the
+                # in-flight frame, i.e. up to two exposures worth of light.
+                if self.control_illumination and not self.illumination_on:
+                    self.turn_on_illumination()
+
+            got_frame = self.camera.read_frame() is not None
+            if not got_frame:
+                self._log.warning("Snap timed out waiting for a frame.")
+            return got_frame
+        finally:
+            # Light off first, then let the frame finish its trip to the display.
+            if self.control_illumination and self.illumination_on:
+                self.turn_off_illumination()
+            if self.for_displacement_measurement:
+                self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
+            if got_frame:
+                frame_propagated.wait(1.0)
+            self.camera.remove_frame_callback(callback_id)
+            self.is_snapping = False
+            if not was_streaming:
+                self.camera.stop_streaming()
 
     def _trigger_acquisition_timer_fn(self):
         if self.trigger_acquisition():

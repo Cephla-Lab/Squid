@@ -847,7 +847,9 @@ class HighContentScreeningGui(QMainWindow):
             self.addDockWidget(Qt.LeftDockWidgetArea, self.jupyter_dock)
 
     def load_objects(self, is_simulation):
-        self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
+        self.streamHandler = core.QtStreamHandler(
+            accept_new_frame_fn=lambda: self.liveController.is_live or self.liveController.is_snapping
+        )
         self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
