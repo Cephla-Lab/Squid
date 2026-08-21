@@ -1513,6 +1513,10 @@ class ImageDisplayWindow(QMainWindow):
 class NavigationViewer(QFrame):
     signal_coordinates_clicked = Signal(float, float)  # Will emit x_mm, y_mm when clicked
 
+    # Colors for the position number labels drawn over the scan grid
+    POSITION_LABEL_COLOR = (252, 174, 30)  # matches the yellow scan grid rectangles
+    POSITION_CURRENT_COLOR = (0, 200, 255)  # cyan - distinct from the red current-FOV box
+
     def __init__(self, objectivestore, camera, sample="glass slide", invertX=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -1630,19 +1634,28 @@ class NavigationViewer(QFrame):
         self.scan_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
         self.fov_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
         self.focus_point_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
+        self.position_highlight_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
 
         self.scan_overlay_item = pg.ImageItem()
         self.fov_overlay_item = pg.ImageItem()
         self.focus_point_overlay_item = pg.ImageItem()
 
+        self.position_highlight_item = pg.ImageItem()
+
         self.view.addItem(self.scan_overlay_item)
         self.view.addItem(self.fov_overlay_item)
         self.view.addItem(self.focus_point_overlay_item)
+        self.view.addItem(self.position_highlight_item)
 
         self.background_item.setZValue(-1)  # Background layer at the bottom
         self.scan_overlay_item.setZValue(0)  # Scan overlay in the middle
         self.focus_point_overlay_item.setZValue(1)  # # Focus points next
+        self.position_highlight_item.setZValue(1.5)  # Selected position highlight
         self.fov_overlay_item.setZValue(2)  # FOV overlay on top
+
+        # pg.TextItems for the position number labels. load_background_image() calls
+        # view.clear(), which drops every item, so this list is rebuilt here each time.
+        self.position_label_items = []
 
     def update_display_properties(self, sample):
         if sample == "glass slide":
@@ -1842,6 +1855,73 @@ class NavigationViewer(QFrame):
         cv2.circle(self.focus_point_overlay, (center_x, center_y), radius, color, -1)  # -1 thickness means filled
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
+    def set_position_labels(self, labels, current_index=None):
+        """
+        Draw a number label at each listed position. Full rebuild - call when the list changes.
+
+        Args:
+            labels: list of (x_mm, y_mm, text) tuples
+            current_index: index into labels to highlight, or None
+        """
+        self.clear_position_labels()
+        for x_mm, y_mm, text in labels:
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            center_x = (current_FOV_top_left[0] + current_FOV_bottom_right[0]) / 2
+            center_y = (current_FOV_top_left[1] + current_FOV_bottom_right[1]) / 2
+            # pg.TextItem draws in screen space, so labels stay upright and legible
+            # regardless of the ViewBox's invertX/invertY or the current zoom level.
+            item = pg.TextItem(text=text, anchor=(0.5, 0.5))
+            item.setZValue(3)
+            item.setPos(center_x, center_y)
+            self.view.addItem(item)
+            self.position_label_items.append(item)
+        self.set_current_position(current_index)
+
+    def set_current_position(self, index, fov_list=None):
+        """
+        Recolor the existing labels and redraw the highlight box around the selected region.
+        Cheap compared to set_position_labels - use this on selection changes.
+
+        Args:
+            index: index of the current position, or None
+            fov_list: FOVs of the current region to outline, as (x_mm, y_mm[, z_mm]) tuples
+                      or FovCenter objects. None clears the highlight box.
+        """
+        for i, item in enumerate(self.position_label_items):
+            is_current = i == index
+            item.setColor(self.POSITION_CURRENT_COLOR if is_current else self.POSITION_LABEL_COLOR)
+            font = item.textItem.font()
+            font.setBold(is_current)
+            item.setFont(font)
+
+        self.position_highlight_overlay.fill(0)
+        color = (*self.POSITION_CURRENT_COLOR, 255)
+        for fov in fov_list or []:
+            # Handle tuple (2D or 3D) and FovCenter object formats
+            if isinstance(fov, tuple):
+                x_mm = fov[0]
+                y_mm = fov[1]
+            else:
+                x_mm = fov.x_mm
+                y_mm = fov.y_mm
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            cv2.rectangle(
+                self.position_highlight_overlay,
+                current_FOV_top_left,
+                current_FOV_bottom_right,
+                color,
+                self.box_line_thickness,
+            )
+        self.position_highlight_item.setImage(self.position_highlight_overlay)
+
+    def clear_position_labels(self):
+        """Remove all position number labels and the selected-position highlight"""
+        for item in self.position_label_items:
+            self.view.removeItem(item)
+        self.position_label_items = []
+        self.position_highlight_overlay.fill(0)
+        self.position_highlight_item.setImage(self.position_highlight_overlay)
+
     def clear_focus_points(self):
         """Clear just the focus point overlay"""
         self.focus_point_overlay = np.zeros((self.image_height, self.image_width, 4), dtype=np.uint8)
@@ -1857,6 +1937,7 @@ class NavigationViewer(QFrame):
         self.scan_overlay_item.setImage(self.scan_overlay)
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
+        self.clear_position_labels()
 
     def handle_mouse_click(self, evt):
         if not evt.double():
