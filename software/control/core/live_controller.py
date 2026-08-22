@@ -429,7 +429,10 @@ class LiveController(QObject):
         was_streaming = self.camera.get_is_streaming()
         if not was_streaming:
             self.camera.start_streaming()
-        self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
+        # Callbacks may be disabled e.g. by the laser AF controller; the snapped frame
+        # reaches the display through them, so enable them for the duration of the snap.
+        callbacks_were_enabled = self.camera.get_callbacks_enabled()
+        self.camera.enable_callbacks(True)
 
         if self.for_displacement_measurement:
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
@@ -466,6 +469,7 @@ class LiveController(QObject):
             if got_frame:
                 frame_propagated.wait(1.0)
             self.camera.remove_frame_callback(callback_id)
+            self.camera.enable_callbacks(callbacks_were_enabled)
             self._is_snapping = False
             if not was_streaming:
                 self.camera.stop_streaming()

@@ -4337,7 +4337,8 @@ class LiveControlWidget(QFrame):
         self.btn_snap.setSizePolicy(sizePolicy)
         self.btn_snap.setToolTip(
             "Acquire a single frame with the current Live Configuration. "
-            "Illumination is on for that one exposure only."
+            "In software/hardware trigger mode the illumination is on for that one "
+            "exposure only; in continuous mode it stays on for up to two exposures."
         )
 
         # line 3: exposure time and analog gain associated with the current mode
