@@ -434,7 +434,7 @@ class ObjectiveTurret4PosController:
         try:
             di1, _, _, alarm = self._read_status_snapshot()
             self._check_alarm(alarm)
-            if not di1:  # already inside the sensor window -> skip straight to backoff
+            if not di1:  # off the sensor -> sweep to it; already in the window skips straight to backoff
                 self._sweep_to_sensor(deadline)
             self._backoff_off_sensor(deadline)
             # Fine search only: lower the acceleration to soften the microstep approach
