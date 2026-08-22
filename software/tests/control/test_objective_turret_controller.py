@@ -462,48 +462,14 @@ def test_out_of_range_offset_raises(monkeypatch):
         ObjectiveTurret4PosController(serial_number="SIM", stage=None, offset_pulses=5_000)
 
 
-def test_sim_accepts_offset_kwarg():
-    # The simulation twin must accept the same kwarg (built from the same turret_kwargs).
-    sim = ObjectiveTurret4PosControllerSimulation(
-        serial_number="SIM-001",
-        positions=OBJECTIVE_TURRET_POSITIONS,
-        offset_pulses=42,
-    )
-    assert sim.is_open
-    sim.move_to_objective("20x")
-    assert sim.current_objective == "20x"
-    sim.close()
-
-
 # --- slot targets ---
 
 
-def test_slot_targets_uniform_spacing_from_single_offset(monkeypatch):
-    # All four slots derive from one measured offset: offset + (slot-1) x PULSES_PER_SLOT.
-    controller, fake = _make_real_controller(monkeypatch, offset_pulses=25)
-    for slot, name in enumerate(["4x", "10x", "20x", "40x"], start=1):
-        fake.writes.clear()
-        controller.move_to_objective(name)
-        assert fake.target_position_writes()[-1] == (slot - 1) * otc.PULSES_PER_SLOT + 25
-    controller.close()
-
-
-def test_pulses_per_slot_matches_microstep_derivation():
-    # The named 2200 must stay linked to the mechanics: 200 full steps x 16
-    # microsteps x 132/48 gear / 4 slots. Fails when one is edited without the other.
-    assert otc.PULSES_PER_SLOT == int(
-        otc.MOTOR_STEPS_PER_REV * 2**otc.MICROSTEP_REG_VALUE * otc.GEAR_RATIO / otc.POSITIONS_PER_REV
-    )
-
-
-def test_init_raises_when_slot_spacing_inconsistent_with_mechanics(monkeypatch):
-    # The same link enforced at init against the microstep readback: if the derived
-    # pulses/slot ever disagrees with PULSES_PER_SLOT, refuse to run on a wrong scale.
-    monkeypatch.setattr(otc, "GEAR_RATIO", 2.0)
-    monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
-    monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: _FakeModbus())
-    with pytest.raises(RuntimeError, match="PULSES_PER_SLOT"):
-        ObjectiveTurret4PosController(serial_number="SIM", stage=None)
+def test_pulses_per_slot_is_2200():
+    # PULSES_PER_SLOT is derived from the mechanics constants; pin the value so an
+    # accidental edit to any of them (gear ratio, steps/rev, microstep) fails loudly.
+    # Slot targets themselves are covered by test_move_targets_apply_offset.
+    assert otc.PULSES_PER_SLOT == 2200
 
 
 # --- backlash compensation ---

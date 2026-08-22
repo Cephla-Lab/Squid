@@ -1247,7 +1247,7 @@ OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 # Global pulse offset added to every turret slot target, shifting the whole slot
 # frame relative to the homing zero (the origin sensor's trigger edge). Corrects
 # units whose sensor does not sit exactly at slot 1; the remaining slots follow at
-# PULSES_PER_SLOT spacing. 0 on all normal units; set per machine (may be negative).
+# exactly 90-degree spacing. 0 on all normal units; set per machine (may be negative).
 # NOTE: software homing (2026-07) zeroes at the sensor's fine-search trigger edge,
 # which sits slightly differently from the old driver-homing zero — re-measure this
 # offset after upgrading a machine that had a value from the old scheme.

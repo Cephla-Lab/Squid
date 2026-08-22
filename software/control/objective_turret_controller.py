@@ -21,11 +21,11 @@ logger = squid.logging.get_logger(__name__)
 GEAR_RATIO = 132 / 48
 MOTOR_STEPS_PER_REV = 200
 POSITIONS_PER_REV = 4  # 90 degrees per objective
-# Slot spacing in pulses: MOTOR_STEPS_PER_REV x 16 microsteps (MICROSTEP_REG_VALUE)
-# x GEAR_RATIO / POSITIONS_PER_REV. Named because slot targets are expressed with it
-# (offset + (slot-1) x PULSES_PER_SLOT); __init__ cross-checks it against the
-# microstep readback so the constant and the mechanics cannot drift apart.
-PULSES_PER_SLOT = 2200
+MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after power cycle
+# 90 degrees of turret travel in motor pulses (= 2200 at the fixed 16-microstep
+# scale); slot targets are offset + (slot-1) x PULSES_PER_SLOT. Derived so it cannot
+# drift from the mechanics; __init__ refuses drives whose microstep readback differs.
+PULSES_PER_SLOT = int(MOTOR_STEPS_PER_REV * 2**MICROSTEP_REG_VALUE * GEAR_RATIO / POSITIONS_PER_REV)
 POSITION_TOLERANCE_PULSES = 50
 # Upper bound for backlash compensation, in turret degrees. Real gear backlash is a
 # small fraction of a degree; anything larger indicates a misconfigured .ini.
@@ -89,7 +89,6 @@ STATUS_BIT_RUNNING = 1 << 12
 # Factory parameter set, ported from SingleMotor MotorService.INIT_PARAMS
 # (2026-07-24 acceptance values, max speed revised 2026-07-25). Speed registers are
 # in Step/s (full steps); pulses/s = Step/s x microstep.
-MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after power cycle
 EXPECTED_ACCEL = 1000  # Step/s^2 (hardware limit ~2000; >=3000 is rejected)
 EXPECTED_DECEL = 1000
 EXPECTED_MIN_SPEED = 16  # manual default start/stop speed
@@ -212,7 +211,7 @@ class ObjectiveTurret4PosControllerSimulation:
         positions: Optional[dict] = None,
         stage: Optional[squid.abc.AbstractStage] = None,
         # Accepted for constructor parity with the real controller; the simulation
-        # tracks objectives by name and never computes pulses, so all four are unused.
+        # tracks objectives by name and never computes pulses, so they are all unused.
         offset_pulses: Optional[int] = None,
         backlash_deg: Optional[float] = None,
         direction_inverted: Optional[bool] = None,
@@ -380,27 +379,18 @@ class ObjectiveTurret4PosController:
                     "tool, save to EEPROM, power-cycle the turret, then restart."
                 )
             self._microstep = 2**microstep_raw
-            self._pulses_per_position = int(MOTOR_STEPS_PER_REV * self._microstep * GEAR_RATIO / POSITIONS_PER_REV)
-            if self._pulses_per_position != PULSES_PER_SLOT:
-                # Slot targets are built from PULSES_PER_SLOT; it must equal the scale
-                # derived from the mechanics constants and the microstep readback.
-                raise RuntimeError(
-                    f"PULSES_PER_SLOT={PULSES_PER_SLOT} does not match the derived "
-                    f"{self._pulses_per_position} pulses/slot (microstep {self._microstep}, "
-                    f"gear ratio {GEAR_RATIO:g}); the constants have drifted apart"
-                )
 
             # A real slot-1 misalignment is always smaller than the 90-degree slot spacing;
             # a larger value means the slot mapping itself is wrong, not that slot 1 is off.
             # Bounding it also keeps every target inside the signed 32-bit register (no wrap).
-            if abs(self._offset_pulses) > self._pulses_per_position:
+            if abs(self._offset_pulses) > PULSES_PER_SLOT:
                 raise ValueError(
                     f"OBJECTIVE_TURRET_OFFSET_PULSES={self._offset_pulses} exceeds one slot "
-                    f"(±{self._pulses_per_position} pulses ≈ 90°); check the machine .ini"
+                    f"(±{PULSES_PER_SLOT} pulses ≈ 90°); check the machine .ini"
                 )
 
             # Backlash compensation in motor pulses (one turret revolution = POSITIONS_PER_REV slots).
-            self._backlash_pulses = round(self._backlash_deg / 360.0 * POSITIONS_PER_REV * self._pulses_per_position)
+            self._backlash_pulses = round(self._backlash_deg / 360.0 * POSITIONS_PER_REV * PULSES_PER_SLOT)
 
             changed = self._calibrate_init_params()
             if changed:
@@ -414,7 +404,7 @@ class ObjectiveTurret4PosController:
                 "Turret controller ready: port=%s microstep=%d pulses/position=%d calibrated=%s",
                 port,
                 self._microstep,
-                self._pulses_per_position,
+                PULSES_PER_SLOT,
                 changed,
             )
 
@@ -525,7 +515,7 @@ class ObjectiveTurret4PosController:
 
     @property
     def pulses_per_position(self) -> int:
-        return self._pulses_per_position
+        return PULSES_PER_SLOT
 
     @property
     def current_position_pulses(self) -> int:
@@ -550,14 +540,9 @@ class ObjectiveTurret4PosController:
         """Map a logical direction bit (1=positive) to the physical register value."""
         return logical_direction ^ 1 if self._direction_inverted else logical_direction
 
-    def _target_pulses(self, position_index: int) -> int:
-        """Absolute pulse target for a slot: uniform PULSES_PER_SLOT spacing shifted
-        by the per-machine slot-1 offset."""
-        return (position_index - 1) * PULSES_PER_SLOT + self._offset_pulses
-
     def _rotate_to(self, objective_name: str, timeout_s: float) -> None:
         position_index = _resolve_position(objective_name, self._positions)
-        target_pulses = self._target_pulses(position_index)
+        target_pulses = (position_index - 1) * PULSES_PER_SLOT + self._offset_pulses
 
         logger.info(
             "Rotating to %s: start=%d, target=%d, backlash_comp=%d",
