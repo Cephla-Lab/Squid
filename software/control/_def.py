@@ -1244,13 +1244,10 @@ OBJECTIVE_TURRET_SLAVE_ID = 1
 OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
-# Global pulse offset added to every turret slot target, shifting the whole slot
-# frame relative to the homing zero (the origin sensor's trigger edge). Corrects
-# units whose sensor does not sit exactly at slot 1; the remaining slots follow at
-# exactly 90-degree spacing. 0 on all normal units; set per machine (may be negative).
-# NOTE: software homing (2026-07) zeroes at the sensor's fine-search trigger edge,
-# which sits slightly differently from the old driver-homing zero — re-measure this
-# offset after upgrading a machine that had a value from the old scheme.
+# Pulse offset of slot 1 from the homing zero (the origin sensor's trigger edge);
+# the other slots follow at exactly 90-degree spacing. 0 on all normal units; set
+# per machine (may be negative). Software homing (2026-07) moved the zero slightly
+# vs the old driver homing — re-measure after upgrading a machine with an old value.
 OBJECTIVE_TURRET_OFFSET_PULSES = 0
 # Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
 # slot change first overshoots below the target by this angle and then approaches

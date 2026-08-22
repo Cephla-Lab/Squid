@@ -388,10 +388,8 @@ def test_init_calibrates_factory_params(monkeypatch):
 
 
 def test_init_microstep_mismatch_raises_without_writing(monkeypatch):
-    # A wrong microstep invalidates the slot spacing and the homing math. The
-    # register reads back the PENDING value, not the active one (vendor-confirmed),
-    # so a corrective write from init would make the next start pass this check
-    # while the drive still runs the old scale: raise only, never write.
+    # The register reads back the pending value, so a corrective write would let
+    # the next start pass this check on the wrong active scale: raise, never write.
     fake = _FakeModbus()
     fake.microstep_raw = 7
     monkeypatch.setattr(otc, "_find_port", lambda serial_number: "FAKE_PORT")
@@ -466,9 +464,8 @@ def test_out_of_range_offset_raises(monkeypatch):
 
 
 def test_pulses_per_slot_is_2200():
-    # PULSES_PER_SLOT is derived from the mechanics constants; pin the value so an
-    # accidental edit to any of them (gear ratio, steps/rev, microstep) fails loudly.
-    # Slot targets themselves are covered by test_move_targets_apply_offset.
+    # Pin the derived value so an accidental edit to a mechanics constant fails
+    # loudly. Slot targets are covered by test_move_targets_apply_offset.
     assert otc.PULSES_PER_SLOT == 2200
 
 

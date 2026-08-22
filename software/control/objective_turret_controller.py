@@ -22,9 +22,7 @@ GEAR_RATIO = 132 / 48
 MOTOR_STEPS_PER_REV = 200
 POSITIONS_PER_REV = 4  # 90 degrees per objective
 MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after power cycle
-# 90 degrees of turret travel in motor pulses (= 2200 at the fixed 16-microstep
-# scale); slot targets are offset + (slot-1) x PULSES_PER_SLOT. Derived so it cannot
-# drift from the mechanics; __init__ refuses drives whose microstep readback differs.
+# 90 degrees of turret travel in motor pulses (2200); drives with a different microstep are rejected in __init__.
 PULSES_PER_SLOT = int(MOTOR_STEPS_PER_REV * 2**MICROSTEP_REG_VALUE * GEAR_RATIO / POSITIONS_PER_REV)
 POSITION_TOLERANCE_PULSES = 50
 # Upper bound for backlash compensation, in turret degrees. Real gear backlash is a
@@ -368,11 +366,9 @@ class ObjectiveTurret4PosController:
             if not 0 <= microstep_raw <= 7:
                 raise ValueError(f"Invalid microstep register value {microstep_raw} (expected 0..7)")
             if microstep_raw != MICROSTEP_REG_VALUE:
-                # Factory config fixes microstep at 16; PULSES_PER_SLOT and the homing
-                # sweep math assume it. Never auto-correct from here: the register reads
-                # back the PENDING value (vendor-confirmed), so a corrective write would
-                # make the next start pass this check while the drive still runs the old
-                # scale until power-cycled. Detect and instruct only.
+                # The register reads back the pending value (vendor-confirmed), so a
+                # corrective write here would let the next start pass this check while
+                # the drive still runs the old scale until power-cycled: never write.
                 raise RuntimeError(
                     f"Turret microstep register reads {microstep_raw} (2^{microstep_raw} microsteps) but "
                     f"{MICROSTEP_REG_VALUE} (16 microsteps) is required. Set it with the SingleMotor setup "
