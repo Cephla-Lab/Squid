@@ -63,7 +63,12 @@ class QtStreamHandler(QObject):
     packet_image_to_write = Signal(np.ndarray, int, float)
     signal_new_frame_received = Signal()
 
-    def __init__(self, display_resolution_scaling=1, accept_new_frame_fn: Callable[[], bool] = lambda: True):
+    def __init__(
+        self,
+        display_resolution_scaling=1,
+        accept_new_frame_fn: Callable[[], bool] = lambda: True,
+        force_display_fn: Callable[[], bool] = lambda: False,
+    ):
         super().__init__()
 
         functions = StreamHandlerFunctions(
@@ -71,6 +76,7 @@ class QtStreamHandler(QObject):
             packet_image_to_write=self.packet_image_to_write.emit,
             signal_new_frame_received=self.signal_new_frame_received.emit,
             accept_new_frame=accept_new_frame_fn,
+            force_display=force_display_fn,
         )
         self._handler = StreamHandler(
             handler_functions=functions, display_resolution_scaling=display_resolution_scaling
@@ -87,9 +93,6 @@ class QtStreamHandler(QObject):
 
     def set_display_fps(self, fps):
         self._handler.set_display_fps(fps)
-
-    def force_next_display(self):
-        self._handler.force_next_display()
 
     def set_save_fps(self, fps):
         self._handler.set_save_fps(fps)

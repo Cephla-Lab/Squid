@@ -4228,6 +4228,9 @@ class LiveControlWidget(QFrame):
     signal_autoLevelSetting = Signal(bool)
     signal_live_configuration = Signal(object)
     signal_start_live = Signal()
+    # Request that the display bring the live view forward, without implying that
+    # live has started (also emitted for a single-frame snap).
+    signal_show_live_view = Signal()
 
     def __init__(
         self,
@@ -4573,18 +4576,14 @@ class LiveControlWidget(QFrame):
         if self.liveController.is_live:
             return
         # Bring the live view forward so the snapped frame is actually visible.
-        self.signal_start_live.emit()
-        self.btn_snap.setEnabled(False)
+        self.signal_show_live_view.emit()
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            # A snap is a single frame - it must not be dropped by display throttling.
-            self.streamHandler.force_next_display()
             self.liveController.snap()
         except Exception:
             self._log.exception("Snap failed")
         finally:
             QApplication.restoreOverrideCursor()
-            self.btn_snap.setEnabled(True)
 
     def toggle_autolevel(self, autolevel_on):
         self.btn_autolevel.setChecked(autolevel_on)
