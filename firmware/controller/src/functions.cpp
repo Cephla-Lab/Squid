@@ -503,20 +503,31 @@ void turn_off_all_ports()
   illumination_is_on = false;
 }
 
-// The strobe ISR drives only the port it latched (strobe_active_source). It
-// never SETS the host-commanded illumination_is_on flag; it only clears it at
-// strobe end when the strobe extinguished the host's own source (v1.3/v1.4
-// behaviour, kept so HW-triggered live view is strobe-only after the first
-// frame). Up to v1.4 the ISR also set the flag true at strobe start, which made
-// a SET_ILLUMINATION arriving while a strobe was still on (the host switching
-// to the next channel right after its exposure sleep) energize the new port
-// immediately via set_illumination() -> turn_on_illumination(); the strobe end
-// then turned off only the latched port and, seeing the source had changed,
-// left the flag true, so the next channel's laser stayed on through the current
-// frame's readout (next-channel bleed, gradient in the last-read rows). With
-// the flag settable only by the host, set_illumination() re-lights a port only
-// if the host explicitly turned illumination on, and a strobe can never be the
-// reason a second port is lit.
+// One strobe pulse for a camera channel, driven by ISR_strobeTimer().
+// strobe_begin() latches illumination_source so strobe_end() extinguishes
+// exactly the port it lit, even if the host switches channels mid-strobe (the
+// race that left e.g. 640 nm stuck HIGH, fixed in v1.3). strobe_begin() never
+// writes the host-owned illumination_is_on flag (v1.5, see constants.h), so a
+// SET_ILLUMINATION landing during a strobe cannot re-light a port.
+static inline void strobe_begin(int camera_channel)
+{
+  strobe_active_source[camera_channel] = illumination_source;
+  turn_on_illumination_source(strobe_active_source[camera_channel]);
+  strobe_output_level[camera_channel] = HIGH;
+}
+
+static inline void strobe_end(int camera_channel)
+{
+  turn_off_illumination_source(strobe_active_source[camera_channel]);
+  // Only clear illumination_is_on if the active source is still the one we
+  // strobed. If the host has switched channels and explicitly turned on the
+  // new source, leave the flag as the host set it.
+  if (illumination_source == strobe_active_source[camera_channel])
+    illumination_is_on = false;
+  strobe_output_level[camera_channel] = LOW;
+  control_strobe[camera_channel] = false;
+}
+
 void ISR_strobeTimer()
 {
   for (int camera_channel = 0; camera_channel < 4; camera_channel++)
@@ -529,51 +540,19 @@ void ISR_strobeTimer()
         // if the illumination on time is smaller than 30 ms, use delayMicroseconds to control the pulse length to avoid pulse length jitter
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
         {
-          // Latch the source we turn on, so we turn off the same one below
-          // even if illumination_source changes during the pulse. Both ON and
-          // OFF helpers below take the latched source explicitly, so the pin
-          // toggled HIGH here is exactly the one toggled LOW after the delay.
-          strobe_active_source[camera_channel] = illumination_source;
-          turn_on_illumination_source(strobe_active_source[camera_channel]);
-          strobe_output_level[camera_channel] = HIGH;
+          strobe_begin(camera_channel);
           delayMicroseconds(illumination_on_time[camera_channel]);
-          turn_off_illumination_source(strobe_active_source[camera_channel]);
-          // The strobe just extinguished the host's own source: reflect that in
-          // the host flag (unchanged from v1.3/v1.4). If the host has switched
-          // to another source meanwhile, leave the flag as the host set it.
-          if (illumination_source == strobe_active_source[camera_channel])
-            illumination_is_on = false;
-          strobe_output_level[camera_channel] = LOW;
-          control_strobe[camera_channel] = false;
+          strobe_end(camera_channel);
         }
       }
       else
       {
         // start the strobe
         if ( ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel]) && strobe_output_level[camera_channel] == LOW )
-        {
-          // Latch source before turning on, so the strobe-end branch below
-          // turns off the SAME port even if Python changes illumination_source
-          // between start and end (the race that left e.g. 640 nm stuck HIGH
-          // after switching to 405 nm during live HW-triggered acquisition).
-          // Both helpers take the latched source explicitly to make the ON/OFF
-          // pair symmetric.
-          strobe_active_source[camera_channel] = illumination_source;
-          turn_on_illumination_source(strobe_active_source[camera_channel]);
-          strobe_output_level[camera_channel] = HIGH;
-        }
+          strobe_begin(camera_channel);
         // end the strobe
         if (((micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel]) && strobe_output_level[camera_channel] == HIGH)
-        {
-          turn_off_illumination_source(strobe_active_source[camera_channel]);
-          // Only clear illumination_is_on if the active source is still the
-          // one we strobed. If Python has switched channels and explicitly
-          // turned on the new source, leave illumination_is_on as Python set it.
-          if (illumination_source == strobe_active_source[camera_channel])
-            illumination_is_on = false;
-          strobe_output_level[camera_channel] = LOW;
-          control_strobe[camera_channel] = false;
-        }
+          strobe_end(camera_channel);
       }
     }
   }
