@@ -9,13 +9,20 @@ import numpy as np
 import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QComboBox
 
 import control._def
 import control.microscope
 import control.widgets
 from control.core import core as core_module
 from control.core.scan_coordinates import ScanCoordinates
-from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, RecordingWidget, SurfacePlotWidget
+from control.widgets import (
+    check_ram_available_with_error_dialog,
+    FocusMapWidget,
+    NDViewerTab,
+    RecordingWidget,
+    SurfacePlotWidget,
+)
 from squid.abc import CameraFrame, CameraFrameFormat
 from squid.config import CameraPixelFormat
 
@@ -2915,3 +2922,36 @@ def test_save_load_round_trip_preserves_z():
     control.widgets.load_coordinate_regions_from_dataframe(sc, df)
 
     assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.25), (10.5, 10.0, 3.25)]
+
+
+class _FocusMapNavigationStub:
+    """FocusMapWidget-ish object exposing just what goto_next_point / goto_selected_point use."""
+
+    def __init__(self, focus_points):
+        self.enabled = True
+        self.focus_points = focus_points
+        self.stage = MagicMock()
+        self.point_combo = QComboBox()
+        for region_id, x, y, z in focus_points:
+            self.point_combo.addItem(f"{region_id} ({x}, {y}, {z})")
+        # Mirrors FocusMapWidget.make_connections()
+        self.point_combo.currentIndexChanged.connect(self.goto_selected_point)
+
+    goto_next_point = FocusMapWidget.goto_next_point
+    goto_selected_point = FocusMapWidget.goto_selected_point
+
+
+def test_focus_map_goto_next_point_moves_stage_once_per_click(qtbot):
+    """Regression: setCurrentIndex emitted currentIndexChanged -> goto_selected_point, and then
+    goto_next_point called goto_selected_point again, so every click ran two full x/y/z moves."""
+    points = [("A1", 1.0, 2.0, 3.0), ("A1", 4.0, 5.0, 6.0), ("B2", 7.0, 8.0, 9.0)]
+    widget = _FocusMapNavigationStub(points)
+
+    for _, x, y, z in points[1:] + points[:1]:  # three clicks: 1, 2, then wrap back to 0
+        widget.stage.reset_mock()
+
+        widget.goto_next_point()
+
+        widget.stage.move_x_to.assert_called_once_with(x)
+        widget.stage.move_y_to.assert_called_once_with(y)
+        widget.stage.move_z_to.assert_called_once_with(z)

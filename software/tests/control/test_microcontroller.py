@@ -269,3 +269,56 @@ def test_abort_current_command_recoverable_logs_at_warning(caplog):
             assert all(r.levelno == logging.ERROR for r in fatal_records)
     finally:
         micro.close()
+
+
+def test_mcu_state_names_a_command_the_firmware_reports_as_still_in_progress():
+    """A firmware that never finishes a move keeps answering IN_PROGRESS for the current command id,
+    which matches none of the read loop's recovery branches; the timeout text must say so."""
+    micro = get_test_micro()
+    try:
+        micro.move_z_to_usteps(100)
+        micro.wait_till_operation_is_completed()
+        # The simulator always completes commands, so stage the stuck-firmware state by hand.
+        micro._cmd_id_mcu = micro._cmd_id
+        micro._cmd_execution_status = control._def.CMD_EXECUTION_STATUS.IN_PROGRESS
+        micro._last_successful_read_time = time.time()
+
+        state = micro._mcu_state()
+
+        assert f"Sent cmd {micro._cmd_id} (MOVETO_Z)" in state
+        assert f"mcu reports cmd {micro._cmd_id} status=IN_PROGRESS" in state
+        assert "Home the stage to clear it" in state
+        assert "gone quiet" not in state
+    finally:
+        micro.close()
+
+
+def test_mcu_state_reports_a_quiet_link_instead_of_a_stuck_command():
+    micro = get_test_micro()
+    try:
+        micro.move_z_to_usteps(100)
+        micro.wait_till_operation_is_completed()
+        micro._cmd_id_mcu = micro._cmd_id
+        micro._cmd_execution_status = control._def.CMD_EXECUTION_STATUS.IN_PROGRESS
+        micro._last_successful_read_time = time.time() - 5.0
+
+        state = micro._mcu_state()
+
+        assert "5.0 [s] since a valid packet" in state
+        assert "gone quiet - check the serial connection" in state
+        assert "Home the stage" not in state
+    finally:
+        micro.close()
+
+
+def test_wait_timeout_error_includes_mcu_state():
+    micro = get_test_micro()
+    try:
+        micro.move_z_to_usteps(100)
+        micro.wait_till_operation_is_completed()
+        micro.is_busy = lambda: True  # pin the wait in the busy state so it has to time out
+
+        with pytest.raises(TimeoutError, match=r"timed out after 0.05 \[s\].*Sent cmd \d+ \(MOVETO_Z\)"):
+            micro.wait_till_operation_is_completed(0.05)
+    finally:
+        micro.close()
