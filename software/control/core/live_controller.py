@@ -12,6 +12,7 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
+from control.lighting import ShutterControlMode
 from control.models import merge_channel_configs
 
 if TYPE_CHECKING:
@@ -95,6 +96,18 @@ class LiveController(QObject):
     def _is_led_matrix(self) -> bool:
         """Check if current configuration is LED matrix (source code 0-9)."""
         return 0 <= self._get_illumination_source() < 10
+
+    def _strobe_owns_light(self) -> bool:
+        """True when the hardware-trigger strobe gates the light for the current
+        configuration: an MCU-gated source (TTL laser shutter, or the MCU-driven
+        LED matrix) in HARDWARE trigger mode. The per-trigger strobe then turns
+        the light on and off; a software shutter (e.g. LDI PC mode) or an
+        external LED array still needs explicit turn_on/turn_off."""
+        if self.trigger_mode != TriggerMode.HARDWARE:
+            return False
+        if self._is_led_matrix():
+            return self.microscope.addons.sci_microscopy_led_array is None
+        return self.microscope.illumination_controller.shutter_control_mode == ShutterControlMode.TTL
 
     def get_intensity_cap_percent(self, channel_config: Optional["AcquisitionChannel"]) -> float:
         """Maximum allowed illumination intensity (percent) for a channel.
@@ -597,10 +610,19 @@ class LiveController(QObject):
             return
         self._log.info("setting microscope mode to " + configuration.name)
 
+        # When the strobe owns an MCU-gated light in hardware-trigger mode, don't
+        # toggle illumination around the switch (a leftover from software-triggered
+        # live view): the TURN_ON kept firmware illumination_is_on true, which is
+        # what let SET_ILLUMINATION re-light a port mid-strobe (next-channel bleed;
+        # see firmware v1.5). Only toggle when the host is deliberately holding the
+        # light on, or when the strobe can't gate it. Capture illumination_on now:
+        # turn_off_illumination() below clears it.
+        host_holds_light = self.illumination_on
+
         # temporarily stop live while changing mode
         if self.is_live is True:
             self._stop_existing_timer()
-            if self.control_illumination:
+            if self.control_illumination and (host_holds_light or not self._strobe_owns_light()):
                 # Turn off illumination BEFORE switching self.currentConfiguration.
                 # turn_off_illumination() reads self.currentConfiguration to determine which
                 # laser wavelength to turn off. If we switch first, we'd turn off the NEW
@@ -622,7 +644,8 @@ class LiveController(QObject):
 
         # restart live
         if self.is_live is True:
-            if self.control_illumination:
+            # Re-evaluated: _strobe_owns_light() depends on the (new) configuration.
+            if self.control_illumination and (host_holds_light or not self._strobe_owns_light()):
                 self.turn_on_illumination()
             self._start_new_timer()
         self._log.info("Done setting microscope mode.")
