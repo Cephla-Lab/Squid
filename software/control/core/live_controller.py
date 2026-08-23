@@ -610,13 +610,9 @@ class LiveController(QObject):
             return
         self._log.info("setting microscope mode to " + configuration.name)
 
-        # When the strobe owns an MCU-gated light in hardware-trigger mode, don't
-        # toggle illumination around the switch (a leftover from software-triggered
-        # live view): the TURN_ON kept firmware illumination_is_on true, which is
-        # what let SET_ILLUMINATION re-light a port mid-strobe (next-channel bleed;
-        # see firmware v1.5). Only toggle when the host is deliberately holding the
-        # light on, or when the strobe can't gate it. Capture illumination_on now:
-        # turn_off_illumination() below clears it.
+        # Captured before turn_off_illumination() below clears it. Skip the toggle
+        # when the strobe gates the light (see _strobe_owns_light(); firmware v1.5
+        # next-channel bleed fix) unless the host is deliberately holding it on.
         host_holds_light = self.illumination_on
 
         # temporarily stop live while changing mode

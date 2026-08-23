@@ -78,44 +78,40 @@ def _switch(live):
     live.set_microscope_mode(_channel("Fluorescence 488 nm Ex"))
 
 
+def _assert_toggled(live, expected: bool):
+    assert live.turn_off_illumination.call_count == (1 if expected else 0)
+    assert live.turn_on_illumination.call_count == (1 if expected else 0)
+
+
 def test_hardware_trigger_channel_switch_does_not_toggle_illumination(live):
     live.trigger_mode = TriggerMode.HARDWARE
     _switch(live)
-    live.turn_off_illumination.assert_not_called()
-    live.turn_on_illumination.assert_not_called()
+    _assert_toggled(live, False)
     live._start_new_timer.assert_called_once()
 
 
 def test_software_trigger_channel_switch_still_toggles_illumination(live):
     live.trigger_mode = TriggerMode.SOFTWARE
     _switch(live)
-    live.turn_off_illumination.assert_called_once()
-    live.turn_on_illumination.assert_called_once()
+    _assert_toggled(live, True)
 
 
 def test_hardware_trigger_keeps_toggling_when_host_holds_illumination_on(live):
-    """Manual continuous illumination (user toggle) must survive a channel switch:
-    the old source must be turned off and the new one on."""
     live.trigger_mode = TriggerMode.HARDWARE
     live.illumination_on = True
     _switch(live)
-    live.turn_off_illumination.assert_called_once()
-    live.turn_on_illumination.assert_called_once()
+    _assert_toggled(live, True)
 
 
 def test_hardware_trigger_keeps_toggling_with_software_shutter(live, scope):
-    """With a software shutter (e.g. LDI PC mode) the strobe cannot gate the light,
-    so this call is the only thing that turns the lamp on."""
     live.trigger_mode = TriggerMode.HARDWARE
     scope.illumination_controller.shutter_control_mode = ShutterControlMode.Software
     _switch(live)
-    live.turn_off_illumination.assert_called_once()
-    live.turn_on_illumination.assert_called_once()
+    _assert_toggled(live, True)
 
 
 def test_not_live_never_toggles(live):
     live.is_live = False
     live.trigger_mode = TriggerMode.SOFTWARE
     _switch(live)
-    live.turn_off_illumination.assert_not_called()
-    live.turn_on_illumination.assert_not_called()
+    _assert_toggled(live, False)
