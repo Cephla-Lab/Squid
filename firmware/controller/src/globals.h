@@ -140,7 +140,12 @@ extern float illumination_intensity_factor;
 extern uint8_t led_matrix_r;
 extern uint8_t led_matrix_g;
 extern uint8_t led_matrix_b;
-// volatile: cleared at strobe end inside ISR, read by set_illumination() in main loop
+// Host-commanded illumination state: set true only by TURN_ON_ILLUMINATION.
+// Cleared by TURN_OFF_ILLUMINATION / watchdog / TURN_OFF_ALL_PORTS, and by the
+// strobe ISR at strobe end when the strobe extinguished the host's own source.
+// The ISR never sets it (it did up to v1.4, see ISR_strobeTimer());
+// set_illumination() uses it to decide whether to re-light the new source.
+// volatile: cleared inside the ISR, read/written in the main loop.
 extern volatile bool illumination_is_on;
 
 // Multi-port illumination control (supports up to 16 ports D1-D16)

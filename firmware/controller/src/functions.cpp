@@ -503,6 +503,20 @@ void turn_off_all_ports()
   illumination_is_on = false;
 }
 
+// The strobe ISR drives only the port it latched (strobe_active_source). It
+// never SETS the host-commanded illumination_is_on flag; it only clears it at
+// strobe end when the strobe extinguished the host's own source (v1.3/v1.4
+// behaviour, kept so HW-triggered live view is strobe-only after the first
+// frame). Up to v1.4 the ISR also set the flag true at strobe start, which made
+// a SET_ILLUMINATION arriving while a strobe was still on (the host switching
+// to the next channel right after its exposure sleep) energize the new port
+// immediately via set_illumination() -> turn_on_illumination(); the strobe end
+// then turned off only the latched port and, seeing the source had changed,
+// left the flag true, so the next channel's laser stayed on through the current
+// frame's readout (next-channel bleed, gradient in the last-read rows). With
+// the flag settable only by the host, set_illumination() re-lights a port only
+// if the host explicitly turned illumination on, and a strobe can never be the
+// reason a second port is lit.
 void ISR_strobeTimer()
 {
   for (int camera_channel = 0; camera_channel < 4; camera_channel++)
@@ -520,11 +534,13 @@ void ISR_strobeTimer()
           // OFF helpers below take the latched source explicitly, so the pin
           // toggled HIGH here is exactly the one toggled LOW after the delay.
           strobe_active_source[camera_channel] = illumination_source;
-          illumination_is_on = true;
           turn_on_illumination_source(strobe_active_source[camera_channel]);
           strobe_output_level[camera_channel] = HIGH;
           delayMicroseconds(illumination_on_time[camera_channel]);
           turn_off_illumination_source(strobe_active_source[camera_channel]);
+          // The strobe just extinguished the host's own source: reflect that in
+          // the host flag (unchanged from v1.3/v1.4). If the host has switched
+          // to another source meanwhile, leave the flag as the host set it.
           if (illumination_source == strobe_active_source[camera_channel])
             illumination_is_on = false;
           strobe_output_level[camera_channel] = LOW;
@@ -543,7 +559,6 @@ void ISR_strobeTimer()
           // Both helpers take the latched source explicitly to make the ON/OFF
           // pair symmetric.
           strobe_active_source[camera_channel] = illumination_source;
-          illumination_is_on = true;
           turn_on_illumination_source(strobe_active_source[camera_channel]);
           strobe_output_level[camera_channel] = HIGH;
         }

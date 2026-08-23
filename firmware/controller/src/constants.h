@@ -15,8 +15,13 @@
 // Version 1.4 = filter-wheel (W/W2) home resets xmin/xmax to full range (rotary
 //               axis has no travel end-stop); fixes intermittent post-home
 //               MOVETO_W CMD_EXECUTION_ERROR (home left xmin = L - C > offset)
+// Version 1.5 = strobe ISR no longer sets illumination_is_on at strobe start
+//               (only the host can set it; the ISR still clears it at strobe
+//               end), so a SET_ILLUMINATION arriving during a strobe can't
+//               light the next channel early (next-channel bleed in HW-triggered
+//               multi-channel acquisitions)
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 4
+#define FIRMWARE_VERSION_MINOR 5
 
 #include "def/def_v1.h"
 
