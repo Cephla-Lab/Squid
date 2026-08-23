@@ -365,6 +365,13 @@ RESPONSE_BYTE_FIRMWARE_VERSION = 22  # Nibble-encoded: high=major, low=minor
 # Serial watchdog (illumination auto-shutoff safety)
 # Must match firmware constants in constants.h
 DEFAULT_WATCHDOG_TIMEOUT_MS = 5000  # 5 seconds (matches firmware)
+
+# Firmware < 1.5 lights the new source immediately if SET_ILLUMINATION arrives while
+# a strobe is still on (and < 1.3 can also strand the old source). On such firmware
+# the host waits out the last trigger's strobe window (strobe delay + exposure) plus
+# this margin before changing the illumination source; the margin absorbs USB/serial
+# jitter. Firmware >= 1.5 needs no spacing.
+STROBE_GUARD_MARGIN_MS = 5
 MAX_WATCHDOG_TIMEOUT_MS = 3600000  # 1 hour (matches firmware)
 WATCHDOG_TIMEOUT_S = DEFAULT_WATCHDOG_TIMEOUT_MS / 1000.0
 

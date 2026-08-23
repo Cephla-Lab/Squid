@@ -18,7 +18,7 @@ import pytest
 
 import tests.control.gui_test_stubs  # noqa: F401 - ensures GUI modules import cleanly
 import control.microscope
-from control._def import TriggerMode
+from control._def import STROBE_GUARD_MARGIN_MS, TriggerMode
 from control.core.config import ConfigRepository
 from control.core.live_controller import LiveController
 from control.lighting import ShutterControlMode
@@ -110,8 +110,64 @@ def test_hardware_trigger_keeps_toggling_with_software_shutter(live, scope):
     _assert_toggled(live, True)
 
 
+def test_pre_1_3_firmware_keeps_legacy_toggle(live, scope):
+    # < 1.3 the ISR doesn't latch its source; the legacy TURN_OFF(old) narrows that
+    # firmware's stuck-port race, so the toggle must survive there.
+    live.trigger_mode = TriggerMode.HARDWARE
+    scope.low_level_drivers.microcontroller.firmware_version = (1, 2)
+    _switch(live)
+    _assert_toggled(live, True)
+
+
 def test_not_live_never_toggles(live):
     live.is_live = False
     live.trigger_mode = TriggerMode.SOFTWARE
     _switch(live)
     _assert_toggled(live, False)
+
+
+# --- strobe-window guard (firmware < 1.5) ---
+
+
+def test_note_hardware_trigger_records_strobe_window(live):
+    import time
+
+    live.trigger_mode = TriggerMode.HARDWARE
+    before = time.monotonic()
+    live.note_hardware_trigger_sent()
+    expected = before + (live.camera.get_total_frame_time() + STROBE_GUARD_MARGIN_MS) / 1e3
+    assert abs(live._strobe_clear_at - expected) < 0.05
+
+
+def _elapsed_switch(live):
+    import time
+
+    start = time.monotonic()
+    _switch(live)
+    return time.monotonic() - start
+
+
+def test_set_microscope_mode_waits_out_strobe_window_on_old_firmware(live, scope):
+    import time
+
+    live.trigger_mode = TriggerMode.HARDWARE
+    scope.low_level_drivers.microcontroller.firmware_version = (1, 4)
+    live._strobe_clear_at = time.monotonic() + 0.15
+    assert _elapsed_switch(live) >= 0.15
+
+
+def test_set_microscope_mode_does_not_wait_on_v1_5_firmware(live, scope):
+    import time
+
+    live.trigger_mode = TriggerMode.HARDWARE
+    scope.low_level_drivers.microcontroller.firmware_version = (1, 5)
+    live._strobe_clear_at = time.monotonic() + 5.0
+    assert _elapsed_switch(live) < 1.0
+
+
+def test_set_microscope_mode_does_not_wait_in_software_trigger_mode(live):
+    import time
+
+    live.trigger_mode = TriggerMode.SOFTWARE
+    live._strobe_clear_at = time.monotonic() + 5.0
+    assert _elapsed_switch(live) < 1.0

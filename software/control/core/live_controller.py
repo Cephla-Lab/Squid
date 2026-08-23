@@ -64,6 +64,10 @@ class LiveController(QObject):
 
         self.enable_channel_auto_filter_switching: bool = True
 
+        # time.monotonic() at which the most recent hardware trigger's strobe window
+        # (strobe delay + exposure + margin) is over; see note_hardware_trigger_sent().
+        self._strobe_clear_at = 0.0
+
         # Confocal mode state - when True, use confocal_override from acquisition configs
         self._confocal_mode: bool = False
 
@@ -97,6 +101,13 @@ class LiveController(QObject):
         """Check if current configuration is LED matrix (source code 0-9)."""
         return 0 <= self._get_illumination_source() < 10
 
+    def note_hardware_trigger_sent(self):
+        """Record when the strobe window of a just-sent hardware trigger will be over.
+        On firmware < 1.5, set_microscope_mode() waits this out before changing the
+        illumination source: SET_ILLUMINATION arriving mid-strobe re-lights the new
+        port immediately (and on < 1.3 can strand the old one)."""
+        self._strobe_clear_at = time.monotonic() + (self.camera.get_total_frame_time() + STROBE_GUARD_MARGIN_MS) / 1e3
+
     def _strobe_owns_light(self) -> bool:
         """True when the hardware-trigger strobe gates the light for the current
         configuration: an MCU-gated source (TTL laser shutter, or the MCU-driven
@@ -104,6 +115,11 @@ class LiveController(QObject):
         the light on and off; a software shutter (e.g. LDI PC mode) or an
         external LED array still needs explicit turn_on/turn_off."""
         if self.trigger_mode != TriggerMode.HARDWARE:
+            return False
+        # On firmware < 1.3 the strobe ISR doesn't latch its source; skipping the
+        # legacy TURN_OFF(old) would widen that firmware's stuck-port race, so
+        # keep today's toggle there.
+        if self.microscope.low_level_drivers.microcontroller.firmware_version < (1, 3):
             return False
         if self._is_led_matrix():
             return self.microscope.addons.sci_microscopy_led_array is None
@@ -468,6 +484,8 @@ class LiveController(QObject):
             if self.trigger_mode in (TriggerMode.HARDWARE, TriggerMode.SOFTWARE):
                 self.trigger_ID = self.trigger_ID + 1
                 self.camera.send_trigger(self.camera.get_exposure_time())
+                if self.trigger_mode == TriggerMode.HARDWARE:
+                    self.note_hardware_trigger_sent()
 
             got_frame = self.camera.read_frame() is not None
             if not got_frame:
@@ -529,6 +547,8 @@ class LiveController(QObject):
         self.trigger_ID = self.trigger_ID + 1
 
         self.camera.send_trigger(self.camera.get_exposure_time())
+        if self.trigger_mode == TriggerMode.HARDWARE:
+            self.note_hardware_trigger_sent()
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -609,6 +629,16 @@ class LiveController(QObject):
             self._log.error("set_microscope_mode() called with None configuration - this is a bug in the caller")
             return
         self._log.info("setting microscope mode to " + configuration.name)
+
+        if self.trigger_mode == TriggerMode.HARDWARE:
+            firmware_version = self.microscope.low_level_drivers.microcontroller.firmware_version
+            if firmware_version < (1, 5):
+                # Pre-1.5 firmware acts on SET_ILLUMINATION mid-strobe (see
+                # note_hardware_trigger_sent()); wait until the last trigger's
+                # strobe window is over before touching the source.
+                delay_s = self._strobe_clear_at - time.monotonic()
+                if delay_s > 0:
+                    time.sleep(delay_s)
 
         # Captured before turn_off_illumination() below clears it. Skip the toggle
         # when the strobe gates the light (see _strobe_owns_light(); firmware v1.5

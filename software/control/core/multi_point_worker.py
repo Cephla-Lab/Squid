@@ -1515,6 +1515,10 @@ class MultiPointWorker:
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
             self.camera.send_trigger(illumination_time=camera_illumination_time)
+            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                # Lets set_microscope_mode() space the next channel's SET_ILLUMINATION
+                # past this trigger's strobe window on firmware < 1.5.
+                self.liveController.note_hardware_trigger_sent()
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
             if self.liveController.trigger_mode == TriggerMode.HARDWARE:
@@ -1564,6 +1568,8 @@ class MultiPointWorker:
 
                 # read camera frame
                 self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
+                if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                    self.liveController.note_hardware_trigger_sent()
                 image = self.camera.read_frame()
                 if image is None:
                     self._log.warning("self.camera.read_frame() returned None")
