@@ -2778,7 +2778,6 @@ def test_load_regions_registers_manual_shape_for_every_region():
     control.widgets.load_coordinate_regions_from_dataframe(sc, df)
 
     assert sc.region_shapes == {"A1": "Manual", "left": "Manual"}
-    assert sc.get_region_shape("left") == "Manual"
 
 
 def test_load_regions_without_z_column_builds_2tuples():

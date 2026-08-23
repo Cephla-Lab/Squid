@@ -641,7 +641,7 @@ class ScanCoordinates:
     def get_region_shape(self, region_id):
         if not self.validate_region(region_id):
             return None
-        # Regions added without a shape (e.g. loaded from a csv) are treated as bounding boxes
+        # Regions registered without a shape (widget code that writes the dicts directly) are bounding boxes
         return self.region_shapes.get(region_id, "Square")
 
     def get_scan_bounds(self):

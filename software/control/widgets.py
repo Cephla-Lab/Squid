@@ -223,11 +223,7 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
     scan_coordinates.clear_regions()
     scan_coordinates.region_fov_coordinates.update(region_fov_coords)
     scan_coordinates.region_centers.update(region_centers)
-    # Loaded coordinates are an arbitrary fov list, like a manually drawn region. Without a shape,
-    # enabling the focus map (generate_grid -> region_contains_coordinate -> get_region_shape)
-    # raised KeyError on the region id.
-    for region_id in region_fov_coords:
-        scan_coordinates.region_shapes[region_id] = "Manual"
+    scan_coordinates.region_shapes.update(dict.fromkeys(region_fov_coords, "Manual"))
 
     return region_fov_coords, z_dropped
 
@@ -10915,8 +10911,7 @@ class FocusMapWidget(QFrame):
             return
         current = self.point_combo.currentIndex()
         next_index = (current + 1) % len(self.focus_points)
-        # setCurrentIndex fires currentIndexChanged -> goto_selected_point, so block it and move once
-        # explicitly.  Otherwise every click ran two full x/y/z moves (and one move for a single point).
+        # setCurrentIndex emits currentIndexChanged -> goto_selected_point; block it so we move once, not twice.
         self.point_combo.blockSignals(True)
         self.point_combo.setCurrentIndex(next_index)
         self.point_combo.blockSignals(False)

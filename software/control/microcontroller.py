@@ -25,13 +25,7 @@ from control._def import *
 _log = squid.logging.get_logger("microcontroller")
 
 # Mapping of execution status bytes to human-readable names for logging
-_CMD_EXECUTION_STATUS_NAMES = {
-    CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS: "COMPLETED_WITHOUT_ERRORS",
-    CMD_EXECUTION_STATUS.IN_PROGRESS: "IN_PROGRESS",
-    CMD_EXECUTION_STATUS.CMD_CHECKSUM_ERROR: "CMD_CHECKSUM_ERROR",
-    CMD_EXECUTION_STATUS.CMD_INVALID: "CMD_INVALID",
-    CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR: "CMD_EXECUTION_ERROR",
-}
+_CMD_EXECUTION_STATUS_NAMES = {value: name for name, value in vars(CMD_EXECUTION_STATUS).items() if name.isupper()}
 
 # Mapping of command type bytes to human-readable names for logging
 _CMD_NAMES = {
@@ -617,9 +611,6 @@ class Microcontroller:
     # The micro has an update time it tries to keep to.  This must be > that time.  As of 2025-04-28, it's 10ms
     # on the micro.  So 0.1 is 10x that.
     STALE_READ_TIMEOUT = 0.1
-    # Position updates arrive continuously, so a gap this long means the link is down rather than
-    # the firmware being stuck mid-command.  Only used to word timeout messages.
-    QUIET_MCU_TIMEOUT = 1.0
 
     def __init__(self, serial_device: AbstractCephlaMicroSerial, reset_and_initialize=True):
         self.log = squid.logging.get_logger(self.__class__.__name__)
@@ -704,14 +695,8 @@ class Microcontroller:
     def _warn_if_reads_stale(self):
         if self._is_simulated:
             return
-        now = time.time()
-        last_read = float(
-            self._last_successful_read_time
-        )  # Just in case it gets update, capture it for printing below.
-        if now - last_read > Microcontroller.STALE_READ_TIMEOUT:
-            self.log.warning(
-                f"Read thread is stale, it has been {now - last_read} [s] since a valid packet. Last cmd id from the mcu was {self._cmd_id_mcu}, our last sent cmd id was {self._cmd_id}"
-            )
+        if time.time() - self._last_successful_read_time > Microcontroller.STALE_READ_TIMEOUT:
+            self.log.warning(f"Read thread is stale. {self._mcu_state()}")
 
     def close(self):
         self.stop_heartbeat()
@@ -1489,9 +1474,7 @@ class Microcontroller:
                 safely only in this case. If False (default), log at ERROR
                 (operator attention warranted) and the motor state is uncertain.
         """
-        cmd_type = self.last_command[1] if self.last_command is not None else -1
-        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
-        msg = f"[MCU] Command {self._cmd_id} ({cmd_name}) aborted: {reason}"
+        msg = f"[MCU] Command {self._cmd_id} ({self._last_command_name()}) aborted: {reason}"
         if recoverable:
             self.log.warning(msg)
         else:
@@ -1599,10 +1582,9 @@ class Microcontroller:
                     if self.mcu_cmd_execution_in_progress:
                         self.mcu_cmd_execution_in_progress = False
                         elapsed_ms = (time.time() - self.last_command_send_timestamp) * 1000
-                        cmd_type = self.last_command[1] if self.last_command is not None else -1
-                        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
                         self.log.debug(
-                            f"[MCU] <<< command {self._cmd_id} ({cmd_name}) complete (took {elapsed_ms:.1f}ms)"
+                            f"[MCU] <<< command {self._cmd_id} ({self._last_command_name()}) complete"
+                            f" (took {elapsed_ms:.1f}ms)"
                         )
                 elif (
                     self.mcu_cmd_execution_in_progress
@@ -1747,29 +1729,23 @@ class Microcontroller:
             if self.last_command_aborted_error is not None:
                 raise self.last_command_aborted_error
 
-    def _mcu_state(self) -> str:
-        """Describe what the mcu last told us, for timeout/abort messages.
-
-        A firmware that never finishes a move keeps reporting IN_PROGRESS for whatever command id it
-        last received, which matches none of the recovery branches in the read loop: no ack timeout
-        (the ids match), no resend, no abort.  Every later blocking command then times out too, so say
-        so explicitly instead of leaving a bare "timed out" for the operator to interpret.
-        """
+    def _last_command_name(self) -> str:
         cmd_type = self.last_command[1] if self.last_command is not None else -1
-        cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+        return _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+
+    def _mcu_state(self) -> str:
+        """Describe the last thing the mcu told us, for wait-timeout and stale-read messages."""
         status_name = _CMD_EXECUTION_STATUS_NAMES.get(self._cmd_execution_status, self._cmd_execution_status)
-        since_read_s = time.time() - float(self._last_successful_read_time)
+        since_read_s = time.time() - self._last_successful_read_time
         state = (
-            f"Sent cmd {self._cmd_id} ({cmd_name}); mcu reports cmd {self._cmd_id_mcu} status={status_name}; "
-            f"{since_read_s:.1f} [s] since a valid packet."
+            f"Sent cmd {self._cmd_id} ({self._last_command_name()}); mcu reports cmd {self._cmd_id_mcu}"
+            f" status={status_name}; {since_read_s:.1f} [s] since a valid packet."
         )
-        if since_read_s > Microcontroller.QUIET_MCU_TIMEOUT:
+        if since_read_s > Microcontroller.STALE_READ_TIMEOUT:
             return state + " The mcu has gone quiet - check the serial connection."
-        if (
-            self._cmd_id_mcu == self._cmd_id
-            and self._cmd_execution_status == CMD_EXECUTION_STATUS.IN_PROGRESS
-            and not self._is_simulated
-        ):
+        if self._cmd_id_mcu == self._cmd_id and self._cmd_execution_status == CMD_EXECUTION_STATUS.IN_PROGRESS:
+            # Matches none of the read loop's recovery branches (ids match, so no ack-timeout resend; no
+            # error status, so no abort), and every later blocking command will hit the same wall.
             return state + (
                 " The mcu is still talking but reports this command as in progress, so the firmware never"
                 " finished a move and every command after it will time out too. Home the stage to clear it."
