@@ -641,7 +641,8 @@ class ScanCoordinates:
     def get_region_shape(self, region_id):
         if not self.validate_region(region_id):
             return None
-        return self.region_shapes[region_id]
+        # Regions registered without a shape (widget code that writes the dicts directly) are bounding boxes
+        return self.region_shapes.get(region_id, "Square")
 
     def get_scan_bounds(self):
         """Get bounds of all scan regions with margin"""
@@ -735,7 +736,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                                 + row * wellplate_settings["well_spacing_mm"]
                                 + control._def.WELLPLATE_OFFSET_Y_mm
                             )
-                            self.region_centers[self._index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
+                            self.region_centers[self._index_to_row(row) + str(col + 1)] = [x_mm, y_mm]
                 else:
                     x_mm = (
                         wellplate_settings["a1_x_mm"]
@@ -747,7 +748,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                         + start_row_index * wellplate_settings["well_spacing_mm"]
                         + control._def.WELLPLATE_OFFSET_Y_mm
                     )
-                    self.region_centers[start_row + start_col] = (x_mm, y_mm)
+                    self.region_centers[start_row + start_col] = [x_mm, y_mm]
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 

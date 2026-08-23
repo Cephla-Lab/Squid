@@ -160,7 +160,8 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
     the acquisition moves Z per FOV; otherwise FOVs are (x, y). Region centers are
     stored as mutable [x, y] lists without z — nothing reads a center z, and a
     mutable list keeps them consistent with the ScanCoordinates.add_* builders
-    (and append-safe for any future center-z writer).
+    (and append-safe for any future center-z writer). Every loaded region is
+    registered with shape "Manual" so containment checks use its bounding box.
 
     All parsing/conversion happens before scan_coordinates is mutated, so a bad
     row raises without clearing or partially overwriting existing regions.
@@ -222,6 +223,7 @@ def load_coordinate_regions_from_dataframe(scan_coordinates, df):
     scan_coordinates.clear_regions()
     scan_coordinates.region_fov_coordinates.update(region_fov_coords)
     scan_coordinates.region_centers.update(region_centers)
+    scan_coordinates.region_shapes.update(dict.fromkeys(region_fov_coords, "Manual"))
 
     return region_fov_coords, z_dropped
 
@@ -10951,7 +10953,10 @@ class FocusMapWidget(QFrame):
             return
         current = self.point_combo.currentIndex()
         next_index = (current + 1) % len(self.focus_points)
+        # setCurrentIndex emits currentIndexChanged -> goto_selected_point; block it so we move once, not twice.
+        self.point_combo.blockSignals(True)
         self.point_combo.setCurrentIndex(next_index)
+        self.point_combo.blockSignals(False)
         self.goto_selected_point()
 
     def goto_selected_point(self):
