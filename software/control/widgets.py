@@ -4228,6 +4228,9 @@ class LiveControlWidget(QFrame):
     signal_autoLevelSetting = Signal(bool)
     signal_live_configuration = Signal(object)
     signal_start_live = Signal()
+    # Request that the display bring the live view forward, without implying that
+    # live has started (also emitted for a single-frame snap).
+    signal_show_live_view = Signal()
 
     def __init__(
         self,
@@ -4317,12 +4320,26 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
 
-        self.btn_live = QPushButton("Start Live")
+        self.btn_live = QPushButton("Start")
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
         self.btn_live.setStyleSheet("background-color: #C2C2FF")
         self.btn_live.setSizePolicy(sizePolicy)
+        self.btn_live.setToolTip("Start/stop continuous live imaging with the current Live Configuration.")
+
+        # Single-frame capture, for light sensitive samples where a free-running
+        # live stream would bleach or damage the sample while settings are dialed in.
+        self.btn_snap = QPushButton("Snap")
+        self.btn_snap.setCheckable(False)
+        self.btn_snap.setDefault(False)
+        self.btn_snap.setStyleSheet("background-color: #C2C2FF")
+        self.btn_snap.setSizePolicy(sizePolicy)
+        self.btn_snap.setToolTip(
+            "Acquire a single frame with the current Live Configuration. "
+            "In software/hardware trigger mode the illumination is on for that one "
+            "exposure only; in continuous mode it stays on for up to two exposures."
+        )
 
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
@@ -4398,7 +4415,10 @@ class LiveControlWidget(QFrame):
         self.btn_autolevel.setChecked(autolevel)
 
         # Determine the maximum width needed
-        self.entry_illuminationIntensity.setMinimumWidth(self.btn_live.sizeHint().width())
+        # Keep the illumination entry aligned with the Start/Snap pair above it.
+        self.entry_illuminationIntensity.setMinimumWidth(
+            self.btn_live.sizeHint().width() + self.btn_snap.sizeHint().width()
+        )
         self.btn_autolevel.setMinimumWidth(self.btn_autolevel.sizeHint().width())
 
         max_width = max(self.btn_autolevel.minimumWidth(), self.entry_illuminationIntensity.minimumWidth())
@@ -4415,6 +4435,7 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
+        self.btn_snap.clicked.connect(self.snap)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
         self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
@@ -4428,7 +4449,12 @@ class LiveControlWidget(QFrame):
         grid_line1 = QHBoxLayout()
         grid_line1.addWidget(QLabel("Live Configuration"))
         grid_line1.addWidget(self.dropdown_modeSelection, 2)
-        grid_line1.addWidget(self.btn_live, 1)
+        # Start and Snap share the space the single live button used to occupy.
+        live_buttons = QHBoxLayout()
+        live_buttons.setContentsMargins(0, 0, 0, 0)
+        live_buttons.addWidget(self.btn_live, 1)
+        live_buttons.addWidget(self.btn_snap, 1)
+        grid_line1.addLayout(live_buttons, 1)
 
         grid_line2 = QHBoxLayout()
         grid_line2.addWidget(QLabel("Exposure Time"))
@@ -4538,11 +4564,27 @@ class LiveControlWidget(QFrame):
     def toggle_live(self, pressed):
         if pressed:
             self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
+            self.btn_live.setText("Stop")
             self.signal_start_live.emit()
         else:
             self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
+            self.btn_live.setText("Start")
+        # Snapping while live is meaningless - the sample is already being exposed.
+        self.btn_snap.setEnabled(not pressed)
+
+    def snap(self):
+        """Acquire and display one frame with the current live configuration."""
+        if self.liveController.is_live:
+            return
+        # Bring the live view forward so the snapped frame is actually visible.
+        self.signal_show_live_view.emit()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.liveController.snap()
+        except Exception:
+            self._log.exception("Snap failed")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def toggle_autolevel(self, autolevel_on):
         self.btn_autolevel.setChecked(autolevel_on)

@@ -847,7 +847,10 @@ class HighContentScreeningGui(QMainWindow):
             self.addDockWidget(Qt.LeftDockWidgetArea, self.jupyter_dock)
 
     def load_objects(self, is_simulation):
-        self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
+        self.streamHandler = core.QtStreamHandler(
+            accept_new_frame_fn=lambda: self.liveController.should_display_frames(),
+            force_display_fn=lambda: self.liveController.is_snapping,
+        )
         self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
@@ -1510,6 +1513,7 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
         if not self.live_only_mode:
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
+            self.liveControlWidget.signal_show_live_view.connect(self.onShowLiveView)
         self.liveControlWidget.update_camera_settings()
 
         self.connectSlidePositionController()
@@ -2687,9 +2691,12 @@ class HighContentScreeningGui(QMainWindow):
             self.log.debug("Warning/error widget: disconnected logging handler")
 
     def onStartLive(self):
-        self.imageDisplayTabs.setCurrentIndex(0)
+        self.onShowLiveView()
         if self.alignmentWidget is not None:
             self.alignmentWidget.enable()
+
+    def onShowLiveView(self):
+        self.imageDisplayTabs.setCurrentIndex(0)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if not self.navigationWidget.get_click_to_move_enabled():
