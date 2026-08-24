@@ -64,12 +64,13 @@ class ObjectiveChanger2PosController:
         """Unified dispatcher to moveToPosition1 / moveToPosition2 based on the
         per-machine XERYON_OBJECTIVE_SWITCHER_POS_1/POS_2 lists. Short-circuits
         if already at the target position. Raises KeyError for unknown names."""
-        from control._def import XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2
+        from control._def import xeryon_objective_position
 
-        if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1:
+        target_position = xeryon_objective_position(objective_name)
+        if target_position == 1:
             if self.currentPosition() != 1:
                 self.moveToPosition1()
-        elif objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2:
+        elif target_position == 2:
             if self.currentPosition() != 2:
                 self.moveToPosition2()
         else:
@@ -117,12 +118,13 @@ class ObjectiveChanger2PosController_Simulation:
         """Unified dispatcher to moveToPosition1 / moveToPosition2 based on the
         per-machine XERYON_OBJECTIVE_SWITCHER_POS_1/POS_2 lists. Short-circuits
         if already at the target position. Raises KeyError for unknown names."""
-        from control._def import XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2
+        from control._def import xeryon_objective_position
 
-        if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1:
+        target_position = xeryon_objective_position(objective_name)
+        if target_position == 1:
             if self.currentPosition() != 1:
                 self.moveToPosition1()
-        elif objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2:
+        elif target_position == 2:
             if self.currentPosition() != 2:
                 self.moveToPosition2()
         else:

@@ -8,6 +8,7 @@ from control.core.scan_coordinates import (
     RemovedScanCoordinateRegion,
     ClearedScanCoordinates,
 )
+from control.core.core import FocusMap
 from control.microscope import Microscope
 
 
@@ -155,3 +156,16 @@ def test_sort_coordinates_keeps_non_well_region_names():
     sc.sort_coordinates()
 
     assert list(sc.region_centers.keys()) == ["A1", "B1", "current", "my region"]
+
+
+def test_focus_grid_for_region_registered_without_a_shape():
+    """Widget code that writes the region dicts directly may leave no shape; the focus map grid
+    (generate_grid -> region_contains_coordinate -> get_region_shape) used to raise KeyError on it."""
+    sc = _make_scan_coordinates("Unidirectional", ["loaded"])
+    sc.region_fov_coordinates["loaded"] = [(20.0 + 0.5 * i, 20.0 + 0.5 * j) for i in range(4) for j in range(4)]
+    assert "loaded" not in sc.region_shapes
+
+    grid = FocusMap().generate_grid_coordinates(sc, rows=3, cols=3)
+
+    assert len(grid["loaded"]) == 9
+    assert sc.get_region_shape("loaded") == "Square"

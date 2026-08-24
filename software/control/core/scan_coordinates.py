@@ -675,7 +675,8 @@ class ScanCoordinates:
     def get_region_shape(self, region_id):
         if not self.validate_region(region_id):
             return None
-        return self.region_shapes[region_id]
+        # Regions registered without a shape (widget code that writes the dicts directly) are bounding boxes
+        return self.region_shapes.get(region_id, "Square")
 
     def get_scan_bounds(self):
         """Get bounds of all scan regions with margin"""
@@ -705,28 +706,6 @@ class ScanCoordinates:
         margin = max(width, height) * 0.00  # 0.05
 
         return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
-
-    def update_fov_z_level(self, region_id, fov, new_z):
-        """Update z-level for a specific FOV and its region center"""
-        if not self.validate_region(region_id):
-            print(f"Region {region_id} not found")
-            return
-
-        # Update FOV coordinates
-        fov_coords = self.region_fov_coordinates[region_id]
-        if fov < len(fov_coords):
-            # Handle both (x,y) and (x,y,z) cases
-            x, y = fov_coords[fov][:2]  # Takes first two elements regardless of length
-            self.region_fov_coordinates[region_id][fov] = (x, y, new_z)
-
-        # If first FOV, update region center coordinates
-        if fov == 0:
-            if len(self.region_centers[region_id]) == 3:
-                self.region_centers[region_id][2] = new_z
-            else:
-                self.region_centers[region_id].append(new_z)
-
-        self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
 
 
 class ScanCoordinatesSiLA2(ScanCoordinates):
@@ -800,12 +779,14 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                             cols = reversed(cols)
 
                         for col in cols:
-                            self.region_centers[self._index_to_row(row) + str(col + 1)] = transform.well_center_mm(
-                                row, col
+                            # list, not tuple: master normalized every region
+                            # center to a mutable [x, y(, z)] (PR #608).
+                            self.region_centers[self._index_to_row(row) + str(col + 1)] = list(
+                                transform.well_center_mm(row, col)
                             )
                 else:
-                    self.region_centers[start_row + start_col] = transform.well_center_mm(
-                        start_row_index, start_col_index
+                    self.region_centers[start_row + start_col] = list(
+                        transform.well_center_mm(start_row_index, start_col_index)
                     )
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")

@@ -777,13 +777,12 @@ class MultiPointController:
                 self._log.info("Using focus surface for Z interpolation")
                 for region_id in scan_position_information.scan_region_names:
                     region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
-                    # Convert each tuple to list for modification
+                    # Rewrite this acquisition's private snapshot; the GUI's
+                    # ScanCoordinates keeps the user-configured coordinates.
                     for i, coords in enumerate(region_fov_coords):
                         x, y = coords[:2]  # This handles both (x,y) and (x,y,z) formats
                         z = self.focus_map.interpolate(x, y, region_id)
-                        # Modify the list directly
                         region_fov_coords[i] = (x, y, z)
-                        self.scanCoordinates.update_fov_z_level(region_id, i, z)
 
             elif self.gen_focus_map and not self.do_reflection_af:
                 self._log.info("Generating autofocus plane for multipoint grid")

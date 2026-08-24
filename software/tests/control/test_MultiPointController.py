@@ -1,4 +1,7 @@
+import copy
 import threading
+
+import pytest
 
 import control._def
 import control.microscope
@@ -407,3 +410,68 @@ def test_acquisition_parameters_apply_channel_offset_can_be_overridden():
         apply_channel_offset=False,
     )
     assert p.apply_channel_offset is False
+
+
+class StubFocusMap:
+    def interpolate(self, x, y, region_id=None):
+        return 3.0
+
+
+def test_focus_map_does_not_mutate_gui_scan_coordinates():
+    control._def.MERGE_CHANNELS = False
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+
+    coords_before = copy.deepcopy(mpc.scanCoordinates.region_fov_coordinates)
+    centers_before = copy.deepcopy(mpc.scanCoordinates.region_centers)
+
+    mpc.set_focus_map(StubFocusMap())
+    mpc.run_acquisition()
+
+    timeout_s = 5
+    assert tt.started_event.wait(timeout_s)
+    assert tt.finished_event.wait(timeout_s)
+
+    assert mpc.scanCoordinates.region_fov_coordinates == coords_before
+    assert mpc.scanCoordinates.region_centers == centers_before
+
+
+def test_acquisition_moves_to_per_fov_z():
+    # Characterization/regression guard: the worker honors a 3-tuple coordinate's z
+    # (multi_point_worker.py move_to_coordinate). Loaded-with-z plans rely on this.
+    control._def.MERGE_CHANNELS = False
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+
+    captured_z_mm = []
+
+    def record_z(frame, info):
+        captured_z_mm.append(info.position.z_mm)
+        tt.receive_image(frame, info)
+
+    callbacks = tt.get_callbacks()
+    callbacks.signal_new_image = record_z
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=callbacks)
+
+    stage = mpc.stage
+    x = stage.get_config().X_AXIS.MIN_POSITION + 1.0
+    y = stage.get_config().Y_AXIS.MIN_POSITION + 1.0
+    z_target = 3.0
+    # Inject regions the way a loaded CSV stores them: 3-tuple FOVs, [x, y] list centers.
+    mpc.scanCoordinates.region_fov_coordinates = {"A1": [(x, y, z_target)]}
+    mpc.scanCoordinates.region_centers = {"A1": [x, y]}
+
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.run_acquisition()
+
+    timeout_s = 5
+    assert tt.started_event.wait(timeout_s)
+    assert tt.finished_event.wait(timeout_s)
+
+    # Every image of this single-FOV, NZ=1 acquisition was captured at the per-FOV z.
+    assert captured_z_mm, "no images were captured"
+    assert all(z == pytest.approx(z_target, abs=1e-3) for z in captured_z_mm)

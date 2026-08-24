@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from typing import Callable, Optional, Tuple, Sequence, List, Dict
 import abc
 import enum
+import threading
 import time
 
 import pydantic
@@ -433,16 +434,23 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         self._software_crop_width_ratio = 1.0
         self._software_crop_height_ratio = 1.0
 
+        # Held for the duration of any operation that pauses streaming (see
+        # _pause_streaming); send_trigger try-acquires it and drops the trigger if a
+        # pause is in flight. Reentrant so a driver can hold it across a compound
+        # operation that itself pauses streaming.
+        self._trigger_lock = threading.RLock()
+
     @contextmanager
     def _pause_streaming(self):
-        was_streaming = self.get_is_streaming()
-        try:
-            if was_streaming:
-                self.stop_streaming()
-            yield
-        finally:
-            if was_streaming:
-                self.start_streaming()
+        with self._trigger_lock:
+            was_streaming = self.get_is_streaming()
+            try:
+                if was_streaming:
+                    self.stop_streaming()
+                yield
+            finally:
+                if was_streaming:
+                    self.start_streaming()
 
     def enable_callbacks(self, enabled: bool):
         """
@@ -791,6 +799,27 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
+    def get_available_sensor_modes(self) -> Sequence[str]:
+        """
+        Driver-defined sensor mode names (e.g. readout speeds, gain modes). An empty
+        list means sensor mode selection is not supported by this camera.
+        """
+        return []
+
+    def get_sensor_mode(self) -> Optional[str]:
+        """
+        The currently active sensor mode, or None if mode selection is not supported.
+        """
+        return None
+
+    def set_sensor_mode(self, mode: str):
+        """
+        Switch the camera to the given sensor mode. The mode must be one of
+        get_available_sensor_modes(). Implementations must refresh exposure/strobe
+        timing afterwards if the mode change affects it.
+        """
+        raise NotImplementedError("Sensor mode selection is not implemented for this camera.")
+
     def set_acquisition_mode(self, acquisition_mode: CameraAcquisitionMode):
         """
         Sets the acquisition mode.  If you are specifying hardware trigger, and an external
@@ -831,7 +860,6 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abc.abstractmethod
     def send_trigger(self, illumination_time: Optional[float] = None):
         """
         If in an acquisition mode that needs triggering, send a trigger.  If in HARDWARE_TRIGGER mode, you are
@@ -843,6 +871,27 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         trigger system that controls illumination, a non-None illumination_time is allowed (but will be ignored)
 
         When this returns, it does not mean it is safe to immediately send another trigger.
+
+        If a settings change that pauses streaming is in flight (the operation holds
+        self._trigger_lock, see _pause_streaming), the trigger is dropped: sending a
+        trigger into a stream that is being torn down or brought back up is never
+        useful. Callers pace themselves via get_ready_for_trigger; implementations
+        should report not-ready there while streaming is off (see HamamatsuCamera).
+        """
+        if not self._trigger_lock.acquire(blocking=False):
+            self._log.debug("Camera settings change in progress, dropping trigger.")
+            return
+        try:
+            self._send_trigger_imp(illumination_time)
+        finally:
+            self._trigger_lock.release()
+
+    @abc.abstractmethod
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
+        """
+        Driver-specific trigger implementation called by send_trigger. Implementations
+        must raise CameraError if the camera cannot accept a trigger (not streaming,
+        not ready, or the vendor call fails).
         """
         pass
 
@@ -850,7 +899,9 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     def get_ready_for_trigger(self) -> bool:
         """
         Returns true if the camera is ready for another trigger, false otherwise.  Calling
-        send_trigger when this is False will result in an exception from send_trigger.
+        send_trigger when this is False will result in an exception from send_trigger,
+        unless a streaming-pausing settings change is in flight, in which case
+        send_trigger drops the trigger silently instead (see send_trigger).
         """
         pass
 

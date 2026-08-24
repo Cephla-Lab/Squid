@@ -296,15 +296,18 @@ class DefaultCamera(AbstractCamera):
         raise NotImplementedError(f"No pixel format for gx format {gx_pixel=}")
 
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
-        with self._pause_streaming():
-            if not self._capabilities.settable_pixel_format:
-                raise NotImplementedError("The camera does not support setting pixel format.")
-            self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
-            self._pixel_format = pixel_format
+        # Hold the trigger lock across the pause AND the strobe/exposure recalculation
+        # so racing triggers are dropped until the new timing is in effect.
+        with self._trigger_lock:
+            with self._pause_streaming():
+                if not self._capabilities.settable_pixel_format:
+                    raise NotImplementedError("The camera does not support setting pixel format.")
+                self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
+                self._pixel_format = pixel_format
 
-        self._update_strobe_time()
-        # For re-setting exposure time just in case the strobe changed.
-        self.set_exposure_time(self.get_exposure_time())
+            self._update_strobe_time()
+            # For re-setting exposure time just in case the strobe changed.
+            self.set_exposure_time(self.get_exposure_time())
 
     def get_pixel_format(self) -> CameraPixelFormat:
         if not self._capabilities.gettable_pixel_format:
@@ -476,7 +479,7 @@ class DefaultCamera(AbstractCamera):
         else:
             return CameraAcquisitionMode.CONTINUOUS
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if not self.get_is_streaming():
             self._log.warning("Trigger requested, but not streaming. Skipping.")
             return

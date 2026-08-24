@@ -847,7 +847,10 @@ class HighContentScreeningGui(QMainWindow):
             self.addDockWidget(Qt.LeftDockWidgetArea, self.jupyter_dock)
 
     def load_objects(self, is_simulation):
-        self.streamHandler = core.QtStreamHandler(accept_new_frame_fn=lambda: self.liveController.is_live)
+        self.streamHandler = core.QtStreamHandler(
+            accept_new_frame_fn=lambda: self.liveController.should_display_frames(),
+            force_display_fn=lambda: self.liveController.is_snapping,
+        )
         self.autofocusController = QtAutoFocusController(
             self.camera, self.stage, self.liveController, self.microcontroller, self.nl5
         )
@@ -1105,11 +1108,13 @@ class HighContentScreeningGui(QMainWindow):
 
         binning_restored = self._restore_binning(cached_settings.binning)
         pixel_format_restored = self._restore_pixel_format(cached_settings.pixel_format)
+        sensor_mode_restored = self._restore_sensor_mode(cached_settings.sensor_mode)
 
-        if binning_restored or pixel_format_restored:
+        if binning_restored or pixel_format_restored or sensor_mode_restored:
             self.log.info(
                 f"Restored camera settings: binning={cached_settings.binning}, "
-                f"pixel_format={cached_settings.pixel_format}"
+                f"pixel_format={cached_settings.pixel_format}, "
+                f"sensor_mode={cached_settings.sensor_mode}"
             )
 
     def _restore_binning(self, binning: Tuple[int, int]) -> bool:
@@ -1159,6 +1164,21 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
         self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
         return True
+
+    def _restore_sensor_mode(self, sensor_mode: Optional[str]) -> bool:
+        """Apply cached sensor mode via the camera settings widget.
+
+        Returns True if successfully applied, False otherwise.
+        """
+        if not sensor_mode:
+            return False
+
+        restored = self.cameraSettingWidget.restore_sensor_mode(sensor_mode)
+        if not restored:
+            self.log.warning(
+                f"Cannot restore sensor mode '{sensor_mode}' - camera does not support it or the mode name is unknown"
+            )
+        return restored
 
     def setupImageDisplayTabs(self):
         if USE_NAPARI_FOR_LIVE_VIEW:
@@ -1493,6 +1513,7 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
         if not self.live_only_mode:
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
+            self.liveControlWidget.signal_show_live_view.connect(self.onShowLiveView)
         self.liveControlWidget.update_camera_settings()
 
         self.connectSlidePositionController()
@@ -1500,6 +1521,12 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
+        # Sensor mode changes (readout speed) can shift the valid exposure range;
+        # refresh the exposure control the user actually sees (LiveControlWidget's),
+        # since CameraSettingsWidget's own exposure entry is hidden here
+        # (include_gain_exposure_time=False). The focus camera has no
+        # LiveControlWidget, so its CameraSettingsWidget signal is left unconnected.
+        self.cameraSettingWidget.signal_sensor_mode_changed.connect(self.liveControlWidget.refresh_exposure_time_limits)
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.objectivesWidget.signal_objective_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
         # TODO(imo): Fix position updates after removal of navigation controller
@@ -2295,10 +2322,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""
-        from control.core.config import ConfigRepository
-
-        config_repo = ConfigRepository()
-        dialog = widgets.IlluminationChannelConfiguratorDialog(config_repo, self)
+        dialog = widgets.IlluminationChannelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
@@ -2310,7 +2334,7 @@ class HighContentScreeningGui(QMainWindow):
 
     def openAdvancedChannelMapping(self):
         """Open the advanced channel hardware mapping dialog"""
-        dialog = widgets.AdvancedChannelMappingDialog(self.microscope.config_repo, self)
+        dialog = widgets.ControllerPortMappingDialog(self.microscope.config_repo, self)
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
@@ -2667,9 +2691,12 @@ class HighContentScreeningGui(QMainWindow):
             self.log.debug("Warning/error widget: disconnected logging handler")
 
     def onStartLive(self):
-        self.imageDisplayTabs.setCurrentIndex(0)
+        self.onShowLiveView()
         if self.alignmentWidget is not None:
             self.alignmentWidget.enable()
+
+    def onShowLiveView(self):
+        self.imageDisplayTabs.setCurrentIndex(0)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
         if not self.navigationWidget.get_click_to_move_enabled():

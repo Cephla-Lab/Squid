@@ -34,7 +34,7 @@ from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSessio
 from control.core.plate_fit import circumcenter, PlateFitError
 from control.core.plate_transform import plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
-from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController
+from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
 
@@ -158,6 +158,127 @@ def save_last_used_saving_path(path: str) -> None:
                 f.write(path)
         except OSError:
             pass  # Silently fail - caching is a convenience feature
+
+
+def load_coordinate_regions_from_dataframe(scan_coordinates, df):
+    """Clear scan_coordinates and populate its regions from a coordinates dataframe.
+
+    The dataframe must have 'region', 'x (mm)' and 'y (mm)' columns. If a 'z (mm)'
+    column is present and fully populated, FOVs are loaded as (x, y, z) tuples so
+    the acquisition moves Z per FOV; otherwise FOVs are (x, y). Region centers are
+    stored as mutable [x, y] lists without z — nothing reads a center z, and a
+    mutable list keeps them consistent with the ScanCoordinates.add_* builders
+    (and append-safe for any future center-z writer). Every loaded region is
+    registered with shape "Manual" so containment checks use its bounding box.
+
+    All parsing/conversion happens before scan_coordinates is mutated, so a bad
+    row raises without clearing or partially overwriting existing regions.
+
+    Returns:
+        (region_fov_coords, z_dropped): dict of region_id -> list of loaded FOV
+        tuples (for navigation-viewer registration by the caller), and whether a
+        'z (mm)' column was present but ignored because it contained empty cells.
+
+    Raises:
+        ValueError: on missing required columns, or z values outside SOFTWARE_POS_LIMIT.
+    """
+    required_columns = ["region", "x (mm)", "y (mm)"]
+    if not all(col in df.columns for col in required_columns):
+        raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
+
+    has_z = "z (mm)" in df.columns
+    z_dropped = False
+    z_values = None
+    if has_z:
+        # Coerce up front: an object-dtype column (numeric strings, stray text) would
+        # make the raw range comparison below raise TypeError. Parseable strings load
+        # correctly; unparseable cells become NaN and take the same warn-and-load-
+        # XY-only path as empty cells (tuples stay homogeneous, NaN never reaches
+        # the stage).
+        z_values = pd.to_numeric(df["z (mm)"], errors="coerce")
+        if z_values.isna().any():
+            has_z = False
+            z_dropped = True
+
+    if has_z:
+        z_min = control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE
+        z_max = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE
+        out_of_range = z_values[(z_values < z_min) | (z_values > z_max)]
+        if not out_of_range.empty:
+            raise ValueError(
+                f"z (mm) values outside software limits [{z_min}, {z_max}] mm: "
+                f"{sorted(out_of_range.unique().tolist())}"
+            )
+
+    # Parse/convert everything up front so a bad cell raises before any mutation.
+    region_fov_coords = {}
+    region_centers = {}
+    for region_id in df["region"].unique():
+        region_points = df[df["region"] == region_id]
+        if has_z:
+            coords = [
+                (float(x), float(y), float(z))
+                for x, y, z in zip(region_points["x (mm)"], region_points["y (mm)"], z_values.loc[region_points.index])
+            ]
+        else:
+            coords = [(float(x), float(y)) for x, y in zip(region_points["x (mm)"], region_points["y (mm)"])]
+        region_fov_coords[region_id] = coords
+        region_centers[region_id] = [
+            float(region_points["x (mm)"].mean()),
+            float(region_points["y (mm)"].mean()),
+        ]
+
+    scan_coordinates.clear_regions()
+    scan_coordinates.region_fov_coordinates.update(region_fov_coords)
+    scan_coordinates.region_centers.update(region_centers)
+    scan_coordinates.region_shapes.update(dict.fromkeys(region_fov_coords, "Manual"))
+
+    return region_fov_coords, z_dropped
+
+
+def _register_loaded_fovs(widget, region_fov_coords, z_dropped):
+    """Register freshly loaded FOVs on the widget's navigation viewer, warning once
+    when load_coordinate_regions_from_dataframe dropped an incomplete z column."""
+    for coords in region_fov_coords.values():
+        widget.navigationViewer.register_fovs_to_image(coords)
+    if z_dropped:
+        QMessageBox.warning(
+            widget,
+            "Z column ignored",
+            "The 'z (mm)' column contains empty values; coordinates were loaded as XY-only.",
+        )
+
+
+def _objective_relative_z_mm(objective_name):
+    """Relative stage-Z frame of an objective under the Xeryon 2-position switcher:
+    the changer parks the stage XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM lower while a
+    position-2 objective is in use (objective_changer_2_pos_controller.moveToPosition2).
+    0 for position-1 objectives, names not in the position lists, and machines without
+    the switcher."""
+    if not control._def.USE_XERYON:
+        return 0.0
+    if control._def.xeryon_objective_position(objective_name) == 2:
+        return -float(control._def.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM)
+    return 0.0
+
+
+def parfocal_adjusted_z_mm(current_objective, target_objective, z_mm):
+    """Shift a stage z from the current objective's frame to the target objective's,
+    using the objective switcher's per-machine Z offset (no-op without a switcher)."""
+    return z_mm + (_objective_relative_z_mm(target_objective) - _objective_relative_z_mm(current_objective))
+
+
+def coordinate_rows_for_save(region_fov_coordinates, z_default_mm):
+    """Flatten region FOV coordinates into a coordinates dataframe with a z column.
+
+    FOVs that already carry z (3-tuples) keep it; 2-tuple FOVs get z_default_mm.
+    """
+    rows = []
+    for region_id, fov_coords in region_fov_coordinates.items():
+        for coord in fov_coords:
+            z = float(coord[2]) if len(coord) == 3 else z_default_mm
+            rows.append([region_id, float(coord[0]), float(coord[1]), z])
+    return pd.DataFrame(rows, columns=["region", "x (mm)", "y (mm)", "z (mm)"])
 
 
 class WrapperWindow(QMainWindow):
@@ -3608,9 +3729,16 @@ class ObjectivesWidget(QWidget):
         self.signal_objective_changed.emit()
 
 
+def set_spinbox_range_from_exposure_limits(camera: AbstractCamera, spinbox: QDoubleSpinBox):
+    exposure_min, exposure_max = camera.get_exposure_limits()
+    spinbox.setMinimum(exposure_min)
+    spinbox.setMaximum(exposure_max)
+
+
 class CameraSettingsWidget(QFrame):
 
     signal_binning_changed = Signal()
+    signal_sensor_mode_changed = Signal()
 
     def __init__(
         self,
@@ -3639,11 +3767,11 @@ class CameraSettingsWidget(QFrame):
         # add buttons and input fields
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
-        self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setValue(20)
-        self.camera.set_exposure_time(20)
+        # Use the spinbox value, not a literal: setValue clamps to the camera's exposure limits.
+        self.camera.set_exposure_time(self.entry_exposureTime.value())
 
         self.entry_analogGain = QDoubleSpinBox()
         try:
@@ -3755,6 +3883,20 @@ class CameraSettingsWidget(QFrame):
             pass
         format_line.addWidget(QLabel("Binning"))
         format_line.addWidget(self.dropdown_binning)
+
+        # Sensor mode dropdown: only shown when the camera implements mode selection.
+        self.dropdown_sensorMode = None
+        sensor_modes = self.camera.get_available_sensor_modes()
+        if sensor_modes:
+            self.dropdown_sensorMode = QComboBox()
+            self.dropdown_sensorMode.addItems(sensor_modes)
+            current_mode = self.camera.get_sensor_mode()
+            if current_mode is not None:
+                self.dropdown_sensorMode.setCurrentText(current_mode)
+            self.dropdown_sensorMode.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+            self.dropdown_sensorMode.currentTextChanged.connect(self.set_sensor_mode)
+            format_line.addWidget(QLabel("Sensor Mode"))
+            format_line.addWidget(self.dropdown_sensorMode)
         self.camera_layout.addLayout(format_line)
 
         if include_camera_temperature_setting:
@@ -3815,6 +3957,51 @@ class CameraSettingsWidget(QFrame):
             self.camera.set_analog_gain(gain)
         except NotImplementedError:
             self._log.warning(f"Cannot set gain to {gain}, gain not supported.")
+
+    def set_sensor_mode(self, mode: str):
+        try:
+            self.camera.set_sensor_mode(mode)
+        except (CameraError, ValueError, NotImplementedError):
+            self._log.exception(f"Failed to set sensor mode '{mode}', reverting selection.")
+            self._revert_sensor_mode_dropdown()
+            return
+
+        # Readout speed can change the valid exposure range.
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
+        # Notify listeners (e.g. LiveControlWidget) whose own exposure control
+        # needs its min/max refreshed too, since this widget's own
+        # entry_exposureTime is often hidden (include_gain_exposure_time=False).
+        self.signal_sensor_mode_changed.emit()
+
+    def restore_sensor_mode(self, mode: str) -> bool:
+        """Apply a cached sensor mode by driving the dropdown, reusing set_sensor_mode's
+        error handling, revert, and exposure-limit refresh.
+
+        Returns True if the camera ends up in the requested mode.
+        """
+        if self.dropdown_sensorMode is None:
+            return False
+        # No-op (and no camera command) when the mode is already current; an unknown
+        # mode isn't in the item list, so the selection and camera stay unchanged.
+        self.dropdown_sensorMode.setCurrentText(mode)
+        try:
+            return self.camera.get_sensor_mode() == mode
+        except CameraError:
+            self._log.exception("Failed to read back sensor mode after restore.")
+            return False
+
+    def _revert_sensor_mode_dropdown(self):
+        self.dropdown_sensorMode.blockSignals(True)
+        try:
+            try:
+                current_mode = self.camera.get_sensor_mode()
+            except CameraError:
+                self._log.exception("Failed to read back current sensor mode while reverting selection.")
+                current_mode = None
+            if current_mode is not None:
+                self.dropdown_sensorMode.setCurrentText(current_mode)
+        finally:
+            self.dropdown_sensorMode.blockSignals(False)
 
     def toggle_auto_wb(self, pressed):
         # 0: OFF  1:CONTINUOUS  2:ONCE
@@ -3995,6 +4182,55 @@ class ProfileWidget(QFrame):
         return self.dropdown_profiles.currentText()
 
 
+class CappedSlider(QSlider):
+    """Slider whose usable range can be capped below its full range.
+
+    The groove keeps showing the full range so the cap is visible in context:
+    the portion beyond the cap is painted gray and values above it are clamped.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cap: Optional[int] = None
+
+    def set_cap(self, cap: float):
+        """Cap the usable range at `cap` (slider units)."""
+        self._cap = int(cap)
+        if self.value() > self._cap:
+            self.setValue(self._cap)
+        self.update()
+
+    def sliderChange(self, change):
+        if change == QAbstractSlider.SliderValueChange and self._cap is not None and self.value() > self._cap:
+            self.setValue(self._cap)
+            return
+        super().sliderChange(change)
+
+    def _overlay_region(self) -> Optional[QRegion]:
+        """Region beyond the cap to gray out, minus the handle so it stays visible."""
+        if self._cap is None or self._cap >= self.maximum():
+            return None
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
+        handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
+        cap_x = QStyle.sliderPositionFromValue(
+            self.minimum(), self.maximum(), self._cap, groove.width(), opt.upsideDown
+        )
+        overlay = QRect(groove.x() + cap_x, groove.y(), groove.width() - cap_x, groove.height())
+        return QRegion(overlay).subtracted(QRegion(handle))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        region = self._overlay_region()
+        if region is None or region.isEmpty():
+            return
+        painter = QPainter(self)
+        painter.setClipRegion(region)
+        painter.fillRect(region.boundingRect(), QColor(128, 128, 128, 150))
+        painter.end()
+
+
 class LiveControlWidget(QFrame):
 
     signal_newExposureTime = Signal(float)
@@ -4002,6 +4238,9 @@ class LiveControlWidget(QFrame):
     signal_autoLevelSetting = Signal(bool)
     signal_live_configuration = Signal(object)
     signal_start_live = Signal()
+    # Request that the display bring the live view forward, without implying that
+    # live has started (also emitted for a single-frame snap).
+    signal_show_live_view = Signal()
 
     def __init__(
         self,
@@ -4091,18 +4330,31 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
 
-        self.btn_live = QPushButton("Start Live")
+        self.btn_live = QPushButton("Start")
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
         self.btn_live.setStyleSheet("background-color: #C2C2FF")
         self.btn_live.setSizePolicy(sizePolicy)
+        self.btn_live.setToolTip("Start/stop continuous live imaging with the current Live Configuration.")
+
+        # Single-frame capture, for light sensitive samples where a free-running
+        # live stream would bleach or damage the sample while settings are dialed in.
+        self.btn_snap = QPushButton("Snap")
+        self.btn_snap.setCheckable(False)
+        self.btn_snap.setDefault(False)
+        self.btn_snap.setStyleSheet("background-color: #C2C2FF")
+        self.btn_snap.setSizePolicy(sizePolicy)
+        self.btn_snap.setToolTip(
+            "Acquire a single frame with the current Live Configuration. "
+            "In software/hardware trigger mode the illumination is on for that one "
+            "exposure only; in continuous mode it stays on for up to two exposures."
+        )
 
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        self.entry_exposureTime.setMinimum(self.camera.get_exposure_limits()[0])
-        self.entry_exposureTime.setMaximum(self.camera.get_exposure_limits()[1])
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setSuffix(" ms")
         self.entry_exposureTime.setValue(0)
@@ -4125,7 +4377,7 @@ class LiveControlWidget(QFrame):
             self.entry_analogGain.setValue(0)
             self.entry_analogGain.setEnabled(False)
 
-        self.slider_illuminationIntensity = QSlider(Qt.Horizontal)
+        self.slider_illuminationIntensity = CappedSlider(Qt.Horizontal)
         self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
         self.slider_illuminationIntensity.setMinimum(0)
         self.slider_illuminationIntensity.setMaximum(100)
@@ -4173,7 +4425,10 @@ class LiveControlWidget(QFrame):
         self.btn_autolevel.setChecked(autolevel)
 
         # Determine the maximum width needed
-        self.entry_illuminationIntensity.setMinimumWidth(self.btn_live.sizeHint().width())
+        # Keep the illumination entry aligned with the Start/Snap pair above it.
+        self.entry_illuminationIntensity.setMinimumWidth(
+            self.btn_live.sizeHint().width() + self.btn_snap.sizeHint().width()
+        )
         self.btn_autolevel.setMinimumWidth(self.btn_autolevel.sizeHint().width())
 
         max_width = max(self.btn_autolevel.minimumWidth(), self.entry_illuminationIntensity.minimumWidth())
@@ -4190,6 +4445,7 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
+        self.btn_snap.clicked.connect(self.snap)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
         self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
@@ -4203,7 +4459,12 @@ class LiveControlWidget(QFrame):
         grid_line1 = QHBoxLayout()
         grid_line1.addWidget(QLabel("Live Configuration"))
         grid_line1.addWidget(self.dropdown_modeSelection, 2)
-        grid_line1.addWidget(self.btn_live, 1)
+        # Start and Snap share the space the single live button used to occupy.
+        live_buttons = QHBoxLayout()
+        live_buttons.setContentsMargins(0, 0, 0, 0)
+        live_buttons.addWidget(self.btn_live, 1)
+        live_buttons.addWidget(self.btn_snap, 1)
+        grid_line1.addLayout(live_buttons, 1)
 
         grid_line2 = QHBoxLayout()
         grid_line2.addWidget(QLabel("Exposure Time"))
@@ -4313,11 +4574,27 @@ class LiveControlWidget(QFrame):
     def toggle_live(self, pressed):
         if pressed:
             self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
+            self.btn_live.setText("Stop")
             self.signal_start_live.emit()
         else:
             self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
+            self.btn_live.setText("Start")
+        # Snapping while live is meaningless - the sample is already being exposed.
+        self.btn_snap.setEnabled(not pressed)
+
+    def snap(self):
+        """Acquire and display one frame with the current live configuration."""
+        if self.liveController.is_live:
+            return
+        # Bring the live view forward so the snapped frame is actually visible.
+        self.signal_show_live_view.emit()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            self.liveController.snap()
+        except Exception:
+            self._log.exception("Snap failed")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def toggle_autolevel(self, autolevel_on):
         self.btn_autolevel.setChecked(autolevel_on)
@@ -4325,6 +4602,17 @@ class LiveControlWidget(QFrame):
     def update_camera_settings(self):
         self.signal_newAnalogGain.emit(self.entry_analogGain.value())
         self.signal_newExposureTime.emit(self.entry_exposureTime.value())
+
+    def refresh_exposure_time_limits(self):
+        """Refresh the exposure spinbox's min/max from the camera.
+
+        Needed after something changes the camera's valid exposure range
+        without going through this widget - e.g. a sensor mode / readout
+        speed change made via CameraSettingsWidget. setMinimum/setMaximum
+        auto-clamp the current value and emit valueChanged, which is already
+        connected to the camera's exposure setter, so the clamp propagates.
+        """
+        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
 
     def refresh_mode_list(self):
         # Update the mode selection dropdown (only show enabled channels)
@@ -4364,6 +4652,10 @@ class LiveControlWidget(QFrame):
                 # update the exposure time and analog gain settings according to the selected configuration
                 self.entry_exposureTime.setValue(self.currentConfiguration.exposure_time)
                 self.entry_analogGain.setValue(self.currentConfiguration.analog_gain)
+                # Cap intensity controls at the illumination channel's max output
+                intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
+                self.slider_illuminationIntensity.set_cap(intensity_cap)
+                self.entry_illuminationIntensity.setMaximum(intensity_cap)
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
@@ -7755,9 +8047,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Seed from current mode; signal only fires on later toggles.
             self._on_mosaic_mode_changed(self.napariMosaicWidget.mode)
 
-        # Connect save/clear coordinates button
-        self.btn_save_scan_coordinates.clicked.connect(self.on_save_or_clear_coordinates_clicked)
-        self.btn_load_scan_coordinates.clicked.connect(self.on_load_coordinates_clicked)
+        self.btn_save_scan_coordinates.clicked.connect(self.save_coordinates)
+        self.btn_load_scan_coordinates.clicked.connect(self.on_load_or_clear_coordinates_clicked)
 
         # Connect acquisition tabs
         self.checkbox_xy.toggled.connect(self.on_xy_toggled)
@@ -8115,7 +8406,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # If no file has been loaded previously, open file dialog immediately
             # But skip if we're loading from cache
             if self.cached_loaded_coordinates_df is None and not getattr(self, "_loading_from_cache", False):
-                QTimer.singleShot(100, self.on_load_coordinates_clicked)
+                QTimer.singleShot(100, self.on_load_or_clear_coordinates_clicked)
             else:
                 # Restore cached coordinates when switching to Load Coordinates mode
                 self.restore_cached_coordinates()
@@ -8768,6 +9059,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         elif self.combobox_xy_mode.currentText() == "Current Position":
             pos = self.stage.get_pos()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
+        elif self.combobox_xy_mode.currentText() == "Load Coordinates" and self.has_loaded_coordinates:
+            # Loaded plans are owned by the load/restore/clear flow and have no scan
+            # inputs to re-derive from. Falling through to the well-selector branch
+            # below silently replaced a loaded plan with whatever wells were ticked
+            # (e.g. right after an acquisition finished, via reset_coordinates) while
+            # the UI still claimed the file was loaded. Without a loaded plan (e.g.
+            # re-applying an acquisition YAML recorded in this mode), fall through so
+            # regions still derive from the ticked wells.
+            return
         else:
             if self.scanCoordinates.has_regions():
                 self.scanCoordinates.clear_regions()
@@ -8994,7 +9294,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.focusMapWidget.update_focus_point_display()
             self.focusMapWidget.enable_updating_focus_points_on_signal()
         self.setEnabled_all(True)
-        self.toggle_coordinate_controls(self.has_loaded_coordinates)
 
     def setEnabled_all(self, enabled):
         for widget in self.findChildren(QWidget):
@@ -9084,116 +9383,73 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
 
-    def toggle_coordinate_controls(self, has_coordinates: bool):
-        """Toggle button text and control states based on whether coordinates are loaded"""
-        if has_coordinates:
-            self.btn_save_scan_coordinates.setText("Clear Coordinates")
-            # Disable scan controls when coordinates are loaded
-            self.combobox_shape.setEnabled(False)
-            self.entry_scan_size.setEnabled(False)
-            self.entry_well_coverage.setEnabled(False)
-            self.entry_overlap.setEnabled(False)
-            # Disable well selector
-            if self.well_selection_widget is not None:
-                self.well_selection_widget.setEnabled(False)
-        else:
-            self.btn_save_scan_coordinates.setText("Save Coordinates")
-            # Re-enable scan controls when coordinates are cleared - use update_scan_control_ui for proper logic
-            self.update_scan_control_ui()
-
-        self.has_loaded_coordinates = has_coordinates
-
-    def on_save_or_clear_coordinates_clicked(self):
-        """Handle save/clear coordinates button click"""
+    def on_load_or_clear_coordinates_clicked(self):
+        """Toggle for btn_load_scan_coordinates: open the load dialog when nothing
+        is loaded, clear the loaded coordinates otherwise."""
         if self.has_loaded_coordinates:
-            # Clear coordinates
-            self.scanCoordinates.clear_regions()
-            self.toggle_coordinate_controls(has_coordinates=False)
-            # Update display/coordinates as needed
-            self.update_coordinates()
-        else:
-            # Save coordinates (existing save functionality)
-            self.save_coordinates()
-
-    def on_load_coordinates_clicked(self):
-        """Open file dialog and load coordinates from selected CSV file"""
+            self.clear_loaded_coordinates()
+            return
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Scan Coordinates", "", "CSV Files (*.csv);;All Files (*)"  # Default directory
+            self, "Load Scan Coordinates", "", "CSV Files (*.csv);;All Files (*)"
         )
-
         if file_path:
             self._log.info(f"Loading coordinates from {file_path}")
             self.load_coordinates(file_path)
 
+    def clear_loaded_coordinates(self):
+        self.scanCoordinates.clear_regions()
+        self.navigationViewer.clear_overlay()
+        self.cached_loaded_coordinates_df = None
+        self.cached_loaded_file_path = None
+        self.text_loaded_coordinates.clear()
+        self._set_has_loaded_coordinates(False)
+
+    def _set_has_loaded_coordinates(self, loaded: bool):
+        self.has_loaded_coordinates = loaded
+        self.btn_load_scan_coordinates.setText("Clear Coords" if loaded else "Load New Coords")
+
     def restore_cached_coordinates(self):
-        """Restore previously loaded coordinates from cached dataframe"""
+        """Restore previously loaded coordinates from the cached dataframe."""
         if self.cached_loaded_coordinates_df is None:
             return
 
-        df = self.cached_loaded_coordinates_df
+        try:
+            region_fov_coords, _ = load_coordinate_regions_from_dataframe(
+                self.scanCoordinates, self.cached_loaded_coordinates_df
+            )
+            for coords in region_fov_coords.values():
+                self.navigationViewer.register_fovs_to_image(coords)
 
-        # Clear existing coordinates
-        self.scanCoordinates.clear_regions()
+            if self.cached_loaded_file_path:
+                self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
+            self._set_has_loaded_coordinates(True)
 
-        # Load coordinates into scanCoordinates from cached dataframe
-        for region_id in df["region"].unique():
-            region_points = df[df["region"] == region_id]
-            coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-            self.scanCoordinates.region_fov_coordinates[region_id] = coords
-
-            # Calculate and store region center (average of points)
-            center_x = region_points["x (mm)"].mean()
-            center_y = region_points["y (mm)"].mean()
-            self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
-
-            # Register FOVs with navigation viewer
-            for x, y in coords:
-                self.navigationViewer.register_fov_to_image(x, y)
-
-        # Update text area to show loaded file path
-        if self.cached_loaded_file_path:
-            self.text_loaded_coordinates.setText(f"Loaded: {self.cached_loaded_file_path}")
+        except Exception as e:
+            # SOFTWARE_POS_LIMIT.Z_POSITIVE/Z_NEGATIVE are runtime-mutable, so a
+            # cached dataframe that validated at load time can fail validation on
+            # a later restore (e.g. mode switch away and back). This method is
+            # called from a Qt slot, so a raised exception here would propagate
+            # into the event loop.
+            self._log.error(f"Failed to restore cached coordinates: {str(e)}")
+            QMessageBox.warning(self, "Load Error", f"Failed to restore cached coordinates\nError: {str(e)}")
 
     def load_coordinates(self, file_path: str):
-        """Load scan coordinates from a CSV file.
-
-        Args:
-            file_path: Path to CSV file containing coordinates
-        """
+        """Load scan coordinates (optionally with per-FOV z) from a CSV file."""
         try:
-            # Read coordinates from CSV (stamped or legacy-unstamped)
+            # Stamped or legacy-unstamped read; the shared loader owns column
+            # validation and the optional per-FOV z column.
             df, stamp = read_scan_coordinates_csv(file_path)
-
-            # Validate CSV format
-            required_columns = ["region", "x (mm)", "y (mm)"]
-            if not all(col in df.columns for col in required_columns):
-                raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
+            region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
             # Cache the dataframe and file path
             self.cached_loaded_coordinates_df = df.copy()
             self.cached_loaded_file_path = file_path
 
-            # Clear existing coordinates
-            self.scanCoordinates.clear_regions()
-
-            # Load coordinates into scanCoordinates
-            for region_id in df["region"].unique():
-                region_points = df[df["region"] == region_id]
-                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-                self.scanCoordinates.region_fov_coordinates[region_id] = coords
-
-                # Calculate and store region center (average of points)
-                center_x = region_points["x (mm)"].mean()
-                center_y = region_points["y (mm)"].mean()
-                self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
-
-                # Register FOVs with navigation viewer
-                self.navigationViewer.register_fovs_to_image(coords)
+            _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
-
-            # Update text area to show loaded file path
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
+            self._set_has_loaded_coordinates(True)
 
             # The file stores ABSOLUTE stage positions: warn (but still load) if
             # the placement changed since it was saved.
@@ -9204,56 +9460,47 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             QMessageBox.warning(self, "Load Error", f"Failed to load coordinates from {file_path}\nError: {str(e)}")
 
     def save_coordinates(self):
-        """Save scan coordinates to a CSV file.
+        """Save scan coordinates to CSV files (one per objective).
 
-        Opens a file dialog for the user to specify a folder name and location.
-        Coordinates are saved in CSV format with headers for each objective.
+        Each FOV row carries 'z (mm)': the current stage z for the objective in
+        use, shifted for the other objectives by the objective switcher's
+        per-machine Z offset (XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM).
         """
-        # Open file dialog for user to specify folder name and location
         folder_path, _ = QFileDialog.getSaveFileName(
             self, "Create Folder for Scan Coordinates", "", "Folder"  # Default directory
         )
+        if not folder_path:
+            return
 
-        if folder_path:
-            # Create the folder if it doesn't exist
-            os.makedirs(folder_path, exist_ok=True)
+        os.makedirs(folder_path, exist_ok=True)
+        folder_name = os.path.basename(folder_path)
+        current_objective = self.objectiveStore.current_objective
+        z_current_mm = self.stage.get_pos().z_mm
 
-            folder_name = os.path.basename(folder_path)
+        def _save_for_objective(objective_name):
+            self.objectiveStore.set_current_objective(objective_name)
+            self.update_coordinates()
+            z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm)
+            df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
+            file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
+            # Stamped, not a bare to_csv: these are ABSOLUTE stage positions, so
+            # the file records the placement they were computed under.
+            write_scan_coordinates_csv(file_path, df, self.scanCoordinates.format)
+            self._log.info(f"Saved scan coordinates to {file_path}")
 
-            current_objective = self.objectiveStore.current_objective
-
-            def _helper_save_coordinates(self, file_path: str):
-                # Get coordinates from scanCoordinates
-                coordinates = []
-                for region_id, fov_coords in self.scanCoordinates.region_fov_coordinates.items():
-                    for x, y in fov_coords:
-                        coordinates.append([region_id, x, y])
-
-                # Save to CSV with headers and a provenance stamp (the placement
-                # these absolute positions were computed under)
-                df = pd.DataFrame(coordinates, columns=["region", "x (mm)", "y (mm)"])
-                write_scan_coordinates_csv(file_path, df, self.scanCoordinates.format)
-
-                self._log.info(f"Saved scan coordinates to {file_path}")
-
-            try:
-                for objective_name in self.objectiveStore.objectives_dict.keys():
-                    if objective_name == current_objective:
-                        continue
-                    else:
-                        self.objectiveStore.set_current_objective(objective_name)
-                        self.update_coordinates()
-                        obj_file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
-                        _helper_save_coordinates(self, obj_file_path)
-
+        try:
+            for objective_name in self.objectiveStore.objectives_dict.keys():
+                if objective_name != current_objective:
+                    _save_for_objective(objective_name)
+            _save_for_objective(current_objective)
+        except Exception as e:
+            self._log.error(f"Failed to save coordinates: {str(e)}")
+            QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {folder_path}\nError: {str(e)}")
+        finally:
+            # Leave the store on the objective the user had selected even if a save failed.
+            if self.objectiveStore.current_objective != current_objective:
                 self.objectiveStore.set_current_objective(current_objective)
                 self.update_coordinates()
-                obj_file_path = os.path.join(folder_path, f"{folder_name}_{current_objective}.csv")
-                _helper_save_coordinates(self, obj_file_path)
-
-            except Exception as e:
-                self._log.error(f"Failed to save coordinates: {str(e)}")
-                QMessageBox.warning(self, "Save Error", f"Failed to save coordinates to {folder_path}\nError: {str(e)}")
 
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
@@ -9858,30 +10105,12 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
             file_path: Path to CSV file containing coordinates
         """
         try:
-            # Read coordinates from CSV (stamped or legacy-unstamped)
+            # Stamped or legacy-unstamped read; the shared loader owns column
+            # validation and the optional per-FOV z column.
             df, stamp = read_scan_coordinates_csv(file_path)
+            region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
-            # Validate CSV format
-            required_columns = ["region", "x (mm)", "y (mm)"]
-            if not all(col in df.columns for col in required_columns):
-                raise ValueError("CSV file must contain 'region', 'x (mm)', and 'y (mm)' columns")
-
-            # Clear existing coordinates
-            self.scanCoordinates.clear_regions()
-
-            # Load coordinates into scanCoordinates
-            for region_id in df["region"].unique():
-                region_points = df[df["region"] == region_id]
-                coords = list(zip(region_points["x (mm)"], region_points["y (mm)"]))
-                self.scanCoordinates.region_fov_coordinates[region_id] = coords
-
-                # Calculate and store region center (average of points)
-                center_x = region_points["x (mm)"].mean()
-                center_y = region_points["y (mm)"].mean()
-                self.scanCoordinates.region_centers[region_id] = (center_x, center_y)
-
-                # Register FOVs with navigation viewer
-                self.navigationViewer.register_fovs_to_image(coords)
+            _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
 
@@ -10759,7 +10988,10 @@ class FocusMapWidget(QFrame):
             return
         current = self.point_combo.currentIndex()
         next_index = (current + 1) % len(self.focus_points)
+        # setCurrentIndex emits currentIndexChanged -> goto_selected_point; block it so we move once, not twice.
+        self.point_combo.blockSignals(True)
         self.point_combo.setCurrentIndex(next_index)
+        self.point_combo.blockSignals(False)
         self.goto_selected_point()
 
     def goto_selected_point(self):
@@ -11617,7 +11849,7 @@ class NapariLiveWidget(QWidget):
         self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
 
         # Illumination Intensity
-        self.slider_illuminationIntensity = QSlider(Qt.Horizontal)
+        self.slider_illuminationIntensity = CappedSlider(Qt.Horizontal)
         self.slider_illuminationIntensity.setRange(0, 100)
         self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
         self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
@@ -11831,6 +12063,10 @@ class NapariLiveWidget(QWidget):
             if self.live_configuration:
                 self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
                 self.entry_analogGain.setValue(self.live_configuration.analog_gain)
+                # Cap the intensity slider at the illumination channel's max output
+                self.slider_illuminationIntensity.set_cap(
+                    self.liveController.get_intensity_cap_percent(self.live_configuration)
+                )
                 self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
         finally:
             self.is_switching_mode = False
@@ -15195,7 +15431,8 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_TYPE = 1
     COL_PORT = 2
     COL_WAVELENGTH = 3
-    COL_CALIBRATION = 4
+    COL_MAX_OUTPUT = 4
+    COL_CALIBRATION = 5
 
     def __init__(self, config_repo, parent=None):
         super().__init__(parent)
@@ -15222,8 +15459,10 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
         # Table for illumination channels
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Name", "Type", "Controller Port", "Wavelength (nm)", "Calibration File"])
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(
+            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Max Output", "Calibration File"]
+        )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -15282,8 +15521,16 @@ class IlluminationChannelConfiguratorDialog(QDialog):
         return str(calib_dir / filename)
 
     def _load_channels(self):
-        """Load illumination channels from YAML config into the table"""
-        self.illumination_config = self.config_repo.get_illumination_config()
+        """Load illumination channels from the repository into the table.
+
+        Edits a deep copy: table edits and add/remove/move must not touch the
+        shared cached config until Save publishes them through the repository.
+        """
+        self.illumination_config = self.config_repo.get_illumination_config(for_edit=True)
+        self._refresh_table()
+
+    def _refresh_table(self):
+        """Render the table from the working copy in self.illumination_config."""
         if not self.illumination_config:
             return
 
@@ -15314,15 +15561,24 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             wave_widget = WavelengthWidget(channel.wavelength_nm)
             self.table.setCellWidget(row, self.COL_WAVELENGTH, wave_widget)
 
+            # Max output (fraction of full scale; caps intensity at max_output*100 %)
+            self.table.setCellWidget(row, self.COL_MAX_OUTPUT, _make_max_output_spinbox(channel.max_output))
+
             # Calibration file (full path)
             full_path = self._get_calibration_full_path(channel.intensity_calibration_file)
             calib_item = QTableWidgetItem(full_path)
             self.table.setItem(row, self.COL_CALIBRATION, calib_item)
 
     def _on_type_changed(self, row, new_type):
-        """Handle type change - update wavelength default and controller port"""
+        """Handle type change - update wavelength, max output and controller port defaults"""
+        from control.models.illumination_config import IlluminationType, default_max_output
+
         wave_widget = self.table.cellWidget(row, self.COL_WAVELENGTH)
         available_ports = self.illumination_config.get_available_ports()
+
+        max_output_widget = self.table.cellWidget(row, self.COL_MAX_OUTPUT)
+        if isinstance(max_output_widget, QDoubleSpinBox):
+            max_output_widget.setValue(default_max_output(IlluminationType(new_type)))
 
         # Find first available USB and D ports
         first_usb = next((p for p in available_ports if p.startswith("USB")), None)
@@ -15356,7 +15612,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
             new_channel = IlluminationChannel(**channel_data)
             self.illumination_config.channels.append(new_channel)
-            self._load_channels()
+            self._refresh_table()
 
     def _remove_channel(self):
         """Remove selected channel"""
@@ -15371,7 +15627,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             )
             if reply == QMessageBox.Yes:
                 del self.illumination_config.channels[current_row]
-                self._load_channels()
+                self._refresh_table()
 
     def _move_up(self):
         """Move selected channel up"""
@@ -15381,7 +15637,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
         channels = self.illumination_config.channels
         channels[current_row], channels[current_row - 1] = channels[current_row - 1], channels[current_row]
-        self._load_channels()
+        self._refresh_table()
         self.table.selectRow(current_row - 1)
 
     def _move_down(self):
@@ -15392,14 +15648,24 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
         channels = self.illumination_config.channels
         channels[current_row], channels[current_row + 1] = channels[current_row + 1], channels[current_row]
-        self._load_channels()
+        self._refresh_table()
         self.table.selectRow(current_row + 1)
 
     def _open_port_mapping(self):
         """Open the controller port mapping dialog"""
         dialog = ControllerPortMappingDialog(self.config_repo, self)
-        dialog.signal_mappings_updated.connect(self._load_channels)
+        dialog.signal_mappings_updated.connect(self._on_port_mappings_updated)
         dialog.exec_()
+
+    def _on_port_mappings_updated(self):
+        """Pull the freshly saved port mapping into the working copy.
+
+        Keeps unsaved channel edits while updating the available ports.
+        """
+        saved = self.config_repo.get_illumination_config()
+        if saved and self.illumination_config:
+            self.illumination_config.controller_port_mapping = dict(saved.controller_port_mapping)
+        self._refresh_table()
 
     def _save_changes(self):
         """Save all changes to illumination channel config"""
@@ -15469,6 +15735,11 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             else:
                 channel.wavelength_nm = None
 
+            # Max output
+            max_output_widget = self.table.cellWidget(row, self.COL_MAX_OUTPUT)
+            if isinstance(max_output_widget, QDoubleSpinBox):
+                channel.max_output = max_output_widget.value()
+
             # Calibration file (extract filename from full path)
             calib_item = self.table.item(row, self.COL_CALIBRATION)
             if calib_item:
@@ -15485,8 +15756,14 @@ class IlluminationChannelConfiguratorDialog(QDialog):
         self.accept()
 
 
-# Keep old name as alias for backwards compatibility
-ChannelEditorDialog = IlluminationChannelConfiguratorDialog
+def _make_max_output_spinbox(value: float) -> QDoubleSpinBox:
+    """Spinbox for a channel's max output fraction (caps intensity at value*100 %)."""
+    spin = QDoubleSpinBox()
+    spin.setRange(0.01, 1.0)
+    spin.setSingleStep(0.05)
+    spin.setDecimals(2)
+    spin.setValue(value)
+    return spin
 
 
 class AddIlluminationChannelDialog(QDialog):
@@ -15528,6 +15805,9 @@ class AddIlluminationChannelDialog(QDialog):
         self.wave_spin.setMinimum(0)  # Allow 0 to represent N/A
         layout.addRow("Wavelength (nm):", self.wave_spin)
 
+        self.max_output_spin = _make_max_output_spinbox(1.0)
+        layout.addRow("Max Output:", self.max_output_spin)
+
         # Calibration file
         self.calib_edit = QLineEdit()
         self.calib_edit.setPlaceholderText("e.g., 405.csv")
@@ -15542,6 +15822,9 @@ class AddIlluminationChannelDialog(QDialog):
         button_layout.addWidget(self.btn_ok)
         button_layout.addWidget(self.btn_cancel)
         layout.addRow(button_layout)
+
+        # Apply type-dependent defaults (port, wavelength, max output) from one place
+        self._on_type_changed(self.type_combo.currentText())
 
     def _validate_and_accept(self):
         """Validate input before accepting"""
@@ -15560,12 +15843,15 @@ class AddIlluminationChannelDialog(QDialog):
         self.accept()
 
     def _on_type_changed(self, type_str):
+        from control.models.illumination_config import IlluminationType, default_max_output
+
         is_epi = type_str == "epi_illumination"
         available_ports = self.illumination_config.get_available_ports() if self.illumination_config else []
         first_d = next((p for p in available_ports if p.startswith("D")), None)
         first_usb = next((p for p in available_ports if p.startswith("USB")), None)
 
-        # Update port default based on type
+        # Update port, wavelength and max output defaults based on type
+        self.max_output_spin.setValue(default_max_output(IlluminationType(type_str)))
         if is_epi:
             if first_d:
                 self.port_combo.setCurrentText(first_d)
@@ -15585,16 +15871,13 @@ class AddIlluminationChannelDialog(QDialog):
             "type": channel_type,
             "controller_port": self.port_combo.currentText(),
             "wavelength_nm": wavelength if wavelength > 0 else None,
+            "max_output": self.max_output_spin.value(),
         }
 
         calib_text = self.calib_edit.text().strip()
         data["intensity_calibration_file"] = calib_text if calib_text else None
 
         return data
-
-
-# Keep old name as alias for backwards compatibility
-AddChannelDialog = AddIlluminationChannelDialog
 
 
 class ControllerPortMappingDialog(QDialog):
@@ -15708,8 +15991,9 @@ class ControllerPortMappingDialog(QDialog):
                 if source_code is not None:
                     new_mapping[port] = source_code
 
-        self.illumination_config.controller_port_mapping = new_mapping
-        self.config_repo.save_illumination_config(self.illumination_config)
+        # Partial update: only the mapping is replaced, so channel edits saved
+        # elsewhere since this dialog opened are not clobbered.
+        self.config_repo.update_port_mapping(new_mapping)
         self.signal_mappings_updated.emit()
         self.accept()
 
@@ -15766,10 +16050,6 @@ class SourceCodeWidget(QWidget):
             self.spinbox.setValue(source_code)
         else:
             self.checkbox.setChecked(False)
-
-
-# Keep old name as alias for backwards compatibility
-AdvancedChannelMappingDialog = ControllerPortMappingDialog
 
 
 class RAMMonitorWidget(QWidget):

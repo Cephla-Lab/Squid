@@ -102,19 +102,21 @@ def test_sila2_selected_well_coordinates(monkeypatch, format_, off):
     )
     s = _def.WELLPLATE_FORMAT_SETTINGS[format_]
 
-    # Range branch (serpentine expansion) over the whole plate...
+    # Range branch (serpentine expansion) over the whole plate. Centers are
+    # mutable [x, y] lists here (master normalized every region center for the
+    # per-FOV z work), so compare against the oracle tuple element-wise.
     sc.get_selected_well_coordinates(range_string(s), s)
     assert len(sc.region_centers) == s["rows"] * s["cols"]
     for row, col in all_wells(s):
         well_id = index_to_row_label(row) + str(col + 1)
-        assert sc.region_centers[well_id] == expected_xy(s, row, col, off[0], off[1]), (format_, well_id)
+        assert tuple(sc.region_centers[well_id]) == expected_xy(s, row, col, off[0], off[1]), (format_, well_id)
 
     # ...and the single-well branch, which is separate arithmetic in the source.
     sc.region_centers.clear()
     last_row, last_col = s["rows"] - 1, s["cols"] - 1
     single = index_to_row_label(last_row) + str(last_col + 1)
     sc.get_selected_well_coordinates(single, s)
-    assert sc.region_centers[single] == expected_xy(s, last_row, last_col, off[0], off[1])
+    assert tuple(sc.region_centers[single]) == expected_xy(s, last_row, last_col, off[0], off[1])
 
 
 def test_sila2_honours_the_offset_suppression_rule(monkeypatch):
@@ -133,12 +135,12 @@ def test_sila2_honours_the_offset_suppression_rule(monkeypatch):
 
     sc.get_selected_well_coordinates("A1", measured)
 
-    assert sc.region_centers["A1"] == (measured["a1_x_mm"], measured["a1_y_mm"])  # no offset added
+    assert tuple(sc.region_centers["A1"]) == (measured["a1_x_mm"], measured["a1_y_mm"])  # no offset added
     # ...while an uncalibrated format still gets it, exactly as before.
     sc.region_centers.clear()
     nominal = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
     sc.get_selected_well_coordinates("A1", nominal)
-    assert sc.region_centers["A1"] == (nominal["a1_x_mm"] + 3.0, nominal["a1_y_mm"] + 3.0)
+    assert tuple(sc.region_centers["A1"]) == (nominal["a1_x_mm"] + 3.0, nominal["a1_y_mm"] + 3.0)
 
 
 # ---- site 3: MicroscopeControlServer._parse_wells (MCP/remote) ----
@@ -250,7 +252,7 @@ def test_offset_read_time_agreement(monkeypatch):
 
     expected = (s["a1_x_mm"] + 2.0, s["a1_y_mm"] + 2.0)
     assert gui_center == expected  # live now
-    assert sila_center == expected  # live as before
+    assert tuple(sila_center) == expected  # live as before (centers are lists)
 
 
 def test_calibration_edit_applies_without_reemit(monkeypatch):
