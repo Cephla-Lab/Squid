@@ -3568,7 +3568,11 @@ class ObjectivesWidget(QWidget):
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
         self.init_ui()
+        # Show the store's current objective without driving the changer: nothing is
+        # connected yet and the hardware already sits there.
+        self.dropdown.blockSignals(True)
         self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+        self.dropdown.blockSignals(False)
 
     def init_ui(self):
         self.dropdown = QComboBox(self)
@@ -3586,9 +3590,8 @@ class ObjectivesWidget(QWidget):
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
             return
-        # A switch blocks for seconds (Z retract, changer motion, Z restore), so run
-        # it off the GUI thread. Disabling the dropdown until completion doubles as
-        # the re-entry guard — the changer does not support concurrent moves.
+        # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
+        # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
         self.dropdown.setEnabled(False)
 
         def on_finished(success, error_msg):
@@ -3597,7 +3600,6 @@ class ObjectivesWidget(QWidget):
                 "_on_objective_move_finished",
                 Qt.QueuedConnection,
                 Q_ARG(bool, success),
-                Q_ARG(str, objective_name),
                 Q_ARG(str, error_msg or ""),
             )
 
@@ -3605,18 +3607,22 @@ class ObjectivesWidget(QWidget):
             self.objective_changer.move_to_objective, on_finished, objective_name=objective_name
         )
 
-    @Slot(bool, str, str)
-    def _on_objective_move_finished(self, success, objective_name, error_msg):
-        self.dropdown.setEnabled(True)
+    @Slot(bool, str)
+    def _on_objective_move_finished(self, success, error_msg):
+        objective_name = self.dropdown.currentText()  # unchanged since the move started: disabled meanwhile
         if success:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
-            return
-        QMessageBox.warning(self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}")
-        # Revert the dropdown so it matches the store / actual changer state.
-        self.dropdown.blockSignals(True)
-        self.dropdown.setCurrentText(self.objectiveStore.current_objective)
-        self.dropdown.blockSignals(False)
+        else:
+            QMessageBox.warning(
+                self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
+            )
+            # Revert the dropdown so it matches the store / actual changer state.
+            self.dropdown.blockSignals(True)
+            self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+            self.dropdown.blockSignals(False)
+        # Re-enable only after the modal warning, which spins a nested event loop.
+        self.dropdown.setEnabled(True)
 
 
 class CameraSettingsWidget(QFrame):
