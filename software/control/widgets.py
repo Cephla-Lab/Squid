@@ -4223,6 +4223,35 @@ class CappedSlider(QSlider):
         painter.end()
 
 
+class SingleSlotButtonRow(QWidget):
+    """Buttons in a row that together advertise the footprint of a single button.
+
+    Lets several buttons take over a layout slot one button used to occupy
+    without adding to the panel's minimum or preferred width: the row's size
+    hints report one button's width, the buttons split the slot evenly and may
+    compress below their individual size hints when the panel is squeezed.
+    """
+
+    def __init__(self, *buttons, parent=None):
+        super().__init__(parent)
+        self._buttons = buttons
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        slot_width = max(b.sizeHint().width() for b in buttons)
+        for b in buttons:
+            b.setMinimumWidth(max(1, slot_width // len(buttons) - row.spacing()))
+            row.addWidget(b, 1)
+
+    def sizeHint(self):
+        return QSize(
+            max(b.sizeHint().width() for b in self._buttons),
+            max(b.sizeHint().height() for b in self._buttons),
+        )
+
+    minimumSizeHint = sizeHint
+
+
 class LiveControlWidget(QFrame):
 
     signal_newExposureTime = Signal(float)
@@ -4322,7 +4351,7 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
 
-        self.btn_live = QPushButton("Start")
+        self.btn_live = QPushButton("Live")
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
@@ -4417,10 +4446,7 @@ class LiveControlWidget(QFrame):
         self.btn_autolevel.setChecked(autolevel)
 
         # Determine the maximum width needed
-        # Keep the illumination entry aligned with the Start/Snap pair above it.
-        self.entry_illuminationIntensity.setMinimumWidth(
-            self.btn_live.sizeHint().width() + self.btn_snap.sizeHint().width()
-        )
+        self.entry_illuminationIntensity.setMinimumWidth(self.btn_live.sizeHint().width())
         self.btn_autolevel.setMinimumWidth(self.btn_autolevel.sizeHint().width())
 
         max_width = max(self.btn_autolevel.minimumWidth(), self.entry_illuminationIntensity.minimumWidth())
@@ -4451,12 +4477,10 @@ class LiveControlWidget(QFrame):
         grid_line1 = QHBoxLayout()
         grid_line1.addWidget(QLabel("Live Configuration"))
         grid_line1.addWidget(self.dropdown_modeSelection, 2)
-        # Start and Snap share the space the single live button used to occupy.
-        live_buttons = QHBoxLayout()
-        live_buttons.setContentsMargins(0, 0, 0, 0)
-        live_buttons.addWidget(self.btn_live, 1)
-        live_buttons.addWidget(self.btn_snap, 1)
-        grid_line1.addLayout(live_buttons, 1)
+        # Live and Snap share the slot the single live button used to occupy,
+        # advertising one button's width so the pair does not widen the panel.
+        self.live_snap_row = SingleSlotButtonRow(self.btn_live, self.btn_snap)
+        grid_line1.addWidget(self.live_snap_row, 1)
 
         grid_line2 = QHBoxLayout()
         grid_line2.addWidget(QLabel("Exposure Time"))
@@ -4570,7 +4594,7 @@ class LiveControlWidget(QFrame):
             self.signal_start_live.emit()
         else:
             self.liveController.stop_live()
-            self.btn_live.setText("Start")
+            self.btn_live.setText("Live")
         # Snapping while live is meaningless - the sample is already being exposed.
         self.btn_snap.setEnabled(not pressed)
 
