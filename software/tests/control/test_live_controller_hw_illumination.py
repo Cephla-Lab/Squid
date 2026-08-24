@@ -12,6 +12,7 @@ The pair must still run when:
   call is the only thing that turns the lamp on.
 """
 
+import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -130,8 +131,6 @@ def test_not_live_never_toggles(live):
 
 
 def test_note_hardware_trigger_records_strobe_window(live):
-    import time
-
     live.trigger_mode = TriggerMode.HARDWARE
     before = time.monotonic()
     live.note_hardware_trigger_sent()
@@ -140,16 +139,12 @@ def test_note_hardware_trigger_records_strobe_window(live):
 
 
 def _elapsed_switch(live):
-    import time
-
     start = time.monotonic()
     _switch(live)
     return time.monotonic() - start
 
 
 def test_set_microscope_mode_waits_out_strobe_window_on_old_firmware(live, scope):
-    import time
-
     live.trigger_mode = TriggerMode.HARDWARE
     scope.low_level_drivers.microcontroller.firmware_version = (1, 4)
     live._strobe_clear_at = time.monotonic() + 0.15
@@ -157,8 +152,6 @@ def test_set_microscope_mode_waits_out_strobe_window_on_old_firmware(live, scope
 
 
 def test_set_microscope_mode_does_not_wait_on_v1_5_firmware(live, scope):
-    import time
-
     live.trigger_mode = TriggerMode.HARDWARE
     scope.low_level_drivers.microcontroller.firmware_version = (1, 5)
     live._strobe_clear_at = time.monotonic() + 5.0
@@ -168,8 +161,6 @@ def test_set_microscope_mode_does_not_wait_on_v1_5_firmware(live, scope):
 def test_set_microscope_mode_waits_even_after_leaving_hardware_mode(live, scope):
     # A strobe from a just-sent HW trigger can still be in flight after switching
     # trigger modes; the wait is gated on firmware, not the current mode.
-    import time
-
     live.trigger_mode = TriggerMode.SOFTWARE
     scope.low_level_drivers.microcontroller.firmware_version = (1, 4)
     live._strobe_clear_at = time.monotonic() + 0.15
@@ -180,3 +171,26 @@ def test_set_microscope_mode_does_not_wait_with_no_pending_strobe(live, scope):
     live.trigger_mode = TriggerMode.SOFTWARE
     scope.low_level_drivers.microcontroller.firmware_version = (1, 4)
     assert _elapsed_switch(live) < 1.0
+
+
+def test_note_hardware_trigger_noop_on_safe_firmware(live, scope):
+    live.trigger_mode = TriggerMode.HARDWARE
+    scope.low_level_drivers.microcontroller.firmware_version = (1, 5)
+    live.note_hardware_trigger_sent()
+    assert live._strobe_clear_at == 0.0
+
+
+def test_send_camera_trigger_records_window_only_in_hardware_mode(live):
+    live.camera = MagicMock()
+    live.camera.get_exposure_time.return_value = 10.0
+    live.camera.get_total_frame_time.return_value = 20.0
+
+    live.trigger_mode = TriggerMode.HARDWARE
+    live.send_camera_trigger(10.0)
+    live.camera.send_trigger.assert_called_once_with(10.0)
+    assert live._strobe_clear_at > time.monotonic()
+
+    live._strobe_clear_at = 0.0
+    live.trigger_mode = TriggerMode.SOFTWARE
+    live.send_camera_trigger(10.0)
+    assert live._strobe_clear_at == 0.0
