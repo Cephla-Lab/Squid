@@ -3582,22 +3582,41 @@ class ObjectivesWidget(QWidget):
         self.setLayout(layout)
 
     def on_objective_changed(self, objective_name):
-        if self.objective_changer is not None:
-            try:
-                self.objective_changer.move_to_objective(objective_name)
-            except KeyError as e:
-                QMessageBox.warning(
-                    self,
-                    "Objective Not Available",
-                    f"Objective '{objective_name}' is not configured for the objective changer:\n{e}",
-                )
-                # Revert the dropdown so it matches the store / actual changer state.
-                self.dropdown.blockSignals(True)
-                self.dropdown.setCurrentText(self.objectiveStore.current_objective)
-                self.dropdown.blockSignals(False)
-                return
-        self.objectiveStore.set_current_objective(objective_name)
-        self.signal_objective_changed.emit()
+        if self.objective_changer is None:
+            self.objectiveStore.set_current_objective(objective_name)
+            self.signal_objective_changed.emit()
+            return
+        # A switch blocks for seconds (Z retract, changer motion, Z restore), so run
+        # it off the GUI thread. Disabling the dropdown until completion doubles as
+        # the re-entry guard — the changer does not support concurrent moves.
+        self.dropdown.setEnabled(False)
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(
+                self,
+                "_on_objective_move_finished",
+                Qt.QueuedConnection,
+                Q_ARG(bool, success),
+                Q_ARG(str, objective_name),
+                Q_ARG(str, error_msg or ""),
+            )
+
+        utils.threaded_operation_helper(
+            self.objective_changer.move_to_objective, on_finished, objective_name=objective_name
+        )
+
+    @Slot(bool, str, str)
+    def _on_objective_move_finished(self, success, objective_name, error_msg):
+        self.dropdown.setEnabled(True)
+        if success:
+            self.objectiveStore.set_current_objective(objective_name)
+            self.signal_objective_changed.emit()
+            return
+        QMessageBox.warning(self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}")
+        # Revert the dropdown so it matches the store / actual changer state.
+        self.dropdown.blockSignals(True)
+        self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+        self.dropdown.blockSignals(False)
 
 
 class CameraSettingsWidget(QFrame):
