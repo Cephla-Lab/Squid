@@ -67,6 +67,10 @@ class LiveController(QObject):
         # time.monotonic() at which the most recent hardware trigger's strobe window
         # (strobe delay + exposure + margin) is over; see note_hardware_trigger_sent().
         self._strobe_clear_at = 0.0
+        # Serializes trigger sends against _wait_for_strobe_clear(), so a timer-thread
+        # trigger in flight while set_microscope_mode() starts is flushed before the
+        # wait, and cannot start a new strobe during it.
+        self._hw_trigger_send_lock = threading.RLock()
 
         # Confocal mode state - when True, use confocal_override from acquisition configs
         self._confocal_mode: bool = False
@@ -107,6 +111,29 @@ class LiveController(QObject):
         illumination source: SET_ILLUMINATION arriving mid-strobe re-lights the new
         port immediately (and on < 1.3 can strand the old one)."""
         self._strobe_clear_at = time.monotonic() + (self.camera.get_total_frame_time() + STROBE_GUARD_MARGIN_MS) / 1e3
+
+    def _wait_for_strobe_clear(self):
+        """On firmware < 1.5 (which acts on SET_ILLUMINATION mid-strobe, see
+        note_hardware_trigger_sent()), sleep out whatever remains of the last
+        hardware trigger's strobe window. Gated on the firmware, not the current
+        trigger mode: a strobe can still be in flight right after leaving
+        HARDWARE mode. Call with the live timer already stopped; taking
+        _hw_trigger_send_lock flushes a trigger send already in flight on the
+        timer thread, and the loop re-checks in case one landed while we slept.
+
+        Any other code path that sends SET_ILLUMINATION during hardware-triggered
+        operation on old firmware needs the same care. The intensity-only
+        update_illumination() path is exempt: it never changes the source, and a
+        same-source re-light mid-strobe is harmless on every firmware version.
+        """
+        if self.microscope.low_level_drivers.microcontroller.firmware_version >= (1, 5):
+            return
+        with self._hw_trigger_send_lock:
+            while True:
+                delay_s = self._strobe_clear_at - time.monotonic()
+                if delay_s <= 0:
+                    return
+                time.sleep(delay_s)
 
     def _strobe_owns_light(self) -> bool:
         """True when the hardware-trigger strobe gates the light for the current
@@ -483,9 +510,10 @@ class LiveController(QObject):
             # CONTINUOUS free-runs, so there is no trigger to send.
             if self.trigger_mode in (TriggerMode.HARDWARE, TriggerMode.SOFTWARE):
                 self.trigger_ID = self.trigger_ID + 1
-                self.camera.send_trigger(self.camera.get_exposure_time())
-                if self.trigger_mode == TriggerMode.HARDWARE:
-                    self.note_hardware_trigger_sent()
+                with self._hw_trigger_send_lock:
+                    self.camera.send_trigger(self.camera.get_exposure_time())
+                    if self.trigger_mode == TriggerMode.HARDWARE:
+                        self.note_hardware_trigger_sent()
 
             got_frame = self.camera.read_frame() is not None
             if not got_frame:
@@ -546,9 +574,10 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        self.camera.send_trigger(self.camera.get_exposure_time())
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            self.note_hardware_trigger_sent()
+        with self._hw_trigger_send_lock:
+            self.camera.send_trigger(self.camera.get_exposure_time())
+            if self.trigger_mode == TriggerMode.HARDWARE:
+                self.note_hardware_trigger_sent()
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -630,24 +659,18 @@ class LiveController(QObject):
             return
         self._log.info("setting microscope mode to " + configuration.name)
 
-        if self.trigger_mode == TriggerMode.HARDWARE:
-            firmware_version = self.microscope.low_level_drivers.microcontroller.firmware_version
-            if firmware_version < (1, 5):
-                # Pre-1.5 firmware acts on SET_ILLUMINATION mid-strobe (see
-                # note_hardware_trigger_sent()); wait until the last trigger's
-                # strobe window is over before touching the source.
-                delay_s = self._strobe_clear_at - time.monotonic()
-                if delay_s > 0:
-                    time.sleep(delay_s)
+        # Stop the live timer BEFORE waiting out the strobe window, so no new
+        # trigger can start a strobe behind the wait's back.
+        if self.is_live is True:
+            self._stop_existing_timer()
+        self._wait_for_strobe_clear()
 
         # Captured before turn_off_illumination() below clears it. Skip the toggle
         # when the strobe gates the light (see _strobe_owns_light(); firmware v1.5
         # next-channel bleed fix) unless the host is deliberately holding it on.
         host_holds_light = self.illumination_on
 
-        # temporarily stop live while changing mode
         if self.is_live is True:
-            self._stop_existing_timer()
             if self.control_illumination and (host_holds_light or not self._strobe_owns_light()):
                 # Turn off illumination BEFORE switching self.currentConfiguration.
                 # turn_off_illumination() reads self.currentConfiguration to determine which

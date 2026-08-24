@@ -165,9 +165,18 @@ def test_set_microscope_mode_does_not_wait_on_v1_5_firmware(live, scope):
     assert _elapsed_switch(live) < 1.0
 
 
-def test_set_microscope_mode_does_not_wait_in_software_trigger_mode(live):
+def test_set_microscope_mode_waits_even_after_leaving_hardware_mode(live, scope):
+    # A strobe from a just-sent HW trigger can still be in flight after switching
+    # trigger modes; the wait is gated on firmware, not the current mode.
     import time
 
     live.trigger_mode = TriggerMode.SOFTWARE
-    live._strobe_clear_at = time.monotonic() + 5.0
+    scope.low_level_drivers.microcontroller.firmware_version = (1, 4)
+    live._strobe_clear_at = time.monotonic() + 0.15
+    assert _elapsed_switch(live) >= 0.15
+
+
+def test_set_microscope_mode_does_not_wait_with_no_pending_strobe(live, scope):
+    live.trigger_mode = TriggerMode.SOFTWARE
+    scope.low_level_drivers.microcontroller.firmware_version = (1, 4)
     assert _elapsed_switch(live) < 1.0
