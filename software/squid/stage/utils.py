@@ -28,8 +28,9 @@ def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
     try:
         with open(cache_path, "r") as f:
             # A valid cache is one short line, so cap the read: a stray large file at this path
-            # must not pull hundreds of MB into memory during startup.
-            contents = f.read(_MAX_CACHE_BYTES)
+            # must not pull hundreds of MB into memory during startup.  Read one byte past the cap
+            # so an oversized file is rejected below instead of parsed from its truncated prefix.
+            contents = f.read(_MAX_CACHE_BYTES + 1)
     except (OSError, UnicodeDecodeError) as e:
         _log.warning(
             f"Cached position file '{cache_path}' could not be read ({e}). "
@@ -38,6 +39,8 @@ def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
         return None
 
     try:
+        if len(contents) > _MAX_CACHE_BYTES:
+            raise ValueError(f"file is larger than {_MAX_CACHE_BYTES} bytes")
         x, y, z = (float(v) for v in contents.strip().split(","))
         if not all(math.isfinite(v) for v in (x, y, z)):
             raise ValueError("non-finite coordinate")

@@ -68,6 +68,29 @@ def test_get_cached_position_treats_corrupted_file_as_no_cache(tmp_path, caplog,
     ), "expected a warning naming the corrupted cache file"
 
 
+def test_get_cached_position_rejects_a_file_larger_than_the_read_cap(tmp_path, caplog):
+    """A valid prefix padded past the read cap must be rejected, not parsed from the truncated prefix."""
+    cache_path = tmp_path / "last_coords.txt"
+    valid_prefix = "11.0,22.0,1.0"
+    padding = " " * (squid.stage.utils._MAX_CACHE_BYTES - len(valid_prefix))
+    cache_path.write_text(valid_prefix + padding + "garbage past the cap")
+
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        assert squid.stage.utils.get_cached_position(cache_path=str(cache_path)) is None
+
+    assert any(
+        r.levelno == logging.WARNING and str(cache_path) in r.getMessage() for r in caplog.records
+    ), "expected a warning naming the oversized cache file"
+
+
+def test_get_cached_position_rejects_a_second_line(tmp_path):
+    """Only a single coordinate triple is a valid cache; extra lines mean the file is not ours."""
+    cache_path = tmp_path / "last_coords.txt"
+    cache_path.write_text("11.0,22.0,1.0\n44.0,55.0,2.0\n")
+
+    assert squid.stage.utils.get_cached_position(cache_path=str(cache_path)) is None
+
+
 def test_get_cached_position_warning_shows_the_corrupt_contents(tmp_path, caplog):
     """The warning must quote what was in the file, so a bad cache can be diagnosed from a log alone."""
     cache_path = tmp_path / "last_coords.txt"
