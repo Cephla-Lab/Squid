@@ -52,9 +52,9 @@ class LaserAFConfig(BaseModel):
         default_factory=lambda: SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE),
         description="Spot detection mode",
     )
-    displacement_success_window_um: float = Field(
-        default_factory=lambda: _def.DISPLACEMENT_SUCCESS_WINDOW_UM,
-        description="Acceptable displacement window in um",
+    displacement_success_window_pixels: float = Field(
+        default_factory=lambda: float(_def.DISPLACEMENT_SUCCESS_WINDOW_PIXELS),
+        description="Max displacement from reference x to accept detection (pixels)",
     )
 
     # Spot detection
@@ -62,23 +62,23 @@ class LaserAFConfig(BaseModel):
     correlation_threshold: float = Field(
         default_factory=lambda: _def.CORRELATION_THRESHOLD, description="Correlation threshold"
     )
-    y_window: int = Field(
-        default_factory=lambda: _def.LASER_AF_Y_WINDOW, description="Y window half-height for detection"
+    # Connected component spot detection parameters
+    cc_threshold: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_CC_THRESHOLD), description="Intensity threshold for binarization"
     )
-    x_window: int = Field(
-        default_factory=lambda: _def.LASER_AF_X_WINDOW, description="X window half-width for detection"
+    cc_min_area: int = Field(
+        default_factory=lambda: _def.LASER_AF_CC_MIN_AREA, description="Minimum component area in pixels"
     )
-    min_peak_width: float = Field(
-        default_factory=lambda: float(_def.LASER_AF_MIN_PEAK_WIDTH), description="Minimum peak width"
+    cc_max_area: int = Field(
+        default_factory=lambda: _def.LASER_AF_CC_MAX_AREA, description="Maximum component area in pixels"
     )
-    min_peak_distance: float = Field(
-        default_factory=lambda: float(_def.LASER_AF_MIN_PEAK_DISTANCE), description="Minimum distance between peaks"
+    cc_row_tolerance: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_CC_ROW_TOLERANCE),
+        description="Allowed deviation from expected row",
     )
-    min_peak_prominence: float = Field(
-        default_factory=lambda: _def.LASER_AF_MIN_PEAK_PROMINENCE, description="Minimum peak prominence"
-    )
-    spot_spacing: float = Field(
-        default_factory=lambda: float(_def.LASER_AF_SPOT_SPACING), description="Expected spot spacing"
+    cc_max_aspect_ratio: float = Field(
+        default_factory=lambda: float(_def.LASER_AF_CC_MAX_ASPECT_RATIO),
+        description="Maximum aspect ratio for valid spot",
     )
     filter_sigma: Optional[float] = Field(
         default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (None to disable)"

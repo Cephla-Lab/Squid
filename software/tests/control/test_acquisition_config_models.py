@@ -711,17 +711,16 @@ class TestLaserAFConfig:
         assert config.spot_detection_mode == SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE)
         assert config.laser_af_averaging_n == _def.LASER_AF_AVERAGING_N
         assert config.correlation_threshold == _def.CORRELATION_THRESHOLD
-        assert config.min_peak_prominence == _def.LASER_AF_MIN_PEAK_PROMINENCE
         assert config.focus_camera_exposure_time_ms == float(_def.FOCUS_CAMERA_EXPOSURE_TIME_MS)
         assert config.focus_camera_analog_gain == float(_def.FOCUS_CAMERA_ANALOG_GAIN)
-        assert config.displacement_success_window_um == _def.DISPLACEMENT_SUCCESS_WINDOW_UM
+        assert config.displacement_success_window_pixels == float(_def.DISPLACEMENT_SUCCESS_WINDOW_PIXELS)
         assert config.spot_crop_size == _def.SPOT_CROP_SIZE
         assert config.pixel_to_um_calibration_distance == _def.PIXEL_TO_UM_CALIBRATION_DISTANCE
-        assert config.y_window == _def.LASER_AF_Y_WINDOW
-        assert config.x_window == _def.LASER_AF_X_WINDOW
-        assert config.min_peak_width == float(_def.LASER_AF_MIN_PEAK_WIDTH)
-        assert config.min_peak_distance == float(_def.LASER_AF_MIN_PEAK_DISTANCE)
-        assert config.spot_spacing == float(_def.LASER_AF_SPOT_SPACING)
+        assert config.cc_threshold == float(_def.LASER_AF_CC_THRESHOLD)
+        assert config.cc_min_area == _def.LASER_AF_CC_MIN_AREA
+        assert config.cc_max_area == _def.LASER_AF_CC_MAX_AREA
+        assert config.cc_row_tolerance == float(_def.LASER_AF_CC_ROW_TOLERANCE)
+        assert config.cc_max_aspect_ratio == float(_def.LASER_AF_CC_MAX_ASPECT_RATIO)
         assert config.filter_sigma == _def.LASER_AF_FILTER_SIGMA
         assert config.initialize_crop_width == _def.LASER_AF_INITIALIZE_CROP_WIDTH
         assert config.initialize_crop_height == _def.LASER_AF_INITIALIZE_CROP_HEIGHT
