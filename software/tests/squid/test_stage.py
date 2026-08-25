@@ -1,3 +1,4 @@
+import logging
 import pytest
 import tempfile
 
@@ -34,6 +35,47 @@ def test_position_caching():
     p_read = squid.stage.utils.get_cached_position(cache_path=temp_cache_path)
 
     assert p_read == p
+
+
+def test_get_cached_position_returns_none_when_cache_file_is_missing(tmp_path):
+    assert squid.stage.utils.get_cached_position(cache_path=str(tmp_path / "missing.txt")) is None
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "garbage",
+        "1.0,2.0",
+        "1.0,2.0,3.0,4.0",
+        "1.0,abc,3.0",
+        "",
+        "   \n",
+        "nan,2.0,3.0",
+        "1.0,inf,3.0",
+    ],
+    ids=["garbage", "too-few-fields", "too-many-fields", "bad-field", "empty", "whitespace", "nan", "inf"],
+)
+def test_get_cached_position_treats_corrupted_file_as_no_cache(tmp_path, caplog, contents):
+    """A corrupted cache must not raise (it would abort startup); it warns and behaves like a missing cache."""
+    cache_path = tmp_path / "last_coords.txt"
+    cache_path.write_text(contents)
+
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        assert squid.stage.utils.get_cached_position(cache_path=str(cache_path)) is None
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warnings, "expected a warning about the corrupted cache file"
+    assert any(str(cache_path) in r.getMessage() for r in warnings)
+
+
+def test_get_cached_position_treats_undecodable_file_as_no_cache(tmp_path, caplog):
+    cache_path = tmp_path / "last_coords.txt"
+    cache_path.write_bytes(b"\xff\xfe\x00\x80 not text")
+
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        assert squid.stage.utils.get_cached_position(cache_path=str(cache_path)) is None
+
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
 # --- PI V-308 / C-414 focus stage --------------------------------------------

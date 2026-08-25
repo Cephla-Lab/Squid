@@ -1,4 +1,5 @@
 from typing import Optional, Callable
+import math
 import os
 
 import squid.logging
@@ -10,27 +11,36 @@ import control.utils
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
 
-"""
-Attempts to load a cached stage position and return it.
-"""
-
 
 def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
+    """Load the stage position previously written by cache_position(), or None if there is none.
+
+    A cache file that cannot be read or parsed (truncated by a crash mid-write, edited by hand,
+    filled with garbage, ...) is treated exactly like a missing one: a warning is logged and None
+    is returned.  Callers use None to mean "no cached position", so a corrupted cache never
+    prevents the software from starting.
+    """
     if not os.path.isfile(cache_path):
         _log.debug(f"Cache file '{cache_path}' not found, no cached pos found.")
         return None
-    with open(cache_path, "r") as f:
-        for line in f:
-            try:
-                x, y, z = line.strip("\n").strip().split(",")
-                x = float(x)
-                y = float(y)
-                z = float(z)
-                return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=None)
-            except RuntimeError as e:
-                raise e
-                pass
-    return None
+
+    contents = None
+    try:
+        with open(cache_path, "r") as f:
+            contents = f.read()
+        x, y, z = (float(v) for v in contents.strip().split(","))
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            raise ValueError(f"non-finite coordinate in ({x}, {y}, {z})")
+    except (OSError, ValueError) as e:
+        # UnicodeDecodeError is a ValueError; unpacking the wrong number of fields is a ValueError too.
+        preview = f" contents={contents.strip()[:100]!r}" if contents is not None else ""
+        _log.warning(
+            f"Cached position file '{cache_path}' is unreadable or corrupted ({e}).{preview} "
+            "Ignoring it and continuing as if there is no cached position."
+        )
+        return None
+
+    return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=None)
 
 
 """
