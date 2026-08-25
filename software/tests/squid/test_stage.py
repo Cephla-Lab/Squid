@@ -1,3 +1,4 @@
+import builtins
 import logging
 import pytest
 import tempfile
@@ -44,38 +45,75 @@ def test_get_cached_position_returns_none_when_cache_file_is_missing(tmp_path):
 @pytest.mark.parametrize(
     "contents",
     [
-        "garbage",
-        "1.0,2.0",
-        "1.0,2.0,3.0,4.0",
-        "1.0,abc,3.0",
-        "",
-        "   \n",
-        "nan,2.0,3.0",
-        "1.0,inf,3.0",
+        pytest.param(b"garbage", id="garbage"),
+        pytest.param(b"1.0,2.0", id="too-few-fields"),
+        pytest.param(b"1.0,2.0,3.0,4.0", id="too-many-fields"),
+        pytest.param(b"1.0,abc,3.0", id="bad-field"),
+        pytest.param(b"", id="empty"),
+        pytest.param(b"nan,2.0,3.0", id="nan"),
+        pytest.param(b"1.0,inf,3.0", id="inf"),
+        pytest.param(b"\xff\xfe\x00\x80 not text", id="undecodable"),
     ],
-    ids=["garbage", "too-few-fields", "too-many-fields", "bad-field", "empty", "whitespace", "nan", "inf"],
 )
 def test_get_cached_position_treats_corrupted_file_as_no_cache(tmp_path, caplog, contents):
     """A corrupted cache must not raise (it would abort startup); it warns and behaves like a missing cache."""
     cache_path = tmp_path / "last_coords.txt"
-    cache_path.write_text(contents)
+    cache_path.write_bytes(contents)
 
     with caplog.at_level(logging.WARNING, logger="squid"):
         assert squid.stage.utils.get_cached_position(cache_path=str(cache_path)) is None
 
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert warnings, "expected a warning about the corrupted cache file"
-    assert any(str(cache_path) in r.getMessage() for r in warnings)
+    assert any(
+        r.levelno == logging.WARNING and str(cache_path) in r.getMessage() for r in caplog.records
+    ), "expected a warning naming the corrupted cache file"
 
 
-def test_get_cached_position_treats_undecodable_file_as_no_cache(tmp_path, caplog):
+def test_get_cached_position_warning_shows_the_corrupt_contents(tmp_path, caplog):
+    """The warning must quote what was in the file, so a bad cache can be diagnosed from a log alone."""
     cache_path = tmp_path / "last_coords.txt"
-    cache_path.write_bytes(b"\xff\xfe\x00\x80 not text")
+    cache_path.write_text("1.0,not-a-number,3.0")
 
     with caplog.at_level(logging.WARNING, logger="squid"):
-        assert squid.stage.utils.get_cached_position(cache_path=str(cache_path)) is None
+        squid.stage.utils.get_cached_position(cache_path=str(cache_path))
 
-    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    assert any("contents='1.0,not-a-number,3.0'" in r.getMessage() for r in caplog.records)
+
+
+class _WriteFailsFile:
+    """Wraps a real file object so opening (and truncating) succeeds but writing fails."""
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def __enter__(self):
+        self._wrapped.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._wrapped.__exit__(*exc_info)
+
+    def write(self, _data):
+        raise OSError("simulated disk full")
+
+
+def test_cache_position_keeps_the_previous_position_when_the_write_fails(tmp_path, monkeypatch):
+    """An interrupted write must not leave a truncated cache behind - that is what corrupts the file."""
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    already_cached = squid.abc.Pos(x_mm=11.0, y_mm=22.0, z_mm=1.0, theta_rad=None)
+    squid.stage.utils.cache_position(pos=already_cached, stage_config=stage_config, cache_path=cache_path)
+
+    real_open = builtins.open
+    monkeypatch.setattr(builtins, "open", lambda *args, **kwargs: _WriteFailsFile(real_open(*args, **kwargs)))
+    with pytest.raises(OSError):
+        squid.stage.utils.cache_position(
+            pos=squid.abc.Pos(x_mm=33.0, y_mm=44.0, z_mm=2.0, theta_rad=None),
+            stage_config=stage_config,
+            cache_path=cache_path,
+        )
+    monkeypatch.undo()
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) == already_cached
 
 
 # --- PI V-308 / C-414 focus stage --------------------------------------------
