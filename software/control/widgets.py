@@ -4361,16 +4361,14 @@ class LiveControlWidget(QFrame):
 
         # Single-frame capture, for light sensitive samples where a free-running
         # live stream would bleach or damage the sample while settings are dialed in.
+        # Illumination is on for that one exposure only in software/hardware trigger
+        # mode; in continuous mode it stays on for up to two exposures.
         self.btn_snap = QPushButton("Snap")
         self.btn_snap.setCheckable(False)
         self.btn_snap.setDefault(False)
         self.btn_snap.setStyleSheet("background-color: #C2C2FF")
         self.btn_snap.setSizePolicy(sizePolicy)
-        self.btn_snap.setToolTip(
-            "Acquire a single frame with the current Live Configuration. "
-            "In software/hardware trigger mode the illumination is on for that one "
-            "exposure only; in continuous mode it stays on for up to two exposures."
-        )
+        self.btn_snap.setToolTip("View a single frame with the current Live Configuration, to reduce photobleaching.")
 
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
