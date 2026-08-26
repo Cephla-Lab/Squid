@@ -60,17 +60,27 @@ mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 # Ubuntu 22.04 ships an old pip; upgrade it before resolving the dependency graph.
 python3 -m pip install --upgrade pip
 
-# Qt binding: napari 0.7 requires PyQt6. Exactly ONE Qt binding may be installed —
-# PyQt5 and PyQt6 in the same environment conflict and break napari/vispy OpenGL
-# rendering. Remove any pre-existing PyQt5 (e.g. pulled in by an apt package) first.
+# Qt binding: the app targets PyQt6 (QT_API=pyqt6; napari itself supports either binding).
+# Exactly ONE Qt binding may be installed — PyQt5 and PyQt6 in the same environment
+# conflict and break napari/vispy OpenGL rendering. Remove any pre-existing PyQt5
+# (e.g. pulled in by an apt package) first.
+# Pinned to the tested combination. napari 0.7.1 blocks PyQt6-Qt6 6.11.0 and 6.11.1
+# (dock-widget and resizing bugs, napari/napari#9052); the napari[pyqt6] extra installed
+# below makes pip re-check these pins against napari's own Qt constraints, so bump them
+# together.
 sudo apt remove -y python3-pyqt5 python3-pyqt5.qtsvg 2>/dev/null || true
 pip3 uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip 2>/dev/null || true
-pip3 install PyQt6 PyQt6-Qt6 PyQt6-sip
+pip3 install "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0"
 
-# install libraries. napari 0.7 requires numpy>=2, so no "numpy<2" pin here.
+# install libraries. No "numpy<2" pin: napari 0.7 only needs numpy>=1.24, but the rest of
+# the current stack (opencv-python 5.x, pyqtgraph 0.14, ...) targets NumPy 2 and the
+# pinned-back packages aicsimageio drags in (tifffile 2023.2, zarr 2.15, lxml 4.9) were
+# verified to work with it.
 pip3 install pyqtgraph qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install "napari>=0.7,<0.8" scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
+# napari pinned to a tested release (patch releases change its vispy/Qt constraints). The
+# [pyqt6] extra is what makes pip enforce napari's Qt blocklist against the PyQt6 above.
+pip3 install "napari[pyqt6]==0.7.1" scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so

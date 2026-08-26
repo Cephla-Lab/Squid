@@ -65,12 +65,13 @@ jobs:
         # Own invocation: the full-application GUI test leaves Qt/thread state
         # behind that deterministically segfaults later Qt tests (e.g.
         # test_channel_sequence) when run in the same pytest process.
-        # Step-scoped pyqt5 pin: without it, pytest-qt picks PySide6 for qtbot
-        # while the app code (qtpy) uses PyQt5, and the mixed bindings fail
-        # with a QObject double-init error.
+        # Step-scoped pyqt6 pin: keeps pytest-qt's qtbot on the same binding as
+        # the app code (qtpy, QT_API=pyqt6). Mixed bindings fail with a QObject
+        # double-init error, and pointing this at a binding that is not installed
+        # (e.g. pyqt5, removed by setup_22.04.sh) aborts pytest at startup.
         run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
         working-directory: ./software
         env:
-          QT_API: pyqt5
-          PYTEST_QT_API: pyqt5
+          QT_API: pyqt6
+          PYTEST_QT_API: pyqt6
           SQUID_PYTEST_HARD_EXIT: "1"
