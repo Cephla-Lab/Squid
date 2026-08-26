@@ -1872,14 +1872,20 @@ class HighContentScreeningGui(QMainWindow):
                 slot = conn[1]
                 connection_type = conn[2] if len(conn) > 2 else None
                 if keep_connected:
+                    # Plain connect() does not raise on an existing connection — it adds a
+                    # second one, so every performance-mode toggle would stack another
+                    # connection on the widgets that stay connected and the slot would run
+                    # N times per emit. Disconnect first so this is idempotent. (Qt's
+                    # UniqueConnection can't be OR'd with the requested connection type
+                    # under PyQt6, where Qt.ConnectionType is a plain Enum.)
                     try:
-                        if connection_type is not None:
-                            signal.connect(slot, connection_type)
-                        else:
-                            signal.connect(slot)
+                        signal.disconnect(slot)
                     except TypeError:
-                        # Connection might already exist, which is fine
-                        pass
+                        pass  # not connected yet
+                    if connection_type is not None:
+                        signal.connect(slot, connection_type)
+                    else:
+                        signal.connect(slot)
                 else:
                     try:
                         signal.disconnect(slot)
