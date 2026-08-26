@@ -2,17 +2,27 @@ import logging
 import os
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 from qtpy.QtCore import Qt
+from qtpy.QtWidgets import QComboBox
 
 import control._def
 import control.microscope
 import control.widgets
 from control.core import core as core_module
-from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, RecordingWidget, SurfacePlotWidget
+from control.core.scan_coordinates import ScanCoordinates
+from control.widgets import (
+    check_ram_available_with_error_dialog,
+    FocusMapWidget,
+    NDViewerTab,
+    RecordingWidget,
+    SurfacePlotWidget,
+)
 from squid.abc import CameraFrame, CameraFrameFormat
 from squid.config import CameraPixelFormat
 
@@ -2609,3 +2619,339 @@ class TestWarningErrorWidgetErrorExemptionWithDroppedCount:
 
         # But the error should be in the messages
         assert any(m["level"] == logging.ERROR for m in widget._messages)
+
+
+def _fake_wellplate_for_toggle(loaded: bool, scan_coordinates=None, cached_df=None):
+    fake = SimpleNamespace(
+        scanCoordinates=scan_coordinates if scan_coordinates is not None else MagicMock(),
+        navigationViewer=MagicMock(),
+        cached_loaded_coordinates_df=cached_df if cached_df is not None else MagicMock(),
+        cached_loaded_file_path="/tmp/coords.csv",
+        text_loaded_coordinates=MagicMock(),
+        btn_load_scan_coordinates=MagicMock(),
+        has_loaded_coordinates=loaded,
+        _log=MagicMock(),
+    )
+    fake._set_has_loaded_coordinates = lambda v: control.widgets.WellplateMultiPointWidget._set_has_loaded_coordinates(
+        fake, v
+    )
+    return fake
+
+
+def test_clear_loaded_coordinates_resets_state():
+    fake = _fake_wellplate_for_toggle(loaded=True)
+
+    control.widgets.WellplateMultiPointWidget.clear_loaded_coordinates(fake)
+
+    fake.scanCoordinates.clear_regions.assert_called_once()
+    fake.navigationViewer.clear_overlay.assert_called_once()
+    assert fake.cached_loaded_coordinates_df is None
+    assert fake.cached_loaded_file_path is None
+    fake.text_loaded_coordinates.clear.assert_called_once()
+    assert fake.has_loaded_coordinates is False
+    fake.btn_load_scan_coordinates.setText.assert_called_with("Load New Coords")
+
+
+def test_load_or_clear_click_clears_when_loaded():
+    fake = _fake_wellplate_for_toggle(loaded=True)
+    fake.clear_loaded_coordinates = MagicMock()
+
+    control.widgets.WellplateMultiPointWidget.on_load_or_clear_coordinates_clicked(fake)
+
+    fake.clear_loaded_coordinates.assert_called_once()
+
+
+def test_load_or_clear_click_opens_dialog_when_not_loaded():
+    fake = _fake_wellplate_for_toggle(loaded=False)
+    fake.load_coordinates = MagicMock()
+
+    with patch("control.widgets.QFileDialog.getOpenFileName", return_value=("/tmp/some.csv", "")):
+        control.widgets.WellplateMultiPointWidget.on_load_or_clear_coordinates_clicked(fake)
+
+    fake.load_coordinates.assert_called_once_with("/tmp/some.csv")
+
+
+def test_load_or_clear_click_cancelled_dialog_loads_nothing():
+    fake = _fake_wellplate_for_toggle(loaded=False)
+    fake.load_coordinates = MagicMock()
+
+    with patch("control.widgets.QFileDialog.getOpenFileName", return_value=("", "")):
+        control.widgets.WellplateMultiPointWidget.on_load_or_clear_coordinates_clicked(fake)
+
+    fake.load_coordinates.assert_not_called()
+
+
+def test_update_coordinates_leaves_loaded_plan_untouched():
+    # Regression: after an acquisition finished in Load Coordinates mode,
+    # acquisition_is_finished -> reset_coordinates -> update_coordinates fell into
+    # the Select Wells branch and silently replaced the loaded plan with regions
+    # derived from whatever wells were still ticked in the well selector — while
+    # the UI kept claiming the file was loaded. Loaded plans are owned by the
+    # load/restore/clear flow; update_coordinates must not touch them.
+    fake = SimpleNamespace(
+        tab_widget=None,
+        checkbox_xy=MagicMock(isChecked=MagicMock(return_value=True)),
+        combobox_xy_mode=MagicMock(currentText=MagicMock(return_value="Load Coordinates")),
+        entry_scan_size=MagicMock(),
+        entry_overlap=MagicMock(),
+        combobox_shape=MagicMock(),
+        scanCoordinates=MagicMock(),
+        has_loaded_coordinates=True,
+    )
+
+    control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
+
+    fake.scanCoordinates.clear_regions.assert_not_called()
+    fake.scanCoordinates.set_well_coordinates.assert_not_called()
+
+
+def test_update_coordinates_derives_from_wells_when_no_plan_loaded():
+    # Re-applying an acquisition YAML recorded in Load Coordinates mode ticks wells
+    # and calls update_coordinates with no CSV plan loaded; regions must still be
+    # derived from the ticked wells (pre-existing behavior), not left stale.
+    fake = SimpleNamespace(
+        tab_widget=None,
+        checkbox_xy=MagicMock(isChecked=MagicMock(return_value=True)),
+        combobox_xy_mode=MagicMock(currentText=MagicMock(return_value="Load Coordinates")),
+        entry_scan_size=MagicMock(),
+        entry_overlap=MagicMock(),
+        combobox_shape=MagicMock(),
+        scanCoordinates=MagicMock(),
+        has_loaded_coordinates=False,
+    )
+
+    control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
+
+    fake.scanCoordinates.set_well_coordinates.assert_called_once()
+
+
+def test_dead_save_clear_toggle_machinery_removed():
+    assert not hasattr(control.widgets.WellplateMultiPointWidget, "toggle_coordinate_controls")
+    assert not hasattr(control.widgets.WellplateMultiPointWidget, "on_save_or_clear_coordinates_clicked")
+
+
+def _scan_coordinates_for_test():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    return ScanCoordinates(scope.objective_store, scope.stage, scope.camera)
+
+
+def test_restore_cached_coordinates_invalid_cached_df_does_not_raise_and_warns():
+    # SOFTWARE_POS_LIMIT.Z_POSITIVE/Z_NEGATIVE are runtime-mutable, so a cached
+    # dataframe that validated at load time can fail validation on a later
+    # restore (e.g. mode switch away and back). restore_cached_coordinates is
+    # called from a Qt slot (on_xy_mode_changed), so it must not let the
+    # helper's ValueError propagate into the event loop.
+    sc = _scan_coordinates_for_test()
+    bad_z = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 1.0
+    bad_df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [bad_z]})
+
+    fake = _fake_wellplate_for_toggle(loaded=False, scan_coordinates=sc, cached_df=bad_df)
+
+    with patch("control.widgets.QMessageBox.warning") as mock_warning:
+        control.widgets.WellplateMultiPointWidget.restore_cached_coordinates(fake)
+
+    mock_warning.assert_called_once()
+    fake._log.error.assert_called_once()
+    assert fake.has_loaded_coordinates is False
+
+
+def test_load_regions_with_z_column_builds_3tuples_and_list_centers():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame(
+        {
+            "region": ["A1", "A1", "B2"],
+            "x (mm)": [10.0, 10.5, 20.0],
+            "y (mm)": [10.0, 10.0, 20.0],
+            "z (mm)": [3.0, 3.0, 3.5],
+        }
+    )
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is False
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0), (10.5, 10.0, 3.0)]
+    assert sc.region_fov_coordinates["B2"] == [(20.0, 20.0, 3.5)]
+    assert sc.region_centers["A1"] == [10.25, 10.0]
+    assert isinstance(sc.region_centers["A1"], list)
+    assert fovs == sc.region_fov_coordinates
+
+
+def test_load_regions_registers_manual_shape_for_every_region():
+    # Enabling the focus map calls get_region_shape() on every region; a loaded region
+    # with no shape raised KeyError.
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1", "A1", "left"], "x (mm)": [10.0, 10.5, 20.0], "y (mm)": [10.0, 10.0, 20.0]})
+
+    control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert sc.region_shapes == {"A1": "Manual", "left": "Manual"}
+
+
+def test_load_regions_without_z_column_builds_2tuples():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is False
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
+
+
+def test_load_regions_with_nan_z_drops_the_column():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame(
+        {"region": ["A1", "A1"], "x (mm)": [10.0, 10.5], "y (mm)": [10.0, 10.0], "z (mm)": [3.0, float("nan")]}
+    )
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is True
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0), (10.5, 10.0)]
+
+
+def test_load_regions_with_numeric_string_z_loads_correctly():
+    # Hand-edited CSVs can yield an object-dtype z column; parseable values load.
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": ["3.0"]})
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is False
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
+
+
+def test_load_regions_with_unparseable_z_drops_the_column():
+    # Non-numeric z text takes the same warn-and-load-XY-only path as empty cells.
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": ["not-a-number"]})
+
+    fovs, z_dropped = control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert z_dropped is True
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
+
+
+def test_load_regions_with_out_of_range_z_raises():
+    sc = _scan_coordinates_for_test()
+    bad_z = control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 1.0
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [bad_z]})
+
+    with pytest.raises(ValueError, match="z"):
+        control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+
+def test_load_regions_missing_required_columns_raises():
+    sc = _scan_coordinates_for_test()
+    df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0]})
+
+    with pytest.raises(ValueError, match="region"):
+        control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+
+def test_load_regions_mid_loop_conversion_failure_leaves_existing_regions_intact():
+    # A non-numeric cell in a later region must not wipe out regions that were
+    # already loaded successfully in a previous call.
+    sc = _scan_coordinates_for_test()
+    good_df = pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0]})
+    control.widgets.load_coordinate_regions_from_dataframe(sc, good_df)
+
+    bad_df = pd.DataFrame({"region": ["B2"], "x (mm)": ["not-a-number"], "y (mm)": [20.0]})
+
+    with pytest.raises(ValueError):
+        control.widgets.load_coordinate_regions_from_dataframe(sc, bad_df)
+
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
+
+
+def test_fluidics_widget_load_coordinates_loads_z(tmp_path):
+    # The fluidics widget's loader goes through the same shared helper.
+    csv_path = tmp_path / "coords.csv"
+    pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [3.0]}).to_csv(csv_path, index=False)
+
+    fake = SimpleNamespace(
+        scanCoordinates=_scan_coordinates_for_test(),
+        navigationViewer=MagicMock(),
+        _log=MagicMock(),
+    )
+
+    control.widgets.MultiPointWithFluidicsWidget.load_coordinates(fake, str(csv_path))
+
+    assert fake.scanCoordinates.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
+    assert fake.scanCoordinates.region_centers["A1"] == [10.0, 10.0]
+    fake.navigationViewer.register_fovs_to_image.assert_called_once()
+
+
+def test_parfocal_adjusted_z_mm_uses_xeryon_switcher_offset(monkeypatch):
+    monkeypatch.setattr(control._def, "USE_XERYON", True)
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_1", ["4x", "10x"])
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_2", ["20x", "40x"])
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM", 2)
+
+    # pos1 -> pos2: the changer parks the stage 2 mm lower for position-2 objectives.
+    assert control.widgets.parfocal_adjusted_z_mm("10x", "20x", 3.0) == pytest.approx(1.0)
+    # pos2 -> pos1: back up.
+    assert control.widgets.parfocal_adjusted_z_mm("20x", "10x", 1.0) == pytest.approx(3.0)
+    # Same position (either one): unchanged.
+    assert control.widgets.parfocal_adjusted_z_mm("20x", "40x", 1.0) == pytest.approx(1.0)
+    assert control.widgets.parfocal_adjusted_z_mm("4x", "10x", 3.0) == pytest.approx(3.0)
+    # Target == current: unmodified.
+    assert control.widgets.parfocal_adjusted_z_mm("20x", "20x", 1.0) == pytest.approx(1.0)
+
+
+def test_parfocal_adjusted_z_mm_is_noop_without_switcher(monkeypatch):
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+
+    assert control.widgets.parfocal_adjusted_z_mm("10x", "20x", 3.0) == pytest.approx(3.0)
+
+
+def test_coordinate_rows_for_save_stamps_default_z_and_keeps_existing_z():
+    fovs = {"A1": [(10.0, 10.0), (10.5, 10.0, 4.0)], "B2": [(20.0, 20.0)]}
+
+    df = control.widgets.coordinate_rows_for_save(fovs, 3.0)
+
+    assert list(df.columns) == ["region", "x (mm)", "y (mm)", "z (mm)"]
+    assert df["region"].tolist() == ["A1", "A1", "B2"]
+    assert df["z (mm)"].tolist() == [3.0, 4.0, 3.0]
+
+
+def test_save_load_round_trip_preserves_z():
+    sc = _scan_coordinates_for_test()
+    fovs = {"A1": [(10.0, 10.0), (10.5, 10.0)]}
+
+    df = control.widgets.coordinate_rows_for_save(fovs, 3.25)
+    control.widgets.load_coordinate_regions_from_dataframe(sc, df)
+
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.25), (10.5, 10.0, 3.25)]
+
+
+class _FocusMapNavigationStub:
+    """FocusMapWidget-ish object exposing just what goto_next_point / goto_selected_point use."""
+
+    def __init__(self, focus_points):
+        self.enabled = True
+        self.focus_points = focus_points
+        self.stage = MagicMock()
+        self.point_combo = QComboBox()
+        for region_id, x, y, z in focus_points:
+            self.point_combo.addItem(f"{region_id} ({x}, {y}, {z})")
+        # Mirrors FocusMapWidget.make_connections()
+        self.point_combo.currentIndexChanged.connect(self.goto_selected_point)
+
+    goto_next_point = FocusMapWidget.goto_next_point
+    goto_selected_point = FocusMapWidget.goto_selected_point
+
+
+def test_focus_map_goto_next_point_moves_stage_once_per_click(qtbot):
+    """Regression: setCurrentIndex emitted currentIndexChanged -> goto_selected_point, and then
+    goto_next_point called goto_selected_point again, so every click ran two full x/y/z moves."""
+    points = [("A1", 1.0, 2.0, 3.0), ("A1", 4.0, 5.0, 6.0), ("B2", 7.0, 8.0, 9.0)]
+    widget = _FocusMapNavigationStub(points)
+
+    for _, x, y, z in points[1:] + points[:1]:  # three clicks: 1, 2, then wrap back to 0
+        widget.stage.reset_mock()
+
+        widget.goto_next_point()
+
+        widget.stage.move_x_to.assert_called_once_with(x)
+        widget.stage.move_y_to.assert_called_once_with(y)
+        widget.stage.move_z_to.assert_called_once_with(z)

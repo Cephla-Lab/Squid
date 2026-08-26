@@ -5,6 +5,9 @@
 #   - Fluorescence laser lines (epi-illumination)
 #   - Controller port mappings (D1-D8 for lasers, USB for LED matrix)
 #   - Intensity calibration file references (relative to intensity_calibrations/)
+#   - max_output: maximum allowed output as a fraction of full scale (0-1].
+#     Intensity controls in the GUI are capped at max_output*100 percent.
+#     If omitted, defaults to 1 (100%).
 #
 # Copy this file to illumination_channel_config.yaml and edit for your system.
 
@@ -33,6 +36,7 @@ channels:
     type: transillumination
     controller_port: USB1
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   # DF LED matrix
@@ -40,6 +44,7 @@ channels:
     type: transillumination
     controller_port: USB4
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   # Fluorescence channels
@@ -47,30 +52,35 @@ channels:
     type: epi_illumination
     controller_port: D1
     wavelength_nm: 405
+    max_output: 1
     intensity_calibration_file: 405.csv
 
   - name: Fluorescence 488 nm Ex
     type: epi_illumination
     controller_port: D2
     wavelength_nm: 488
+    max_output: 1
     intensity_calibration_file: 488.csv
 
   - name: Fluorescence 561 nm Ex
     type: epi_illumination
     controller_port: D3
     wavelength_nm: 561
+    max_output: 1
     intensity_calibration_file: 561.csv
 
   - name: Fluorescence 638 nm Ex
     type: epi_illumination
     controller_port: D4
     wavelength_nm: 638
+    max_output: 1
     intensity_calibration_file: 638.csv
 
   - name: Fluorescence 730 nm Ex
     type: epi_illumination
     controller_port: D5
     wavelength_nm: 730
+    max_output: 1
     intensity_calibration_file: 730.csv
 
   # Other LED matrix
@@ -78,52 +88,61 @@ channels:
     type: transillumination
     controller_port: USB5
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix left half
     type: transillumination
     controller_port: USB2
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix right half
     type: transillumination
     controller_port: USB3
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix top half
     type: transillumination
     controller_port: USB7
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix bottom half
     type: transillumination
     controller_port: USB8
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix full_R
     type: transillumination
     controller_port: USB1
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix full_G
     type: transillumination
     controller_port: USB1
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix full_B
     type: transillumination
     controller_port: USB1
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null
 
   - name: BF LED matrix full_RGB
     type: transillumination
     controller_port: USB1
     wavelength_nm: null
+    max_output: 0.2
     intensity_calibration_file: null

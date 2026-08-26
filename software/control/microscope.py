@@ -443,6 +443,7 @@ class Microscope:
         skip_init: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._closed = False
 
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
@@ -456,8 +457,9 @@ class Microscope:
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self._laser_af_controller = None
 
-        # Centralized config management
-        self.config_repo: ConfigRepository = ConfigRepository()
+        # Centralized config management (assigning through the property below also
+        # hands the same repository to the illumination controller).
+        self.config_repo = ConfigRepository()
 
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
@@ -495,6 +497,18 @@ class Microscope:
 
         if not skip_prepare_for_use:
             self._prepare_for_use(skip_init=skip_init)
+
+    @property
+    def config_repo(self) -> ConfigRepository:
+        """Centralized config repository, shared by every consumer in this microscope."""
+        return self._config_repo
+
+    @config_repo.setter
+    def config_repo(self, repo: ConfigRepository) -> None:
+        # One shared cache: keep the illumination controller reading the same
+        # repository so GUI-saved config edits take effect without a restart.
+        self._config_repo = repo
+        self.illumination_controller.config_repo = repo
 
     def _prepare_for_use(self, skip_init: bool = False):
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
@@ -1046,7 +1060,12 @@ class Microscope:
 
         Attempts to cleanly shut down all hardware components. Errors during
         shutdown are logged but do not prevent other components from being closed.
+        Calling close() more than once is a no-op.
         """
+        if self._closed:
+            return
+        self._closed = True
+
         try:
             self.stop_live()
         except Exception as e:

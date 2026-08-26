@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 
 from control.core.job_processing import CaptureInfo
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class ScanPositionInformation:
-    scan_region_coords_mm: List[Tuple[float, float]]
+    scan_region_coords_mm: List[List[float]]
     scan_region_names: List[str]
     scan_region_fov_coords_mm: Dict[str, List[Tuple[float, float, float]]]
 
@@ -21,7 +21,12 @@ class ScanPositionInformation:
         return ScanPositionInformation(
             scan_region_coords_mm=list(scan_coordinates.region_centers.values()),
             scan_region_names=list(scan_coordinates.region_centers.keys()),
-            scan_region_fov_coords_mm=dict(scan_coordinates.region_fov_coordinates),
+            # Copy the inner lists too: the controller's focus-map branch rewrites
+            # FOV entries in place, and sharing them would leak interpolated z into
+            # the GUI's ScanCoordinates (and crash a later Save Coordinates).
+            scan_region_fov_coords_mm={
+                region_id: list(coords) for region_id, coords in scan_coordinates.region_fov_coordinates.items()
+            },
         )
 
 
@@ -63,6 +68,11 @@ class AcquisitionParameters:
 
     # XY mode for determining scan type
     xy_mode: str = "Current Position"  # "Current Position", "Select Wells", "Manual", "Load Coordinates"
+
+    # Per-region laser-AF target offsets (µm from the global laser-AF reference plane),
+    # keyed by region_id. Empty unless the focus-map + laser-AF combined mode is active,
+    # in which case each FOV in a region targets that region's offset instead of 0.
+    region_laser_af_offsets: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass

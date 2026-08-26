@@ -392,6 +392,19 @@ class LaserAutofocusController(QObject):
         else:
             self.stage.move_z(um_to_move / 1000)
 
+    def apply_relative_offset_um(self, offset_um: float) -> None:
+        """Open-loop relative Z move of ``offset_um`` (displacement µm, 1:1 with Z), with NO
+        spot re-verification.
+
+        Intended to run right after ``move_to_target(0.0)`` has anchored — and verified — the
+        spot at the reference plane, to then place the sample at a target displacement from
+        that reference. Spot-alignment verification (``_verify_spot_alignment``) always crops
+        at ``x_reference`` and would fail for a deliberately-displaced spot, so it must NOT be
+        used to reach a nonzero target; this method deliberately skips it. No-op for offset 0.
+        """
+        if offset_um:
+            self._move_z(offset_um)
+
     def set_reference(self) -> bool:
         """Set the current spot position as the reference position.
 

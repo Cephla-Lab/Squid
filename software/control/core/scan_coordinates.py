@@ -2,14 +2,18 @@ from dataclasses import dataclass
 import itertools
 import math
 import re
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
 import control._def
+import control.utils
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
+
+# Well region names are a row label followed by a 1-based column number, e.g. "A1", "AF48".
+_WELL_KEY_PATTERN = re.compile(r"^([A-Za-z]+)(\d+)$")
 
 
 @dataclass
@@ -92,7 +96,8 @@ class ScanCoordinates:
         self.well_spacing_mm = spacing_mm
         self.number_of_skip = number_of_skip
 
-    def _index_to_row(self, index):
+    @staticmethod
+    def _index_to_row(index):
         index += 1
         row = ""
         while index > 0:
@@ -100,6 +105,18 @@ class ScanCoordinates:
             row = chr(index % 26 + ord("A")) + row
             index //= 26
         return row
+
+    @staticmethod
+    def _parse_well_key(key: str) -> Optional[Tuple[int, int]]:
+        """Split a well region name like "AA12" into 0-based (row, column) indices.
+
+        Returns None for region names that are not well IDs (e.g. "current" or a
+        user-supplied flexible-region name).
+        """
+        match = _WELL_KEY_PATTERN.match(key)
+        if not match:
+            return None
+        return (control.utils.row_to_index(match.group(1)), int(match.group(2)) - 1)
 
     def get_selected_wells(self):
         # get selected wells from the widget
@@ -550,6 +567,9 @@ class ScanCoordinates:
         if len(self.region_centers) <= 1:
             return
 
+        # Parse each region name once; wells[key] is (row, col) or None for non-well names.
+        wells = {key: None if self._is_manual_region(key) else self._parse_well_key(key) for key in self.region_centers}
+
         def sort_key(item):
             key, coord = item
             if self._is_manual_region(key):
@@ -557,36 +577,42 @@ class ScanCoordinates:
                 # They sort before wells (priority 0 vs 1)
                 return (0, self._get_manual_region_index(key), 0)
 
-            # Well regions sort by row letter, then column number (e.g., A1, A2, B1, B2)
-            letters = "".join(c for c in key if c.isalpha())
-            numbers = "".join(c for c in key if c.isdigit())
+            if wells[key] is None:
+                # Not a well ID (e.g. "current", or a named flexible region). Keep these
+                # after the wells in insertion order - sorted() is stable.
+                return (2, 0, 0)
 
-            # Convert multi-letter row (e.g., "AA") to numeric value
-            letter_value = 0
-            for i, letter in enumerate(reversed(letters)):
-                letter_value += (ord(letter) - ord("A")) * (26**i)
-
-            return (1, letter_value, int(numbers))
+            # Well regions sort by row, then column number (e.g., A1, A2, B1, B2)
+            return (1, *wells[key])
 
         sorted_items = sorted(self.region_centers.items(), key=sort_key)
 
         if self.acquisition_pattern == "S-Pattern":
             # S-Pattern only applies to well plates - manual regions stay in drawing order
             # because the user's drawing order already represents their intended path
-            manual_items = [(k, v) for k, v in sorted_items if self._is_manual_region(k)]
-            well_items = [(k, v) for k, v in sorted_items if not self._is_manual_region(k)]
+            manual_items = []
+            well_items = []
+            other_items = []
+            for k, v in sorted_items:
+                if self._is_manual_region(k):
+                    manual_items.append((k, v))
+                elif wells[k] is not None:
+                    well_items.append((k, v))
+                else:
+                    other_items.append((k, v))
 
-            # Reverse alternate rows to create serpentine path (reduces stage travel)
-            if well_items:
-                rows = itertools.groupby(well_items, key=lambda x: x[0][0])
-                well_items = []
-                for i, (_, group) in enumerate(rows):
-                    row = list(group)
-                    if i % 2 == 1:
-                        row.reverse()
-                    well_items.extend(row)
+            # Reverse alternate rows to create serpentine path (reduces stage travel).
+            # Group by row index rather than the first character, since "A1" and "AA1"
+            # are different rows on a 1536-well plate.
+            serpentined = []
+            row_groups = itertools.groupby(well_items, key=lambda item: wells[item[0]][0])
+            for i, (_, group) in enumerate(row_groups):
+                row = list(group)
+                if i % 2 == 1:
+                    row.reverse()
+                serpentined.extend(row)
 
-            sorted_items = manual_items + well_items
+            sorted_items = manual_items + serpentined + other_items
 
         # Update dictionaries efficiently
         self.region_centers = {k: v for k, v in sorted_items}
@@ -615,7 +641,8 @@ class ScanCoordinates:
     def get_region_shape(self, region_id):
         if not self.validate_region(region_id):
             return None
-        return self.region_shapes[region_id]
+        # Regions registered without a shape (widget code that writes the dicts directly) are bounding boxes
+        return self.region_shapes.get(region_id, "Square")
 
     def get_scan_bounds(self):
         """Get bounds of all scan regions with margin"""
@@ -645,28 +672,6 @@ class ScanCoordinates:
         margin = max(width, height) * 0.00  # 0.05
 
         return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
-
-    def update_fov_z_level(self, region_id, fov, new_z):
-        """Update z-level for a specific FOV and its region center"""
-        if not self.validate_region(region_id):
-            print(f"Region {region_id} not found")
-            return
-
-        # Update FOV coordinates
-        fov_coords = self.region_fov_coordinates[region_id]
-        if fov < len(fov_coords):
-            # Handle both (x,y) and (x,y,z) cases
-            x, y = fov_coords[fov][:2]  # Takes first two elements regardless of length
-            self.region_fov_coordinates[region_id][fov] = (x, y, new_z)
-
-        # If first FOV, update region center coordinates
-        if fov == 0:
-            if len(self.region_centers[region_id]) == 3:
-                self.region_centers[region_id][2] = new_z
-            else:
-                self.region_centers[region_id].append(new_z)
-
-        self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
 
 
 class ScanCoordinatesSiLA2(ScanCoordinates):
@@ -704,30 +709,15 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
         descriptions = well_names.split(",")
 
-        def row_to_index(row):
-            index = 0
-            for char in row:
-                index = index * 26 + (ord(char.upper()) - ord("A") + 1)
-            return index - 1
-
-        def index_to_row(index):
-            index += 1
-            row = ""
-            while index > 0:
-                index -= 1
-                row = chr(index % 26 + ord("A")) + row
-                index //= 26
-            return row
-
         for desc in descriptions:
             match = re.match(pattern, desc.strip())
             if match:
                 start_row, start_col, end_row, end_col = match.groups()
-                start_row_index = row_to_index(start_row)
+                start_row_index = control.utils.row_to_index(start_row)
                 start_col_index = int(start_col) - 1
 
                 if end_row and end_col:  # It's a range
-                    end_row_index = row_to_index(end_row)
+                    end_row_index = control.utils.row_to_index(end_row)
                     end_col_index = int(end_col) - 1
                     for row in range(min(start_row_index, end_row_index), max(start_row_index, end_row_index) + 1):
                         cols = range(min(start_col_index, end_col_index), max(start_col_index, end_col_index) + 1)
@@ -746,7 +736,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                                 + row * wellplate_settings["well_spacing_mm"]
                                 + control._def.WELLPLATE_OFFSET_Y_mm
                             )
-                            self.region_centers[index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
+                            self.region_centers[self._index_to_row(row) + str(col + 1)] = [x_mm, y_mm]
                 else:
                     x_mm = (
                         wellplate_settings["a1_x_mm"]
@@ -758,7 +748,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                         + start_row_index * wellplate_settings["well_spacing_mm"]
                         + control._def.WELLPLATE_OFFSET_Y_mm
                     )
-                    self.region_centers[start_row + start_col] = (x_mm, y_mm)
+                    self.region_centers[start_row + start_col] = [x_mm, y_mm]
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 

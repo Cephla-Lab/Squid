@@ -652,6 +652,26 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
     return (letter_part, number_part)
 
 
+def row_to_index(row: str) -> int:
+    """Convert a well row label to a 0-based row index.
+
+    Row labels are bijective base-26 (A=0, ..., Z=25, AA=26, ..., AF=31 on a
+    1536-well plate), so a leading "A" is worth 26 and must not be treated as a
+    plain base-26 zero digit. Sorting rows by this index is NOT the same as
+    sorting the labels as strings ("AA" < "B" lexicographically).
+
+    Args:
+        row: Row letters, e.g. "A", "Z", "AA" (case-insensitive)
+
+    Returns:
+        0-based row index
+    """
+    index = 0
+    for char in row.upper():
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index - 1
+
+
 # -----------------------------------------------------------------------------
 # Zarr path building utilities
 # -----------------------------------------------------------------------------

@@ -16,6 +16,11 @@ class StreamHandlerFunctions:
     packet_image_to_write: Callable[[np.ndarray, int, float], None]
     signal_new_frame_received: Callable[[], None]
     accept_new_frame: Callable[[], bool]
+    # True to exempt the frame from display-fps throttling. Used by single-frame
+    # captures (snap), where dropping the one frame that was acquired because it
+    # arrived too soon after the previous one would leave the user staring at a
+    # stale image.
+    force_display: Callable[[], bool] = lambda: False
 
 
 NoOpStreamHandlerFunctions = StreamHandlerFunctions(
@@ -23,6 +28,7 @@ NoOpStreamHandlerFunctions = StreamHandlerFunctions(
     packet_image_to_write=lambda a, i, f: None,
     signal_new_frame_received=lambda: None,
     accept_new_frame=lambda: True,
+    force_display=lambda: False,
 )
 
 
@@ -95,7 +101,7 @@ class StreamHandler:
 
         # send image to display
         time_now = time.time()
-        if time_now - self.timestamp_last_display >= 1 / self.fps_display:
+        if self._fns.force_display() or time_now - self.timestamp_last_display >= 1 / self.fps_display:
             self._fns.image_to_display(
                 utils.crop_image(
                     image,

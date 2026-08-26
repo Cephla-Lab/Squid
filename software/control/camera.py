@@ -296,15 +296,18 @@ class DefaultCamera(AbstractCamera):
         raise NotImplementedError(f"No pixel format for gx format {gx_pixel=}")
 
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
-        with self._pause_streaming():
-            if not self._capabilities.settable_pixel_format:
-                raise NotImplementedError("The camera does not support setting pixel format.")
-            self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
-            self._pixel_format = pixel_format
+        # Hold the trigger lock across the pause AND the strobe/exposure recalculation
+        # so racing triggers are dropped until the new timing is in effect.
+        with self._trigger_lock:
+            with self._pause_streaming():
+                if not self._capabilities.settable_pixel_format:
+                    raise NotImplementedError("The camera does not support setting pixel format.")
+                self._camera.PixelFormat.set(self._gx_pixel_format_for(pixel_format))
+                self._pixel_format = pixel_format
 
-        self._update_strobe_time()
-        # For re-setting exposure time just in case the strobe changed.
-        self.set_exposure_time(self.get_exposure_time())
+            self._update_strobe_time()
+            # For re-setting exposure time just in case the strobe changed.
+            self.set_exposure_time(self.get_exposure_time())
 
     def get_pixel_format(self) -> CameraPixelFormat:
         if not self._capabilities.gettable_pixel_format:
@@ -385,9 +388,17 @@ class DefaultCamera(AbstractCamera):
 
         total_exposure_time_ms = self._exposure_time_ms + self._strobe_delay_us / 1000.0
 
-        # If the last frame we got was from <exposure time ago, use it.
-        if self._current_frame and time.time() - self._current_frame.timestamp <= total_exposure_time_ms / 1000.0:
-            return self._current_frame
+        # Reuse the cached frame only if it is fresh AND was captured at or after the most recent
+        # trigger: a pre-trigger frame breaks trigger->read workflows (e.g. the laser-AF
+        # measure -> piezo move -> verify loop, where a stale pre-move frame reverts a correct
+        # focus move). In continuous mode no per-read trigger is sent, so every frame passes.
+        cached_frame = self._current_frame
+        if (
+            cached_frame
+            and cached_frame.timestamp >= self._last_trigger_timestamp
+            and time.time() - cached_frame.timestamp <= total_exposure_time_ms / 1000.0
+        ):
+            return cached_frame
 
         # The camera api isn't really fast, so it is easy to time out waiting for a frame and its processing.  So
         # for the timeout, we add a flat 100 ms to account for that.
@@ -468,7 +479,7 @@ class DefaultCamera(AbstractCamera):
         else:
             return CameraAcquisitionMode.CONTINUOUS
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if not self.get_is_streaming():
             self._log.warning("Trigger requested, but not streaming. Skipping.")
             return
