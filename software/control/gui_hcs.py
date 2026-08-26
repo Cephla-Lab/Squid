@@ -1758,15 +1758,20 @@ class HighContentScreeningGui(QMainWindow):
             self.updateNapariConnections()
 
     def updateNapariConnections(self):
-        """Performance mode disconnects the multichannel napari view; leaving it reconnects it."""
+        """Performance mode disconnects the multichannel napari view; leaving it reconnects it.
+
+        Plain connect() does not raise on an existing connection; it adds a second one, so a
+        repeated refresh would stack connections and the slot would run N times per emit.
+        Disconnect first so this is idempotent. (Qt.UniqueConnection can't be OR'd with the
+        requested connection type under PyQt6, where Qt.ConnectionType is a plain Enum.)
+        """
         for signal, slot, *connection_type in self.napari_connections:
             try:
-                if self.performance_mode:
-                    signal.disconnect(slot)
-                else:
-                    signal.connect(slot, *connection_type)
+                signal.disconnect(slot)
             except TypeError:
-                pass  # not connected / already connected
+                pass  # not connected yet
+            if not self.performance_mode:
+                signal.connect(slot, *connection_type)
 
     def toggleNapariTabs(self):
         # Enable/disable Napari tabs based on performance mode
