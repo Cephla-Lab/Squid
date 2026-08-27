@@ -46,7 +46,7 @@ class LaserAFTestParams:
     repeatability_cycles: int = 20
     repeatability_offset_um: Optional[float] = None  # None -> half the sweep range, alternating sign
     run_repeatability: bool = True
-    stability_duration_s: float = 30.0
+    stability_n_samples: int = 25
     stability_interval_s: float = 0.5
     run_stability: bool = True
     save_spot_images: bool = True
@@ -403,28 +403,17 @@ def _spot_image_paths_in_record_order(results: LaserAFTestResults, images_dir: P
     return pairs
 
 
-def write_spot_video(results: LaserAFTestResults, out_dir: Union[str, Path], fps: float = 10.0) -> Optional[Path]:
-    """Assemble the saved spot images into an annotated mp4 (the screen-recording replacement).
-
-    Frames run in acquisition order and carry routine/index plus commanded vs measured
-    displacement. Returns the video path, or None when no spot images were saved.
-    """
-    out = Path(out_dir)
-    pairs = _spot_image_paths_in_record_order(results, out / "spot_images")
-    if not pairs:
-        return None
-
+def _write_annotated_video(pairs: List[tuple], path: Path, fps: float) -> Optional[Path]:
     first_frame = cv2.imread(str(pairs[0][1]), cv2.IMREAD_UNCHANGED)
     if first_frame is None:
         return None
     height, width = first_frame.shape[:2]
-    video_path = out / "spot_video.mp4"
-    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
     try:
         font_scale = max(0.4, width / 1000.0)
         thickness = max(1, int(round(font_scale * 2)))
-        for record, path in pairs:
-            frame = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        for record, image_path in pairs:
+            frame = cv2.imread(str(image_path), cv2.IMREAD_UNCHANGED)
             if frame is None or frame.shape[:2] != (height, width):
                 continue  # a resized ROI mid-run would corrupt the container; skip the odd frame
             if frame.ndim == 2:
@@ -441,7 +430,27 @@ def write_spot_video(results: LaserAFTestResults, out_dir: Union[str, Path], fps
             writer.write(frame)
     finally:
         writer.release()
-    return video_path
+    return path
+
+
+def write_spot_videos(results: LaserAFTestResults, out_dir: Union[str, Path], fps: float = 10.0) -> List[Path]:
+    """Assemble the saved spot images into one annotated mp4 per routine (the screen-recording
+    replacement): sweep.mp4, repeatability.mp4, stability.mp4.
+
+    Frames run in acquisition order and carry routine/index plus commanded vs measured
+    displacement. Routines without saved images are skipped; returns the written paths.
+    """
+    out = Path(out_dir)
+    pairs = _spot_image_paths_in_record_order(results, out / "spot_images")
+    written = []
+    for routine in ("sweep", "repeatability", "stability"):
+        routine_pairs = [(record, path) for record, path in pairs if record.routine == routine]
+        if not routine_pairs:
+            continue
+        video_path = _write_annotated_video(routine_pairs, out / f"{routine}.mp4", fps)
+        if video_path is not None:
+            written.append(video_path)
+    return written
 
 
 def _build_pdf_summary_page(results: LaserAFTestResults, config: LaserAFConfig) -> Figure:
@@ -498,14 +507,14 @@ def write_pdf_report(results: LaserAFTestResults, config: LaserAFConfig, out_dir
 
 def write_report(results: LaserAFTestResults, config: LaserAFConfig, out_dir: Union[str, Path]) -> None:
     """Write measurements.csv, summary.json/.txt, laser_af_config.yaml, PNG plots, report.pdf,
-    and (when spot images were saved) the annotated spot_video.mp4."""
+    and (when spot images were saved) one annotated mp4 per routine."""
     out = Path(out_dir)
     write_measurements_csv(results.records, out / "measurements.csv")
     write_summary(results, config, out)
     write_config_snapshot(config, out / "laser_af_config.yaml")
     save_plots(results, out)
     write_pdf_report(results, config, out)
-    write_spot_video(results, out)
+    write_spot_videos(results, out)
 
 
 class LaserAFCharacterizationRunner:
@@ -576,7 +585,7 @@ class LaserAFCharacterizationRunner:
         self._log.info(
             f"Starting laser AF test for objective '{objective}' "
             f"(sweep +/-{sweep_range_um} um / {params.sweep_n_steps} steps, "
-            f"{params.repeatability_cycles} repeatability cycles, {params.stability_duration_s} s stability) "
+            f"{params.repeatability_cycles} repeatability cycles, {params.stability_n_samples} stability samples) "
             f"-> {out_dir}"
         )
 
@@ -706,23 +715,20 @@ class LaserAFCharacterizationRunner:
                 self._settle()
 
     def _run_stability(self, params: LaserAFTestParams, images_dir, results) -> None:
-        n_expected = max(1, int(round(params.stability_duration_s / params.stability_interval_s)))
-        phase_start = time.monotonic()
-        i = 0
-        last_measurement = None
-        while time.monotonic() - phase_start < params.stability_duration_s:
+        # Each sample is an independent laser-gated capture — measure_displacement_detailed()
+        # turns the AF laser on before the frame and off after it, never holding it on across
+        # samples — so the trace includes the laser's own on/off cycling behavior, exactly as
+        # production acquisitions experience it. Every frame is saved.
+        for i in range(params.stability_n_samples):
             if self._abort_requested.is_set():
-                break
-            self._progress_fn("Stability", min(i + 1, n_expected), n_expected)
+                return
+            self._progress_fn("Stability", i + 1, params.stability_n_samples)
             sample_start = time.monotonic()
-            # Full-rate spot images would dominate disk use; keep only the first and last frames.
-            last_measurement = self._measure_and_record("stability", i, 0.0, images_dir, results, save_image=(i == 0))
-            i += 1
-            remaining = params.stability_interval_s - (time.monotonic() - sample_start)
-            if remaining > 0:
-                time.sleep(remaining)
-        if i > 1 and images_dir is not None and last_measurement is not None and last_measurement.image is not None:
-            iio.imwrite(images_dir / f"stability_{i - 1:03d}.bmp", last_measurement.image)
+            self._measure_and_record("stability", i, 0.0, images_dir, results)
+            if i + 1 < params.stability_n_samples:
+                remaining = params.stability_interval_s - (time.monotonic() - sample_start)
+                if remaining > 0:
+                    time.sleep(remaining)
 
     def _compute_metrics(self, results: LaserAFTestResults) -> None:
         sweep = [r for r in results.records if r.routine == "sweep"]

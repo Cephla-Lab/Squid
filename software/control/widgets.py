@@ -3034,12 +3034,11 @@ class LaserAutofocusSettingWidget(QWidget):
         self.test_repeat_offset_spinbox.setValue(props.laser_af_range / 2.0)
         _add_test_row("Repeatability Offset (μm):", self.test_repeat_offset_spinbox)
 
-        self.test_stability_duration_spinbox = QDoubleSpinBox()
-        self.test_stability_duration_spinbox.setKeyboardTracking(False)
-        self.test_stability_duration_spinbox.setRange(0.0, 600.0)
-        self.test_stability_duration_spinbox.setDecimals(0)
-        self.test_stability_duration_spinbox.setValue(30.0)
-        _add_test_row("Stability Duration (s, 0 = skip):", self.test_stability_duration_spinbox)
+        self.test_stability_samples_spinbox = QSpinBox()
+        self.test_stability_samples_spinbox.setKeyboardTracking(False)
+        self.test_stability_samples_spinbox.setRange(0, 1000)
+        self.test_stability_samples_spinbox.setValue(25)
+        _add_test_row("Stability Samples (0 = skip):", self.test_stability_samples_spinbox)
 
         self.test_save_images_checkbox = QCheckBox("Save spot images")
         self.test_save_images_checkbox.setChecked(True)
@@ -3163,15 +3162,15 @@ class LaserAutofocusSettingWidget(QWidget):
         self.laser_af_test_progress_label.setText("Starting laser AF test...")
 
         repeatability_cycles = int(self.test_repeat_cycles_spinbox.value())
-        stability_duration_s = self.test_stability_duration_spinbox.value()
+        stability_n_samples = int(self.test_stability_samples_spinbox.value())
         params = LaserAFTestParams(
             sweep_range_um=self.test_sweep_range_spinbox.value(),
             sweep_n_steps=int(self.test_sweep_steps_spinbox.value()),
             repeatability_cycles=repeatability_cycles,
             repeatability_offset_um=self.test_repeat_offset_spinbox.value(),
             run_repeatability=repeatability_cycles > 0,
-            stability_duration_s=stability_duration_s,
-            run_stability=stability_duration_s > 0,
+            stability_n_samples=stability_n_samples,
+            run_stability=stability_n_samples > 0,
             save_spot_images=self.test_save_images_checkbox.isChecked(),
         )
         self._set_laser_af_test_running_ui(True)

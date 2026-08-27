@@ -165,11 +165,20 @@ def test_write_report_generates_pdf(tmp_path):
     pdf = tmp_path / "report.pdf"
     assert pdf.exists()
     assert pdf.stat().st_size > 5000  # summary page + three plot pages, not an empty shell
-    # Without saved spot images there is nothing to assemble into a video.
-    assert not (tmp_path / "spot_video.mp4").exists()
+    # Without saved spot images there is nothing to assemble into videos.
+    for routine in ("sweep", "repeatability", "stability"):
+        assert not (tmp_path / f"{routine}.mp4").exists()
 
 
-def test_write_report_builds_annotated_spot_video(tmp_path):
+def _frame_count(path) -> int:
+    cap = cv2.VideoCapture(str(path))
+    try:
+        return int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        cap.release()
+
+
+def test_write_report_builds_one_video_per_routine(tmp_path):
     results = _fake_results(tmp_path)
     images_dir = tmp_path / "spot_images"
     images_dir.mkdir()
@@ -181,11 +190,14 @@ def test_write_report_builds_annotated_spot_video(tmp_path):
     with tests.tools.NonInteractiveMatplotlib():
         lac.write_report(results, LaserAFConfig(), tmp_path)
 
-    video = tmp_path / "spot_video.mp4"
-    assert video.exists()
-    cap = cv2.VideoCapture(str(video))
+    # _fake_results has 2 sweep, 1 repeatability, 1 stability record.
+    assert _frame_count(tmp_path / "sweep.mp4") == 2
+    assert _frame_count(tmp_path / "repeatability.mp4") == 1
+    assert _frame_count(tmp_path / "stability.mp4") == 1
+    assert not (tmp_path / "spot_video.mp4").exists()
+
+    cap = cv2.VideoCapture(str(tmp_path / "sweep.mp4"))
     try:
-        assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == len(results.records)
         assert int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) == 96
         assert int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) == 64
     finally:
@@ -233,8 +245,8 @@ def test_runner_end_to_end_simulated(sim_controller):
         sweep_n_steps=9,
         repeatability_cycles=3,
         repeatability_offset_um=10.0,
-        stability_duration_s=1.0,
-        stability_interval_s=0.2,
+        stability_n_samples=5,
+        stability_interval_s=0.05,
         save_spot_images=True,
     )
     progress = []
@@ -256,7 +268,7 @@ def test_runner_end_to_end_simulated(sim_controller):
     assert results.sweep.slope_um_per_um == pytest.approx(1.0, abs=0.1)
     assert results.sweep.r_squared > 0.98
     assert results.repeatability is not None and results.repeatability.n_cycles == 3
-    assert results.stability is not None and results.stability.n_samples >= 4
+    assert results.stability is not None and results.stability.n_samples == 5
 
     assert abs(controller.stage.get_pos().z_mm - start_z_mm) * 1000.0 < 1.0  # restored within 1 um
 
@@ -268,10 +280,51 @@ def test_runner_end_to_end_simulated(sim_controller):
         "laser_af_config.yaml",
         "sweep.png",
         "report.pdf",
-        "spot_video.mp4",
+        "sweep.mp4",
+        "repeatability.mp4",
+        "stability.mp4",
     ):
         assert (out / name).exists(), name
     assert any((out / "spot_images").iterdir())
+
+
+def test_stability_collects_n_samples_each_with_laser_cycling(sim_controller, monkeypatch):
+    controller = _referenced(sim_controller)
+    microcontroller = controller.microcontroller
+
+    counts = {"on": 0, "off": 0}
+
+    def counting(fn, key):
+        def wrapper(*args, **kwargs):
+            counts[key] += 1
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(microcontroller, "turn_on_AF_laser", counting(microcontroller.turn_on_AF_laser, "on"))
+    monkeypatch.setattr(microcontroller, "turn_off_AF_laser", counting(microcontroller.turn_off_AF_laser, "off"))
+
+    params = lac.LaserAFTestParams(
+        run_sweep=False,
+        run_repeatability=False,
+        stability_n_samples=4,
+        stability_interval_s=0.05,
+        save_spot_images=True,
+    )
+    runner = lac.LaserAFCharacterizationRunner(controller, progress_fn=lambda *a: None, finished_fn=lambda r: None)
+
+    with tests.tools.NonInteractiveMatplotlib():
+        results = runner.run_blocking(params)
+
+    assert results.error is None
+    stability_records = [r for r in results.records if r.routine == "stability"]
+    assert len(stability_records) == 4
+    # Every stability sample saves its frame...
+    saved = sorted(p.name for p in (Path(results.output_dir) / "spot_images").iterdir())
+    assert saved == ["stability_000.bmp", "stability_001.bmp", "stability_002.bmp", "stability_003.bmp"]
+    # ...and each sample is an independent laser-gated capture: on before, off after, never held on.
+    assert counts["on"] == 4
+    assert counts["off"] >= 4  # the runner's cleanup adds one belt-and-braces off
 
 
 def test_runner_abort_restores_stage_and_reports_partial(sim_controller):

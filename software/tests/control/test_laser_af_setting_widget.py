@@ -59,7 +59,7 @@ def test_run_button_executes_test_and_reports_results(qtbot, widget_env):
     widget.test_sweep_steps_spinbox.setValue(3)
     widget.test_repeat_cycles_spinbox.setValue(2)
     widget.test_repeat_offset_spinbox.setValue(5.0)
-    widget.test_stability_duration_spinbox.setValue(0.0)  # skip the stability phase
+    widget.test_stability_samples_spinbox.setValue(0)  # skip the stability phase
     widget.test_save_images_checkbox.setChecked(False)
 
     with qtbot.waitSignal(widget.laser_af_test_runner.signal_finished, timeout=60000):
