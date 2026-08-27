@@ -166,16 +166,6 @@ class MicroscopeAddons:
                 else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
             )
 
-        camera_focus = None
-        if control._def.SUPPORT_LASER_AUTOFOCUS:
-            camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=laser_af_camera_simulated
-            )
-
-        fluidics = None
-        if control._def.RUN_FLUIDICS:
-            fluidics = Fluidics(config_path=control._def.FLUIDICS_CONFIG_PATH, simulation=simulated)
-
         piezo_stage = None
         if control._def.HAS_OBJECTIVE_PIEZO:
             if not micro:
@@ -189,6 +179,33 @@ class MicroscopeAddons:
                     "OBJECTIVE_PIEZO_FLIP_DIR": control._def.OBJECTIVE_PIEZO_FLIP_DIR,
                 },
             )
+
+        camera_focus = None
+        if control._def.SUPPORT_LASER_AUTOFOCUS:
+            if laser_af_camera_simulated:
+                # A Z-responsive simulated focus camera so laser AF (initialize_auto, set_reference,
+                # measure_displacement, move_to_target) behaves like hardware in simulation.
+                def _af_focus_z_um() -> float:
+                    z_um = stage.get_pos().z_mm * 1000.0
+                    if piezo_stage is not None:
+                        z_um += piezo_stage.position
+                    return z_um
+
+                spot_mode = control._def.SpotDetectionMode(control._def.LASER_AF_SPOT_DETECTION_MODE)
+                camera_focus = squid.camera.utils.SimulatedFocusCamera(
+                    squid.config.get_autofocus_camera_config(),
+                    get_z_um_fn=_af_focus_z_um,
+                    num_spots=(1 if spot_mode == control._def.SpotDetectionMode.SINGLE else 2),
+                    spot_spacing_px=float(control._def.LASER_AF_SPOT_SPACING),
+                )
+            else:
+                camera_focus = squid.camera.utils.get_camera(
+                    squid.config.get_autofocus_camera_config(), simulated=False
+                )
+
+        fluidics = None
+        if control._def.RUN_FLUIDICS:
+            fluidics = Fluidics(config_path=control._def.FLUIDICS_CONFIG_PATH, simulation=simulated)
 
         sci_microscopy_led_array = None
         if control._def.SUPPORT_SCIMICROSCOPY_LED_ARRAY:

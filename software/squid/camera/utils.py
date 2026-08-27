@@ -463,3 +463,81 @@ class SimulatedCamera(AbstractCamera):
     @debug_log
     def close(self):
         pass
+
+
+class SimulatedFocusCamera(SimulatedCamera):
+    """Simulated laser-AF (focus) camera whose spot position tracks the current Z position.
+
+    The real laser AF projects a laser onto the focus camera; the spot's x position moves
+    linearly with the objective-to-sample distance.  This subclass reproduces that coupling so
+    laser AF can be exercised end-to-end in simulation (initialize_auto, set_reference,
+    measure_displacement, move_to_target), with a nominal sensitivity of 1/um_per_px px/um.
+
+    The Z reference is latched on the first frame, so wherever the stage happens to sit at
+    startup reads as "in focus" (primary spot at the horizontal center).  Frames are synthesized
+    in final display orientation; pass a config without rotate/flip.
+    """
+
+    def __init__(
+        self,
+        config: CameraConfig,
+        get_z_um_fn: Callable[[], float],
+        num_spots: int = 2,
+        spot_spacing_px: float = 100.0,
+        um_per_px: float = 0.4,
+        spot_sigma_px: float = 6.0,
+        jitter_px_rms: float = 0.3,
+        hw_trigger_fn: Optional[Callable[[Optional[float]], bool]] = None,
+        hw_set_strobe_delay_ms_fn: Optional[Callable[[float], bool]] = None,
+    ):
+        super().__init__(config, hw_trigger_fn=hw_trigger_fn, hw_set_strobe_delay_ms_fn=hw_set_strobe_delay_ms_fn)
+        self._get_z_um_fn = get_z_um_fn
+        self._num_spots = num_spots
+        self._spot_spacing_px = spot_spacing_px
+        self._um_per_px = um_per_px
+        self._spot_sigma_px = spot_sigma_px
+        self._jitter_px_rms = jitter_px_rms
+        self._z_ref_um: Optional[float] = None
+
+    def _next_frame(self):
+        if self.get_pixel_format() != CameraPixelFormat.MONO8:
+            raise NotImplementedError(f"SimulatedFocusCamera only supports MONO8, got {self.get_pixel_format()}")
+        width, height = self.get_resolution()
+
+        z_um = float(self._get_z_um_fn())
+        if self._z_ref_um is None:
+            self._z_ref_um = z_um
+
+        # Low background so the normalized peak prominence check in find_spot_location holds;
+        # the parent's full-scale noise would swamp the spot.
+        frame = np.random.randint(0, 15, size=(height, width), dtype=np.uint8)
+        x_center = width / 2.0 + (z_um - self._z_ref_um) / self._um_per_px
+        if self._jitter_px_rms > 0:
+            x_center += np.random.normal(0.0, self._jitter_px_rms)
+        for i in range(self._num_spots):
+            self._stamp_gaussian_spot(frame, x_center + i * self._spot_spacing_px, height / 2.0)
+
+        self._current_raw_frame = frame
+        self._frame_id += 1
+        self._current_frame = CameraFrame(
+            frame_id=self._frame_id,
+            timestamp=time.time(),
+            frame=self._process_raw_frame(self._current_raw_frame),
+            frame_format=self.get_frame_format(),
+            frame_pixel_format=self.get_pixel_format(),
+        )
+        self._propogate_frame(self._current_frame)
+
+    def _stamp_gaussian_spot(self, frame: np.ndarray, x_center: float, y_center: float, amplitude: float = 200.0):
+        height, width = frame.shape
+        half = int(4 * self._spot_sigma_px)
+        x0 = int(round(x_center))
+        y0 = int(round(y_center))
+        ys = slice(max(0, y0 - half), min(height, y0 + half + 1))
+        xs = slice(max(0, x0 - half), min(width, x0 + half + 1))
+        if ys.start >= ys.stop or xs.start >= xs.stop:
+            return  # spot has moved off-frame
+        yy, xx = np.mgrid[ys, xs]
+        spot = amplitude * np.exp(-(((xx - x_center) ** 2) + ((yy - y_center) ** 2)) / (2.0 * self._spot_sigma_px**2))
+        patch = frame[ys, xs].astype(np.float32) + spot
+        frame[ys, xs] = np.clip(patch, 0, 255).astype(np.uint8)
