@@ -462,4 +462,4 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def close(self):
-        pass
+        self.stop_streaming()
