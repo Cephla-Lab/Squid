@@ -26,8 +26,11 @@ def test_performance_mode_defers_mosaic_and_renders_at_completion(qtbot, confirm
     Lives in its own module because it forces the mosaic napari.Viewer on; grouping
     it with the other full-GUI tests accumulates enough napari/vispy viewers to hit
     the known STATUS_HEAP_CORRUPTION on OpenGL teardown at process exit (documented;
-    run napari-heavy GUI test files separately). See gui_hcs.updateNapariConnections
-    and gui_hcs.toggleAcquisitionStart.
+    run napari-heavy GUI test files separately). CI also runs this file in its own
+    pytest process (main.yml): destroying the full GUI segfaults, and the deferred
+    delete pytest-qt posts for the window at teardown would otherwise be flushed
+    inside a later test's event loop. See gui_hcs.updateNapariConnections and
+    gui_hcs.toggleAcquisitionStart.
     """
     # gui_hcs star-imports _def; force the mosaic view on before construction so the
     # widget exists regardless of this machine's cached [VIEWS] config.
