@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import cv2
 from datetime import datetime
@@ -17,6 +17,20 @@ from control.piezo import PiezoStage
 from control.models import LaserAFConfig
 from squid.abc import AbstractCamera, AbstractStage
 import squid.logging
+
+
+class LaserAFDisplacementMeasurement(NamedTuple):
+    """One displacement measurement with its raw ingredients.
+
+    displacement_um is float('nan') when the measurement failed; spot_x_px/spot_y_px are the
+    detected spot centroid (NaN when no spot was found) and image is the last raw focus-camera
+    frame of the averaging burst (None when no frame was captured).
+    """
+
+    displacement_um: float
+    spot_x_px: float
+    spot_y_px: float
+    image: Optional[np.ndarray]
 
 
 class LaserAutofocusController(QObject):
@@ -218,7 +232,7 @@ class LaserAutofocusController(QObject):
             return False
 
         # Move to first position and measure
-        self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
+        self.move_z_um(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
         if self.piezo is not None:
             time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
@@ -235,7 +249,7 @@ class LaserAutofocusController(QObject):
         x0, y0 = result
 
         # Move to second position and measure
-        self._move_z(self.laser_af_properties.pixel_to_um_calibration_distance)
+        self.move_z_um(self.laser_af_properties.pixel_to_um_calibration_distance)
         time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
         result = self._get_laser_spot_centroid()
@@ -259,7 +273,7 @@ class LaserAutofocusController(QObject):
             )
 
         # move back to initial position
-        self._move_z(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
+        self.move_z_um(-self.laser_af_properties.pixel_to_um_calibration_distance / 2)
         if self.piezo is not None:
             time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000)
 
@@ -305,10 +319,22 @@ class LaserAutofocusController(QObject):
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
         """
+        return self.measure_displacement_detailed().displacement_um
 
-        def finish_with(um: float) -> float:
+    def measure_displacement_detailed(self) -> LaserAFDisplacementMeasurement:
+        """Measure the displacement and also return the raw spot centroid and camera frame.
+
+        Same semantics as measure_displacement() (laser gating, averaging, NaN on failure,
+        signal_displacement_um emission), but keeps the ingredients that characterization
+        needs instead of discarding them.
+        """
+        nan = float("nan")
+
+        def finish_with(
+            um: float, x: float = nan, y: float = nan, image: Optional[np.ndarray] = None
+        ) -> LaserAFDisplacementMeasurement:
             self.signal_displacement_um.emit(um)
-            return um
+            return LaserAFDisplacementMeasurement(um, x, y, image)
 
         try:
             # turn on the laser
@@ -316,10 +342,11 @@ class LaserAutofocusController(QObject):
             self.microcontroller.wait_till_operation_is_completed()
         except TimeoutError:
             self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
-            return finish_with(float("nan"))
+            return finish_with(nan)
 
         # get laser spot location
         result = self._get_laser_spot_centroid()
+        image = self.image
 
         # turn off the laser
         try:
@@ -332,16 +359,17 @@ class LaserAutofocusController(QObject):
 
         if result is None:
             self._log.error("Failed to detect laser spot during displacement measurement")
-            return finish_with(float("nan"))  # Signal invalid measurement
+            return finish_with(nan, image=image)  # Signal invalid measurement
+
+        x, y = result
 
         if self.laser_af_properties.x_reference is None:
             self._log.warning("Cannot calculate displacement - reference position not set")
-            return finish_with(float("nan"))
+            return finish_with(nan, x, y, image)
 
-        x, y = result
         # calculate displacement
         displacement_um = (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
-        return finish_with(displacement_um)
+        return finish_with(displacement_um, x, y, image)
 
     def move_to_target(self, target_um: float) -> bool:
         """Move the stage to reach a target displacement from reference position.
@@ -370,7 +398,7 @@ class LaserAutofocusController(QObject):
             return False
 
         um_to_move = target_um - current_displacement_um
-        self._move_z(um_to_move)
+        self.move_z_um(um_to_move)
 
         # Verify using cross-correlation that spot is in same location as reference
         cc_result, correlation = self._verify_spot_alignment()
@@ -378,13 +406,14 @@ class LaserAutofocusController(QObject):
         if not cc_result:
             self._log.warning("Cross correlation check failed - spots not well aligned")
             # move back to the current position
-            self._move_z(-um_to_move)
+            self.move_z_um(-um_to_move)
             return False
         else:
             self._log.info("Cross correlation check passed - spots are well aligned")
             return True
 
-    def _move_z(self, um_to_move: float) -> None:
+    def move_z_um(self, um_to_move: float) -> None:
+        """Relative Z move in micrometers, via the objective piezo when present, else the stage."""
         if self.piezo is not None:
             # TODO: check if um_to_move is in the range of the piezo
             self.piezo.move_relative(um_to_move)
@@ -403,7 +432,7 @@ class LaserAutofocusController(QObject):
         used to reach a nonzero target; this method deliberately skips it. No-op for offset 0.
         """
         if offset_um:
-            self._move_z(offset_um)
+            self.move_z_um(offset_um)
 
     def set_reference(self) -> bool:
         """Set the current spot position as the reference position.
