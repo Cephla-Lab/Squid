@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import cv2
+import imageio as iio
 import numpy as np
 import pytest
 import yaml
@@ -154,6 +156,42 @@ def test_write_report_skips_plots_for_missing_phases(tmp_path):
     assert summary["repeatability"] is None
 
 
+def test_write_report_generates_pdf(tmp_path):
+    results = _fake_results(tmp_path)
+
+    with tests.tools.NonInteractiveMatplotlib():
+        lac.write_report(results, LaserAFConfig(), tmp_path)
+
+    pdf = tmp_path / "report.pdf"
+    assert pdf.exists()
+    assert pdf.stat().st_size > 5000  # summary page + three plot pages, not an empty shell
+    # Without saved spot images there is nothing to assemble into a video.
+    assert not (tmp_path / "spot_video.mp4").exists()
+
+
+def test_write_report_builds_annotated_spot_video(tmp_path):
+    results = _fake_results(tmp_path)
+    images_dir = tmp_path / "spot_images"
+    images_dir.mkdir()
+    rng = np.random.default_rng(1)
+    for r in results.records:
+        frame = rng.integers(0, 255, size=(64, 96), dtype=np.uint8)
+        iio.imwrite(images_dir / f"{r.routine}_{r.index:03d}.bmp", frame)
+
+    with tests.tools.NonInteractiveMatplotlib():
+        lac.write_report(results, LaserAFConfig(), tmp_path)
+
+    video = tmp_path / "spot_video.mp4"
+    assert video.exists()
+    cap = cv2.VideoCapture(str(video))
+    try:
+        assert int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) == len(results.records)
+        assert int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) == 96
+        assert int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) == 64
+    finally:
+        cap.release()
+
+
 def test_create_output_dir_uses_runtime_saving_path(tmp_path, monkeypatch):
     monkeypatch.setattr(control._def, "DEFAULT_SAVING_PATH", str(tmp_path))
 
@@ -223,7 +261,15 @@ def test_runner_end_to_end_simulated(sim_controller):
     assert abs(controller.stage.get_pos().z_mm - start_z_mm) * 1000.0 < 1.0  # restored within 1 um
 
     out = Path(results.output_dir)
-    for name in ("measurements.csv", "summary.json", "summary.txt", "laser_af_config.yaml", "sweep.png"):
+    for name in (
+        "measurements.csv",
+        "summary.json",
+        "summary.txt",
+        "laser_af_config.yaml",
+        "sweep.png",
+        "report.pdf",
+        "spot_video.mp4",
+    ):
         assert (out / name).exists(), name
     assert any((out / "spot_images").iterdir())
 

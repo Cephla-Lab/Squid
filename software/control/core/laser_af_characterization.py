@@ -23,11 +23,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
+import cv2
 import imageio as iio
 import numpy as np
 import pandas as pd
 import yaml
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 
 import control._def
@@ -284,7 +286,7 @@ def _records_for(results: LaserAFTestResults, routine: str) -> List[MeasurementR
     return [r for r in results.records if r.routine == routine]
 
 
-def _save_sweep_plot(records: List[MeasurementRecord], metrics: Optional[SweepMetrics], path: Path) -> None:
+def _build_sweep_figure(records: List[MeasurementRecord], metrics: Optional[SweepMetrics]) -> Figure:
     commanded = np.array([r.commanded_dz_um for r in records])
     measured = np.array([r.measured_displacement_um for r in records])
     valid = np.isfinite(measured)
@@ -311,12 +313,10 @@ def _save_sweep_plot(records: List[MeasurementRecord], metrics: Optional[SweepMe
     ax_res.set_xlabel("commanded Z offset (um)")
     ax_res.set_ylabel("residual (um)")
     ax_res.grid(True, alpha=0.3)
-    fig.savefig(path, dpi=200, bbox_inches="tight")
+    return fig
 
 
-def _save_repeatability_plot(
-    records: List[MeasurementRecord], metrics: Optional[RepeatabilityMetrics], path: Path
-) -> None:
+def _build_repeatability_figure(records: List[MeasurementRecord], metrics: Optional[RepeatabilityMetrics]) -> Figure:
     residuals = np.array([r.measured_displacement_um for r in records])
     cycles = np.array([r.index for r in records])
     valid = np.isfinite(residuals)
@@ -336,10 +336,10 @@ def _save_repeatability_plot(
     if metrics is not None and math.isfinite(metrics.rms_residual_um):
         title += f"  (RMS {metrics.rms_residual_um:.3f} um, success {metrics.success_rate * 100.0:.0f}%)"
     fig.suptitle(title, fontsize=10)
-    fig.savefig(path, dpi=200, bbox_inches="tight")
+    return fig
 
 
-def _save_stability_plot(records: List[MeasurementRecord], metrics: Optional[StabilityMetrics], path: Path) -> None:
+def _build_stability_figure(records: List[MeasurementRecord], metrics: Optional[StabilityMetrics]) -> Figure:
     t = np.array([r.timestamp_s for r in records])
     d = np.array([r.measured_displacement_um for r in records])
     valid = np.isfinite(d)
@@ -359,29 +359,153 @@ def _save_stability_plot(records: List[MeasurementRecord], metrics: Optional[Sta
         title += f"  (sigma {metrics.sigma_um:.3f} um, drift {metrics.drift_um_per_min:+.3f} um/min)"
     ax.set_title(title, fontsize=10)
     ax.grid(True, alpha=0.3)
-    fig.savefig(path, dpi=200, bbox_inches="tight")
+    return fig
+
+
+def _build_phase_figures(results: LaserAFTestResults) -> List[Figure]:
+    figures = []
+    sweep_records = _records_for(results, "sweep")
+    if sweep_records:
+        figures.append(_build_sweep_figure(sweep_records, results.sweep))
+    repeatability_records = _records_for(results, "repeatability")
+    if repeatability_records:
+        figures.append(_build_repeatability_figure(repeatability_records, results.repeatability))
+    stability_records = _records_for(results, "stability")
+    if stability_records:
+        figures.append(_build_stability_figure(stability_records, results.stability))
+    return figures
 
 
 def save_plots(results: LaserAFTestResults, out_dir: Union[str, Path]) -> None:
     out = Path(out_dir)
     sweep_records = _records_for(results, "sweep")
     if sweep_records:
-        _save_sweep_plot(sweep_records, results.sweep, out / "sweep.png")
+        _build_sweep_figure(sweep_records, results.sweep).savefig(out / "sweep.png", dpi=200, bbox_inches="tight")
     repeatability_records = _records_for(results, "repeatability")
     if repeatability_records:
-        _save_repeatability_plot(repeatability_records, results.repeatability, out / "repeatability.png")
+        _build_repeatability_figure(repeatability_records, results.repeatability).savefig(
+            out / "repeatability.png", dpi=200, bbox_inches="tight"
+        )
     stability_records = _records_for(results, "stability")
     if stability_records:
-        _save_stability_plot(stability_records, results.stability, out / "stability.png")
+        _build_stability_figure(stability_records, results.stability).savefig(
+            out / "stability.png", dpi=200, bbox_inches="tight"
+        )
+
+
+def _spot_image_paths_in_record_order(results: LaserAFTestResults, images_dir: Path) -> List[tuple]:
+    """(record, image path) pairs for the records whose spot image exists, in acquisition order."""
+    pairs = []
+    for record in results.records:
+        path = images_dir / f"{record.routine}_{record.index:03d}.bmp"
+        if path.exists():
+            pairs.append((record, path))
+    return pairs
+
+
+def write_spot_video(results: LaserAFTestResults, out_dir: Union[str, Path], fps: float = 10.0) -> Optional[Path]:
+    """Assemble the saved spot images into an annotated mp4 (the screen-recording replacement).
+
+    Frames run in acquisition order and carry routine/index plus commanded vs measured
+    displacement. Returns the video path, or None when no spot images were saved.
+    """
+    out = Path(out_dir)
+    pairs = _spot_image_paths_in_record_order(results, out / "spot_images")
+    if not pairs:
+        return None
+
+    first_frame = cv2.imread(str(pairs[0][1]), cv2.IMREAD_UNCHANGED)
+    if first_frame is None:
+        return None
+    height, width = first_frame.shape[:2]
+    video_path = out / "spot_video.mp4"
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+    try:
+        font_scale = max(0.4, width / 1000.0)
+        thickness = max(1, int(round(font_scale * 2)))
+        for record, path in pairs:
+            frame = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+            if frame is None or frame.shape[:2] != (height, width):
+                continue  # a resized ROI mid-run would corrupt the container; skip the odd frame
+            if frame.ndim == 2:
+                frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            measured = (
+                f"{record.measured_displacement_um:+.2f} um"
+                if math.isfinite(record.measured_displacement_um)
+                else "failed"
+            )
+            label = f"{record.routine} #{record.index}  dz {record.commanded_dz_um:+.1f} um  measured {measured}"
+            origin = (8, int(24 * font_scale) + 8)
+            cv2.putText(frame, label, origin, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness + 2)
+            cv2.putText(frame, label, origin, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness)
+            writer.write(frame)
+    finally:
+        writer.release()
+    return video_path
+
+
+def _build_pdf_summary_page(results: LaserAFTestResults, config: LaserAFConfig) -> Figure:
+    fig = Figure(figsize=(8.27, 11.69))  # A4 portrait
+    FigureCanvasAgg(fig)
+    fig.text(0.07, 0.96, "Laser AF Test Report", fontsize=16, fontweight="bold", va="top")
+    body = format_summary_text(results, config)
+    body += "\nLaserAFConfig snapshot:\n"
+    body += yaml.safe_dump(
+        config.model_dump(mode="json", warnings=False, exclude=_REFERENCE_IMAGE_FIELDS),
+        default_flow_style=False,
+        sort_keys=False,
+    )
+    fig.text(0.07, 0.91, body, fontsize=8, family="monospace", va="top")
+    return fig
+
+
+def _build_pdf_spot_image_page(results: LaserAFTestResults, images_dir: Path) -> Optional[Figure]:
+    pairs = _spot_image_paths_in_record_order(results, images_dir)
+    if not pairs:
+        return None
+    # Up to 6 samples spread across the run.
+    indices = np.unique(np.linspace(0, len(pairs) - 1, num=min(6, len(pairs)), dtype=int))
+    fig = Figure(figsize=(8.27, 11.69))
+    FigureCanvasAgg(fig)
+    fig.suptitle("Spot images (sample)", fontsize=12)
+    for slot, pair_index in enumerate(indices):
+        record, path = pairs[pair_index]
+        image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if image is None:
+            continue
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        ax = fig.add_subplot(3, 2, slot + 1)
+        ax.imshow(image, cmap="gray")
+        ax.set_title(f"{record.routine} #{record.index}  dz {record.commanded_dz_um:+.1f} um", fontsize=7)
+        ax.axis("off")
+    return fig
+
+
+def write_pdf_report(results: LaserAFTestResults, config: LaserAFConfig, out_dir: Union[str, Path]) -> Path:
+    """One shareable report.pdf: summary page, the phase plots, and sample spot images."""
+    out = Path(out_dir)
+    pdf_path = out / "report.pdf"
+    with PdfPages(str(pdf_path)) as pdf:
+        pdf.savefig(_build_pdf_summary_page(results, config))
+        for figure in _build_phase_figures(results):
+            pdf.savefig(figure)
+        image_page = _build_pdf_spot_image_page(results, out / "spot_images")
+        if image_page is not None:
+            pdf.savefig(image_page)
+    return pdf_path
 
 
 def write_report(results: LaserAFTestResults, config: LaserAFConfig, out_dir: Union[str, Path]) -> None:
-    """Write measurements.csv, summary.json/.txt, laser_af_config.yaml, and the PNG plots."""
+    """Write measurements.csv, summary.json/.txt, laser_af_config.yaml, PNG plots, report.pdf,
+    and (when spot images were saved) the annotated spot_video.mp4."""
     out = Path(out_dir)
     write_measurements_csv(results.records, out / "measurements.csv")
     write_summary(results, config, out)
     write_config_snapshot(config, out / "laser_af_config.yaml")
     save_plots(results, out)
+    write_pdf_report(results, config, out)
+    write_spot_video(results, out)
 
 
 class LaserAFCharacterizationRunner:
