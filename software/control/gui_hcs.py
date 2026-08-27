@@ -2876,6 +2876,14 @@ class HighContentScreeningGui(QMainWindow):
             except Exception:
                 self.log.exception(f"Error closing multipoint controller during {context}")
 
+        # Stop the Slack notifier's worker thread. It is a plain daemon thread, so
+        # without this it outlives the window (and, in the test suite, the test).
+        if self.slackNotifier is not None:
+            try:
+                self.slackNotifier.close()
+            except Exception:
+                self.log.exception(f"Error closing Slack notifier during {context}")
+
         # Clean up NDViewer
         if self.ndviewerTab is not None:
             try:
