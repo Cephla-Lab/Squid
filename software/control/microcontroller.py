@@ -786,6 +786,35 @@ class Microcontroller:
         cmd[5] = min(int(b * 255), 255)
         self.send_command(cmd)
 
+    def set_illumination_led_matrix_pixel(self, index, r, g, b):
+        """Set one LED (index 0..127) in the controller's user framebuffer. r,g,b are
+        0..1. Does NOT display -- paint all pixels, then select the PROGRAMMABLE source
+        (set_illumination_led_matrix) to show them. Same R/G channel order + scaling as
+        set_illumination_led_matrix, so a pixel matches the built-in patterns' color."""
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ILLUMINATION_LED_MATRIX_PIXEL
+        cmd[2] = int(index) & 0xFF
+        cmd[3] = min(max(int(g * 255), 0), 255)
+        cmd[4] = min(max(int(r * 255), 0), 255)
+        cmd[5] = min(max(int(b * 255), 0), 255)
+        self.send_command(cmd)
+
+    def clear_illumination_led_matrix(self):
+        """Zero the controller's user framebuffer (no display)."""
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.CLEAR_ILLUMINATION_LED_MATRIX
+        self.send_command(cmd)
+
+    def set_illumination_led_matrix_frame(self, frame):
+        """Paint the whole 128-LED user framebuffer. `frame` is an iterable of (r,g,b)
+        tuples in 0..1 (index = LED number). Clears first, then sends only the non-black
+        LEDs to keep the number of serial commands small. Does NOT display -- the caller
+        selects the PROGRAMMABLE source afterwards to show it."""
+        self.clear_illumination_led_matrix()
+        for index, (r, g, b) in enumerate(frame):
+            if r > 0 or g > 0 or b > 0:
+                self.set_illumination_led_matrix_pixel(index, r, g, b)
+
     # Multi-port illumination commands (firmware v1.0+)
     # These allow multiple ports to be ON simultaneously with independent intensities
     # Maximum number of ports supported by firmware
