@@ -37,6 +37,10 @@ class LiveController(QObject):
         self.microscope = microscope
         self.camera: AbstractCamera = camera
         self.currentConfiguration: Optional[AcquisitionChannel] = None
+        # Settings source for the "Phase contrast annulus" channel (set by the GUI); the
+        # annulus ring geometry/color is read from it when that channel is on (intensity
+        # comes from the channel's own intensity slider).
+        self.led_matrix_ring_widget = None
         self.trigger_mode: Optional[TriggerMode] = TriggerMode.SOFTWARE  # @@@ change to None
         self.is_live = False
         # True only for the duration of a single snap(); see should_display_frames().
@@ -93,8 +97,8 @@ class LiveController(QObject):
         return self.currentConfiguration.get_illumination_wavelength(ill_config)
 
     def _is_led_matrix(self) -> bool:
-        """Check if current configuration is LED matrix (source code 0-9)."""
-        return 0 <= self._get_illumination_source() < 10
+        """Check if current configuration is LED matrix (source code 0-10)."""
+        return 0 <= self._get_illumination_source() < 11
 
     def get_intensity_cap_percent(self, channel_config: Optional["AcquisitionChannel"]) -> float:
         """Maximum allowed illumination intensity (percent) for a channel.
@@ -304,7 +308,18 @@ class LiveController(QObject):
             else:
                 micro: Microcontroller = self.microscope.low_level_drivers.microcontroller
                 name = self.currentConfiguration.name
-                if "BF LED matrix full_R" in name:
+                if illumination_source == ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE and self.led_matrix_ring_widget is not None:
+                    # Programmable channel: the pattern (which LEDs, what color) is computed
+                    # on the host by the LED Matrix panel and painted per-pixel into the
+                    # controller's framebuffer; intensity comes from this channel's own
+                    # intensity slider. No firmware pattern logic -- new patterns need no reflash.
+                    frame = self.led_matrix_ring_widget.get_frame(intensity / 100.0, self.currentConfiguration.name)
+                    lit = sum(1 for px in frame if px[0] or px[1] or px[2])
+                    self._log.info(f"applying programmable LED matrix frame: {lit} LEDs lit @ {intensity}%")
+                    micro.set_illumination_led_matrix_frame(frame)
+                    # Select the PROGRAMMABLE source (displays the painted framebuffer).
+                    micro.set_illumination_led_matrix(illumination_source, r=0, g=0, b=0)
+                elif "BF LED matrix full_R" in name:
                     micro.set_illumination_led_matrix(illumination_source, r=(intensity / 100), g=0, b=0)
                 elif "BF LED matrix full_G" in name:
                     micro.set_illumination_led_matrix(illumination_source, r=0, g=(intensity / 100), b=0)

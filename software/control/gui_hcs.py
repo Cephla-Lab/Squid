@@ -956,6 +956,8 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
+        self.ledMatrixRingWidget = widgets.LedMatrixRingWidget(self.microcontroller, self.liveController)
+        self.liveController.led_matrix_ring_widget = self.ledMatrixRingWidget
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
@@ -1353,6 +1355,7 @@ class HighContentScreeningGui(QMainWindow):
         if SUPPORT_LASER_AUTOFOCUS:
             self.cameraTabWidget.addTab(self.laserAutofocusControlWidget, "Laser AF")
         self.cameraTabWidget.addTab(self.focusMapWidget, "Focus Map")
+        self.cameraTabWidget.addTab(self.ledMatrixRingWidget, "Phase Contrast")
         if self.laserEngineWidget:
             self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
@@ -1511,6 +1514,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.liveControlWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
         self.liveControlWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
+        # Auto-follow: the Phase Contrast tab shows the ring for whichever annulus
+        # configuration is selected in live view.
+        self.liveControlWidget.signal_live_configuration.connect(self.ledMatrixRingWidget.on_live_configuration_changed)
         if not self.live_only_mode:
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
             self.liveControlWidget.signal_show_live_view.connect(self.onShowLiveView)
