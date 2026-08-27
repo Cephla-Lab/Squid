@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 import squid.logging
 from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
+from control.core.laser_af_characterization import LaserAFCharacterizationRunner, LaserAFTestParams
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
@@ -2823,6 +2824,31 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
+class QtLaserAFTestRunner(LaserAFCharacterizationRunner, QObject):
+    """Qt adapter for LaserAFCharacterizationRunner: callbacks become signals.
+
+    The runner invokes the callbacks on its worker thread; emitting signals there
+    auto-queues delivery to GUI-thread slots (same pattern as QtAutoFocusController).
+    """
+
+    signal_started = Signal()
+    signal_progress = Signal(str, int, int)  # phase, step, total
+    signal_finished = Signal(object)  # LaserAFTestResults
+
+    def __init__(self, laser_af_controller):
+        QObject.__init__(self)
+        LaserAFCharacterizationRunner.__init__(
+            self,
+            laser_af_controller,
+            progress_fn=lambda phase, step, total: self.signal_progress.emit(phase, step, total),
+            finished_fn=lambda results: self.signal_finished.emit(results),
+        )
+
+    def start(self, params: LaserAFTestParams) -> None:
+        self.signal_started.emit()
+        LaserAFCharacterizationRunner.start(self, params)
+
+
 class LaserAutofocusSettingWidget(QWidget):
 
     signal_newExposureTime = Signal(float)
@@ -2836,6 +2862,8 @@ class LaserAutofocusSettingWidget(QWidget):
         self.streamHandler = streamHandler
         self.liveController: LiveController = liveController
         self.laserAutofocusController = laserAutofocusController
+        self.laser_af_test_runner = QtLaserAFTestRunner(laserAutofocusController)
+        self._test_was_live = False
         self.stretch = stretch
         self.liveController.set_trigger_fps(10)
         self.streamHandler.set_display_fps(10)
@@ -2966,6 +2994,74 @@ class LaserAutofocusSettingWidget(QWidget):
         initialize_layout.addWidget(self.initialize_button)
         initialize_group.setLayout(initialize_layout)
 
+        # One-click laser AF test: collects sweep/repeatability/stability data + spot images
+        # for the current objective into a timestamped folder (replaces screen recordings).
+        # Collapsible so the settings panel keeps its height when the test UI is not in use.
+        test_group = CollapsibleGroupBox("Laser AF Test", collapsed=True)
+        self.laser_af_test_group = test_group
+        test_layout = QVBoxLayout()
+        props = self.laserAutofocusController.laser_af_properties
+
+        def _add_test_row(label: str, spinbox_widget) -> None:
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            row.addWidget(spinbox_widget)
+            test_layout.addLayout(row)
+
+        self.test_sweep_range_spinbox = QDoubleSpinBox()
+        self.test_sweep_range_spinbox.setKeyboardTracking(False)
+        self.test_sweep_range_spinbox.setRange(1.0, 1000.0)
+        self.test_sweep_range_spinbox.setDecimals(1)
+        self.test_sweep_range_spinbox.setValue(props.laser_af_range)
+        _add_test_row("Test Sweep Range (±μm):", self.test_sweep_range_spinbox)
+
+        self.test_sweep_steps_spinbox = QSpinBox()
+        self.test_sweep_steps_spinbox.setKeyboardTracking(False)
+        self.test_sweep_steps_spinbox.setRange(3, 201)
+        self.test_sweep_steps_spinbox.setValue(21)
+        _add_test_row("Test Sweep Steps:", self.test_sweep_steps_spinbox)
+
+        self.test_repeat_cycles_spinbox = QSpinBox()
+        self.test_repeat_cycles_spinbox.setKeyboardTracking(False)
+        self.test_repeat_cycles_spinbox.setRange(0, 200)
+        self.test_repeat_cycles_spinbox.setValue(20)
+        _add_test_row("Repeatability Cycles (0 = skip):", self.test_repeat_cycles_spinbox)
+
+        self.test_repeat_offset_spinbox = QDoubleSpinBox()
+        self.test_repeat_offset_spinbox.setKeyboardTracking(False)
+        self.test_repeat_offset_spinbox.setRange(0.1, 500.0)
+        self.test_repeat_offset_spinbox.setDecimals(1)
+        self.test_repeat_offset_spinbox.setValue(props.laser_af_range / 2.0)
+        _add_test_row("Repeatability Offset (μm):", self.test_repeat_offset_spinbox)
+
+        self.test_stability_duration_spinbox = QDoubleSpinBox()
+        self.test_stability_duration_spinbox.setKeyboardTracking(False)
+        self.test_stability_duration_spinbox.setRange(0.0, 600.0)
+        self.test_stability_duration_spinbox.setDecimals(0)
+        self.test_stability_duration_spinbox.setValue(30.0)
+        _add_test_row("Stability Duration (s, 0 = skip):", self.test_stability_duration_spinbox)
+
+        self.test_save_images_checkbox = QCheckBox("Save spot images")
+        self.test_save_images_checkbox.setChecked(True)
+        test_layout.addWidget(self.test_save_images_checkbox)
+
+        test_buttons_layout = QHBoxLayout()
+        self.btn_run_laser_af_test = QPushButton("Run Laser AF Test")
+        self.btn_run_laser_af_test.setStyleSheet("background-color: #C2C2FF")
+        self.btn_run_laser_af_test.setEnabled(False)
+        self.btn_abort_laser_af_test = QPushButton("Abort")
+        self.btn_abort_laser_af_test.setEnabled(False)
+        test_buttons_layout.addWidget(self.btn_run_laser_af_test)
+        test_buttons_layout.addWidget(self.btn_abort_laser_af_test)
+        test_layout.addLayout(test_buttons_layout)
+
+        self.laser_af_test_progress_label = QLabel()
+        test_layout.addWidget(self.laser_af_test_progress_label)
+        self.laser_af_test_result_label = QLabel()
+        self.laser_af_test_result_label.setWordWrap(True)
+        test_layout.addWidget(self.laser_af_test_result_label)
+        test_group.content.addLayout(test_layout)
+
         # Add Laser AF Characterization Mode checkbox
         characterization_group = QFrame()
         characterization_layout = QHBoxLayout()
@@ -2980,6 +3076,7 @@ class LaserAutofocusSettingWidget(QWidget):
         layout.addWidget(settings_group)
         layout.addWidget(spot_detection_group)
         layout.addWidget(initialize_group)
+        layout.addWidget(test_group)
         layout.addWidget(characterization_group)
         self.setLayout(layout)
 
@@ -2994,6 +3091,12 @@ class LaserAutofocusSettingWidget(QWidget):
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
         self.initialize_button.clicked.connect(self.apply_and_initialize)
         self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
+        self.btn_run_laser_af_test.clicked.connect(self.on_run_laser_af_test)
+        self.btn_abort_laser_af_test.clicked.connect(self.on_abort_laser_af_test)
+        self.laser_af_test_runner.signal_progress.connect(self._on_laser_af_test_progress)
+        self.laser_af_test_runner.signal_finished.connect(self._on_laser_af_test_finished)
+        self.laserAutofocusController.signal_reference_changed.connect(self._update_laser_af_test_button_state)
+        self._update_laser_af_test_button_state()
 
     def _add_spinbox(
         self,
@@ -3050,6 +3153,90 @@ class LaserAutofocusSettingWidget(QWidget):
     def toggle_characterization_mode(self, state):
         self.laserAutofocusController.characterization_mode = state
 
+    def on_run_laser_af_test(self):
+        if self.laser_af_test_runner.is_running():
+            return
+        self._test_was_live = self.liveController.is_live
+        if self._test_was_live:
+            self.stop_live()
+        self.laser_af_test_result_label.setText("")
+        self.laser_af_test_progress_label.setText("Starting laser AF test...")
+
+        repeatability_cycles = int(self.test_repeat_cycles_spinbox.value())
+        stability_duration_s = self.test_stability_duration_spinbox.value()
+        params = LaserAFTestParams(
+            sweep_range_um=self.test_sweep_range_spinbox.value(),
+            sweep_n_steps=int(self.test_sweep_steps_spinbox.value()),
+            repeatability_cycles=repeatability_cycles,
+            repeatability_offset_um=self.test_repeat_offset_spinbox.value(),
+            run_repeatability=repeatability_cycles > 0,
+            stability_duration_s=stability_duration_s,
+            run_stability=stability_duration_s > 0,
+            save_spot_images=self.test_save_images_checkbox.isChecked(),
+        )
+        self._set_laser_af_test_running_ui(True)
+        try:
+            self.laser_af_test_runner.start(params)
+        except RuntimeError:
+            self._set_laser_af_test_running_ui(False)
+            raise
+
+    def on_abort_laser_af_test(self):
+        self.laser_af_test_progress_label.setText("Aborting laser AF test...")
+        self.laser_af_test_runner.abort()
+
+    def _set_laser_af_test_running_ui(self, running: bool):
+        self.btn_abort_laser_af_test.setEnabled(running)
+        self.initialize_button.setEnabled(not running)
+        self.update_threshold_button.setEnabled(not running)
+        self.btn_live.setEnabled(not running)
+        if running:
+            self.btn_run_laser_af_test.setEnabled(False)
+            self.run_spot_detection_button.setEnabled(False)
+        else:
+            self._update_laser_af_test_button_state()
+            self.run_spot_detection_button.setEnabled(not self.btn_live.isChecked())
+
+    def _update_laser_af_test_button_state(self, *_):
+        controller = self.laserAutofocusController
+        ready = controller.is_initialized and controller.laser_af_properties.has_reference
+        self.btn_run_laser_af_test.setEnabled(ready and not self.laser_af_test_runner.is_running())
+
+    def _on_laser_af_test_progress(self, phase: str, step: int, total: int):
+        self.laser_af_test_progress_label.setText(f"{phase}: {step}/{total}")
+
+    def _on_laser_af_test_finished(self, results):
+        self._set_laser_af_test_running_ui(False)
+        if results.error:
+            self.laser_af_test_progress_label.setText("Laser AF test failed")
+            self.laser_af_test_result_label.setText(f"Error: {results.error}")
+        else:
+            self.laser_af_test_progress_label.setText(
+                "Laser AF test aborted (partial data saved)" if results.aborted else "Laser AF test complete"
+            )
+            parts = []
+            if results.sweep is not None:
+                parts.append(
+                    f"slope {results.sweep.slope_um_per_um:.3f} μm/μm (R² {results.sweep.r_squared:.4f}), "
+                    f"usable {results.sweep.usable_range_neg_um:+.0f}..{results.sweep.usable_range_pos_um:+.0f} μm"
+                )
+            if results.repeatability is not None:
+                parts.append(
+                    f"repeatability RMS {results.repeatability.rms_residual_um:.3f} μm "
+                    f"({results.repeatability.success_rate * 100:.0f}% success)"
+                )
+            if results.stability is not None:
+                parts.append(
+                    f"stability σ {results.stability.sigma_um:.3f} μm, "
+                    f"drift {results.stability.drift_um_per_min:+.3f} μm/min"
+                )
+            summary = "; ".join(parts) if parts else "no data collected"
+            self.laser_af_test_result_label.setText(f"{summary}\nSaved to: {results.output_dir}")
+        if self._test_was_live:
+            self._test_was_live = False
+            self.btn_live.setChecked(True)
+            self.toggle_live(True)
+
     def update_exposure_time(self, value):
         self.signal_newExposureTime.emit(value)
 
@@ -3080,6 +3267,7 @@ class LaserAutofocusSettingWidget(QWidget):
             self.spot_mode_combo.setCurrentIndex(index)
 
         self.update_threshold_button.setEnabled(self.laserAutofocusController.is_initialized)
+        self._update_laser_af_test_button_state()
         self.update_calibration_label()
 
     def apply_and_initialize(self):

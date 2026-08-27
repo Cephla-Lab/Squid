@@ -1260,9 +1260,19 @@ class HighContentScreeningGui(QMainWindow):
 
             dock_laserfocus_liveController = dock.Dock("Laser Autofocus Settings", autoOrientation=False)
             dock_laserfocus_liveController.showTitleBar()
-            dock_laserfocus_liveController.addWidget(self.laserAutofocusSettingWidget)
+            # Scroll container so the panel stays usable when taller than the viewport
+            # (e.g. with the collapsible "Laser AF Test" group expanded).
+            laserfocus_settings_scroll = QScrollArea()
+            laserfocus_settings_scroll.setWidget(self.laserAutofocusSettingWidget)
+            laserfocus_settings_scroll.setWidgetResizable(True)
+            laserfocus_settings_scroll.setFrameShape(QFrame.NoFrame)
+            laserfocus_settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            dock_laserfocus_liveController.addWidget(laserfocus_settings_scroll)
             dock_laserfocus_liveController.setStretch(x=100, y=100)
-            dock_laserfocus_liveController.setFixedWidth(self.laserAutofocusSettingWidget.minimumSizeHint().width())
+            dock_laserfocus_liveController.setFixedWidth(
+                self.laserAutofocusSettingWidget.minimumSizeHint().width()
+                + laserfocus_settings_scroll.verticalScrollBar().sizeHint().width()
+            )
 
             dock_waveform = dock.Dock("Displacement Measurement", autoOrientation=False)
             dock_waveform.showTitleBar()
@@ -1654,6 +1664,14 @@ class HighContentScreeningGui(QMainWindow):
             self.laserAutofocusController.signal_cross_correlation.connect(
                 self.laserAutofocusSettingWidget.show_cross_correlation_result
             )
+            # While a laser AF test runs (worker thread moving Z / using the AF laser), lock out
+            # the manual laser AF controls so they can't send concurrent MCU commands.
+            self.laserAutofocusSettingWidget.laser_af_test_runner.signal_started.connect(
+                lambda: self.laserAutofocusControlWidget.setEnabled(False)
+            )
+            self.laserAutofocusSettingWidget.laser_af_test_runner.signal_finished.connect(
+                self._on_laser_af_test_finished
+            )
 
             self.streamHandler_focus_camera.signal_new_frame_received.connect(
                 self.liveController_focus_camera.on_new_frame
@@ -1717,6 +1735,10 @@ class HighContentScreeningGui(QMainWindow):
             self.imageDisplayWindow.btn_well_selector.clicked.connect(
                 lambda: self.toggleWellSelector(not self.dock_wellSelection.isVisible())
             )
+
+    def _on_laser_af_test_finished(self, _results):
+        self.laserAutofocusControlWidget.setEnabled(True)
+        self.laserAutofocusControlWidget.update_init_state()
 
     def setup_movement_updater(self):
         # We provide a few signals about the system's physical movement to other parts of the UI.  Ideally, they other
