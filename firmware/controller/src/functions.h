@@ -53,6 +53,9 @@ void turn_on_illumination();
 void turn_off_illumination();
 void set_illumination(int source, uint16_t intensity);
 void set_illumination_led_matrix(int source, uint8_t r, uint8_t g, uint8_t b);
+void set_illumination_led_matrix_pixel(uint8_t index, uint8_t byte_g, uint8_t byte_r, uint8_t byte_b);
+void clear_illumination_led_matrix_buffer();
+void turn_on_LED_matrix_user(CRGB * matrix);
 void ISR_strobeTimer();
 
 // Multi-port illumination control
