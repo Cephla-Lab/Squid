@@ -1142,6 +1142,57 @@ def read_objectives_csv(file_path):
     return objectives
 
 
+# On-disk column order for sample_formats.csv. Single source of truth for both the
+# reader and the writer below, so the two cannot drift apart. This schema is
+# FROZEN at these 10 columns: per-axis geometry and well shape are derived
+# in-memory (below) and, when a format genuinely differs from the defaults,
+# persisted in the user-formats YAML - never here.
+SAMPLE_FORMAT_CSV_FIELDNAMES = (
+    "format",
+    "a1_x_mm",
+    "a1_y_mm",
+    "a1_x_pixel",
+    "a1_y_pixel",
+    "well_size_mm",
+    "well_spacing_mm",
+    "number_of_skip",
+    "rows",
+    "cols",
+)
+
+# In-memory keys derived from the 10 CSV columns; never written back to the CSV
+# (the writer skips them without warning). well_spacing_x_mm multiplies the
+# COLUMN index and well_spacing_y_mm the ROW index; ANSI/SLAS pitch is identical
+# in both axes for every shipped format, so the scalar broadcasts.
+DERIVED_SAMPLE_FORMAT_KEYS = (
+    "well_spacing_x_mm",
+    "well_spacing_y_mm",
+    "well_size_x_mm",
+    "well_size_y_mm",
+    "well_shape",
+)
+
+# Well shape was previously inferred from the format NAME at scattered call
+# sites (384/1536 -> Square, everything else -> Circle) - which silently
+# misclassified any custom rectangular format as a circle. This is the one
+# code-side default; formats defined in the user YAML can override it.
+_RECTANGULAR_SHIPPED_FORMATS = ("384 well plate", "1536 well plate")
+
+
+def _with_derived_geometry(format_key, settings):
+    """Fill the derived per-axis/shape keys, idempotently.
+
+    Applied on CSV load AND in get_wellplate_settings, so runtime-added custom
+    formats (add_custom_format inserts plain dicts) get defaults too.
+    """
+    settings.setdefault("well_spacing_x_mm", settings["well_spacing_mm"])
+    settings.setdefault("well_spacing_y_mm", settings["well_spacing_mm"])
+    settings.setdefault("well_size_x_mm", settings["well_size_mm"])
+    settings.setdefault("well_size_y_mm", settings["well_size_mm"])
+    settings.setdefault("well_shape", "rectangle" if format_key in _RECTANGULAR_SHIPPED_FORMATS else "circle")
+    return settings
+
+
 def read_sample_formats_csv(file_path):
     sample_formats = {}
     with open(file_path, "r") as csvfile:
@@ -1149,18 +1200,143 @@ def read_sample_formats_csv(file_path):
         for row in reader:
             format_ = str(row["format"])
             format_key = f"{format_} well plate" if format_.isdigit() else format_
-            sample_formats[format_key] = {
-                "a1_x_mm": float(row["a1_x_mm"]),
-                "a1_y_mm": float(row["a1_y_mm"]),
-                "a1_x_pixel": int(row["a1_x_pixel"]),
-                "a1_y_pixel": int(row["a1_y_pixel"]),
-                "well_size_mm": float(row["well_size_mm"]),
-                "well_spacing_mm": float(row["well_spacing_mm"]),
-                "number_of_skip": int(row["number_of_skip"]),
-                "rows": int(row["rows"]),
-                "cols": int(row["cols"]),
-            }
+            sample_formats[format_key] = _with_derived_geometry(
+                format_key,
+                {
+                    "a1_x_mm": float(row["a1_x_mm"]),
+                    "a1_y_mm": float(row["a1_y_mm"]),
+                    "a1_x_pixel": int(row["a1_x_pixel"]),
+                    "a1_y_pixel": int(row["a1_y_pixel"]),
+                    "well_size_mm": float(row["well_size_mm"]),
+                    "well_spacing_mm": float(row["well_spacing_mm"]),
+                    "number_of_skip": int(row["number_of_skip"]),
+                    "rows": int(row["rows"]),
+                    "cols": int(row["cols"]),
+                },
+            )
     return sample_formats
+
+
+def write_sample_formats_csv(file_path, sample_formats):
+    """Write sample formats to file_path atomically.
+
+    The caller's previous file survives any failure intact: we write a sibling
+    temp file, fsync it, then os.replace() onto the target. That matters because
+    load_formats() parses this file at import time, so a half-written file would
+    prevent the application from starting.
+    """
+    directory = os.path.dirname(file_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    # Same directory as the target so os.replace() stays within one filesystem.
+    tmp_path = file_path + ".tmp"
+    try:
+        with open(tmp_path, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=SAMPLE_FORMAT_CSV_FIELDNAMES)
+            writer.writeheader()
+            for format_, settings in sample_formats.items():
+                # Project explicitly onto the known columns. A missing column raises
+                # (a blank cell is what breaks load_formats() at import time); an
+                # extra key is dropped, but never silently - if you add a setting you
+                # must add it to SAMPLE_FORMAT_CSV_FIELDNAMES or it will not persist.
+                dropped = set(settings) - set(SAMPLE_FORMAT_CSV_FIELDNAMES) - set(DERIVED_SAMPLE_FORMAT_KEYS)
+                if dropped:
+                    log.warning(
+                        f"Sample format {format_!r} has setting(s) {sorted(dropped)} with no column in "
+                        f"SAMPLE_FORMAT_CSV_FIELDNAMES; they will NOT be saved to {file_path}."
+                    )
+                row = {"format": format_}
+                for field in SAMPLE_FORMAT_CSV_FIELDNAMES[1:]:
+                    row[field] = settings[field]
+                writer.writerow(row)
+            csvfile.flush()
+            os.fsync(csvfile.fileno())
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
+    """Convert a legacy cache/sample_formats.csv into user format definitions.
+
+    The legacy cache was a WHOLE-TABLE shadow: one calibration froze all seven
+    formats forever. Each row that differs from the shipped example becomes a
+    COMPLETE definition in sample_formats_user.yaml (a1 included, absolutely);
+    rows the shipped catalog does not know become definitions too. Rows
+    identical to the shipped example are dropped - they carry no user intent
+    and keeping them would needlessly stop tracking future shipped examples.
+
+    The cache is then renamed .migrated. Existing entries in the user file are
+    never clobbered (they are newer than the cache).
+    """
+    import datetime
+
+    from control.models.sample_format_config import (
+        FormatMeasurement,
+        load_user_sample_formats,
+        MeasuredPoint,
+        SampleFormat,
+        save_user_sample_formats,
+        UserSampleFormats,
+    )
+
+    cached = read_sample_formats_csv(cached_formats_path)
+    if not cached:
+        # A cache that parses to zero formats is damage (a legitimate cache
+        # always carries the full table). Refuse to migrate it so the loader's
+        # loud damaged-cache ERROR path handles it instead.
+        raise ValueError(f"{cached_formats_path} parsed to zero formats; treating as damaged, not migrating")
+    shipped = read_sample_formats_csv(default_formats_path)
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
+
+    user_formats = load_user_sample_formats() or UserSampleFormats()
+    migrated = []
+
+    for format_key, cached_settings in cached.items():
+        if format_key in user_formats.formats:
+            continue  # the user file is newer than the cache
+        shipped_settings = shipped.get(format_key)
+        if shipped_settings is not None and all(
+            cached_settings[field] == shipped_settings[field]
+            for field in SAMPLE_FORMAT_CSV_FIELDNAMES
+            if field != "format"
+        ):
+            continue  # untouched example: nothing of the user's to carry over
+
+        a1_measured = shipped_settings is None or (
+            cached_settings["a1_x_mm"] != shipped_settings["a1_x_mm"]
+            or cached_settings["a1_y_mm"] != shipped_settings["a1_y_mm"]
+        )
+        # from_settings is the ONE dict -> model converter: cached_settings has
+        # already been through _with_derived_geometry, so per-axis pitch and
+        # well_shape come across too. Hand-listing the CSV's 10 columns here
+        # silently dropped well_shape, migrating 384/1536 to "circle".
+        user_formats.formats[format_key] = SampleFormat.from_settings(
+            cached_settings,
+            measured=(
+                FormatMeasurement(
+                    points=[MeasuredPoint(well="A1", x_mm=cached_settings["a1_x_mm"], y_mm=cached_settings["a1_y_mm"])],
+                    method="migrated",
+                    timestamp=mtime,
+                    note=f"migrated_from_cache_csv (cache mtime {mtime})",
+                )
+                if a1_measured
+                else None
+            ),
+        )
+        migrated.append(format_key)
+
+    save_user_sample_formats(user_formats)
+    os.replace(cached_formats_path, cached_formats_path + ".migrated")
+    log.info(
+        f"Legacy format cache migrated ({len(migrated)} format(s): {sorted(migrated)}) and renamed to "
+        f"{cached_formats_path}.migrated; definitions now load from sample_formats_user.yaml."
+    )
 
 
 def load_formats():
@@ -1175,12 +1351,56 @@ def load_formats():
     cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
     default_formats_path = os.path.join(default_path, "sample_formats.csv")
 
+    # One-time, idempotent migration of the legacy whole-table calibration
+    # cache into complete per-format definitions in the user YAML.
+    # Renames the cache to .migrated on success so it never runs twice; on any
+    # failure the cache is left in place and keeps working as before.
     if os.path.exists(cached_formats_path):
-        print("Using cached sample formats")
-        sample_formats = read_sample_formats_csv(cached_formats_path)
-    else:
-        print("Using default sample formats")
+        try:
+            _migrate_legacy_format_cache(cached_formats_path, default_formats_path)
+        except Exception:
+            log.exception(
+                f"Migration of {cached_formats_path} failed; keeping the legacy cache as-is. "
+                f"Calibrations continue to load from it."
+            )
+
+    sample_formats = None
+    if os.path.exists(cached_formats_path):
+        try:
+            sample_formats = read_sample_formats_csv(cached_formats_path)
+        except Exception:
+            # Never propagate: this runs at import time, so raising here means the
+            # application cannot start at all.
+            log.exception(
+                f"Cached sample formats at {cached_formats_path} are unreadable. Falling back to the shipped "
+                f"geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN THE CACHE IS NOT BEING "
+                f"APPLIED, so stage positions will differ from your last session. Move the file aside and "
+                f"recalibrate to clear this."
+            )
+        else:
+            if not sample_formats:
+                log.error(
+                    f"Cached sample formats at {cached_formats_path} parsed but contained no formats. Falling "
+                    f"back to the shipped geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN "
+                    f"THE CACHE IS NOT BEING APPLIED."
+                )
+                sample_formats = None
+
+    if sample_formats is None:
         sample_formats = read_sample_formats_csv(default_formats_path)
+    else:
+        log.info(f"Using cached sample formats from {cached_formats_path}")
+
+    # Layer the user's format edits and custom formats on top of the base
+    # (shipped catalog, or the legacy whole-table cache until it is migrated).
+    # Imported here because control.models imports pydantic; keep _def importable
+    # even if that stack is broken - the identity default is "no user file".
+    try:
+        from control.models.sample_format_config import apply_user_sample_formats, load_user_sample_formats
+
+        apply_user_sample_formats(sample_formats, load_user_sample_formats())
+    except Exception:
+        log.exception("Failed to load sample_formats_user.yaml; continuing without user format edits.")
 
     return objectives, sample_formats
 
@@ -1193,20 +1413,23 @@ OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
 def get_wellplate_settings(wellplate_format):
     if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-        settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+        settings = _with_derived_geometry(wellplate_format, WELLPLATE_FORMAT_SETTINGS[wellplate_format])
     elif wellplate_format == "0":
-        settings = {
-            "format": "0",
-            "a1_x_mm": 0,
-            "a1_y_mm": 0,
-            "a1_x_pixel": 0,
-            "a1_y_pixel": 0,
-            "well_size_mm": 0,
-            "well_spacing_mm": 0,
-            "number_of_skip": 0,
-            "rows": 1,
-            "cols": 1,
-        }
+        settings = _with_derived_geometry(
+            "0",
+            {
+                "format": "0",
+                "a1_x_mm": 0,
+                "a1_y_mm": 0,
+                "a1_x_pixel": 0,
+                "a1_y_pixel": 0,
+                "well_size_mm": 0,
+                "well_spacing_mm": 0,
+                "number_of_skip": 0,
+                "rows": 1,
+                "cols": 1,
+            },
+        )
     else:
         raise ValueError(
             f"Invalid wellplate format: {wellplate_format}. Expected formats are: {list(WELLPLATE_FORMAT_SETTINGS.keys())} or '0'"

@@ -43,12 +43,12 @@ import time
 import csv
 import itertools
 import json
-import math
 import numpy as np
 import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc
+from control.core.plate_transform import resolve_rotation_deg, rotate_deg
 import scipy.ndimage
 
 if ENABLE_NL5:
@@ -1517,11 +1517,14 @@ class NavigationViewer(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.sample = sample
+        # Catalog identity vs display identity: "4 glass slide" is an image
+        # choice, not a format. Constructors may pass either; normalize to the
+        # format and derive the display name from the ONE owner of the alias.
+        self.format = "glass slide" if sample in ("glass slide", "4 glass slide") else sample
+        self.sample = self._display_sample_for(self.format)
         self.objectiveStore = objectivestore
         self.camera = camera
         self.well_size_mm = WELL_SIZE_MM
-        self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
         self.a1_x_mm = A1_X_MM
         self.a1_y_mm = A1_Y_MM
@@ -1547,9 +1550,9 @@ class NavigationViewer(QFrame):
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "images/4 slide carrier_1509x1010.png"))
+        self.load_background_image(self.image_paths.get(self.sample, "images/4 slide carrier_1509x1010.png"))
         self.create_layers()
-        self.update_display_properties(sample)
+        self.update_display_properties(self.sample)
         # self.update_display()
 
     def init_ui(self, invertX):
@@ -1665,42 +1668,58 @@ class NavigationViewer(QFrame):
     def update_fov_size(self):
         self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
 
+    @staticmethod
+    def _display_sample_for(format_: str) -> str:
+        """The display alias for a catalog format - the one owner of the
+        "4 glass slide is how an HCS machine DRAWS a glass slide" rule."""
+        if format_ == "glass slide" and IS_HCS:
+            return "4 glass slide"
+        return format_
+
+    def _current_rotation_deg(self) -> float:
+        """The measured plate rotation, resolved at CALL time (never cached).
+
+        The background image is a NOMINAL drawing - wells on an unrotated grid -
+        so under a measured rotation the stage<->pixel mapping must go through
+        the plate frame: pixels are always nominal, stage coordinates are
+        rotated about A1. Pitch-0 formats (glass slides) resolve to 0.0 in the
+        resolver itself - no sample-name special cases here.
+        """
+        try:
+            return resolve_rotation_deg(self.format)[0]
+        except Exception:
+            self._log.exception(
+                f"Could not resolve plate rotation for {self.format!r}; drawing the navigation view with 0.00 deg."
+            )
+            return 0.0
+
     def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_wellplate_settings(
-        self,
-        sample_format,
-        a1_x_mm,
-        a1_y_mm,
-        a1_x_pixel,
-        a1_y_pixel,
-        well_size_mm,
-        well_spacing_mm,
-        number_of_skip,
-        rows,
-        cols,
-    ):
-        if isinstance(sample_format, QVariant):
-            sample_format = sample_format.value()
+    def update_wellplate_settings(self, settings: "WellplateSettings"):
+        sample_format = settings.format
+        a1_x_mm = settings.a1_x_mm
+        a1_y_mm = settings.a1_y_mm
+        a1_x_pixel = settings.a1_x_pixel
+        a1_y_pixel = settings.a1_y_pixel
+        well_size_mm = settings.well_size_mm
+        number_of_skip = settings.number_of_skip
+        rows = settings.rows
+        cols = settings.cols
 
-        if sample_format == "glass slide":
-            if IS_HCS:
-                sample = "4 glass slide"
-            else:
-                sample = "glass slide"
-        else:
-            sample = sample_format
+        sample = self._display_sample_for(sample_format)
 
         self.sample = sample
+        self.format = sample_format  # catalog identity survives the display renaming
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
         self.well_size_mm = well_size_mm
-        self.well_spacing_mm = well_spacing_mm
+        # settings.well_spacing_mm is deliberately not stored: NavigationViewer's
+        # mm<->pixel mapping never uses the pitch.
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols
@@ -1708,13 +1727,20 @@ class NavigationViewer(QFrame):
         # Try to find the image for the wellplate
         image_path = self.image_paths.get(sample)
         if image_path is None or not os.path.exists(image_path):
-            # Look for a custom wellplate image
+            # Custom wellplate image: raw name is the convention; the underscore
+            # variant is a legacy fallback for images generated by older builds,
+            # which wrote spaces as underscores.
             custom_image_path = os.path.join("images", self.sample + ".png")
-            self._log.info(custom_image_path)
+            legacy_image_path = os.path.join("images", self.sample.replace(" ", "_") + ".png")
             if os.path.exists(custom_image_path):
                 image_path = custom_image_path
+            elif os.path.exists(legacy_image_path):
+                image_path = legacy_image_path
             else:
-                self._log.warning(f"Image not found for {sample}. Using default image.")
+                self._log.warning(
+                    f"No plate image for {sample!r} (tried {custom_image_path!r} and {legacy_image_path!r}); "
+                    f"using the default image - the navigation view will not match this plate."
+                )
                 image_path = self.image_paths.get("glass slide")  # Use a default image
 
         self.load_background_image(image_path)
@@ -1734,7 +1760,12 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def get_FOV_pixel_coordinates(self, x_mm, y_mm):
+    def get_FOV_pixel_coordinates(self, x_mm, y_mm, rotation_deg=None):
+        """Stage mm -> image pixel corners of the FOV box.
+
+        rotation_deg lets batch callers resolve the rotation once per redraw
+        instead of once per FOV (resolution reads the placement/holder files).
+        """
         if self.sample == "glass slide":
             current_FOV_top_left = (
                 round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
@@ -1753,13 +1784,29 @@ class NavigationViewer(QFrame):
                 ),
             )
         else:
+            if rotation_deg is None:
+                rotation_deg = self._current_rotation_deg()
+            if rotation_deg == 0.0:
+                # Legacy arithmetic kept verbatim (origin_pixel form) so the
+                # unrotated path is bit-for-bit what it always was.
+                center_x_pixel = self.origin_x_pixel + x_mm / self.mm_per_pixel
+                center_y_pixel = self.origin_y_pixel + y_mm / self.mm_per_pixel
+            else:
+                # Stage -> plate frame (R(-theta) about A1), then the nominal
+                # drawing's anchor. The pivot is the same composed a1 the
+                # planner rotates about, so a planned well-center FOV lands on
+                # the well's drawn (nominal) position.
+                plate_x, plate_y = rotate_deg(-rotation_deg, x_mm - self.a1_x_mm, y_mm - self.a1_y_mm)
+                center_x_pixel = self.a1_x_pixel + plate_x / self.mm_per_pixel
+                center_y_pixel = self.a1_y_pixel + plate_y / self.mm_per_pixel
+            half_fov_pixel = self.fov_size_mm / 2 / self.mm_per_pixel
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel - half_fov_pixel),
+                round(center_y_pixel - half_fov_pixel),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel + half_fov_pixel),
+                round(center_y_pixel + half_fov_pixel),
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
@@ -1790,6 +1837,7 @@ class NavigationViewer(QFrame):
             return
 
         color = (252, 174, 30, 128)  # Yellow RGBA
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1798,7 +1846,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
             )
@@ -1815,6 +1865,7 @@ class NavigationViewer(QFrame):
         if not fov_list:
             return
 
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1823,7 +1874,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
             )
@@ -1858,6 +1911,25 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
+    def pixel_to_stage_mm(self, x_pixel, y_pixel):
+        """Image pixel -> stage mm: the inverse of get_FOV_pixel_coordinates.
+
+        The clicked pixel is a NOMINAL plate position (the drawing is unrotated),
+        so under a measured rotation the plate-frame point rotates forward
+        (R(+theta) about A1) into stage coordinates - a double-click on a drawn
+        well navigates to where that well actually sits.
+        """
+        rotation_deg = self._current_rotation_deg()  # pitch-0 formats resolve to 0.0
+        if rotation_deg == 0.0:
+            # Legacy arithmetic kept verbatim for the unrotated path.
+            x_mm = (x_pixel - self.origin_x_pixel) * self.mm_per_pixel
+            y_mm = (y_pixel - self.origin_y_pixel) * self.mm_per_pixel
+            return x_mm, y_mm
+        plate_x = (x_pixel - self.a1_x_pixel) * self.mm_per_pixel
+        plate_y = (y_pixel - self.a1_y_pixel) * self.mm_per_pixel
+        dx, dy = rotate_deg(rotation_deg, plate_x, plate_y)
+        return (self.a1_x_mm + dx, self.a1_y_mm + dy)
+
     def handle_mouse_click(self, evt):
         if not evt.double():
             return
@@ -1865,9 +1937,7 @@ class NavigationViewer(QFrame):
             # Get mouse position in image coordinates (independent of zoom)
             mouse_point = self.background_item.mapFromScene(evt.scenePos())
 
-            # Subtract origin offset before converting to mm
-            x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
-            y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
+            x_mm, y_mm = self.pixel_to_stage_mm(mouse_point.x(), mouse_point.y())
 
             self._log.debug(f"Got double click at (x_mm, y_mm) = {x_mm, y_mm}")
             self.signal_coordinates_clicked.emit(x_mm, y_mm)

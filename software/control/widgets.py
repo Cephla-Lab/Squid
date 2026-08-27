@@ -25,6 +25,14 @@ from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
+from control.core.coordinate_provenance import (
+    read_scan_coordinates_csv,
+    staleness_warning,
+    write_scan_coordinates_csv,
+)
+from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSession, SessionError
+from control.core.plate_fit import circumcenter, PlateFitError
+from control.core.plate_transform import plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
@@ -5955,8 +5963,11 @@ class WellSelectionWidget(QTableWidget):
         if (row >= 0 + self.number_of_skip and row <= self.rows - 1 - self.number_of_skip) and (
             col >= 0 + self.number_of_skip and col <= self.columns - 1 - self.number_of_skip
         ):
-            x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-            y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
+            # Resolved at CLICK time: the snapshot-from-cached-fields transform
+            # this replaces missed calibration deltas, measured rotation, and
+            # per-axis pitch - double-click navigation disagreed with planning.
+            transform = plate_transform_for(self.format)
+            x_mm, y_mm = transform.well_center_mm(row, col)
             self.signal_wellSelectedPos.emit(x_mm, y_mm)
             print("well location:", (x_mm, y_mm))
             self.signal_wellSelected.emit(True)
@@ -7487,6 +7498,16 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self.entry_deltaX.value(),
                     self.entry_deltaY.value(),
                 )
+
+
+def _warn_if_coordinates_stale(widget, stamp):
+    """Shared by both load_coordinates widgets: stamped file + changed placement -> warn, still load."""
+    if stamp is None:
+        return
+    stale = staleness_warning(stamp, widget.scanCoordinates.format)
+    if stale:
+        widget._log.warning(stale)
+        QMessageBox.warning(widget, "Coordinates may be stale", stale)
 
 
 class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
@@ -9437,7 +9458,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     def load_coordinates(self, file_path: str):
         """Load scan coordinates (optionally with per-FOV z) from a CSV file."""
         try:
-            df = pd.read_csv(file_path)
+            # Stamped or legacy-unstamped read; the shared loader owns column
+            # validation and the optional per-FOV z column.
+            df, stamp = read_scan_coordinates_csv(file_path)
             region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
             # Cache the dataframe and file path
@@ -9449,6 +9472,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
             self.text_loaded_coordinates.setText(f"Loaded: {file_path}")
             self._set_has_loaded_coordinates(True)
+
+            # The file stores ABSOLUTE stage positions: warn (but still load) if
+            # the placement changed since it was saved.
+            _warn_if_coordinates_stale(self, stamp)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
@@ -9478,7 +9505,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm)
             df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
             file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
-            df.to_csv(file_path, index=False)
+            # Stamped, not a bare to_csv: these are ABSOLUTE stage positions, so
+            # the file records the placement they were computed under.
+            write_scan_coordinates_csv(file_path, df, self.scanCoordinates.format)
             self._log.info(f"Saved scan coordinates to {file_path}")
 
         try:
@@ -10098,12 +10127,18 @@ class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
             file_path: Path to CSV file containing coordinates
         """
         try:
-            df = pd.read_csv(file_path)
+            # Stamped or legacy-unstamped read; the shared loader owns column
+            # validation and the optional per-FOV z column.
+            df, stamp = read_scan_coordinates_csv(file_path)
             region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
             _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
             self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
+
+            # The file stores ABSOLUTE stage positions: warn (but still load) if
+            # the placement changed since it was saved.
+            _warn_if_coordinates_stale(self, stamp)
 
         except Exception as e:
             self._log.error(f"Failed to load coordinates: {str(e)}")
@@ -13168,7 +13203,9 @@ class LaserAutofocusControlWidget(QFrame):
 
 class WellplateFormatWidget(QWidget):
 
-    signalWellplateSettings = Signal(str, float, float, int, int, float, float, int, int, int)
+    # One object instead of 10 positional args: slots with shorter signatures
+    # used to silently drop the trailing arguments in transit.
+    signalWellplateSettings = Signal(object)
 
     def __init__(self, stage: AbstractStage, navigationViewer, streamHandler, liveController):
         super().__init__()
@@ -13206,6 +13243,11 @@ class WellplateFormatWidget(QWidget):
         self.comboBox.setItemData(index, font, Qt.FontRole)
 
     def wellplateChanged(self, index):
+        # Capture BEFORE overwriting: the Rejected branch below needs the previous
+        # format, and the old code read self.wellplate_format after it had already
+        # been set to "custom" - findData("custom") re-selected "calibrate
+        # format..." and the dropdown was stuck there on cancel.
+        previous_format = self.wellplate_format
         self.wellplate_format = self.comboBox.itemData(index)
         if self.wellplate_format == "custom":
             calibration_dialog = WellplateCalibration(
@@ -13213,34 +13255,44 @@ class WellplateFormatWidget(QWidget):
             )
             result = calibration_dialog.exec_()
             if result == QDialog.Rejected:
-                # If the dialog was closed without adding a new format, revert to the previous selection
-                prev_index = self.comboBox.findData(self.wellplate_format)
-                self.comboBox.setCurrentIndex(prev_index)
+                # Revert to the previous selection. This is the ONLY revert path;
+                # WellplateCalibration.reject() deliberately does not try to
+                # second-guess it (it used to, with an int-vs-string findData
+                # mismatch that could not find anything).
+                self.wellplate_format = previous_format
+                prev_index = self.comboBox.findData(previous_format)
+                if prev_index >= 0:
+                    self.comboBox.setCurrentIndex(prev_index)
         else:
             self.setWellplateSettings(self.wellplate_format)
 
+    def select_format_silently(self, format_id):
+        """Rebuild the combo and select format_id with exactly ONE settings emission.
+
+        populate_combo_box() starts with comboBox.clear(), so doing this with
+        signals live fires currentIndexChanged three times (-1, 0, target) - the
+        index-0 emission momentarily reconfigures the whole app for whatever
+        format happens to be first in the dict.
+        """
+        self.comboBox.blockSignals(True)
+        try:
+            self.populate_combo_box()
+            index = self.comboBox.findData(format_id)
+            if index >= 0:
+                self.comboBox.setCurrentIndex(index)
+        finally:
+            self.comboBox.blockSignals(False)
+        if index >= 0:
+            self.wellplateChanged(index)
+        return index
+
     def setWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-            settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+            self.signalWellplateSettings.emit(WellplateSettings.from_format(wellplate_format))
         elif wellplate_format == "glass slide":
-            self.signalWellplateSettings.emit("glass slide", 0, 0, 0, 0, 0, 0, 0, 1, 1)
-            return
+            self.signalWellplateSettings.emit(WellplateSettings.glass_slide())
         else:
             print(f"Wellplate format {wellplate_format} not recognized")
-            return
-
-        self.signalWellplateSettings.emit(
-            wellplate_format,
-            settings["a1_x_mm"],
-            settings["a1_y_mm"],
-            settings["a1_x_pixel"],
-            settings["a1_y_pixel"],
-            settings["well_size_mm"],
-            settings["well_spacing_mm"],
-            settings["number_of_skip"],
-            settings["rows"],
-            settings["cols"],
-        )
 
     def getWellplateSettings(self, wellplate_format):
         if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
@@ -13271,40 +13323,10 @@ class WellplateFormatWidget(QWidget):
         self.wellplateChanged(index)
 
     def save_formats_to_csv(self):
+        # Atomic, so an interrupted write cannot leave a cache that load_formats()
+        # chokes on at import time. Column order lives with the reader in _def.
         cache_path = os.path.join("cache", self.csv_path)
-        os.makedirs("cache", exist_ok=True)
-
-        fieldnames = [
-            "format",
-            "a1_x_mm",
-            "a1_y_mm",
-            "a1_x_pixel",
-            "a1_y_pixel",
-            "well_size_mm",
-            "well_spacing_mm",
-            "number_of_skip",
-            "rows",
-            "cols",
-        ]
-        with open(cache_path, "w", newline="") as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
-                writer.writerow({**{"format": format_}, **settings})
-
-    @staticmethod
-    def parse_csv_row(row):
-        return {
-            "a1_x_mm": float(row["a1_x_mm"]),
-            "a1_y_mm": float(row["a1_y_mm"]),
-            "a1_x_pixel": int(row["a1_x_pixel"]),
-            "a1_y_pixel": int(row["a1_y_pixel"]),
-            "well_size_mm": float(row["well_size_mm"]),
-            "well_spacing_mm": float(row["well_spacing_mm"]),
-            "number_of_skip": int(row["number_of_skip"]),
-            "rows": int(row["rows"]),
-            "cols": int(row["cols"]),
-        }
+        control._def.write_sample_formats_csv(cache_path, WELLPLATE_FORMAT_SETTINGS)
 
 
 class WellplateCalibration(QDialog):
@@ -13338,12 +13360,15 @@ class WellplateCalibration(QDialog):
         self.mode_group = QButtonGroup(self)
         self.new_format_radio = QRadioButton("Add New Format")
         self.calibrate_format_radio = QRadioButton("Calibrate Existing Format")
+        self.holder_rotation_radio = QRadioButton("Measure Holder Rotation")
         self.mode_group.addButton(self.new_format_radio)
         self.mode_group.addButton(self.calibrate_format_radio)
+        self.mode_group.addButton(self.holder_rotation_radio)
         self.new_format_radio.setChecked(True)
 
         left_layout.addWidget(self.new_format_radio)
         left_layout.addWidget(self.calibrate_format_radio)
+        left_layout.addWidget(self.holder_rotation_radio)
 
         # Existing format selection (initially hidden)
         self.existing_format_combo = QComboBox(self)
@@ -13355,6 +13380,7 @@ class WellplateCalibration(QDialog):
         # Connect radio buttons to toggle visibility
         self.new_format_radio.toggled.connect(self.toggle_input_mode)
         self.calibrate_format_radio.toggled.connect(self.toggle_input_mode)
+        self.holder_rotation_radio.toggled.connect(self.toggle_input_mode)
 
         # New format inputs container (hidden when calibrating existing format)
         self.new_format_widget = QWidget()
@@ -13506,6 +13532,13 @@ class WellplateCalibration(QDialog):
         center_point_layout.setColumnStretch(0, 1)
         self.center_point_widget.hide()  # Initially hidden
         left_layout.addWidget(self.center_point_widget)
+
+        # Holder rotation mode (initially hidden). All state lives in a pure
+        # HolderAlignmentSession; this widget is a thin view over it.
+        self.holder_session = None
+        self._build_holder_widget()
+        self.holder_widget.hide()
+        left_layout.addWidget(self.holder_widget)
 
         # Add 'Click to Move' checkbox
         self.clickToMoveCheckbox = QCheckBox("Click to Move")
@@ -13662,18 +13695,289 @@ class WellplateCalibration(QDialog):
             self.existing_format_combo.addItem(self._format_display_name(format_), format_)
 
     def toggle_input_mode(self):
-        is_new_format = self.new_format_radio.isChecked()
+        # The mode radios share an exclusive QButtonGroup: exactly one is true.
+        is_new = self.new_format_radio.isChecked()
+        is_existing = self.calibrate_format_radio.isChecked()
+        is_holder = self.holder_rotation_radio.isChecked()
 
-        self.new_format_widget.setVisible(is_new_format)
-        self.center_well_size_label.setVisible(is_new_format)
-        self.center_well_size_input.setVisible(is_new_format)
+        self.new_format_widget.setVisible(is_new)
+        self.center_well_size_label.setVisible(is_new)
+        self.center_well_size_input.setVisible(is_new)
 
-        self.existing_format_combo.setVisible(not is_new_format)
-        self.existing_params_group.setVisible(not is_new_format)
-        self.update_params_button.setVisible(not is_new_format)
+        self.existing_format_combo.setVisible(is_existing)
+        self.existing_params_group.setVisible(is_existing)
+        self.update_params_button.setVisible(is_existing)
 
-        if not is_new_format:
+        # The per-A1 method/points UI and the Calibrate button belong to the
+        # two format modes; the holder mode has its own flow and Save.
+        self.calibration_method_group.setVisible(not is_holder)
+        self._sync_method_panel()
+        self.calibrateButton.setVisible(not is_holder)
+        self.holder_widget.setVisible(is_holder)
+
+        if is_holder:
+            self._enter_holder_mode()
+        elif is_existing:
             self.load_existing_format_values()
+
+    # ------------------------------------------------------------------------
+    # Holder rotation mode - a thin view over HolderAlignmentSession
+    # ------------------------------------------------------------------------
+
+    def _build_holder_widget(self):
+        self.holder_widget = QWidget()
+        layout = QVBoxLayout(self.holder_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.holder_status_label = QLabel("")
+        self.holder_status_label.setWordWrap(True)
+        layout.addWidget(self.holder_status_label)
+
+        self.holder_method_label = QLabel("")
+        self.holder_method_label.setWordWrap(True)
+        layout.addWidget(self.holder_method_label)
+
+        corner_row = QHBoxLayout()
+        self.holder_corner_label = QLabel("Corner (same on every well):")
+        self.holder_corner_combo = QComboBox()
+        for feature in CORNER_FEATURES:
+            self.holder_corner_combo.addItem(feature.replace("corner_", "").replace("_", " "), feature)
+        self.holder_corner_combo.currentIndexChanged.connect(self._holder_corner_changed)
+        corner_row.addWidget(self.holder_corner_label)
+        corner_row.addWidget(self.holder_corner_combo)
+        layout.addLayout(corner_row)
+
+        wells_grid = QGridLayout()
+        self.holder_well_edits = []
+        self.holder_record_buttons = []
+        self.holder_well_status = []
+        for i in range(4):
+            edit = QLineEdit()
+            edit.setFixedWidth(60)
+            edit.editingFinished.connect(lambda index=i: self._holder_nominate(index))
+            record = QPushButton("Set Point")
+            record.clicked.connect(lambda checked=False, index=i: self._holder_record(index))
+            status = QLabel("")
+            wells_grid.addWidget(edit, i, 0)
+            wells_grid.addWidget(record, i, 1)
+            wells_grid.addWidget(status, i, 2)
+            self.holder_well_edits.append(edit)
+            self.holder_record_buttons.append(record)
+            self.holder_well_status.append(status)
+        wells_grid.setColumnStretch(2, 1)
+        layout.addLayout(wells_grid)
+
+        self.holder_fit_label = QLabel("")
+        self.holder_fit_label.setWordWrap(True)
+        layout.addWidget(self.holder_fit_label)
+
+        verify_row = QHBoxLayout()
+        self.holder_holdout_edit = QLineEdit()
+        self.holder_holdout_edit.setFixedWidth(60)
+        self.holder_holdout_edit.setPlaceholderText("well")
+        self.holder_holdout_button = QPushButton("Set Hold-out Point")
+        self.holder_holdout_button.clicked.connect(self._holder_record_holdout)
+        self.holder_test_button = QPushButton("Drive to Test Well")
+        self.holder_test_button.clicked.connect(self._holder_drive_to_test)
+        verify_row.addWidget(self.holder_holdout_edit)
+        verify_row.addWidget(self.holder_holdout_button)
+        verify_row.addWidget(self.holder_test_button)
+        layout.addLayout(verify_row)
+
+        self.holder_holdout_label = QLabel("")
+        self.holder_holdout_label.setWordWrap(True)
+        layout.addWidget(self.holder_holdout_label)
+
+        self.holder_save_button = QPushButton("Save Holder Rotation")
+        self.holder_save_button.clicked.connect(self._holder_save)
+        layout.addWidget(self.holder_save_button)
+
+    def _enter_holder_mode(self):
+        """(Re)create the session for the CURRENTLY selected plate format."""
+        format_ = self.wellplateFormatWidget.wellplate_format
+        try:
+            self.holder_session = HolderAlignmentSession(format_)
+        except SessionError as e:
+            self.holder_session = None
+            self.holder_status_label.setText(str(e))
+            for widget in (self.holder_corner_combo, self.holder_save_button, self.holder_test_button):
+                widget.setEnabled(False)
+            for button in self.holder_record_buttons:
+                button.setEnabled(False)
+            return
+
+        session = self.holder_session
+        for widget in (self.holder_save_button, self.holder_test_button):
+            widget.setEnabled(True)
+        for button in self.holder_record_buttons:
+            button.setEnabled(True)
+        is_square = session.touches_per_well == 1
+        self.holder_corner_label.setVisible(is_square)
+        self.holder_corner_combo.setVisible(is_square)
+        self.holder_corner_combo.setEnabled(True)
+        # Approaching every well from the same direction makes stage backlash a
+        # CONSTANT offset across the touches, and the fit cancels constant
+        # offsets exactly (translation is discarded in this mode regardless) -
+        # so an instruction buys what motion choreography would, with no
+        # invented backoff constants.
+        approach_hint = "Approach every well from the same direction - backlash then cancels out of the fit."
+        self.holder_method_label.setText(
+            f"{format_}: touch the SAME corner on each of the 4 wells below.\n{approach_hint}"
+            if is_square
+            else f"{format_}: touch 3 points on the rim of each of the 4 wells below.\n{approach_hint}"
+        )
+        for i, well in enumerate(session.reference_wells):
+            self.holder_well_edits[i].setText(well.well_id)
+        self._holder_refresh()
+
+    def _holder_refresh(self):
+        session = self.holder_session
+        self.holder_status_label.setText(session.status_line())
+        for i, well in enumerate(session.reference_wells):
+            done = well.point_mm is not None
+            if done:
+                text = f"({well.point_mm[0]:.3f}, {well.point_mm[1]:.3f}) mm"
+                if well.fitted_radius_mm is not None:
+                    text += f", r = {well.fitted_radius_mm:.3f} mm"
+            else:
+                text = f"{len(well.touches)}/{session.touches_per_well} touches"
+            self.holder_well_status[i].setText(text)
+        # The corner is locked once any touch exists (it applies to every well).
+        if session.touches_per_well == 1:
+            self.holder_corner_combo.setEnabled(not any(w.touches for w in session.reference_wells))
+
+        if not session.can_fit:
+            self.holder_fit_label.setText(f"{session.wells_measured}/4 wells measured (3 minimum to fit).")
+            self.holder_save_button.setEnabled(False)
+            self.holder_test_button.setEnabled(False)
+            return
+        result = session.fit()
+        residuals = ", ".join(f"{r:.0f}" for r in result.residuals_um)
+        lines = [
+            f"Rotation {result.rotation_deg:.2f} deg  (scale QC {result.fitted_scale:.5f})",
+            f"Click noise sigma {result.sigma_hat_um:.0f} um; residuals [{residuals}] um",
+            f"Predicted {result.predicted_rms_um:.0f} um RMS / {result.predicted_p95_um:.0f} um p95 at {result.worst_well}",
+        ]
+        for gate in result.gates:
+            lines.append(("REJECTED: " if gate.level == "reject" else "Check: ") + gate.message)
+        self.holder_fit_label.setText("\n".join(lines))
+        self.holder_save_button.setEnabled(not result.rejected)
+        self.holder_test_button.setEnabled(not result.rejected)
+
+    def _holder_error(self, exc):
+        QMessageBox.warning(self, "Holder Alignment", str(exc))
+
+    def _holder_corner_changed(self):
+        if self.holder_session is None:
+            return
+        try:
+            self.holder_session.set_corner_feature(self.holder_corner_combo.currentData())
+        except SessionError as e:
+            self._holder_error(e)
+
+    def _holder_nominate(self, index):
+        if self.holder_session is None:
+            return
+        well = self.holder_session.reference_wells[index]
+        text = self.holder_well_edits[index].text().strip()
+        if text == well.well_id:
+            return
+        try:
+            self.holder_session.nominate(index, text)
+        except SessionError as e:
+            self.holder_well_edits[index].setText(well.well_id)
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+
+    def _holder_record(self, index):
+        if self.holder_session is None:
+            return
+        pos = self.stage.get_pos()
+        try:
+            self.holder_session.record_touch(index, pos.x_mm, pos.y_mm)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+
+    def _holder_record_holdout(self):
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        pos = self.stage.get_pos()
+        try:
+            residual = self.holder_session.holdout_residual_um(
+                self.holder_holdout_edit.text().strip(), (pos.x_mm, pos.y_mm)
+            )
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self.holder_holdout_label.setText(
+            f"Hold-out residual at {self.holder_holdout_edit.text().strip()}: {residual:.0f} um "
+            f"(measured, not modeled)"
+        )
+
+    def _holder_drive_to_test(self):
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        try:
+            result = self.holder_session.fit()
+            x_mm, y_mm = self.holder_session.predicted_touch_mm(result.worst_well)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self.stage.move_x_to(x_mm)
+        self.stage.move_y_to(y_mm)
+
+    def _holder_save(self):
+        if self.holder_session is None:
+            return
+        session = self.holder_session
+        try:
+            result = session.fit()
+        except SessionError as e:
+            self._holder_error(e)
+            return
+
+        confirm = False
+        if result.needs_confirmation:
+            # Warn-gates require typing the value to confirm - a click-through
+            # dialog would defeat the point of the gate.
+            typed, ok = QInputDialog.getText(
+                self,
+                "Confirm measured rotation",
+                "\n".join(g.message for g in result.gates if g.level == "warn")
+                + f"\n\nType the angle ({result.rotation_deg:.2f}) to confirm:",
+            )
+            if not ok or typed.strip() != f"{result.rotation_deg:.2f}":
+                return
+            confirm = True
+
+        clear = ()
+        stale = session.formats_with_measured_overrides()
+        if stale:
+            answer = QMessageBox.question(
+                self,
+                "Stale rotation overrides",
+                f"{len(stale)} format(s) carry a rotation measured under the previous mounting: "
+                f"{', '.join(stale)}. Clear them to inherit the new angle?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                clear = tuple(stale)
+
+        try:
+            holder = session.save(confirm_warnings=confirm, clear_overrides=clear)
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_refresh()
+        QMessageBox.information(
+            self,
+            "Holder rotation saved",
+            f"Rotation {holder.rotation_deg:.2f} deg saved to machine_configs/plate_holder.yaml. "
+            f"It now applies to every plate format without a measured override.",
+        )
 
     def load_existing_format_values(self):
         """Load current values from selected existing format into the parameter inputs."""
@@ -13719,14 +14023,17 @@ class WellplateCalibration(QDialog):
 
         self.update_calibrate_button_state()
 
+    def _sync_method_panel(self):
+        """The ONE owner of the method-panel visibility rule: which points
+        widget shows follows the method radios, and neither shows in holder
+        mode. Both mode and method toggles route through here."""
+        is_holder = self.holder_rotation_radio.isChecked()
+        self.points_widget.setVisible(not is_holder and self.edge_points_radio.isChecked())
+        self.center_point_widget.setVisible(not is_holder and self.center_point_radio.isChecked())
+
     def toggle_calibration_method(self):
         """Toggle between 3 edge points and center point calibration methods."""
-        if self.edge_points_radio.isChecked():
-            self.points_widget.show()
-            self.center_point_widget.hide()
-        else:
-            self.points_widget.hide()
-            self.center_point_widget.show()
+        self._sync_method_panel()
         self.update_calibrate_button_state()
 
     def setCenterPoint(self):
@@ -13773,8 +14080,8 @@ class WellplateCalibration(QDialog):
                 QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
                 return None
             center, radius = self.calculate_circle(self.corners)
-            well_size_mm = radius * 2
-            a1_x_mm, a1_y_mm = center
+            well_size_mm = float(radius * 2)
+            a1_x_mm, a1_y_mm = float(center[0]), float(center[1])
         return a1_x_mm, a1_y_mm, well_size_mm
 
     def update_existing_parameters(self):
@@ -13801,22 +14108,23 @@ class WellplateCalibration(QDialog):
             )
             print(f"NEW: spacing={new_spacing}, well_size={new_well_size}")
 
-            # Update the settings
-            WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+            # One path for every format: the edited definition replaces the
+            # shipped example (or the previous user entry) wholesale.
+            self._save_format_definition(
+                selected_format,
                 {
                     "well_spacing_mm": new_spacing,
+                    "well_spacing_x_mm": new_spacing,
+                    "well_spacing_y_mm": new_spacing,
                     "well_size_mm": new_well_size,
-                }
+                    "well_size_x_mm": new_well_size,
+                    "well_size_y_mm": new_well_size,
+                },
             )
 
-            # Save and refresh
-            self.wellplateFormatWidget.save_formats_to_csv()
-            self.wellplateFormatWidget.populate_combo_box()
-
-            # Re-select the format (triggers wellplateChanged which calls setWellplateSettings)
-            index = self.wellplateFormatWidget.comboBox.findData(selected_format)
-            if index >= 0:
-                self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+            # select_format_silently re-emits the settings exactly once (no
+            # spurious index-0 emission from the combo rebuild).
+            self.wellplateFormatWidget.select_format_silently(selected_format)
 
             QMessageBox.information(
                 self,
@@ -13846,7 +14154,7 @@ class WellplateCalibration(QDialog):
                 self._calibrate_new_format()
             else:
                 self._calibrate_existing_format()
-        except np.linalg.LinAlgError:
+        except PlateFitError:
             import traceback
 
             traceback.print_exc()
@@ -13892,7 +14200,10 @@ class WellplateCalibration(QDialog):
         }
 
         self.wellplateFormatWidget.add_custom_format(name, new_format)
-        self.wellplateFormatWidget.save_formats_to_csv()
+
+        # Same writer as every other calibration: a complete definition, with
+        # the measured A1 stored absolutely and its provenance alongside.
+        self._save_format_definition(name, new_format, measured=self._measurement_record(a1_x_mm, a1_y_mm))
         self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
 
         self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
@@ -13906,7 +14217,7 @@ class WellplateCalibration(QDialog):
             return
         a1_x_mm, a1_y_mm, well_size_mm = calibration_data
 
-        existing_settings = WELLPLATE_FORMAT_SETTINGS[selected_format]
+        existing_settings = control._def.get_wellplate_settings(selected_format)
         display_name = self._format_display_name(selected_format)
 
         print(f"Updating existing format {display_name}")
@@ -13916,24 +14227,82 @@ class WellplateCalibration(QDialog):
         )
         print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
 
-        WELLPLATE_FORMAT_SETTINGS[selected_format].update(
+        # Identical treatment to a brand-new format: the measured A1 and well
+        # size are stored ABSOLUTELY in a complete definition that replaces the
+        # shipped example. No deltas, no second file.
+        self._save_format_definition(
+            selected_format,
             {
                 "a1_x_mm": a1_x_mm,
                 "a1_y_mm": a1_y_mm,
                 "well_size_mm": well_size_mm,
-            }
+                "well_size_x_mm": well_size_mm,
+                "well_size_y_mm": well_size_mm,
+            },
+            measured=self._measurement_record(a1_x_mm, a1_y_mm),
         )
-
-        self.wellplateFormatWidget.save_formats_to_csv()
 
         self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
 
+    _CARRIED_MEASUREMENTS = {"rotation_deg", "rotation_measured", "measured"}
+
+    def _measurement_record(self, a1_x_mm, a1_y_mm):
+        """Raw provenance for a stored A1: the points the user actually set."""
+        import datetime
+
+        from control.models.sample_format_config import FormatMeasurement, MeasuredPoint
+
+        if self.edge_points_radio.isChecked() and all(self.corners):
+            points = [MeasuredPoint(well="A1", x_mm=float(x), y_mm=float(y)) for x, y in self.corners]
+            method = "3 edge points"
+        else:
+            points = [MeasuredPoint(well="A1", x_mm=float(a1_x_mm), y_mm=float(a1_y_mm))]
+            method = "center point"
+        return FormatMeasurement(
+            points=points, method=method, timestamp=datetime.datetime.now().isoformat(timespec="seconds")
+        )
+
+    def _save_format_definition(self, format_key, updates, measured=None):
+        """Write a COMPLETE definition for `format_key` to the user file.
+
+        Every calibration and every parameter edit goes through here, for
+        shipped and user formats alike: shipped rows are examples, and the
+        moment a lab measures or edits one, their definition replaces it
+        wholesale (owner decision, 2026-08-16). `updates` are the newly
+        measured/edited settings keys; everything else is carried over from
+        what the app currently knows about the format.
+        """
+        from control.models.sample_format_config import (
+            load_user_sample_formats,
+            SampleFormat,
+            save_user_sample_formats,
+            UserSampleFormats,
+        )
+
+        try:
+            settings = dict(control._def.get_wellplate_settings(format_key))
+        except ValueError:
+            settings = {}  # brand-new format: `updates` carries the whole definition
+        settings.update(updates)
+
+        user_formats = load_user_sample_formats() or UserSampleFormats()
+        previous = user_formats.formats.get(format_key)
+        # Everything measured survives an unrelated edit: a spacing tweak must
+        # never erase a calibration. Named once, so a future measurement kind
+        # is added in the model rather than remembered at every call site.
+        carried = previous.model_dump(include=self._CARRIED_MEASUREMENTS) if previous is not None else {}
+        if measured is not None:
+            carried["measured"] = measured
+        user_formats.formats[format_key] = SampleFormat.from_settings(settings, **carried)
+        save_user_sample_formats(user_formats)
+
+        # Keep the live table in step so the current session sees the edit
+        # without a reload.
+        WELLPLATE_FORMAT_SETTINGS[format_key] = user_formats.formats[format_key].to_settings()
+
     def _finish_calibration(self, format_id, success_message: str):
         """Complete calibration by updating UI and showing success message."""
-        self.wellplateFormatWidget.populate_combo_box()
-        index = self.wellplateFormatWidget.comboBox.findData(format_id)
-        if index >= 0:
-            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
+        self.wellplateFormatWidget.select_format_silently(format_id)
 
         QMessageBox.information(self, "Calibration Successful", success_message)
         self.accept()
@@ -13954,6 +14323,18 @@ class WellplateCalibration(QDialog):
         well_spacing_mm = format_data["well_spacing_mm"]
         well_size_mm = format_data["well_size_mm"]
         a1_x_mm, a1_y_mm = format_data["a1_x_mm"], format_data["a1_y_mm"]
+
+        # Plate-frame display asset: deliberately NO WELLPLATE_OFFSET (and, later,
+        # no rotation). The PNG is registered against the offset-free
+        # a1_x_pixel = round(a1_x_mm * scale) convention computed at save time,
+        # and NavigationViewer derives its origin from that same pair - feeding
+        # the stage-frame offset in here would shear the map away from it.
+        nominal = PlateTransform(
+            a1_x_mm=a1_x_mm,
+            a1_y_mm=a1_y_mm,
+            pitch_x_mm=well_spacing_mm,
+            pitch_y_mm=well_spacing_mm,
+        )
 
         def draw_left_slanted_rectangle(draw, xy, slant, width=4, outline="black", fill=None):
             x1, y1, x2, y2 = xy
@@ -13992,8 +14373,9 @@ class WellplateCalibration(QDialog):
         # Draw the wells
         for row in range(rows):
             for col in range(cols):
-                x = mm_to_px(a1_x_mm + col * well_spacing_mm)
-                y = mm_to_px(a1_y_mm + row * well_spacing_mm)
+                cx_mm, cy_mm = nominal.well_center_mm(row, col)
+                x = mm_to_px(cx_mm)
+                y = mm_to_px(cy_mm)
                 draw_circle(x, y, mm_to_px(well_size_mm))
 
         # Load a default font
@@ -14003,7 +14385,7 @@ class WellplateCalibration(QDialog):
         # Add column labels
         for col in range(cols):
             label = str(col + 1)
-            x = mm_to_px(a1_x_mm + col * well_spacing_mm)
+            x = mm_to_px(nominal.well_center_mm(0, col)[0])
             y = mm_to_px((a1_y_mm - well_size_mm / 2) / 2)
             bbox = font.getbbox(label)
             text_width = bbox[2] - bbox[0]
@@ -14014,31 +14396,29 @@ class WellplateCalibration(QDialog):
         for row in range(rows):
             label = chr(65 + row) if row < 26 else chr(65 + row // 26 - 1) + chr(65 + row % 26)
             x = mm_to_px((a1_x_mm - well_size_mm / 2) / 2)
-            y = mm_to_px(a1_y_mm + row * well_spacing_mm)
+            y = mm_to_px(nominal.well_center_mm(row, 0)[1])
             bbox = font.getbbox(label)
             text_height = bbox[3] - bbox[1]
             text_width = bbox[2] - bbox[0]
             draw.text((x + 20 - text_width / 2, y - text_height + 1), label, fill="black", font=font)
 
-        image_path = os.path.join("images", f'{name.replace(" ", "_")}.png')
+        # Raw name, spaces preserved: NavigationViewer looks the image up as
+        # "images/<sample>.png" with the sample name unmodified, and the shipped
+        # assets already use spaces ("96 well plate_1509x1010.png"). The old
+        # spaces->underscores write meant any custom format named with a space -
+        # including the dialog's own placeholder "custom well plate" - generated
+        # an image the viewer could never find.
+        image_path = os.path.join("images", f"{name}.png")
         image.save(image_path)
         print(f"Wellplate image saved as {image_path}")
         return image_path
 
     @staticmethod
     def calculate_circle(points):
-        # Convert points to numpy array
-        points = np.array(points)
-
-        # Calculate the center and radius of the circle
-        A = np.array([points[1] - points[0], points[2] - points[0]])
-        b = np.sum(A * (points[1:3] + points[0]) / 2, axis=1)
-        center = np.linalg.solve(A, b)
-
-        # Calculate the radius
-        radius = np.mean(np.linalg.norm(points - center, axis=1))
-
-        return center, radius
+        # ONE circle solver for the whole dialog; collinear points raise
+        # PlateFitError, which calibrate() maps to the dialog's message.
+        cx, cy, radius = circumcenter(tuple(points[0]), tuple(points[1]), tuple(points[2]))
+        return (cx, cy), radius
 
     def closeEvent(self, event):
         # Stop live view if it wasn't initially on
@@ -14056,26 +14436,13 @@ class WellplateCalibration(QDialog):
         # This method is called when the dialog is closed without accepting
         if not self.was_live:
             self.liveController.stop_live()
-        sample = self.navigationViewer.sample
 
-        # Convert sample string to format int
-        if "glass slide" in sample:
-            sample_format = "glass slide"
-        else:
-            try:
-                sample_format = int(sample.split()[0])
-            except (ValueError, IndexError):
-                print(f"Unable to parse sample format from '{sample}'. Defaulting to 0.")
-                sample_format = "glass slide"
-
-        # Set dropdown to the current sample format
-        index = self.wellplateFormatWidget.comboBox.findData(sample_format)
-        if index >= 0:
-            self.wellplateFormatWidget.comboBox.setCurrentIndex(index)
-
-        # Update wellplate settings
-        self.wellplateFormatWidget.setWellplateSettings(sample_format)
-
+        # Deliberately NO dropdown revert here: WellplateFormatWidget.wellplateChanged
+        # owns the Rejected-revert (it captured the previous format before opening
+        # this dialog). The revert that used to live here parsed
+        # navigationViewer.sample to an int, which findData() could never match
+        # against the string item data - it silently did nothing, or worse fought
+        # the widget's own revert.
         super().reject()
 
 
@@ -14288,35 +14655,26 @@ class Well1536SelectionWidget(QWidget):
     signal_wellSelected = Signal(bool)
     signal_wellSelectedPos = Signal(float, float)
 
-    def __init__(self, wellplateFormatWidget):
+    def __init__(self, wellplateFormatWidget: "WellplateFormatWidget"):
         super().__init__()
         self.wellplateFormatWidget = wellplateFormatWidget
         self.format = "1536 well plate"
         self.selected_cells = {}  # Dictionary to keep track of selected cells and their colors
         self.current_cell = None  # To track the current (green) cell
 
-        # defaults
-        self.rows = 32
-        self.columns = 48
-        self.spacing_mm = 2.25
-        self.number_of_skip = 0
-        self.well_size_mm = 1.5
-        self.a1_x_mm = 11.0  # measured stage position - to update
-        self.a1_y_mm = 7.86  # measured stage position - to update
-        self.a1_x_pixel = 144  # coordinate on the png - to update
-        self.a1_y_pixel = 108  # coordinate on the png - to update
-
-        if self.wellplateFormatWidget is not None:
-            s = self.wellplateFormatWidget.getWellplateSettings(self.format)
-            self.rows = s["rows"]
-            self.columns = s["cols"]
-            self.spacing_mm = s["well_spacing_mm"]
-            self.number_of_skip = s["number_of_skip"]
-            self.a1_x_mm = s["a1_x_mm"]
-            self.a1_y_mm = s["a1_y_mm"]
-            self.a1_x_pixel = s["a1_x_pixel"]
-            self.a1_y_pixel = s["a1_y_pixel"]
-            self.well_size_mm = s["well_size_mm"]
+        # Geometry always comes from the format settings; hardcoded fallbacks here
+        # had already drifted from sample_formats.csv (well_size 1.5 vs 1.53,
+        # a1 11.0/7.86 vs 11.01/7.87) and were dead on every reachable path.
+        s = self.wellplateFormatWidget.getWellplateSettings(self.format)
+        self.rows = s["rows"]
+        self.columns = s["cols"]
+        self.spacing_mm = s["well_spacing_mm"]
+        self.number_of_skip = s["number_of_skip"]
+        self.a1_x_mm = s["a1_x_mm"]
+        self.a1_y_mm = s["a1_y_mm"]
+        self.a1_x_pixel = s["a1_x_pixel"]
+        self.a1_y_pixel = s["a1_y_pixel"]
+        self.well_size_mm = s["well_size_mm"]
 
         self.initUI()
 
@@ -14676,8 +15034,9 @@ class Well1536SelectionWidget(QWidget):
         # Update cell_input with the correct label (e.g., A1, B2, AA1, etc.)
         self.cell_input.setText(self._cell_name(row, col))
 
-        x_mm = col * self.spacing_mm + self.a1_x_mm + WELLPLATE_OFFSET_X_mm
-        y_mm = row * self.spacing_mm + self.a1_y_mm + WELLPLATE_OFFSET_Y_mm
+        # Resolved at CLICK time - same rule as WellSelectionWidget.onDoubleClick.
+        transform = plate_transform_for(self.format)
+        x_mm, y_mm = transform.well_center_mm(row, col)
         self.signal_wellSelectedPos.emit(x_mm, y_mm)
 
     def redraw_wells(self):

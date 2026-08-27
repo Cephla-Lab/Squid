@@ -8,6 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
+from control.core.plate_transform import legacy_offset_for, PlateTransform, WellplateSettings, plate_transform_for
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -65,36 +66,32 @@ class ScanCoordinates:
         self.well_selector = None
         self.acquisition_pattern = control._def.ACQUISITION_PATTERN
         self.fov_pattern = control._def.FOV_PATTERN
+        # Identity + display state only. All well-center GEOMETRY (a1, pitch,
+        # offsets) is resolved at compute time via plate_transform_for() - the
+        # __init__ snapshots this class used to keep meant an offset or
+        # calibration change was silently ignored until a signal re-emit.
         self.format = control._def.WELLPLATE_FORMAT
-        self.a1_x_mm = control._def.A1_X_MM
-        self.a1_y_mm = control._def.A1_Y_MM
-        self.wellplate_offset_x_mm = control._def.WELLPLATE_OFFSET_X_mm
-        self.wellplate_offset_y_mm = control._def.WELLPLATE_OFFSET_Y_mm
-        self.well_spacing_mm = control._def.WELL_SPACING_MM
         self.well_size_mm = control._def.WELL_SIZE_MM
-        self.a1_x_pixel = None
-        self.a1_y_pixel = None
-        self.number_of_skip = None
 
         # Centralized region management
         self.region_centers = {}  # {region_id: [x, y, z]}
         self.region_shapes = {}  # {region_id: "Square"}
         self.region_fov_coordinates = {}  # {region_id: [(x,y,z), ...]}
+        # {region_id: count} of planned FOVs that fell outside stage travel and
+        # were skipped. Dropping them is correct (the stage cannot go there) -
+        # doing it SILENTLY is not: a plate seated near the travel edge, or a
+        # measured rotation pushing an edge well over the limit, would otherwise
+        # just quietly image fewer FOVs than the user selected.
+        self.out_of_travel = {}
 
     def add_well_selector(self, well_selector):
         self.well_selector = well_selector
 
-    def update_wellplate_settings(
-        self, format_, a1_x_mm, a1_y_mm, a1_x_pixel, a1_y_pixel, size_mm, spacing_mm, number_of_skip
-    ):
-        self.format = format_
-        self.a1_x_mm = a1_x_mm
-        self.a1_y_mm = a1_y_mm
-        self.a1_x_pixel = a1_x_pixel
-        self.a1_y_pixel = a1_y_pixel
-        self.well_size_mm = size_mm
-        self.well_spacing_mm = spacing_mm
-        self.number_of_skip = number_of_skip
+    def update_wellplate_settings(self, settings: "WellplateSettings"):
+        # Identity + display state only; geometry is resolved at compute time
+        # via plate_transform_for(self.format).
+        self.format = settings.format
+        self.well_size_mm = settings.well_size_mm
 
     @staticmethod
     def _index_to_row(index):
@@ -133,6 +130,9 @@ class ScanCoordinates:
         # populate the coordinates
         rows = np.unique(selected_wells[:, 0])
         _increasing = True
+        # Resolved at COMPUTE time: an in-place calibration edit or offset
+        # change now affects planning without a signal re-emit.
+        transform = plate_transform_for(self.format)
         for row in rows:
             items = selected_wells[selected_wells[:, 0] == row]
             columns = items[:, 1]
@@ -140,10 +140,8 @@ class ScanCoordinates:
             if _increasing == False:
                 columns = np.flip(columns)
             for column in columns:
-                x_mm = self.a1_x_mm + (column * self.well_spacing_mm) + self.wellplate_offset_x_mm
-                y_mm = self.a1_y_mm + (row * self.well_spacing_mm) + self.wellplate_offset_y_mm
                 well_id = self._index_to_row(row) + str(column + 1)
-                well_centers[well_id] = (x_mm, y_mm)
+                well_centers[well_id] = transform.well_center_mm(row, column)
             _increasing = not _increasing
         return well_centers
 
@@ -200,6 +198,7 @@ class ScanCoordinates:
         fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
         scan_coordinates = []
+        dropped_out_of_travel = 0
 
         if shape == "Rectangle":
             # Use scan_size_mm as height, width is 0.6 * height
@@ -227,6 +226,8 @@ class ScanCoordinates:
                     x = center_x + (j - half_steps_width) * step_size_mm
                     if self.validate_coordinates(x, y):
                         row.append((x, y))
+                    else:
+                        dropped_out_of_travel += 1
                 if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                     row.reverse()
                 scan_coordinates.extend(row)
@@ -270,6 +271,8 @@ class ScanCoordinates:
                     ):
                         if self.validate_coordinates(x, y):
                             row.append((x, y))
+                        else:
+                            dropped_out_of_travel += 1
 
                 if self.fov_pattern == "S-Pattern" and i % 2 == 1:
                     row.reverse()
@@ -278,7 +281,10 @@ class ScanCoordinates:
         if not scan_coordinates and shape == "Circle":
             if self.validate_coordinates(center_x, center_y):
                 scan_coordinates.append((center_x, center_y))
+            else:
+                dropped_out_of_travel += 1
 
+        self._register_travel_drops(well_id, dropped_out_of_travel, len(scan_coordinates))
         self.region_shapes[well_id] = shape
         self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
         self.region_fov_coordinates[well_id] = scan_coordinates
@@ -298,6 +304,7 @@ class ScanCoordinates:
                 for coord in region_scan_coordinates:
                     removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[1]))
 
+            self.out_of_travel.pop(well_id, None)
             self._log.info(f"Removed Region: {well_id}")
             self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed_fov_centers))
 
@@ -305,6 +312,7 @@ class ScanCoordinates:
         self.region_centers.clear()
         self.region_shapes.clear()
         self.region_fov_coordinates.clear()
+        self.out_of_travel.clear()
         self._update_callback(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 
@@ -332,6 +340,8 @@ class ScanCoordinates:
 
         # Region coordinates are already centered since center_x, center_y is grid center
         if scan_coordinates:  # Only add region if there are valid coordinates
+            # travel is the only filter above, so the drop count is derivable
+            self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_shapes[region_id] = "Square"
@@ -340,7 +350,7 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            self._log.info(f"Region Out of Bounds: {region_id}")
+            self._log.warning(f"Region {region_id!r} not added: every planned FOV is outside the stage travel limits.")
 
     def add_single_fov_region(self, region_id, center_x, center_y, center_z):
         if not self.validate_coordinates(center_x, center_y):
@@ -370,6 +380,8 @@ class ScanCoordinates:
             scan_coordinates.extend(row)
 
         if scan_coordinates:  # Only add region if there are valid coordinates
+            # travel is the only filter above, so the drop count is derivable
+            self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
             self._log.info(f"Added Flexible Region: {region_id}")
             self.region_centers[region_id] = [center_x, center_y, center_z]
             self.region_shapes[region_id] = "Square"
@@ -378,7 +390,7 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            print(f"Region Out of Bounds: {region_id}")
+            self._log.warning(f"Region {region_id!r} not added: every planned FOV is outside the stage travel limits.")
 
     def get_points_for_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""
@@ -427,8 +439,10 @@ class ScanCoordinates:
             )
 
         valid_points = []
+        dropped_out_of_travel = 0
         for x_center, y_center in grid_points:
             if not self.validate_coordinates(x_center, y_center):
+                dropped_out_of_travel += 1
                 self._log.debug(
                     f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
                 )
@@ -445,6 +459,11 @@ class ScanCoordinates:
                 continue
 
             valid_points.append((x_center, y_center))
+        if dropped_out_of_travel:
+            self._log.warning(
+                f"Manual region: {dropped_out_of_travel} planned FOVs fall outside the stage travel limits "
+                f"and were skipped."
+            )
         if not valid_points:
             return []
         valid_points = np.array(valid_points)
@@ -478,6 +497,8 @@ class ScanCoordinates:
             y = float(y_mm + template_y_mm[i])
             if self.validate_coordinates(x, y):
                 scan_coordinates.append((x, y))
+        # travel is the only filter above, so the drop count is derivable
+        self._register_travel_drops(region_id, len(template_x_mm) - len(scan_coordinates), len(scan_coordinates))
         self.region_centers[region_id] = [x_mm, y_mm, z_mm]
         self.region_shapes[region_id] = "Square"
         self.region_fov_coordinates[region_id] = scan_coordinates
@@ -542,6 +563,19 @@ class ScanCoordinates:
         return (
             control._def.SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= control._def.SOFTWARE_POS_LIMIT.X_POSITIVE
             and control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        )
+
+    def _register_travel_drops(self, region_id, dropped: int, kept: int):
+        """Record and LOUDLY report FOVs skipped for being outside stage travel."""
+        if dropped <= 0:
+            self.out_of_travel.pop(region_id, None)
+            return
+        self.out_of_travel[region_id] = dropped
+        limits = control._def.SOFTWARE_POS_LIMIT
+        self._log.warning(
+            f"Region {region_id!r}: {dropped} of {dropped + kept} planned FOVs fall outside the stage travel "
+            f"limits (X [{limits.X_NEGATIVE}, {limits.X_POSITIVE}] mm, Y [{limits.Y_NEGATIVE}, {limits.Y_POSITIVE}] mm) "
+            f"and were skipped - the acquisition will image {kept} FOVs there."
         )
 
     def _is_manual_region(self, key: str) -> bool:
@@ -709,6 +743,25 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
         descriptions = well_names.split(",")
 
+        # Offsets read LIVE at call time - this path has always disagreed with
+        # ScanCoordinates' snapshot-at-__init__ behaviour, and the golden oracle
+        # pins that disagreement until compute-time resolution unifies them.
+        pitch = wellplate_settings["well_spacing_mm"]
+        # legacy_offset_for applies the SAME suppression rule as the resolver:
+        # once a1 is measured the offset is already accounted for, and adding
+        # it here double-applied it on every calibrated format.
+        offset_x, offset_y = legacy_offset_for(wellplate_settings)
+        transform = PlateTransform(
+            a1_x_mm=wellplate_settings["a1_x_mm"],
+            a1_y_mm=wellplate_settings["a1_y_mm"],
+            # Per-axis when the settings carry it (anisotropic user formats);
+            # the scalar is the legacy fallback for caller-supplied dicts.
+            pitch_x_mm=wellplate_settings.get("well_spacing_x_mm", pitch),
+            pitch_y_mm=wellplate_settings.get("well_spacing_y_mm", pitch),
+            offset_x_mm=offset_x,
+            offset_y_mm=offset_y,
+        )
+
         for desc in descriptions:
             match = re.match(pattern, desc.strip())
             if match:
@@ -726,29 +779,15 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                             cols = reversed(cols)
 
                         for col in cols:
-                            x_mm = (
-                                wellplate_settings["a1_x_mm"]
-                                + col * wellplate_settings["well_spacing_mm"]
-                                + control._def.WELLPLATE_OFFSET_X_mm
+                            # list, not tuple: master normalized every region
+                            # center to a mutable [x, y(, z)] (PR #608).
+                            self.region_centers[self._index_to_row(row) + str(col + 1)] = list(
+                                transform.well_center_mm(row, col)
                             )
-                            y_mm = (
-                                wellplate_settings["a1_y_mm"]
-                                + row * wellplate_settings["well_spacing_mm"]
-                                + control._def.WELLPLATE_OFFSET_Y_mm
-                            )
-                            self.region_centers[self._index_to_row(row) + str(col + 1)] = [x_mm, y_mm]
                 else:
-                    x_mm = (
-                        wellplate_settings["a1_x_mm"]
-                        + start_col_index * wellplate_settings["well_spacing_mm"]
-                        + control._def.WELLPLATE_OFFSET_X_mm
+                    self.region_centers[start_row + start_col] = list(
+                        transform.well_center_mm(start_row_index, start_col_index)
                     )
-                    y_mm = (
-                        wellplate_settings["a1_y_mm"]
-                        + start_row_index * wellplate_settings["well_spacing_mm"]
-                        + control._def.WELLPLATE_OFFSET_Y_mm
-                    )
-                    self.region_centers[start_row + start_col] = [x_mm, y_mm]
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 
