@@ -293,7 +293,8 @@ def _build_sweep_figure(records: List[MeasurementRecord], metrics: Optional[Swee
 
     fig = Figure(figsize=(7, 7))
     FigureCanvasAgg(fig)
-    ax_fit, ax_res = fig.subplots(2, 1, sharex=True, height_ratios=[3, 1])
+    # gridspec_kw (not the direct height_ratios kwarg) — the latter needs matplotlib >= 3.6
+    ax_fit, ax_res = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [3, 1]})
     ax_fit.plot(commanded[valid], measured[valid], "o", markersize=4, label="measured")
     if np.count_nonzero(valid) >= 2:
         slope, intercept = np.polyfit(commanded[valid], measured[valid], 1)
@@ -323,7 +324,8 @@ def _build_repeatability_figure(records: List[MeasurementRecord], metrics: Optio
 
     fig = Figure(figsize=(8, 4))
     FigureCanvasAgg(fig)
-    ax_series, ax_hist = fig.subplots(1, 2, width_ratios=[2, 1])
+    # gridspec_kw (not the direct width_ratios kwarg) — the latter needs matplotlib >= 3.6
+    ax_series, ax_hist = fig.subplots(1, 2, gridspec_kw={"width_ratios": [2, 1]})
     ax_series.plot(cycles[valid], residuals[valid], "o-", markersize=4)
     ax_series.axhline(0.0, color="gray", linewidth=0.5)
     ax_series.set_xlabel("cycle")

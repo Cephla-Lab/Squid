@@ -156,6 +156,31 @@ def test_write_report_skips_plots_for_missing_phases(tmp_path):
     assert summary["repeatability"] is None
 
 
+def test_report_builds_without_matplotlib36_subplots_kwargs(monkeypatch, tmp_path):
+    """Microscope machines may run matplotlib < 3.6, where Figure.subplots() does not accept
+    height_ratios/width_ratios directly — the builders must pass them via gridspec_kw."""
+    from matplotlib.figure import Figure
+
+    original_subplots = Figure.subplots
+
+    def strict_subplots(self, *args, **kwargs):
+        for kw in ("height_ratios", "width_ratios"):
+            if kw in kwargs:
+                raise TypeError(f"subplots() got an unexpected keyword argument '{kw}'")
+        return original_subplots(self, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "subplots", strict_subplots)
+
+    results = _fake_results(tmp_path)
+    with tests.tools.NonInteractiveMatplotlib():
+        lac.write_report(results, LaserAFConfig(), tmp_path)
+
+    assert (tmp_path / "sweep.png").exists()
+    assert (tmp_path / "repeatability.png").exists()
+    assert (tmp_path / "stability.png").exists()
+    assert (tmp_path / "report.pdf").exists()
+
+
 def test_write_report_generates_pdf(tmp_path):
     results = _fake_results(tmp_path)
 
