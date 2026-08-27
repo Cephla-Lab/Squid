@@ -1,0 +1,618 @@
+"""
+One-click laser autofocus characterization for the current objective.
+
+Collects the data that used to require screen recordings: a Z sweep (linearity /
+sensitivity / usable range), closed-loop repeatability of move_to_target, and a
+displacement stability trace, plus the raw focus-camera spot images.  Results are
+written to a timestamped folder as CSV + JSON/text summary + PNG plots.
+
+This module is deliberately Qt-free so it can be unit-tested and driven headlessly;
+the GUI wraps the runner with a thin Qt signal adapter (see gui_hcs.py).  Plots are
+rendered with Figure/FigureCanvasAgg (never pyplot) because they are generated on a
+worker thread inside a Qt application.
+"""
+
+import dataclasses
+import json
+import math
+import re
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, List, Optional, Union
+
+import imageio as iio
+import numpy as np
+import pandas as pd
+import yaml
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+
+import control._def
+import control.utils
+import squid.logging
+from control.models.laser_af_config import LaserAFConfig
+
+
+@dataclass
+class LaserAFTestParams:
+    sweep_range_um: Optional[float] = None  # None -> the objective's configured laser_af_range
+    sweep_n_steps: int = 21
+    run_sweep: bool = True
+    repeatability_cycles: int = 20
+    repeatability_offset_um: Optional[float] = None  # None -> half the sweep range, alternating sign
+    run_repeatability: bool = True
+    stability_duration_s: float = 30.0
+    stability_interval_s: float = 0.5
+    run_stability: bool = True
+    save_spot_images: bool = True
+
+
+@dataclass
+class MeasurementRecord:
+    routine: str  # "sweep" | "repeatability" | "stability"
+    index: int
+    commanded_dz_um: float
+    stage_z_mm: float
+    measured_displacement_um: float
+    spot_x_px: float
+    spot_y_px: float
+    timestamp_s: float
+    move_success: Optional[bool] = None  # repeatability only
+
+
+@dataclass
+class SweepMetrics:
+    slope_um_per_um: float
+    r_squared: float
+    residual_rms_um: float
+    usable_range_neg_um: float
+    usable_range_pos_um: float
+    n_valid: int
+    n_total: int
+
+
+@dataclass
+class RepeatabilityMetrics:
+    rms_residual_um: float
+    max_abs_residual_um: float
+    success_rate: float
+    n_cycles: int
+
+
+@dataclass
+class StabilityMetrics:
+    sigma_um: float
+    drift_um_per_min: float
+    duration_s: float
+    n_samples: int
+
+
+@dataclass
+class LaserAFTestResults:
+    objective: str
+    output_dir: str
+    params: LaserAFTestParams
+    records: List[MeasurementRecord]
+    sweep: Optional[SweepMetrics] = None
+    repeatability: Optional[RepeatabilityMetrics] = None
+    stability: Optional[StabilityMetrics] = None
+    aborted: bool = False
+    error: Optional[str] = None
+
+
+CSV_COLUMNS = [
+    "routine",
+    "index",
+    "commanded_dz_um",
+    "stage_z_mm",
+    "measured_displacement_um",
+    "spot_x_px",
+    "spot_y_px",
+    "timestamp_s",
+    "move_success",
+]
+
+_REFERENCE_IMAGE_FIELDS = {"reference_image", "reference_image_shape", "reference_image_dtype"}
+
+
+def compute_sweep_metrics(commanded_dz_um, measured_um) -> SweepMetrics:
+    """Fit measured displacement vs commanded Z offset; NaN measurements mark the usable-range edges."""
+    commanded = np.asarray(commanded_dz_um, dtype=float)
+    measured = np.asarray(measured_um, dtype=float)
+    valid = np.isfinite(measured)
+    n_valid = int(np.count_nonzero(valid))
+    nan = float("nan")
+
+    slope = r_squared = residual_rms = nan
+    if n_valid >= 2:
+        slope, intercept = np.polyfit(commanded[valid], measured[valid], 1)
+        residuals = measured[valid] - (slope * commanded[valid] + intercept)
+        residual_rms = float(np.sqrt(np.mean(residuals**2)))
+        ss_tot = float(np.sum((measured[valid] - np.mean(measured[valid])) ** 2))
+        r_squared = 1.0 - float(np.sum(residuals**2)) / ss_tot if ss_tot > 0 else nan
+
+    # Usable range: from the point closest to 0, extend outward until the first invalid measurement.
+    usable_neg = usable_pos = nan
+    if n_valid:
+        order = np.argsort(commanded)
+        commanded_sorted = commanded[order]
+        valid_sorted = valid[order]
+        center = int(np.argmin(np.abs(commanded_sorted)))
+        if valid_sorted[center]:
+            i = center
+            while i - 1 >= 0 and valid_sorted[i - 1]:
+                i -= 1
+            j = center
+            while j + 1 < commanded_sorted.size and valid_sorted[j + 1]:
+                j += 1
+            usable_neg = float(commanded_sorted[i])
+            usable_pos = float(commanded_sorted[j])
+
+    return SweepMetrics(
+        float(slope), float(r_squared), float(residual_rms), usable_neg, usable_pos, n_valid, int(commanded.size)
+    )
+
+
+def compute_repeatability_metrics(residuals_um, move_successes) -> RepeatabilityMetrics:
+    """Residual statistics over successful cycles; success rate over all cycles."""
+    residuals = np.asarray(residuals_um, dtype=float)
+    successes = np.asarray(move_successes, dtype=bool)
+    ok = successes & np.isfinite(residuals)
+    nan = float("nan")
+    rms = float(np.sqrt(np.mean(residuals[ok] ** 2))) if np.any(ok) else nan
+    max_abs = float(np.max(np.abs(residuals[ok]))) if np.any(ok) else nan
+    rate = float(np.count_nonzero(successes) / successes.size) if successes.size else nan
+    return RepeatabilityMetrics(rms, max_abs, rate, int(residuals.size))
+
+
+def compute_stability_metrics(timestamps_s, measured_um) -> StabilityMetrics:
+    """Noise sigma after removing linear drift; drift reported in um/min."""
+    t = np.asarray(timestamps_s, dtype=float)
+    d = np.asarray(measured_um, dtype=float)
+    valid = np.isfinite(d)
+    nan = float("nan")
+    duration = float(t[-1] - t[0]) if t.size else nan
+    if np.count_nonzero(valid) >= 2:
+        slope, intercept = np.polyfit(t[valid], d[valid], 1)
+        detrended = d[valid] - (slope * t[valid] + intercept)
+        sigma = float(np.std(detrended))
+        drift = float(slope * 60.0)
+    else:
+        sigma = drift = nan
+    return StabilityMetrics(sigma, drift, duration, int(t.size))
+
+
+def create_output_dir(objective: str) -> Path:
+    """Create {DEFAULT_SAVING_PATH}/laser_af_tests/{objective}_{timestamp}/ (saving path read at call time)."""
+    sanitized = re.sub(r"[^\w\-]", "_", objective)
+    out = (
+        Path(control._def.DEFAULT_SAVING_PATH)
+        / "laser_af_tests"
+        / f"{sanitized}_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
+    )
+    control.utils.ensure_directory_exists(str(out))
+    return out
+
+
+def write_measurements_csv(records: List[MeasurementRecord], path: Union[str, Path]) -> None:
+    df = pd.DataFrame([dataclasses.asdict(r) for r in records], columns=CSV_COLUMNS)
+    df.to_csv(path, index=False)
+
+
+def _metrics_dict(metrics) -> Optional[dict]:
+    return dataclasses.asdict(metrics) if metrics is not None else None
+
+
+def format_summary_verdict(results: LaserAFTestResults) -> str:
+    """One-line pass/fail judgment shown at the end of summary.txt.
+
+    TODO(hongquan): define the acceptance thresholds from bench experience
+    (e.g. repeatability RMS limit per objective class, minimum sweep R^2,
+    maximum stability sigma) and return "PASS"/"FAIL: <reason>" accordingly.
+    """
+    return "Verdict: (no acceptance thresholds set)"
+
+
+def format_summary_text(results: LaserAFTestResults, config: LaserAFConfig) -> str:
+    lines = [
+        f"Laser AF test - objective {results.objective}",
+        f"Generated: {datetime.now().isoformat(timespec='seconds')}",
+        f"Output: {results.output_dir}",
+        f"pixel_to_um: {config.pixel_to_um:.4f}   laser_af_range: {config.laser_af_range} um",
+        "",
+    ]
+    if results.sweep is not None:
+        s = results.sweep
+        lines += [
+            "Sweep:",
+            f"  sensitivity slope: {s.slope_um_per_um:.4f} um/um   R^2: {s.r_squared:.5f}",
+            f"  residual RMS: {s.residual_rms_um:.3f} um",
+            f"  usable range: {s.usable_range_neg_um:+.1f} .. {s.usable_range_pos_um:+.1f} um "
+            f"({s.n_valid}/{s.n_total} points valid)",
+        ]
+    if results.repeatability is not None:
+        r = results.repeatability
+        lines += [
+            "Repeatability (move_to_target residuals):",
+            f"  RMS: {r.rms_residual_um:.3f} um   max |residual|: {r.max_abs_residual_um:.3f} um",
+            f"  success rate: {r.success_rate * 100.0:.1f}% of {r.n_cycles} cycles",
+        ]
+    if results.stability is not None:
+        st = results.stability
+        lines += [
+            "Stability:",
+            f"  sigma (detrended): {st.sigma_um:.3f} um   drift: {st.drift_um_per_min:+.3f} um/min",
+            f"  {st.n_samples} samples over {st.duration_s:.1f} s",
+        ]
+    if results.aborted:
+        lines.append("NOTE: test was aborted before completion; data above is partial.")
+    if results.error:
+        lines.append(f"ERROR: {results.error}")
+    lines += ["", format_summary_verdict(results)]
+    return "\n".join(lines) + "\n"
+
+
+def write_summary(results: LaserAFTestResults, config: LaserAFConfig, out_dir: Union[str, Path]) -> None:
+    summary = {
+        "objective": results.objective,
+        "generated": datetime.now().isoformat(timespec="seconds"),
+        "squid_repo_state": control.utils.get_squid_repo_state_description(),
+        "pixel_to_um": config.pixel_to_um,
+        "laser_af_range_um": config.laser_af_range,
+        "params": dataclasses.asdict(results.params),
+        "sweep": _metrics_dict(results.sweep),
+        "repeatability": _metrics_dict(results.repeatability),
+        "stability": _metrics_dict(results.stability),
+        "aborted": results.aborted,
+        "error": results.error,
+    }
+    out = Path(out_dir)
+    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out / "summary.txt").write_text(format_summary_text(results, config))
+
+
+def write_config_snapshot(config: LaserAFConfig, path: Union[str, Path]) -> None:
+    """Snapshot of the objective's LaserAFConfig without the bulky base64 reference-image fields."""
+    data = config.model_dump(mode="json", warnings=False, exclude=_REFERENCE_IMAGE_FIELDS)
+    Path(path).write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False))
+
+
+def _records_for(results: LaserAFTestResults, routine: str) -> List[MeasurementRecord]:
+    return [r for r in results.records if r.routine == routine]
+
+
+def _save_sweep_plot(records: List[MeasurementRecord], metrics: Optional[SweepMetrics], path: Path) -> None:
+    commanded = np.array([r.commanded_dz_um for r in records])
+    measured = np.array([r.measured_displacement_um for r in records])
+    valid = np.isfinite(measured)
+
+    fig = Figure(figsize=(7, 7))
+    FigureCanvasAgg(fig)
+    ax_fit, ax_res = fig.subplots(2, 1, sharex=True, height_ratios=[3, 1])
+    ax_fit.plot(commanded[valid], measured[valid], "o", markersize=4, label="measured")
+    if np.count_nonzero(valid) >= 2:
+        slope, intercept = np.polyfit(commanded[valid], measured[valid], 1)
+        fit_x = np.array([commanded.min(), commanded.max()])
+        ax_fit.plot(fit_x, slope * fit_x + intercept, "-", linewidth=1, label="fit")
+        ax_res.plot(commanded[valid], measured[valid] - (slope * commanded[valid] + intercept), "o", markersize=3)
+    ax_res.axhline(0.0, color="gray", linewidth=0.5)
+    title = "Laser AF Z sweep"
+    if metrics is not None and math.isfinite(metrics.slope_um_per_um):
+        title += f"  (slope {metrics.slope_um_per_um:.3f} um/um, R$^2$ {metrics.r_squared:.4f})"
+    if np.count_nonzero(~valid):
+        title += f"  [{int(np.count_nonzero(~valid))} failed points]"
+    ax_fit.set_title(title, fontsize=10)
+    ax_fit.set_ylabel("measured displacement (um)")
+    ax_fit.legend(fontsize=8)
+    ax_fit.grid(True, alpha=0.3)
+    ax_res.set_xlabel("commanded Z offset (um)")
+    ax_res.set_ylabel("residual (um)")
+    ax_res.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=200, bbox_inches="tight")
+
+
+def _save_repeatability_plot(
+    records: List[MeasurementRecord], metrics: Optional[RepeatabilityMetrics], path: Path
+) -> None:
+    residuals = np.array([r.measured_displacement_um for r in records])
+    cycles = np.array([r.index for r in records])
+    valid = np.isfinite(residuals)
+
+    fig = Figure(figsize=(8, 4))
+    FigureCanvasAgg(fig)
+    ax_series, ax_hist = fig.subplots(1, 2, width_ratios=[2, 1])
+    ax_series.plot(cycles[valid], residuals[valid], "o-", markersize=4)
+    ax_series.axhline(0.0, color="gray", linewidth=0.5)
+    ax_series.set_xlabel("cycle")
+    ax_series.set_ylabel("residual after move_to_target(0) (um)")
+    ax_series.grid(True, alpha=0.3)
+    if np.count_nonzero(valid):
+        ax_hist.hist(residuals[valid], bins=min(15, max(3, int(np.count_nonzero(valid) // 2 + 1))))
+    ax_hist.set_xlabel("residual (um)")
+    title = "Laser AF repeatability"
+    if metrics is not None and math.isfinite(metrics.rms_residual_um):
+        title += f"  (RMS {metrics.rms_residual_um:.3f} um, success {metrics.success_rate * 100.0:.0f}%)"
+    fig.suptitle(title, fontsize=10)
+    fig.savefig(path, dpi=200, bbox_inches="tight")
+
+
+def _save_stability_plot(records: List[MeasurementRecord], metrics: Optional[StabilityMetrics], path: Path) -> None:
+    t = np.array([r.timestamp_s for r in records])
+    d = np.array([r.measured_displacement_um for r in records])
+    valid = np.isfinite(d)
+
+    fig = Figure(figsize=(8, 4))
+    FigureCanvasAgg(fig)
+    ax = fig.subplots()
+    ax.plot(t[valid], d[valid], ".-", markersize=3, linewidth=0.7)
+    if np.count_nonzero(valid) >= 2:
+        slope, intercept = np.polyfit(t[valid], d[valid], 1)
+        ax.plot(t[valid], slope * t[valid] + intercept, "-", color="tab:orange", linewidth=1, label="drift")
+        ax.legend(fontsize=8)
+    ax.set_xlabel("time (s)")
+    ax.set_ylabel("measured displacement (um)")
+    title = "Laser AF stability"
+    if metrics is not None and math.isfinite(metrics.sigma_um):
+        title += f"  (sigma {metrics.sigma_um:.3f} um, drift {metrics.drift_um_per_min:+.3f} um/min)"
+    ax.set_title(title, fontsize=10)
+    ax.grid(True, alpha=0.3)
+    fig.savefig(path, dpi=200, bbox_inches="tight")
+
+
+def save_plots(results: LaserAFTestResults, out_dir: Union[str, Path]) -> None:
+    out = Path(out_dir)
+    sweep_records = _records_for(results, "sweep")
+    if sweep_records:
+        _save_sweep_plot(sweep_records, results.sweep, out / "sweep.png")
+    repeatability_records = _records_for(results, "repeatability")
+    if repeatability_records:
+        _save_repeatability_plot(repeatability_records, results.repeatability, out / "repeatability.png")
+    stability_records = _records_for(results, "stability")
+    if stability_records:
+        _save_stability_plot(stability_records, results.stability, out / "stability.png")
+
+
+def write_report(results: LaserAFTestResults, config: LaserAFConfig, out_dir: Union[str, Path]) -> None:
+    """Write measurements.csv, summary.json/.txt, laser_af_config.yaml, and the PNG plots."""
+    out = Path(out_dir)
+    write_measurements_csv(results.records, out / "measurements.csv")
+    write_summary(results, config, out)
+    write_config_snapshot(config, out / "laser_af_config.yaml")
+    save_plots(results, out)
+
+
+class LaserAFCharacterizationRunner:
+    """Runs the laser AF test phases against a LaserAutofocusController and writes the report.
+
+    Qt-free: progress and completion are plain callbacks (the GUI wraps them in Qt signals).
+    ``start()`` runs ``run_blocking()`` on a daemon thread; ``abort()`` stops between
+    measurements.  The stage (or piezo) Z position is always restored, the camera callback
+    state is put back, and ``finished_fn`` is always called exactly once with the results —
+    including on error, abort, or failed preconditions.
+    """
+
+    def __init__(
+        self,
+        laser_af_controller,
+        progress_fn: Callable[[str, int, int], None],
+        finished_fn: Callable[[LaserAFTestResults], None],
+    ):
+        self._controller = laser_af_controller
+        self._progress_fn = progress_fn
+        self._finished_fn = finished_fn
+        self._abort_requested = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def abort(self) -> None:
+        self._abort_requested.set()
+
+    def start(self, params: LaserAFTestParams) -> None:
+        if self.is_running():
+            raise RuntimeError("A laser AF test is already running")
+        self._thread = threading.Thread(target=self.run_blocking, args=(params,), daemon=True, name="LaserAFTest")
+        self._thread.start()
+
+    def run_blocking(self, params: LaserAFTestParams) -> LaserAFTestResults:
+        self._abort_requested.clear()
+        controller = self._controller
+        config = controller.laser_af_properties
+        objective = controller.objectiveStore.current_objective if controller.objectiveStore else "unknown"
+        results = LaserAFTestResults(objective=objective, output_dir="", params=params, records=[])
+
+        error = self._check_preconditions(controller, config)
+        if error:
+            self._log.error(f"Laser AF test cannot start: {error}")
+            results.error = error
+            self._finished_fn(results)
+            return results
+
+        sweep_range_um = float(params.sweep_range_um if params.sweep_range_um is not None else config.laser_af_range)
+        repeat_offset_um = float(
+            params.repeatability_offset_um if params.repeatability_offset_um is not None else sweep_range_um / 2.0
+        )
+
+        out_dir = create_output_dir(objective)
+        results.output_dir = str(out_dir)
+        images_dir = None
+        if params.save_spot_images:
+            images_dir = out_dir / "spot_images"
+            control.utils.ensure_directory_exists(str(images_dir))
+
+        start_z_mm = controller.stage.get_pos().z_mm
+        start_piezo_um = controller.piezo.position if controller.piezo is not None else None
+        callbacks_were_enabled = controller.camera.get_callbacks_enabled()
+        self._t0 = time.monotonic()
+        self._log.info(
+            f"Starting laser AF test for objective '{objective}' "
+            f"(sweep +/-{sweep_range_um} um / {params.sweep_n_steps} steps, "
+            f"{params.repeatability_cycles} repeatability cycles, {params.stability_duration_s} s stability) "
+            f"-> {out_dir}"
+        )
+
+        try:
+            if params.run_sweep and not self._abort_requested.is_set():
+                self._run_sweep(params, sweep_range_um, images_dir, results)
+                self._restore_start_position(start_z_mm, start_piezo_um)
+            if params.run_repeatability and not self._abort_requested.is_set():
+                self._run_repeatability(params, repeat_offset_um, images_dir, results)
+                self._restore_start_position(start_z_mm, start_piezo_um)
+            if params.run_stability and not self._abort_requested.is_set():
+                self._run_stability(params, images_dir, results)
+        except Exception as exc:
+            self._log.exception("Laser AF test failed")
+            results.error = str(exc)
+        finally:
+            results.aborted = self._abort_requested.is_set()
+            try:
+                self._restore_start_position(start_z_mm, start_piezo_um)
+            except Exception as restore_exc:
+                self._log.error(f"Failed to restore Z after laser AF test: {restore_exc}. Original: {results.error}")
+                if results.error is None:
+                    results.error = f"Failed to restore Z position: {restore_exc}"
+            try:
+                controller.camera.enable_callbacks(callbacks_were_enabled)
+            except Exception:
+                self._log.exception("Failed to restore focus-camera callback state after laser AF test")
+            try:
+                # The controller methods leave the AF laser off, but make sure even on error paths.
+                controller.microcontroller.turn_off_AF_laser()
+                controller.microcontroller.wait_till_operation_is_completed()
+            except Exception:
+                self._log.exception("Failed to ensure AF laser is off after laser AF test")
+
+            self._compute_metrics(results)
+            try:
+                write_report(results, config, out_dir)
+            except Exception as report_exc:
+                self._log.exception("Failed to write laser AF test report")
+                if results.error is None:
+                    results.error = f"Failed to write report: {report_exc}"
+
+            self._log.info(f"Laser AF test finished (aborted={results.aborted}, error={results.error})")
+            self._finished_fn(results)
+        return results
+
+    @staticmethod
+    def _check_preconditions(controller, config: LaserAFConfig) -> Optional[str]:
+        if not controller.is_initialized:
+            return "Laser AF is not initialized for the current objective"
+        if not config.has_reference or config.x_reference is None:
+            return "Laser AF reference is not set for the current objective"
+        if not config.pixel_to_um:
+            return "Laser AF pixel_to_um calibration is zero or missing"
+        return None
+
+    def _settle(self) -> None:
+        if self._controller.piezo is not None:
+            time.sleep(control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000.0)
+        else:
+            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000.0)
+
+    def _restore_start_position(self, start_z_mm: float, start_piezo_um: Optional[float]) -> None:
+        if self._controller.piezo is not None and start_piezo_um is not None:
+            self._controller.piezo.move_to(start_piezo_um)
+        else:
+            self._controller.stage.move_z_to(start_z_mm)
+        self._settle()
+
+    def _measure_and_record(
+        self,
+        routine: str,
+        index: int,
+        commanded_dz_um: float,
+        images_dir: Optional[Path],
+        results: LaserAFTestResults,
+        move_success: Optional[bool] = None,
+        save_image: bool = True,
+    ):
+        measurement = self._controller.measure_displacement_detailed()
+        results.records.append(
+            MeasurementRecord(
+                routine=routine,
+                index=index,
+                commanded_dz_um=commanded_dz_um,
+                stage_z_mm=self._controller.stage.get_pos().z_mm,
+                measured_displacement_um=measurement.displacement_um,
+                spot_x_px=measurement.spot_x_px,
+                spot_y_px=measurement.spot_y_px,
+                timestamp_s=time.monotonic() - self._t0,
+                move_success=move_success,
+            )
+        )
+        if save_image and images_dir is not None and measurement.image is not None:
+            iio.imwrite(images_dir / f"{routine}_{index:03d}.bmp", measurement.image)
+        return measurement
+
+    def _run_sweep(self, params: LaserAFTestParams, sweep_range_um: float, images_dir, results) -> None:
+        offsets = np.linspace(-sweep_range_um, sweep_range_um, params.sweep_n_steps)
+        # One move down, then unidirectional upward steps (the stage's backlash compensation
+        # handles the initial descent; measuring bottom-up avoids per-point backlash).
+        previous = 0.0
+        for i, offset in enumerate(offsets):
+            if self._abort_requested.is_set():
+                return
+            self._progress_fn("Sweep", i + 1, len(offsets))
+            self._controller.move_z_um(float(offset - previous))
+            previous = float(offset)
+            self._settle()
+            self._measure_and_record("sweep", i, float(offset), images_dir, results)
+
+    def _run_repeatability(self, params: LaserAFTestParams, repeat_offset_um: float, images_dir, results) -> None:
+        for i in range(params.repeatability_cycles):
+            if self._abort_requested.is_set():
+                return
+            self._progress_fn("Repeatability", i + 1, params.repeatability_cycles)
+            offset = repeat_offset_um if i % 2 == 0 else -repeat_offset_um
+            self._controller.move_z_um(offset)
+            self._settle()
+            ok = self._controller.move_to_target(0.0)
+            self._settle()
+            self._measure_and_record("repeatability", i, offset, images_dir, results, move_success=ok)
+            if not ok:
+                # On failure move_to_target leaves the stage at the offset position; undo it so
+                # cycles don't accumulate displacement.
+                self._controller.move_z_um(-offset)
+                self._settle()
+
+    def _run_stability(self, params: LaserAFTestParams, images_dir, results) -> None:
+        n_expected = max(1, int(round(params.stability_duration_s / params.stability_interval_s)))
+        phase_start = time.monotonic()
+        i = 0
+        last_measurement = None
+        while time.monotonic() - phase_start < params.stability_duration_s:
+            if self._abort_requested.is_set():
+                break
+            self._progress_fn("Stability", min(i + 1, n_expected), n_expected)
+            sample_start = time.monotonic()
+            # Full-rate spot images would dominate disk use; keep only the first and last frames.
+            last_measurement = self._measure_and_record("stability", i, 0.0, images_dir, results, save_image=(i == 0))
+            i += 1
+            remaining = params.stability_interval_s - (time.monotonic() - sample_start)
+            if remaining > 0:
+                time.sleep(remaining)
+        if i > 1 and images_dir is not None and last_measurement is not None and last_measurement.image is not None:
+            iio.imwrite(images_dir / f"stability_{i - 1:03d}.bmp", last_measurement.image)
+
+    def _compute_metrics(self, results: LaserAFTestResults) -> None:
+        sweep = [r for r in results.records if r.routine == "sweep"]
+        if sweep:
+            results.sweep = compute_sweep_metrics(
+                [r.commanded_dz_um for r in sweep], [r.measured_displacement_um for r in sweep]
+            )
+        repeatability = [r for r in results.records if r.routine == "repeatability"]
+        if repeatability:
+            results.repeatability = compute_repeatability_metrics(
+                [r.measured_displacement_um for r in repeatability], [bool(r.move_success) for r in repeatability]
+            )
+        stability = [r for r in results.records if r.routine == "stability"]
+        if stability:
+            results.stability = compute_stability_metrics(
+                [r.timestamp_s for r in stability], [r.measured_displacement_um for r in stability]
+            )
