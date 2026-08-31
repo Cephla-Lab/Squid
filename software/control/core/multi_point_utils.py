@@ -58,7 +58,6 @@ class AcquisitionParameters:
     z_stacking_config: str
     z_range: Tuple[float, float]
 
-    use_fluidics: bool
     apply_channel_offset: bool = True
     skip_saving: bool = False
 

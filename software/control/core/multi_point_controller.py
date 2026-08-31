@@ -147,9 +147,6 @@ def _save_acquisition_yaml(
         "num_rows": params.plate_num_rows,
         "num_cols": params.plate_num_cols,
     }
-    yaml_dict["fluidics"] = {
-        "enabled": params.use_fluidics,
-    }
 
     yaml_path = os.path.join(experiment_path, "acquisition.yaml")
     try:
@@ -187,7 +184,6 @@ class MultiPointController:
         self.objectiveStore: ObjectiveStore = objective_store
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.multiPointWorker: Optional[MultiPointWorker] = None
-        self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
         self._per_acq_log_handler = None
         self._memory_monitor: Optional[MemoryMonitor] = None
@@ -225,7 +221,6 @@ class MultiPointController:
         self.experiment_ID = None
         self.use_manual_focus_map = False
         self.base_path = None
-        self.use_fluidics = False
         self.skip_saving = False
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
@@ -430,9 +425,6 @@ class MultiPointController:
 
     def set_base_path(self, path):
         self.base_path = path
-
-    def set_use_fluidics(self, use_fluidics):
-        self.use_fluidics = use_fluidics
 
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
@@ -1004,7 +996,6 @@ class MultiPointController:
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
-            use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,

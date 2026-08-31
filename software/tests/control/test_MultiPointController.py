@@ -373,7 +373,6 @@ def test_acquisition_parameters_has_apply_channel_offset_default_true():
         display_resolution_scaling=1.0,
         z_stacking_config="FROM CENTER",
         z_range=(0.0, 0.0),
-        use_fluidics=False,
     )
     assert p.apply_channel_offset is True
 
@@ -406,7 +405,6 @@ def test_acquisition_parameters_apply_channel_offset_can_be_overridden():
         display_resolution_scaling=1.0,
         z_stacking_config="FROM CENTER",
         z_range=(0.0, 0.0),
-        use_fluidics=False,
         apply_channel_offset=False,
     )
     assert p.apply_channel_offset is False
@@ -475,3 +473,10 @@ def test_acquisition_moves_to_per_fov_z():
     # Every image of this single-FOV, NZ=1 acquisition was captured at the per-FOV z.
     assert captured_z_mm, "no images were captured"
     assert all(z == pytest.approx(z_target, abs=1e-3) for z in captured_z_mm)
+
+
+def test_engine_has_no_fluidics_coupling():
+    from dataclasses import fields
+
+    assert "use_fluidics" not in {f.name for f in fields(AcquisitionParameters)}
+    assert not hasattr(MultiPointController, "set_use_fluidics")

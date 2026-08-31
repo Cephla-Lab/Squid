@@ -6818,7 +6818,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_use_fluidics(False)
             self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
             self.multipointController.set_widget_type("flexible")
             self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
@@ -7264,7 +7263,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_use_piezo(False)
         self.multipointController.set_af_flag(False)
         self.multipointController.set_reflection_af_flag(False)
-        self.multipointController.set_use_fluidics(False)
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
@@ -9196,7 +9194,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
             self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
             self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_use_fluidics(False)
             self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
             self.multipointController.set_widget_type("wellplate")
             self.multipointController.set_scan_size(self.entry_scan_size.value())
@@ -9360,7 +9357,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_use_piezo(False)
         self.multipointController.set_af_flag(False)
         self.multipointController.set_reflection_af_flag(False)
-        self.multipointController.set_use_fluidics(False)
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
