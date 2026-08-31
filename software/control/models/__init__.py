@@ -11,6 +11,8 @@ This package contains models for:
 - AcquisitionConfig: User-facing acquisition channel settings (general + objective-specific)
 - ChannelGroup: Multi-camera channel grouping
 - LaserAFConfig: Laser autofocus configuration
+- ProtocolFile / SettingsBlock / CoordinatesBlock: fluidics protocol file (sequence file + imaging rows)
+- RunManifest: how a fluidics protocol run went (cursor, attempts, TEC state)
 """
 
 from control.models.illumination_config import (
@@ -59,6 +61,27 @@ from control.models.acquisition_config import (
     validate_channel_group,
 )
 from control.models.laser_af_config import LaserAFConfig
+from control.models.fluidics_protocol import (
+    ProtocolFile,
+    ImagingHeader,
+    ImagingRow,
+    SettingsBlock,
+    CoordinatesBlock,
+    Region,
+    FluidicsStep,
+    ImagingStep,
+    load_protocol,
+    save_protocol,
+    split_into_steps,
+    strip_for_library,
+)
+from control.models.fluidics_run import (
+    RunManifest,
+    StepRecord,
+    AttemptRecord,
+    RunCursor,
+    TecState,
+)
 
 __all__ = [
     # Illumination
@@ -103,4 +126,23 @@ __all__ = [
     "validate_channel_group",
     # Laser AF
     "LaserAFConfig",
+    # Fluidics protocol
+    "ProtocolFile",
+    "ImagingHeader",
+    "ImagingRow",
+    "SettingsBlock",
+    "CoordinatesBlock",
+    "Region",
+    "FluidicsStep",
+    "ImagingStep",
+    "load_protocol",
+    "save_protocol",
+    "split_into_steps",
+    "strip_for_library",
+    # Fluidics run
+    "RunManifest",
+    "StepRecord",
+    "AttemptRecord",
+    "RunCursor",
+    "TecState",
 ]

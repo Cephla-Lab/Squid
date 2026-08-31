@@ -169,3 +169,48 @@ def test_focus_grid_for_region_registered_without_a_shape():
 
     assert len(grid["loaded"]) == 9
     assert sc.get_region_shape("loaded") == "Square"
+
+
+def _fresh_scan_coordinates(updates):
+    from control.core.scan_coordinates import ScanCoordinates
+
+    scope = Microscope.build_from_global_config(True)
+    return ScanCoordinates(scope.objective_store, scope.stage, scope.camera, update_callback=updates.append)
+
+
+def test_add_region_from_fovs_stores_3tuples_center_shape_and_notifies():
+    import pytest
+
+    from control.core.scan_coordinates import AddScanCoordinateRegion
+
+    updates = []
+    sc = _fresh_scan_coordinates(updates)
+
+    sc.add_region_from_fovs("A1", [[10.0, 10.0, 3.0], [10.5, 10.0, 3.2]])
+
+    assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0), (10.5, 10.0, 3.2)]
+    assert sc.region_centers["A1"] == [10.25, 10.0, pytest.approx(3.1)]
+    assert sc.region_shapes["A1"] == "Manual"
+    assert isinstance(updates[-1], AddScanCoordinateRegion) and len(updates[-1].fov_centers) == 2
+
+
+def test_add_region_from_fovs_without_full_z_stores_xy_only():
+    sc = _fresh_scan_coordinates([])
+    sc.add_region_from_fovs("B2", [[20.0, 20.0, 1.0], [20.5, 20.0]])
+    assert sc.region_fov_coordinates["B2"] == [(20.0, 20.0), (20.5, 20.0)]
+    assert sc.region_centers["B2"] == [20.25, 20.0]
+
+
+def test_add_region_from_fovs_rejects_bad_input_without_storing():
+    import pytest
+
+    import control._def
+
+    sc = _fresh_scan_coordinates([])
+    with pytest.raises(ValueError):
+        sc.add_region_from_fovs("empty", [])
+    with pytest.raises(ValueError):
+        sc.add_region_from_fovs("far", [[control._def.SOFTWARE_POS_LIMIT.X_POSITIVE + 100.0, 10.0]])
+    with pytest.raises(ValueError):
+        sc.add_region_from_fovs("deep", [[10.0, 10.0, control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE + 100.0]])
+    assert not sc.has_regions()

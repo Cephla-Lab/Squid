@@ -14,3 +14,8 @@ extend-exclude = '''
 | ^/control/ndviewer_light/
 | ^/fluidics_v2/
 )'''
+
+[tool.pytest.ini_options]
+# The two submodules carry their own test suites (and the fluidics one patches time.sleep in its
+# conftest); never collect them from software/. The rest is pytest's default list.
+norecursedirs = ["fluidics_v2", "ndviewer_light", "*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}"]

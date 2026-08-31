@@ -2863,24 +2863,6 @@ def test_load_regions_mid_loop_conversion_failure_leaves_existing_regions_intact
     assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
 
 
-def test_fluidics_widget_load_coordinates_loads_z(tmp_path):
-    # The fluidics widget's loader goes through the same shared helper.
-    csv_path = tmp_path / "coords.csv"
-    pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [3.0]}).to_csv(csv_path, index=False)
-
-    fake = SimpleNamespace(
-        scanCoordinates=_scan_coordinates_for_test(),
-        navigationViewer=MagicMock(),
-        _log=MagicMock(),
-    )
-
-    control.widgets.MultiPointWithFluidicsWidget.load_coordinates(fake, str(csv_path))
-
-    assert fake.scanCoordinates.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
-    assert fake.scanCoordinates.region_centers["A1"] == [10.0, 10.0]
-    fake.navigationViewer.register_fovs_to_image.assert_called_once()
-
-
 def test_parfocal_adjusted_z_mm_uses_xeryon_switcher_offset(monkeypatch):
     monkeypatch.setattr(control._def, "USE_XERYON", True)
     monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_1", ["4x", "10x"])
@@ -2955,3 +2937,101 @@ def test_focus_map_goto_next_point_moves_stage_once_per_click(qtbot):
         widget.stage.move_x_to.assert_called_once_with(x)
         widget.stage.move_y_to.assert_called_once_with(y)
         widget.stage.move_z_to.assert_called_once_with(z)
+
+
+def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
+    def widget(**kw):
+        m = MagicMock()
+        for name, value in kw.items():
+            getattr(m, name).return_value = value
+        return m
+
+    focus_map = MagicMock()
+    focus_map.fit_surface.return_value = fit_ok
+    return SimpleNamespace(
+        checkbox_xy=widget(isChecked=True),
+        scanCoordinates=MagicMock(),
+        combobox_z_mode=widget(currentText="Set Range"),
+        entry_minZ=widget(value=100.0),
+        entry_maxZ=widget(value=200.0),
+        entry_deltaZ=widget(value=1.5),
+        entry_NZ=widget(value=3),
+        entry_dt=widget(value=0.0),
+        entry_Nt=widget(value=1),
+        checkbox_useFocusMap=widget(isChecked=use_focus_map),
+        focusMapWidget=focus_map,
+        checkbox_usePiezo=widget(isChecked=False),
+        checkbox_withAutofocus=widget(isChecked=True),
+        checkbox_withReflectionAutofocus=widget(isChecked=False),
+        lineEdit_savingDir=widget(text="/tmp/saving"),
+        checkbox_skipSaving=widget(isChecked=False),
+        entry_scan_size=widget(value=2.0),
+        entry_overlap=widget(value=10.0),
+        combobox_xy_mode=widget(currentText="Load Coordinates"),
+        channel_sequence=widget(ordered_selected_names=["BF LED matrix full"]),
+        multipointController=MagicMock(),
+        stage=MagicMock(),
+        _log=MagicMock(),
+        set_coordinates_to_current_position=MagicMock(),
+    )
+
+
+def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting():
+    fake = _wellplate_ui_fake()
+
+    assert control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake) is None
+
+    mpc = fake.multipointController
+    mpc.set_z_range.assert_called_once_with(0.1, 0.2)
+    mpc.set_focus_map.assert_called_once_with(None)
+    mpc.set_deltaZ.assert_called_once_with(1.5)
+    mpc.set_NZ.assert_called_once_with(3)
+    mpc.set_af_flag.assert_called_once_with(True)
+    mpc.set_base_path.assert_called_once_with("/tmp/saving")
+    mpc.set_widget_type.assert_called_once_with("wellplate")
+    mpc.set_xy_mode.assert_called_once_with("Load Coordinates")
+    mpc.set_selected_configurations.assert_called_once_with(["BF LED matrix full"])
+    mpc.start_new_experiment.assert_not_called()
+    mpc.run_acquisition.assert_not_called()
+    fake.scanCoordinates.sort_coordinates.assert_called_once()
+
+
+def test_wellplate_configure_controller_from_ui_reports_a_failed_focus_fit():
+    fake = _wellplate_ui_fake(fit_ok=False, use_focus_map=True)
+
+    problem = control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+
+    assert problem == "Failed to fit focus surface"
+    fake.multipointController.set_selected_configurations.assert_not_called()
+
+
+def test_flexible_set_ui_acquisition_running_marks_the_widget_running():
+    fake = SimpleNamespace(
+        is_current_acquisition_widget=False,
+        btn_startAcquisition=MagicMock(),
+        setEnabled_all=MagicMock(),
+        signal_acquisition_started=MagicMock(),
+        signal_acquisition_shape=MagicMock(),
+        emit_selected_channels=MagicMock(),
+    )
+
+    control.widgets.FlexibleMultiPointWidget._set_ui_acquisition_running(fake, 3, 1.5, set_button_checked=True)
+
+    assert fake.is_current_acquisition_widget is True
+    fake.setEnabled_all.assert_called_once_with(False)
+    fake.btn_startAcquisition.setChecked.assert_called_once_with(True)
+    fake.signal_acquisition_started.emit.assert_called_once_with(True)
+    fake.signal_acquisition_shape.emit.assert_called_once_with(3, 1.5)
+    fake.emit_selected_channels.assert_called_once()
+
+
+def test_flexible_set_acquisition_running_state_dispatches_like_the_wellplate_slot():
+    fake = SimpleNamespace(
+        _log=MagicMock(), _set_ui_acquisition_running=MagicMock(), acquisition_is_finished=MagicMock()
+    )
+
+    control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, True, 3, 1.5)
+    fake._set_ui_acquisition_running.assert_called_once_with(3, 1.5, set_button_checked=True)
+
+    control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, False)
+    fake.acquisition_is_finished.assert_called_once()

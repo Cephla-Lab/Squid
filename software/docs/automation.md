@@ -11,7 +11,7 @@ The automation workflow:
 2. Run the acquisition programmatically using the saved YAML
 3. Optionally override parameters like wells or save location
 
-**Note:** Only wellplate mode acquisitions are supported via scripting. FlexibleMultiPoint acquisitions must be run from the GUI.
+**Note:** Wellplate and flexible acquisition YAMLs are both accepted; the regions/positions and every controller setting come from the file (the tab's controls are refreshed asynchronously).
 
 ## Prerequisites
 
@@ -149,10 +149,6 @@ jobs:
 - Ensure the GUI is running with `--start-server` flag
 - Or enable via Settings → Enable MCP Control Server
 - Check that port 5050 is not blocked
-
-### "TCP command only supports wellplate mode"
-- The YAML was saved from FlexibleMultiPoint mode
-- Re-save the acquisition using wellplate mode, or run from GUI
 
 ### "Hardware configuration mismatch"
 - The current objective or camera binning differs from when YAML was saved

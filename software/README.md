@@ -133,13 +133,14 @@ Follow the instructions during the installation.
 <details>
 <summary>Installing fluidics module</summary>
 
-Link to the fluidics software repo: https://github.com/Alpaca233/fluidics_v2
+Link to the fluidics software repo: https://github.com/Cephla-Lab/Squid-Fluidics (vendored as the `software/fluidics_v2` submodule).
 
 In the Squid repo, run
 ```
-git submodule init
-git submodule update
+git submodule update --init software/fluidics_v2
+cd software && pip3 install --no-deps -e fluidics_v2/software
 ```
+Then set `RUN_FLUIDICS = True` and `FLUIDICS_CONFIG_PATH` in your `configuration*.ini` (see `machine_configs/fluidics_config.yaml.example`).
 
 </details>
 

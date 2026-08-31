@@ -204,3 +204,55 @@ class TestGetImagePixelSizeUm:
                 assert scope.get_image_pixel_size_um() is None
         finally:
             scope.close()
+
+
+def test_fluidics_ini_keys_have_new_defaults():
+    # [SIMULATION] simulate_fluidics is parsed like the other SIMULATE_* keys; the default config
+    # path is the machine_configs template's real-file name.
+    assert control._def.SIMULATE_FLUIDICS is False
+    assert isinstance(control._def.RUN_FLUIDICS, bool)
+    assert control._def.FLUIDICS_CONFIG_PATH == "machine_configs/fluidics_config.yaml"
+
+
+def test_addons_fluidics_is_none_without_run_fluidics():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        assert scope.addons.fluidics is None
+    finally:
+        scope.close()
+
+
+def test_run_fluidics_builds_an_uninitialized_simulated_service(monkeypatch):
+    pytest.importorskip("fluidics")
+    from control.fluidics_system import FluidicsService
+
+    # The import guard in control.microscope ran at import time with RUN_FLUIDICS=False, so bind the class
+    # explicitly; SIMULATE_FLUIDICS is honoured through _should_simulate like the other components.
+    monkeypatch.setattr(control._def, "RUN_FLUIDICS", True)
+    monkeypatch.setattr(control._def, "SIMULATE_FLUIDICS", True)
+    monkeypatch.setattr(control.microscope, "FluidicsService", FluidicsService, raising=False)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        service = scope.addons.fluidics
+        assert isinstance(service, FluidicsService)
+        assert service.simulated is True
+        assert service.initialized is False
+        assert service.default_config_path == control._def.FLUIDICS_CONFIG_PATH
+    finally:
+        scope.close()
+
+
+def test_microscope_close_closes_the_fluidics_service():
+    class FakeService:
+        closed = 0
+
+        def close(self):
+            self.closed += 1
+            return []
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    fake = FakeService()
+    scope.addons.fluidics = fake
+    scope.close()
+    scope.close()  # second close is a no-op
+    assert fake.closed == 1

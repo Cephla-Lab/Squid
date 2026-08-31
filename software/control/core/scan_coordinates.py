@@ -351,6 +351,38 @@ class ScanCoordinates:
         self.region_fov_coordinates[region_id] = [(center_x, center_y)]
         self._update_callback(AddScanCoordinateRegion(fov_centers=[FovCenter(x_mm=center_x, y_mm=center_y)]))
 
+    def add_region_from_fovs(self, region_id, fovs, shape="Manual"):
+        """Add a region from an explicit FOV list - the Load-Coordinates shape of region.
+
+        Each FOV is (x, y) or (x, y, z) in mm. Z is kept only when every FOV has one (the worker moves
+        Z per FOV only for 3-tuples; a region must be homogeneous). Validates before mutating and fires
+        the AddScanCoordinateRegion update so the navigation viewer and focus map stay in sync.
+        """
+        fovs = list(fovs)
+        if not fovs:
+            raise ValueError(f"Region {region_id} has no FOVs")
+        has_z = all(len(fov) > 2 for fov in fovs)
+        coords = []
+        for fov in fovs:
+            x, y = float(fov[0]), float(fov[1])
+            if not self.validate_coordinates(x, y):
+                raise ValueError(f"FOV (x,y)=({x},{y}) of region {region_id} is outside the software XY limits")
+            if has_z:
+                z = float(fov[2])
+                if not control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE <= z <= control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE:
+                    raise ValueError(f"FOV z={z} of region {region_id} is outside the software Z limits")
+                coords.append((x, y, z))
+            else:
+                coords.append((x, y))
+        center = [sum(c[0] for c in coords) / len(coords), sum(c[1] for c in coords) / len(coords)]
+        if has_z:
+            center.append(sum(c[2] for c in coords) / len(coords))
+        self.region_centers[region_id] = center
+        self.region_shapes[region_id] = shape
+        self.region_fov_coordinates[region_id] = coords
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(coords)))
+        self._log.info(f"Added Region from {len(coords)} FOVs: {region_id}")
+
     def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
         grid_width_mm = (Nx - 1) * dx

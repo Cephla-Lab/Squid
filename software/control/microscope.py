@@ -61,9 +61,9 @@ class ObjectiveChangerProtocol(Protocol):
 
 
 if control._def.RUN_FLUIDICS:
-    from control.fluidics import Fluidics
+    from control.fluidics_system import FluidicsService
 else:
-    Fluidics = None
+    FluidicsService = None
 
 if control._def.ENABLE_NL5:
     import control.NL5 as NL5
@@ -103,6 +103,7 @@ class MicroscopeAddons:
         filter_wheel_simulated = _should_simulate(simulated, control._def.SIMULATE_FILTER_WHEEL)
         objective_changer_simulated = _should_simulate(simulated, control._def.SIMULATE_OBJECTIVE_CHANGER)
         laser_af_camera_simulated = _should_simulate(simulated, control._def.SIMULATE_LASER_AF_CAMERA)
+        fluidics_simulated = _should_simulate(simulated, control._def.SIMULATE_FLUIDICS)
 
         xlight = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
@@ -174,7 +175,11 @@ class MicroscopeAddons:
 
         fluidics = None
         if control._def.RUN_FLUIDICS:
-            fluidics = Fluidics(config_path=control._def.FLUIDICS_CONFIG_PATH, simulation=simulated)
+            # Uninitialized on purpose: the Fluidics tab's Initialize button loads the config and brings the
+            # system up (blocking, off the GUI thread). See control/fluidics_system.py.
+            fluidics = FluidicsService(
+                default_config_path=control._def.FLUIDICS_CONFIG_PATH, simulated=fluidics_simulated
+            )
 
         piezo_stage = None
         if control._def.HAS_OBJECTIVE_PIEZO:
@@ -231,7 +236,7 @@ class MicroscopeAddons:
         emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
         objective_changer: Optional[ObjectiveChangerProtocol] = None,
         camera_focus: Optional[AbstractCamera] = None,
-        fluidics: Optional[Fluidics] = None,
+        fluidics: Optional["FluidicsService"] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
         squid_laser_engine: Optional["squid_laser_engine.SquidLaserEngineBase"] = None,
@@ -243,7 +248,7 @@ class MicroscopeAddons:
         self.emission_filter_wheel = emission_filter_wheel
         self.objective_changer = objective_changer
         self.camera_focus: Optional[AbstractCamera] = camera_focus
-        self.fluidics = fluidics
+        self.fluidics: Optional["FluidicsService"] = fluidics
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
@@ -1099,6 +1104,12 @@ class Microscope:
                 self.addons.squid_laser_engine.close()
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
+
+        if self.addons.fluidics is not None:
+            try:
+                self.addons.fluidics.close()
+            except Exception as e:
+                self._log.warning(f"Error closing fluidics: {e}")
 
         try:
             self.camera.close()

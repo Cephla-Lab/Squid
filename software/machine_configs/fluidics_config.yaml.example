@@ -1,0 +1,118 @@
+# Fluidics system configuration (Squid-Fluidics `FluidicsConfig`, the same file the standalone
+# fluidics GUI uses). Copy to machine_configs/fluidics_config.yaml (gitignored) and edit the serial
+# numbers, valves and port names for this instrument. Selected in Squid through FLUIDICS_CONFIG_PATH
+# (the Fluidics tab's Initialize row arrives in phase 2). Optional sections: temperature_controller,
+# flow_sensors.
+config_version: '2.0'
+microcontroller:
+  serial_number: '15579610'
+syringe_pump:
+  serial_number: A9TLZRF2
+  volume_ul: 5000
+  ports_allowed:
+  - 1
+  - 2
+  - 3
+  waste_port: 3
+  extract_port: 2
+  dispense_port: null
+  speed_code_limit: 10
+reagent_selection:
+  selector_valves:
+    valve_ids:
+    - 0
+    - 1
+    - 2
+    number_of_ports:
+      0: 10
+      1: 10
+      2: 10
+    tubing_fluid_amount_to_valve_ul:
+      0: 0
+      1: 200
+      2: 340
+    name_mapping:
+      port_1: reagent x
+      port_2: y
+      port_3: z
+      port_4: a
+      port_5: b
+      port_6: c
+      port_7: t
+      port_8: x
+      port_9: y
+      port_10: z
+      port_11: aa
+      port_12: bb
+      port_13: cc
+      port_14: dd
+      port_15: ee
+      port_16: ff
+      port_17: gg
+      port_18: hh
+      port_19: ii
+      port_20: j
+      port_21: k
+      port_22: l
+      port_23: m
+      port_24: n
+      port_25: buffer 1
+      port_26: buffer 2
+      port_27: buffer 3
+      port_28: buffer 4
+    tubing_fluid_amount_ul:
+      port_1: 700
+      port_2: 700
+      port_3: 700
+      port_4: 700
+      port_5: 700
+      port_6: 700
+      port_7: 700
+      port_8: 700
+      port_9: 700
+      port_10: 600
+      port_11: 600
+      port_12: 600
+      port_13: 600
+      port_14: 600
+      port_15: 600
+      port_16: 600
+      port_17: 600
+      port_18: 600
+      port_19: 450
+      port_20: 450
+      port_21: 450
+      port_22: 450
+      port_23: 450
+      port_24: 450
+      port_25: 700
+      port_26: 700
+      port_27: 900
+      port_28: 900
+  common_tubing_fluid_amount_ul: 800
+# Optional -- omit the whole section if no flow sensor is fitted.
+#
+# index is the sensor's physical position on the board, which is its I2C bus
+# and fixes which packet bytes carry it: 1 = Wire1 = bytes 23-24, 2 = Wire2 =
+# bytes 25-26. Bus 0 is not supported; it carries the selector valves, whose
+# transactions would stall flow reads during a valve move.
+#
+# One or two sensors, in any combination. A single sensor may sit at index 2
+# with nothing at index 1 -- it reads bytes 25-26 and 23-24 report no sensor.
+# Note only index 1 feeds the firmware's closed-loop flow control and the
+# CLEAR_LINES guard; a sensor at index 2 is read and plotted but not fed back.
+flow_sensors:
+- index: 1
+  name: syringe_draw
+  # Draw protection. Keep it quoted -- bare off is a YAML boolean.
+  #   off   read and plot only
+  #   warn  log a flow fault and carry on
+  #   stop  halt the draw and fail the sequence
+  # This is the starting mode; the GUI switches it per sensor at runtime. Start
+  # a new setup on "warn" and watch what the rule would have fired on before
+  # letting it halt a run. All four fields are optional; shown at their defaults.
+  monitor: "off"
+  ramp_up_seconds: 3.0
+  tolerance_fraction: 0.3
+  max_flow_rate_ul_min: 2000
+application: Flow Cell

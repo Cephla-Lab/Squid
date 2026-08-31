@@ -856,6 +856,7 @@ SIMULATE_SPINNING_DISK = False  # XLight/Dragonfly
 SIMULATE_FILTER_WHEEL = False
 SIMULATE_OBJECTIVE_CHANGER = False
 SIMULATE_LASER_AF_CAMERA = False  # Laser autofocus camera
+SIMULATE_FLUIDICS = False  # Fluidics system (syringe pump, valves, TEC, flow sensors); built on Initialize
 
 # Acquisition Backpressure Settings
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
@@ -1274,7 +1275,7 @@ def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> Non
 
 # fluidics
 RUN_FLUIDICS = False
-FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
+FLUIDICS_CONFIG_PATH = "machine_configs/fluidics_config.yaml"  # the library's FluidicsConfig YAML
 
 USE_TEMPLATE_MULTIPOINT = False
 
@@ -1543,5 +1544,8 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             if _sim_config.has_option("SIMULATION", "simulate_laser_af_camera"):
                 SIMULATE_LASER_AF_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_laser_af_camera"))
                 log.info(f"Loaded SIMULATE_LASER_AF_CAMERA={SIMULATE_LASER_AF_CAMERA} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_fluidics"):
+                SIMULATE_FLUIDICS = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_fluidics"))
+                log.info(f"Loaded SIMULATE_FLUIDICS={SIMULATE_FLUIDICS} from config")
     except Exception as e:
         log.warning(f"Failed to load SIMULATION settings from config: {e}")

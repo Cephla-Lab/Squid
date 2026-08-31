@@ -34,6 +34,8 @@ def create_mock_server(objective: str = "20x", channels: list = None):
     mock_multipoint = MagicMock()
     mock_multipoint.acquisition_in_progress.return_value = False
     mock_multipoint.experiment_ID = "test_experiment"
+    # What set_selected_configurations would have resolved for these channels
+    mock_multipoint.selected_configurations = mock_channels
 
     mock_scan_coords = MagicMock()
     mock_scan_coords.region_fov_coordinates = {"B6": [(0, 0)], "B7": [(0, 0)]}
@@ -182,8 +184,8 @@ class TestRunAcquisitionFromYAML:
         """Test that autofocus settings are applied from YAML."""
         mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
 
-        assert mock_server.multipoint_controller.do_autofocus is False
-        assert mock_server.multipoint_controller.do_reflection_af is True
+        mock_server.multipoint_controller.set_af_flag.assert_called_with(False)
+        mock_server.multipoint_controller.set_reflection_af_flag.assert_called_with(True)
 
     def test_run_acquisition_called(self, mock_server, yaml_file):
         """Test that run_acquisition is called after configuration."""
@@ -272,10 +274,14 @@ flexible_scan:
         """Create a mock server for flexible widget tests."""
         return create_mock_server(objective="10x", channels=["BF LED matrix full"])
 
-    def test_flexible_widget_type_rejected(self, mock_flexible_server, flexible_yaml_file):
-        """Test that flexible widget YAML is rejected (TCP only supports wellplate)."""
-        with pytest.raises(ValueError, match="TCP command only supports wellplate mode"):
-            mock_flexible_server._cmd_run_acquisition_from_yaml(yaml_path=flexible_yaml_file)
+    def test_flexible_widget_type_is_accepted(self, mock_flexible_server, flexible_yaml_file):
+        """Flexible YAMLs run through the shared settings function (positions -> add_flexible_region)."""
+        result = mock_flexible_server._cmd_run_acquisition_from_yaml(yaml_path=flexible_yaml_file)
+
+        assert result["started"] is True
+        assert result["widget_type"] == "flexible"
+        assert mock_flexible_server.scan_coordinates.add_flexible_region.called
+        mock_flexible_server.multipoint_controller.set_widget_type.assert_called_with("flexible")
 
 
 SIMPLE_WELLPLATE_YAML = """
@@ -346,8 +352,8 @@ class TestRunAcquisitionFromYAMLOverrides:
 
         mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
 
-        # Verify piezo was set to True (from YAML)
-        assert mock_server.multipoint_controller.use_piezo is True
+        # Verify piezo was set to True (from YAML) through the setter
+        mock_server.multipoint_controller.set_use_piezo.assert_called_with(True)
 
 
 class TestHelperMethods:
@@ -376,25 +382,41 @@ class TestHelperMethods:
         # Should not raise, just return early
         mock_server._update_gui_from_yaml(yaml_data, "/path/to/yaml")
 
-    def test_configure_controller_from_yaml(self, mock_server):
-        """Test _configure_controller_from_yaml sets all parameters."""
-        yaml_data = MagicMock()
-        yaml_data.nz = 5
-        yaml_data.delta_z_um = 10.0
-        yaml_data.nt = 3
-        yaml_data.delta_t_s = 60.0
-        yaml_data.contrast_af = True
-        yaml_data.laser_af = False
-        yaml_data.use_piezo = True
-        yaml_data.channel_names = ["Channel1"]
+    def test_apply_acquisition_settings_drives_every_setter(self, mock_server):
+        from control.acquisition_yaml_loader import AcquisitionYAMLData
+        from control.core.acquisition_settings import apply_acquisition_settings
 
-        mock_server._configure_controller_from_yaml(yaml_data)
+        data = AcquisitionYAMLData(
+            widget_type="wellplate",
+            nz=5,
+            delta_z_um=10.0,
+            nt=3,
+            delta_t_s=60.0,
+            contrast_af=True,
+            laser_af=False,
+            use_piezo=True,
+            channel_names=["Channel1"],
+            wellplate_regions=[{"name": "A1", "center_mm": [1.0, 2.0, 3.0]}],
+        )
+        channel = MagicMock()
+        channel.name = "Channel1"
+        mock_server.multipoint_controller.selected_configurations = [channel]
 
-        mock_server.multipoint_controller.set_NZ.assert_called_with(5)
-        mock_server.multipoint_controller.set_deltaZ.assert_called_with(10.0)
-        mock_server.multipoint_controller.set_Nt.assert_called_with(3)
-        mock_server.multipoint_controller.set_deltat.assert_called_with(60.0)
-        assert mock_server.multipoint_controller.do_autofocus is True
-        assert mock_server.multipoint_controller.do_reflection_af is False
-        assert mock_server.multipoint_controller.use_piezo is True
-        mock_server.multipoint_controller.set_selected_configurations.assert_called_with(["Channel1"])
+        apply_acquisition_settings(
+            mock_server.multipoint_controller, mock_server.scan_coordinates, mock_server.microscope, data
+        )
+
+        mpc = mock_server.multipoint_controller
+        mpc.set_NZ.assert_called_with(5)
+        mpc.set_deltaZ.assert_called_with(10.0)
+        mpc.set_Nt.assert_called_with(3)
+        mpc.set_deltat.assert_called_with(60.0)
+        mpc.set_af_flag.assert_called_with(True)
+        mpc.set_reflection_af_flag.assert_called_with(False)
+        mpc.set_use_piezo.assert_called_with(True)
+        mpc.set_focus_map.assert_called_with(None)
+        mpc.set_region_laser_af_offsets.assert_called_with({})
+        mpc.set_widget_type.assert_called_with("wellplate")
+        mpc.set_selected_configurations.assert_called_with(["Channel1"])
+        mock_server.scan_coordinates.clear_regions.assert_called_once()
+        assert mock_server.scan_coordinates.add_region.called
