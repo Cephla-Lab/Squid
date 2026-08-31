@@ -1,7 +1,7 @@
 import os
 
 # set QT_API environment variable
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 
 import qtpy
 from qtpy.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QPushButton, QLabel
