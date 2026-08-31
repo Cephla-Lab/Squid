@@ -1,7 +1,7 @@
 # Fluidics protocol (engine)
 
-Status: phases 0–1 merged (engine only); the GUI (Fluidics Protocol record tab, Fluidics display tab) is
-phase 2. Design: AI-docs `Squid/in-progress/2026-08-30-fluidics-protocol-design.md`.
+Status: phases 0–1 implemented (engine only, PR pending review); the GUI (Fluidics Protocol record tab,
+Fluidics display tab) is phase 2. Design: AI-docs `Squid/in-progress/2026-08-30-fluidics-protocol-design.md`.
 
 ## What a protocol is
 

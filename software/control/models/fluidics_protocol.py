@@ -296,12 +296,14 @@ def expand_rounds(
     port_row_name: Optional[str] = None,
     ports: Optional[List[int]] = None,
 ) -> ProtocolFile:
-    """Append `count` copies of the rows labelled `template_round`, relabelled `label_pattern.format(n=...)`
-    from `start`; in each copy the row named `port_row_name` gets the next entry of `ports`, and imaging
-    folders are re-rendered from the header pattern. Returns a new ProtocolFile."""
+    """Insert `count` copies of the rows labelled `template_round` right after that round, relabelled
+    `label_pattern.format(n=...)` from `start`; in each copy the row named `port_row_name` gets the next
+    entry of `ports`, and imaging folders are re-rendered from the header pattern. Rows after the template
+    round (a `final` clean-up group) stay last. Returns a new ProtocolFile."""
     template = [row for row in protocol.sequences if row.get("round") == template_round]
     if not template:
         raise ValueError(f"No rows carry the round label '{template_round}'")
+    insert_at = max(i for i, row in enumerate(protocol.sequences) if row.get("round") == template_round) + 1
     if port_row_name is not None:
         if ports is None or len(ports) < count:
             have = 0 if ports is None else len(ports)
@@ -324,4 +326,6 @@ def expand_rounds(
                     index=imaging_ordinal,
                 )
             new_rows.append(copy)
-    return protocol.model_copy(update={"sequences": list(protocol.sequences) + new_rows})
+    sequences = list(protocol.sequences)
+    sequences[insert_at:insert_at] = new_rows
+    return protocol.model_copy(update={"sequences": sequences})

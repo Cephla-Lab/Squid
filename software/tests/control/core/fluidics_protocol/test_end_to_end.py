@@ -25,7 +25,7 @@ def _protocol():
         },
         sequences=[
             {
-                "type": "priming",
+                "type": "flow_reagent",
                 "round": "setup",
                 "name": "prime",
                 "fluidic_port": 25,
@@ -66,7 +66,7 @@ def _protocol():
                 "repeat": 2,
             },
             {
-                "type": "clean_up",
+                "type": "flow_reagent",
                 "round": "final",
                 "name": "cleanup",
                 "fluidic_port": 28,

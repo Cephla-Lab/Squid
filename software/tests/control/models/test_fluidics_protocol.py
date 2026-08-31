@@ -158,7 +158,8 @@ def test_expand_rounds_copies_a_round_with_new_labels_ports_and_folders():
     assert [r["name"] for r in r02] == ["probe", "wash", "image", "cleave"]
     assert r02[0]["fluidic_port"] == 2 and r02[2]["folder"] == "R02_image"
     assert [r for r in out.sequences if r.get("round") == "R03"][0]["fluidic_port"] == 3
-    assert out.sequences[-1]["round"] == "R03"  # generated rounds are appended at the end, in order
+    assert [r.get("round") for r in out.sequences[5:13]] == ["R02"] * 4 + ["R03"] * 4  # right after R01, in order
+    assert out.sequences[-1]["round"] == "final"  # the trailing clean-up group stays last
     assert len(p.sequences) == 6  # the input is untouched
     with pytest.raises(ValueError):
         expand_rounds(p, "R01", count=3, port_row_name="probe", ports=[2])
