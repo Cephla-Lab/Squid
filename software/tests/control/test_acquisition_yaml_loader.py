@@ -482,3 +482,55 @@ class TestValidationResultDataclass:
         assert result.current_binning == (1, 1)
         assert result.yaml_binning == (2, 2)
         assert result.message == "Hardware mismatch"
+
+
+class TestExtendedLoader:
+    def test_parse_dict_reads_new_fields_and_keeps_fovs(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict(
+            {
+                "acquisition": {"experiment_id": "R01_image", "widget_type": "wellplate", "skip_saving": True},
+                "sample": {"wellplate_format": "384 well plate"},
+                "z_stack": {"nz": 2, "delta_z_mm": 0.001, "z_range_mm": [1.0, 1.001]},
+                "channels": [{"name": "A"}],
+                "wellplate_scan": {
+                    "regions": [{"name": "A1", "center_mm": [1, 2, 3], "fovs": [[1.0, 2.0, 3.0], [1.5, 2.0, 3.0]]}]
+                },
+            }
+        )
+        assert data.experiment_id == "R01_image"
+        assert data.wellplate_format == "384 well plate"
+        assert data.z_range_mm == (1.0, 1.001)
+        assert data.skip_saving is True
+        assert data.wellplate_regions[0]["fovs"] == [[1.0, 2.0, 3.0], [1.5, 2.0, 3.0]]
+
+    def test_parse_folder_fills_fovs_from_coordinates_csv(self, tmp_path):
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        (tmp_path / "acquisition.yaml").write_text(
+            "acquisition:\n  widget_type: wellplate\nwellplate_scan:\n  regions:\n  - name: A1\n    center_mm: [1, 2, 3]\n"
+        )
+        (tmp_path / "coordinates.csv").write_text("region,x (mm),y (mm),z (mm)\nA1,1.0,2.0,3.0\nA1,1.5,2.0,3.1\n")
+
+        data = parse_acquisition_yaml(str(tmp_path))
+
+        assert data.wellplate_regions[0]["fovs"] == [[1.0, 2.0, 3.0], [1.5, 2.0, 3.1]]
+
+    def test_read_coordinates_csv_drops_z_when_incomplete_and_groups_by_region(self, tmp_path):
+        from control.acquisition_yaml_loader import read_coordinates_csv
+
+        csv_path = tmp_path / "coordinates.csv"
+        csv_path.write_text("region,x (mm),y (mm),z (mm)\nA1,1.0,2.0,3.0\nB2,4.0,5.0,\nA1,1.5,2.0,3.0\n")
+
+        regions = read_coordinates_csv(str(csv_path))
+
+        assert regions == [{"name": "A1", "fovs": [[1.0, 2.0], [1.5, 2.0]]}, {"name": "B2", "fovs": [[4.0, 5.0]]}]
+
+    def test_read_coordinates_csv_requires_columns(self, tmp_path):
+        from control.acquisition_yaml_loader import read_coordinates_csv
+
+        csv_path = tmp_path / "bad.csv"
+        csv_path.write_text("x,y\n1,2\n")
+        with pytest.raises(ValueError):
+            read_coordinates_csv(str(csv_path))
