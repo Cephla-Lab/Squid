@@ -2863,24 +2863,6 @@ def test_load_regions_mid_loop_conversion_failure_leaves_existing_regions_intact
     assert sc.region_fov_coordinates["A1"] == [(10.0, 10.0)]
 
 
-def test_fluidics_widget_load_coordinates_loads_z(tmp_path):
-    # The fluidics widget's loader goes through the same shared helper.
-    csv_path = tmp_path / "coords.csv"
-    pd.DataFrame({"region": ["A1"], "x (mm)": [10.0], "y (mm)": [10.0], "z (mm)": [3.0]}).to_csv(csv_path, index=False)
-
-    fake = SimpleNamespace(
-        scanCoordinates=_scan_coordinates_for_test(),
-        navigationViewer=MagicMock(),
-        _log=MagicMock(),
-    )
-
-    control.widgets.MultiPointWithFluidicsWidget.load_coordinates(fake, str(csv_path))
-
-    assert fake.scanCoordinates.region_fov_coordinates["A1"] == [(10.0, 10.0, 3.0)]
-    assert fake.scanCoordinates.region_centers["A1"] == [10.0, 10.0]
-    fake.navigationViewer.register_fovs_to_image.assert_called_once()
-
-
 def test_parfocal_adjusted_z_mm_uses_xeryon_switcher_offset(monkeypatch):
     monkeypatch.setattr(control._def, "USE_XERYON", True)
     monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_1", ["4x", "10x"])

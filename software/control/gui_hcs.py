@@ -104,9 +104,6 @@ if SUPPORT_LASER_AUTOFOCUS:
 if USE_JUPYTER_CONSOLE:
     from control.console import JupyterWidget
 
-if RUN_FLUIDICS:
-    from control.fluidics import Fluidics
-
 # Import the custom widget
 from control.custom_multipoint_widget import TemplateMultiPointWidget
 
@@ -239,7 +236,6 @@ class QtMultiPointController(MultiPointController, QObject):
         objective_store: ObjectiveStore,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-        fluidics: Optional[Any] = None,
         alignment_widget=None,
     ):
         MultiPointController.__init__(
@@ -633,7 +629,7 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
         self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
-        self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
+        self.fluidics: Optional[Any] = microscope.addons.fluidics  # FluidicsService (uninitialized) or None
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
         self.contrastManager: ContrastManager = microscope.contrast_manager
@@ -723,11 +719,9 @@ class HighContentScreeningGui(QMainWindow):
         self.waveformDisplay: Optional[widgets.WaveformDisplay] = None
         self.displacementMeasurementWidget: Optional[widgets.DisplacementMeasurementWidget] = None
         self.laserAutofocusControlWidget: Optional[widgets.LaserAutofocusControlWidget] = None
-        self.fluidicsWidget: Optional[widgets.FluidicsWidget] = None
         self.flexibleMultiPointWidget: Optional[widgets.FlexibleMultiPointWidget] = None
         self.wellplateMultiPointWidget: Optional[widgets.WellplateMultiPointWidget] = None
         self.templateMultiPointWidget: Optional[TemplateMultiPointWidget] = None
-        self.multiPointWithFluidicsWidget: Optional[widgets.MultiPointWithFluidicsWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
         self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
@@ -892,7 +886,6 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
-            fluidics=self.fluidics,
         )
 
     def setup_hardware(self):
@@ -1024,9 +1017,6 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(liveController=self.liveController)
 
-        if RUN_FLUIDICS:
-            self.fluidicsWidget = widgets.FluidicsWidget(self.fluidics)
-
         self.imageDisplayTabs = QTabWidget(parent=self)
         if self.live_only_mode:
             if ENABLE_TRACKING:
@@ -1075,14 +1065,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.scanCoordinates,
                 self.focusMapWidget,
             )
-        self.multiPointWithFluidicsWidget = widgets.MultiPointWithFluidicsWidget(
-            self.stage,
-            self.navigationViewer,
-            self.multipointController,
-            self.objectiveStore,
-            self.scanCoordinates,
-            self.unifiedMosaicWidget,
-        )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
         if ENABLE_TRACKING:
@@ -1286,9 +1268,6 @@ class HighContentScreeningGui(QMainWindow):
 
             self.imageDisplayTabs.addTab(laserfocus_dockArea, self.LASER_BASED_FOCUS_TAB_NAME)
 
-        if RUN_FLUIDICS:
-            self.imageDisplayTabs.addTab(self.fluidicsWidget, "Fluidics")
-
     def setupRecordTabWidget(self):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(self.wellplateMultiPointWidget, "Wellplate Multipoint")
@@ -1296,8 +1275,6 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.flexibleMultiPointWidget, "Flexible Multipoint")
         if USE_TEMPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(self.templateMultiPointWidget, "Template Multipoint")
-        if RUN_FLUIDICS:
-            self.recordTabWidget.addTab(self.multiPointWithFluidicsWidget, "Multipoint with Fluidics")
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
@@ -1498,14 +1475,6 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
             self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
-
-        if RUN_FLUIDICS:
-            self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
-            self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(
-                self.fluidicsWidget.set_acquisition_running
-            )
-            self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
-            self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -1797,19 +1766,6 @@ class HighContentScreeningGui(QMainWindow):
                         ),
                         (
                             self.wellplateMultiPointWidget.signal_acquisition_shape,
-                            self.napariMultiChannelWidget.initLayersShape,
-                        ),
-                    ]
-                )
-            if RUN_FLUIDICS:
-                self.napari_connections["napariMultiChannelWidget"].extend(
-                    [
-                        (
-                            self.multiPointWithFluidicsWidget.signal_acquisition_channels,
-                            self.napariMultiChannelWidget.initChannels,
-                        ),
-                        (
-                            self.multiPointWithFluidicsWidget.signal_acquisition_shape,
                             self.napariMultiChannelWidget.initLayersShape,
                         ),
                     ]
@@ -2354,8 +2310,6 @@ class HighContentScreeningGui(QMainWindow):
             self.flexibleMultiPointWidget.refresh_channel_list()
         if self.wellplateMultiPointWidget:
             self.wellplateMultiPointWidget.refresh_channel_list()
-        if self.multiPointWithFluidicsWidget:
-            self.multiPointWithFluidicsWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
         is_flexible_acquisition = (
@@ -2467,10 +2421,6 @@ class HighContentScreeningGui(QMainWindow):
             self.stageUtils.signal_loading_position_reached.connect(
                 self.wellplateMultiPointWidget.disable_the_start_aquisition_button
             )
-        if RUN_FLUIDICS:
-            self.stageUtils.signal_loading_position_reached.connect(
-                self.multiPointWithFluidicsWidget.disable_the_start_aquisition_button
-            )
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.stageUtils.signal_scanning_position_reached.connect(
@@ -2479,10 +2429,6 @@ class HighContentScreeningGui(QMainWindow):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.stageUtils.signal_scanning_position_reached.connect(
                 self.wellplateMultiPointWidget.enable_the_start_aquisition_button
-            )
-        if RUN_FLUIDICS:
-            self.stageUtils.signal_scanning_position_reached.connect(
-                self.multiPointWithFluidicsWidget.enable_the_start_aquisition_button
             )
 
         self.stageUtils.signal_scanning_position_reached.connect(self.navigationViewer.clear_slide)
@@ -2973,8 +2919,8 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
-        # Close fluidics
-        if RUN_FLUIDICS:
+        # Close fluidics (a no-op unless Initialize was pressed; Microscope.close() would also do it)
+        if self.fluidics is not None:
             try:
                 self.fluidics.close()
             except Exception:
