@@ -158,6 +158,9 @@ class MicroscopeAddons:
                 baudrate=control._def.OBJECTIVE_TURRET_BAUDRATE,
                 positions=control._def.OBJECTIVE_TURRET_POSITIONS,
                 offset_pulses=control._def.OBJECTIVE_TURRET_OFFSET_PULSES,
+                backlash_deg=control._def.OBJECTIVE_TURRET_BACKLASH_DEG,
+                direction_inverted=control._def.OBJECTIVE_TURRET_DIRECTION_INVERTED,
+                di_invert=control._def.OBJECTIVE_TURRET_DI_INVERT,
                 stage=stage,
             )
             objective_changer = (
