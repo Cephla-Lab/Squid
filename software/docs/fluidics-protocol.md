@@ -10,8 +10,9 @@ A Squid-Fluidics **sequence file** (`sequences:` list of `flow_reagent` / `primi
 `imaging` (`folder`, `settings`, `coordinates`). A Squid-only `imaging:` header holds the settings and
 coordinate blocks the imaging rows point at; `settings` / `coordinates` may also name a saved acquisition
 folder or `acquisition.yaml`, or (coordinates only) a `coordinates.csv`, relative to the protocol file. The
-standalone fluidics GUI opens the same file — its loader reads only `sequences`. Until the library accepts
-`round` and `imaging` itself, Squid strips both before every library call (`strip_for_library`).
+library accepts `round` natively; `imaging` rows are Squid-only and are stripped before every library
+call (`strip_for_library`) — running a protocol's imaging is Squid's job, never the standalone tool's,
+so a combined file is not loadable there (pure-fluidics files remain interchangeable).
 
 ```yaml
 version: 1

@@ -3,9 +3,9 @@
 A protocol is the Squid-Fluidics library's sequence file (a `sequences:` list of flow_reagent /
 priming / clean_up / set_temperature ... rows) plus, per row, an optional `round:` label and a Squid-only
 row type `imaging`, and a Squid-only `imaging:` header holding the settings and coordinate blocks the
-imaging rows point at. The library's loader reads only `sequences`, so the standalone fluidics GUI opens
-the same file. Until the library accepts `round` and `imaging` itself, `strip_for_library()` produces
-the rows every library call receives.
+imaging rows point at. The library accepts `round` natively; `imaging` is Squid-only, so
+`strip_for_library()` produces the rows every library call receives (it also drops `round`, keeping
+Squid tolerant of older library installs).
 
 Qt-free, library-free: fluidics rows are kept as plain dicts here and validated by the library in
 control.core.fluidics_protocol.resolve.
