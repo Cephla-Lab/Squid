@@ -6771,6 +6771,43 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
 
+    def configure_controller_from_ui(self) -> Optional[str]:
+        """Push every acquisition setting shown in this tab onto the MultiPointController.
+
+        No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
+        "Apply current settings" share this. Returns None, or a reason nothing further should happen.
+        """
+        if self.checkbox_set_z_range.isChecked():
+            # Set Z-range (convert from μm to mm)
+            minZ = self.entry_minZ.value() / 1000
+            maxZ = self.entry_maxZ.value() / 1000
+            self.multipointController.set_z_range(minZ, maxZ)
+        else:
+            z = self.stage.get_pos().z_mm
+            dz = self.entry_deltaZ.value()
+            Nz = self.entry_NZ.value()
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+
+        if self.checkbox_useFocusMap.isChecked():
+            self.focusMapWidget.fit_surface()
+            self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+        else:
+            self.multipointController.set_focus_map(None)
+
+        # Set acquisition parameters
+        self.multipointController.set_deltaZ(self.entry_deltaZ.value())
+        self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_deltat(self.entry_dt.value())
+        self.multipointController.set_Nt(self.entry_Nt.value())
+        self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
+        self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_base_path(self.lineEdit_savingDir.text())
+        self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+        self.multipointController.set_widget_type("flexible")
+        self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+        return None
+
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
@@ -6792,35 +6829,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.add_location()
                 self.acquisition_in_place = True
 
-            if self.checkbox_set_z_range.isChecked():
-                # Set Z-range (convert from μm to mm)
-                minZ = self.entry_minZ.value() / 1000
-                maxZ = self.entry_maxZ.value() / 1000
-                self.multipointController.set_z_range(minZ, maxZ)
-            else:
-                z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
-                Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
-
-            if self.checkbox_useFocusMap.isChecked():
-                self.focusMapWidget.fit_surface()
-                self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-            else:
-                self.multipointController.set_focus_map(None)
-
-            # Set acquisition parameters
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_deltat(self.entry_dt.value())
-            self.multipointController.set_Nt(self.entry_Nt.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
-            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
-            self.multipointController.set_widget_type("flexible")
-            self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+            problem = self.configure_controller_from_ui()
+            if problem:
+                error_dialog(problem)
+                self.btn_startAcquisition.setChecked(False)
+                return
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -9145,6 +9158,56 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self._last_x_mm = x_mm
         self._last_y_mm = y_mm
 
+    def configure_controller_from_ui(self) -> Optional[str]:
+        """Push every acquisition setting shown in this tab onto the MultiPointController.
+
+        No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
+        "Apply current settings" share this. Returns None, or a reason nothing further should happen.
+        """
+        # if XY is not checked, use current position
+        if not self.checkbox_xy.isChecked():
+            self.set_coordinates_to_current_position()
+
+        self.scanCoordinates.sort_coordinates()
+
+        if self.combobox_z_mode.currentText() == "Set Range":
+            # Set Z-range (convert from μm to mm)
+            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
+            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
+            self.multipointController.set_z_range(minZ, maxZ)
+            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        else:
+            z = self.stage.get_pos().z_mm
+            dz = self.entry_deltaZ.value()
+            Nz = self.entry_NZ.value()
+            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+
+        if self.checkbox_useFocusMap.isChecked():
+            # Try to fit the surface; on success set the surface fitter in the controller
+            if self.focusMapWidget.fit_surface():
+                self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+            else:
+                return "Failed to fit focus surface"
+        else:
+            # If checkbox not checked, set surface fitter to None
+            self.multipointController.set_focus_map(None)
+
+        self.multipointController.set_deltaZ(self.entry_deltaZ.value())
+        self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_deltat(self.entry_dt.value())
+        self.multipointController.set_Nt(self.entry_Nt.value())
+        self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
+        self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_base_path(self.lineEdit_savingDir.text())
+        self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+        self.multipointController.set_widget_type("wellplate")
+        self.multipointController.set_scan_size(self.entry_scan_size.value())
+        self.multipointController.set_overlap_percent(self.entry_overlap.value())
+        self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
+        self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+        return None
+
     def toggle_acquisition(self, pressed):
         self._log.debug(f"WellplateMultiPointWidget.toggle_acquisition, {pressed=}")
         if not self.base_path_is_set:
@@ -9163,51 +9226,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            # if XY is not checked, use current position
-            if not self.checkbox_xy.isChecked():
-                self.set_coordinates_to_current_position()
-
-            self.scanCoordinates.sort_coordinates()
-
-            if self.combobox_z_mode.currentText() == "Set Range":
-                # Set Z-range (convert from μm to mm)
-                minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
-                maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-                self.multipointController.set_z_range(minZ, maxZ)
-                self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
-            else:
-                z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
-                Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz * (Nz - 1))
-
-            if self.checkbox_useFocusMap.isChecked():
-                # Try to fit the surface
-                if self.focusMapWidget.fit_surface():
-                    # If fit successful, set the surface fitter in controller
-                    self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-                else:
-                    QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
-                    self.btn_startAcquisition.setChecked(False)
-                    return
-            else:
-                # If checkbox not checked, set surface fitter to None
-                self.multipointController.set_focus_map(None)
-
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_deltat(self.entry_dt.value())
-            self.multipointController.set_Nt(self.entry_Nt.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
-            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
-            self.multipointController.set_widget_type("wellplate")
-            self.multipointController.set_scan_size(self.entry_scan_size.value())
-            self.multipointController.set_overlap_percent(self.entry_overlap.value())
-            self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
-            self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+            problem = self.configure_controller_from_ui()
+            if problem:
+                QMessageBox.warning(self, "Warning", problem)
+                self.btn_startAcquisition.setChecked(False)
+                return
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
