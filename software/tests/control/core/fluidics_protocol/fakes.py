@@ -29,7 +29,9 @@ class FakeTicket:
         run_id: str = "run-fake",
         position: Optional[int] = None,
         pause_ok: bool = True,
+        explode: bool = False,
     ):
+        self.explode = explode
         self.run_id = run_id
         self.position = position  # a held ticket reports the sequence it is parked in
         self._outcome = outcome
@@ -42,6 +44,8 @@ class FakeTicket:
             self._released.set()
 
     def wait(self, timeout: float) -> Optional[FluidicsOutcome]:
+        if self.explode:
+            raise RuntimeError("device fell off the bus")
         if not self._released.wait(timeout):
             return None
         if self._aborted:
@@ -74,7 +78,8 @@ class FakeTicket:
 class FakeFluidicsPort:
     """`script` is consumed one entry per start(): ("finished",) | ("stopped", position) | ("failed", position, message)
     | ("hold",) - a ticket parked in its 2nd sequence that blocks until resumed/aborted/released, then finishes
-    | ("nopause",) - like hold but refuses pause() | ("raise",) - start() raises (the library refused the run)."""
+    | ("nopause",) - like hold but refuses pause() | ("raise",) - start() raises (the library refused the run)
+    | ("explode",) - the ticket's wait() raises (a device failure while polling)."""
 
     def __init__(self, script: Optional[List[tuple]] = None, tec: Optional[TecState] = None):
         self.script = list(script or [])
@@ -99,6 +104,10 @@ class FakeFluidicsPort:
         if entry[0] == "raise":
             raise RuntimeError("the rig is busy: a run is in progress")
         self.tickets.append(None)
+        if entry[0] == "explode":
+            ticket = FakeTicket(FluidicsOutcome("failed", "boom", 0.0, 0, run_id, {}), run_id=run_id, explode=True)
+            self.tickets[-1] = ticket
+            return ticket
         if entry[0] == "finished":
             return FakeTicket(FluidicsOutcome("finished", None, 1.0, None, run_id, {1: 500.0}), run_id=run_id)
         if entry[0] == "stopped":

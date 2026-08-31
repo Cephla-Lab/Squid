@@ -35,5 +35,6 @@ To generate test files, run: `tools/evaluate_intensity_calibration.py`
 ### `fluidics_config.yaml` (Optional)
 Only for instruments with the fluidics system (`RUN_FLUIDICS = True`). This is the Squid-Fluidics
 library's own `FluidicsConfig` file — the standalone fluidics GUI opens the same file. Start from
-`fluidics_config.yaml.example`; the real file is gitignored. Squid loads it when you press
-Initialize in the Fluidics tab (path from `FLUIDICS_CONFIG_PATH`, overridable there).
+`fluidics_config.yaml.example`; the real file is gitignored. Squid loads it when the fluidics system is
+initialized (`FluidicsService.initialize()`, path from `FLUIDICS_CONFIG_PATH`); the Fluidics tab's
+Initialize button arrives in phase 2 of the protocol integration (see `docs/fluidics-protocol.md`).

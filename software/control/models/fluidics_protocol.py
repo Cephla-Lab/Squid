@@ -309,7 +309,10 @@ def expand_rounds(
             have = 0 if ports is None else len(ports)
             raise ValueError(f"{count} rounds need {count} ports for '{port_row_name}', got {have}")
     new_rows: List[dict] = []
-    imaging_ordinal = sum(1 for r in protocol.sequences if r.get("type") == IMAGING_TYPE and r.get("include", True))
+    # {index} in the folder pattern is the imaging ordinal at the insertion point, so rows after it keep theirs.
+    imaging_ordinal = sum(
+        1 for r in protocol.sequences[:insert_at] if r.get("type") == IMAGING_TYPE and r.get("include", True)
+    )
     for k in range(count):
         label = label_pattern.format(n=start + k)
         for row in template:

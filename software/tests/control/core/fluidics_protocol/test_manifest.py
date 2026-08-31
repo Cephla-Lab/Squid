@@ -67,3 +67,10 @@ def test_find_unfinished_runs_reports_dead_non_terminal_runs_newest_first(tmp_pa
 
     assert [os.path.basename(x.run_dir) for x in found] == ["c", "a"]
     assert m.pid_alive(os.getpid()) is True and m.pid_alive(dead_pid) is False
+
+
+def test_run_names_must_be_a_single_filesystem_safe_component(tmp_path):
+    for bad in ("../evil", "/tmp/abs", "a/b", "", ".hidden"):
+        with pytest.raises(ValueError):
+            m.create_run_dir(tmp_path, bad)
+    assert not list(tmp_path.iterdir())

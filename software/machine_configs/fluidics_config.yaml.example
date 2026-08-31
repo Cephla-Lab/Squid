@@ -1,7 +1,8 @@
 # Fluidics system configuration (Squid-Fluidics `FluidicsConfig`, the same file the standalone
 # fluidics GUI uses). Copy to machine_configs/fluidics_config.yaml (gitignored) and edit the serial
 # numbers, valves and port names for this instrument. Selected in Squid through FLUIDICS_CONFIG_PATH
-# and the Fluidics tab's Initialize row. Optional sections: temperature_controller, flow_sensors.
+# (the Fluidics tab's Initialize row arrives in phase 2). Optional sections: temperature_controller,
+# flow_sensors.
 config_version: '2.0'
 microcontroller:
   serial_number: '15579610'

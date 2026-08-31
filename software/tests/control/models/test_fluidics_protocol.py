@@ -169,3 +169,14 @@ def test_parse_port_list():
     assert parse_port_list("2-4,7,9-10") == [2, 3, 4, 7, 9, 10]
     with pytest.raises(ValueError):
         parse_port_list("a-b")
+
+
+def test_expand_rounds_index_ordinal_counts_only_rows_before_the_insertion_point():
+    p = _protocol()
+    p.imaging.folder_pattern = "{index:02d}_{round}_{step}"
+    p.sequences.append({"type": "imaging", "round": "post", "name": "final_scan", "folder": "99_post_final_scan"})
+
+    out = expand_rounds(p, "R01", count=1, label_pattern="R{n:02d}", start=2)
+
+    added = [r for r in out.sequences if r.get("round") == "R02" and r["type"] == "imaging"]
+    assert added[0]["folder"] == "02_R02_image"  # ordinal 2: only R01's imaging row precedes the insertion point

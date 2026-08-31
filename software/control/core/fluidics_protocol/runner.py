@@ -34,7 +34,14 @@ from control.core.fluidics_protocol.ports import (
     ImagingResult,
 )
 from control.core.fluidics_protocol.resolve import ResolvedProtocol
-from control.models.fluidics_protocol import FluidicsStep, ImagingStep, save_protocol, strip_for_library
+from control.models.fluidics_protocol import (
+    FluidicsStep,
+    ImagingStep,
+    load_protocol,
+    protocol_to_dict,
+    save_protocol,
+    strip_for_library,
+)
 from control.models.fluidics_run import AttemptRecord, RunCursor, RunManifest, StepRecord, TecState
 
 _OK_IMAGING = ("completed",)
@@ -116,6 +123,7 @@ class ProtocolRunner:
         self._log_handler = None
         self._current_step: Optional[int] = None
         self._current_attempt = 0
+        self._active = None  # the ticket/handle being driven, aborted if the runner itself crashes
         self._tec_before: Optional[TecState] = None
 
     # ---- public API (any thread) ----
@@ -194,10 +202,14 @@ class ProtocolRunner:
         try:
             self._open_run()
             outcome = self._loop()
-        except Exception as e:  # a bug in the runner itself must still leave a readable manifest
+        except Exception as e:  # a bug in the runner itself must still leave a readable manifest and a safe system
             self._log.exception("Protocol runner crashed")
             outcome = "failed"
             self._manifest.hold_message = str(e)
+            active, self._active = self._active, None
+            if active is not None:
+                self._safe(active.abort, "aborting the interrupted step")
+            self._safe(self._fluidics.make_safe, "making the fluidics system safe")
         finally:
             self._close_run(outcome)
 
@@ -257,6 +269,7 @@ class ProtocolRunner:
                 resume_position = None
                 if result.ok:
                     index += 1
+                    self._advance_cursor(index)
                     continue
                 if self._abort_run_requested.is_set():
                     return "stopped"
@@ -282,11 +295,11 @@ class ProtocolRunner:
             if action is HoldAction.END:
                 return "stopped"
             if action in (HoldAction.SKIP, HoldAction.ACCEPT):
-                with self._lock:
-                    if action is HoldAction.SKIP:
+                if action is HoldAction.SKIP:
+                    with self._lock:
                         self._manifest.steps[step.index].skipped = True
-                    self._save()
                 index += 1
+                self._advance_cursor(index)
                 continue
             if action is HoldAction.RESUME and hold.can_resume:
                 resume_position = hold.resume_position
@@ -309,7 +322,10 @@ class ProtocolRunner:
             self._log.error(f"Fluidics step {step.label} could not start: {e}")
             self._end_attempt(step, attempt, "failed_to_start", str(e))
             return _StepResult(ok=False, outcome="failed_to_start", message=str(e))
+        # _active stays set if the drive raises, so _run's crash handler can abort it; cleared on a clean return.
+        self._active = ticket
         outcome = self._drive_fluidics(ticket, step, offset, len(plan))
+        self._active = None
         position = None if outcome.position is None else offset + int(outcome.position)
         self._end_attempt(
             step,
@@ -403,7 +419,9 @@ class ProtocolRunner:
         session_dir = self.run_dir / folder
         if session_dir.is_dir():
             self._safe(lambda: manifest_io.write_step_info(session_dir, info), "writing protocol_step.json")
+        self._active = handle
         result = self._drive_imaging(handle)
+        self._active = None
         self._end_attempt(step, attempt, result.end_reason, None, folder=folder, images=result.image_count)
         if result.end_reason in _OK_IMAGING:
             return _StepResult(ok=True, outcome=result.end_reason)
@@ -514,9 +532,14 @@ class ProtocolRunner:
         if recorded != current:
             raise ValueError("The run manifest does not match this protocol's steps; it cannot be resumed")
         protocol_copy = run_dir / manifest_io.PROTOCOL_COPY_NAME
-        if manifest.protocol_sha256 and protocol_copy.exists():
-            if manifest_io.sha256_of_file(protocol_copy) != manifest.protocol_sha256:
-                raise ValueError("protocol.yaml in the run folder differs from the one the manifest recorded")
+        if not protocol_copy.exists():
+            raise ValueError("protocol.yaml is missing from the run folder; the run cannot be resumed")
+        if manifest.protocol_sha256 and manifest_io.sha256_of_file(protocol_copy) != manifest.protocol_sha256:
+            raise ValueError("protocol.yaml in the run folder differs from the one the manifest recorded")
+        if protocol_to_dict(load_protocol(str(protocol_copy))) != protocol_to_dict(resolved.protocol):
+            raise ValueError(
+                "The protocol being resumed differs from protocol.yaml in the run folder; resume from that file"
+            )
 
     @staticmethod
     def _row_indices(step) -> list:
@@ -535,6 +558,13 @@ class ProtocolRunner:
         self._emit(StepStarted(step.index, attempt, step.kind, step.label))
         self._log.info(f"Step {step.index + 1}/{len(self._steps)} ({step.kind} {step.label}) attempt {attempt} started")
         return attempt
+
+    def _advance_cursor(self, next_index: int) -> None:
+        """A finished/skipped step must never be offered for resume: point the cursor at the next one, on disk."""
+        with self._lock:
+            step = next_index if next_index < len(self._steps) else None
+            self._manifest.cursor = RunCursor(step=step, attempt=0, sequence=None)
+            self._save()
 
     def _set_cursor_sequence(self, position: int) -> None:
         with self._lock:

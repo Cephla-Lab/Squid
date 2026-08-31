@@ -10,6 +10,7 @@
 import hashlib
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -26,8 +27,14 @@ STEP_INFO_NAME = "protocol_step.json"
 PathLike = Union[str, os.PathLike]
 
 
+_RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def run_folder_name(run_name: str, when: datetime) -> str:
-    return f"{run_name.strip().replace(' ', '_')}_{when:%Y-%m-%d_%H-%M-%S}"
+    safe = run_name.strip().replace(" ", "_")
+    if not _RUN_NAME_RE.match(safe):
+        raise ValueError(f"Run name '{run_name}' must be a plain name (letters, digits, spaces, . _ -)")
+    return f"{safe}_{when:%Y-%m-%d_%H-%M-%S}"
 
 
 def create_run_dir(base_dir: PathLike, run_name: str, when: Optional[datetime] = None) -> Path:

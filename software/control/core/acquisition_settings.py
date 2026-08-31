@@ -161,6 +161,11 @@ def apply_acquisition_settings(
     call start_new_experiment or run_acquisition. Raises ValueError with a user-readable message.
     """
     _validate_channels(microscope, data.channel_names)
+    valid_z_configs = set(control._def.Z_STACKING_CONFIG_MAP.values())
+    if data.z_stacking_config not in valid_z_configs:
+        raise ValueError(
+            f"Unknown z_stacking_config '{data.z_stacking_config}'; expected one of {sorted(valid_z_configs)}"
+        )
     _configure_regions(scan_coordinates, microscope, data, wells)
 
     controller.set_NX(1)  # grids are expanded into FOVs by the region builders
@@ -172,8 +177,7 @@ def apply_acquisition_settings(
     controller.set_af_flag(data.contrast_af)
     controller.set_reflection_af_flag(data.laser_af)
     controller.set_use_piezo(data.use_piezo)
-    if data.z_stacking_config in control._def.Z_STACKING_CONFIG_MAP.values():
-        controller.z_stacking_config = data.z_stacking_config
+    controller.z_stacking_config = data.z_stacking_config
     if data.z_range_mm:
         controller.set_z_range(float(data.z_range_mm[0]), float(data.z_range_mm[1]))
     else:

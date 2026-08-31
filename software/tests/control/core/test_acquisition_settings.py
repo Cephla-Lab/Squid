@@ -136,3 +136,17 @@ def test_parse_wells_range_and_list():
         "B2": (19.0, 29.0),
     }
     assert parse_wells("A1,C3", settings) == {"A1": (10.0, 20.0), "C3": (28.0, 38.0)}
+
+
+def test_apply_rejects_an_unknown_z_stacking_config_before_touching_regions():
+    scope, mpc = _controller()
+    mpc.scanCoordinates.add_region_from_fovs("keep", _some_fovs(mpc))
+    data = AcquisitionYAMLData(
+        widget_type="wellplate",
+        channel_names=_channel_names(scope, mpc, 1),
+        z_stacking_config="FROM NOWHERE",
+        wellplate_regions=[{"name": "A1", "fovs": _some_fovs(mpc)}],
+    )
+    with pytest.raises(ValueError, match="z_stacking_config"):
+        apply_acquisition_settings(mpc, mpc.scanCoordinates, scope, data)
+    assert "keep" in mpc.scanCoordinates.region_fov_coordinates

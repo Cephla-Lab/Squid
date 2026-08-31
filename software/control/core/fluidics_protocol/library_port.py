@@ -98,9 +98,17 @@ class LibraryFluidicsPort:
     def start(self, rows: List[dict], plan: Optional[tuple] = None) -> LibraryTicket:
         ticket = LibraryTicket(self._system)
         with self._lock:
+            if self._current is not None:
+                raise RuntimeError("a fluidics run is already in flight on this port")
             self._current = ticket
-        # RunStarted arrives synchronously inside run(); no runner lock is held here.
-        self._system.run(None if plan is not None else rows, plan=plan)
+        try:
+            # RunStarted arrives synchronously inside run(); no runner lock is held here.
+            self._system.run(None if plan is not None else rows, plan=plan)
+        except BaseException:
+            with self._lock:
+                if self._current is ticket:
+                    self._current = None
+            raise
         return ticket
 
     def make_safe(self) -> List[Exception]:

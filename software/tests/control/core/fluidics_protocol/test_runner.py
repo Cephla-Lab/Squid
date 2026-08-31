@@ -233,6 +233,8 @@ def test_pause_during_imaging_parks_at_the_boundary(tmp_path):
     imaging.handles[0].release()
     assert wait_until(lambda: runner.state == RunnerState.PAUSED)
     assert len(fluidics.starts) == 2  # the cleave step has not started
+    boundary = manifest_io.read_manifest(run_dir)
+    assert boundary.cursor.step == 3 and boundary.cursor.attempt == 0  # the finished step is not offered for resume
 
     runner.resume()
     assert runner.wait(10) and runner.outcome == "finished" and len(fluidics.starts) == 3
@@ -345,4 +347,40 @@ def test_recovery_refuses_a_manifest_that_does_not_match_the_protocol(tmp_path):
     (run_dir / "protocol.yaml").write_text("version: 1\nsequences: []\n")
     same = resolve_protocol(_protocol(), tmp_path, fluidics=FakeFluidicsPort())
     with pytest.raises(ValueError, match="protocol.yaml"):
+        ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+
+def test_a_crash_while_polling_aborts_the_step_and_makes_the_system_safe(tmp_path):
+    fluidics = FakeFluidicsPort(script=[("explode",)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    runner.start()
+    assert runner.wait(10)
+
+    assert runner.outcome == "failed"
+    assert fluidics.tickets[0]._aborted is True
+    assert fluidics.make_safe_calls == 1
+    man = manifest_io.read_manifest(run_dir)
+    assert man.status == "failed" and "device fell off the bus" in man.hold_message
+
+
+def test_recovery_refuses_a_missing_or_different_protocol_copy(tmp_path):
+    runner, fluidics, imaging, run_dir = _runner(tmp_path)
+    runner.start()
+    assert runner.wait(10)
+    crashed = manifest_io.read_manifest(run_dir)
+    crashed.status = "running"
+    crashed.cursor.step = 1
+    crashed.protocol_sha256 = None  # get past the hash check to the content check
+
+    from control.models.fluidics_protocol import save_protocol
+
+    changed = _protocol()
+    changed.sequences[1]["volume"] = 9999  # same steps, different instructions
+    save_protocol(changed, str(run_dir / "protocol.yaml"))
+    same = resolve_protocol(_protocol(), tmp_path, fluidics=FakeFluidicsPort())
+    with pytest.raises(ValueError, match="differs from protocol.yaml"):
+        ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+    (run_dir / "protocol.yaml").unlink()
+    with pytest.raises(ValueError, match="missing"):
         ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)

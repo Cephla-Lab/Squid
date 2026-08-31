@@ -546,3 +546,18 @@ class TestExtendedLoader:
         data = parse_acquisition_yaml(str(tmp_path))
 
         assert data.wellplate_regions[0]["center_mm"] == [1, 2, 3] and "fovs" not in data.wellplate_regions[0]
+
+    def test_parse_folder_fills_only_the_regions_missing_fovs(self, tmp_path):
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        (tmp_path / "acquisition.yaml").write_text(
+            "acquisition:\n  widget_type: wellplate\nwellplate_scan:\n  regions:\n"
+            "  - name: A1\n    fovs: [[9.0, 9.0]]\n  - name: B2\n    center_mm: [1, 2, 3]\n"
+        )
+        (tmp_path / "coordinates.csv").write_text("region,x (mm),y (mm)\nA1,1.0,2.0\nB2,4.0,5.0\n")
+
+        data = parse_acquisition_yaml(str(tmp_path))
+
+        regions = {r["name"]: r for r in data.wellplate_regions}
+        assert regions["A1"]["fovs"] == [[9.0, 9.0]]  # kept
+        assert regions["B2"]["fovs"] == [[4.0, 5.0]]  # completed from the CSV

@@ -983,8 +983,8 @@ class MultiPointController:
             self.callbacks.signal_acquisition_start(acquisition_params)
 
             self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
-            thread_started = True
             self.thread.start()
+            thread_started = True
         finally:
             if not thread_started:
                 # Acquisition never launched a worker — close out the breadcrumb so the
