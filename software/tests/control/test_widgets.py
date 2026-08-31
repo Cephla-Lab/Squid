@@ -3003,3 +3003,35 @@ def test_wellplate_configure_controller_from_ui_reports_a_failed_focus_fit():
 
     assert problem == "Failed to fit focus surface"
     fake.multipointController.set_selected_configurations.assert_not_called()
+
+
+def test_flexible_set_ui_acquisition_running_marks_the_widget_running():
+    fake = SimpleNamespace(
+        is_current_acquisition_widget=False,
+        btn_startAcquisition=MagicMock(),
+        setEnabled_all=MagicMock(),
+        signal_acquisition_started=MagicMock(),
+        signal_acquisition_shape=MagicMock(),
+        emit_selected_channels=MagicMock(),
+    )
+
+    control.widgets.FlexibleMultiPointWidget._set_ui_acquisition_running(fake, 3, 1.5, set_button_checked=True)
+
+    assert fake.is_current_acquisition_widget is True
+    fake.setEnabled_all.assert_called_once_with(False)
+    fake.btn_startAcquisition.setChecked.assert_called_once_with(True)
+    fake.signal_acquisition_started.emit.assert_called_once_with(True)
+    fake.signal_acquisition_shape.emit.assert_called_once_with(3, 1.5)
+    fake.emit_selected_channels.assert_called_once()
+
+
+def test_flexible_set_acquisition_running_state_dispatches_like_the_wellplate_slot():
+    fake = SimpleNamespace(
+        _log=MagicMock(), _set_ui_acquisition_running=MagicMock(), acquisition_is_finished=MagicMock()
+    )
+
+    control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, True, 3, 1.5)
+    fake._set_ui_acquisition_running.assert_called_once_with(3, 1.5, set_button_checked=True)
+
+    control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, False)
+    fake.acquisition_is_finished.assert_called_once()

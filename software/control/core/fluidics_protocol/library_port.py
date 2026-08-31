@@ -3,7 +3,7 @@
 import threading
 from typing import List, Optional
 
-from fluidics.events import RunEnded, RunStarted
+from fluidics.events import RunEnded, RunStarted, SequenceStarted
 from fluidics.sequences import SequenceListAdapter, validate_sequences
 from pydantic import ValidationError
 
@@ -21,12 +21,15 @@ class LibraryTicket:
     def __init__(self, system):
         self._system = system
         self.run_id: Optional[str] = None
+        self.position: Optional[int] = None  # plan index of the sequence in flight (relative to the plan handed in)
         self._outcome: Optional[FluidicsOutcome] = None
         self._ended = threading.Event()
 
     def _on_event(self, event) -> None:
         if isinstance(event, RunStarted) and self.run_id is None:
             self.run_id = event.run_id
+        elif isinstance(event, SequenceStarted) and (self.run_id is None or event.run_id == self.run_id):
+            self.position = event.position
         elif isinstance(event, RunEnded) and (self.run_id is None or event.run_id == self.run_id):
             try:
                 usage = {int(port): float(ul) for port, _name, ul in self._system.usage.rows()}
@@ -46,7 +49,8 @@ class LibraryTicket:
     def wait(self, timeout: float) -> Optional[FluidicsOutcome]:
         if not self._ended.wait(timeout):
             return None
-        self._system.wait(timeout)  # let the job thread unwind before anyone starts the next run
+        if not self._system.wait(timeout):  # let the job thread unwind before anyone starts the next run
+            return None
         return self._outcome
 
     def pause(self) -> bool:
@@ -76,6 +80,10 @@ class LibraryFluidicsPort:
             ticket = self._current
         if ticket is not None:
             ticket._on_event(event)
+            if isinstance(event, RunEnded):
+                with self._lock:
+                    if self._current is ticket:
+                        self._current = None
 
     def validate(self, rows: List[dict]) -> None:
         try:

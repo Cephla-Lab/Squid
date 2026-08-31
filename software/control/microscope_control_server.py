@@ -875,10 +875,12 @@ class MicroscopeControlServer:
         return None
 
     def _update_gui_from_yaml(self, yaml_data, yaml_path: str) -> None:
-        """Refresh the acquisition tab's controls from the YAML, without blocking this (socket) thread.
+        """Refresh the acquisition tab's controls from the YAML and wait for it.
 
-        Queued: QTimer.singleShot from a non-Qt thread never fires; the load only refreshes the tab's
-        controls, so nothing waits on it (and a QMessageBox it may open must not block this thread).
+        Blocking on purpose: the tab's _apply_yaml_settings rebuilds the shared ScanCoordinates from its
+        controls, so it must finish before apply_acquisition_settings() rebuilds them from the file - a
+        queued call would race it (QTimer.singleShot from a non-Qt thread never fires at all). The slot's
+        dialogs are unreachable here: the file parsed and validate_hardware() passed before this call.
         """
         if not QT_AVAILABLE:
             return
@@ -891,10 +893,13 @@ class MicroscopeControlServer:
             self._log.warning(f"Widget {type(widget).__name__} lacks load_acquisition_yaml_slot")
             return
 
-        if not QMetaObject.invokeMethod(
-            widget, "load_acquisition_yaml_slot", Qt.QueuedConnection, Q_ARG(str, yaml_path)
-        ):
-            self._log.warning(f"Could not queue the acquisition YAML load on {type(widget).__name__}")
+        try:
+            if not QMetaObject.invokeMethod(
+                widget, "load_acquisition_yaml_slot", Qt.BlockingQueuedConnection, Q_ARG(str, yaml_path)
+            ):
+                self._log.warning(f"Could not run the acquisition YAML load on {type(widget).__name__}")
+        except Exception as e:
+            self._log.error(f"Failed to update GUI from YAML: {e}")
 
     def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
         """Update GUI widget state to reflect acquisition running/stopped.

@@ -19,6 +19,7 @@ class FluidicsOutcome:
 
 class FluidicsTicket(Protocol):
     run_id: Optional[str]
+    position: Optional[int]  # plan index of the sequence in flight, relative to the plan handed to start()
 
     def wait(self, timeout: float) -> Optional[FluidicsOutcome]: ...
 

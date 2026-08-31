@@ -714,6 +714,9 @@ class MultiPointController:
         # widget, TCP control server).
         run_region_laser_af_offsets = self.region_laser_af_offsets
         self.region_laser_af_offsets = {}
+        # Same one-run consumption for the protocol context: an early return must not leak it into a later run.
+        run_protocol_info = self.protocol_info
+        self.protocol_info = None
         self.last_end_reason = None
         self.last_image_count = 0
         if not self.validate_acquisition_settings():
@@ -918,9 +921,8 @@ class MultiPointController:
                 wellplate_format,
                 self.scan_size_mm,
                 self.overlap_percent,
-                protocol=self.protocol_info,
+                protocol=run_protocol_info,
             )
-            self.protocol_info = None
 
             # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
             # self._run_state_writer is already a NullRunStateWriter (set before the outer try); it

@@ -534,3 +534,15 @@ class TestExtendedLoader:
         csv_path.write_text("x,y\n1,2\n")
         with pytest.raises(ValueError):
             read_coordinates_csv(str(csv_path))
+
+    def test_parse_folder_tolerates_a_bad_coordinates_csv(self, tmp_path):
+        from control.acquisition_yaml_loader import parse_acquisition_yaml
+
+        (tmp_path / "acquisition.yaml").write_text(
+            "acquisition:\n  widget_type: wellplate\nwellplate_scan:\n  regions:\n  - name: A1\n    center_mm: [1, 2, 3]\n"
+        )
+        (tmp_path / "coordinates.csv").write_text("region,x (mm),y (mm),z (mm)\n")  # header only (aborted run)
+
+        data = parse_acquisition_yaml(str(tmp_path))
+
+        assert data.wellplate_regions[0]["center_mm"] == [1, 2, 3] and "fovs" not in data.wellplate_regions[0]

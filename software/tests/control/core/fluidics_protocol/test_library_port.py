@@ -69,6 +69,7 @@ def test_run_finishes_with_reagent_totals_and_run_id(service):
 
     assert outcome is not None and outcome.outcome == "finished" and outcome.position is None
     assert outcome.run_id and outcome.run_id == ticket.run_id
+    assert ticket.position == 1  # the last sequence started was the 2nd of the plan
     assert outcome.reagent_used_ul.get(1, 0) > 0 and outcome.reagent_used_ul.get(2, 0) > 0
     assert service.system.busy is False
 

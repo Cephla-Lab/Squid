@@ -21,6 +21,7 @@ from control.core.fluidics_protocol.events import (
     Listener,
     RunFinished,
     RunnerState,
+    SequenceProgress,
     StateChanged,
     StepEnded,
     StepStarted,
@@ -82,6 +83,8 @@ class ProtocolRunner:
         self._heartbeat_s = heartbeat_s
         self._poll_s = poll_s
         self._recovering = manifest is not None
+        if manifest is not None:
+            self._check_recovery_manifest(manifest, resolved, self.run_dir)
         now = time.time()
         self._manifest = manifest or RunManifest(
             run_name=run_name,
@@ -209,7 +212,8 @@ class ProtocolRunner:
         protocol_copy = self.run_dir / manifest_io.PROTOCOL_COPY_NAME
         if not self._recovering or not protocol_copy.exists():
             save_protocol(self._resolved.protocol, str(protocol_copy))
-        self._manifest.protocol_sha256 = manifest_io.sha256_of_file(protocol_copy)
+        if not self._recovering or not self._manifest.protocol_sha256:
+            self._manifest.protocol_sha256 = manifest_io.sha256_of_file(protocol_copy)
         self._set_state(RunnerState.RUNNING, status="running")
         self._log.info(f"Protocol run '{self._manifest.run_name}' started: {len(self._steps)} steps in {self.run_dir}")
 
@@ -295,12 +299,17 @@ class ProtocolRunner:
 
     def _run_fluidics_step(self, step: FluidicsStep, attempt: int, resume_position: Optional[int]) -> _StepResult:
         rows = strip_for_library(step.rows)
-        plan = self._fluidics.plan(rows)
         offset = int(resume_position or 0)
-        tail = plan[offset:] if offset else plan
-        self._set_cursor_sequence(offset)
-        ticket = self._fluidics.start(rows, plan=tail)
-        outcome = self._drive_fluidics(ticket)
+        try:
+            plan = self._fluidics.plan(rows)
+            tail = plan[offset:] if offset else plan
+            self._set_cursor_sequence(offset)
+            ticket = self._fluidics.start(rows, plan=tail)
+        except Exception as e:  # a refused/failed launch holds like everything else
+            self._log.error(f"Fluidics step {step.label} could not start: {e}")
+            self._end_attempt(step, attempt, "failed_to_start", str(e))
+            return _StepResult(ok=False, outcome="failed_to_start", message=str(e))
+        outcome = self._drive_fluidics(ticket, step, offset, len(plan))
         position = None if outcome.position is None else offset + int(outcome.position)
         self._end_attempt(
             step,
@@ -321,29 +330,45 @@ class ProtocolRunner:
             resume_position=position if position is not None else 0,
         )
 
-    def _drive_fluidics(self, ticket) -> FluidicsOutcome:
+    def _drive_fluidics(self, ticket, step: FluidicsStep, offset: int, total: int) -> FluidicsOutcome:
         aborted = False
+        pause_deferred = False  # the library refused the pause (no gate left): park at the step boundary
+        last_position = None
         while True:
             result = ticket.wait(self._poll_s)
             if result is not None:
                 self._abort_step_requested.clear()
-                if self._state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
+                if pause_deferred or self._state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
+                    # The operator asked to pause and the step ended before/while holding: honour it at the boundary.
+                    self._pause_requested.set()
+                if self._state is not RunnerState.RUNNING:
                     self._set_state(RunnerState.RUNNING, status="running")
                 return result
+            position = getattr(ticket, "position", None)
+            if position is not None and position != last_position:
+                last_position = position
+                self._set_cursor_sequence(offset + int(position))
+                self._emit(SequenceProgress(step.index, offset + int(position), total, step.label))
             self._heartbeat()
             if (self._abort_step_requested.is_set() or self._abort_run_requested.is_set()) and not aborted:
                 aborted = True
                 ticket.abort()
-            if self._pause_requested.is_set() and self._state is RunnerState.RUNNING:
+            if self._pause_requested.is_set() and self._state is RunnerState.RUNNING and not pause_deferred:
                 self._pause_requested.clear()
-                ticket.pause()
-                self._set_state(RunnerState.PAUSE_REQUESTED, status="paused")
+                if ticket.pause():
+                    self._set_state(RunnerState.PAUSE_REQUESTED, status="paused")
+                else:
+                    pause_deferred = True
             if self._state is RunnerState.PAUSE_REQUESTED and ticket.at_rest():
                 self._set_state(RunnerState.PAUSED, status="paused")
-            if self._resume_requested.is_set() and self._state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
-                self._resume_requested.clear()
-                ticket.resume()
-                self._set_state(RunnerState.RUNNING, status="running")
+            if self._resume_requested.is_set():
+                if self._state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
+                    self._resume_requested.clear()
+                    ticket.resume()
+                    self._set_state(RunnerState.RUNNING, status="running")
+                elif pause_deferred:
+                    self._resume_requested.clear()
+                    pause_deferred = False
 
     def _run_imaging_step(self, step: ImagingStep, attempt: int) -> _StepResult:
         resolved = self._resolved.imaging[step.row_index]
@@ -433,7 +458,12 @@ class ProtocolRunner:
         )
         while not self._hold_event.wait(self._poll_s):
             self._heartbeat()
-        decision = self._hold_decision or (HoldAction.END, False)
+            if self._abort_run_requested.is_set():
+                break
+        if self._abort_run_requested.is_set():
+            decision = (HoldAction.END, False)
+        else:
+            decision = self._hold_decision or (HoldAction.END, False)
         with self._lock:
             self._hold = None
             self._manifest.hold_reason = None
@@ -475,6 +505,18 @@ class ProtocolRunner:
         )
 
     # ---- manifest bookkeeping (runner thread only) ----
+
+    @staticmethod
+    def _check_recovery_manifest(manifest: RunManifest, resolved: ResolvedProtocol, run_dir: Path) -> None:
+        """A manifest may only resume the protocol it recorded: same steps, same protocol.yaml."""
+        recorded = [(s.index, s.kind) for s in manifest.steps]
+        current = [(s.index, s.kind) for s in resolved.steps]
+        if recorded != current:
+            raise ValueError("The run manifest does not match this protocol's steps; it cannot be resumed")
+        protocol_copy = run_dir / manifest_io.PROTOCOL_COPY_NAME
+        if manifest.protocol_sha256 and protocol_copy.exists():
+            if manifest_io.sha256_of_file(protocol_copy) != manifest.protocol_sha256:
+                raise ValueError("protocol.yaml in the run folder differs from the one the manifest recorded")
 
     @staticmethod
     def _row_indices(step) -> list:

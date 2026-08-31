@@ -621,3 +621,25 @@ def test_acquisition_yaml_has_region_fovs_and_the_protocol_section(tmp_path):
     assert data["protocol"] == {"name": "demo", "round": "R01", "step": "image", "run_name": "liver"}
     assert "fluidics" not in data
     assert mpc.protocol_info is None
+
+
+def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
+    import yaml
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+    mpc.protocol_info = {"name": "demo", "round": "R01"}
+    mpc.laserAutoFocusController.laser_af_properties.has_reference = False
+    mpc.set_reflection_af_flag(True)
+    mpc.run_acquisition()  # validation failure
+    assert mpc.last_end_reason == "failed_to_start" and mpc.protocol_info is None
+
+    mpc.set_reflection_af_flag(False)
+    tt.finished_event.clear()
+    mpc.start_new_experiment("R02_image", add_timestamp=False)
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+    with open(tmp_path / "R02_image" / "acquisition.yaml", encoding="utf-8") as f:
+        assert "protocol" not in yaml.safe_load(f)

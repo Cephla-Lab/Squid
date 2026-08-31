@@ -22,10 +22,19 @@ class FakeTicket:
     """Completes on the first wait() with the scripted outcome, unless `hold` is set: then it blocks until
     resume()/abort(), reporting at_rest() while paused (like a run parked at a gate)."""
 
-    def __init__(self, outcome: FluidicsOutcome, hold: bool = False, run_id: str = "run-fake"):
+    def __init__(
+        self,
+        outcome: FluidicsOutcome,
+        hold: bool = False,
+        run_id: str = "run-fake",
+        position: Optional[int] = None,
+        pause_ok: bool = True,
+    ):
         self.run_id = run_id
+        self.position = position  # a held ticket reports the sequence it is parked in
         self._outcome = outcome
         self._hold = hold
+        self._pause_ok = pause_ok
         self._paused = False
         self._aborted = False
         self._released = threading.Event()
@@ -36,10 +45,15 @@ class FakeTicket:
         if not self._released.wait(timeout):
             return None
         if self._aborted:
-            return FluidicsOutcome("stopped", None, 0.1, 0, self.run_id, {})
+            return FluidicsOutcome("stopped", None, 0.1, self.position or 0, self.run_id, {})
         return self._outcome
 
+    def release(self) -> None:
+        self._released.set()
+
     def pause(self) -> bool:
+        if not self._pause_ok:
+            return False
         self._paused = True
         return True
 
@@ -59,11 +73,13 @@ class FakeTicket:
 
 class FakeFluidicsPort:
     """`script` is consumed one entry per start(): ("finished",) | ("stopped", position) | ("failed", position, message)
-    | ("hold",) - a ticket that blocks until resumed/aborted, then finishes."""
+    | ("hold",) - a ticket parked in its 2nd sequence that blocks until resumed/aborted/released, then finishes
+    | ("nopause",) - like hold but refuses pause() | ("raise",) - start() raises (the library refused the run)."""
 
     def __init__(self, script: Optional[List[tuple]] = None, tec: Optional[TecState] = None):
         self.script = list(script or [])
         self.starts: List[dict] = []
+        self.tickets: List[Optional["FakeTicket"]] = []
         self.validated: List[List[dict]] = []
         self.make_safe_calls = 0
         self.restored: List[TecState] = []
@@ -80,14 +96,25 @@ class FakeFluidicsPort:
         plan = plan if plan is not None else self.plan(rows)
         self.starts.append({"rows": rows, "plan": plan, "outcome": entry})
         run_id = f"run-{len(self.starts)}"
+        if entry[0] == "raise":
+            raise RuntimeError("the rig is busy: a run is in progress")
+        self.tickets.append(None)
         if entry[0] == "finished":
             return FakeTicket(FluidicsOutcome("finished", None, 1.0, None, run_id, {1: 500.0}), run_id=run_id)
         if entry[0] == "stopped":
             return FakeTicket(FluidicsOutcome("stopped", None, 0.5, entry[1], run_id, {1: 100.0}), run_id=run_id)
         if entry[0] == "failed":
             return FakeTicket(FluidicsOutcome("failed", entry[2], 0.5, entry[1], run_id, {}), run_id=run_id)
-        if entry[0] == "hold":
-            return FakeTicket(FluidicsOutcome("finished", None, 1.0, None, run_id, {}), hold=True, run_id=run_id)
+        if entry[0] in ("hold", "nopause"):
+            ticket = FakeTicket(
+                FluidicsOutcome("finished", None, 1.0, None, run_id, {}),
+                hold=True,
+                run_id=run_id,
+                position=min(1, len(plan) - 1),
+                pause_ok=entry[0] == "hold",
+            )
+            self.tickets[-1] = ticket
+            return ticket
         raise AssertionError(f"unknown script entry {entry}")
 
     def make_safe(self):

@@ -5,6 +5,8 @@ Utilities for parsing and validating acquisition YAML files.
 import csv
 import os
 import yaml
+
+import squid.logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -83,7 +85,12 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     csv_path = os.path.join(folder or os.path.dirname(file_path), "coordinates.csv")
     regions = parsed.wellplate_regions if parsed.widget_type == "wellplate" else parsed.flexible_positions
     if regions and not any(r.get("fovs") for r in regions) and os.path.isfile(csv_path):
-        by_name = {r["name"]: r["fovs"] for r in read_coordinates_csv(csv_path)}
+        try:
+            by_name = {r["name"]: r["fovs"] for r in read_coordinates_csv(csv_path)}
+        except (ValueError, OSError) as e:
+            # An empty or malformed sibling CSV (an aborted run) must not fail an otherwise valid acquisition.yaml.
+            squid.logging.get_logger(__name__).warning(f"Ignoring {csv_path}: {e}")
+            by_name = {}
         for region in regions:
             if region.get("name") in by_name:
                 region["fovs"] = by_name[region["name"]]

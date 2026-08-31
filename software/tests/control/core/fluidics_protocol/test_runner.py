@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import HoldAction, RunnerState
 from control.core.fluidics_protocol.resolve import resolve_protocol
@@ -118,15 +120,17 @@ def test_abort_step_during_fluidics_holds_and_resume_runs_the_plan_tail(tmp_path
     runner.start()
     assert wait_until(lambda: len(fluidics.starts) == 2)
 
+    assert wait_until(lambda: manifest_io.read_manifest(run_dir).cursor.sequence == 1)  # 2nd sequence in flight
+
     runner.abort_step()
     assert _held(runner)
     hold = runner.hold
-    assert hold.kind == "fluidics" and hold.reason == "stopped" and hold.resume_position == 0 and hold.can_resume
+    assert hold.kind == "fluidics" and hold.reason == "stopped" and hold.resume_position == 1 and hold.can_resume
     assert manifest_io.read_manifest(run_dir).status == "held"
 
     runner.hold_action(HoldAction.RESUME)
     assert runner.wait(10) and runner.outcome == "finished"
-    assert len(fluidics.starts[2]["plan"]) == 2  # tail from position 0 of a 2-row step
+    assert len(fluidics.starts[2]["plan"]) == 1  # tail from position 1 of the 2-row step
     man = manifest_io.read_manifest(run_dir)
     assert [a.outcome for a in man.steps[1].attempts] == ["stopped", "finished"]
 
@@ -286,3 +290,59 @@ def test_crash_recovery_starts_held_at_the_cursor_and_resumes_the_tail(tmp_path)
     assert man.status == "finished" and man.steps[0].attempts[0].outcome == "finished"  # untouched history
     assert man.steps[1].attempts[0].outcome == "error" and man.steps[1].attempts[1].outcome == "finished"
     assert len(imaging2.requests) == 1 and len(fluidics2.starts) == 2
+
+
+def test_abort_run_while_held_ends_the_run(tmp_path):
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "boom")])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    runner.start()
+    assert _held(runner)
+    runner.abort_run()
+    assert runner.wait(10) and runner.outcome == "stopped"
+
+
+def test_refused_pause_parks_at_the_step_boundary(tmp_path):
+    fluidics = FakeFluidicsPort(script=[("nopause",)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    runner.start()
+    assert wait_until(lambda: len(fluidics.starts) == 1)
+
+    runner.pause()  # the library has no gate left: pause() returns False
+    assert wait_until(lambda: len(fluidics.starts) == 1 and runner.state == RunnerState.RUNNING)
+    fluidics.tickets[0].release()
+    assert wait_until(lambda: runner.state == RunnerState.PAUSED)
+    assert len(fluidics.starts) == 1  # the next step waits for Resume
+
+    runner.resume()
+    assert runner.wait(10) and runner.outcome == "finished"
+
+
+def test_fluidics_start_refusal_holds_as_failed_to_start(tmp_path):
+    fluidics = FakeFluidicsPort(script=[("raise",), ("finished",)])
+    runner, fluidics, imaging, run_dir = _runner(tmp_path, fluidics=fluidics)
+    runner.start()
+    assert _held(runner)
+    assert runner.hold.reason == "failed_to_start" and "busy" in runner.hold.message
+    man = manifest_io.read_manifest(run_dir)
+    assert man.steps[0].attempts[0].outcome == "failed_to_start"
+
+    runner.hold_action(HoldAction.RESTART)
+    assert runner.wait(10) and runner.outcome == "finished"
+
+
+def test_recovery_refuses_a_manifest_that_does_not_match_the_protocol(tmp_path):
+    runner, fluidics, imaging, run_dir = _runner(tmp_path)
+    runner.start()
+    assert runner.wait(10)
+    crashed = manifest_io.read_manifest(run_dir)
+    crashed.status = "running"
+    crashed.cursor.step = 1
+
+    other = resolve_protocol(_protocol(rounds=2), tmp_path, fluidics=FakeFluidicsPort())
+    with pytest.raises(ValueError, match="steps"):
+        ProtocolRunner(other, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
+
+    (run_dir / "protocol.yaml").write_text("version: 1\nsequences: []\n")
+    same = resolve_protocol(_protocol(), tmp_path, fluidics=FakeFluidicsPort())
+    with pytest.raises(ValueError, match="protocol.yaml"):
+        ProtocolRunner(same, run_dir, FakeImagingPort(), FakeFluidicsPort(), run_name="liver", manifest=crashed)
