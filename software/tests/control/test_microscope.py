@@ -204,3 +204,11 @@ class TestGetImagePixelSizeUm:
                 assert scope.get_image_pixel_size_um() is None
         finally:
             scope.close()
+
+
+def test_fluidics_ini_keys_have_new_defaults():
+    # [SIMULATION] simulate_fluidics is parsed like the other SIMULATE_* keys; the default config
+    # path is the machine_configs template's real-file name.
+    assert control._def.SIMULATE_FLUIDICS is False
+    assert isinstance(control._def.RUN_FLUIDICS, bool)
+    assert control._def.FLUIDICS_CONFIG_PATH == "machine_configs/fluidics_config.yaml"
