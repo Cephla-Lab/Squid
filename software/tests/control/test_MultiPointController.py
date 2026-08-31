@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import threading
 
 import pytest
@@ -504,3 +505,96 @@ def test_start_new_experiment_default_still_appends_a_timestamp(tmp_path):
 
     assert mpc.experiment_ID.startswith("my_exp_")
     assert len(mpc.experiment_ID) > len("my_exp_")
+
+
+class CountingTracker(TestAcquisitionTracker):
+    def __init__(self):
+        super().__init__()
+        self.finished_count = 0
+
+    def get_callbacks(self) -> MultiPointControllerFunctions:
+        callbacks = super().get_callbacks()
+
+        def finished():
+            self.finished_count += 1
+            self.finished_event.set()
+
+        return dataclasses.replace(callbacks, signal_acquisition_finished=finished)
+
+
+def _controller_with_tracker():
+    control._def.MERGE_CHANNELS = False
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = CountingTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    return scope, tt, mpc
+
+
+def test_completed_run_reports_end_reason_and_image_count():
+    scope, tt, mpc = _controller_with_tracker()
+    assert mpc.last_end_reason is None
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "completed"
+    assert mpc.last_image_count == tt.image_count > 0
+
+
+def test_user_abort_reports_user_abort():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.run_acquisition()
+    mpc.request_abort_aquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "user_abort"
+
+
+def test_validation_failure_reports_failed_to_start_exactly_once():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.laserAutoFocusController.laser_af_properties.has_reference = False
+    mpc.set_reflection_af_flag(True)
+
+    mpc.run_acquisition()
+
+    assert tt.finished_event.is_set()
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "failed_to_start"
+    assert not mpc.acquisition_in_progress()
+
+
+def test_focus_map_without_scan_bounds_reports_failed_to_start_and_restores_the_camera():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_gen_focus_map_flag(True)
+    mpc.scanCoordinates.get_scan_bounds = lambda: None  # the focus-map early return
+    callbacks_before = scope.camera.get_callbacks_enabled()
+
+    mpc.run_acquisition()
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "failed_to_start"
+    assert scope.camera.get_callbacks_enabled() == callbacks_before
+    assert not mpc.acquisition_in_progress()
+
+
+def test_worker_construction_failure_reports_failed_to_start_once_and_reraises(monkeypatch):
+    import control.core.multi_point_controller as mpc_module
+
+    class BrokenWorker:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mpc_module, "MultiPointWorker", BrokenWorker)
+    scope, tt, mpc = _controller_with_tracker()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        mpc.run_acquisition()
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "failed_to_start"

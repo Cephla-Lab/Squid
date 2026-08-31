@@ -219,6 +219,11 @@ class MultiPointController:
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
+        # Outcome of the last run_acquisition(): None while in flight; "completed" |
+        # "completed_with_errors" | "user_abort" | "error" from the worker, or "failed_to_start" when the
+        # run never launched a worker. Read by finished-callback consumers (no payload on the signal).
+        self.last_end_reason: Optional[str] = None
+        self.last_image_count: int = 0
         self.use_manual_focus_map = False
         self.base_path = None
         self.skip_saving = False
@@ -696,8 +701,11 @@ class MultiPointController:
         # widget, TCP control server).
         run_region_laser_af_offsets = self.region_laser_af_offsets
         self.region_laser_af_offsets = {}
+        self.last_end_reason = None
+        self.last_image_count = 0
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
+            self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
             return
         self._start_per_acquisition_log()
@@ -714,6 +722,7 @@ class MultiPointController:
             log_memory("ACQUISITION START", include_children=True)
 
         thread_started = False
+        hardware_prepared = False
         self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
         try:
             self._log.info("start multipoint")
@@ -772,6 +781,7 @@ class MultiPointController:
             # We need callbacks, because we trigger and then use callbacks for image processing.  This
             # lets us do overlapping triggering (soon).
             self.camera.enable_callbacks(True)
+            hardware_prepared = True
 
             # run the acquisition
             self.timestamp_acquisition_started = time.time()
@@ -968,6 +978,24 @@ class MultiPointController:
                 if self._memory_monitor is not None:
                     self._memory_monitor.stop()
                     self._memory_monitor = None
+                # The run never launched a worker (validation passed but a focus-map early return or a
+                # pre-worker exception ended it). Undo what was prepared and report exactly once, so every
+                # caller - GUI widgets, TCP server, the fluidics protocol runner - sees acquisition_finished.
+                if hardware_prepared:
+                    try:
+                        self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
+                        if (
+                            self.liveController_was_live_before_multipoint
+                            and control._def.RESUME_LIVE_AFTER_ACQUISITION
+                        ):
+                            self.liveController.start_live()
+                    except Exception:
+                        self._log.exception("Failed to restore camera/live state after a failed acquisition start")
+                self.last_end_reason = "failed_to_start"
+                try:
+                    self.callbacks.signal_acquisition_finished()
+                except Exception:
+                    self._log.exception("acquisition_finished callback failed after a failed acquisition start")
 
     def build_params(
         self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None
@@ -1051,6 +1079,9 @@ class MultiPointController:
         # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
+        worker = self.multiPointWorker
+        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
+        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False
