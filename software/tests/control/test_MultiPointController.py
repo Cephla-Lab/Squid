@@ -480,3 +480,27 @@ def test_engine_has_no_fluidics_coupling():
 
     assert "use_fluidics" not in {f.name for f in fields(AcquisitionParameters)}
     assert not hasattr(MultiPointController, "set_use_fluidics")
+
+
+def test_start_new_experiment_without_timestamp_uses_the_folder_verbatim(tmp_path):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    mpc.set_base_path(str(tmp_path))
+
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+
+    assert mpc.experiment_ID == "R01_image"
+    assert (tmp_path / "R01_image" / "acquisition parameters.json").exists()
+    with pytest.raises(FileExistsError):
+        mpc.start_new_experiment("R01_image", add_timestamp=False)
+
+
+def test_start_new_experiment_default_still_appends_a_timestamp(tmp_path):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    mpc.set_base_path(str(tmp_path))
+
+    mpc.start_new_experiment("my exp")
+
+    assert mpc.experiment_ID.startswith("my_exp_")
+    assert len(mpc.experiment_ID) > len("my_exp_")

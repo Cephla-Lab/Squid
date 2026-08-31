@@ -441,12 +441,22 @@ class MultiPointController:
     def set_overlap_percent(self, overlap_percent: float):
         self.overlap_percent = overlap_percent
 
-    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
-        # generate unique experiment ID
-        self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+    def start_new_experiment(self, experiment_ID, add_timestamp=True):
+        """Create the experiment folder and write its parameter files.
+
+        add_timestamp=True (default): folder = experiment_ID (spaces -> underscores) + "_" + now.
+        add_timestamp=False: folder = experiment_ID verbatim; raises FileExistsError if it already exists
+        (the fluidics protocol runner names session folders itself and never reuses one).
+        """
+        if add_timestamp:
+            self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        else:
+            self.experiment_ID = experiment_ID
         self.recording_start_time = time.time()
         # create a new folder
         experiment_dir = os.path.join(self.base_path, self.experiment_ID)
+        if not add_timestamp and os.path.exists(experiment_dir):
+            raise FileExistsError(experiment_dir)
         utils.ensure_directory_exists(experiment_dir)
         # Save acquisition configuration via ConfigRepository
         self.liveController.microscope.config_repo.save_acquisition_output(
