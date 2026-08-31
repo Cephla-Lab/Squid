@@ -7350,6 +7350,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         )
         event.acceptProposedAction()
 
+    @Slot(str)
+    def load_acquisition_yaml_slot(self, file_path: str) -> None:
+        """Queued entry point for non-Qt threads (TCP server): load a saved acquisition.yaml into this tab."""
+        try:
+            self._load_acquisition_yaml(file_path)
+        except Exception as e:
+            self._log.error(f"Failed to load acquisition YAML {file_path}: {e}", exc_info=True)
+
     def _get_expected_widget_type(self) -> str:
         """Return the expected widget_type for this widget."""
         return "flexible"
@@ -9493,6 +9501,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
+
+    @Slot(str)
+    def load_acquisition_yaml_slot(self, file_path: str) -> None:
+        """Queued entry point for non-Qt threads (TCP server): load a saved acquisition.yaml into this tab."""
+        try:
+            self._load_acquisition_yaml(file_path)
+        except Exception as e:
+            self._log.error(f"Failed to load acquisition YAML {file_path}: {e}", exc_info=True)
 
     def _get_expected_widget_type(self) -> str:
         """Return the expected widget_type for this widget."""
