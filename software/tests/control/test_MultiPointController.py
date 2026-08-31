@@ -598,3 +598,26 @@ def test_worker_construction_failure_reports_failed_to_start_once_and_reraises(m
 
     assert tt.finished_count == 1
     assert mpc.last_end_reason == "failed_to_start"
+
+
+def test_acquisition_yaml_has_region_fovs_and_the_protocol_section(tmp_path):
+    import yaml
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+    mpc.protocol_info = {"name": "demo", "round": "R01", "step": "image", "run_name": "liver"}
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    with open(tmp_path / "R01_image" / "acquisition.yaml", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    regions = {r["name"]: r for r in data["wellplate_scan"]["regions"]}
+    expected = [list(fov) for fov in mpc.scanCoordinates.region_fov_coordinates["region_1"]]
+    assert regions["region_1"]["fovs"] == expected
+    assert len(regions["region_grid"]["fovs"]) == 9
+    assert data["protocol"] == {"name": "demo", "round": "R01", "step": "image", "run_name": "liver"}
+    assert "fluidics" not in data
+    assert mpc.protocol_info is None

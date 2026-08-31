@@ -57,6 +57,7 @@ def _save_acquisition_yaml(
     wellplate_format: str = None,
     scan_size_mm: float = 0.0,
     overlap_percent: float = 10.0,
+    protocol: Optional[dict] = None,
 ) -> None:
     """Save acquisition parameters to YAML file.
 
@@ -111,6 +112,10 @@ def _save_acquisition_yaml(
                     "name": name,
                     "center_mm": _serialize_for_yaml(center),
                     "shape": region_shapes.get(name) if region_shapes else None,
+                    "fovs": [
+                        _serialize_for_yaml(c)
+                        for c in params.scan_position_information.scan_region_fov_coords_mm.get(name, [])
+                    ],
                 }
                 for name, center in zip(
                     params.scan_position_information.scan_region_names,
@@ -129,6 +134,10 @@ def _save_acquisition_yaml(
                 {
                     "name": name,
                     "center_mm": _serialize_for_yaml(center),
+                    "fovs": [
+                        _serialize_for_yaml(c)
+                        for c in params.scan_position_information.scan_region_fov_coords_mm.get(name, [])
+                    ],
                 }
                 for name, center in zip(
                     params.scan_position_information.scan_region_names,
@@ -147,6 +156,9 @@ def _save_acquisition_yaml(
         "num_rows": params.plate_num_rows,
         "num_cols": params.plate_num_cols,
     }
+
+    if protocol:
+        yaml_dict["protocol"] = protocol
 
     yaml_path = os.path.join(experiment_path, "acquisition.yaml")
     try:
@@ -224,6 +236,7 @@ class MultiPointController:
         # run never launched a worker. Read by finished-callback consumers (no payload on the signal).
         self.last_end_reason: Optional[str] = None
         self.last_image_count: int = 0
+        self.protocol_info: Optional[dict] = None  # fluidics protocol context for the next run's acquisition.yaml
         self.use_manual_focus_map = False
         self.base_path = None
         self.skip_saving = False
@@ -905,7 +918,9 @@ class MultiPointController:
                 wellplate_format,
                 self.scan_size_mm,
                 self.overlap_percent,
+                protocol=self.protocol_info,
             )
+            self.protocol_info = None
 
             # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
             # self._run_state_writer is already a NullRunStateWriter (set before the outer try); it
