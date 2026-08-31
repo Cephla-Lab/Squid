@@ -599,6 +599,7 @@ class QtMultiPointController(MultiPointController, QObject):
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
+    FLUIDICS_TAB_NAME = "Fluidics"
     signal_performance_mode_changed = Signal(bool)
 
     def __init__(
@@ -732,6 +733,10 @@ class HighContentScreeningGui(QMainWindow):
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
         self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
         self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
+        self.fluidicsDisplayTab = None  # widgets_fluidics.FluidicsDisplayTab when RUN_FLUIDICS
+        self.fluidicsProtocolWidget = None  # widgets_fluidics.FluidicsProtocolWidget when RUN_FLUIDICS
+        self.qtImagingPort = None
+        self._fluidics_protocol_active = False
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
@@ -1074,6 +1079,9 @@ class HighContentScreeningGui(QMainWindow):
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
 
+        if self.fluidics is not None:
+            self._setup_fluidics_widgets()
+
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
 
@@ -1275,6 +1283,8 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.flexibleMultiPointWidget, "Flexible Multipoint")
         if USE_TEMPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(self.templateMultiPointWidget, "Template Multipoint")
+        if self.fluidicsProtocolWidget is not None:
+            self.recordTabWidget.addTab(self.fluidicsProtocolWidget, "Fluidics Protocol")
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
@@ -1475,6 +1485,15 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
             self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
+
+        if self.fluidicsProtocolWidget is not None:
+            self.fluidicsProtocolWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.fluidicsProtocolWidget.signal_protocol_active.connect(self._set_fluidics_protocol_active)
+            self.fluidicsProtocolWidget.signal_show_fluidics_tab.connect(
+                lambda: self.imageDisplayTabs.setCurrentWidget(self.fluidicsDisplayTab)
+            )
+            self.fluidicsProtocolWidget.signal_run_notification.connect(self._handle_fluidics_notification)
+            self.fluidicsProtocolWidget.signal_reagent_rows.connect(self.fluidicsDisplayTab.reagents_table.set_rows)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -1770,6 +1789,19 @@ class HighContentScreeningGui(QMainWindow):
                         ),
                     ]
                 )
+            if self.qtImagingPort is not None:
+                self.napari_connections["napariMultiChannelWidget"].extend(
+                    [
+                        (
+                            self.qtImagingPort.signal_acquisition_channels,
+                            self.napariMultiChannelWidget.initChannels,
+                        ),
+                        (
+                            self.qtImagingPort.signal_acquisition_shape,
+                            self.napariMultiChannelWidget.initLayersShape,
+                        ),
+                    ]
+                )
 
             # Unified mosaic/plate view connections.
             # plate_view_init uses Qt.QueuedConnection because it can be emitted from
@@ -1838,7 +1870,7 @@ class HighContentScreeningGui(QMainWindow):
     def toggleNapariTabs(self):
         # Enable/disable Napari tabs based on performance mode
         for i in range(1, self.imageDisplayTabs.count()):
-            if self.imageDisplayTabs.tabText(i) != self.LASER_BASED_FOCUS_TAB_NAME:
+            if self.imageDisplayTabs.tabText(i) not in (self.LASER_BASED_FOCUS_TAB_NAME, self.FLUIDICS_TAB_NAME):
                 self.imageDisplayTabs.setTabEnabled(i, not self.performance_mode)
 
         if self.performance_mode:
@@ -1945,6 +1977,8 @@ class HighContentScreeningGui(QMainWindow):
         self._laser_engine_dialog_engine = None
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
+        if self._fluidics_protocol_active:
+            return  # the display stays on the Fluidics tab for the whole protocol run
         if self.performance_mode:
             self.imageDisplayTabs.setCurrentIndex(0)
             return
@@ -2024,6 +2058,66 @@ class HighContentScreeningGui(QMainWindow):
                 self.slackNotifier.notify_acquisition_finished(stats)
         except Exception as e:
             self.log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+
+    def _setup_fluidics_widgets(self):
+        from control.core.acquisition_settings import export_acquisition_settings
+        from control.widgets_fluidics.display_tab import FluidicsDisplayTab
+        from control.widgets_fluidics.protocol_widget import FluidicsProtocolWidget
+        from control.widgets_fluidics.qt_imaging_port import QtImagingPort
+
+        self.qtImagingPort = QtImagingPort(self.multipointController, self.scanCoordinates, self.microscope)
+
+        def current_imaging_source():
+            problem = self.wellplateMultiPointWidget.configure_controller_from_ui()
+            if problem:
+                return problem, {}, {}
+            settings, coordinates = export_acquisition_settings(
+                self.multipointController, self.scanCoordinates, self.objectiveStore, self.camera
+            )
+            return None, settings, coordinates
+
+        def fluidics_busy_check():
+            if self.multipointController.acquisition_in_progress():
+                return "an acquisition is already in progress"
+            if self.workflowRunner is not None and self.workflowRunner.is_running():
+                return "a workflow is running"
+            return None
+
+        self.fluidicsDisplayTab = FluidicsDisplayTab(self.fluidics, current_source=current_imaging_source)
+        if isinstance(self.imageDisplayTabs, QTabWidget):  # absent in live-only mode
+            self.imageDisplayTabs.addTab(self.fluidicsDisplayTab, self.FLUIDICS_TAB_NAME)
+        self.fluidicsProtocolWidget = FluidicsProtocolWidget(
+            self.fluidics,
+            self.fluidicsDisplayTab.protocol_tab,
+            imaging_port_factory=lambda: self.qtImagingPort,
+            busy_check=fluidics_busy_check,
+        )
+        self.fluidicsDisplayTab.system_ready.connect(
+            lambda: self.fluidicsProtocolWidget.set_fluidics_port(self.fluidicsDisplayTab.fluidics_port)
+        )
+        self.fluidicsDisplayTab.run_line_provider = self._fluidics_run_line
+
+    def _fluidics_run_line(self) -> str:
+        widget = self.fluidicsProtocolWidget
+        if widget is None or widget.runner is None:
+            return "idle"
+        snap = widget.runner.snapshot()
+        line = snap.state.value
+        if snap.step_index is not None:
+            line += f" · step {snap.step_index + 1}/{snap.total_steps}"
+        return line
+
+    def _set_fluidics_protocol_active(self, active: bool):
+        self._fluidics_protocol_active = active
+        if self.fluidicsDisplayTab is not None:
+            self.fluidicsDisplayTab.set_run_active(active)
+
+    def _handle_fluidics_notification(self, text: str):
+        try:
+            if self.slackNotifier is not None and self.slackNotifier.enabled:
+                self.slackNotifier.send_message(text)
+        except Exception as e:
+            self.log.warning(f"Failed to send the fluidics Slack notification: {e}")
 
     def openSlackSettings(self):
         """Open the Slack notifications settings dialog."""
@@ -2312,6 +2406,10 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
+        if self.fluidicsProtocolWidget is not None and index == self.recordTabWidget.indexOf(
+            self.fluidicsProtocolWidget
+        ):
+            return  # switching to the protocol tab must not clear captured scan regions
         is_flexible_acquisition = (
             (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
             if ENABLE_FLEXIBLE_MULTIPOINT
@@ -2697,6 +2795,8 @@ class HighContentScreeningGui(QMainWindow):
         self._show_event_initialized = True
         self._update_ram_monitor_visibility()
         self._connect_warning_handler()
+        if self.fluidicsProtocolWidget is not None:
+            QTimer.singleShot(0, lambda: self.fluidicsProtocolWidget.offer_recovery(startup=True))
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
@@ -2919,6 +3019,12 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
+        if self.fluidicsDisplayTab is not None:
+            try:
+                self.fluidicsDisplayTab.log_view.disconnect_logging()
+            except Exception:
+                self.log.exception(f"Error disconnecting the fluidics log view during {context}")
+
         # Close fluidics (a no-op unless Initialize was pressed; Microscope.close() would also do it)
         if self.fluidics is not None:
             try:
@@ -2964,6 +3070,20 @@ class HighContentScreeningGui(QMainWindow):
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
+        if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
+            reply = QMessageBox.question(
+                self,
+                "Fluidics protocol running",
+                "A fluidics protocol run is in progress. End it and exit?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
+            if not self.fluidicsProtocolWidget.end_run_for_exit(15):
+                self.log.warning("The fluidics protocol run did not end within 15 s; continuing shutdown")
+
         # Show confirmation dialog
         reply = QMessageBox.question(
             self,
