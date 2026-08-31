@@ -514,11 +514,13 @@ class ProtocolRunner:
         self._log.info(f"Step {step.index + 1} attempt {attempt} ended: {outcome} {message or ''}")
 
     def _set_state(self, state: RunnerState, status: Optional[str] = None) -> None:
+        # Write the manifest before publishing the state, so anyone who sees the new state on `runner.state`
+        # also finds it on disk (the GUI reads one, the recovery path the other).
         with self._lock:
-            self._state = state
             if status is not None:
                 self._manifest.status = status
             self._save()
+            self._state = state
         self._emit(StateChanged(state, self._hold if state is RunnerState.HELD else None))
 
     def _heartbeat(self) -> None:
