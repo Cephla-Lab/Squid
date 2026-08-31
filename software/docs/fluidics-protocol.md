@@ -1,7 +1,7 @@
-# Fluidics protocol (engine)
+# Fluidics protocol
 
-Status: engine implemented (phases 0–1); the GUI (Fluidics Protocol record tab, Fluidics display tab)
-is phase 2. Design: AI-docs `Squid/in-progress/2026-08-30-fluidics-protocol-design.md`.
+Status: engine and GUI implemented (phases 0–2); the flow-sensor tab is phase 3.
+Design: AI-docs `Squid/in-progress/2026-08-30-fluidics-protocol-design.md`.
 
 ## What a protocol is
 
@@ -45,11 +45,38 @@ Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, 
   `library_port.py` (`LibraryFluidicsPort` over `FluidicsSystem`), `manifest.py` (run folder, atomic
   `run_manifest.json`, `find_unfinished_runs` for crash recovery).
 - `control/core/acquisition_settings.py` — Qt-free `apply_acquisition_settings` shared by the TCP command and
-  (phase 2) the imaging port; rebuilds Load-Coordinates regions from FOV lists
+  the imaging port; rebuilds Load-Coordinates regions from FOV lists
   (`ScanCoordinates.add_region_from_fovs`); `export_acquisition_settings` produces the two blocks.
 - Engine seams used by the runner: `MultiPointController.start_new_experiment(folder, add_timestamp=False)`,
   `last_end_reason` / `last_image_count` (every `run_acquisition()` reports `acquisition_finished` exactly
   once), `protocol_info` → `acquisition.yaml`'s `protocol:` section, `regions[].fovs` in `acquisition.yaml`.
+
+## GUI
+
+Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
+
+**Fluidics display tab** (next to Live View): the instrument side and the Protocol editor.
+
+- **Initialize** builds the `FluidicsSystem` from `machine_configs/fluidics_config.yaml` (path editable,
+  remembered in `cache/fluidics_protocol.json`) off the GUI thread; on success the upstream manual-control
+  widget (`fluidics.qt.manual_control`), device status, and — when the config lists a temperature
+  controller — the Temperature tab appear. Log | Temperature | Reagents live under the status panel;
+  Temperature plots live readings (record-to-CSV per run), Reagents accumulates estimated µL per port.
+- **Protocol editor**: rounds-grouped step list with include checkboxes and live validation, a field editor
+  with "apply to all rows with this name", **Add rounds…** (template round × N with a port list),
+  **+ Imaging** (`folder_pattern`, default `{round}_{step}`), and per-imaging-row settings/coordinates
+  sources: **Apply current** captures the Wellplate Multipoint panel into a header block; **From file…**
+  points at a saved acquisition folder / `acquisition.yaml` / `coordinates.csv`.
+
+**Fluidics Protocol record tab** (with the acquisition panels): name the run, pick where run folders go,
+**Start run…** (pre-flight dialog lists every problem, or the run summary), then a status card (state, step,
+progress, elapsed, open-folder) with **Pause** (finishes the current step first; during imaging it reads
+"Pause after imaging"), **Abort step**, and **Abort run…**. A failed step raises the orange HELD panel —
+resume from the failed sequence / restart the step / skip / accept (imaging `completed_with_errors`) /
+end run, with an optional TEC-restore checkbox. A run in progress locks the protocol structure, keeps the
+display on the Fluidics tab, and asks before exit; on startup (and per save-to folder change) unfinished
+run folders offer crash recovery — reopening the run HELD at the interrupted step. Run notifications go to
+Slack when the notifier is configured.
 
 ## Run folder
 
@@ -67,5 +94,7 @@ Models: `control/models/fluidics_protocol.py` (`ProtocolFile`, `SettingsBlock`, 
 
 `tests/control/core/fluidics_protocol/` (scripted fakes for both engines; the library tests skip when the
 `fluidics` package is not installed), `tests/control/test_fluidics_system.py`,
-`tests/control/core/test_acquisition_settings.py`. Install the library with
+`tests/control/core/test_acquisition_settings.py`; GUI: `tests/control/widgets_fluidics/`
+(`test_end_to_end_gui_run.py` drives a 3-round protocol through the real Qt imaging path, including
+abort-during-imaging → Restart → `_attempt2`). Install the library with
 `git submodule update --init software/fluidics_v2 && pip3 install --no-deps -e fluidics_v2/software`.
