@@ -259,7 +259,9 @@ def _get_linux_pss_mb(pid: int) -> float:
                     pss_total_kb += int(parts[1])
 
         return pss_total_kb / 1024
-    except (FileNotFoundError, PermissionError, ValueError):
+    except (FileNotFoundError, PermissionError, ValueError, ProcessLookupError):
+        # ProcessLookupError (errno ESRCH) can occur when the process exited between
+        # PID enumeration and the smaps_rollup read, or when the PID is a zombie.
         pass
     return 0.0
 
