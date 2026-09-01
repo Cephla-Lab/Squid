@@ -102,13 +102,7 @@ class StreamHandler:
         # send image to display
         time_now = time.time()
         if self._fns.force_display() or time_now - self.timestamp_last_display >= 1 / self.fps_display:
-            self._fns.image_to_display(
-                utils.crop_image(
-                    image,
-                    round(image.shape[1] * self.display_resolution_scaling),
-                    round(image.shape[0] * self.display_resolution_scaling),
-                )
-            )
+            self._fns.image_to_display(utils.crop_to_fraction(image, self.display_resolution_scaling))
             self.timestamp_last_display = time_now
 
         # send image to write

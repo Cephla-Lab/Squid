@@ -36,7 +36,7 @@ _log = squid.logging.get_logger("control.utils")
 
 
 def to_grayscale(image: np.ndarray) -> np.ndarray:
-    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
 
 
 def measure_translation_px(
@@ -48,11 +48,8 @@ def measure_translation_px(
     of view (see StreamHandler), so the same part of ``reference`` is compared. ``reference`` is then
     resampled to ``live``'s shape, so a reference acquired at a different binning works too.
     """
-    reference = to_grayscale(reference)
+    reference = crop_to_fraction(to_grayscale(reference), live_crop_fraction)
     live = to_grayscale(live)
-    if live_crop_fraction < 1.0:
-        height, width = reference.shape
-        reference = crop_image(reference, round(width * live_crop_fraction), round(height * live_crop_fraction))
     if reference.shape != live.shape:
         height, width = live.shape
         reference = cv2.resize(reference, (width, height), interpolation=cv2.INTER_AREA)
@@ -85,9 +82,14 @@ def crop_image(image, crop_width, crop_height):
     return image_cropped
 
 
+def crop_to_fraction(image, fraction):
+    """Center crop keeping ``fraction`` of each dimension (how the live display applies its resolution scaling)."""
+    height, width = image.shape[:2]
+    return crop_image(image, round(width * fraction), round(height * fraction))
+
+
 def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
-    if len(image.shape) == 3:
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)  # optional
+    image = to_grayscale(image)
     if method == FocusMeasureOperator.LAPE:
         if image.dtype == np.uint16:
             lap = cv2.Laplacian(image, cv2.CV_32F)

@@ -1,5 +1,7 @@
 """Tests for sample alignment: reference-image registration, stage offset mapping, and the AlignmentWidget."""
 
+from unittest.mock import MagicMock
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -9,8 +11,8 @@ from qtpy.QtWidgets import QFileDialog, QMessageBox
 
 import control._def
 from control import utils
-from control.core.core import ImageDisplayWindow
-from control.widgets import AlignmentWidget
+from control.gui_hcs import HighContentScreeningGui
+from control.widgets import AlignmentWidget, WellplateCalibration
 
 
 def _textured_image(shape=(128, 128), dtype=np.uint16):
@@ -46,9 +48,15 @@ def test_measure_translation_px_accepts_color_reference_against_mono_live():
 def test_measure_translation_px_accounts_for_display_center_crop():
     """Below 100% display resolution the live frame is the center crop of the field of view."""
     base = _textured_image()
-    live = utils.crop_image(np.roll(base, shift=(2, 6), axis=(0, 1)), 64, 64)
+    live = utils.crop_to_fraction(np.roll(base, shift=(2, 6), axis=(0, 1)), 0.5)
 
     assert utils.measure_translation_px(base, live, live_crop_fraction=0.5) == pytest.approx((6, 2))
+
+
+def test_crop_to_fraction_is_the_stream_handler_center_crop():
+    image = _textured_image(shape=(100, 120))
+
+    assert np.array_equal(utils.crop_to_fraction(image, 0.5), utils.crop_image(image, 60, 50))
 
 
 @pytest.mark.parametrize("inverted_objective, expected", [(False, (0.005, -0.010)), (True, (0.005, 0.010))])
@@ -56,6 +64,18 @@ def test_image_delta_to_stage_delta_mm_follows_click_to_move_convention(monkeypa
     monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", inverted_objective)
 
     assert utils.image_delta_to_stage_delta_mm(10, 20, pixel_size_um=0.5) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("inverted_objective, expected_dy", [(False, -0.010), (True, 0.010)])
+def test_wellplate_calibration_click_uses_the_shared_stage_convention(monkeypatch, inverted_objective, expected_dy):
+    monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", inverted_objective)
+    stub = MagicMock()
+    stub.liveController.microscope.get_image_pixel_size_um.return_value = 0.5
+
+    WellplateCalibration.viewerClicked(stub, 10, 20, 640, 480)
+
+    stub.stage.move_x.assert_called_once_with(pytest.approx(0.005))
+    stub.stage.move_y.assert_called_once_with(pytest.approx(expected_dy))
 
 
 # ─── AlignmentWidget ────────────────────────────────────────────────────────
@@ -84,17 +104,10 @@ def acquisition_folder(tmp_path, request):
 
 
 @pytest.fixture
-def display(qtbot):
-    win = ImageDisplayWindow()
-    qtbot.addWidget(win)
-    return win
-
-
-@pytest.fixture
-def widget(qtbot, display, acquisition_folder, monkeypatch):
+def widget(qtbot, image_display_window, acquisition_folder, monkeypatch):
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(acquisition_folder))
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
-    w = AlignmentWidget(display)
+    w = AlignmentWidget(image_display_window)
     qtbot.addWidget(w)
     w.enable()
     return w
@@ -109,23 +122,23 @@ def _confirm(widget, current_x_mm, current_y_mm):
     widget.set_current_position(current_x_mm, current_y_mm)
 
 
-def test_align_moves_to_center_fov_and_overlays_its_image(widget, display):
+def test_align_moves_to_center_fov_and_overlays_its_image(widget, image_display_window):
     moves = []
     widget.signal_move_to_position.connect(lambda x, y: moves.append((x, y)))
 
     _start_alignment(widget)
 
     assert moves == [CENTER_FOV_POSITION]
-    assert np.array_equal(display.alignment_reference_item.image, REFERENCE_IMAGE)
+    assert np.array_equal(image_display_window.alignment_reference_item.image, REFERENCE_IMAGE)
     assert widget.btn_align.text() == "Confirm Offset"
 
 
 @pytest.mark.parametrize("acquisition_folder", [(COLOR_REFERENCE_IMAGE, "bmp")], indirect=True)
-def test_color_reference_is_overlaid_as_an_intensity_image(widget, display):
+def test_color_reference_is_overlaid_as_an_intensity_image(widget, image_display_window):
     """pyqtgraph ignores lookup tables on H x W x 3 data, so a color reference must be reduced first."""
     _start_alignment(widget)
 
-    assert display.alignment_reference_item.image.ndim == 2
+    assert image_display_window.alignment_reference_item.image.ndim == 2
 
 
 def test_auto_is_only_available_while_a_reference_is_loaded(widget):
@@ -147,7 +160,7 @@ def test_auto_requests_registration_against_the_loaded_reference(widget):
     assert np.array_equal(requests[0], REFERENCE_IMAGE)
 
 
-def test_confirm_sets_offset_from_stage_displacement_and_hides_overlay(widget, display):
+def test_confirm_sets_offset_from_stage_displacement_and_hides_overlay(widget, image_display_window):
     offsets = []
     widget.signal_offset_set.connect(lambda x, y: offsets.append((x, y)))
     _start_alignment(widget)
@@ -156,7 +169,7 @@ def test_confirm_sets_offset_from_stage_displacement_and_hides_overlay(widget, d
 
     assert offsets == [pytest.approx((0.25, -0.1))]
     assert widget.apply_offset(1.0, 1.0) == pytest.approx((1.25, 0.9))
-    assert display.alignment_reference_item is None
+    assert image_display_window.alignment_reference_item is None
     assert widget.btn_align.text() == "Clear Offset"
 
 
@@ -179,19 +192,17 @@ def test_clear_removes_offset(widget):
 
 def _gui_stub(live_image, pixel_size_um, is_live=True, display_resolution_scaling=1.0):
     """HighContentScreeningGui-shaped stub with just what _alignment_auto_align touches."""
-    from unittest.mock import MagicMock
-
     stub = MagicMock()
     stub.imageDisplayWindow.current_image.return_value = live_image
     stub.microscope.get_image_pixel_size_um.return_value = pixel_size_um
     stub.liveController.is_live = is_live
-    stub.streamHandler.display_resolution_scaling = display_resolution_scaling
+    stub.liveController.display_resolution_scaling = display_resolution_scaling
+    # the real method under test must run, not a MagicMock stand-in
+    stub._move_stage_by_image_delta = lambda *args: HighContentScreeningGui._move_stage_by_image_delta(stub, *args)
     return stub
 
 
 def test_auto_align_moves_stage_to_cancel_measured_displacement(monkeypatch):
-    from control.gui_hcs import HighContentScreeningGui
-
     monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", False)
     live = np.roll(REFERENCE_IMAGE, shift=(-3, 4), axis=(0, 1))  # content moved +4 px in x, -3 px in y
     gui = _gui_stub(live, pixel_size_um=0.5)
@@ -203,11 +214,9 @@ def test_auto_align_moves_stage_to_cancel_measured_displacement(monkeypatch):
 
 
 def test_auto_align_uses_the_display_crop_fraction(monkeypatch):
-    from control.gui_hcs import HighContentScreeningGui
-
     monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", False)
     reference = _textured_image()
-    live = utils.crop_image(np.roll(reference, shift=(0, 4), axis=(0, 1)), 64, 64)
+    live = utils.crop_to_fraction(np.roll(reference, shift=(0, 4), axis=(0, 1)), 0.5)
     gui = _gui_stub(live, pixel_size_um=0.5, display_resolution_scaling=0.5)
 
     HighContentScreeningGui._alignment_auto_align(gui, reference)
@@ -226,8 +235,6 @@ def test_auto_align_uses_the_display_crop_fraction(monkeypatch):
 )
 def test_auto_align_refuses_to_move_without_a_current_live_frame(monkeypatch, gui):
     """After live view stops, current_image() is stale relative to the stage position."""
-    from control.gui_hcs import HighContentScreeningGui
-
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: warnings.append(args))
 

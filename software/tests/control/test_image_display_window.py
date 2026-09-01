@@ -1,4 +1,4 @@
-"""Tests for ImageDisplayWindow's Ctrl+Scroll Z-navigation event filter."""
+"""Tests for ImageDisplayWindow: Ctrl+Scroll Z-navigation, overexposure indicator, alignment overlay."""
 
 import numpy as np
 import pytest
@@ -30,13 +30,6 @@ def _pin_z_step_constants(monkeypatch):
 
     monkeypatch.setattr(control._def, "LIVE_VIEW_Z_STEP_UM", 1.0)
     monkeypatch.setattr(control._def, "LIVE_VIEW_Z_STEP_FAST_UM", 20.0)
-
-
-@pytest.fixture
-def image_display_window(qtbot):
-    win = ImageDisplayWindow()
-    qtbot.addWidget(win)
-    return win
 
 
 @pytest.mark.parametrize(
@@ -106,90 +99,81 @@ def test_wheel_step_size_picks_up_live_def_changes(image_display_window, monkeyp
 
 # ─── Overexposure indicator ──────────────────────────────────────────────────
 
-BLACK = (0, 0, 0)
-WHITE = (255, 255, 255)
 RED = (255, 0, 0)
 
 
-def _live_lut(win):
-    """The 256-entry RGB lookup table the live image item currently renders with (None = raw grayscale)."""
-    lut = win.graphics_widget.img.lut
-    if callable(lut):
-        lut = lut(np.zeros((1, 1), dtype=np.uint8))
-    return None if lut is None else np.asarray(lut)[:, :3]
+def _mono_frame_with_saturated_corner():
+    frame = np.full((2, 2), 1000, dtype=np.uint16)
+    frame[0, 0] = np.iinfo(np.uint16).max
+    return frame
 
 
-def test_overexposure_indicator_is_off_by_default(image_display_window):
-    assert image_display_window.btn_overexposure.isCheckable()
-    assert not image_display_window.btn_overexposure.isChecked()
-    assert _live_lut(image_display_window) is None
-
-
-def test_overexposure_on_renders_top_bin_red_and_rest_grayscale(image_display_window):
-    image_display_window.btn_overexposure.click()
-
-    lut = _live_lut(image_display_window)
-    assert tuple(lut[0]) == BLACK
-    assert tuple(lut[254]) == WHITE
-    assert tuple(lut[255]) == RED
-
-
-def test_overexposure_off_restores_plain_grayscale(image_display_window):
-    image_display_window.btn_overexposure.click()
-    image_display_window.btn_overexposure.click()
-
-    lut = _live_lut(image_display_window)
-    assert lut is None or tuple(lut[255]) == WHITE
-
-
-def test_overexposure_toggle_drives_histogram_gradient_in_lut_mode(qtbot):
-    """In show_LUT mode the histogram widget owns the live LUT, so the indicator must be
-    expressed as its gradient - otherwise the next contrast change would wipe it out."""
-    win = ImageDisplayWindow(show_LUT=True)
-    qtbot.addWidget(win)
-
-    win.btn_overexposure.click()
-    on = _live_lut(win)
-    assert tuple(on[255]) == RED
-    assert tuple(on[254]) == WHITE
-    assert tuple(on[0]) == BLACK
-
-    win.btn_overexposure.click()
-    off = _live_lut(win)
-    assert off is None or tuple(off[255]) == WHITE
-
-
-def _rgb_frame():
+def _rgb_frame_with_saturated_corner():
     frame = np.zeros((2, 2, 3), dtype=np.uint8)
     frame[0, 0] = (255, 255, 255)
     frame[1, 1] = (10, 20, 30)
     return frame
 
 
-def test_overexposure_marks_saturated_rgb_pixels_red(image_display_window):
-    """Lookup tables do not apply to H x W x 3 frames, so color cameras need the marking done in the data."""
+def test_overexposure_indicator_is_off_by_default(image_display_window):
+    assert image_display_window.btn_overexposure.isCheckable()
+    assert not image_display_window.btn_overexposure.isChecked()
+    assert image_display_window.overexposure_item is None
+
+
+@pytest.mark.parametrize("show_lut", [False, True])
+def test_overexposure_overlays_pixels_at_the_upper_contrast_limit_in_red(qtbot, show_lut):
+    win = ImageDisplayWindow(show_LUT=show_lut)
+    qtbot.addWidget(win)
+    win.btn_overexposure.click()
+
+    win.display_image(_mono_frame_with_saturated_corner())
+
+    item = win.overexposure_item
+    assert item in win._active_view().addedItems
+    assert item.image.tolist() == [[1, 0], [0, 0]]
+    lut = np.asarray(item.lut)
+    assert tuple(lut[1][:3]) == RED and lut[1][3] == 255
+    assert lut[0][3] == 0  # unsaturated pixels stay see-through
+
+
+def test_overexposure_marks_rgb_frames_without_modifying_them(image_display_window):
     win = image_display_window
-    frame = _rgb_frame()
+    frame = _rgb_frame_with_saturated_corner()
     win.btn_overexposure.click()
 
     win.display_image(frame)
 
-    shown = win.graphics_widget.img.image
-    assert tuple(shown[0, 0]) == RED
-    assert tuple(shown[1, 1]) == (10, 20, 30)
-    assert np.array_equal(win.current_image(), frame)
+    assert win.overexposure_item.image.tolist() == [[1, 0], [0, 0]]
+    assert np.array_equal(win.graphics_widget.img.image, frame)
 
 
-def test_rgb_frames_are_shown_unmodified_when_indicator_is_off(image_display_window):
-    frame = _rgb_frame()
+def test_overexposure_follows_histogram_level_changes(qtbot):
+    win = ImageDisplayWindow(show_LUT=True)
+    qtbot.addWidget(win)
+    win.btn_overexposure.click()
+    win.display_image(np.array([[100, 10], [10, 10]], dtype=np.uint16))
+    assert win.overexposure_item.image.tolist() == [[0, 0], [0, 0]]
 
-    image_display_window.display_image(frame)
+    win.LUTWidget.setLevels(0, 50)
 
-    assert np.array_equal(image_display_window.graphics_widget.img.image, frame)
+    assert win.overexposure_item.image.tolist() == [[1, 0], [0, 0]]
+
+
+def test_overexposure_off_removes_the_overlay(image_display_window):
+    win = image_display_window
+    win.btn_overexposure.click()
+    item = win.overexposure_item
+
+    win.btn_overexposure.click()
+
+    assert win.overexposure_item is None
+    assert item not in win._active_view().addedItems
 
 
 # ─── Alignment reference overlay ────────────────────────────────────────────
 
+BLACK = (0, 0, 0)
 MAGENTA = (255, 0, 255)
 
 
@@ -208,6 +192,13 @@ def test_show_alignment_reference_overlays_additive_magenta_item(qtbot, show_lut
     assert tuple(lut[0]) == BLACK
     assert tuple(lut[255]) == MAGENTA
     assert item.paintMode == QPainter.CompositionMode_Plus
+
+
+def test_show_alignment_reference_reduces_color_images_to_intensity(image_display_window):
+    """pyqtgraph ignores lookup tables on H x W x 3 data, so the magenta overlay needs a 2-D image."""
+    image_display_window.show_alignment_reference(np.zeros((4, 4, 3), dtype=np.uint8))
+
+    assert image_display_window.alignment_reference_item.image.ndim == 2
 
 
 def test_show_alignment_reference_twice_reuses_the_overlay_item(image_display_window):
