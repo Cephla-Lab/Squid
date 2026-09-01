@@ -105,3 +105,19 @@ def test_record_button_follows_a_recorder_stop(qtbot, tmp_path, monkeypatch):
     finally:
         tab._timer.stop()
         tc.close()
+
+
+def test_reagent_export_quotes_awkward_names(qtbot, tmp_path, monkeypatch):
+    import csv as csv_module
+
+    import control.widgets_fluidics.log_view as log_view_module
+    from control.widgets_fluidics.log_view import ReagentsTable
+
+    table = ReagentsTable()
+    qtbot.addWidget(table)
+    table.set_rows([(1, 'probe, "red"', 10.0, 20.0, 30.0)])
+    target = tmp_path / "reagents.csv"
+    monkeypatch.setattr(log_view_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
+    table._export()
+    rows = list(csv_module.reader(target.open()))
+    assert rows[1][1] == 'probe, "red"' and rows[1][0] == "1"

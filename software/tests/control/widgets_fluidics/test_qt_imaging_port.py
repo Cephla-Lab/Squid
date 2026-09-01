@@ -63,6 +63,7 @@ def _wait_result(qtbot, handle, timeout=30000):
 
 def test_start_runs_a_named_acquisition_to_completion(qtbot, qt_controller, tmp_path):
     scope, controller = qt_controller
+    controller.set_base_path(str(tmp_path / "manual"))  # what the multipoint UI had set
     port = QtImagingPort(controller, controller.scanCoordinates, scope)
     channels_seen = []
     port.signal_acquisition_channels.connect(channels_seen.append)
@@ -71,6 +72,7 @@ def test_start_runs_a_named_acquisition_to_completion(qtbot, qt_controller, tmp_
     result = _wait_result(qtbot, handle)
 
     assert result.end_reason == "completed" and result.folder == "R01_image"
+    assert controller.base_path == str(tmp_path / "manual")  # the operator's path came back
     assert result.image_count > 0
     assert (tmp_path / "R01_image" / ".done").exists()
     assert len(channels_seen) == 1 and len(channels_seen[0]) == 1
@@ -116,10 +118,12 @@ def test_abort_reports_user_abort(qtbot, qt_controller, tmp_path):
 def test_start_refusals_raise_imaging_start_error(qtbot, qt_controller, tmp_path):
     scope, controller = qt_controller
     port = QtImagingPort(controller, controller.scanCoordinates, scope)
+    controller.set_base_path(str(tmp_path / "manual"))
     request = _request(scope, controller, tmp_path, folder="R04_image")
     (tmp_path / "R04_image").mkdir()
     with pytest.raises(ImagingStartError, match="R04_image"):
         port.start(request)
+    assert controller.base_path == str(tmp_path / "manual")  # restored on the failure path
 
     bad = _request(scope, controller, tmp_path, folder="R05_image")
     bad.settings.channels = ["No Such Channel"]

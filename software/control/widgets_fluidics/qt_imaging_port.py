@@ -55,6 +55,8 @@ class QtImagingPort(QObject):
         self._microscope = microscope
         self._current: Optional[QtImagingHandle] = None
         self._start_error: Optional[ImagingStartError] = None
+        self._restore_base_path: Optional[str] = None
+        self._restore_pending = False
         self._start_requested.connect(self._do_start, Qt.BlockingQueuedConnection)
         controller.acquisition_finished.connect(self._on_acquisition_finished)
 
@@ -73,8 +75,11 @@ class QtImagingPort(QObject):
     def _do_start(self, request: ImagingRequest) -> None:
         # Qt swallows slot exceptions under BlockingQueuedConnection: report through _start_error.
         self._start_error = None
+        controller = self._controller
+        # The multipoint controller is shared with the manual UI: its base path must
+        # come back to whatever the operator had once the protocol acquisition ends.
+        previous_base_path = controller.base_path
         try:
-            controller = self._controller
             if controller.acquisition_in_progress():
                 raise ImagingStartError("another acquisition is already in progress")
             data = acquisition_data_from_blocks(request.settings.model_dump(), request.coordinates.model_dump())
@@ -83,17 +88,21 @@ class QtImagingPort(QObject):
             controller.start_new_experiment(request.folder, add_timestamp=False)
             controller.protocol_info = dict(request.protocol)
             self._current = QtImagingHandle(controller, request.folder)
+            self._restore_base_path, self._restore_pending = previous_base_path, True
             self.signal_acquisition_channels.emit(list(applied.channels))
             self.signal_acquisition_shape.emit(int(applied.nz), float(data.delta_z_um))
             controller.run_acquisition()
         except ImagingStartError as e:
+            controller.set_base_path(previous_base_path)
             self._current = None
             self._start_error = e
         except (ValueError, FileExistsError) as e:
+            controller.set_base_path(previous_base_path)
             self._current = None
             self._start_error = ImagingStartError(str(e))
         except Exception as e:
             self._log.exception("Imaging step failed to start")
+            controller.set_base_path(previous_base_path)
             self._current = None
             self._start_error = ImagingStartError(f"{type(e).__name__}: {e}")
 
@@ -102,3 +111,6 @@ class QtImagingPort(QObject):
         handle = self._current
         if handle is not None:
             handle._on_finished()
+            if handle._finished.is_set() and self._restore_pending:
+                self._controller.set_base_path(self._restore_base_path)
+                self._restore_base_path, self._restore_pending = None, False

@@ -4,6 +4,7 @@ The log pane polls a squid.logging.BufferingHandler on a QTimer — the WarningE
 The FluidicsService logging bridge already forwards the library's records (fluidics.*, XCaliburD)
 into the squid logger, so everything the run says lands here."""
 
+import csv
 import logging
 from typing import List, Optional, Tuple
 
@@ -141,9 +142,10 @@ class ReagentsTable(QWidget):
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write("port,reagent,last_step_ul,this_run_ul,since_init_ul\n")
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["port", "reagent", "last_step_ul", "this_run_ul", "since_init_ul"])
                 for port, reagent, last_step, this_run, since_init in self._rows:
-                    f.write(f"{port},{reagent or ''},{last_step},{this_run},{since_init}\n")
+                    writer.writerow([port, reagent or "", last_step, this_run, since_init])
         except OSError as e:
             QMessageBox.warning(self, "Export failed", f"Could not export the table:\n{e}")

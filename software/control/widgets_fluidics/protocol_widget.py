@@ -77,6 +77,7 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab = protocol_tab
         self.imaging_port_factory = imaging_port_factory
         self.busy_check = busy_check
+        self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
         self._resolved = None
@@ -112,6 +113,7 @@ class FluidicsProtocolWidget(QFrame):
         self.summary_label.setWordWrap(True)
 
         self.save_to_edit = QLineEdit(ui_state.get("save_to") or "")
+        self.save_to_edit.editingFinished.connect(self._save_to_changed)
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse_save_to)
         save_row = QHBoxLayout()
@@ -194,6 +196,7 @@ class FluidicsProtocolWidget(QFrame):
         if path:
             self.save_to_edit.setText(path)
             state.save_ui_state(save_to=path)
+            self._save_to_changed()
 
     # ---------- state ----------
 
@@ -288,6 +291,11 @@ class FluidicsProtocolWidget(QFrame):
             resolved,
         )
 
+    def _save_to_changed(self) -> None:
+        save_to = self.save_to_edit.text().strip()
+        if save_to and save_to != self._recovery_checked_dir:
+            self.offer_recovery(startup=True)
+
     def offer_recovery(self, startup: bool = False) -> None:
         if self.is_run_active():
             return
@@ -297,16 +305,21 @@ class FluidicsProtocolWidget(QFrame):
                 QMessageBox.warning(self, "Cannot resume", f"Cannot resume a run while {busy}.")
             return
         save_to = self.save_to_edit.text().strip() or state.load_ui_state().get("save_to") or ""
+        if startup and save_to == self._recovery_checked_dir:
+            return
+        if self.fluidics_port is None:
+            # A recovered run needs the fluidics system; the offer re-fires on system_ready.
+            if not startup:
+                QMessageBox.warning(self, "Cannot resume", "Initialize the fluidics system first.")
+            return
         runs = manifest_io.find_unfinished_runs(save_to) if save_to else []
+        self._recovery_checked_dir = save_to
         if not runs:
             if not startup:
                 QMessageBox.information(self, "Nothing to resume", "No unfinished runs under the Save to directory.")
             return
         manifest = runs[0]
         if RecoveryDialog(manifest, self).exec_() != QDialog.Accepted:
-            return
-        if self.fluidics_port is None:
-            QMessageBox.warning(self, "Cannot resume", "Initialize the fluidics system first.")
             return
         run_dir = manifest.run_dir
         try:

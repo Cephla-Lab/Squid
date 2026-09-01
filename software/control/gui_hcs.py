@@ -1495,6 +1495,11 @@ class HighContentScreeningGui(QMainWindow):
             self.fluidicsProtocolWidget.signal_run_notification.connect(self._handle_fluidics_notification)
             self.fluidicsProtocolWidget.signal_reagent_rows.connect(self.fluidicsDisplayTab.reagents_table.set_rows)
             self.fluidicsProtocolWidget.signal_step_label.connect(self.fluidicsDisplayTab.recorder.set_step_label)
+            # Crash recovery is only actionable once the fluidics system exists, so the
+            # startup offer waits for Initialize.
+            self.fluidicsDisplayTab.system_ready.connect(
+                lambda: QTimer.singleShot(0, lambda: self.fluidicsProtocolWidget.offer_recovery(startup=True))
+            )
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -2112,6 +2117,8 @@ class HighContentScreeningGui(QMainWindow):
         self._fluidics_protocol_active = active
         if self.fluidicsDisplayTab is not None:
             self.fluidicsDisplayTab.set_run_active(active)
+            if active and isinstance(self.imageDisplayTabs, QTabWidget):
+                self.imageDisplayTabs.setCurrentWidget(self.fluidicsDisplayTab)
 
     def _handle_fluidics_notification(self, text: str):
         try:
@@ -2796,8 +2803,6 @@ class HighContentScreeningGui(QMainWindow):
         self._show_event_initialized = True
         self._update_ram_monitor_visibility()
         self._connect_warning_handler()
-        if self.fluidicsProtocolWidget is not None:
-            QTimer.singleShot(0, lambda: self.fluidicsProtocolWidget.offer_recovery(startup=True))
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""

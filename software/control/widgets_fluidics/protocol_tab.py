@@ -144,6 +144,7 @@ class ProtocolTab(QWidget):
         self._run_locked = locked
         for widget in self._lockable:
             widget.setEnabled(not locked)
+        self._render()  # re-render so include checkboxes lose/regain their checkable flag
         self._rebuild_field_editor()
 
     def imaging_ready(self) -> Optional[str]:
@@ -675,7 +676,10 @@ class ProtocolTab(QWidget):
         status = "✗" if i in self._problems else ""
         item = QTreeWidgetItem([name, type_label, port, vol, rate, inc, status])
         item.setData(0, Qt.UserRole, i)
-        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        if self._run_locked:  # a running protocol's structure is frozen, checkboxes included
+            item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+        else:
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
         item.setCheckState(0, Qt.Checked if row.get("include", True) else Qt.Unchecked)
         if i in self._problems:
             item.setToolTip(6, self._problems[i])

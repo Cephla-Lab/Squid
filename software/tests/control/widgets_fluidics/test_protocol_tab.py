@@ -208,13 +208,16 @@ def test_imaging_ready_reports_missing_sources(tab):
     assert "1 imaging row" in tab.imaging_ready()
 
 
-def test_run_lock_reverts_include_clicks(tab):
+def test_run_lock_freezes_include_checkboxes(tab):
     tab.set_run_locked(True)
-    child = tab.tree.topLevelItem(1).child(0)  # probe R01
-    child.setCheckState(0, Qt.Unchecked)
+    child = tab.tree.topLevelItem(1).child(0)  # probe R01 (re-rendered by the lock)
+    assert not child.flags() & Qt.ItemIsUserCheckable  # not clickable at all
+    child.setCheckState(0, Qt.Unchecked)  # even a programmatic change reverts
     assert tab.protocol.sequences[1].get("include", True) is True
     assert child.checkState(0) == Qt.Checked
     tab.set_run_locked(False)
+    child = tab.tree.topLevelItem(1).child(0)
+    assert child.flags() & Qt.ItemIsUserCheckable
 
 
 def test_removing_the_selected_row_clears_the_field_editor(tab, qtbot):

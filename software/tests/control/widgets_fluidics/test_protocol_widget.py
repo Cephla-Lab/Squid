@@ -251,3 +251,36 @@ def test_recovery_is_refused_while_the_controller_is_busy(qtbot, widget):
     w.busy_check = lambda: "an acquisition is already in progress"
     w.offer_recovery()
     assert w.runner is None
+
+
+def test_startup_recovery_waits_for_initialize(qtbot, widget, monkeypatch, quiet_dialogs):
+    w, fluidics, imaging, save_to = widget
+    w.fluidics_port = None
+    dialogs = []
+    monkeypatch.setattr(
+        protocol_widget_module,
+        "RecoveryDialog",
+        lambda *a, **k: dialogs.append(a) or SimpleNamespace(exec_=lambda: QDialog.Rejected),
+    )
+    monkeypatch.setattr(
+        protocol_widget_module.manifest_io, "find_unfinished_runs", lambda _d: [SimpleNamespace(run_dir="x")]
+    )
+    w.offer_recovery(startup=True)
+    assert not dialogs and w.runner is None  # quiet: nothing actionable before Initialize
+    w.offer_recovery()
+    assert quiet_dialogs and "Initialize" in quiet_dialogs[-1][1]
+
+    w.set_fluidics_port(fluidics)
+    w.offer_recovery(startup=True)
+    assert dialogs  # now the offer fires
+
+
+def test_changing_the_save_to_directory_offers_recovery(qtbot, widget, monkeypatch, tmp_path):
+    w, fluidics, imaging, save_to = widget
+    offers = []
+    monkeypatch.setattr(w, "offer_recovery", lambda startup=False: offers.append(startup))
+    other = tmp_path / "other_runs"
+    other.mkdir()
+    w.save_to_edit.setText(str(other))
+    w.save_to_edit.editingFinished.emit()
+    assert offers == [True]
