@@ -1291,11 +1291,13 @@ class HighContentScreeningGui(QMainWindow):
         """Register the live view against the reference image and move the stage to cancel the displacement."""
         live_image = self.imageDisplayWindow.current_image()
         pixel_size_um = self.microscope.get_image_pixel_size_um()
-        if live_image is None or pixel_size_um is None:
-            QMessageBox.warning(self, "Alignment Error", "Auto align needs a live image and a known pixel size.")
+        if not self.liveController.is_live or live_image is None or pixel_size_um is None:
+            QMessageBox.warning(self, "Alignment Error", "Auto align needs a running live view and a known pixel size.")
             return
 
-        dx_px, dy_px = control.utils.measure_translation_px(reference_image, live_image)
+        dx_px, dy_px = control.utils.measure_translation_px(
+            reference_image, live_image, live_crop_fraction=self.streamHandler.display_resolution_scaling
+        )
         dx_mm, dy_mm = control.utils.image_delta_to_stage_delta_mm(dx_px, dy_px, pixel_size_um)
         self.log.info(
             f"Auto align: displacement ({dx_px:.1f}, {dy_px:.1f}) px -> stage move ({dx_mm:.4f}, {dy_mm:.4f}) mm"

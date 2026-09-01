@@ -159,6 +159,35 @@ def test_overexposure_toggle_drives_histogram_gradient_in_lut_mode(qtbot):
     assert off is None or tuple(off[255]) == WHITE
 
 
+def _rgb_frame():
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    frame[0, 0] = (255, 255, 255)
+    frame[1, 1] = (10, 20, 30)
+    return frame
+
+
+def test_overexposure_marks_saturated_rgb_pixels_red(image_display_window):
+    """Lookup tables do not apply to H x W x 3 frames, so color cameras need the marking done in the data."""
+    win = image_display_window
+    frame = _rgb_frame()
+    win.btn_overexposure.click()
+
+    win.display_image(frame)
+
+    shown = win.graphics_widget.img.image
+    assert tuple(shown[0, 0]) == RED
+    assert tuple(shown[1, 1]) == (10, 20, 30)
+    assert np.array_equal(win.current_image(), frame)
+
+
+def test_rgb_frames_are_shown_unmodified_when_indicator_is_off(image_display_window):
+    frame = _rgb_frame()
+
+    image_display_window.display_image(frame)
+
+    assert np.array_equal(image_display_window.graphics_widget.img.image, frame)
+
+
 # ─── Alignment reference overlay ────────────────────────────────────────────
 
 MAGENTA = (255, 0, 255)
