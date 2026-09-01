@@ -51,6 +51,7 @@ def test_signals_are_connected_and_the_imaging_port_feeds_napari():
     assert "signal_protocol_active.connect(self._set_fluidics_protocol_active)" in src
     assert "signal_run_notification.connect(self._handle_fluidics_notification)" in src
     assert "signal_reagent_rows.connect(self.fluidicsDisplayTab.reagents_table.set_rows)" in src
+    assert "signal_step_label.connect(self.fluidicsDisplayTab.recorder.set_step_label)" in src
     napari_src = _source("makeNapariConnections")
     assert "self.qtImagingPort.signal_acquisition_channels" in napari_src
     assert "self.qtImagingPort.signal_acquisition_shape" in napari_src
@@ -67,5 +68,9 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     close_src = _source("closeEvent")
     assert "is_run_active()" in close_src and "end_run_for_exit(15)" in close_src
     assert close_src.index("is_run_active") < close_src.index("Confirm Exit")
+    # Ending the run is irreversible: it must come only after exit is confirmed.
+    assert close_src.index("event.ignore()") < close_src.index("end_run_for_exit")
+    restart_src = _source("restart_application")
+    assert "is_run_active()" in restart_src and "end_run_for_exit(15)" in restart_src
     assert "offer_recovery(startup=True)" in _source("showEvent")
     assert "disconnect_logging" in _source("_cleanup_common")

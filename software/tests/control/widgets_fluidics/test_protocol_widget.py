@@ -1,13 +1,16 @@
 import json
 import pathlib
+import threading
 from types import SimpleNamespace
 
 import pytest
+from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QDialog
 
 import control.widgets_fluidics.protocol_widget as protocol_widget_module
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import RunnerState
+from control.core.fluidics_protocol.ports import ImagingResult
 from control.models.fluidics_protocol import ProtocolFile
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.protocol_widget import FluidicsProtocolWidget
@@ -92,6 +95,8 @@ def test_start_runs_a_protocol_to_completion(qtbot, widget):
     w, fluidics, imaging, save_to = widget
     started = []
     w.signal_acquisition_started.connect(started.append)
+    step_labels = []
+    w.signal_step_label.connect(step_labels.append)
 
     w.start_run()
     assert w.runner is not None
@@ -106,6 +111,8 @@ def test_start_runs_a_protocol_to_completion(qtbot, widget):
     assert [s.kind for s in manifest.steps] == ["fluidics", "imaging", "fluidics"]
     assert len(imaging.requests) == 1 and imaging.requests[0].folder == "R01_image"
     assert w.protocol_tab.add_step_button.isEnabled()  # unlocked again
+    assert any(label for label in step_labels)  # the sensor recorder gets real step labels...
+    assert step_labels[-1] == ""  # ...and a blank when the run ends
 
 
 def test_a_failed_fluidics_step_shows_the_held_panel_and_restart_recovers(qtbot, widget):
@@ -157,8 +164,12 @@ def test_recovery_reopens_a_crashed_run_held(qtbot, widget):
     manifest_io.write_manifest(run_dir, crashed)
     first_runner = w.runner
 
+    from control.models.fluidics_protocol import ProtocolFile as _PF
+
+    w.protocol_tab.set_protocol(_PF(name="unrelated"))
     w.offer_recovery()
     assert w.runner is not first_runner
+    assert w.protocol_tab.protocol.name == "demo"  # the run's protocol, not the open one
     qtbot.waitUntil(lambda: w.runner.state == RunnerState.HELD, timeout=15000)
     assert w.runner.hold.reason == "recovered"
     w.runner.hold_action(protocol_widget_module.HoldAction.END)
@@ -195,3 +206,48 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
         if tab.temperature_tab is not None:
             tab.temperature_tab._timer.stop()
         assert service.close() == []
+
+
+class _GuiGatedImaging:
+    """Completes only once a GUI-thread event fires - like the real QtImagingPort,
+    whose acquisition_finished is a queued signal on the GUI thread."""
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.starts = []
+
+    def start(self, request):
+        self.starts.append(request)
+        done = self.done
+
+        class Handle:
+            def wait(self, timeout):
+                if done.wait(timeout):
+                    return ImagingResult(end_reason="user_abort", image_count=0, folder=request.folder)
+                return None
+
+            def abort(self):
+                pass
+
+        return Handle()
+
+
+def test_end_run_for_exit_pumps_the_event_loop_during_imaging(qtbot, widget):
+    w, fluidics, _imaging, save_to = widget
+    gated = _GuiGatedImaging()
+    w.imaging_port_factory = lambda: gated
+    w.start_run()
+    qtbot.waitUntil(lambda: len(gated.starts) == 1, timeout=15000)
+
+    # The imaging step can only finish via this GUI-thread timer; a blocking
+    # runner.wait() on the GUI thread would deadlock until the timeout.
+    QTimer.singleShot(300, gated.done.set)
+    assert w.end_run_for_exit(10)
+    assert w.runner.outcome == "stopped"
+
+
+def test_recovery_is_refused_while_the_controller_is_busy(qtbot, widget):
+    w, fluidics, imaging, save_to = widget
+    w.busy_check = lambda: "an acquisition is already in progress"
+    w.offer_recovery()
+    assert w.runner is None

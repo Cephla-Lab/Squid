@@ -1494,6 +1494,7 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.fluidicsProtocolWidget.signal_run_notification.connect(self._handle_fluidics_notification)
             self.fluidicsProtocolWidget.signal_reagent_rows.connect(self.fluidicsDisplayTab.reagents_table.set_rows)
+            self.fluidicsProtocolWidget.signal_step_label.connect(self.fluidicsDisplayTab.recorder.set_step_label)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -2821,6 +2822,19 @@ class HighContentScreeningGui(QMainWindow):
         then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
         """
+        if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
+            reply = QMessageBox.question(
+                self,
+                "Fluidics protocol running",
+                "A fluidics protocol run is in progress. End it and restart?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
+            if not self.fluidicsProtocolWidget.end_run_for_exit(15):
+                self.log.warning("The fluidics protocol run did not end within 15 s; continuing restart")
+
         self.log.info("Restarting application with --skip-init...")
 
         # Build new args list, preserving original arguments but adding --skip-init
@@ -3070,7 +3084,8 @@ class HighContentScreeningGui(QMainWindow):
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
-        if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
+        fluidics_run_active = self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active()
+        if fluidics_run_active:
             reply = QMessageBox.question(
                 self,
                 "Fluidics protocol running",
@@ -3078,24 +3093,20 @@ class HighContentScreeningGui(QMainWindow):
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
-            if reply == QMessageBox.No:
-                event.ignore()
-                return
-            if not self.fluidicsProtocolWidget.end_run_for_exit(15):
-                self.log.warning("The fluidics protocol run did not end within 15 s; continuing shutdown")
-
-        # Show confirmation dialog
-        reply = QMessageBox.question(
-            self,
-            "Confirm Exit",
-            "Are you sure you want to exit the software?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-
+        else:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Exit",
+                "Are you sure you want to exit the software?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
         if reply == QMessageBox.No:
             event.ignore()
             return
+        # Only after exit is confirmed: ending the run is irreversible.
+        if fluidics_run_active and not self.fluidicsProtocolWidget.end_run_for_exit(15):
+            self.log.warning("The fluidics protocol run did not end within 15 s; continuing shutdown")
 
         self._cleanup_common(for_restart=False)
 

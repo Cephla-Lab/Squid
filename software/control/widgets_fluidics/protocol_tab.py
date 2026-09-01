@@ -648,6 +648,9 @@ class ProtocolTab(QWidget):
         self._render_summaries()
         if selected is not None:
             self._select_row(selected)
+        # The rebuild ran via itemSelectionChanged only if a row is still selected;
+        # when the selected row vanished, clear the stale editor explicitly.
+        self._rebuild_field_editor()
 
     def _render_row(self, i: int, row: dict) -> QTreeWidgetItem:
         seq_type = row.get("type", "")
@@ -693,10 +696,15 @@ class ProtocolTab(QWidget):
                     return
 
     def _on_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
-        if self._run_locked or column != 0:
+        if column != 0:
             return
         data = item.data(0, Qt.UserRole)
         if data is None:
+            return
+        if self._run_locked:
+            row = self._protocol.sequences[int(data)]
+            with QSignalBlocker(self.tree):
+                item.setCheckState(0, Qt.Checked if row.get("include", True) else Qt.Unchecked)
             return
         index = int(data)
         included = item.checkState(0) == Qt.Checked

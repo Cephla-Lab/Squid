@@ -78,3 +78,30 @@ def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
     finally:
         tab._timer.stop()
         tc.close()
+
+
+def test_record_button_follows_a_recorder_stop(qtbot, tmp_path, monkeypatch):
+    pytest.importorskip("fluidics")
+    from fluidics.control.temperature_controller import TCMControllerSimulation
+
+    import control.widgets_fluidics.sensor_plots as sensor_plots_module
+    from control.widgets_fluidics.sensor_plots import TemperatureTab
+
+    tc = TCMControllerSimulation(channels=2)
+    recorder = SensorRecorder()
+    tab = TemperatureTab(tc, recorder)
+    qtbot.addWidget(tab)
+    try:
+        target = tmp_path / "t.csv"
+        monkeypatch.setattr(
+            sensor_plots_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), ""))
+        )
+        tab.record_button.setChecked(True)
+        assert recorder.recording
+        recorder.stop_recording()  # what a failed CSV write does internally
+        tab._refresh()
+        assert not tab.record_button.isChecked()
+        assert "Record" in tab.record_button.text()
+    finally:
+        tab._timer.stop()
+        tc.close()

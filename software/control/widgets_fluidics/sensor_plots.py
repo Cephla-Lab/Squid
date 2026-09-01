@@ -129,6 +129,10 @@ class TemperatureTab(QWidget):
             self.record_button.setText("Record to CSV…")
 
     def _refresh(self) -> None:
+        if self.record_button.isChecked() and not self._recorder.recording:
+            # The recorder stopped on its own (a CSV write failed and was logged):
+            # the button must not keep promising a recording.
+            self.record_button.setChecked(False)
         try:
             now = time.time()
             window = _WINDOWS[self.window_combo.currentText()]

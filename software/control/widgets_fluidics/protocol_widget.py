@@ -5,10 +5,11 @@ import os
 import time
 from typing import Callable, Dict, Optional
 
-from qtpy.QtCore import QTimer, Signal
+from qtpy.QtCore import QEventLoop, QTimer, Signal
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtCore import QUrl
 from qtpy.QtWidgets import (
+    QApplication,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -58,6 +59,7 @@ class FluidicsProtocolWidget(QFrame):
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
+    signal_step_label = Signal(str)  # current protocol step, for the sensor recorder ("" when idle)
 
     REFRESH_MS = 500
 
@@ -287,6 +289,13 @@ class FluidicsProtocolWidget(QFrame):
         )
 
     def offer_recovery(self, startup: bool = False) -> None:
+        if self.is_run_active():
+            return
+        busy = self.busy_check() if self.busy_check is not None else None
+        if busy:
+            if not startup:
+                QMessageBox.warning(self, "Cannot resume", f"Cannot resume a run while {busy}.")
+            return
         save_to = self.save_to_edit.text().strip() or state.load_ui_state().get("save_to") or ""
         runs = manifest_io.find_unfinished_runs(save_to) if save_to else []
         if not runs:
@@ -316,6 +325,9 @@ class FluidicsProtocolWidget(QFrame):
         except Exception as e:
             QMessageBox.warning(self, "Cannot resume", str(e))
             return
+        # The editor must show the protocol the run is riding: highlights and the
+        # run-lock apply to it, not to whatever protocol happened to be open.
+        self.protocol_tab.set_protocol(protocol, os.path.join(run_dir, manifest_io.PROTOCOL_COPY_NAME))
         self._launch(runner, resolved)
 
     def _launch(self, runner: ProtocolRunner, resolved) -> None:
@@ -332,11 +344,18 @@ class FluidicsProtocolWidget(QFrame):
         runner.start()
 
     def end_run_for_exit(self, timeout: float = 15.0) -> bool:
-        """closeEvent path: end an active run and wait for it to unwind."""
+        """closeEvent path: end an active run and wait for it to unwind, pumping the event
+        loop while waiting - an in-flight imaging step can only finish through queued
+        signals delivered on this (GUI) thread, so a plain blocking wait would deadlock."""
         if not self.is_run_active():
             return True
         self.runner.abort_run()
-        return self.runner.wait(timeout)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self.runner.wait(0.05):
+                return True
+            QApplication.processEvents(QEventLoop.AllEvents, 50)
+        return self.runner.wait(0)
 
     # ---------- runner events (GUI thread via the bridge) ----------
 
@@ -349,6 +368,7 @@ class FluidicsProtocolWidget(QFrame):
                 if step is not None:
                     row_index = step.row_index if step.kind == "imaging" else step.row_indices[0]
                     self.protocol_tab.highlight_row(row_index)
+                self.signal_step_label.emit(event.label)
                 self.sequence_label.setText("—")
             elif isinstance(event, SequenceProgress):
                 self.sequence_label.setText(f"sequence {event.position + 1}/{event.total} ({event.label})")
@@ -361,6 +381,7 @@ class FluidicsProtocolWidget(QFrame):
                     self._hold = None
                     self.held_box.hide()
             elif isinstance(event, RunFinished):
+                self.signal_step_label.emit("")
                 self._finish(event.outcome)
         except Exception:
             self._log.exception("Error handling a runner event")

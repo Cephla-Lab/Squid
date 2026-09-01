@@ -206,3 +206,22 @@ def test_imaging_ready_reports_missing_sources(tab):
     assert tab.imaging_ready() is None
     tab.protocol.sequences[3]["coordinates"] = None
     assert "1 imaging row" in tab.imaging_ready()
+
+
+def test_run_lock_reverts_include_clicks(tab):
+    tab.set_run_locked(True)
+    child = tab.tree.topLevelItem(1).child(0)  # probe R01
+    child.setCheckState(0, Qt.Unchecked)
+    assert tab.protocol.sequences[1].get("include", True) is True
+    assert child.checkState(0) == Qt.Checked
+    tab.set_run_locked(False)
+
+
+def test_removing_the_selected_row_clears_the_field_editor(tab, qtbot):
+    tab._select_row(len(tab.protocol.sequences) - 1)
+    tab._rebuild_field_editor()
+    assert tab.field_form.rowCount() > 0
+    del tab.protocol.sequences[-1]
+    tab._mark_changed()
+    qtbot.wait(20)
+    assert tab.field_form.rowCount() == 0  # no stale editor addressing a vanished row
