@@ -991,6 +991,8 @@ LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
+
+# Live view only (no acquisition tabs)
 LIVE_ONLY_MODE = False
 
 # NDViewer integration
