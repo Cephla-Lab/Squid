@@ -5,9 +5,8 @@ import os
 import time
 from typing import Callable, Dict, Optional
 
-from qtpy.QtCore import QEventLoop, QTimer, Signal
+from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
-from qtpy.QtCore import QUrl
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +25,7 @@ from qtpy.QtWidgets import (
 
 import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
+from control.core.fluidics_protocol.manifest import reagent_totals
 from control.core.fluidics_protocol.events import (
     Hold,
     HoldAction,
@@ -55,7 +55,6 @@ def _hms(seconds: Optional[float]) -> str:
 
 class FluidicsProtocolWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # True at run start, False at run end (the gui contract)
-    signal_protocol_active = Signal(bool)
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
@@ -67,15 +66,15 @@ class FluidicsProtocolWidget(QFrame):
         self,
         service,
         protocol_tab,
-        imaging_port_factory: Callable[[], object],
-        busy_check: Optional[Callable[[], Optional[str]]] = None,
+        imaging_port: object,
+        busy_check: Callable[[], Optional[str]] = lambda: None,
         parent=None,
     ):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.service = service
         self.protocol_tab = protocol_tab
-        self.imaging_port_factory = imaging_port_factory
+        self.imaging_port = imaging_port
         self.busy_check = busy_check
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
@@ -85,7 +84,6 @@ class FluidicsProtocolWidget(QFrame):
         self._bridge.event_received.connect(self._on_runner_event)
         self._current_step_kind: Optional[str] = None
         self._current_step_label = ""
-        self._hold: Optional[Hold] = None
         self._since_init_ul: Dict[int, float] = {}
 
         self._build_ui()
@@ -212,14 +210,12 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_label.setText(
             protocol.name or os.path.basename(self.protocol_tab.protocol_path or "") or "(no protocol)"
         )
-        imaging = len(protocol.imaging_rows())
-        rounds = len(dict.fromkeys(r.get("round") for r in protocol.sequences if r.get("round")))
-        self.summary_label.setText(f"{rounds} rounds · {len(protocol.sequences)} rows · {imaging} imaging")
-        hint = None
-        if self.fluidics_port is None:
-            hint = "Initialize the fluidics system first (Fluidics display tab)"
-        else:
-            hint = self.protocol_tab.imaging_ready()
+        self.summary_label.setText(protocol.summary_line())
+        hint = (
+            "Initialize the fluidics system first (Fluidics display tab)"
+            if self.fluidics_port is None
+            else self.protocol_tab.imaging_ready()
+        )
         self.start_button.setEnabled(hint is None and not self.is_run_active())
         self.hint_label.setText(hint or "")
 
@@ -230,10 +226,9 @@ class FluidicsProtocolWidget(QFrame):
             return "a protocol run is already in progress"
         if self.fluidics_port is None or self.service is None or not getattr(self.service, "initialized", False):
             return "Initialize the fluidics system first"
-        if self.busy_check is not None:
-            busy = self.busy_check()
-            if busy:
-                return busy
+        busy = self.busy_check()
+        if busy:
+            return busy
         hint = self.protocol_tab.imaging_ready()
         if hint:
             return hint
@@ -283,7 +278,7 @@ class FluidicsProtocolWidget(QFrame):
             ProtocolRunner(
                 resolved,
                 run_dir,
-                imaging=self.imaging_port_factory(),
+                imaging=self.imaging_port,
                 fluidics=self.fluidics_port,
                 run_name=run_name,
                 listener=self._bridge.listener,
@@ -299,7 +294,7 @@ class FluidicsProtocolWidget(QFrame):
     def offer_recovery(self, startup: bool = False) -> None:
         if self.is_run_active():
             return
-        busy = self.busy_check() if self.busy_check is not None else None
+        busy = self.busy_check()
         if busy:
             if not startup:
                 QMessageBox.warning(self, "Cannot resume", f"Cannot resume a run while {busy}.")
@@ -329,7 +324,7 @@ class FluidicsProtocolWidget(QFrame):
             runner = ProtocolRunner(
                 resolved,
                 run_dir,
-                imaging=self.imaging_port_factory(),
+                imaging=self.imaging_port,
                 fluidics=self.fluidics_port,
                 run_name=fresh.run_name,
                 listener=self._bridge.listener,
@@ -346,15 +341,23 @@ class FluidicsProtocolWidget(QFrame):
     def _launch(self, runner: ProtocolRunner, resolved) -> None:
         self.runner = runner
         self._resolved = resolved
-        self._hold = None
         self._current_step_kind = None
         self.protocol_tab.set_run_locked(True)
         self.idle_box.hide()
         self.running_box.show()
         self.held_box.hide()
         self.signal_acquisition_started.emit(True)
-        self.signal_protocol_active.emit(True)
         runner.start()
+
+    def run_line(self) -> str:
+        """One line for the device-status panel: state, and the step position when running."""
+        if self.runner is None:
+            return "idle"
+        snap = self.runner.snapshot()
+        line = snap.state.value
+        if snap.step_index is not None:
+            line += f" · step {snap.step_index + 1}/{snap.total_steps}"
+        return line
 
     def end_run_for_exit(self, timeout: float = 15.0) -> bool:
         """closeEvent path: end an active run and wait for it to unwind, pumping the event
@@ -391,7 +394,6 @@ class FluidicsProtocolWidget(QFrame):
                 if event.state is RunnerState.HELD and event.hold is not None:
                     self._show_hold(event.hold)
                 elif event.state is not RunnerState.HELD:
-                    self._hold = None
                     self.held_box.hide()
             elif isinstance(event, RunFinished):
                 self.signal_step_label.emit("")
@@ -400,7 +402,6 @@ class FluidicsProtocolWidget(QFrame):
             self._log.exception("Error handling a runner event")
 
     def _show_hold(self, hold: Hold) -> None:
-        self._hold = hold
         while self.held_layout.count():
             item = self.held_layout.takeAt(0)
             widget = item.widget()
@@ -454,12 +455,10 @@ class FluidicsProtocolWidget(QFrame):
 
         end.clicked.connect(end_clicked)
         buttons.addWidget(end)
-        container = QHBoxLayout()
         holder = QGroupBox()
         holder.setFlat(True)
         holder.setLayout(buttons)
         self.held_layout.addWidget(holder)
-        del container
         self.held_box.show()
         self.signal_run_notification.emit(
             f"Fluidics protocol held at step {hold.step_index + 1} ({hold.kind}): {hold.reason}"
@@ -469,26 +468,13 @@ class FluidicsProtocolWidget(QFrame):
     def _update_reagents(self) -> None:
         if self.runner is None:
             return
-        manifest = self.runner.manifest
-        last_step: Dict[int, float] = {}
-        this_run: Dict[int, float] = {}
-        for step in manifest.steps:
-            for attempt in step.attempts:
-                for port_str, ul in (attempt.reagent_used_ul or {}).items():
-                    port = int(port_str)
-                    this_run[port] = this_run.get(port, 0.0) + ul
-                if attempt.reagent_used_ul:
-                    last_step = {int(p): u for p, u in attempt.reagent_used_ul.items()}
-        for port, ul in this_run.items():
-            self._since_init_ul[port] = max(self._since_init_ul.get(port, 0.0), 0.0)
+        this_run, last_step = reagent_totals(self.runner.manifest)
         rows = []
-        ports = sorted(set(this_run) | set(self._since_init_ul))
-        reagent_name = self._reagent_name
-        for port in ports:
+        for port in sorted(set(this_run) | set(self._since_init_ul)):
             rows.append(
                 (
                     port,
-                    reagent_name(port),
+                    self._reagent_name(port),
                     last_step.get(port, 0.0),
                     this_run.get(port, 0.0),
                     self._since_init_ul.get(port, 0.0) + this_run.get(port, 0.0),
@@ -503,18 +489,14 @@ class FluidicsProtocolWidget(QFrame):
             return None
 
     def _finish(self, outcome: str) -> None:
-        manifest = self.runner.manifest if self.runner is not None else None
-        if manifest is not None:
-            for step in manifest.steps:
-                for attempt in step.attempts:
-                    for port_str, ul in (attempt.reagent_used_ul or {}).items():
-                        port = int(port_str)
-                        self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
+        if self.runner is not None:
+            totals, _last = reagent_totals(self.runner.manifest)
+            for port, ul in totals.items():
+                self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
         self.protocol_tab.set_run_locked(False)
         self.protocol_tab.highlight_row(None)
         self.state_label.setText(f"Run {outcome}")
         self.signal_acquisition_started.emit(False)
-        self.signal_protocol_active.emit(False)
         self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
         self.idle_box.show()
         self._refresh_idle()

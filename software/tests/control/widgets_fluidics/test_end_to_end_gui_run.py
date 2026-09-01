@@ -12,8 +12,6 @@ import pytest
 
 pytest.importorskip("fluidics")
 
-import control._def
-import control.microscope
 from control.core.fluidics_protocol import manifest as manifest_io
 from control.core.fluidics_protocol.events import RunnerState
 from control.core.fluidics_protocol.library_port import LibraryFluidicsPort
@@ -25,29 +23,6 @@ from control.models.fluidics_protocol import CoordinatesBlock, ProtocolFile, Set
 from control.widgets_fluidics.qt_imaging_port import QtImagingPort
 
 EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[3] / "machine_configs" / "fluidics_config.yaml.example"
-
-
-@pytest.fixture
-def qt_controller(qtbot):
-    control._def.MERGE_CHANNELS = False
-    import tests.control.test_stubs as ts
-    from control.gui_hcs import QtMultiPointController
-
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    live = ts.get_test_live_controller(microscope=scope, starting_objective=scope.objective_store.default_objective)
-    controller = QtMultiPointController(
-        scope,
-        live,
-        ts.get_test_autofocus_controller(scope.camera, scope.stage, live, scope.low_level_drivers.microcontroller),
-        scope.objective_store,
-        scan_coordinates=ts.get_test_scan_coordinates(
-            objective_store=scope.objective_store, stage=scope.stage, camera=scope.camera
-        ),
-        laser_autofocus_controller=ts.get_test_laser_autofocus_controller(scope),
-    )
-    yield scope, controller
-    controller.close()
-    scope.close()
 
 
 def _fovs(scope, count):

@@ -39,7 +39,7 @@ class AddRoundsDialog(QDialog):
         self.protocol = protocol
         self.result_kwargs: Optional[dict] = None
 
-        labels = list(dict.fromkeys(r.get("round") for r in protocol.sequences if r.get("round")))
+        labels = protocol.round_labels()
         self.template_combo = QComboBox()
         self.template_combo.addItems(labels)
         self.count_spin = QSpinBox()

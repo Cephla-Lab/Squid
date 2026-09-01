@@ -23,18 +23,19 @@ from control.widgets_fluidics import state
 
 
 def _config_summary(config) -> str:
-    valves = config.reagent_selection.selector_valves
-    ports = sum(valves.number_of_ports[v] - 1 for v in valves.valve_ids) + 1
+    from fluidics.control.config import available_port_count  # importable once the service is up
+
+    ports = available_port_count(config)
     tec = config.temperature_controller.channels if config.temperature_controller is not None else None
     sensors = len(config.flow_sensors or [])
     return f"{config.application} · {ports} ports · TEC {tec if tec is not None else '—'} · sensors {sensors}"
 
 
 class SystemPanel(QGroupBox):
+    # Emitted from the bring-up thread (queued delivery); the panel's own UI slots are
+    # connected first in __init__, so they run before any external subscriber.
     initialized = Signal()
     initialize_failed = Signal(str)
-    _init_ok = Signal()
-    _init_error = Signal(str)
 
     _INITIALIZE_KWARGS: dict = {}  # tests override with {"instant": True}
 
@@ -61,8 +62,8 @@ class SystemPanel(QGroupBox):
         layout.addWidget(self.status_label)
         self.setLayout(layout)
 
-        self._init_ok.connect(self._on_initialized)
-        self._init_error.connect(self._on_failed)
+        self.initialized.connect(self._on_initialized)
+        self.initialize_failed.connect(self._on_failed)
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -84,9 +85,9 @@ class SystemPanel(QGroupBox):
             try:
                 self.service.initialize(config_path=config_path, **self._INITIALIZE_KWARGS)
             except Exception as e:
-                self._init_error.emit(str(e))
+                self.initialize_failed.emit(str(e))
                 return
-            self._init_ok.emit()
+            self.initialized.emit()
 
         threading.Thread(target=bring_up, name="fluidics-initialize", daemon=True).start()
 
@@ -99,14 +100,12 @@ class SystemPanel(QGroupBox):
             summary += f" · {len(self.service.issues)} bring-up issue(s), see the log"
         self.status_label.setText(summary)
         state.save_ui_state(config_path=self.service.config_path)
-        self.initialized.emit()
 
     def _on_failed(self, message: str) -> None:
         self.initialize_button.setEnabled(True)
         self.browse_button.setEnabled(True)
         self.status_label.setText("Initialize failed")
         QMessageBox.warning(self, "Initialize failed", message)
-        self.initialize_failed.emit(message)
 
 
 class DeviceStatusGroup(QGroupBox):

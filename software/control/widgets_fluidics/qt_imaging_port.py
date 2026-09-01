@@ -16,6 +16,9 @@ from control.core.acquisition_settings import acquisition_data_from_blocks, appl
 from control.core.fluidics_protocol.ports import ImagingRequest, ImagingResult, ImagingStartError
 
 
+_NO_RESTORE = object()  # distinguishes "nothing to restore" from a legitimate None base path
+
+
 class QtImagingHandle:
     def __init__(self, controller, folder: str):
         self._controller = controller
@@ -55,8 +58,7 @@ class QtImagingPort(QObject):
         self._microscope = microscope
         self._current: Optional[QtImagingHandle] = None
         self._start_error: Optional[ImagingStartError] = None
-        self._restore_base_path: Optional[str] = None
-        self._restore_pending = False
+        self._restore_base_path = _NO_RESTORE  # the operator's base path while a protocol acquisition runs
         self._start_requested.connect(self._do_start, Qt.BlockingQueuedConnection)
         controller.acquisition_finished.connect(self._on_acquisition_finished)
 
@@ -88,29 +90,27 @@ class QtImagingPort(QObject):
             controller.start_new_experiment(request.folder, add_timestamp=False)
             controller.protocol_info = dict(request.protocol)
             self._current = QtImagingHandle(controller, request.folder)
-            self._restore_base_path, self._restore_pending = previous_base_path, True
+            self._restore_base_path = previous_base_path
             self.signal_acquisition_channels.emit(list(applied.channels))
             self.signal_acquisition_shape.emit(int(applied.nz), float(data.delta_z_um))
             controller.run_acquisition()
-        except ImagingStartError as e:
-            controller.set_base_path(previous_base_path)
-            self._current = None
-            self._start_error = e
-        except (ValueError, FileExistsError) as e:
-            controller.set_base_path(previous_base_path)
-            self._current = None
-            self._start_error = ImagingStartError(str(e))
         except Exception as e:
-            self._log.exception("Imaging step failed to start")
             controller.set_base_path(previous_base_path)
             self._current = None
-            self._start_error = ImagingStartError(f"{type(e).__name__}: {e}")
+            self._restore_base_path = _NO_RESTORE
+            if isinstance(e, ImagingStartError):
+                self._start_error = e
+            elif isinstance(e, (ValueError, FileExistsError)):
+                self._start_error = ImagingStartError(str(e))
+            else:
+                self._log.exception("Imaging step failed to start")
+                self._start_error = ImagingStartError(f"{type(e).__name__}: {e}")
 
     @Slot()
     def _on_acquisition_finished(self) -> None:
         handle = self._current
         if handle is not None:
             handle._on_finished()
-            if handle._finished.is_set() and self._restore_pending:
+            if handle._finished.is_set() and self._restore_base_path is not _NO_RESTORE:
                 self._controller.set_base_path(self._restore_base_path)
-                self._restore_base_path, self._restore_pending = None, False
+                self._restore_base_path = _NO_RESTORE

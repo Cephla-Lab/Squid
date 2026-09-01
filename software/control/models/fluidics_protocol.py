@@ -130,6 +130,14 @@ class ProtocolFile(BaseModel):
             if row.get("type") == IMAGING_TYPE
         ]
 
+    def round_labels(self) -> List[str]:
+        """The distinct round labels, in first-appearance order."""
+        return list(dict.fromkeys(r.get("round") for r in self.sequences if r.get("round")))
+
+    def summary_line(self) -> str:
+        imaging = sum(1 for r in self.sequences if r.get("type") == IMAGING_TYPE)
+        return f"{len(self.round_labels())} rounds · {len(self.sequences)} rows · {imaging} imaging"
+
 
 def strip_for_library(rows: List[dict]) -> List[dict]:
     """The rows the Squid-Fluidics library may see: no imaging rows, no `round` key. Copies; never mutates."""

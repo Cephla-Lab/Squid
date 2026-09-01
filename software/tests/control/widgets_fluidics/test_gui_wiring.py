@@ -21,7 +21,7 @@ def test_the_fluidics_tab_name_and_hooks_exist():
         "_setup_fluidics_widgets",
         "_set_fluidics_protocol_active",
         "_handle_fluidics_notification",
-        "_fluidics_run_line",
+        "_confirm_end_fluidics_run",
     ):
         assert callable(getattr(GUI, hook))
 
@@ -48,12 +48,18 @@ def test_napari_toggle_exempts_the_fluidics_tab():
 def test_signals_are_connected_and_the_imaging_port_feeds_napari():
     src = _source("make_connections")
     assert "signal_acquisition_started.connect(self.toggleAcquisitionStart)" in src
-    assert "signal_protocol_active.connect(self._set_fluidics_protocol_active)" in src
+    assert "signal_acquisition_started.connect(self._set_fluidics_protocol_active)" in src
     assert "signal_run_notification.connect(self._handle_fluidics_notification)" in src
-    assert "signal_reagent_rows.connect(self.fluidicsDisplayTab.reagents_table.set_rows)" in src
-    assert "signal_step_label.connect(self.fluidicsDisplayTab.recorder.set_step_label)" in src
-    assert "system_ready.connect" in src  # startup recovery waits for Initialize
     assert "setCurrentWidget(self.fluidicsDisplayTab)" in _source("_set_fluidics_protocol_active")
+    # widget-to-widget wiring lives in the fluidics package, not in gui_hcs
+    assert "wire_fluidics(self.fluidicsDisplayTab, self.fluidicsProtocolWidget)" in _source("_setup_fluidics_widgets")
+    import control.widgets_fluidics as widgets_fluidics
+
+    wire_src = inspect.getsource(widgets_fluidics.wire_fluidics)
+    assert "signal_reagent_rows.connect(display_tab.reagents_table.set_rows)" in wire_src
+    assert "signal_step_label.connect(display_tab.recorder.set_step_label)" in wire_src
+    assert "system_ready.connect" in wire_src  # startup recovery waits for Initialize
+    assert "run_line_provider = protocol_widget.run_line" in wire_src
     napari_src = _source("makeNapariConnections")
     assert "self.qtImagingPort.signal_acquisition_channels" in napari_src
     assert "self.qtImagingPort.signal_acquisition_shape" in napari_src
@@ -68,11 +74,10 @@ def test_a_running_protocol_freezes_tab_and_region_behavior():
 
 def test_close_and_show_events_cover_the_protocol_lifecycle():
     close_src = _source("closeEvent")
-    assert "is_run_active()" in close_src and "end_run_for_exit(15)" in close_src
-    assert close_src.index("is_run_active") < close_src.index("Confirm Exit")
-    # Ending the run is irreversible: it must come only after exit is confirmed.
-    assert close_src.index("event.ignore()") < close_src.index("end_run_for_exit")
-    restart_src = _source("restart_application")
-    assert "is_run_active()" in restart_src and "end_run_for_exit(15)" in restart_src
+    assert "_confirm_end_fluidics_run" in close_src and "Confirm Exit" in close_src
+    assert "_confirm_end_fluidics_run" in _source("restart_application")
+    helper_src = _source("_confirm_end_fluidics_run")
+    # Ending the run is irreversible: it must come only after the user consents.
+    assert helper_src.index("question") < helper_src.index("end_run_for_exit(15)")
     assert "offer_recovery" not in _source("showEvent")  # deferred to system_ready
     assert "disconnect_logging" in _source("_cleanup_common")

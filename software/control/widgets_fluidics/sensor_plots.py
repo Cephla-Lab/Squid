@@ -34,7 +34,6 @@ class TemperatureTab(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._tc = temperature_controller
         self._recorder = recorder
-        self._run_active = False
 
         grid = QGridLayout()
         self.actual_labels: List[QLabel] = []
@@ -78,6 +77,10 @@ class TemperatureTab(QWidget):
         self.plot.setLabel("left", "°C")
         self.plot.setLabel("bottom", "minutes ago")
         self.plot.addLegend()
+        self._curves = [
+            self.plot.plot([], [], pen=pg.mkPen(color=_CHANNEL_COLORS[i % 2], width=2), name=f"Ch {i + 1}")
+            for i in range(self._tc.channels)
+        ]
 
         layout = QVBoxLayout()
         layout.addLayout(grid)
@@ -86,9 +89,10 @@ class TemperatureTab(QWidget):
         self.setLayout(layout)
 
         # Producer thread -> recorder only (no Qt); the GUI repaints on its own clock.
-        def on_temps(temps):
+        # The closure holds the thread-safe recorder alone, never the widget.
+        def on_temps(temps, recorder=recorder):
             for i, value in enumerate(temps):
-                self._recorder.record(f"channel_{i + 1}", float(value))
+                recorder.record(f"channel_{i + 1}", float(value))
 
         self._tc.subscribe(on_temps)
         self._tc.start()
@@ -99,7 +103,6 @@ class TemperatureTab(QWidget):
 
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the TEC: the manual Set/Output controls go dead."""
-        self._run_active = active
         for button in self.set_buttons + self.output_buttons:
             button.setEnabled(not active)
         for spin in self.target_spinboxes:
@@ -133,15 +136,14 @@ class TemperatureTab(QWidget):
             # The recorder stopped on its own (a CSV write failed and was logged):
             # the button must not keep promising a recording.
             self.record_button.setChecked(False)
+        if not self.isVisible():
+            return  # the recorder keeps capturing; the plot catches up when shown
         try:
             now = time.time()
             window = _WINDOWS[self.window_combo.currentText()]
-            self.plot.clear()
-            for i in range(self._tc.channels):
+            for i, curve in enumerate(self._curves):
                 ts, vs = self._recorder.channel(f"channel_{i + 1}").window(window)
-                if ts:
-                    x = [(t - now) / 60.0 for t in ts]
-                    self.plot.plot(x, vs, pen=pg.mkPen(color=_CHANNEL_COLORS[i % 2], width=2), name=f"Ch {i + 1}")
+                curve.setData([(t - now) / 60.0 for t in ts], vs)
                 self.actual_labels[i].setText(f"{self._tc.actual_temperatures[i]:.1f} °C")
                 self.target_labels[i].setText(f"target {self._tc.target_temperatures[i]:.1f} °C")
                 self.output_buttons[i].setText("Output ON" if self._tc.output_enabled[i] else "Output OFF")

@@ -81,7 +81,7 @@ def widget(qtbot, tmp_path, monkeypatch, quiet_dialogs):
     tab.set_protocol(_protocol())
     imaging = FakeImagingPort()
     fluidics = FakeFluidicsPort()
-    w = FluidicsProtocolWidget(service, tab, imaging_port_factory=lambda: imaging)
+    w = FluidicsProtocolWidget(service, tab, imaging_port=imaging)
     qtbot.addWidget(w)
     w.set_fluidics_port(fluidics)
     save_to = tmp_path / "runs"
@@ -235,7 +235,7 @@ class _GuiGatedImaging:
 def test_end_run_for_exit_pumps_the_event_loop_during_imaging(qtbot, widget):
     w, fluidics, _imaging, save_to = widget
     gated = _GuiGatedImaging()
-    w.imaging_port_factory = lambda: gated
+    w.imaging_port = gated
     w.start_run()
     qtbot.waitUntil(lambda: len(gated.starts) == 1, timeout=15000)
 

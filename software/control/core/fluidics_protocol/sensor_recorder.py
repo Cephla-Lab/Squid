@@ -1,6 +1,7 @@
 """Qt-free sensor buffers for the fluidics tabs: producer threads append, the GUI polls windows on a
 timer, and a CSV is written only while the operator records. Never raises on I/O — logs and carries on."""
 
+import bisect
 import csv
 import threading
 import time
@@ -27,11 +28,7 @@ class SensorSeries:
         with self._lock:
             ts, vs = list(self._t), list(self._v)
         if seconds is not None and ts:
-            cutoff = ts[-1] - seconds
-            start = 0
-            for start, t in enumerate(ts):
-                if t >= cutoff:
-                    break
+            start = bisect.bisect_left(ts, ts[-1] - seconds)  # timestamps are appended in order
             ts, vs = ts[start:], vs[start:]
         return ts, vs
 

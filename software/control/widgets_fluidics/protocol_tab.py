@@ -9,9 +9,10 @@ import os
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
-from qtpy.QtCore import QSignalBlocker, Qt, Signal
+from qtpy.QtCore import QSignalBlocker, Qt, QTimer, Signal
 from qtpy.QtGui import QBrush, QColor
 from qtpy.QtWidgets import (
+    QDialog,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -38,6 +39,7 @@ from control.models.fluidics_protocol import (
     ImagingRow,
     ProtocolFile,
     SettingsBlock,
+    expand_rounds,
     folder_problems,
     load_protocol,
     render_folder,
@@ -45,7 +47,18 @@ from control.models.fluidics_protocol import (
 )
 from control.widgets_fluidics import state
 from control.widgets_fluidics.dialogs import AddRoundsDialog, pick_coordinates_source, pick_settings_source
-from control.models.fluidics_protocol import expand_rounds
+
+try:  # the editor degrades gracefully when the fluidics library is not installed
+    from fluidics.sequences import (
+        SEQUENCE_TYPE_LABELS,
+        SequenceListAdapter,
+        get_fields_for_type,
+        sequence_port_problems,
+        sequence_type_problem,
+    )
+except ImportError:
+    SEQUENCE_TYPE_LABELS = SequenceListAdapter = None
+    get_fields_for_type = sequence_port_problems = sequence_type_problem = None
 
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
@@ -57,8 +70,9 @@ _INVALID = QColor(255, 205, 205)
 def _port_limit(service) -> Optional[int]:
     if service is None or not getattr(service, "initialized", False):
         return None
-    valves = service.config.reagent_selection.selector_valves
-    return sum(valves.number_of_ports[v] - 1 for v in valves.valve_ids) + 1
+    from fluidics.control.config import available_port_count  # importable once the service is up
+
+    return available_port_count(service.config)
 
 
 def _application(service) -> str:
@@ -144,8 +158,7 @@ class ProtocolTab(QWidget):
         self._run_locked = locked
         for widget in self._lockable:
             widget.setEnabled(not locked)
-        self._render()  # re-render so include checkboxes lose/regain their checkable flag
-        self._rebuild_field_editor()
+        self._render()  # re-renders the checkable flags and rebuilds the field editor
 
     def imaging_ready(self) -> Optional[str]:
         """None when every included imaging row has both sources; else a one-line hint."""
@@ -298,8 +311,7 @@ class ProtocolTab(QWidget):
 
     def _mark_changed(self) -> None:
         self._dirty = True
-        self._validate()
-        self._render()
+        self._render()  # renders and re-validates
         self.signal_protocol_changed.emit()
 
     def _selected_row_index(self) -> Optional[int]:
@@ -409,8 +421,8 @@ class ProtocolTab(QWidget):
         path = pick_settings_source(self) if kind == "settings" else pick_coordinates_source(self)
         if not path:
             return
-        if path.endswith(("acquisition.yaml", "coordinates.csv")):
-            path = os.path.dirname(path) if kind == "settings" and path.endswith("acquisition.yaml") else path
+        if kind == "settings" and path.endswith("acquisition.yaml"):
+            path = os.path.dirname(path)  # a saved acquisition folder is the settings source
         base = os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
         ref = os.path.relpath(path, base) if base and os.path.abspath(path).startswith(base + os.sep) else path
         if not self._confirm_replace(rows, kind, ref):
@@ -447,8 +459,6 @@ class ProtocolTab(QWidget):
             except Exception:
                 pass
         dialog = AddSequenceDialog(self, _application(self.service), port_names)
-        from qtpy.QtWidgets import QDialog
-
         if dialog.exec_() == QDialog.Accepted and dialog.result_dict:
             row = dict(dialog.result_dict)
             if row.get("type") == IMAGING_TYPE:
@@ -506,8 +516,6 @@ class ProtocolTab(QWidget):
             QMessageBox.information(self, "No rounds", "Label at least one row with a round first.")
             return
         dialog = AddRoundsDialog(self._protocol, self)
-        from qtpy.QtWidgets import QDialog
-
         if dialog.exec_() == QDialog.Accepted and dialog.result_kwargs:
             self._protocol = expand_rounds(self._protocol, **dialog.result_kwargs)
             self._mark_changed()
@@ -566,9 +574,9 @@ class ProtocolTab(QWidget):
                         problems[i] = f"{field} '{ref}' is neither a header block nor a file"
                         break
                 continue
+            if SequenceListAdapter is None:
+                continue
             try:
-                from fluidics.sequences import SequenceListAdapter, sequence_port_problems, sequence_type_problem
-
                 type_problem = sequence_type_problem(row, application)
                 if type_problem:
                     problems[i] = type_problem
@@ -578,8 +586,6 @@ class ProtocolTab(QWidget):
                     port_problems = sequence_port_problems(coerced, limit)
                     if port_problems:
                         problems[i] = "; ".join(port_problems)
-            except ImportError:
-                pass
             except Exception as e:
                 problems[i] = str(e)
         self._problems = problems
@@ -616,14 +622,11 @@ class ProtocolTab(QWidget):
             if imaging
             else "—"
         )
-        rounds = len(dict.fromkeys(r.get("round") for r in self._protocol.sequences if r.get("round")))
         if self._problems:
             self.validation_label.setText(f"✗ {len(self._problems)} problem(s)")
             self.validation_label.setStyleSheet("color: #b00020;")
         else:
-            self.validation_label.setText(
-                f"✓ valid · {rounds} rounds · {len(self._protocol.sequences)} rows · {len(imaging)} imaging"
-            )
+            self.validation_label.setText(f"✓ valid · {self._protocol.summary_line()}")
             self.validation_label.setStyleSheet("color: #2e7d32;")
 
     def _render(self) -> None:
@@ -635,7 +638,7 @@ class ProtocolTab(QWidget):
             current_label = object()  # sentinel unequal to any real label
             for i, row in enumerate(self._protocol.sequences):
                 label = row.get("round")
-                if group_item is None or label != current_label:
+                if label != current_label:
                     current_label = label
                     group_item = QTreeWidgetItem([label or "—", "", "", "", "", "", ""])
                     group_item.setData(0, Qt.UserRole + 1, label)
@@ -657,13 +660,10 @@ class ProtocolTab(QWidget):
         seq_type = row.get("type", "")
         if seq_type == IMAGING_TYPE:
             type_label = "Imaging"
+        elif SEQUENCE_TYPE_LABELS is not None:
+            type_label = SEQUENCE_TYPE_LABELS.get(seq_type, seq_type)
         else:
-            try:
-                from fluidics.sequences import SEQUENCE_TYPE_LABELS
-
-                type_label = SEQUENCE_TYPE_LABELS.get(seq_type, seq_type)
-            except ImportError:
-                type_label = seq_type
+            type_label = seq_type
         name = row.get("name") or type_label
         if seq_type == IMAGING_TYPE:
             name = f"{name} → {row.get('folder') or '?'}"
@@ -749,9 +749,7 @@ class ProtocolTab(QWidget):
     def _build_fluidics_editor(self, index: int, row: dict) -> None:
         self.field_group.setTitle(f"Selected row — {row.get('name') or row.get('type')}")
         try:
-            from fluidics.sequences import get_fields_for_type
-
-            fields = get_fields_for_type(row.get("type"))
+            fields = get_fields_for_type(row.get("type")) if get_fields_for_type is not None else {}
         except Exception:
             fields = {}
         for fname, finfo in fields.items():
@@ -760,22 +758,15 @@ class ProtocolTab(QWidget):
             value = row.get(fname, getattr(finfo, "default", None))
             if fname in _STRING_FIELDS:
                 widget = self._line_edit(index, fname, value)
-            elif fname in ("temperature", "incubation_time"):
-                widget = QDoubleSpinBox()
-                widget.setRange(0, 100000)
-                widget.setDecimals(2)
-                if value is not None:
-                    try:
-                        widget.setValue(float(value))
-                    except (TypeError, ValueError):
-                        pass
-                widget.editingFinished.connect(lambda w=widget, f=fname: self._field_edited(index, f, w))
             else:
-                widget = QSpinBox()
+                is_float = fname in ("temperature", "incubation_time")
+                widget = QDoubleSpinBox() if is_float else QSpinBox()
                 widget.setRange(0, 100000)
+                if is_float:
+                    widget.setDecimals(2)
                 if value is not None:
                     try:
-                        widget.setValue(int(value))
+                        widget.setValue(float(value) if is_float else int(value))
                     except (TypeError, ValueError):
                         pass
                 widget.editingFinished.connect(lambda w=widget, f=fname: self._field_edited(index, f, w))
@@ -846,6 +837,4 @@ class ProtocolTab(QWidget):
                 if other is not row and (other.get("name"), other.get("type")) == key:
                     other[field] = value
         # Re-render on the next event-loop turn: destroying the editor inside its own signal is unsafe.
-        from qtpy.QtCore import QTimer
-
         QTimer.singleShot(0, self._mark_changed)

@@ -3,9 +3,8 @@ Log | Temperature | Reagents), the Protocol editor on the right."""
 
 from typing import Callable, Optional, Tuple
 
-from qtpy.QtCore import QTimer, Signal
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import QGroupBox, QLabel, QSplitter, QTabWidget, QVBoxLayout, QWidget
-from qtpy.QtCore import Qt
 
 import squid.logging
 from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
