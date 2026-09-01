@@ -6,7 +6,6 @@ sequence semantics are the library's."""
 
 import datetime
 import os
-import sys
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -173,10 +172,13 @@ class ProtocolTab(QWidget):
 
     def imaging_ready(self) -> Optional[str]:
         """None when every included imaging row has both sources; else a one-line hint."""
-        missing = 0
-        for _i, row in self._protocol.imaging_rows():
-            if row.include and (not row.settings or not row.coordinates):
-                missing += 1
+        missing = sum(
+            1
+            for row in self._protocol.sequences
+            if row.get("type") == IMAGING_TYPE
+            and row.get("include", True)
+            and not (row.get("settings") and row.get("coordinates"))
+        )
         if missing:
             return f"{missing} imaging row(s) have no settings or coordinates"
         if not self._protocol.sequences:
@@ -586,10 +588,9 @@ class ProtocolTab(QWidget):
                 continue
             try:
                 # The library owns the verdict order and phrasing (sequence_problem), so
-                # Squid's rows read exactly as the standalone editor's would. Before
-                # Initialize the port range is unknown: an unbounded limit runs the same
-                # verdict with the port stage unable to fire.
-                problem = sequence_problem(row, application, limit if limit is not None else sys.maxsize)
+                # Squid's rows read exactly as the standalone editor's would; limit=None
+                # (before Initialize) skips the port stage upstream.
+                problem = sequence_problem(row, application, limit)
                 if problem:
                     problems[i] = problem
             except Exception as e:
@@ -611,20 +612,21 @@ class ProtocolTab(QWidget):
         self.name_label.setText(name + (" *" if self._dirty else ""))
 
     def _render_summaries(self) -> None:
-        imaging = [r for _i, r in self._protocol.imaging_rows()]
-        by_ref = lambda field: {getattr(r, field) for r in imaging if getattr(r, field)}  # noqa: E731
+        # Raw dict reads: this runs on every repaint, so no per-row Pydantic here.
+        imaging = [r for r in self._protocol.sequences if r.get("type") == IMAGING_TYPE]
+        by_ref = lambda field: {r.get(field) for r in imaging if r.get(field)}  # noqa: E731
         self.settings_summary.setText(
-            f"{sum(1 for r in imaging if r.settings)}/{len(imaging)} rows · {len(by_ref('settings'))} source(s)"
+            f"{sum(1 for r in imaging if r.get('settings'))}/{len(imaging)} rows · {len(by_ref('settings'))} source(s)"
             if imaging
             else "—"
         )
         total_fovs = 0
         for r in imaging:
-            block = self._protocol.imaging.coordinates.get(r.coordinates or "")
+            block = self._protocol.imaging.coordinates.get(r.get("coordinates") or "")
             if block is not None:
                 total_fovs += block.fov_count
         self.coordinates_summary.setText(
-            f"{sum(1 for r in imaging if r.coordinates)}/{len(imaging)} rows · {total_fovs} FOVs in blocks"
+            f"{sum(1 for r in imaging if r.get('coordinates'))}/{len(imaging)} rows · {total_fovs} FOVs in blocks"
             if imaging
             else "—"
         )

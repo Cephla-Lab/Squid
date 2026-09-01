@@ -91,10 +91,10 @@ def test_imaging_rows_are_validated_and_unknown_keys_rejected():
     assert [(i, r.folder) for i, r in p.imaging_rows()] == [(3, "R01_image")]
 
 
-def test_strip_for_library_drops_imaging_rows_and_round_labels():
+def test_strip_for_library_drops_imaging_rows_and_keeps_round():
     rows = strip_for_library(_protocol().sequences)
     assert [r["type"] for r in rows] == ["priming", "flow_reagent", "flow_reagent", "flow_reagent", "clean_up"]
-    assert all("round" not in r for r in rows)
+    assert all(r.get("round") for r in rows)  # the library accepts round natively
     assert rows[1]["fluidic_port"] == 1  # other keys untouched
 
 

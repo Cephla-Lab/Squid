@@ -4,8 +4,7 @@ A protocol is the Squid-Fluidics library's sequence file (a `sequences:` list of
 priming / clean_up / set_temperature ... rows) plus, per row, an optional `round:` label and a Squid-only
 row type `imaging`, and a Squid-only `imaging:` header holding the settings and coordinate blocks the
 imaging rows point at. The library accepts `round` natively; `imaging` is Squid-only, so
-`strip_for_library()` produces the rows every library call receives (it also drops `round`, keeping
-Squid tolerant of older library installs).
+`strip_for_library()` produces the rows every library call receives.
 
 Qt-free, library-free: fluidics rows are kept as plain dicts here and validated by the library in
 control.core.fluidics_protocol.resolve.
@@ -140,8 +139,9 @@ class ProtocolFile(BaseModel):
 
 
 def strip_for_library(rows: List[dict]) -> List[dict]:
-    """The rows the Squid-Fluidics library may see: no imaging rows, no `round` key. Copies; never mutates."""
-    return [{k: v for k, v in row.items() if k != "round"} for row in rows if row.get("type") != IMAGING_TYPE]
+    """The rows the Squid-Fluidics library may see: no imaging rows (`round` passes through -
+    the library accepts it natively). Copies; never mutates."""
+    return [dict(row) for row in rows if row.get("type") != IMAGING_TYPE]
 
 
 def load_protocol(path: str) -> ProtocolFile:

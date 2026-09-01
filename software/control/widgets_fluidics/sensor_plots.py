@@ -50,15 +50,8 @@ class TemperatureTab(QWidget):
         self._timer.timeout.connect(self._refresh)
 
     def set_run_active(self, active: bool) -> None:
-        """A running protocol owns the TEC: the manual Set/Save/Output controls go dead."""
-        for channel_widget in self.control_widget.plot_widgets:
-            for control in (
-                channel_widget.temp_input,
-                channel_widget.set_btn,
-                channel_widget.save_btn,
-                channel_widget.output_btn,
-            ):
-                control.setEnabled(not active)
+        """A running protocol owns the TEC: the manual setpoint controls go dead."""
+        self.control_widget.set_controls_enabled(not active)
 
     def _toggle_recording(self, checked: bool) -> None:
         if checked:

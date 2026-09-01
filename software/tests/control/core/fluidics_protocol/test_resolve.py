@@ -59,7 +59,9 @@ def test_header_keys_resolve_and_fluidics_rows_are_validated(tmp_path):
     resolved = resolve_protocol(_protocol(), tmp_path, fluidics=port)
     assert [s.kind for s in resolved.steps] == ["fluidics", "imaging"]
     assert resolved.imaging[1].settings.z_stack.nz == 2 and resolved.imaging[1].coordinates.fov_count == 1
-    assert port.validated == [[{"type": "flow_reagent", "fluidic_port": 1, "flow_rate": 500, "volume": 500}]]
+    assert port.validated == [
+        [{"type": "flow_reagent", "round": "R01", "fluidic_port": 1, "flow_rate": 500, "volume": 500}]
+    ]  # round passes through - the library accepts it natively
     assert resolved.fluidics_estimate_s == 60.0
 
 
