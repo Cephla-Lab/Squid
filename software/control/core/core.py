@@ -931,7 +931,7 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
-        self.btn_overexposure = QPushButton("Overexposure")
+        self.btn_overexposure = QPushButton("Over-exposed Pixels")
         self.btn_overexposure.setCheckable(True)
         self.btn_overexposure.setToolTip("Highlight pixels at or above the upper contrast limit in red")
         self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
@@ -1679,7 +1679,13 @@ class NavigationViewer(QFrame):
         """Set the alignment widget to be displayed in the navigation viewer."""
         self.alignment_widget = alignment_widget
         self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.installEventFilter(self)  # it grows/shrinks as its Auto button toggles
         self.alignment_widget.adjustSize()
+
+    def eventFilter(self, obj, event):
+        if obj is self.alignment_widget and event.type() == QEvent.Resize:
+            self._position_button()
+        return super().eventFilter(obj, event)
         self._position_button()
 
     def resizeEvent(self, event):

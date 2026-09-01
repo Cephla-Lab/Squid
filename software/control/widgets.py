@@ -10422,6 +10422,7 @@ class AlignmentWidget(QWidget):
         """Setup the button UI."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSizeConstraint(QLayout.SetFixedSize)  # shrink/grow as the Auto button is shown/hidden
 
         self.btn_align = QPushButton("Align")
         self.btn_align.setCursor(Qt.PointingHandCursor)
@@ -10433,14 +10434,14 @@ class AlignmentWidget(QWidget):
         self.btn_auto = QPushButton("Auto")
         self.btn_auto.setCursor(Qt.PointingHandCursor)
         self.btn_auto.setToolTip("Register the live view against the reference image and move the stage to match")
-        self.btn_auto.setEnabled(False)  # Only while a reference is loaded
+        self.btn_auto.hide()  # Only while a reference is loaded
         self.btn_auto.clicked.connect(lambda: self.signal_auto_align_requested.emit(self._reference_image))
         layout.addWidget(self.btn_auto)
 
     def _set_state(self, state: str):
         self.state = state
         self.btn_align.setText(self._BUTTON_TEXT[state])
-        self.btn_auto.setEnabled(state == self.STATE_CONFIRM)
+        self.btn_auto.setVisible(state == self.STATE_CONFIRM)
 
     def enable(self):
         """Enable the alignment button if currently disabled. Call when live view starts."""

@@ -104,9 +104,14 @@ def acquisition_folder(tmp_path, request):
 
 
 @pytest.fixture
-def widget(qtbot, image_display_window, acquisition_folder, monkeypatch):
+def alignment_dialogs(acquisition_folder, monkeypatch):
+    """Make the folder picker return the acquisition folder and mute the confirmation popup."""
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(acquisition_folder))
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+
+
+@pytest.fixture
+def widget(qtbot, image_display_window, alignment_dialogs):
     w = AlignmentWidget(image_display_window)
     qtbot.addWidget(w)
     w.enable()
@@ -141,12 +146,39 @@ def test_color_reference_is_overlaid_as_an_intensity_image(widget, image_display
     assert image_display_window.alignment_reference_item.image.ndim == 2
 
 
-def test_auto_is_only_available_while_a_reference_is_loaded(widget):
-    assert not widget.btn_auto.isEnabled()
+def test_auto_is_only_shown_while_a_reference_is_loaded(widget):
+    assert widget.btn_auto.isHidden()
     _start_alignment(widget)
-    assert widget.btn_auto.isEnabled()
+    assert not widget.btn_auto.isHidden()
     _confirm(widget, *CENTER_FOV_POSITION)
-    assert not widget.btn_auto.isEnabled()
+    assert widget.btn_auto.isHidden()
+
+
+def test_navigation_viewer_keeps_alignment_widget_beside_clear_button_as_auto_toggles(
+    qtbot, image_display_window, alignment_dialogs
+):
+    from control.core.core import NavigationViewer
+    from control.core.objective_store import ObjectiveStore
+
+    viewer = NavigationViewer(ObjectiveStore(), camera=MagicMock())
+    qtbot.addWidget(viewer)
+    widget = AlignmentWidget(image_display_window)  # owned (and torn down) by the viewer
+    widget.enable()
+    viewer.set_alignment_widget(widget)
+    viewer.show()
+    qtbot.waitExposed(viewer)
+
+    def gap_to_clear_button():
+        return viewer.btn_clear_coordinates.x() - (widget.x() + widget.width())
+
+    _start_alignment(widget)  # Auto appears, widget grows
+    qtbot.waitUntil(lambda: not widget.btn_auto.isHidden())
+    wide_width, wide_gap = widget.width(), gap_to_clear_button()
+
+    _confirm(widget, *CENTER_FOV_POSITION)  # Auto disappears, widget shrinks
+
+    qtbot.waitUntil(lambda: widget.width() < wide_width)
+    assert gap_to_clear_button() == wide_gap
 
 
 def test_auto_requests_registration_against_the_loaded_reference(widget):
