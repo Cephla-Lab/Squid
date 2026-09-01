@@ -1,4 +1,3 @@
-import json
 import threading
 from types import SimpleNamespace
 
@@ -183,9 +182,9 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
     from control.widgets_fluidics.system_panel import SystemPanel
 
     monkeypatch.chdir(tmp_path)
-    from tests.control.fluidics_test_config import CONFIG_YAML
+    from tests.control.fluidics_test_config import TEC_CONFIG_YAML
 
-    text = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
+    text = TEC_CONFIG_YAML
     config = tmp_path / "with_tec.yaml"
     config.write_text(text)
     monkeypatch.setattr(SystemPanel, "_INITIALIZE_KWARGS", {"instant": True})
@@ -203,9 +202,7 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
         assert not tab.manual_group.isEnabled()
         tab.set_run_active(False)
     finally:
-        tab.log_view.disconnect_logging()
-        if tab.temperature_tab is not None:
-            tab.temperature_tab._timer.stop()
+        tab.shutdown()
         assert service.close() == []
 
 

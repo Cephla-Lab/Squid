@@ -39,9 +39,9 @@ def service(tmp_path, fluidics_config_path):
 
 @pytest.fixture
 def tec_service(tmp_path):
-    from tests.control.fluidics_test_config import CONFIG_YAML
+    from tests.control.fluidics_test_config import TEC_CONFIG_YAML
 
-    text = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
+    text = TEC_CONFIG_YAML
     config = tmp_path / "with_tec.yaml"
     config.write_text(text)
     svc = FluidicsService(default_config_path=str(config), simulated=True)

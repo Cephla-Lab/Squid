@@ -1,8 +1,8 @@
 """One simulated-instrument FluidicsConfig for the test suite.
 
 The real file is the operator's own (machine_configs/fluidics_config.yaml, gitignored,
-copied from the instrument's standalone fluidics installation); tests write this YAML
-to a temporary file instead of shipping an example config in the repo."""
+copied from the instrument's standalone fluidics installation); the conftest fixture
+writes this YAML to a temporary file instead of shipping an example config in the repo."""
 
 CONFIG_YAML = """\
 config_version: '2.0'
@@ -120,12 +120,4 @@ flow_sensors:
 application: Flow Cell
 """
 
-
-def write_test_config(directory) -> str:
-    """Write the test FluidicsConfig into `directory`; returns the file path."""
-    import os
-
-    path = os.path.join(str(directory), "fluidics_config.yaml")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(CONFIG_YAML)
-    return path
+TEC_CONFIG_YAML = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"

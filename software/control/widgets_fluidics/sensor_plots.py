@@ -6,7 +6,7 @@ CSV carries the step each sample belongs to."""
 from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-import squid.logging
+from fluidics.qt.sensor_plots import TemperatureControlWidget
 from fluidics.sensor_recorder import SensorRecorder
 
 
@@ -15,21 +15,21 @@ class TemperatureTab(QWidget):
 
     def __init__(self, temperature_controller, recorder: SensorRecorder, parent=None):
         super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
         self._tc = temperature_controller
         self._recorder = recorder
-
-        from fluidics.qt.sensor_plots import TemperatureControlWidget
 
         self.control_widget = TemperatureControlWidget(temperature_controller)
 
         # Producer thread -> recorder only (no Qt); the closure holds the thread-safe
-        # recorder alone, never the widget. The plot widgets subscribe separately.
+        # recorder alone, never the widget. Subscribed only while a recording is open
+        # (the plot widgets keep their own subscription); detached on destroyed.
         def on_temps(temps, recorder=recorder):
             for i, value in enumerate(temps):
                 recorder.record(f"channel_{i + 1}", float(value))
 
-        self._tc.subscribe(on_temps)
+        self._on_temps = on_temps
+        tc = temperature_controller
+        self.destroyed.connect(lambda: tc.unsubscribe(on_temps))
 
         self.record_button = QPushButton("Record run to CSV…")
         self.record_button.setCheckable(True)
@@ -44,9 +44,10 @@ class TemperatureTab(QWidget):
         layout.addLayout(record_row)
         self.setLayout(layout)
 
+        # Runs only while a recording is open: its one job is following a recorder
+        # that stopped itself on a write failure.
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
-        self._timer.start(self.REFRESH_MS)
 
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the TEC: the manual Set/Save/Output controls go dead."""
@@ -65,8 +66,12 @@ class TemperatureTab(QWidget):
             if not path or not self._recorder.start_recording(path):
                 self.record_button.setChecked(False)
                 return
+            self._tc.subscribe(self._on_temps)
+            self._timer.start(self.REFRESH_MS)
             self.record_button.setText("Stop recording")
         else:
+            self._tc.unsubscribe(self._on_temps)
+            self._timer.stop()
             self._recorder.stop_recording()
             self.record_button.setText("Record run to CSV…")
 

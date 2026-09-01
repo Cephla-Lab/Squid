@@ -80,6 +80,9 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     # Ending the run is irreversible: it must come only after the user consents.
     assert helper_src.index("question") < helper_src.index("end_run_for_exit(15)")
     assert "offer_recovery" not in _source("showEvent")  # deferred to system_ready
-    cleanup_src = _source("_cleanup_common")
-    assert "disconnect_logging" in cleanup_src
-    assert "recorder.stop_recording()" in cleanup_src  # an open CSV's tail is flushed on exit
+    assert "fluidicsDisplayTab.shutdown()" in _source("_cleanup_common")
+    from control.widgets_fluidics.display_tab import FluidicsDisplayTab
+
+    shutdown_src = inspect.getsource(FluidicsDisplayTab.shutdown)
+    assert "disconnect_logging" in shutdown_src
+    assert "stop_recording" in shutdown_src and "close_recordings" in shutdown_src

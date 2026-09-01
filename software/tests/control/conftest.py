@@ -45,6 +45,8 @@ def _watchdog_state_to_tmp(tmp_path, monkeypatch):
 @pytest.fixture(scope="session")
 def fluidics_config_path(tmp_path_factory) -> str:
     """A simulated-instrument FluidicsConfig written once per session."""
-    from tests.control.fluidics_test_config import write_test_config
+    from tests.control.fluidics_test_config import CONFIG_YAML
 
-    return write_test_config(tmp_path_factory.mktemp("fluidics_config"))
+    path = tmp_path_factory.mktemp("fluidics_config") / "fluidics_config.yaml"
+    path.write_text(CONFIG_YAML, encoding="utf-8")
+    return str(path)

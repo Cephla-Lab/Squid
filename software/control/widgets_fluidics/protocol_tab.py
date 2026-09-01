@@ -1,11 +1,12 @@
 """The Protocol editor: a round-grouped tree over a ProtocolFile, with imaging-source assignment
 (Apply current settings / Capture current coordinates / From file…), folder rules, Add rounds and
 live validation. Built on the fluidics library's own logic helpers (get_fields_for_type,
-SEQUENCE_TYPE_LABELS, sequence_problem, SequenceListAdapter) — the widget skin is Squid's, the
+SEQUENCE_TYPE_LABELS, sequence_problem) — the widget skin is Squid's, the
 sequence semantics are the library's."""
 
 import datetime
 import os
+import sys
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -41,6 +42,8 @@ from control.models.fluidics_protocol import (
     SettingsBlock,
     expand_rounds,
     folder_problems_by_row,
+    rebase_file_refs,
+    ref_for_path,
     load_protocol,
     render_folder,
     save_protocol,
@@ -51,14 +54,11 @@ from control.widgets_fluidics.dialogs import AddRoundsDialog, pick_coordinates_s
 try:  # the editor degrades gracefully when the fluidics library is not installed
     from fluidics.sequences import (
         SEQUENCE_TYPE_LABELS,
-        SequenceListAdapter,
         get_fields_for_type,
         sequence_problem,
-        sequence_type_problem,
     )
 except ImportError:
-    SEQUENCE_TYPE_LABELS = SequenceListAdapter = None
-    get_fields_for_type = sequence_problem = sequence_type_problem = None
+    SEQUENCE_TYPE_LABELS = get_fields_for_type = sequence_problem = None
 
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
@@ -146,10 +146,10 @@ class ProtocolTab(QWidget):
         )
         if not path:
             return False
-        old_base = os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
+        old_base = self._protocol_dir()
         new_base = os.path.dirname(os.path.abspath(path))
         if old_base and old_base != new_base:
-            self._rebase_file_refs(old_base, new_base)
+            rebase_file_refs(self._protocol, old_base, new_base)
         self.protocol_path = path
         state.save_ui_state(protocol_path=path)
         saved = self.save()
@@ -157,21 +157,12 @@ class ProtocolTab(QWidget):
             self._render()  # rebased references repaint
         return saved
 
-    def _rebase_file_refs(self, old_base: str, new_base: str) -> None:
-        """File-backed settings/coordinates references are relative to the protocol file, so a
-        Save As into another directory must re-point them at the same files."""
-        for _i, row in ((i, r) for i, r in enumerate(self._protocol.sequences) if r.get("type") == IMAGING_TYPE):
-            for field in ("settings", "coordinates"):
-                ref = row.get(field)
-                header = getattr(self._protocol.imaging, field)
-                if not ref or ref in header or os.path.isabs(ref):
-                    continue
-                target = os.path.normpath(os.path.join(old_base, ref))
-                relative = os.path.relpath(target, new_base)
-                row[field] = target if relative.startswith("..") else relative
-
     def new(self) -> None:
         self.set_protocol(ProtocolFile(), None)
+
+    def _protocol_dir(self) -> Optional[str]:
+        """The directory the protocol's relative file references resolve against."""
+        return os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
 
     def set_run_locked(self, locked: bool) -> None:
         """The structure is frozen while a run rides it (the tree stays viewable)."""
@@ -443,8 +434,8 @@ class ProtocolTab(QWidget):
             return
         if kind == "settings" and path.endswith("acquisition.yaml"):
             path = os.path.dirname(path)  # a saved acquisition folder is the settings source
-        base = os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
-        ref = os.path.relpath(path, base) if base and os.path.abspath(path).startswith(base + os.sep) else path
+        base = self._protocol_dir()
+        ref = ref_for_path(path, base)
         if not self._confirm_replace(rows, kind, ref):
             return
         for i in rows:
@@ -565,7 +556,7 @@ class ProtocolTab(QWidget):
         folder_by_row = folder_problems_by_row(self._protocol)
         application = _application(self.service)
         limit = _port_limit(self.service)
-        base = os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
+        base = self._protocol_dir()
         for i, row in enumerate(self._protocol.sequences):
             if row.get("type") == IMAGING_TYPE:
                 try:
@@ -591,18 +582,14 @@ class ProtocolTab(QWidget):
                         problems[i] = f"{field} '{ref}' is neither a header block nor a file"
                         break
                 continue
-            if SequenceListAdapter is None:
+            if sequence_problem is None:
                 continue
             try:
-                if limit is not None:
-                    # The library owns the verdict order and phrasing (sequence_problem),
-                    # so Squid's rows read exactly as the standalone editor's would.
-                    problem = sequence_problem(row, application, limit)
-                else:
-                    # Before Initialize the port range is unknown: type + schema only.
-                    problem = sequence_type_problem(row, application)
-                    if problem is None:
-                        SequenceListAdapter.validate_python([row])
+                # The library owns the verdict order and phrasing (sequence_problem), so
+                # Squid's rows read exactly as the standalone editor's would. Before
+                # Initialize the port range is unknown: an unbounded limit runs the same
+                # verdict with the port stage unable to fire.
+                problem = sequence_problem(row, application, limit if limit is not None else sys.maxsize)
                 if problem:
                     problems[i] = problem
             except Exception as e:

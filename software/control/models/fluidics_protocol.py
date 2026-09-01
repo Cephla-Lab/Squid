@@ -197,6 +197,28 @@ def render_folder(
     return pattern.format(round=round_label or "", step=step_name or "image", index=index, run=run_name)
 
 
+def ref_for_path(path: str, base: Optional[str]) -> str:
+    """How a file-backed settings/coordinates reference is written: relative to the
+    protocol file when the target sits under its directory, absolute otherwise."""
+    if base and os.path.abspath(path).startswith(base + os.sep):
+        return os.path.relpath(path, base)
+    return path
+
+
+def rebase_file_refs(protocol: ProtocolFile, old_base: str, new_base: str) -> None:
+    """File-backed references are relative to the protocol file, so saving it into
+    another directory must re-point them at the same files. Header keys are untouched."""
+    for row in protocol.sequences:
+        if row.get("type") != IMAGING_TYPE:
+            continue
+        for field in ("settings", "coordinates"):
+            ref = row.get(field)
+            if not ref or ref in getattr(protocol.imaging, field) or os.path.isabs(ref):
+                continue
+            target = os.path.normpath(os.path.join(old_base, ref))
+            row[field] = ref_for_path(target, new_base)
+
+
 def folder_problems_by_row(protocol: ProtocolFile) -> Dict[int, str]:
     """Every folder rule an imaging row can break, keyed by the offending row's index
     (imaging rows commonly share a display name, so a name is no key)."""

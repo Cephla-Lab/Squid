@@ -3031,10 +3031,9 @@ class HighContentScreeningGui(QMainWindow):
 
         if self.fluidicsDisplayTab is not None:
             try:
-                self.fluidicsDisplayTab.log_view.disconnect_logging()
-                self.fluidicsDisplayTab.recorder.stop_recording()  # flushes an open CSV's tail
+                self.fluidicsDisplayTab.shutdown()  # detaches logging, flushes open recordings
             except Exception:
-                self.log.exception(f"Error closing the fluidics views during {context}")
+                self.log.exception(f"Error shutting down the fluidics display tab during {context}")
 
         # Close fluidics (a no-op unless Initialize was pressed; Microscope.close() would also do it)
         if self.fluidics is not None:

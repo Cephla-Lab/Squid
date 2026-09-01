@@ -1,6 +1,9 @@
 import pytest
 
 import squid.logging
+
+pytest.importorskip("fluidics")
+
 from fluidics.sensor_recorder import SensorRecorder
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
@@ -43,7 +46,6 @@ def test_reagents_table_renders_rows(qtbot):
 
 
 def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
-    pytest.importorskip("fluidics")
     from fluidics.control.temperature_controller import TCMControllerSimulation
 
     import control.widgets_fluidics.sensor_plots as sensor_plots_module
@@ -59,14 +61,14 @@ def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
         channel.set_btn.click()
         assert tc.target_temperatures[0] == 37.0
 
-        qtbot.waitUntil(lambda: len(recorder.channel("channel_1").window()[0]) > 0, timeout=5000)
-
         target = tmp_path / "t.csv"
         monkeypatch.setattr(
             sensor_plots_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), ""))
         )
         tab.record_button.setChecked(True)
         assert recorder.recording
+        # the recorder feed subscribes with the recording, so samples arrive only now
+        qtbot.waitUntil(lambda: len(recorder.channel("channel_1").window()[0]) > 0, timeout=5000)
         qtbot.waitUntil(lambda: len(target.read_text().splitlines()) > 1, timeout=5000)
         tab.record_button.setChecked(False)
         assert not recorder.recording
@@ -82,7 +84,6 @@ def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
 
 
 def test_record_button_follows_a_recorder_stop(qtbot, tmp_path, monkeypatch):
-    pytest.importorskip("fluidics")
     from fluidics.control.temperature_controller import TCMControllerSimulation
 
     import control.widgets_fluidics.sensor_plots as sensor_plots_module

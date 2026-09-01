@@ -343,11 +343,16 @@ class FluidicsProtocolWidget(QFrame):
         self._resolved = resolved
         self._current_step_kind = None
         self.protocol_tab.set_run_locked(True)
-        self.idle_box.hide()
-        self.running_box.show()
-        self.held_box.hide()
+        self._set_run_visible(True)
         self.signal_acquisition_started.emit(True)
         runner.start()
+
+    def _set_run_visible(self, active: bool) -> None:
+        """The status card replaces the idle panel while a run rides; the HELD box is
+        shown only by _show_hold."""
+        self.idle_box.setHidden(active)
+        self.running_box.setHidden(not active)
+        self.held_box.hide()
 
     def run_line(self) -> str:
         """One line for the device-status panel: state, and the step position when running."""
@@ -498,9 +503,7 @@ class FluidicsProtocolWidget(QFrame):
         self.state_label.setText(f"Run {outcome}")
         self.signal_acquisition_started.emit(False)
         self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
-        self.running_box.hide()
-        self.held_box.hide()
-        self.idle_box.show()
+        self._set_run_visible(False)
         self._refresh_idle()
 
     # ---------- buttons / timer ----------

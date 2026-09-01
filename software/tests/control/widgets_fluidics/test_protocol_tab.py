@@ -251,8 +251,6 @@ def test_folder_problems_flag_only_the_offending_rows(tab):
 
 
 def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
-    import control.widgets_fluidics.protocol_tab as protocol_tab_module
-
     dir1 = tmp_path / "one"
     dir2 = tmp_path / "two" / "deeper"
     dir2.mkdir(parents=True)
@@ -263,7 +261,6 @@ def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
     monkeypatch.setattr(protocol_tab_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (target, "")))
     tab.protocol.sequences[5]["coordinates"] = "../two/deeper/acq2"  # lands under the new directory
     assert tab.save_as()
-    import os
 
     # outside the new base: absolute, still the same file (matches the From file… convention)
     assert tab.protocol.sequences[3]["coordinates"] == str(dir1 / "acq" / "run1")

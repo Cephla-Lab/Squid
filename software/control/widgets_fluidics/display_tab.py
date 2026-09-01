@@ -104,6 +104,16 @@ class FluidicsDisplayTab(QWidget):
                 self._log.exception("Could not build the Temperature tab")
         self.system_ready.emit()
 
+    def shutdown(self) -> None:
+        """Exit/restart path: detach logging and flush every open recording — Squid's
+        step-labeled CSV and the plot widgets' per-channel CSVs (an embedded tab gets no
+        closeEvent, so the host must ask; see SensorTabWidget.close_recordings)."""
+        self.log_view.disconnect_logging()
+        self.recorder.stop_recording()
+        if self.temperature_tab is not None:
+            self.temperature_tab._timer.stop()
+            self.temperature_tab.control_widget.close_recordings()
+
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the instrument: manual control and TEC setpoints go dead."""
         self.manual_group.setEnabled(not active)
