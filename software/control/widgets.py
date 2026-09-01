@@ -10375,39 +10375,36 @@ class AlignmentWidget(QWidget):
     Allows users to align current sample position with a previous acquisition by:
     1. Loading a past acquisition folder
     2. Moving stage to a reference FOV position
-    3. Displaying reference image as translucent overlay
-    4. Calculating X/Y offset after manual alignment
+    3. Displaying reference image as a magenta overlay on the live view
+    4. Calculating X/Y offset after manual or automatic alignment
     5. Applying offset to future scan coordinates
 
-    The widget manages its own state and napari layers, communicating with
-    external components (stage, live controller) via signals.
+    The widget manages its own state and the reference overlay on the live display,
+    communicating with external components (stage, registration) via signals.
     """
 
     signal_move_to_position = Signal(float, float)  # x_mm, y_mm
     signal_offset_set = Signal(float, float)  # offset_x_mm, offset_y_mm
     signal_offset_cleared = Signal()
     signal_request_current_position = Signal()  # Response via set_current_position()
+    signal_auto_align_requested = Signal(object)  # reference image to register the live view against
 
     # Button states
     STATE_ALIGN = "align"
     STATE_CONFIRM = "confirm"
     STATE_CLEAR = "clear"
+    _BUTTON_TEXT = {STATE_ALIGN: "Align", STATE_CONFIRM: "Confirm Offset", STATE_CLEAR: "Clear Offset"}
 
-    # Napari layer name
-    REFERENCE_LAYER_NAME = "Alignment Reference"
-
-    def __init__(self, napari_viewer, parent=None):
+    def __init__(self, display, parent=None):
         """
-        Initialize alignment widget.
-
         Args:
-            napari_viewer: The napari viewer instance for layer management
+            display: Live image display providing show_alignment_reference(image) / hide_alignment_reference()
             parent: Parent widget
         """
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
-        self.viewer = napari_viewer
+        self._display = display
         self.state = self.STATE_ALIGN
 
         # Alignment state
@@ -10415,9 +10412,8 @@ class AlignmentWidget(QWidget):
         self._offset_y_mm = 0.0
         self._has_offset = False
         self._reference_fov_position = None  # (x_mm, y_mm)
+        self._reference_image = None
         self._current_folder = None
-        self._original_live_opacity = 1.0
-        self._original_live_blending = "additive"
         self._pending_position_request = False
 
         self._setup_ui()
@@ -10426,6 +10422,7 @@ class AlignmentWidget(QWidget):
         """Setup the button UI."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSizeConstraint(QLayout.SetFixedSize)  # shrink/grow as the Auto button is shown/hidden
 
         self.btn_align = QPushButton("Align")
         self.btn_align.setCursor(Qt.PointingHandCursor)
@@ -10433,6 +10430,18 @@ class AlignmentWidget(QWidget):
         self.btn_align.setEnabled(False)  # Disabled until live view starts
         self.btn_align.clicked.connect(self._on_button_clicked)
         layout.addWidget(self.btn_align)
+
+        self.btn_auto = QPushButton("Auto")
+        self.btn_auto.setCursor(Qt.PointingHandCursor)
+        self.btn_auto.setToolTip("Register the live view against the reference image and move the stage to match")
+        self.btn_auto.hide()  # Only while a reference is loaded
+        self.btn_auto.clicked.connect(lambda: self.signal_auto_align_requested.emit(self._reference_image))
+        layout.addWidget(self.btn_auto)
+
+    def _set_state(self, state: str):
+        self.state = state
+        self.btn_align.setText(self._BUTTON_TEXT[state])
+        self.btn_auto.setVisible(state == self.STATE_CONFIRM)
 
     def enable(self):
         """Enable the alignment button if currently disabled. Call when live view starts."""
@@ -10474,14 +10483,13 @@ class AlignmentWidget(QWidget):
 
     def reset(self):
         """Reset widget to initial state."""
-        self.state = self.STATE_ALIGN
-        self.btn_align.setText("Align")
         self._current_folder = None
         self._reference_fov_position = None
         self._has_offset = False
         self._offset_x_mm = 0.0
         self._offset_y_mm = 0.0
-        self._remove_reference_layer()
+        self._hide_reference()
+        self._set_state(self.STATE_ALIGN)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Button Click Handler
@@ -10513,15 +10521,7 @@ class AlignmentWidget(QWidget):
 
     def _handle_clear_click(self):
         """Handle click in CLEAR state - clear offset."""
-        self._offset_x_mm = 0.0
-        self._offset_y_mm = 0.0
-        self._has_offset = False
-        self._reference_fov_position = None
-        self._current_folder = None
-
-        self.state = self.STATE_ALIGN
-        self.btn_align.setText("Align")
-
+        self.reset()
         self.signal_offset_cleared.emit()
         self._log.info("Alignment offset cleared")
 
@@ -10537,11 +10537,9 @@ class AlignmentWidget(QWidget):
             ref_x, ref_y = info["center_fov_position"]
             self._reference_fov_position = (ref_x, ref_y)
 
-            self.state = self.STATE_CONFIRM
-            self.btn_align.setText("Confirm Offset")
-
             self.signal_move_to_position.emit(ref_x, ref_y)
             self._load_reference_image(info["image_path"])
+            self._set_state(self.STATE_CONFIRM)
             self._log.info(f"Alignment started: ref_pos=({ref_x:.4f}, {ref_y:.4f})")
 
         except Exception as e:
@@ -10564,10 +10562,8 @@ class AlignmentWidget(QWidget):
         self._offset_y_mm = offset_y
         self._has_offset = True
 
-        self._remove_reference_layer()
-
-        self.state = self.STATE_CLEAR
-        self.btn_align.setText("Clear Offset")
+        self._hide_reference()
+        self._set_state(self.STATE_CLEAR)
 
         self.signal_offset_set.emit(offset_x, offset_y)
         self._log.info(f"Alignment confirmed: offset=({offset_x:.4f}, {offset_y:.4f})mm")
@@ -10657,11 +10653,11 @@ class AlignmentWidget(QWidget):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Napari Layer Management
+    # Reference Overlay
     # ─────────────────────────────────────────────────────────────────────────
 
     def _load_reference_image(self, image_path: str):
-        """Load reference image and add to napari viewer."""
+        """Load reference image and overlay it on the live view."""
         import tifffile
 
         if image_path.endswith((".tiff", ".tif", ".ome.tiff", ".ome.tif")):
@@ -10675,642 +10671,12 @@ class AlignmentWidget(QWidget):
             if ref_image is None:
                 raise ValueError(f"Failed to read image: {image_path}")
 
-        self._add_reference_layer(ref_image)
-
-    def _add_reference_layer(self, image: np.ndarray):
-        """Add reference image as a napari layer with magenta/green overlay."""
-        self._modified_live_view = False
-        self._contrast_connected = False
-        if "Live View" in self.viewer.layers:
-            live_layer = self.viewer.layers["Live View"]
-            self._original_live_opacity = live_layer.opacity
-            self._original_live_blending = live_layer.blending
-            self._original_live_colormap = live_layer.colormap
-            live_layer.opacity = 1.0
-            live_layer.blending = "additive"
-            live_layer.colormap = "green"
-            live_layer.events.contrast_limits.connect(self._sync_contrast_limits)
-            self._contrast_connected = True
-            self._modified_live_view = True
-        else:
-            self._log.warning("Live View layer not found - reference image will be shown alone")
-
-        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers[self.REFERENCE_LAYER_NAME].data = image
-        else:
-            self.viewer.add_image(
-                image,
-                name=self.REFERENCE_LAYER_NAME,
-                visible=True,
-                opacity=1.0,
-                colormap="magenta",
-                blending="additive",
-            )
-        # Sync initial contrast limits from Live View
-        if self._contrast_connected and self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            ref_layer = self.viewer.layers[self.REFERENCE_LAYER_NAME]
-            ref_layer.contrast_limits = live_layer.contrast_limits
-        self._log.debug("Reference layer added to napari viewer")
-
-    def _sync_contrast_limits(self, event):
-        """Sync contrast limits from Live View to reference layer."""
-        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers[self.REFERENCE_LAYER_NAME].contrast_limits = event.value
-
-    def _remove_reference_layer(self):
-        """Remove reference layer and restore live view settings."""
-        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers.remove(self.REFERENCE_LAYER_NAME)
-            self._log.debug("Reference layer removed from napari viewer")
-
-        if getattr(self, "_modified_live_view", False) and "Live View" in self.viewer.layers:
-            live_layer = self.viewer.layers["Live View"]
-            if getattr(self, "_contrast_connected", False):
-                live_layer.events.contrast_limits.disconnect(self._sync_contrast_limits)
-                self._contrast_connected = False
-            live_layer.opacity = self._original_live_opacity
-            live_layer.blending = self._original_live_blending
-            live_layer.colormap = self._original_live_colormap
-            self._modified_live_view = False
-
-
-class NapariLiveWidget(QWidget):
-    signal_coordinates_clicked = Signal(int, int, int, int)
-    signal_newExposureTime = Signal(float)
-    signal_newAnalogGain = Signal(float)
-    signal_autoLevelSetting = Signal(bool)
-
-    def __init__(
-        self,
-        streamHandler,
-        liveController,
-        stage: AbstractStage,
-        objectiveStore,
-        contrastManager,
-        wellSelectionWidget=None,
-        show_trigger_options=True,
-        show_display_options=True,
-        show_autolevel=False,
-        autolevel=False,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.streamHandler = streamHandler
-        self.liveController: LiveController = liveController
-        self.stage = stage
-        self.objectiveStore = objectiveStore
-        self.wellSelectionWidget = wellSelectionWidget
-        self.live_configuration = self.liveController.currentConfiguration
-        self.image_width = 0
-        self.image_height = 0
-        self.dtype = np.uint8
-        self.channels = set()
-        self.init_live = False
-        self.init_live_rgb = False
-        self.init_scale = False
-        self.previous_scale = None
-        self.previous_center = None
-        self.last_was_autofocus = False
-        self.fps_trigger = 10
-        self.fps_display = 10
-        self.contrastManager = contrastManager
-        self.is_switching_mode = False  # Guard to prevent duplicate MCU commands during mode switch
-
-        self.initNapariViewer()
-        self.addNapariGrayclipColormap()
-        self.initControlWidgets(show_trigger_options, show_display_options, show_autolevel, autolevel)
-        self.update_ui_for_mode(self.live_configuration)
-
-    def initNapariViewer(self):
-        self.viewer = napari.Viewer(show=False)
-        self.viewerWidget = self.viewer.window._qt_window
-        self.viewer.dims.axis_labels = ["Y-axis", "X-axis"]
-        self.layout = QVBoxLayout()
-        self.layout.addWidget(self.viewerWidget)
-        self.setLayout(self.layout)
-        self.customizeViewer()
-
-    def customizeViewer(self):
-        # # Hide the status bar (which includes the activity button)
-        # if hasattr(self.viewer.window, "_status_bar"):
-        #     self.viewer.window._status_bar.hide()
-
-        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        if sys.platform == "darwin":
-            self.viewer.window.main_menu.setNativeMenuBar(False)
-        self.viewer.window.main_menu.hide()
-
-        # Hide the layer buttons
-        if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
-            self.viewer.window._qt_viewer.layerButtons.hide()
-
-    def updateHistogram(self, layer):
-        if self.histogram_widget is not None and layer.data is not None:
-            self.pg_image_item.setImage(layer.data, autoLevels=False)
-            self.histogram_widget.setLevels(*layer.contrast_limits)
-            self.histogram_widget.setHistogramRange(layer.data.min(), layer.data.max())
-
-            # Set the histogram widget's region to match the layer's contrast limits
-            self.histogram_widget.region.setRegion(layer.contrast_limits)
-
-            # Update colormap only if it has changed
-            if hasattr(self, "last_colormap") and self.last_colormap != layer.colormap.name:
-                self.histogram_widget.gradient.setColorMap(self.createColorMap(layer.colormap))
-            self.last_colormap = layer.colormap.name
-
-    def createColorMap(self, colormap):
-        colors = colormap.colors
-        positions = np.linspace(0, 1, len(colors))
-        return pg.ColorMap(positions, colors)
-
-    def initControlWidgets(self, show_trigger_options, show_display_options, show_autolevel, autolevel):
-        # Initialize histogram widget
-        self.pg_image_item = pg.ImageItem()
-        self.histogram_widget = pg.HistogramLUTWidget(image=self.pg_image_item)
-        self.histogram_widget.setFixedWidth(100)
-        self.histogram_dock = self.viewer.window.add_dock_widget(self.histogram_widget, area="right", name="hist")
-        self.histogram_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
-        self.histogram_dock.setTitleBarWidget(QWidget())
-        self.histogram_widget.region.sigRegionChanged.connect(self.on_histogram_region_changed)
-        self.histogram_widget.region.sigRegionChangeFinished.connect(self.on_histogram_region_changed)
-
-        # Microscope Configuration (only enabled channels)
-        self.dropdown_modeSelection = QComboBox()
-        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
-            self.dropdown_modeSelection.addItem(config.name)
-        self.dropdown_modeSelection.setCurrentText(self.live_configuration.name)
-        self.dropdown_modeSelection.activated.connect(self.select_new_microscope_mode_by_name)
-
-        # Live button
-        self.btn_live = QPushButton("Start Live")
-        self.btn_live.setCheckable(True)
-        gradient_style = """
-            QPushButton {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #D6D6FF, stop:1 #C2C2FF);
-                border-radius: 5px;
-                color: black;
-                border: 1px solid #A0A0A0;
-            }
-            QPushButton:checked {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #FFD6D6, stop:1 #FFC2C2);
-                border: 1px solid #A0A0A0;
-            }
-            QPushButton:hover {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #E0E0FF, stop:1 #D0D0FF);
-            }
-            QPushButton:pressed {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #9090C0, stop:1 #8080B0);
-            }
-        """
-        self.btn_live.setStyleSheet(gradient_style)
-        # self.btn_live.setStyleSheet("font-weight: bold; background-color: #7676F7") #6666D3
-        current_height = self.btn_live.sizeHint().height()
-        self.btn_live.setFixedHeight(int(current_height * 1.5))
-        self.btn_live.clicked.connect(self.toggle_live)
-
-        # Exposure Time
-        self.entry_exposureTime = QDoubleSpinBox()
-        self.entry_exposureTime.setRange(*self.liveController.camera.get_exposure_limits())
-        self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-        self.entry_exposureTime.setSuffix(" ms")
-        self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
-
-        # Analog Gain
-        self.entry_analogGain = QDoubleSpinBox()
-        self.entry_analogGain.setRange(0, 24)
-        self.entry_analogGain.setSingleStep(0.1)
-        self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-        # self.entry_analogGain.setSuffix('x')
-        self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
-
-        # Illumination Intensity
-        self.slider_illuminationIntensity = CappedSlider(Qt.Horizontal)
-        self.slider_illuminationIntensity.setRange(0, 100)
-        self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
-        self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
-        self.slider_illuminationIntensity.setTickInterval(10)
-        self.slider_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
-        self.label_illuminationIntensity = QLabel(str(self.slider_illuminationIntensity.value()) + "%")
-        self.slider_illuminationIntensity.valueChanged.connect(
-            lambda v: self.label_illuminationIntensity.setText(str(v) + "%")
-        )
-
-        # Trigger mode
-        self.dropdown_triggerMode = QComboBox()
-        trigger_modes = [
-            ("Software", TriggerMode.SOFTWARE),
-            ("Hardware", TriggerMode.HARDWARE),
-            ("Continuous", TriggerMode.CONTINUOUS),
-        ]
-        for display_name, mode in trigger_modes:
-            self.dropdown_triggerMode.addItem(display_name, mode)
-        self.dropdown_triggerMode.currentIndexChanged.connect(self.on_trigger_mode_changed)
-
-        # Trigger FPS
-        self.entry_triggerFPS = QDoubleSpinBox()
-        self.entry_triggerFPS.setRange(0.02, 1000)
-        self.entry_triggerFPS.setValue(self.fps_trigger)
-        # self.entry_triggerFPS.setSuffix(" fps")
-        self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-
-        # Display FPS
-        self.entry_displayFPS = QDoubleSpinBox()
-        self.entry_displayFPS.setRange(1, 240)
-        self.entry_displayFPS.setValue(self.fps_display)
-        # self.entry_displayFPS.setSuffix(" fps")
-        self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
-
-        # Resolution Scaling
-        self.slider_resolutionScaling = QSlider(Qt.Horizontal)
-        self.slider_resolutionScaling.setRange(10, 100)
-        self.slider_resolutionScaling.setValue(100)
-        self.slider_resolutionScaling.setTickPosition(QSlider.TicksBelow)
-        self.slider_resolutionScaling.setTickInterval(10)
-        self.slider_resolutionScaling.valueChanged.connect(self.update_resolution_scaling)
-        self.label_resolutionScaling = QLabel(str(self.slider_resolutionScaling.value()) + "%")
-        self.slider_resolutionScaling.valueChanged.connect(lambda v: self.label_resolutionScaling.setText(str(v) + "%"))
-
-        # Autolevel
-        self.btn_autolevel = QPushButton("Autolevel")
-        self.btn_autolevel.setCheckable(True)
-        self.btn_autolevel.setChecked(autolevel)
-        self.btn_autolevel.clicked.connect(self.signal_autoLevelSetting.emit)
-
-        def make_row(label_widget, entry_widget, value_label=None):
-            row = QHBoxLayout()
-            row.addWidget(label_widget)
-            row.addWidget(entry_widget)
-            if value_label:
-                row.addWidget(value_label)
-            return row
-
-        control_layout = QVBoxLayout()
-
-        # Add widgets to layout
-        control_layout.addWidget(self.dropdown_modeSelection)
-        control_layout.addWidget(self.btn_live)
-        control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        row1 = make_row(QLabel("Exposure Time"), self.entry_exposureTime)
-        control_layout.addLayout(row1)
-
-        row2 = make_row(QLabel("Illumination"), self.slider_illuminationIntensity, self.label_illuminationIntensity)
-        control_layout.addLayout(row2)
-
-        row3 = make_row((QLabel("Analog Gain")), self.entry_analogGain)
-        control_layout.addLayout(row3)
-        control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        if show_trigger_options:
-            row0 = make_row(QLabel("Trigger Mode"), self.dropdown_triggerMode)
-            control_layout.addLayout(row0)
-            row00 = make_row(QLabel("Trigger FPS"), self.entry_triggerFPS)
-            control_layout.addLayout(row00)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        if show_display_options:
-            row4 = make_row((QLabel("Display FPS")), self.entry_displayFPS)
-            control_layout.addLayout(row4)
-            row5 = make_row(QLabel("Display Resolution"), self.slider_resolutionScaling, self.label_resolutionScaling)
-            control_layout.addLayout(row5)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        if show_autolevel:
-            control_layout.addWidget(self.btn_autolevel)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        control_layout.addStretch(1)
-
-        add_live_controls = False
-        if USE_NAPARI_FOR_LIVE_CONTROL or add_live_controls:
-            live_controls_widget = QWidget()
-            live_controls_widget.setLayout(control_layout)
-            # layer_list_widget.setFixedWidth(270)
-
-            layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
-            layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
-
-            self.viewer.window._qt_viewer.layerButtons.hide()
-            self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
-            self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
-
-            # Add the actual dock widgets
-            self.dock_layer_controls = self.viewer.window.add_dock_widget(
-                layer_controls_widget, area="left", name="layer controls", tabify=True
-            )
-            self.dock_layer_list = self.viewer.window.add_dock_widget(
-                layer_list_widget, area="left", name="layer list", tabify=True
-            )
-            self.dock_live_controls = self.viewer.window.add_dock_widget(
-                live_controls_widget, area="left", name="live controls", tabify=True
-            )
-
-            self.viewer.window.window_menu.addAction(self.dock_live_controls.toggleViewAction())
-
-        if USE_NAPARI_WELL_SELECTION:
-            well_selector_layout = QVBoxLayout()
-            # title_label = QLabel("Well Selector")
-            # title_label.setAlignment(Qt.AlignCenter)  # Center the title
-            # title_label.setStyleSheet("font-weight: bold;")  # Optional: style the title
-            # well_selector_layout.addWidget(title_label)
-
-            well_selector_row = QHBoxLayout()
-            well_selector_row.addStretch(1)
-            well_selector_row.addWidget(self.wellSelectionWidget)
-            well_selector_row.addStretch(1)
-            well_selector_layout.addLayout(well_selector_row)
-            well_selector_layout.addStretch()
-
-            well_selector_dock_widget = QWidget()
-            well_selector_dock_widget.setLayout(well_selector_layout)
-            self.dock_well_selector = self.viewer.window.add_dock_widget(
-                well_selector_dock_widget, area="bottom", name="well selector"
-            )
-            self.dock_well_selector.setFixedHeight(self.dock_well_selector.minimumSizeHint().height())
-
-        layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
-        layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
-
-        self.viewer.window._qt_viewer.layerButtons.hide()
-        self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
-        self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
-        self.print_window_menu_items()
-
-    def print_window_menu_items(self):
-        print("Items in window_menu:")
-        for action in self.viewer.window.window_menu.actions():
-            print(action.text())
-
-    def on_histogram_region_changed(self):
-        if self.live_configuration.name:
-            min_val, max_val = self.histogram_widget.region.getRegion()
-            self.updateContrastLimits(self.live_configuration.name, min_val, max_val)
-
-    def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
-
-    def toggle_live_controls(self, show):
-        if show:
-            self.dock_live_controls.show()
-        else:
-            self.dock_live_controls.hide()
-
-    def toggle_well_selector(self, show):
-        if show:
-            self.dock_well_selector.show()
-        else:
-            self.dock_well_selector.hide()
-
-    def replace_well_selector(self, wellSelector):
-        self.viewer.window.remove_dock_widget(self.dock_well_selector)
-        self.wellSelectionWidget = wellSelector
-        well_selector_layout = QHBoxLayout()
-        well_selector_layout.addStretch(1)  # Add stretch on the left
-        well_selector_layout.addWidget(self.wellSelectionWidget)
-        well_selector_layout.addStretch(1)  # Add stretch on the right
-        well_selector_dock_widget = QWidget()
-        well_selector_dock_widget.setLayout(well_selector_layout)
-        self.dock_well_selector = self.viewer.window.add_dock_widget(
-            well_selector_dock_widget, area="bottom", name="well selector", tabify=True
-        )
-
-    def select_new_microscope_mode_by_name(self, config_index):
-        config_name = self.dropdown_modeSelection.itemText(config_index)
-        maybe_new_config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, config_name)
-
-        if not maybe_new_config:
-            self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
-            return
-
-        self.liveController.set_microscope_mode(maybe_new_config)
-        self.update_ui_for_mode(maybe_new_config)
-
-    def update_ui_for_mode(self, config):
-        try:
-            self.is_switching_mode = True
-            self.live_configuration = config
-            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
-            if self.live_configuration:
-                self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-                self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-                # Cap the intensity slider at the illumination channel's max output
-                self.slider_illuminationIntensity.set_cap(
-                    self.liveController.get_intensity_cap_percent(self.live_configuration)
-                )
-                self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
-        finally:
-            self.is_switching_mode = False
-
-    def update_config_exposure_time(self, new_value):
-        if self.is_switching_mode:
-            return
-        self.live_configuration.exposure_time = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.live_configuration.name,
-            "ExposureTime",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        self.signal_newExposureTime.emit(new_value)
-
-    def update_config_analog_gain(self, new_value):
-        if self.is_switching_mode:
-            return
-        self.live_configuration.analog_gain = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.live_configuration.name,
-            "AnalogGain",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        self.signal_newAnalogGain.emit(new_value)
-
-    def update_config_illumination_intensity(self, new_value):
-        if self.is_switching_mode:
-            return
-        self.live_configuration.illumination_intensity = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.live_configuration.name,
-            "IlluminationIntensity",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        self.liveController.update_illumination()
-
-    def update_resolution_scaling(self, value):
-        self.streamHandler.set_display_resolution_scaling(value)
-        self.liveController.set_display_resolution_scaling(value)
-
-    def refresh_mode_list(self):
-        """Refresh the mode selection dropdown (only show enabled channels)"""
-        self.dropdown_modeSelection.blockSignals(True)
-        self.dropdown_modeSelection.clear()
-        first_config = None
-        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
-            if not first_config:
-                first_config = config
-            self.dropdown_modeSelection.addItem(config.name)
-        self.dropdown_modeSelection.blockSignals(False)
-
-        if self.dropdown_modeSelection.count() > 0 and first_config:
-            self.update_ui_for_mode(first_config)
-            self.liveController.set_microscope_mode(first_config)
-
-    def on_trigger_mode_changed(self, index):
-        # Get the actual value using user data
-        actual_value = self.dropdown_triggerMode.itemData(index)
-        print(f"Selected: {self.dropdown_triggerMode.currentText()} (actual value: {actual_value})")
-
-    def addNapariGrayclipColormap(self):
-        if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, "grayclip"):
-            return
-        grayclip = []
-        for i in range(255):
-            grayclip.append([i / 255, i / 255, i / 255])
-        grayclip.append([1, 0, 0])
-        napari.utils.colormaps.AVAILABLE_COLORMAPS["grayclip"] = napari.utils.Colormap(name="grayclip", colors=grayclip)
-
-    def initLiveLayer(self, channel, image_height, image_width, image_dtype, rgb=False):
-        """Initializes the full canvas for each channel based on the acquisition parameters."""
-        self.viewer.layers.clear()
-        self.image_width = image_width
-        self.image_height = image_height
-        if self.dtype != np.dtype(image_dtype):
-
-            self.contrastManager.scale_contrast_limits(
-                np.dtype(image_dtype)
-            )  # Fix This to scale existing contrast limits to new dtype range
-            self.dtype = image_dtype
-
-        self.channels.add(channel)
-        self.live_configuration.name = channel
-
-        if rgb:
-            canvas = np.zeros((image_height, image_width, 3), dtype=self.dtype)
-        else:
-            canvas = np.zeros((image_height, image_width), dtype=self.dtype)
-        limits = self.getContrastLimits(self.dtype)
-        layer = self.viewer.add_image(
-            canvas,
-            name="Live View",
-            visible=True,
-            rgb=rgb,
-            colormap="grayclip",
-            contrast_limits=limits,
-            blending="additive",
-        )
-        layer.contrast_limits = self.contrastManager.get_limits(self.live_configuration.name, self.dtype)
-        layer.mouse_double_click_callbacks.append(self.onDoubleClick)
-        layer.events.contrast_limits.connect(self.signalContrastLimits)
-        self.updateHistogram(layer)
-
-        if not self.init_scale:
-            self.resetView()
-            self.previous_scale = self.viewer.camera.zoom
-            self.previous_center = self.viewer.camera.center
-        else:
-            self.viewer.camera.zoom = self.previous_scale
-            self.viewer.camera.center = self.previous_center
-
-    def updateLiveLayer(self, image, from_autofocus=False):
-        """Updates the canvas with the new image data."""
-        if self.dtype != np.dtype(image.dtype):
-            self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
-            self.dtype = np.dtype(image.dtype)
-            self.init_live = False
-            self.init_live_rgb = False
-
-        if not self.live_configuration.name:
-            self.live_configuration.name = self.liveController.currentConfiguration.name
-        rgb = len(image.shape) >= 3
-
-        if not rgb and not self.init_live or "Live View" not in self.viewer.layers:
-            self.initLiveLayer(self.live_configuration.name, image.shape[0], image.shape[1], image.dtype, rgb)
-            self.init_live = True
-            self.init_live_rgb = False
-            print("init live")
-        elif rgb and not self.init_live_rgb:
-            self.initLiveLayer(self.live_configuration.name, image.shape[0], image.shape[1], image.dtype, rgb)
-            self.init_live_rgb = True
-            self.init_live = False
-            print("init live rgb")
-
-        layer = self.viewer.layers["Live View"]
-        layer.data = image
-        layer.contrast_limits = self.contrastManager.get_limits(self.live_configuration.name)
-        self.updateHistogram(layer)
-
-        if from_autofocus:
-            # save viewer scale
-            if not self.last_was_autofocus:
-                self.previous_scale = self.viewer.camera.zoom
-                self.previous_center = self.viewer.camera.center
-            # resize to cropped view
-            self.resetView()
-            self.last_was_autofocus = True
-        else:
-            if not self.init_scale:
-                # init viewer scale
-                self.resetView()
-                self.previous_scale = self.viewer.camera.zoom
-                self.previous_center = self.viewer.camera.center
-                self.init_scale = True
-            elif self.last_was_autofocus:
-                # return to to original view
-                self.viewer.camera.zoom = self.previous_scale
-                self.viewer.camera.center = self.previous_center
-            # save viewer scale
-            self.previous_scale = self.viewer.camera.zoom
-            self.previous_center = self.viewer.camera.center
-            self.last_was_autofocus = False
-        layer.refresh()
-
-    def onDoubleClick(self, layer, event):
-        """Handle double-click events and emit centered coordinates if within the data range."""
-        coords = layer.world_to_data(event.position)
-        layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
-
-        if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
-            x_centered = int(coords[-1] - layer_shape[-1] / 2)
-            y_centered = int(coords[-2] - layer_shape[-2] / 2)
-            # Emit the centered coordinates and dimensions of the layer's data array
-            self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
-
-    def set_live_configuration(self, live_configuration):
-        self.live_configuration = live_configuration
-
-    def updateContrastLimits(self, channel, min_val, max_val):
-        self.contrastManager.update_limits(channel, min_val, max_val)
-        if "Live View" in self.viewer.layers:
-            self.viewer.layers["Live View"].contrast_limits = (min_val, max_val)
-
-    def signalContrastLimits(self, event):
-        layer = event.source
-        min_val, max_val = map(float, layer.contrast_limits)
-        self.contrastManager.update_limits(self.live_configuration.name, min_val, max_val)
-
-    def getContrastLimits(self, dtype):
-        return self.contrastManager.get_default_limits()
-
-    def resetView(self):
-        self.viewer.reset_view()
-
-    def activate(self):
-        print("ACTIVATING NAPARI LIVE WIDGET")
-        self.viewer.window.activate()
+        self._reference_image = ref_image
+        self._display.show_alignment_reference(ref_image)
+
+    def _hide_reference(self):
+        self._reference_image = None
+        self._display.hide_alignment_reference()
 
 
 class NapariMultiChannelWidget(QWidget):
@@ -11405,7 +10771,7 @@ class NapariMultiChannelWidget(QWidget):
         else:
             self.viewer.layers.clear()
             self.acquisition_initialized = True
-            if self.dtype != np.dtype(image_dtype) and not USE_NAPARI_FOR_LIVE_VIEW:
+            if self.dtype != np.dtype(image_dtype):
                 self.contrastManager.scale_contrast_limits(image_dtype)
 
         self.image_width = image_width
@@ -12663,17 +12029,12 @@ class WellplateCalibration(QDialog):
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
 
     def viewerClicked(self, x, y, width, height):
-        pixel_size_um = (
-            self.navigationViewer.objectiveStore.get_pixel_size_factor()
-            * self.liveController.microscope.camera.get_pixel_size_binned_um()
-        )
+        pixel_size_um = self.liveController.microscope.get_image_pixel_size_um()
+        if pixel_size_um is None:
+            self._log.warning("Calibration click: pixel size unavailable, ignoring click")
+            return
 
-        pixel_sign_x = 1
-        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-
-        delta_x = pixel_sign_x * pixel_size_um * x / 1000.0
-        delta_y = pixel_sign_y * pixel_size_um * y / 1000.0
-
+        delta_x, delta_y = utils.image_delta_to_stage_delta_mm(x, y, pixel_size_um)
         self.stage.move_x(delta_x)
         self.stage.move_y(delta_y)
 

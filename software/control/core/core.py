@@ -843,6 +843,17 @@ class TrackingWorker(QObject):
         self.finished.emit()
 
 
+MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+# Mask overlay: 0 = see-through, 1 = red
+OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
+
+
+def _overexposure_mask(image: np.ndarray, upper_level: float) -> np.ndarray:
+    """1 where any channel is at or above the upper contrast limit, else 0."""
+    intensity = image if image.ndim == 2 else image.max(axis=2)
+    return (intensity >= upper_level).view(np.uint8)
+
+
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
@@ -884,6 +895,14 @@ class ImageDisplayWindow(QMainWindow):
         self.preview_line = None
         self.start_point_marker = None
 
+        # Last frame as received (before any on-screen marking), for registration
+        self._current_image: Optional[np.ndarray] = None
+
+        # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
+        self.alignment_reference_item: Optional[pg.ImageItem] = None
+        self.overexposure_item: Optional[pg.ImageItem] = None
+        self._overexposure_source = None  # (frame id, levels) the current mask was computed from
+
         # Create main layout
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -912,6 +931,11 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
+        self.btn_overexposure = QPushButton("Over-exposed Pixels")
+        self.btn_overexposure.setCheckable(True)
+        self.btn_overexposure.setToolTip("Highlight pixels at or above the upper contrast limit in red")
+        self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
+
         # Add well selector toggle button
         self.btn_well_selector = QPushButton("Show Well Selector")
         self.btn_well_selector.setCheckable(False)
@@ -926,6 +950,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
+        status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_overexposure)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
 
@@ -963,6 +989,7 @@ class ImageDisplayWindow(QMainWindow):
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
+            self.LUTWidget.item.sigLevelsChanged.connect(self._update_overlays)
         else:
             self.graphics_widget.img = pg.ImageItem(border="w")
             self.graphics_widget.view.addItem(self.graphics_widget.img)
@@ -1087,6 +1114,58 @@ class ImageDisplayWindow(QMainWindow):
         # Stop the timer when the window is closed
         self.update_timer.stop()
         super().closeEvent(event)
+
+    def set_overexposure_indicator(self, enabled: bool):
+        """Overlay pixels at or above the upper contrast limit in red."""
+        if enabled and self.overexposure_item is None:
+            self.overexposure_item = self._add_overlay_item(OVEREXPOSURE_LUT)
+            self._update_overlays()
+        elif not enabled and self.overexposure_item is not None:
+            self._active_view().removeItem(self.overexposure_item)
+            self.overexposure_item = None
+            self._overexposure_source = None
+
+    def current_image(self) -> Optional[np.ndarray]:
+        """The most recently received frame, unmodified (None before the first one)."""
+        return self._current_image
+
+    def show_alignment_reference(self, image: np.ndarray):
+        """Overlay a reference image in additive magenta so misalignment with the live view shows as color fringes."""
+        if self.alignment_reference_item is None:
+            self.alignment_reference_item = self._add_overlay_item(
+                MAGENTA_COLORMAP.getLookupTable(nPts=256), QPainter.CompositionMode_Plus
+            )
+        # lookup tables do not apply to H x W x 3 data
+        self.alignment_reference_item.setImage(utils.to_grayscale(image), autoLevels=False)
+        self._update_overlays()
+
+    def hide_alignment_reference(self):
+        if self.alignment_reference_item is not None:
+            self._active_view().removeItem(self.alignment_reference_item)
+            self.alignment_reference_item = None
+
+    def _add_overlay_item(self, lut: np.ndarray, composition_mode=None) -> pg.ImageItem:
+        item = pg.ImageItem()
+        item.setLookupTable(lut)
+        if composition_mode is not None:
+            item.setCompositionMode(composition_mode)
+        self._active_view().addItem(item)
+        return item
+
+    def _update_overlays(self, *_):
+        """Keep the overlays in step with the live image and its contrast range."""
+        levels = self.graphics_widget.img.getLevels()
+        if levels is None:
+            return
+        reference = self.alignment_reference_item
+        if reference is not None and not np.array_equal(reference.getLevels(), levels):
+            reference.setLevels(levels)
+        if self.overexposure_item is not None and self._current_image is not None:
+            source = (id(self._current_image), tuple(levels))
+            if source != self._overexposure_source:
+                self._overexposure_source = source
+                mask = _overexposure_mask(self._current_image, levels[1])
+                self.overexposure_item.setImage(mask, autoLevels=False, levels=(0, 1))
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
@@ -1399,6 +1478,7 @@ class ImageDisplayWindow(QMainWindow):
         if self.first_image:
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
+        self._current_image = image
 
         if ENABLE_TRACKING:
             image = np.copy(image)
@@ -1428,6 +1508,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
+        self._update_overlays()
 
         # Update pixel value based on last valid position
         if self.has_valid_position:
@@ -1598,7 +1679,13 @@ class NavigationViewer(QFrame):
         """Set the alignment widget to be displayed in the navigation viewer."""
         self.alignment_widget = alignment_widget
         self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.installEventFilter(self)  # it grows/shrinks as its Auto button toggles
         self.alignment_widget.adjustSize()
+
+    def eventFilter(self, obj, event):
+        if obj is self.alignment_widget and event.type() == QEvent.Resize:
+            self._position_button()
+        return super().eventFilter(obj, event)
         self._position_button()
 
     def resizeEvent(self, event):
