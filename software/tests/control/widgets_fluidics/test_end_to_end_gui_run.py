@@ -153,6 +153,7 @@ def test_three_round_gui_run_with_abort_and_restart(qtbot, qt_controller, tmp_pa
 
         qtbot.waitUntil(lambda: runner.outcome is not None, timeout=180000)
         assert runner.outcome == "finished", runner.snapshot()
+        assert runner.wait(10)  # join the runner thread so the final manifest write has landed
 
         man = manifest_io.read_manifest(run_dir)
         assert man.status == "finished"
