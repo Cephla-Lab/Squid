@@ -27,6 +27,8 @@ void init_callbacks()
     cmd_map[TURN_OFF_ILLUMINATION] = &callback_turn_off_illumination;
     cmd_map[SET_ILLUMINATION] = &callback_set_illumination;
     cmd_map[SET_ILLUMINATION_LED_MATRIX] = &callback_set_illumination_led_matrix;
+    cmd_map[SET_ILLUMINATION_LED_MATRIX_PIXEL] = &callback_set_illumination_led_matrix_pixel;
+    cmd_map[CLEAR_ILLUMINATION_LED_MATRIX] = &callback_clear_illumination_led_matrix;
     // Multi-port illumination commands (firmware v1.0+)
     cmd_map[SET_PORT_INTENSITY] = &callback_set_port_intensity;
     cmd_map[TURN_ON_PORT] = &callback_turn_on_port;
