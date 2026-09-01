@@ -670,7 +670,7 @@ class HighContentScreeningGui(QMainWindow):
         self.is_live_scan_grid_on = False
         self.live_scan_grid_was_on = None
         self.performance_mode = False
-        self.napari_connections = {}
+        self.napari_connections = []
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
         self.multipointController: QtMultiPointController = None
@@ -1296,14 +1296,16 @@ class HighContentScreeningGui(QMainWindow):
             return
 
         dx_px, dy_px = control.utils.measure_translation_px(
-            reference_image, live_image, live_crop_fraction=self.streamHandler.display_resolution_scaling
+            reference_image, live_image, live_crop_fraction=self.liveController.display_resolution_scaling
         )
-        dx_mm, dy_mm = control.utils.image_delta_to_stage_delta_mm(dx_px, dy_px, pixel_size_um)
-        self.log.info(
-            f"Auto align: displacement ({dx_px:.1f}, {dy_px:.1f}) px -> stage move ({dx_mm:.4f}, {dy_mm:.4f}) mm"
-        )
-        self.stage.move_x(dx_mm, blocking=False)
-        self.stage.move_y(dy_mm, blocking=True)
+        self.log.info(f"Auto align: live view displaced by ({dx_px:.1f}, {dy_px:.1f}) px")
+        self._move_stage_by_image_delta(dx_px, dy_px, pixel_size_um)
+
+    def _move_stage_by_image_delta(self, delta_x_px: float, delta_y_px: float, pixel_size_um: float):
+        """Shift the displayed image content by (-delta_x_px, -delta_y_px)."""
+        delta_x_mm, delta_y_mm = control.utils.image_delta_to_stage_delta_mm(delta_x_px, delta_y_px, pixel_size_um)
+        self.stage.move_x(delta_x_mm, blocking=False)
+        self.stage.move_y(delta_y_mm, blocking=True)
 
     def setupCameraTabWidget(self):
         self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
@@ -1665,111 +1667,80 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer.start()
 
     def makeNapariConnections(self):
-        """Initialize all Napari connections in one place"""
-        self.napari_connections = {
-            "napariMultiChannelWidget": [],
-            "unifiedMosaicWidget": [],
-        }
-        # Live display connections are wired in make_connections() — wiring them here
-        # again would double every click/scroll signal.
+        """Collect the (signal, slot[, connection_type]) pairs that feed the napari display widgets."""
+        self.napari_connections = []
 
         if not self.live_only_mode:
-            # Setup multichannel widget connections
-            self.napari_connections["napariMultiChannelWidget"] = [
+            self.napari_connections += [
                 (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
                 (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
             ]
 
             if ENABLE_FLEXIBLE_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"].extend(
-                    [
-                        (
-                            self.flexibleMultiPointWidget.signal_acquisition_channels,
-                            self.napariMultiChannelWidget.initChannels,
-                        ),
-                        (
-                            self.flexibleMultiPointWidget.signal_acquisition_shape,
-                            self.napariMultiChannelWidget.initLayersShape,
-                        ),
-                    ]
-                )
+                self.napari_connections += [
+                    (
+                        self.flexibleMultiPointWidget.signal_acquisition_channels,
+                        self.napariMultiChannelWidget.initChannels,
+                    ),
+                    (
+                        self.flexibleMultiPointWidget.signal_acquisition_shape,
+                        self.napariMultiChannelWidget.initLayersShape,
+                    ),
+                ]
 
             if ENABLE_WELLPLATE_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"].extend(
-                    [
-                        (
-                            self.wellplateMultiPointWidget.signal_acquisition_channels,
-                            self.napariMultiChannelWidget.initChannels,
-                        ),
-                        (
-                            self.wellplateMultiPointWidget.signal_acquisition_shape,
-                            self.napariMultiChannelWidget.initLayersShape,
-                        ),
-                    ]
-                )
+                self.napari_connections += [
+                    (
+                        self.wellplateMultiPointWidget.signal_acquisition_channels,
+                        self.napariMultiChannelWidget.initChannels,
+                    ),
+                    (
+                        self.wellplateMultiPointWidget.signal_acquisition_shape,
+                        self.napariMultiChannelWidget.initLayersShape,
+                    ),
+                ]
 
             # Unified mosaic/plate view connections.
             # plate_view_init uses Qt.QueuedConnection because it can be emitted from
             # the acquisition worker thread; the slot needs to run on the main thread.
             if self.unifiedMosaicWidget is not None:
-                self.napari_connections["unifiedMosaicWidget"] = [
+                self.napari_connections += [
                     (self.multipointController.mosaic_tile_update, self.unifiedMosaicWidget.updateTile),
                     (self.unifiedMosaicWidget.signal_coordinates_clicked, self.move_from_click_mm),
                     (self.unifiedMosaicWidget.signal_clear_viewer, self.navigationViewer.clear_slide),
-                ]
-                self.napari_connections["unifiedMosaicWidget"].append(
                     (
                         self.multipointController.plate_view_init,
                         self.unifiedMosaicWidget.setPlateLayout,
                         Qt.QueuedConnection,
-                    )
-                )
+                    ),
+                ]
 
                 # ROI shape drawing in mosaic mode (wellplate flow only).
                 if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections["unifiedMosaicWidget"].extend(
-                        [
-                            (
-                                self.wellplateMultiPointWidget.signal_manual_shape_mode,
-                                self.unifiedMosaicWidget.enable_shape_drawing,
-                            ),
-                            (
-                                self.unifiedMosaicWidget.signal_shape_drawn,
-                                self.wellplateMultiPointWidget.update_manual_shape,
-                            ),
-                        ]
-                    )
+                    self.napari_connections += [
+                        (
+                            self.wellplateMultiPointWidget.signal_manual_shape_mode,
+                            self.unifiedMosaicWidget.enable_shape_drawing,
+                        ),
+                        (
+                            self.unifiedMosaicWidget.signal_shape_drawn,
+                            self.wellplateMultiPointWidget.update_manual_shape,
+                        ),
+                    ]
 
             # Make initial connections
             self.updateNapariConnections()
 
     def updateNapariConnections(self):
-        # Update Napari connections based on performance mode.
-        # Connection tuples can be:
-        #   (signal, slot) - uses default Qt.AutoConnection
-        #   (signal, slot, connection_type) - uses specified connection type (e.g., Qt.QueuedConnection)
-        for widget_name, connections in self.napari_connections.items():
-            widget = getattr(self, widget_name, None)
-            if widget:
-                for conn in connections:
-                    signal = conn[0]
-                    slot = conn[1]
-                    connection_type = conn[2] if len(conn) > 2 else None
-                    if self.performance_mode:
-                        try:
-                            signal.disconnect(slot)
-                        except TypeError:
-                            # Connection might not exist, which is fine
-                            pass
-                    else:
-                        try:
-                            if connection_type is not None:
-                                signal.connect(slot, connection_type)
-                            else:
-                                signal.connect(slot)
-                        except TypeError:
-                            # Connection might already exist, which is fine
-                            pass
+        """Performance mode disconnects the napari display widgets; leaving it reconnects them."""
+        for signal, slot, *connection_type in self.napari_connections:
+            try:
+                if self.performance_mode:
+                    signal.disconnect(slot)
+                else:
+                    signal.connect(slot, *connection_type)
+            except TypeError:
+                pass  # not connected / already connected
 
     def toggleNapariTabs(self):
         # Enable/disable Napari tabs based on performance mode
@@ -2581,9 +2552,7 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("Click to move: pixel size unavailable, ignoring click")
             return
 
-        delta_x_mm, delta_y_mm = control.utils.image_delta_to_stage_delta_mm(click_x, click_y, pixel_size_um)
-        self.stage.move_x(delta_x_mm, blocking=False)
-        self.stage.move_y(delta_y_mm, blocking=True)
+        self._move_stage_by_image_delta(click_x, click_y, pixel_size_um)
 
     def move_z_from_scroll(self, delta_um: float):
         if not self.navigationWidget.get_click_to_move_enabled():

@@ -10520,13 +10520,7 @@ class AlignmentWidget(QWidget):
 
     def _handle_clear_click(self):
         """Handle click in CLEAR state - clear offset."""
-        self._offset_x_mm = 0.0
-        self._offset_y_mm = 0.0
-        self._has_offset = False
-        self._reference_fov_position = None
-        self._current_folder = None
-        self._set_state(self.STATE_ALIGN)
-
+        self.reset()
         self.signal_offset_cleared.emit()
         self._log.info("Alignment offset cleared")
 
@@ -10676,7 +10670,6 @@ class AlignmentWidget(QWidget):
             if ref_image is None:
                 raise ValueError(f"Failed to read image: {image_path}")
 
-        ref_image = utils.to_grayscale(ref_image)
         self._reference_image = ref_image
         self._display.show_alignment_reference(ref_image)
 
@@ -12035,17 +12028,12 @@ class WellplateCalibration(QDialog):
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
 
     def viewerClicked(self, x, y, width, height):
-        pixel_size_um = (
-            self.navigationViewer.objectiveStore.get_pixel_size_factor()
-            * self.liveController.microscope.camera.get_pixel_size_binned_um()
-        )
+        pixel_size_um = self.liveController.microscope.get_image_pixel_size_um()
+        if pixel_size_um is None:
+            self._log.warning("Calibration click: pixel size unavailable, ignoring click")
+            return
 
-        pixel_sign_x = 1
-        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-
-        delta_x = pixel_sign_x * pixel_size_um * x / 1000.0
-        delta_y = pixel_sign_y * pixel_size_um * y / 1000.0
-
+        delta_x, delta_y = utils.image_delta_to_stage_delta_mm(x, y, pixel_size_um)
         self.stage.move_x(delta_x)
         self.stage.move_y(delta_y)
 

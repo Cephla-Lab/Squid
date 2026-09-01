@@ -843,10 +843,15 @@ class TrackingWorker(QObject):
         self.finished.emit()
 
 
-# Gray ramp whose top entry is red, so pixels at or above the upper contrast limit stand out
-# as overexposed (the same mapping as napari's "grayclip" colormap: 255 gray levels + red).
-GRAYCLIP_COLORMAP = pg.ColorMap(pos=[0.0, 254 / 255, 1.0], color=[(0, 0, 0), (255, 255, 255), (255, 0, 0)])
 MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+# Mask overlay: 0 = see-through, 1 = red
+OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
+
+
+def _overexposure_mask(image: np.ndarray, upper_level: float) -> np.ndarray:
+    """1 where any channel is at or above the upper contrast limit, else 0."""
+    intensity = image if image.ndim == 2 else image.max(axis=2)
+    return (intensity >= upper_level).view(np.uint8)
 
 
 class ImageDisplayWindow(QMainWindow):
@@ -893,8 +898,10 @@ class ImageDisplayWindow(QMainWindow):
         # Last frame as received (before any on-screen marking), for registration
         self._current_image: Optional[np.ndarray] = None
 
-        # Reference image overlaid on the live view during alignment
+        # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
         self.alignment_reference_item: Optional[pg.ImageItem] = None
+        self.overexposure_item: Optional[pg.ImageItem] = None
+        self._overexposure_source = None  # (frame id, levels) the current mask was computed from
 
         # Create main layout
         layout = QVBoxLayout()
@@ -982,7 +989,7 @@ class ImageDisplayWindow(QMainWindow):
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
-            self.LUTWidget.item.sigLevelsChanged.connect(self._sync_alignment_reference_levels)
+            self.LUTWidget.item.sigLevelsChanged.connect(self._update_overlays)
         else:
             self.graphics_widget.img = pg.ImageItem(border="w")
             self.graphics_widget.view.addItem(self.graphics_widget.img)
@@ -1109,17 +1116,14 @@ class ImageDisplayWindow(QMainWindow):
         super().closeEvent(event)
 
     def set_overexposure_indicator(self, enabled: bool):
-        """Render pixels at or above the upper contrast limit in red."""
-        if self.show_LUT:
-            # The histogram widget owns the live LUT and regenerates it from its gradient on
-            # every contrast change, so the indicator has to live in the gradient itself.
-            gradient = self.LUTWidget.item.gradient
-            if enabled:
-                gradient.setColorMap(GRAYCLIP_COLORMAP)
-            else:
-                gradient.loadPreset("grey")
-        else:
-            self.graphics_widget.img.setLookupTable(GRAYCLIP_COLORMAP.getLookupTable(nPts=256) if enabled else None)
+        """Overlay pixels at or above the upper contrast limit in red."""
+        if enabled and self.overexposure_item is None:
+            self.overexposure_item = self._add_overlay_item(OVEREXPOSURE_LUT)
+            self._update_overlays()
+        elif not enabled and self.overexposure_item is not None:
+            self._active_view().removeItem(self.overexposure_item)
+            self.overexposure_item = None
+            self._overexposure_source = None
 
     def current_image(self) -> Optional[np.ndarray]:
         """The most recently received frame, unmodified (None before the first one)."""
@@ -1128,24 +1132,40 @@ class ImageDisplayWindow(QMainWindow):
     def show_alignment_reference(self, image: np.ndarray):
         """Overlay a reference image in additive magenta so misalignment with the live view shows as color fringes."""
         if self.alignment_reference_item is None:
-            item = pg.ImageItem()
-            item.setLookupTable(MAGENTA_COLORMAP.getLookupTable(nPts=256))
-            item.setCompositionMode(QPainter.CompositionMode_Plus)
-            self._active_view().addItem(item)
-            self.alignment_reference_item = item
-        self.alignment_reference_item.setImage(image, autoLevels=False)
-        self._sync_alignment_reference_levels()
+            self.alignment_reference_item = self._add_overlay_item(
+                MAGENTA_COLORMAP.getLookupTable(nPts=256), QPainter.CompositionMode_Plus
+            )
+        # lookup tables do not apply to H x W x 3 data
+        self.alignment_reference_item.setImage(utils.to_grayscale(image), autoLevels=False)
+        self._update_overlays()
 
     def hide_alignment_reference(self):
         if self.alignment_reference_item is not None:
             self._active_view().removeItem(self.alignment_reference_item)
             self.alignment_reference_item = None
 
-    def _sync_alignment_reference_levels(self, *_):
-        """Keep the reference overlay on the same contrast range as the live image."""
+    def _add_overlay_item(self, lut: np.ndarray, composition_mode=None) -> pg.ImageItem:
+        item = pg.ImageItem()
+        item.setLookupTable(lut)
+        if composition_mode is not None:
+            item.setCompositionMode(composition_mode)
+        self._active_view().addItem(item)
+        return item
+
+    def _update_overlays(self, *_):
+        """Keep the overlays in step with the live image and its contrast range."""
         levels = self.graphics_widget.img.getLevels()
-        if self.alignment_reference_item is not None and levels is not None:
-            self.alignment_reference_item.setLevels(levels)
+        if levels is None:
+            return
+        reference = self.alignment_reference_item
+        if reference is not None and not np.array_equal(reference.getLevels(), levels):
+            reference.setLevels(levels)
+        if self.overexposure_item is not None and self._current_image is not None:
+            source = (id(self._current_image), tuple(levels))
+            if source != self._overexposure_source:
+                self._overexposure_source = source
+                mask = _overexposure_mask(self._current_image, levels[1])
+                self.overexposure_item.setImage(mask, autoLevels=False, levels=(0, 1))
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
@@ -1478,11 +1498,6 @@ class ImageDisplayWindow(QMainWindow):
                 self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
             min_val, max_val = self.contrastManager.get_limits(channel_name, image.dtype)
 
-        # Lookup tables do not apply to RGB frames, so mark overexposure in the data instead
-        if self.btn_overexposure.isChecked() and image.ndim == 3:
-            image = image.copy()
-            image[(image >= max_val).any(axis=2)] = (info.max, 0, 0)
-
         self.graphics_widget.img.setImage(image, autoLevels=self.autoLevels, levels=(min_val, max_val))
 
         if not self.autoLevels:
@@ -1493,7 +1508,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
-        self._sync_alignment_reference_levels()
+        self._update_overlays()
 
         # Update pixel value based on last valid position
         if self.has_valid_position:
