@@ -1,8 +1,10 @@
-# Fluidics system configuration (Squid-Fluidics `FluidicsConfig`, the same file the standalone
-# fluidics GUI uses). Copy to machine_configs/fluidics_config.yaml (gitignored) and edit the serial
-# numbers, valves and port names for this instrument. Selected in Squid through FLUIDICS_CONFIG_PATH
-# (the Fluidics tab's Initialize row arrives in phase 2). Optional sections: temperature_controller,
-# flow_sensors.
+"""One simulated-instrument FluidicsConfig for the test suite.
+
+The real file is the operator's own (machine_configs/fluidics_config.yaml, gitignored,
+copied from the instrument's standalone fluidics installation); tests write this YAML
+to a temporary file instead of shipping an example config in the repo."""
+
+CONFIG_YAML = """\
 config_version: '2.0'
 microcontroller:
   serial_number: '15579610'
@@ -116,3 +118,14 @@ flow_sensors:
   tolerance_fraction: 0.3
   max_flow_rate_ul_min: 2000
 application: Flow Cell
+"""
+
+
+def write_test_config(directory) -> str:
+    """Write the test FluidicsConfig into `directory`; returns the file path."""
+    import os
+
+    path = os.path.join(str(directory), "fluidics_config.yaml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(CONFIG_YAML)
+    return path

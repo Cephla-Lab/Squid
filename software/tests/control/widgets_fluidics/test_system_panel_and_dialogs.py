@@ -1,5 +1,4 @@
 import os
-import pathlib
 
 import pytest
 
@@ -7,7 +6,6 @@ from control.models.fluidics_protocol import ProtocolFile
 from control.models.fluidics_run import RunCursor, RunManifest, StepRecord
 from control.widgets_fluidics.dialogs import AddRoundsDialog, PreflightDialog, RecoveryDialog
 
-EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[3] / "machine_configs" / "fluidics_config.yaml.example"
 
 SETTINGS = {"channels": ["A"], "z_stack": {"nz": 1}}
 COORDS = {"regions": [{"name": "A1", "fovs": [[1.0, 2.0, 3.0]]}]}
@@ -38,13 +36,13 @@ def _protocol():
     )
 
 
-def test_system_panel_initializes_the_simulated_service_off_thread(qtbot, tmp_path, monkeypatch):
+def test_system_panel_initializes_the_simulated_service_off_thread(qtbot, tmp_path, monkeypatch, fluidics_config_path):
     pytest.importorskip("fluidics")
     from control.fluidics_system import FluidicsService
     from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
 
     monkeypatch.chdir(tmp_path)  # UI-state cache lands in tmp cwd
-    service = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=True)
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
     monkeypatch.setattr(SystemPanel, "_INITIALIZE_KWARGS", {"instant": True})
     panel = SystemPanel(service)
     qtbot.addWidget(panel)

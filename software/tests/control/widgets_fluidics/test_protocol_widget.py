@@ -1,5 +1,4 @@
 import json
-import pathlib
 import threading
 from types import SimpleNamespace
 
@@ -183,8 +182,9 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
     from control.widgets_fluidics.system_panel import SystemPanel
 
     monkeypatch.chdir(tmp_path)
-    example = pathlib.Path(__file__).resolve().parents[3] / "machine_configs" / "fluidics_config.yaml.example"
-    text = example.read_text() + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
+    from tests.control.fluidics_test_config import CONFIG_YAML
+
+    text = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
     config = tmp_path / "with_tec.yaml"
     config.write_text(text)
     monkeypatch.setattr(SystemPanel, "_INITIALIZE_KWARGS", {"instant": True})

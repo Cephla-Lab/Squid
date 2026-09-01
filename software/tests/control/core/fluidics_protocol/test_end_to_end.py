@@ -1,5 +1,3 @@
-import pathlib
-
 import pytest
 
 pytest.importorskip("fluidics")
@@ -12,8 +10,6 @@ from control.core.fluidics_protocol.runner import ProtocolRunner
 from control.fluidics_system import FluidicsService
 from control.models.fluidics_protocol import ProtocolFile, expand_rounds, load_protocol
 from tests.control.core.fluidics_protocol.fakes import FakeImagingPort
-
-EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[4] / "machine_configs" / "fluidics_config.yaml.example"
 
 
 def _protocol():
@@ -78,8 +74,8 @@ def _protocol():
     return expand_rounds(base, "R01", 2, port_row_name="probe", ports=[2, 3])
 
 
-def test_three_round_protocol_runs_on_the_simulated_fluidics_system(tmp_path):
-    service = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=True)
+def test_three_round_protocol_runs_on_the_simulated_fluidics_system(tmp_path, fluidics_config_path):
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
     service.initialize(report_dir=str(tmp_path / "reports"), instant=True)
     try:
         port = LibraryFluidicsPort(service.system)

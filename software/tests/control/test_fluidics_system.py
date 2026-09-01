@@ -1,5 +1,4 @@
 import logging
-import pathlib
 
 import pytest
 
@@ -7,8 +6,6 @@ pytest.importorskip("fluidics")
 
 import squid.logging
 from control.fluidics_system import FluidicsService, check_library_surface, install_logging_bridge
-
-EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[2] / "machine_configs" / "fluidics_config.yaml.example"
 
 
 class _Capture(logging.Handler):
@@ -31,13 +28,13 @@ def test_uninitialized_service_is_inert():
     assert service.close() == []
 
 
-def test_initialize_builds_a_simulated_system_and_close_releases_it(tmp_path):
-    service = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=True)
+def test_initialize_builds_a_simulated_system_and_close_releases_it(tmp_path, fluidics_config_path):
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
     service.initialize(report_dir=str(tmp_path), instant=True)
     try:
         assert service.initialized
         assert service.config.application == "Flow Cell"
-        assert service.config_path == str(EXAMPLE_CONFIG.resolve())
+        assert service.config_path == fluidics_config_path
         assert service.system.devices.syringe_pump is not None
         assert service.system.busy is False
         with pytest.raises(RuntimeError):
@@ -48,8 +45,8 @@ def test_initialize_builds_a_simulated_system_and_close_releases_it(tmp_path):
     assert service.close() == []  # idempotent
 
 
-def test_instant_is_refused_for_real_hardware():
-    service = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=False)
+def test_instant_is_refused_for_real_hardware(fluidics_config_path):
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=False)
     with pytest.raises(ValueError):
         service.initialize(instant=True)
 

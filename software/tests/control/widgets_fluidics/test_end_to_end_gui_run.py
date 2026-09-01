@@ -6,8 +6,6 @@ acquisition folder produced earlier in the test. Mid-run, R02's acquisition is a
 the HELD step restarted, which must land in an `_attempt2` session folder.
 """
 
-import pathlib
-
 import pytest
 
 pytest.importorskip("fluidics")
@@ -21,8 +19,6 @@ from control.core.fluidics_protocol.runner import HoldAction, ProtocolRunner
 from control.fluidics_system import FluidicsService
 from control.models.fluidics_protocol import CoordinatesBlock, ProtocolFile, SettingsBlock
 from control.widgets_fluidics.qt_imaging_port import QtImagingPort
-
-EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[3] / "machine_configs" / "fluidics_config.yaml.example"
 
 
 def _fovs(scope, count):
@@ -54,7 +50,7 @@ def _image(round_name, source_key):
     }
 
 
-def test_three_round_gui_run_with_abort_and_restart(qtbot, qt_controller, tmp_path):
+def test_three_round_gui_run_with_abort_and_restart(qtbot, qt_controller, tmp_path, fluidics_config_path):
     scope, controller = qt_controller
     port = QtImagingPort(controller, controller.scanCoordinates, scope)
     channel = [m.name for m in controller.liveController.get_channels(scope.objective_store.current_objective)][:1]
@@ -108,7 +104,7 @@ def test_three_round_gui_run_with_abort_and_restart(qtbot, qt_controller, tmp_pa
         ],
     )
 
-    service = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=True)
+    service = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
     service.initialize(report_dir=str(tmp_path / "reports"), instant=True)
     try:
         fluidics_port = LibraryFluidicsPort(service.system)

@@ -1,5 +1,4 @@
 import logging
-import pathlib
 
 import pytest
 
@@ -11,7 +10,6 @@ from control.fluidics_system import FluidicsService
 from control.models.fluidics_run import TecState
 from tests.control.core.fluidics_protocol.fakes import wait_until
 
-EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[4] / "machine_configs" / "fluidics_config.yaml.example"
 ROWS = [
     {"type": "flow_reagent", "fluidic_port": 1, "flow_rate": 500, "volume": 500},
     {"type": "flow_reagent", "fluidic_port": 2, "flow_rate": 500, "volume": 300},
@@ -32,8 +30,8 @@ def _wait_outcome(ticket, tries=500):
 
 
 @pytest.fixture
-def service(tmp_path):
-    svc = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=True)
+def service(tmp_path, fluidics_config_path):
+    svc = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
     svc.initialize(report_dir=str(tmp_path), instant=True)
     yield svc
     assert svc.close() == []
@@ -41,7 +39,9 @@ def service(tmp_path):
 
 @pytest.fixture
 def tec_service(tmp_path):
-    text = EXAMPLE_CONFIG.read_text() + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
+    from tests.control.fluidics_test_config import CONFIG_YAML
+
+    text = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
     config = tmp_path / "with_tec.yaml"
     config.write_text(text)
     svc = FluidicsService(default_config_path=str(config), simulated=True)

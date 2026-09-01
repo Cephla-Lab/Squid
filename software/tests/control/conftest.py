@@ -40,3 +40,11 @@ def firmware_sim_nonstrict():
 def _watchdog_state_to_tmp(tmp_path, monkeypatch):
     # Keep acquisition breadcrumbs out of the real user state dir during tests.
     monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path / "watchdog"))
+
+
+@pytest.fixture(scope="session")
+def fluidics_config_path(tmp_path_factory) -> str:
+    """A simulated-instrument FluidicsConfig written once per session."""
+    from tests.control.fluidics_test_config import write_test_config
+
+    return write_test_config(tmp_path_factory.mktemp("fluidics_config"))
