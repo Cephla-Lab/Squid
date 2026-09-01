@@ -116,6 +116,7 @@ def _rgb_frame_with_saturated_corner():
 
 
 def test_overexposure_indicator_is_off_by_default(image_display_window):
+    assert image_display_window.btn_overexposure.text() == "Over-exposed Pixels"
     assert image_display_window.btn_overexposure.isCheckable()
     assert not image_display_window.btn_overexposure.isChecked()
     assert image_display_window.overexposure_item is None
