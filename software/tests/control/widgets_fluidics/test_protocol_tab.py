@@ -228,3 +228,45 @@ def test_removing_the_selected_row_clears_the_field_editor(tab, qtbot):
     tab._mark_changed()
     qtbot.wait(20)
     assert tab.field_form.rowCount() == 0  # no stale editor addressing a vanished row
+
+
+def test_folder_problems_flag_only_the_offending_rows(tab):
+    # every imaging row is named "image"; only the duplicated pair may go red
+    tab.protocol.sequences.append(
+        {
+            "type": "imaging",
+            "round": "R03",
+            "name": "image",
+            "folder": "R01_image",
+            "settings": "cur",
+            "coordinates": "cur",
+        }
+    )
+    tab._mark_changed()
+    flagged = {i for i, p in tab._problems.items() if "duplicate" in p}
+    dup_rows = {i for i, r in enumerate(tab.protocol.sequences) if r.get("folder") == "R01_image"}
+    assert flagged and flagged <= dup_rows
+    ok_rows = {i for i, r in enumerate(tab.protocol.sequences) if r.get("folder") == "R02_image"}
+    assert not (ok_rows & set(tab._problems))
+
+
+def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
+    import control.widgets_fluidics.protocol_tab as protocol_tab_module
+
+    dir1 = tmp_path / "one"
+    dir2 = tmp_path / "two" / "deeper"
+    dir2.mkdir(parents=True)
+    dir1.mkdir()
+    tab.protocol_path = str(dir1 / "p.yaml")
+    tab.protocol.sequences[3]["coordinates"] = "acq/run1"  # file-backed, relative to dir1
+    target = str(dir2 / "p.yaml")
+    monkeypatch.setattr(protocol_tab_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (target, "")))
+    tab.protocol.sequences[5]["coordinates"] = "../two/deeper/acq2"  # lands under the new directory
+    assert tab.save_as()
+    import os
+
+    # outside the new base: absolute, still the same file (matches the From file… convention)
+    assert tab.protocol.sequences[3]["coordinates"] == str(dir1 / "acq" / "run1")
+    # under the new base: relative to the new protocol file
+    assert tab.protocol.sequences[5]["coordinates"] == "acq2"
+    assert tab.protocol.sequences[3]["settings"] == "cur"  # header keys stay header keys

@@ -110,6 +110,7 @@ def test_start_runs_a_protocol_to_completion(qtbot, widget):
     assert [s.kind for s in manifest.steps] == ["fluidics", "imaging", "fluidics"]
     assert len(imaging.requests) == 1 and imaging.requests[0].folder == "R01_image"
     assert w.protocol_tab.add_step_button.isEnabled()  # unlocked again
+    assert w.running_box.isHidden() and not w.idle_box.isHidden()  # the stale status card leaves
     assert any(label for label in step_labels)  # the sensor recorder gets real step labels...
     assert step_labels[-1] == ""  # ...and a blank when the run ends
 

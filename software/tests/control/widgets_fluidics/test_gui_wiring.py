@@ -80,4 +80,6 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     # Ending the run is irreversible: it must come only after the user consents.
     assert helper_src.index("question") < helper_src.index("end_run_for_exit(15)")
     assert "offer_recovery" not in _source("showEvent")  # deferred to system_ready
-    assert "disconnect_logging" in _source("_cleanup_common")
+    cleanup_src = _source("_cleanup_common")
+    assert "disconnect_logging" in cleanup_src
+    assert "recorder.stop_recording()" in cleanup_src  # an open CSV's tail is flushed on exit

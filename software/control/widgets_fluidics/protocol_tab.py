@@ -40,7 +40,7 @@ from control.models.fluidics_protocol import (
     ProtocolFile,
     SettingsBlock,
     expand_rounds,
-    folder_problems,
+    folder_problems_by_row,
     load_protocol,
     render_folder,
     save_protocol,
@@ -146,9 +146,29 @@ class ProtocolTab(QWidget):
         )
         if not path:
             return False
+        old_base = os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
+        new_base = os.path.dirname(os.path.abspath(path))
+        if old_base and old_base != new_base:
+            self._rebase_file_refs(old_base, new_base)
         self.protocol_path = path
         state.save_ui_state(protocol_path=path)
-        return self.save()
+        saved = self.save()
+        if saved:
+            self._render()  # rebased references repaint
+        return saved
+
+    def _rebase_file_refs(self, old_base: str, new_base: str) -> None:
+        """File-backed settings/coordinates references are relative to the protocol file, so a
+        Save As into another directory must re-point them at the same files."""
+        for _i, row in ((i, r) for i, r in enumerate(self._protocol.sequences) if r.get("type") == IMAGING_TYPE):
+            for field in ("settings", "coordinates"):
+                ref = row.get(field)
+                header = getattr(self._protocol.imaging, field)
+                if not ref or ref in header or os.path.isabs(ref):
+                    continue
+                target = os.path.normpath(os.path.join(old_base, ref))
+                relative = os.path.relpath(target, new_base)
+                row[field] = target if relative.startswith("..") else relative
 
     def new(self) -> None:
         self.set_protocol(ProtocolFile(), None)
@@ -542,9 +562,7 @@ class ProtocolTab(QWidget):
 
     def _validate(self) -> None:
         problems: Dict[int, str] = {}
-        folder_map: Dict[str, str] = {}
-        for message in folder_problems(self._protocol):
-            folder_map.setdefault(message.split(":", 1)[0], message)
+        folder_by_row = folder_problems_by_row(self._protocol)
         application = _application(self.service)
         limit = _port_limit(self.service)
         base = os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
@@ -557,9 +575,8 @@ class ProtocolTab(QWidget):
                     continue
                 if not imaging.include:
                     continue
-                label = imaging.name or f"row {i + 1}"
-                if label in folder_map:
-                    problems[i] = folder_map[label]
+                if i in folder_by_row:
+                    problems[i] = folder_by_row[i]
                     continue
                 for field in ("settings", "coordinates"):
                     ref = getattr(imaging, field)

@@ -498,6 +498,8 @@ class FluidicsProtocolWidget(QFrame):
         self.state_label.setText(f"Run {outcome}")
         self.signal_acquisition_started.emit(False)
         self.signal_run_notification.emit(f"Fluidics protocol run {outcome} ({self.folder_label.text()})")
+        self.running_box.hide()
+        self.held_box.hide()
         self.idle_box.show()
         self._refresh_idle()
 

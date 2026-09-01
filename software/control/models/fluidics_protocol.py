@@ -197,24 +197,30 @@ def render_folder(
     return pattern.format(round=round_label or "", step=step_name or "image", index=index, run=run_name)
 
 
-def folder_problems(protocol: ProtocolFile) -> List[str]:
-    """Every folder rule an imaging row can break: present, filesystem-safe, unique among included rows."""
-    problems: List[str] = []
+def folder_problems_by_row(protocol: ProtocolFile) -> Dict[int, str]:
+    """Every folder rule an imaging row can break, keyed by the offending row's index
+    (imaging rows commonly share a display name, so a name is no key)."""
+    problems: Dict[int, str] = {}
     seen: Dict[str, int] = {}
     for i, row in protocol.imaging_rows():
         if not row.include:
             continue
         label = row.name or f"row {i + 1}"
         if not row.folder:
-            problems.append(f"{label} ({row.round or 'no round'}): no folder name")
+            problems[i] = f"{label} ({row.round or 'no round'}): no folder name"
             continue
         if not _FOLDER_RE.match(row.folder):
-            problems.append(f"{label}: folder '{row.folder}' must be a plain name (letters, digits, . _ -)")
+            problems[i] = f"{label}: folder '{row.folder}' must be a plain name (letters, digits, . _ -)"
         if row.folder in seen:
-            problems.append(f"{label}: duplicate folder '{row.folder}' (also row {seen[row.folder] + 1})")
+            problems[i] = f"{label}: duplicate folder '{row.folder}' (also row {seen[row.folder] + 1})"
         else:
             seen[row.folder] = i
     return problems
+
+
+def folder_problems(protocol: ProtocolFile) -> List[str]:
+    """The folder rules as messages (the pre-flight list); one per offending row."""
+    return list(folder_problems_by_row(protocol).values())
 
 
 @dataclass
