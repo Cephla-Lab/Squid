@@ -1,8 +1,8 @@
 """The Protocol editor: a round-grouped tree over a ProtocolFile, with imaging-source assignment
 (Apply current settings / Capture current coordinates / From file…), folder rules, Add rounds and
 live validation. Built on the fluidics library's own logic helpers (get_fields_for_type,
-SEQUENCE_TYPE_LABELS, sequence_type_problem, sequence_port_problems, SequenceListAdapter) — the
-widget skin is Squid's, the sequence semantics are the library's."""
+SEQUENCE_TYPE_LABELS, sequence_problem, SequenceListAdapter) — the widget skin is Squid's, the
+sequence semantics are the library's."""
 
 import datetime
 import os
@@ -53,12 +53,12 @@ try:  # the editor degrades gracefully when the fluidics library is not installe
         SEQUENCE_TYPE_LABELS,
         SequenceListAdapter,
         get_fields_for_type,
-        sequence_port_problems,
+        sequence_problem,
         sequence_type_problem,
     )
 except ImportError:
     SEQUENCE_TYPE_LABELS = SequenceListAdapter = None
-    get_fields_for_type = sequence_port_problems = sequence_type_problem = None
+    get_fields_for_type = sequence_problem = sequence_type_problem = None
 
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
@@ -577,15 +577,17 @@ class ProtocolTab(QWidget):
             if SequenceListAdapter is None:
                 continue
             try:
-                type_problem = sequence_type_problem(row, application)
-                if type_problem:
-                    problems[i] = type_problem
-                    continue
-                coerced = SequenceListAdapter.validate_python([row])[0].model_dump()
                 if limit is not None:
-                    port_problems = sequence_port_problems(coerced, limit)
-                    if port_problems:
-                        problems[i] = "; ".join(port_problems)
+                    # The library owns the verdict order and phrasing (sequence_problem),
+                    # so Squid's rows read exactly as the standalone editor's would.
+                    problem = sequence_problem(row, application, limit)
+                else:
+                    # Before Initialize the port range is unknown: type + schema only.
+                    problem = sequence_type_problem(row, application)
+                    if problem is None:
+                        SequenceListAdapter.validate_python([row])
+                if problem:
+                    problems[i] = problem
             except Exception as e:
                 problems[i] = str(e)
         self._problems = problems
