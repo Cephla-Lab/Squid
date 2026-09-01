@@ -1,7 +1,7 @@
 import pytest
 
 import squid.logging
-from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
+from fluidics.sensor_recorder import SensorRecorder
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
 
@@ -54,8 +54,9 @@ def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
     tab = TemperatureTab(tc, recorder)
     qtbot.addWidget(tab)
     try:
-        tab.target_spinboxes[0].setValue(37.0)
-        tab.set_buttons[0].click()
+        channel = tab.control_widget.plot_widgets[0]  # the fluidics module's own plot widget
+        channel.temp_input.setText("37.0")
+        channel.set_btn.click()
         assert tc.target_temperatures[0] == 37.0
 
         qtbot.waitUntil(lambda: len(recorder.channel("channel_1").window()[0]) > 0, timeout=5000)
@@ -72,9 +73,9 @@ def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
         assert target.read_text().startswith("time,channel,value,step")
 
         tab.set_run_active(True)
-        assert not tab.set_buttons[0].isEnabled()
+        assert not channel.set_btn.isEnabled() and not channel.output_btn.isEnabled()
         tab.set_run_active(False)
-        assert tab.set_buttons[0].isEnabled()
+        assert channel.set_btn.isEnabled()
     finally:
         tab._timer.stop()
         tc.close()

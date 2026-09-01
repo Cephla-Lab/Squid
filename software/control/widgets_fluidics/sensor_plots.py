@@ -1,33 +1,17 @@
-"""The Temperature tab: per-channel readouts/controls and a pyqtgraph plot fed by the Qt-free
-SensorRecorder (producer threads write, the GUI repaints on a timer — never per-sample signals).
-CSV is written only while Record is pressed."""
+"""The Temperature tab: the fluidics module's own per-channel plot widgets
+(fluidics.qt.sensor_plots), plus Squid's step-labeled run recording — the shared
+fluidics.sensor_recorder fed straight from the TEC subscription, so a protocol run's
+CSV carries the step each sample belongs to."""
 
-import time
-from typing import List, Optional
-
-import pyqtgraph as pg
 from qtpy.QtCore import QTimer
-from qtpy.QtWidgets import (
-    QComboBox,
-    QDoubleSpinBox,
-    QFileDialog,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 import squid.logging
-from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
-
-_CHANNEL_COLORS = ("#1f77b4", "#d62728")
-_WINDOWS = {"10 min": 600.0, "1 h": 3600.0, "all": None}
+from fluidics.sensor_recorder import SensorRecorder
 
 
 class TemperatureTab(QWidget):
-    REFRESH_MS = 500
+    REFRESH_MS = 1000
 
     def __init__(self, temperature_controller, recorder: SensorRecorder, parent=None):
         super().__init__(parent)
@@ -35,90 +19,45 @@ class TemperatureTab(QWidget):
         self._tc = temperature_controller
         self._recorder = recorder
 
-        grid = QGridLayout()
-        self.actual_labels: List[QLabel] = []
-        self.target_labels: List[QLabel] = []
-        self.target_spinboxes: List[QDoubleSpinBox] = []
-        self.set_buttons: List[QPushButton] = []
-        self.output_buttons: List[QPushButton] = []
-        for i in range(self._tc.channels):
-            grid.addWidget(QLabel(f"Channel {i + 1}:"), i, 0)
-            actual = QLabel("— °C")
-            target = QLabel("target — °C")
-            spin = QDoubleSpinBox()
-            spin.setRange(-20.0, 100.0)
-            spin.setDecimals(1)
-            spin.setValue(float(self._tc.target_temperatures[i]))
-            set_btn = QPushButton("Set")
-            out_btn = QPushButton("Output ON" if self._tc.output_enabled[i] else "Output OFF")
-            set_btn.clicked.connect(lambda _=False, ch=i: self._set_target(ch))
-            out_btn.clicked.connect(lambda _=False, ch=i: self._toggle_output(ch))
-            for col, w in enumerate((actual, target, spin, set_btn, out_btn), start=1):
-                grid.addWidget(w, i, col)
-            self.actual_labels.append(actual)
-            self.target_labels.append(target)
-            self.target_spinboxes.append(spin)
-            self.set_buttons.append(set_btn)
-            self.output_buttons.append(out_btn)
+        from fluidics.qt.sensor_plots import TemperatureControlWidget
 
-        self.window_combo = QComboBox()
-        self.window_combo.addItems(list(_WINDOWS))
-        self.record_button = QPushButton("Record to CSV…")
-        self.record_button.setCheckable(True)
-        self.record_button.toggled.connect(self._toggle_recording)
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("Window:"))
-        controls.addWidget(self.window_combo)
-        controls.addStretch(1)
-        controls.addWidget(self.record_button)
+        self.control_widget = TemperatureControlWidget(temperature_controller)
 
-        self.plot_widget = pg.GraphicsLayoutWidget()
-        self.plot = self.plot_widget.addPlot()
-        self.plot.setLabel("left", "°C")
-        self.plot.setLabel("bottom", "minutes ago")
-        self.plot.addLegend()
-        self._curves = [
-            self.plot.plot([], [], pen=pg.mkPen(color=_CHANNEL_COLORS[i % 2], width=2), name=f"Ch {i + 1}")
-            for i in range(self._tc.channels)
-        ]
-
-        layout = QVBoxLayout()
-        layout.addLayout(grid)
-        layout.addLayout(controls)
-        layout.addWidget(self.plot_widget)
-        self.setLayout(layout)
-
-        # Producer thread -> recorder only (no Qt); the GUI repaints on its own clock.
-        # The closure holds the thread-safe recorder alone, never the widget.
+        # Producer thread -> recorder only (no Qt); the closure holds the thread-safe
+        # recorder alone, never the widget. The plot widgets subscribe separately.
         def on_temps(temps, recorder=recorder):
             for i, value in enumerate(temps):
                 recorder.record(f"channel_{i + 1}", float(value))
 
         self._tc.subscribe(on_temps)
-        self._tc.start()
+
+        self.record_button = QPushButton("Record run to CSV…")
+        self.record_button.setCheckable(True)
+        self.record_button.toggled.connect(self._toggle_recording)
+        record_row = QHBoxLayout()
+        record_row.addWidget(QLabel("All channels, labeled with the running protocol step:"))
+        record_row.addStretch(1)
+        record_row.addWidget(self.record_button)
+
+        layout = QVBoxLayout()
+        layout.addWidget(self.control_widget, 1)
+        layout.addLayout(record_row)
+        self.setLayout(layout)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(self.REFRESH_MS)
 
     def set_run_active(self, active: bool) -> None:
-        """A running protocol owns the TEC: the manual Set/Output controls go dead."""
-        for button in self.set_buttons + self.output_buttons:
-            button.setEnabled(not active)
-        for spin in self.target_spinboxes:
-            spin.setEnabled(not active)
-
-    def _set_target(self, channel_index: int) -> None:
-        try:
-            self._tc.set_target_temperature(channel_index + 1, float(self.target_spinboxes[channel_index].value()))
-        except Exception as e:
-            self._log.error(f"Failed to set the TEC target: {e}")
-
-    def _toggle_output(self, channel_index: int) -> None:
-        try:
-            self._tc.set_output_enabled(channel_index + 1, not self._tc.output_enabled[channel_index])
-        except Exception as e:
-            self._log.error(f"Failed to switch the TEC output: {e}")
+        """A running protocol owns the TEC: the manual Set/Save/Output controls go dead."""
+        for channel_widget in self.control_widget.plot_widgets:
+            for control in (
+                channel_widget.temp_input,
+                channel_widget.set_btn,
+                channel_widget.save_btn,
+                channel_widget.output_btn,
+            ):
+                control.setEnabled(not active)
 
     def _toggle_recording(self, checked: bool) -> None:
         if checked:
@@ -129,23 +68,10 @@ class TemperatureTab(QWidget):
             self.record_button.setText("Stop recording")
         else:
             self._recorder.stop_recording()
-            self.record_button.setText("Record to CSV…")
+            self.record_button.setText("Record run to CSV…")
 
     def _refresh(self) -> None:
         if self.record_button.isChecked() and not self._recorder.recording:
             # The recorder stopped on its own (a CSV write failed and was logged):
             # the button must not keep promising a recording.
             self.record_button.setChecked(False)
-        if not self.isVisible():
-            return  # the recorder keeps capturing; the plot catches up when shown
-        try:
-            now = time.time()
-            window = _WINDOWS[self.window_combo.currentText()]
-            for i, curve in enumerate(self._curves):
-                ts, vs = self._recorder.channel(f"channel_{i + 1}").window(window)
-                curve.setData([(t - now) / 60.0 for t in ts], vs)
-                self.actual_labels[i].setText(f"{self._tc.actual_temperatures[i]:.1f} °C")
-                self.target_labels[i].setText(f"target {self._tc.target_temperatures[i]:.1f} °C")
-                self.output_buttons[i].setText("Output ON" if self._tc.output_enabled[i] else "Output OFF")
-        except Exception as e:  # Qt swallows timer-slot exceptions: log explicitly
-            self._log.error(f"Temperature tab refresh failed: {e}")
