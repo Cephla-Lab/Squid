@@ -35,23 +35,29 @@ import squid.logging
 _log = squid.logging.get_logger("control.utils")
 
 
-def _as_grayscale(image: np.ndarray) -> np.ndarray:
+def to_grayscale(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
 
 
-def measure_translation_px(reference: np.ndarray, moving: np.ndarray) -> Tuple[float, float]:
-    """Displacement (dx, dy), in pixels of ``moving``, of its content relative to ``reference``.
+def measure_translation_px(
+    reference: np.ndarray, live: np.ndarray, live_crop_fraction: float = 1.0
+) -> Tuple[float, float]:
+    """Displacement (dx, dy), in pixels of ``live``, of its content relative to ``reference``.
 
-    ``reference`` is resampled to the shape of ``moving`` first, so a reference acquired at a
-    different binning is compared in the live image's pixels.
+    Below 100% display resolution the live frame is the center ``live_crop_fraction`` of the field
+    of view (see StreamHandler), so the same part of ``reference`` is compared. ``reference`` is then
+    resampled to ``live``'s shape, so a reference acquired at a different binning works too.
     """
-    reference = _as_grayscale(reference)
-    moving = _as_grayscale(moving)
-    if reference.shape != moving.shape:
-        height, width = moving.shape
+    reference = to_grayscale(reference)
+    live = to_grayscale(live)
+    if live_crop_fraction < 1.0:
+        height, width = reference.shape
+        reference = crop_image(reference, round(width * live_crop_fraction), round(height * live_crop_fraction))
+    if reference.shape != live.shape:
+        height, width = live.shape
         reference = cv2.resize(reference, (width, height), interpolation=cv2.INTER_AREA)
-    # skimage returns the (row, col) shift that registers ``moving`` onto ``reference``
-    shift_rows, shift_cols = phase_cross_correlation(reference, moving)[0]
+    # skimage returns the (row, col) shift that registers ``live`` onto ``reference``
+    shift_rows, shift_cols = phase_cross_correlation(reference, live)[0]
     return (-float(shift_cols), -float(shift_rows))
 
 

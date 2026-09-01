@@ -43,6 +43,14 @@ def test_measure_translation_px_accepts_color_reference_against_mono_live():
     assert utils.measure_translation_px(reference, moving) == pytest.approx((4, -3))
 
 
+def test_measure_translation_px_accounts_for_display_center_crop():
+    """Below 100% display resolution the live frame is the center crop of the field of view."""
+    base = _textured_image()
+    live = utils.crop_image(np.roll(base, shift=(2, 6), axis=(0, 1)), 64, 64)
+
+    assert utils.measure_translation_px(base, live, live_crop_fraction=0.5) == pytest.approx((6, 2))
+
+
 @pytest.mark.parametrize("inverted_objective, expected", [(False, (0.005, -0.010)), (True, (0.005, 0.010))])
 def test_image_delta_to_stage_delta_mm_follows_click_to_move_convention(monkeypatch, inverted_objective, expected):
     monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", inverted_objective)
@@ -53,16 +61,25 @@ def test_image_delta_to_stage_delta_mm_follows_click_to_move_convention(monkeypa
 # ─── AlignmentWidget ────────────────────────────────────────────────────────
 
 REFERENCE_IMAGE = _textured_image(shape=(32, 32))
+COLOR_REFERENCE_IMAGE = np.stack([_textured_image(shape=(32, 32), dtype=np.uint8)] * 3, axis=-1)
 CENTER_FOV_POSITION = (2.0, 5.0)
 
 
 @pytest.fixture
-def acquisition_folder(tmp_path):
-    """A past acquisition with three FOVs in a row; the middle one (index 1) is the region center."""
+def acquisition_folder(tmp_path, request):
+    """A past acquisition with three FOVs in a row; the middle one (index 1) is the region center.
+
+    Parametrize indirectly with (image, extension) to change the stored reference image.
+    """
+    image, extension = getattr(request, "param", (REFERENCE_IMAGE, "tiff"))
     coords = pd.DataFrame({"region": ["A1"] * 3, "x (mm)": [1.0, 2.0, 3.0], "y (mm)": [5.0] * 3})
     coords.to_csv(tmp_path / "coordinates.csv", index=False)
     (tmp_path / "0").mkdir()
-    tifffile.imwrite(tmp_path / "0" / "A1_1_0_Fluorescence_405_nm_Ex.tiff", REFERENCE_IMAGE)
+    path = tmp_path / "0" / f"A1_1_0_Fluorescence_405_nm_Ex.{extension}"
+    if extension == "tiff":
+        tifffile.imwrite(path, image)
+    else:
+        cv2.imwrite(str(path), image)
     return tmp_path
 
 
@@ -101,6 +118,14 @@ def test_align_moves_to_center_fov_and_overlays_its_image(widget, display):
     assert moves == [CENTER_FOV_POSITION]
     assert np.array_equal(display.alignment_reference_item.image, REFERENCE_IMAGE)
     assert widget.btn_align.text() == "Confirm Offset"
+
+
+@pytest.mark.parametrize("acquisition_folder", [(COLOR_REFERENCE_IMAGE, "bmp")], indirect=True)
+def test_color_reference_is_overlaid_as_an_intensity_image(widget, display):
+    """pyqtgraph ignores lookup tables on H x W x 3 data, so a color reference must be reduced first."""
+    _start_alignment(widget)
+
+    assert display.alignment_reference_item.image.ndim == 2
 
 
 def test_auto_is_only_available_while_a_reference_is_loaded(widget):
@@ -152,13 +177,15 @@ def test_clear_removes_offset(widget):
 # ─── GUI auto-align handler ─────────────────────────────────────────────────
 
 
-def _gui_stub(live_image, pixel_size_um):
+def _gui_stub(live_image, pixel_size_um, is_live=True, display_resolution_scaling=1.0):
     """HighContentScreeningGui-shaped stub with just what _alignment_auto_align touches."""
     from unittest.mock import MagicMock
 
     stub = MagicMock()
     stub.imageDisplayWindow.current_image.return_value = live_image
     stub.microscope.get_image_pixel_size_um.return_value = pixel_size_um
+    stub.liveController.is_live = is_live
+    stub.streamHandler.display_resolution_scaling = display_resolution_scaling
     return stub
 
 
@@ -175,15 +202,37 @@ def test_auto_align_moves_stage_to_cancel_measured_displacement(monkeypatch):
     gui.stage.move_y.assert_called_once_with(pytest.approx(3 * 0.5 / 1000), blocking=True)
 
 
-def test_auto_align_refuses_without_pixel_size_or_live_image(monkeypatch):
+def test_auto_align_uses_the_display_crop_fraction(monkeypatch):
+    from control.gui_hcs import HighContentScreeningGui
+
+    monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", False)
+    reference = _textured_image()
+    live = utils.crop_image(np.roll(reference, shift=(0, 4), axis=(0, 1)), 64, 64)
+    gui = _gui_stub(live, pixel_size_um=0.5, display_resolution_scaling=0.5)
+
+    HighContentScreeningGui._alignment_auto_align(gui, reference)
+
+    gui.stage.move_x.assert_called_once_with(pytest.approx(4 * 0.5 / 1000), blocking=False)
+
+
+@pytest.mark.parametrize(
+    "gui",
+    [
+        _gui_stub(REFERENCE_IMAGE, pixel_size_um=None),
+        _gui_stub(None, pixel_size_um=0.5),
+        _gui_stub(REFERENCE_IMAGE, pixel_size_um=0.5, is_live=False),
+    ],
+    ids=["no pixel size", "no frame", "live stopped"],
+)
+def test_auto_align_refuses_to_move_without_a_current_live_frame(monkeypatch, gui):
+    """After live view stops, current_image() is stale relative to the stage position."""
     from control.gui_hcs import HighContentScreeningGui
 
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: warnings.append(args))
 
-    for gui in (_gui_stub(REFERENCE_IMAGE, pixel_size_um=None), _gui_stub(None, pixel_size_um=0.5)):
-        HighContentScreeningGui._alignment_auto_align(gui, REFERENCE_IMAGE)
-        gui.stage.move_x.assert_not_called()
-        gui.stage.move_y.assert_not_called()
+    HighContentScreeningGui._alignment_auto_align(gui, REFERENCE_IMAGE)
 
-    assert len(warnings) == 2
+    gui.stage.move_x.assert_not_called()
+    gui.stage.move_y.assert_not_called()
+    assert len(warnings) == 1

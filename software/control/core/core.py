@@ -890,6 +890,9 @@ class ImageDisplayWindow(QMainWindow):
         self.preview_line = None
         self.start_point_marker = None
 
+        # Last frame as received (before any on-screen marking), for registration
+        self._current_image: Optional[np.ndarray] = None
+
         # Reference image overlaid on the live view during alignment
         self.alignment_reference_item: Optional[pg.ImageItem] = None
 
@@ -1119,8 +1122,8 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.img.setLookupTable(GRAYCLIP_COLORMAP.getLookupTable(nPts=256) if enabled else None)
 
     def current_image(self) -> Optional[np.ndarray]:
-        """The most recently displayed frame (None before the first one)."""
-        return self.graphics_widget.img.image
+        """The most recently received frame, unmodified (None before the first one)."""
+        return self._current_image
 
     def show_alignment_reference(self, image: np.ndarray):
         """Overlay a reference image in additive magenta so misalignment with the live view shows as color fringes."""
@@ -1455,6 +1458,7 @@ class ImageDisplayWindow(QMainWindow):
         if self.first_image:
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
+        self._current_image = image
 
         if ENABLE_TRACKING:
             image = np.copy(image)
@@ -1473,6 +1477,11 @@ class ImageDisplayWindow(QMainWindow):
             ):
                 self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
             min_val, max_val = self.contrastManager.get_limits(channel_name, image.dtype)
+
+        # Lookup tables do not apply to RGB frames, so mark overexposure in the data instead
+        if self.btn_overexposure.isChecked() and image.ndim == 3:
+            image = image.copy()
+            image[(image >= max_val).any(axis=2)] = (info.max, 0, 0)
 
         self.graphics_widget.img.setImage(image, autoLevels=self.autoLevels, levels=(min_val, max_val))
 

@@ -10676,6 +10676,7 @@ class AlignmentWidget(QWidget):
             if ref_image is None:
                 raise ValueError(f"Failed to read image: {image_path}")
 
+        ref_image = utils.to_grayscale(ref_image)
         self._reference_image = ref_image
         self._display.show_alignment_reference(ref_image)
 
