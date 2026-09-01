@@ -66,12 +66,31 @@ _HIGHLIGHT = QColor(255, 244, 180)
 _INVALID = QColor(255, 205, 205)
 
 
-def _port_limit(service) -> Optional[int]:
-    if service is None or not getattr(service, "initialized", False):
-        return None
-    from fluidics.control.config import available_port_count  # importable once the service is up
+_config_port_count_cache: dict = {}  # path -> (mtime, count)
 
-    return available_port_count(service.config)
+
+def _port_limit(service) -> Optional[int]:
+    """The rig's port count - from the live system, or peeked from the config file before
+    Initialize (parsing the YAML needs no hardware), so no arbitrary cap ever applies."""
+    if service is None:
+        return None
+    try:
+        from fluidics.control.config import available_port_count, load_config
+    except ImportError:
+        return None
+    if getattr(service, "initialized", False):
+        return available_port_count(service.config)
+    path = getattr(service, "default_config_path", None)
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        mtime = os.path.getmtime(path)
+        cached = _config_port_count_cache.get(path)
+        if cached is None or cached[0] != mtime:
+            _config_port_count_cache[path] = (mtime, available_port_count(load_config(path)))
+        return _config_port_count_cache[path][1]
+    except Exception:
+        return None
 
 
 def _application(service) -> str:
@@ -465,7 +484,7 @@ class ProtocolTab(QWidget):
             QMessageBox.warning(self, "Not available", "Adding steps needs the updated fluidics library (fluidics.qt).")
             return
         limit = _port_limit(self.service)
-        port_names = [f"Port {i}" for i in range(1, (limit or 24) + 1)]
+        port_names = [f"Port {i}" for i in range(1, (limit or 99) + 1)]
         if self.service is not None and getattr(self.service, "initialized", False):
             try:
                 port_names = self.service.system.devices.selector_valves.get_port_names()

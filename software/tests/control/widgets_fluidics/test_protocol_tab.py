@@ -267,3 +267,17 @@ def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
     # under the new base: relative to the new protocol file
     assert tab.protocol.sequences[5]["coordinates"] == "acq2"
     assert tab.protocol.sequences[3]["settings"] == "cur"  # header keys stay header keys
+
+
+def test_port_limit_peeks_at_the_config_file_before_initialize(tmp_path):
+    pytest.importorskip("fluidics")
+    from tests.control.fluidics_test_config import CONFIG_YAML
+
+    config = tmp_path / "fluidics_config.yaml"
+    config.write_text(CONFIG_YAML)
+    service = SimpleNamespace(initialized=False, default_config_path=str(config))
+    # 3 daisy-chained 10-port valves: the last port of all but the final valve is plumbing
+    assert protocol_tab_module._port_limit(service) == 28
+    assert protocol_tab_module._port_limit(SimpleNamespace(initialized=False)) is None
+    missing = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "nope.yaml"))
+    assert protocol_tab_module._port_limit(missing) is None
