@@ -15,6 +15,7 @@ from numpy import square, mean
 import numpy as np
 from scipy.ndimage import label, gaussian_filter
 from scipy import signal
+from skimage.registration import phase_cross_correlation
 import os
 from typing import Optional, Tuple, List, Callable
 
@@ -28,9 +29,39 @@ from control._def import (
     SpotDetectionMode,
     FocusMeasureOperator,
 )
+import control._def
 import squid.logging
 
 _log = squid.logging.get_logger("control.utils")
+
+
+def _as_grayscale(image: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+
+def measure_translation_px(reference: np.ndarray, moving: np.ndarray) -> Tuple[float, float]:
+    """Displacement (dx, dy), in pixels of ``moving``, of its content relative to ``reference``.
+
+    ``reference`` is resampled to the shape of ``moving`` first, so a reference acquired at a
+    different binning is compared in the live image's pixels.
+    """
+    reference = _as_grayscale(reference)
+    moving = _as_grayscale(moving)
+    if reference.shape != moving.shape:
+        height, width = moving.shape
+        reference = cv2.resize(reference, (width, height), interpolation=cv2.INTER_AREA)
+    # skimage returns the (row, col) shift that registers ``moving`` onto ``reference``
+    shift_rows, shift_cols = phase_cross_correlation(reference, moving)[0]
+    return (-float(shift_cols), -float(shift_rows))
+
+
+def image_delta_to_stage_delta_mm(delta_x_px: float, delta_y_px: float, pixel_size_um: float) -> Tuple[float, float]:
+    """Stage move that shifts the displayed image content by (-delta_x_px, -delta_y_px).
+
+    Used both to center a clicked point and to undo a measured displacement.
+    """
+    pixel_sign_y = 1 if control._def.INVERTED_OBJECTIVE else -1
+    return (pixel_size_um * delta_x_px / 1000.0, pixel_sign_y * pixel_size_um * delta_y_px / 1000.0)
 
 
 def crop_image(image, crop_width, crop_height):

@@ -843,6 +843,12 @@ class TrackingWorker(QObject):
         self.finished.emit()
 
 
+# Gray ramp whose top entry is red, so pixels at or above the upper contrast limit stand out
+# as overexposed (the same mapping as napari's "grayclip" colormap: 255 gray levels + red).
+GRAYCLIP_COLORMAP = pg.ColorMap(pos=[0.0, 254 / 255, 1.0], color=[(0, 0, 0), (255, 255, 255), (255, 0, 0)])
+MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+
+
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
@@ -884,6 +890,9 @@ class ImageDisplayWindow(QMainWindow):
         self.preview_line = None
         self.start_point_marker = None
 
+        # Reference image overlaid on the live view during alignment
+        self.alignment_reference_item: Optional[pg.ImageItem] = None
+
         # Create main layout
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -912,6 +921,11 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
+        self.btn_overexposure = QPushButton("Overexposure")
+        self.btn_overexposure.setCheckable(True)
+        self.btn_overexposure.setToolTip("Highlight pixels at or above the upper contrast limit in red")
+        self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
+
         # Add well selector toggle button
         self.btn_well_selector = QPushButton("Show Well Selector")
         self.btn_well_selector.setCheckable(False)
@@ -926,6 +940,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
+        status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_overexposure)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
 
@@ -963,6 +979,7 @@ class ImageDisplayWindow(QMainWindow):
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
+            self.LUTWidget.item.sigLevelsChanged.connect(self._sync_alignment_reference_levels)
         else:
             self.graphics_widget.img = pg.ImageItem(border="w")
             self.graphics_widget.view.addItem(self.graphics_widget.img)
@@ -1087,6 +1104,45 @@ class ImageDisplayWindow(QMainWindow):
         # Stop the timer when the window is closed
         self.update_timer.stop()
         super().closeEvent(event)
+
+    def set_overexposure_indicator(self, enabled: bool):
+        """Render pixels at or above the upper contrast limit in red."""
+        if self.show_LUT:
+            # The histogram widget owns the live LUT and regenerates it from its gradient on
+            # every contrast change, so the indicator has to live in the gradient itself.
+            gradient = self.LUTWidget.item.gradient
+            if enabled:
+                gradient.setColorMap(GRAYCLIP_COLORMAP)
+            else:
+                gradient.loadPreset("grey")
+        else:
+            self.graphics_widget.img.setLookupTable(GRAYCLIP_COLORMAP.getLookupTable(nPts=256) if enabled else None)
+
+    def current_image(self) -> Optional[np.ndarray]:
+        """The most recently displayed frame (None before the first one)."""
+        return self.graphics_widget.img.image
+
+    def show_alignment_reference(self, image: np.ndarray):
+        """Overlay a reference image in additive magenta so misalignment with the live view shows as color fringes."""
+        if self.alignment_reference_item is None:
+            item = pg.ImageItem()
+            item.setLookupTable(MAGENTA_COLORMAP.getLookupTable(nPts=256))
+            item.setCompositionMode(QPainter.CompositionMode_Plus)
+            self._active_view().addItem(item)
+            self.alignment_reference_item = item
+        self.alignment_reference_item.setImage(image, autoLevels=False)
+        self._sync_alignment_reference_levels()
+
+    def hide_alignment_reference(self):
+        if self.alignment_reference_item is not None:
+            self._active_view().removeItem(self.alignment_reference_item)
+            self.alignment_reference_item = None
+
+    def _sync_alignment_reference_levels(self, *_):
+        """Keep the reference overlay on the same contrast range as the live image."""
+        levels = self.graphics_widget.img.getLevels()
+        if self.alignment_reference_item is not None and levels is not None:
+            self.alignment_reference_item.setLevels(levels)
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
@@ -1428,6 +1484,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
+        self._sync_alignment_reference_levels()
 
         # Update pixel value based on last valid position
         if self.has_valid_position:

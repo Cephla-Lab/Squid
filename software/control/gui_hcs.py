@@ -724,7 +724,6 @@ class HighContentScreeningGui(QMainWindow):
         self.templateMultiPointWidget: Optional[TemplateMultiPointWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
-        self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
         self.alignmentWidget: Optional[widgets.AlignmentWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
@@ -1017,22 +1016,13 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(liveController=self.liveController)
 
-        self.imageDisplayTabs = QTabWidget(parent=self)
+        self.imageDisplayWindow = self._create_live_image_display()
         if self.live_only_mode:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
             self.unifiedMosaicWidget = None
         else:
+            self.imageDisplayTabs = QTabWidget(parent=self)
             self.setupImageDisplayTabs()
-
-        # Setup alignment widget if using napari for live view
-        if USE_NAPARI_FOR_LIVE_VIEW and self.napariLiveWidget is not None:
             self._setup_alignment_widget()
 
         self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(
@@ -1162,26 +1152,15 @@ class HighContentScreeningGui(QMainWindow):
             )
         return restored
 
+    def _create_live_image_display(self) -> core.ImageDisplayWindow:
+        if ENABLE_TRACKING:
+            window = core.ImageDisplayWindow(self.liveController, self.contrastManager)
+            window.show_ROI_selector()
+            return window
+        return core.ImageDisplayWindow(self.liveController, self.contrastManager, show_LUT=True, autoLevels=True)
+
     def setupImageDisplayTabs(self):
-        if USE_NAPARI_FOR_LIVE_VIEW:
-            self.napariLiveWidget = widgets.NapariLiveWidget(
-                self.streamHandler,
-                self.liveController,
-                self.stage,
-                self.objectiveStore,
-                self.contrastManager,
-                self.wellSelectionWidget,
-            )
-            self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
-        else:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
-            self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
+        self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:
             self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
@@ -1284,17 +1263,11 @@ class HighContentScreeningGui(QMainWindow):
 
     def _setup_alignment_widget(self):
         """Setup alignment widget and connect to navigation viewer and multipoint controller."""
-        if self.napariLiveWidget is None:
-            self.log.warning("Cannot setup alignment widget: napariLiveWidget not available")
-            return
-
-        self.alignmentWidget = widgets.AlignmentWidget(
-            napari_viewer=self.napariLiveWidget.viewer,
-            parent=None,
-        )
+        self.alignmentWidget = widgets.AlignmentWidget(self.imageDisplayWindow)
 
         self.alignmentWidget.signal_move_to_position.connect(self._alignment_move_to)
         self.alignmentWidget.signal_request_current_position.connect(self._alignment_provide_position)
+        self.alignmentWidget.signal_auto_align_requested.connect(self._alignment_auto_align)
         self.alignmentWidget.signal_offset_set.connect(
             lambda x, y: self.log.info(f"Alignment offset active: ({x:.4f}, {y:.4f})mm")
         )
@@ -1314,9 +1287,24 @@ class HighContentScreeningGui(QMainWindow):
         pos = self.stage.get_pos()
         self.alignmentWidget.set_current_position(pos.x_mm, pos.y_mm)
 
+    def _alignment_auto_align(self, reference_image: np.ndarray):
+        """Register the live view against the reference image and move the stage to cancel the displacement."""
+        live_image = self.imageDisplayWindow.current_image()
+        pixel_size_um = self.microscope.get_image_pixel_size_um()
+        if live_image is None or pixel_size_um is None:
+            QMessageBox.warning(self, "Alignment Error", "Auto align needs a live image and a known pixel size.")
+            return
+
+        dx_px, dy_px = control.utils.measure_translation_px(reference_image, live_image)
+        dx_mm, dy_mm = control.utils.image_delta_to_stage_delta_mm(dx_px, dy_px, pixel_size_um)
+        self.log.info(
+            f"Auto align: displacement ({dx_px:.1f}, {dy_px:.1f}) px -> stage move ({dx_mm:.4f}, {dy_mm:.4f}) mm"
+        )
+        self.stage.move_x(dx_mm, blocking=False)
+        self.stage.move_y(dy_mm, blocking=True)
+
     def setupCameraTabWidget(self):
-        if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
-            self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
+        self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
@@ -1364,11 +1352,8 @@ class HighContentScreeningGui(QMainWindow):
             simulated_io_banner.setAlignment(Qt.AlignCenter)
             layout.addWidget(simulated_io_banner)
 
-        if USE_NAPARI_FOR_LIVE_CONTROL and not self.live_only_mode:
-            layout.addWidget(self.navigationWidget)
-        else:
-            layout.addWidget(self.profileWidget)
-            layout.addWidget(self.liveControlWidget)
+        layout.addWidget(self.profileWidget)
+        layout.addWidget(self.liveControlWidget)
 
         layout.addWidget(self.cameraTabWidget)
 
@@ -1447,10 +1432,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.dock_wellSelection = dock.Dock("Well Selector", autoOrientation=False)
         self.dock_wellSelection.showTitleBar()
-        if not USE_NAPARI_WELL_SELECTION or self.live_only_mode:
-            self.dock_wellSelection.addWidget(self.wellSelectionWidget)
-            self.dock_wellSelection.setFixedHeight(self.dock_wellSelection.minimumSizeHint().height())
-            main_dockArea.addDock(self.dock_wellSelection, "bottom")
+        self.dock_wellSelection.addWidget(self.wellSelectionWidget)
+        self.dock_wellSelection.setFixedHeight(self.dock_wellSelection.minimumSizeHint().height())
+        main_dockArea.addDock(self.dock_wellSelection, "bottom")
 
         dock_controlPanel = dock.Dock("Controls", autoOrientation=False)
         dock_controlPanel.addWidget(self.centralWidget)
@@ -1541,32 +1525,13 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
 
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.update_ui_for_mode)
-            self.autofocusController.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True)
-            )
-            self.streamHandler.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-            )
-            self.multipointController.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-            )
-            self.napariLiveWidget.signal_coordinates_clicked.connect(self.move_from_click_image)
-            self.liveControlWidget.signal_live_configuration.connect(self.napariLiveWidget.set_live_configuration)
-
-            if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napariLiveWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
-                self.napariLiveWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
-                self.napariLiveWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-        else:
-            self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
-            self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-            self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
-            self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
+        self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
+        self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
+        self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
+        self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
 
         self.makeNapariConnections()
 
@@ -1700,41 +1665,11 @@ class HighContentScreeningGui(QMainWindow):
     def makeNapariConnections(self):
         """Initialize all Napari connections in one place"""
         self.napari_connections = {
-            "napariLiveWidget": [],
             "napariMultiChannelWidget": [],
             "unifiedMosaicWidget": [],
         }
-
-        # Setup live view connections
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.napari_connections["napariLiveWidget"] = [
-                (self.multipointController.signal_current_configuration, self.napariLiveWidget.update_ui_for_mode),
-                (
-                    self.autofocusController.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True),
-                ),
-                (
-                    self.streamHandler.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                ),
-                (
-                    self.multipointController.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                ),
-                (self.napariLiveWidget.signal_coordinates_clicked, self.move_from_click_image),
-                (self.liveControlWidget.signal_live_configuration, self.napariLiveWidget.set_live_configuration),
-            ]
-
-            if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napari_connections["napariLiveWidget"].extend(
-                    [
-                        (self.napariLiveWidget.signal_newExposureTime, self.cameraSettingWidget.set_exposure_time),
-                        (self.napariLiveWidget.signal_newAnalogGain, self.cameraSettingWidget.set_analog_gain),
-                        (self.napariLiveWidget.signal_autoLevelSetting, self.imageDisplayWindow.set_autolevel),
-                    ]
-                )
-        # Non-Napari display connections are wired in make_connections() — wiring them
-        # here again under the same condition would double every click/scroll signal.
+        # Live display connections are wired in make_connections() — wiring them here
+        # again would double every click/scroll signal.
 
         if not self.live_only_mode:
             # Setup multichannel widget connections
@@ -1807,33 +1742,32 @@ class HighContentScreeningGui(QMainWindow):
             self.updateNapariConnections()
 
     def updateNapariConnections(self):
-        # Update Napari connections based on performance mode. Live widget connections are preserved
+        # Update Napari connections based on performance mode.
         # Connection tuples can be:
         #   (signal, slot) - uses default Qt.AutoConnection
         #   (signal, slot, connection_type) - uses specified connection type (e.g., Qt.QueuedConnection)
         for widget_name, connections in self.napari_connections.items():
-            if widget_name != "napariLiveWidget":  # Always keep the live widget connected
-                widget = getattr(self, widget_name, None)
-                if widget:
-                    for conn in connections:
-                        signal = conn[0]
-                        slot = conn[1]
-                        connection_type = conn[2] if len(conn) > 2 else None
-                        if self.performance_mode:
-                            try:
-                                signal.disconnect(slot)
-                            except TypeError:
-                                # Connection might not exist, which is fine
-                                pass
-                        else:
-                            try:
-                                if connection_type is not None:
-                                    signal.connect(slot, connection_type)
-                                else:
-                                    signal.connect(slot)
-                            except TypeError:
-                                # Connection might already exist, which is fine
-                                pass
+            widget = getattr(self, widget_name, None)
+            if widget:
+                for conn in connections:
+                    signal = conn[0]
+                    slot = conn[1]
+                    connection_type = conn[2] if len(conn) > 2 else None
+                    if self.performance_mode:
+                        try:
+                            signal.disconnect(slot)
+                        except TypeError:
+                            # Connection might not exist, which is fine
+                            pass
+                    else:
+                        try:
+                            if connection_type is not None:
+                                signal.connect(slot, connection_type)
+                            else:
+                                signal.connect(slot)
+                        except TypeError:
+                            # Connection might already exist, which is fine
+                            pass
 
     def toggleNapariTabs(self):
         # Enable/disable Napari tabs based on performance mode
@@ -1842,11 +1776,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.imageDisplayTabs.setTabEnabled(i, not self.performance_mode)
 
         if self.performance_mode:
-            # Switch to the NapariLiveWidget tab if it exists
-            for i in range(self.imageDisplayTabs.count()):
-                if isinstance(self.imageDisplayTabs.widget(i), widgets.NapariLiveWidget):
-                    self.imageDisplayTabs.setCurrentIndex(i)
-                    break
+            self.imageDisplayTabs.setCurrentIndex(0)  # Live View
 
     def togglePerformanceMode(self):
         self.performance_mode = self.performanceModeToggle.isChecked()
@@ -2304,8 +2234,6 @@ class HighContentScreeningGui(QMainWindow):
         """Refresh channel lists in all widgets after channel configuration changes"""
         if self.liveControlWidget:
             self.liveControlWidget.refresh_mode_list()
-        if self.napariLiveWidget:
-            self.napariLiveWidget.refresh_mode_list()
         if self.flexibleMultiPointWidget:
             self.flexibleMultiPointWidget.refresh_channel_list()
         if self.wellplateMultiPointWidget:
@@ -2438,10 +2366,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.deleteLater()
         self.wellSelectionWidget = new_widget
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
-        if USE_NAPARI_WELL_SELECTION and not self.performance_mode and not self.live_only_mode:
-            self.napariLiveWidget.replace_well_selector(self.wellSelectionWidget)
-        else:
-            self.dock_wellSelection.addWidget(self.wellSelectionWidget)
+        self.dock_wellSelection.addWidget(self.wellSelectionWidget)
 
     def connectWellSelectionWidget(self):
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)
@@ -2654,10 +2579,7 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("Click to move: pixel size unavailable, ignoring click")
             return
 
-        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-        delta_x_mm = pixel_size_um * click_x / 1000.0
-        delta_y_mm = pixel_sign_y * pixel_size_um * click_y / 1000.0
-
+        delta_x_mm, delta_y_mm = control.utils.image_delta_to_stage_delta_mm(click_x, click_y, pixel_size_um)
         self.stage.move_x(delta_x_mm, blocking=False)
         self.stage.move_y(delta_y_mm, blocking=True)
 
@@ -2804,7 +2726,6 @@ class HighContentScreeningGui(QMainWindow):
 
         # Close napari viewers — they run background threads that prevent clean exit.
         for widget_name in [
-            "napariLiveWidget",
             "napariMultiChannelWidget",
             "unifiedMosaicWidget",
         ]:
