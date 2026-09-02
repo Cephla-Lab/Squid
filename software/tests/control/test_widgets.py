@@ -179,6 +179,46 @@ def surface_plot_widget(qtbot):
     return widget
 
 
+@pytest.fixture
+def autofocus_widget(qtbot):
+    """Create an AutoFocusWidget backed by a mock controller."""
+    controller = MagicMock()
+    widget = control.widgets.AutoFocusWidget(controller)
+    qtbot.addWidget(widget)
+    return widget
+
+
+class TestAutoFocusWidget:
+    """Tests for the contrast AF panel's FOVs-per-autofocus control."""
+
+    def test_fovs_per_af_initializes_from_config(self, autofocus_widget):
+        assert autofocus_widget.entry_fovs_per_af.value() == control._def.Acquisition.NUMBER_OF_FOVS_PER_AF
+
+    def test_fovs_per_af_spinbox_updates_acquisition_setting(self, autofocus_widget):
+        """The acquisition worker reads Acquisition.NUMBER_OF_FOVS_PER_AF, so the spinbox
+        has to write through to the class attribute -- not just hold a local value."""
+        original = control._def.Acquisition.NUMBER_OF_FOVS_PER_AF
+        try:
+            autofocus_widget.entry_fovs_per_af.setValue(1)
+            assert control._def.Acquisition.NUMBER_OF_FOVS_PER_AF == 1
+
+            autofocus_widget.entry_fovs_per_af.setValue(5)
+            assert control._def.Acquisition.NUMBER_OF_FOVS_PER_AF == 5
+        finally:
+            control._def.Acquisition.NUMBER_OF_FOVS_PER_AF = original
+
+    def test_fovs_per_af_minimum_is_every_fov(self, autofocus_widget):
+        """1 (autofocus at every FOV) must be reachable; 0 would disable AF entirely and
+        would make the worker's `af_fov_count % N` gate raise."""
+        original = control._def.Acquisition.NUMBER_OF_FOVS_PER_AF
+        try:
+            autofocus_widget.entry_fovs_per_af.setValue(0)
+            assert autofocus_widget.entry_fovs_per_af.value() == 1
+            assert control._def.Acquisition.NUMBER_OF_FOVS_PER_AF == 1
+        finally:
+            control._def.Acquisition.NUMBER_OF_FOVS_PER_AF = original
+
+
 class TestSurfacePlotWidget:
     """Tests for SurfacePlotWidget Z-stack handling and edge cases."""
 

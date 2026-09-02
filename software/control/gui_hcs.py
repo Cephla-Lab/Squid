@@ -1972,11 +1972,19 @@ class HighContentScreeningGui(QMainWindow):
         if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             config = ConfigParser()
             config.read(CACHED_CONFIG_FILE_PATH)
+            try:
+                channel_names = [
+                    c.name for c in self.liveController.get_channels(self.objectiveStore.current_objective)
+                ]
+            except Exception:
+                self.log.exception("Could not list channels for the preferences dialog")
+                channel_names = None
             dialog = widgets.PreferencesDialog(
                 config,
                 CACHED_CONFIG_FILE_PATH,
                 parent=self,
                 on_restart=self.restart_application,
+                channel_names=channel_names,
             )
             dialog.signal_config_changed.connect(self._update_ram_monitor_visibility)
             dialog.signal_config_changed.connect(
