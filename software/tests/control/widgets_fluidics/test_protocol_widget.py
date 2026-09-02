@@ -71,10 +71,10 @@ def quiet_dialogs(monkeypatch):
 
 
 @pytest.fixture
-def widget(qtbot, tmp_path, monkeypatch, quiet_dialogs):
+def widget(qtbot, tmp_path, monkeypatch, quiet_dialogs, fluidics_config_path):
     monkeypatch.chdir(tmp_path)
     service = SimpleNamespace(initialized=True)
-    tab = ProtocolTab(SimpleNamespace(initialized=False))
+    tab = ProtocolTab(SimpleNamespace(initialized=False, default_config_path=fluidics_config_path))
     qtbot.addWidget(tab)
     tab.set_protocol(_protocol())
     imaging = FakeImagingPort()

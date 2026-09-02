@@ -66,12 +66,20 @@ _HIGHLIGHT = QColor(255, 244, 180)
 _INVALID = QColor(255, 205, 205)
 
 
+class FluidicsConfigError(RuntimeError):
+    """The fluidics configuration is missing or unreadable: the port range cannot be known.
+    A machine with the Fluidics tab claims a fluidics system, so this is a misconfiguration
+    to surface, never a reason to judge protocols with the port stage quietly skipped."""
+
+
 _config_port_count_cache: dict = {}  # path -> (mtime, count)
 
 
 def _port_limit(service) -> Optional[int]:
-    """The rig's port count - from the live system, or peeked from the config file before
-    Initialize (parsing the YAML needs no hardware), so no arbitrary cap ever applies."""
+    """The port count - from the live system, or peeked from the config file before
+    Initialize (parsing the YAML needs no hardware). Raises FluidicsConfigError when the
+    configured file is missing or unreadable; returns None only when there is nothing to
+    consult at all (no service, no library, no configured path)."""
     if service is None:
         return None
     try:
@@ -81,16 +89,24 @@ def _port_limit(service) -> Optional[int]:
     if getattr(service, "initialized", False):
         return available_port_count(service.config)
     path = getattr(service, "default_config_path", None)
-    if not path or not os.path.isfile(path):
+    if not path:
         return None
+    if not os.path.isfile(path):
+        raise FluidicsConfigError(
+            f"No fluidics configuration at {path} — copy the instrument's config there, or Initialize with another file"
+        )
     try:
         mtime = os.path.getmtime(path)
-        cached = _config_port_count_cache.get(path)
-        if cached is None or cached[0] != mtime:
-            _config_port_count_cache[path] = (mtime, available_port_count(load_config(path)))
-        return _config_port_count_cache[path][1]
-    except Exception:
-        return None
+    except OSError as e:
+        raise FluidicsConfigError(f"Cannot read the fluidics configuration at {path}: {e}")
+    cached = _config_port_count_cache.get(path)
+    if cached is None or cached[0] != mtime:
+        try:
+            count = available_port_count(load_config(path))
+        except Exception as e:
+            raise FluidicsConfigError(f"The fluidics configuration at {path} is invalid: {e}")
+        _config_port_count_cache[path] = (mtime, count)
+    return _config_port_count_cache[path][1]
 
 
 def _application(service) -> str:
@@ -483,8 +499,15 @@ class ProtocolTab(QWidget):
         except ImportError:
             QMessageBox.warning(self, "Not available", "Adding steps needs the updated fluidics library (fluidics.qt).")
             return
-        limit = _port_limit(self.service)
-        port_names = [f"Port {i}" for i in range(1, (limit or 99) + 1)]
+        try:
+            limit = _port_limit(self.service)
+        except FluidicsConfigError as e:
+            QMessageBox.warning(self, "Fluidics configuration", str(e))
+            return
+        if limit is None:
+            QMessageBox.warning(self, "Fluidics configuration", "No fluidics configuration to list ports from.")
+            return
+        port_names = [f"Port {i}" for i in range(1, limit + 1)]
         if self.service is not None and getattr(self.service, "initialized", False):
             try:
                 port_names = self.service.system.devices.selector_valves.get_port_names()
@@ -576,7 +599,10 @@ class ProtocolTab(QWidget):
         problems: Dict[int, str] = {}
         folder_by_row = folder_problems_by_row(self._protocol)
         application = _application(self.service)
-        limit = _port_limit(self.service)
+        try:
+            limit, config_error = _port_limit(self.service), None
+        except FluidicsConfigError as e:
+            limit, config_error = None, str(e)
         base = self._protocol_dir()
         for i, row in enumerate(self._protocol.sequences):
             if row.get("type") == IMAGING_TYPE:
@@ -605,10 +631,14 @@ class ProtocolTab(QWidget):
                 continue
             if sequence_problem is None:
                 continue
+            if limit is None:
+                # No readable port range is an error the operator must see, never a
+                # quietly skipped port stage.
+                problems[i] = config_error or "no fluidics configuration to judge ports against"
+                continue
             try:
                 # The library owns the verdict order and phrasing (sequence_problem), so
-                # Squid's rows read exactly as the standalone editor's would; limit=None
-                # (before Initialize) skips the port stage upstream.
+                # Squid's rows read exactly as the standalone editor's would.
                 problem = sequence_problem(row, application, limit)
                 if problem:
                     problems[i] = problem

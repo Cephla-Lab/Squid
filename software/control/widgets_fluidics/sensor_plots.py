@@ -51,7 +51,7 @@ class TemperatureTab(QWidget):
 
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the TEC: the manual setpoint controls go dead."""
-        self.control_widget.set_controls_enabled(not active)
+        self.control_widget.setControlsEnabled(not active)
 
     def _toggle_recording(self, checked: bool) -> None:
         if checked:

@@ -78,8 +78,8 @@ def quiet_dialogs(monkeypatch):
 
 
 @pytest.fixture
-def tab(qtbot, quiet_dialogs):
-    service = SimpleNamespace(initialized=False)
+def tab(qtbot, quiet_dialogs, fluidics_config_path):
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
     widget = ProtocolTab(service)
     qtbot.addWidget(widget)
     widget.set_protocol(_protocol())
@@ -151,8 +151,8 @@ def test_duplicate_folder_marks_the_row_invalid(tab):
     assert any("duplicate" in p for p in problems)
 
 
-def test_apply_current_settings_to_all_imaging_rows(qtbot, quiet_dialogs):
-    service = SimpleNamespace(initialized=False)
+def test_apply_current_settings_to_all_imaging_rows(qtbot, quiet_dialogs, fluidics_config_path):
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
     source = lambda: (None, SETTINGS, COORDS)  # noqa: E731
     tab = ProtocolTab(service, current_source=source)
     qtbot.addWidget(tab)
@@ -171,8 +171,8 @@ def test_apply_current_settings_to_all_imaging_rows(qtbot, quiet_dialogs):
     assert tab.protocol.imaging.settings[key].source == "Wellplate Multipoint"
 
 
-def test_capture_refuses_zero_fovs(qtbot, quiet_dialogs):
-    service = SimpleNamespace(initialized=False)
+def test_capture_refuses_zero_fovs(qtbot, quiet_dialogs, fluidics_config_path):
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
     source = lambda: (None, SETTINGS, {"regions": []})  # noqa: E731
     tab = ProtocolTab(service, current_source=source)
     qtbot.addWidget(tab)
@@ -278,6 +278,24 @@ def test_port_limit_peeks_at_the_config_file_before_initialize(tmp_path):
     service = SimpleNamespace(initialized=False, default_config_path=str(config))
     # 3 daisy-chained 10-port valves: the last port of all but the final valve is plumbing
     assert protocol_tab_module._port_limit(service) == 28
-    assert protocol_tab_module._port_limit(SimpleNamespace(initialized=False)) is None
+    assert protocol_tab_module._port_limit(SimpleNamespace(initialized=False)) is None  # nothing to consult
+
     missing = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "nope.yaml"))
-    assert protocol_tab_module._port_limit(missing) is None
+    with pytest.raises(protocol_tab_module.FluidicsConfigError, match="No fluidics configuration"):
+        protocol_tab_module._port_limit(missing)
+    corrupt = tmp_path / "corrupt.yaml"
+    corrupt.write_text("config_version: '2.0'\nsyringe_pump: [not, a, mapping]\n")
+    with pytest.raises(protocol_tab_module.FluidicsConfigError, match="invalid"):
+        protocol_tab_module._port_limit(SimpleNamespace(initialized=False, default_config_path=str(corrupt)))
+
+
+def test_missing_config_marks_fluidics_rows_as_errors(qtbot, quiet_dialogs, tmp_path):
+    pytest.importorskip("fluidics")
+    service = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "absent.yaml"))
+    widget = ProtocolTab(service)
+    qtbot.addWidget(widget)
+    widget.set_protocol(_protocol())
+    fluidics_rows = {i for i, r in enumerate(widget.protocol.sequences) if r["type"] != "imaging"}
+    assert fluidics_rows <= set(widget._problems)
+    assert all("No fluidics configuration" in widget._problems[i] for i in fluidics_rows)
+    assert "✗" in widget.validation_label.text()
