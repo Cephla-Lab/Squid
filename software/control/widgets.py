@@ -94,19 +94,35 @@ def check_space_available_with_error_dialog(
     return True
 
 
-def check_ram_available_with_error_dialog(
+def resource_allocation_dialog(parent=None):
+    """Tell the operator that mosaic view is being traded away for this run."""
+    msg = QMessageBox(parent)
+    msg.setIcon(QMessageBox.Information)
+    msg.setText("Mosaic View will be disabled for this Run.")
+    msg.setWindowTitle("Resource Allocation")
+    msg.setStandardButtons(QMessageBox.Ok)
+    msg.setDefaultButton(QMessageBox.Ok)
+    msg.exec_()
+
+
+def mosaic_ram_exceeds_available(
     multi_point_controller: MultiPointController,
     logger: logging.Logger,
     factor_of_safety: float = 1.15,
     performance_mode: bool = False,
 ) -> bool:
-    """Check if enough RAM is available for mosaic view."""
+    """True if this acquisition's mosaic view would not fit in available RAM.
+
+    This only reports the condition — it does not veto the acquisition. Only the live
+    mosaic preview is unaffordable in this situation, not the run itself, so the caller
+    turns Performance Mode on for the run instead of refusing to start.
+    """
     import psutil
 
-    # Skip check if performance mode is enabled (mosaic view is disabled)
+    # Mosaic view is already off in performance mode, so there is nothing to fit.
     if performance_mode:
         logger.info("Performance mode enabled, skipping RAM check for mosaic view")
-        return True
+        return False
 
     ram_required = factor_of_safety * multi_point_controller.get_estimated_mosaic_ram_bytes()
     available_ram = psutil.virtual_memory().available
@@ -116,15 +132,13 @@ def check_ram_available_with_error_dialog(
     if ram_required > available_ram:
         mb_required = int(ram_required / 1024 / 1024)
         mb_available = int(available_ram / 1024 / 1024)
-        error_message = (
-            f"This acquisition's mosaic view will require approximately {mb_required:,} MB RAM, "
-            f"but only {mb_available:,} MB is currently available.\n\n"
-            f"Consider enabling Performance Mode to disable mosaic view during acquisition."
+        logger.warning(
+            f"This acquisition's mosaic view would require approximately {mb_required:,} MB RAM, "
+            f"but only {mb_available:,} MB is currently available. "
+            f"Enabling Performance Mode for this run."
         )
-        logger.error(error_message)
-        error_dialog(error_message, title="Not Enough RAM")
-        return False
-    return True
+        return True
+    return False
 
 
 def get_last_used_saving_path() -> str:
@@ -6025,6 +6039,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
     signal_acquisition_shape = Signal(int, float)  # Nz, dz
+    # This run's mosaic view will not fit in RAM; ask the GUI to enter Performance Mode
+    # for the duration of the run. Emitted before run_acquisition() so the connection
+    # (direct, same thread) has taken effect by the time the acquisition starts.
+    signal_request_mosaic_disable = Signal()
 
     def __init__(
         self,
@@ -6843,12 +6861,13 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            if not check_ram_available_with_error_dialog(
+            # Not enough RAM for the live mosaic is not a reason to refuse the run — only
+            # the preview is unaffordable. Trade it away and carry on.
+            if mosaic_ram_exceeds_available(
                 self.multipointController, self._log, performance_mode=self.performance_mode
             ):
-                self._log.error("Failed to start acquisition.  Not enough RAM available.")
-                self.btn_startAcquisition.setChecked(False)
-                return
+                resource_allocation_dialog(self)
+                self.signal_request_mosaic_disable.emit()
 
             # Update UI to show acquisition is running
             self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
@@ -7534,6 +7553,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
     signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
     signal_manual_shape_mode = Signal(bool)  # enable manual shape layer on mosaic display
     signal_toggle_live_scan_grid = Signal(bool)  # enable/disable live scan grid
+    # This run's mosaic view will not fit in RAM; ask the GUI to enter Performance Mode
+    # for the duration of the run. Emitted before run_acquisition() so the connection
+    # (direct, same thread) has taken effect by the time the acquisition starts.
+    signal_request_mosaic_disable = Signal()
     # Signal to set acquisition running state from any thread (used by TCP server)
     signal_set_acquisition_running = Signal(bool, int, float)  # is_running, nz, delta_z_um
 
@@ -9259,12 +9282,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self._log.error("Failed to start acquisition.  Not enough disk space available.")
                 return
 
-            if not check_ram_available_with_error_dialog(
+            # Not enough RAM for the live mosaic is not a reason to refuse the run — only
+            # the preview is unaffordable. Trade it away and carry on.
+            if mosaic_ram_exceeds_available(
                 self.multipointController, self._log, performance_mode=self.performance_mode
             ):
-                self.btn_startAcquisition.setChecked(False)
-                self._log.error("Failed to start acquisition.  Not enough RAM available.")
-                return
+                resource_allocation_dialog(self)
+                self.signal_request_mosaic_disable.emit()
 
             # Update UI to show acquisition is running
             self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
