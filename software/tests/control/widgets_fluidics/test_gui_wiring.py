@@ -57,7 +57,6 @@ def test_signals_are_connected_and_the_imaging_port_feeds_napari():
 
     wire_src = inspect.getsource(widgets_fluidics.wire_fluidics)
     assert "signal_reagent_rows.connect(display_tab.reagents_table.set_rows)" in wire_src
-    assert "signal_step_label.connect(display_tab.recorder.set_step_label)" in wire_src
     assert "system_ready.connect" in wire_src  # startup recovery waits for Initialize
     assert "run_line_provider = protocol_widget.run_line" in wire_src
     napari_src = _source("makeNapariConnections")
@@ -84,5 +83,4 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     from control.widgets_fluidics.display_tab import FluidicsDisplayTab
 
     shutdown_src = inspect.getsource(FluidicsDisplayTab.shutdown)
-    assert "disconnect_logging" in shutdown_src
-    assert "stop_recording" in shutdown_src and "close_recordings" in shutdown_src
+    assert "disconnect_logging" in shutdown_src and "close_recordings" in shutdown_src

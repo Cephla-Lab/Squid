@@ -7,7 +7,6 @@ from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import QGroupBox, QLabel, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 import squid.logging
-from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
@@ -26,7 +25,6 @@ class FluidicsDisplayTab(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.service = service
         self.fluidics_port = None
-        self.recorder = SensorRecorder()
         self.temperature_tab = None
         self.run_line_provider: Callable[[], str] = lambda: "—"
 
@@ -96,29 +94,28 @@ class FluidicsDisplayTab(QWidget):
         tc = self.service.system.devices.temperature_controller
         if tc is not None:
             try:
-                from control.widgets_fluidics.sensor_plots import TemperatureTab
+                from fluidics.qt.sensor_plots import TemperatureControlWidget
 
-                self.temperature_tab = TemperatureTab(tc, self.recorder)
+                self.temperature_tab = TemperatureControlWidget(tc)
                 self.tabs.insertTab(1, self.temperature_tab, "Temperature")
             except Exception:
                 self._log.exception("Could not build the Temperature tab")
         self.system_ready.emit()
 
     def shutdown(self) -> None:
-        """Exit/restart path: detach logging and flush every open recording — Squid's
-        step-labeled CSV and the plot widgets' per-channel CSVs (an embedded tab gets no
-        closeEvent, so the host must ask; see SensorTabWidget.close_recordings)."""
+        """Exit/restart path: detach logging and close the plot widgets' open CSV
+        recordings (an embedded tab gets no closeEvent, so the host must ask; see
+        SensorTabWidget.close_recordings)."""
         self.log_view.disconnect_logging()
-        self.recorder.stop_recording()
         if self.temperature_tab is not None:
-            self.temperature_tab._timer.stop()
-            self.temperature_tab.control_widget.close_recordings()
+            self.temperature_tab.close_recordings()
 
     def set_run_active(self, active: bool) -> None:
-        """A running protocol owns the instrument: manual control and TEC setpoints go dead."""
+        """A running protocol owns the instrument: manual control and TEC setpoints go
+        dead (the plots and their recording stay live)."""
         self.manual_group.setEnabled(not active)
         if self.temperature_tab is not None:
-            self.temperature_tab.set_run_active(active)
+            self.temperature_tab.setControlsEnabled(not active)
 
     def _refresh_status(self) -> None:
         try:

@@ -93,8 +93,6 @@ def test_start_runs_a_protocol_to_completion(qtbot, widget):
     w, fluidics, imaging, save_to = widget
     started = []
     w.signal_acquisition_started.connect(started.append)
-    step_labels = []
-    w.signal_step_label.connect(step_labels.append)
 
     w.start_run()
     assert w.runner is not None
@@ -110,8 +108,6 @@ def test_start_runs_a_protocol_to_completion(qtbot, widget):
     assert len(imaging.requests) == 1 and imaging.requests[0].folder == "R01_image"
     assert w.protocol_tab.add_step_button.isEnabled()  # unlocked again
     assert w.running_box.isHidden() and not w.idle_box.isHidden()  # the stale status card leaves
-    assert any(label for label in step_labels)  # the sensor recorder gets real step labels...
-    assert step_labels[-1] == ""  # ...and a blank when the run ends
 
 
 def test_a_failed_fluidics_step_shows_the_held_panel_and_restart_recovers(qtbot, widget):

@@ -62,8 +62,8 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   remembered in `cache/fluidics_protocol.json`) off the GUI thread; on success the upstream manual-control
   widget (`fluidics.qt.manual_control`), device status, and — when the config lists a temperature
   controller — the Temperature tab appear. Log | Temperature | Reagents live under the status panel;
-  Temperature embeds the fluidics module's own per-channel plot widgets plus a step-labeled
-  record-to-CSV (the shared `fluidics.sensor_recorder`), Reagents accumulates estimated µL per port.
+  Temperature embeds the fluidics module's own per-channel plot widgets (each with the standalone
+  software's Start Recording CSV), Reagents accumulates estimated µL per port.
 - **Protocol editor**: rounds-grouped step list with include checkboxes and live validation, a field editor
   with "apply to all rows with this name", **Add rounds…** (template round × N with a port list),
   **+ Imaging** (`folder_pattern`, default `{round}_{step}`), and per-imaging-row settings/coordinates

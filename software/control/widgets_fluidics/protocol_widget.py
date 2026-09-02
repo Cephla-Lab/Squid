@@ -58,7 +58,6 @@ class FluidicsProtocolWidget(QFrame):
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
     signal_reagent_rows = Signal(list)  # rows for the Reagents table
-    signal_step_label = Signal(str)  # current protocol step, for the sensor recorder ("" when idle)
 
     REFRESH_MS = 500
 
@@ -389,7 +388,6 @@ class FluidicsProtocolWidget(QFrame):
                 if step is not None:
                     row_index = step.row_index if step.kind == "imaging" else step.row_indices[0]
                     self.protocol_tab.highlight_row(row_index)
-                self.signal_step_label.emit(event.label)
                 self.sequence_label.setText("—")
             elif isinstance(event, SequenceProgress):
                 self.sequence_label.setText(f"sequence {event.position + 1}/{event.total} ({event.label})")
@@ -401,7 +399,6 @@ class FluidicsProtocolWidget(QFrame):
                 elif event.state is not RunnerState.HELD:
                     self.held_box.hide()
             elif isinstance(event, RunFinished):
-                self.signal_step_label.emit("")
                 self._finish(event.outcome)
         except Exception:
             self._log.exception("Error handling a runner event")

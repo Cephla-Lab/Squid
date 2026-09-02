@@ -4,7 +4,6 @@ import squid.logging
 
 pytest.importorskip("fluidics")
 
-from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
 
@@ -43,70 +42,6 @@ def test_reagents_table_renders_rows(qtbot):
     assert table.table.item(0, 1).text() == "probe 1"
     assert table.table.item(1, 1).text() == "—"
     assert table.table.item(1, 4).text() == "9000"
-
-
-def test_temperature_tab_reads_the_simulated_tec(qtbot, tmp_path, monkeypatch):
-    from fluidics.control.temperature_controller import TCMControllerSimulation
-
-    import control.widgets_fluidics.sensor_plots as sensor_plots_module
-    from control.widgets_fluidics.sensor_plots import TemperatureTab
-
-    tc = TCMControllerSimulation(channels=2)
-    recorder = SensorRecorder()
-    tab = TemperatureTab(tc, recorder)
-    qtbot.addWidget(tab)
-    try:
-        channel = tab.control_widget.plot_widgets[0]  # the fluidics module's own plot widget
-        channel.temp_input.setText("37.0")
-        channel.set_btn.click()
-        assert tc.target_temperatures[0] == 37.0
-
-        target = tmp_path / "t.csv"
-        monkeypatch.setattr(
-            sensor_plots_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), ""))
-        )
-        tab.record_button.setChecked(True)
-        assert recorder.recording
-        # the recorder feed subscribes with the recording, so samples arrive only now
-        qtbot.waitUntil(lambda: len(recorder.channel("channel_1").window()[0]) > 0, timeout=5000)
-        qtbot.waitUntil(lambda: len(target.read_text().splitlines()) > 1, timeout=5000)
-        tab.record_button.setChecked(False)
-        assert not recorder.recording
-        assert target.read_text().startswith("time,channel,value,step")
-
-        tab.set_run_active(True)
-        assert not channel.set_btn.isEnabled() and not channel.output_btn.isEnabled()
-        tab.set_run_active(False)
-        assert channel.set_btn.isEnabled()
-    finally:
-        tab._timer.stop()
-        tc.close()
-
-
-def test_record_button_follows_a_recorder_stop(qtbot, tmp_path, monkeypatch):
-    from fluidics.control.temperature_controller import TCMControllerSimulation
-
-    import control.widgets_fluidics.sensor_plots as sensor_plots_module
-    from control.widgets_fluidics.sensor_plots import TemperatureTab
-
-    tc = TCMControllerSimulation(channels=2)
-    recorder = SensorRecorder()
-    tab = TemperatureTab(tc, recorder)
-    qtbot.addWidget(tab)
-    try:
-        target = tmp_path / "t.csv"
-        monkeypatch.setattr(
-            sensor_plots_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), ""))
-        )
-        tab.record_button.setChecked(True)
-        assert recorder.recording
-        recorder.stop_recording()  # what a failed CSV write does internally
-        tab._refresh()
-        assert not tab.record_button.isChecked()
-        assert "Record" in tab.record_button.text()
-    finally:
-        tab._timer.stop()
-        tc.close()
 
 
 def test_reagent_export_quotes_awkward_names(qtbot, tmp_path, monkeypatch):
