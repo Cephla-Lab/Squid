@@ -4,7 +4,7 @@ import squid.logging
 
 pytest.importorskip("fluidics")
 
-from fluidics.sensor_recorder import SensorRecorder
+from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
 

@@ -7,7 +7,7 @@ from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from fluidics.qt.sensor_plots import TemperatureControlWidget
-from fluidics.sensor_recorder import SensorRecorder
+from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
 
 
 class TemperatureTab(QWidget):

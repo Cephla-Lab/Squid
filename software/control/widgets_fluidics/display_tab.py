@@ -7,7 +7,7 @@ from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import QGroupBox, QLabel, QSplitter, QTabWidget, QVBoxLayout, QWidget
 
 import squid.logging
-from fluidics.sensor_recorder import SensorRecorder
+from control.core.fluidics_protocol.sensor_recorder import SensorRecorder
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
