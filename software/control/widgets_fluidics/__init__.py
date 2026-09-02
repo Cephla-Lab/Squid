@@ -10,6 +10,8 @@ def wire_fluidics(display_tab, protocol_widget) -> None:
 
     protocol_widget.signal_reagent_rows.connect(display_tab.reagents_table.set_rows)
     display_tab.system_ready.connect(lambda: protocol_widget.set_fluidics_port(display_tab.fluidics_port))
+    # Initialize changes the application and port range the row verdicts are reached under.
+    display_tab.system_ready.connect(display_tab.protocol_tab.refresh_validation)
     # Crash recovery is only actionable once the fluidics system exists, so the startup
     # offer waits for Initialize.
     display_tab.system_ready.connect(lambda: QTimer.singleShot(0, lambda: protocol_widget.offer_recovery(startup=True)))

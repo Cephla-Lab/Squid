@@ -176,16 +176,22 @@ class ProtocolTab(QWidget):
         )
         if not path:
             return False
-        old_base = self._protocol_dir()
+        old_path, old_base = self.protocol_path, self._protocol_dir()
         new_base = os.path.dirname(os.path.abspath(path))
-        if old_base and old_base != new_base:
+        rebased = old_base is not None and old_base != new_base
+        before = [(row, row.get("settings"), row.get("coordinates")) for row in self._protocol.imaging_dicts()]
+        if rebased:
             rebase_file_refs(self._protocol, old_base, new_base)
         self.protocol_path = path
+        if not self.save():
+            # the file was never written: point back at the still-valid original
+            self.protocol_path = old_path
+            for row, settings_ref, coordinates_ref in before:
+                row["settings"], row["coordinates"] = settings_ref, coordinates_ref
+            return False
         state.save_ui_state(protocol_path=path)
-        saved = self.save()
-        if saved:
-            self._render()  # rebased references repaint
-        return saved
+        self._render()  # rebased references repaint
+        return True
 
     def new(self) -> None:
         self.set_protocol(ProtocolFile(), None)
@@ -193,6 +199,11 @@ class ProtocolTab(QWidget):
     def _protocol_dir(self) -> Optional[str]:
         """The directory the protocol's relative file references resolve against."""
         return os.path.dirname(os.path.abspath(self.protocol_path)) if self.protocol_path else None
+
+    def refresh_validation(self) -> None:
+        """Re-judge every row: the config the verdicts are reached under can change
+        (Initialize swaps the peeked file for the live system's)."""
+        self._render()
 
     def set_run_locked(self, locked: bool) -> None:
         """The structure is frozen while a run rides it (the tree stays viewable)."""
@@ -813,7 +824,9 @@ class ProtocolTab(QWidget):
             else:
                 is_float = fname in ("temperature", "incubation_time")
                 widget = QDoubleSpinBox() if is_float else QSpinBox()
-                widget.setRange(0, 100000)
+                # the library models temperature as an unconstrained float (sub-zero setpoints
+                # are valid); every other numeric field has a floor of 0
+                widget.setRange(-100000 if fname == "temperature" else 0, 100000)
                 if is_float:
                     widget.setDecimals(2)
                 if value is not None:

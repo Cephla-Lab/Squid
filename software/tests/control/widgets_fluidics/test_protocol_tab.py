@@ -301,3 +301,33 @@ def test_missing_config_marks_fluidics_rows_as_errors(qtbot, quiet_dialogs, tmp_
     assert fluidics_rows <= set(widget._problems)
     assert all("No fluidics configuration" in widget._problems[i] for i in fluidics_rows)
     assert "✗" in widget.validation_label.text()
+
+
+def test_save_as_rolls_back_when_the_write_fails(tab, tmp_path, monkeypatch):
+    dir1 = tmp_path / "one"
+    dir1.mkdir()
+    tab.protocol_path = str(dir1 / "p.yaml")
+    tab.protocol.sequences[3]["coordinates"] = "acq/run1"
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("")  # a file where a directory would be needed
+    target = str(blocker / "p.yaml")
+    monkeypatch.setattr(protocol_tab_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (target, "")))
+    assert not tab.save_as()
+    assert tab.protocol_path == str(dir1 / "p.yaml")  # still targeting the valid original
+    assert tab.protocol.sequences[3]["coordinates"] == "acq/run1"  # references not rebased away
+
+
+def test_initialize_revalidates_the_open_protocol(qtbot, quiet_dialogs, tmp_path, fluidics_config_path):
+    pytest.importorskip("fluidics")
+    from fluidics.control.config import load_config
+
+    service = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "absent.yaml"))
+    widget = ProtocolTab(service)
+    qtbot.addWidget(widget)
+    widget.set_protocol(_protocol())
+    assert widget._problems  # missing config marks the fluidics rows
+
+    service.initialized = True
+    service.config = load_config(fluidics_config_path)
+    widget.refresh_validation()  # what wire_fluidics connects to system_ready
+    assert not widget._problems

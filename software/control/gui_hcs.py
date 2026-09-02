@@ -2111,7 +2111,14 @@ class HighContentScreeningGui(QMainWindow):
         if reply == QMessageBox.No:
             return False
         if not widget.end_run_for_exit(15):
-            self.log.warning(f"The fluidics protocol run did not end within 15 s; continuing {action}")
+            # Tearing hardware out from under a still-unwinding run is worse than staying open:
+            # an abort on real hardware can legitimately take longer than the wait.
+            QMessageBox.warning(
+                self,
+                "Fluidics protocol still ending",
+                f"The protocol run did not end within 15 s; not {action}ing yet — try again in a moment.",
+            )
+            return False
         return True
 
     def _set_fluidics_protocol_active(self, active: bool):

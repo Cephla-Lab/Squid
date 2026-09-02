@@ -58,6 +58,7 @@ def test_signals_are_connected_and_the_imaging_port_feeds_napari():
     wire_src = inspect.getsource(widgets_fluidics.wire_fluidics)
     assert "signal_reagent_rows.connect(display_tab.reagents_table.set_rows)" in wire_src
     assert "system_ready.connect" in wire_src  # startup recovery waits for Initialize
+    assert "refresh_validation" in wire_src  # Initialize re-judges the open protocol
     assert "run_line_provider = protocol_widget.run_line" in wire_src
     napari_src = _source("makeNapariConnections")
     assert "self.qtImagingPort.signal_acquisition_channels" in napari_src
@@ -78,6 +79,8 @@ def test_close_and_show_events_cover_the_protocol_lifecycle():
     helper_src = _source("_confirm_end_fluidics_run")
     # Ending the run is irreversible: it must come only after the user consents.
     assert helper_src.index("question") < helper_src.index("end_run_for_exit(15)")
+    # A run that will not unwind cancels the exit rather than racing hardware teardown.
+    assert "return False" in helper_src.split("end_run_for_exit(15)")[1]
     assert "offer_recovery" not in _source("showEvent")  # deferred to system_ready
     assert "fluidicsDisplayTab.shutdown()" in _source("_cleanup_common")
     from control.widgets_fluidics.display_tab import FluidicsDisplayTab
