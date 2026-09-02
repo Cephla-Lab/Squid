@@ -209,6 +209,9 @@ class QtMultiPointController(MultiPointController, QObject):
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
     timepoint_finished = Signal(int)  # time_point index that just completed
+    # TimingProbeResult from run_timing_probe().  Emitted from the probe thread; Qt's auto
+    # connection queues it onto the GUI thread, where showing dialogs is safe.
+    timing_probe_finished = Signal(object)
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats

@@ -158,6 +158,11 @@ class MultiPointWorker:
         )
 
         self.time_point = 0
+        # Time-lapse pacing diagnostics.  We never skip a time point: when a round runs past
+        # its dt interval we start the next one immediately and record the overrun here.
+        self._late_time_points = 0
+        self._max_lateness_s = 0.0
+        self._total_lateness_s = 0.0
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
@@ -197,6 +202,9 @@ class MultiPointWorker:
         self._current_round_images = {}
 
         self.skip_saving = acquisition_parameters.skip_saving
+        self._dry_run = acquisition_parameters.dry_run
+        if self._dry_run:
+            self._log.warning("DRY RUN: illumination will not be opened for this acquisition.")
         job_classes = []
         use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
         use_zarr_v3 = FILE_SAVING_OPTION == FileSavingOption.ZARR_V3
@@ -463,7 +471,9 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
-            sleep_time = min(self.dt / 20.0, 0.5)
+            # Poll often enough to stay abort-responsive and keep the watchdog heartbeat alive,
+            # but never faster than 50 ms -- a tiny dt would otherwise busy-spin the wait loop.
+            sleep_time = min(max(self.dt / 20.0, 0.05), 0.5)
 
             # Send Slack acquisition start notification
             if self._slack_notifier is not None:
@@ -491,6 +501,7 @@ class MultiPointWorker:
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
                 self._run_state_beat()
+                time_point_start = time.time()
 
                 # Gate on laser engine readiness for the channels this acquisition will fire.
                 # Re-checked every timepoint so dt-induced sleep gaps are handled.
@@ -503,26 +514,43 @@ class MultiPointWorker:
                     self.run_single_time_point()
 
                 self.time_point = self.time_point + 1
-                if self.dt == 0:  # continous acquisition
-                    pass
-                else:  # timed acquisition
 
-                    # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
-                        self._log.info("skip time point " + str(self.time_point + 1))
-                        self.time_point = self.time_point + 1
+                if self.dt == 0:  # continous acquisition - start the next round immediately
+                    continue
 
-                    # check if it has reached Nt
-                    if self.time_point == self.Nt:
-                        break  # no waiting after taking the last time point
+                # Timed acquisition.  dt is a START-TO-START period.  We never skip a time point:
+                # if a round overran dt we start the next one immediately and the run just
+                # stretches out.  Dropping requested time points silently was the old behaviour
+                # and it cost whole acquisitions whenever a round was slower than dt.
+                next_start = self.timestamp_acquisition_started + self.time_point * self.dt
+                lateness_s = time.time() - next_start
+                if lateness_s > 0:
+                    round_s = time.time() - time_point_start
+                    self._late_time_points += 1
+                    self._total_lateness_s += lateness_s
+                    self._max_lateness_s = max(self._max_lateness_s, lateness_s)
+                    tail = (
+                        f"Starting time point {self.time_point + 1}/{self.Nt} immediately; no time points are skipped."
+                        if self.time_point < self.Nt
+                        else "This was the last time point."
+                    )
+                    self._log.warning(
+                        f"Time point {self.time_point}/{self.Nt} overran its {self.dt:g} [s] interval by "
+                        f"{lateness_s:.1f} [s] (the round took {round_s:.1f} [s]). {tail}"
+                    )
 
-                    # wait until it's time to do the next acquisition
-                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
-                        if self.abort_requested_fn():
-                            self._log.debug("In run wait loop, abort_acquisition_requested=True")
-                            break
-                        self._run_state_beat()
-                        self._sleep(sleep_time)
+                # check if it has reached Nt
+                if self.time_point >= self.Nt:
+                    break  # no waiting after taking the last time point
+
+                # Wait until it's time to do the next acquisition.  If we are already late this
+                # loop is a no-op and the next round starts right away.
+                while time.time() < next_start:
+                    if self.abort_requested_fn():
+                        self._log.debug("In run wait loop, abort_acquisition_requested=True")
+                        break
+                    self._run_state_beat()
+                    self._sleep(sleep_time)
 
             elapsed_time = time.perf_counter_ns() - start_time
             self._log.info("Time taken for acquisition: " + str(elapsed_time / 10**9))
@@ -551,11 +579,19 @@ class MultiPointWorker:
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
             total_duration = time.time() - self.timestamp_acquisition_started
+            if self._late_time_points:
+                self._log.warning(
+                    f"{self._late_time_points} of {self.time_point} acquired time point(s) ran past the "
+                    f"{self.dt:g} [s] interval (worst overrun {self._max_lateness_s:.1f} [s], "
+                    f"total {self._total_lateness_s:.1f} [s]).  No time points were skipped."
+                )
             self._run_state.end(
                 reason,
                 {
                     "total_images": self.image_count,
                     "total_timepoints": self.time_point,
+                    "late_timepoints": self._late_time_points,
+                    "max_lateness_seconds": round(self._max_lateness_s, 3),
                     "total_duration_seconds": total_duration,
                     "errors_encountered": self._acquisition_error_count,
                 },
@@ -571,6 +607,7 @@ class MultiPointWorker:
                         errors_encountered=self._acquisition_error_count,
                         experiment_id=self.experiment_ID or "unknown",
                         reason=reason,
+                        late_timepoints=self._late_time_points,
                     )
                     self.callbacks.signal_slack_acquisition_finished(stats)
                 except Exception as e:
@@ -1076,7 +1113,10 @@ class MultiPointWorker:
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
-        af_succeeded = self.perform_autofocus(region_id, fov)
+        # Timed so the timing probe can separate the autofocus cost from the rest of the FOV;
+        # records ~0 on FOVs where contrast AF is skipped by the NUMBER_OF_FOVS_PER_AF gate.
+        with self._timing.get_timer("perform_autofocus"):
+            af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
@@ -1163,6 +1203,35 @@ class MultiPointWorker:
         self.callbacks.signal_current_configuration(config)
         self.liveController.set_microscope_mode(config)
         self.wait_till_operation_is_completed()
+
+    def _illumination_on_for_frame(self):
+        """Open the illumination for one frame -- or, in a dry run, issue the equal-cost
+        NON-illuminating twin of that command so the per-frame latency is still paid.
+
+        The twin is the same command with the opposite polarity:
+
+          * ShutterControlMode.TTL and LED matrix:
+                microcontroller.turn_off_illumination()   (microcontroller.py:768)
+            instead of
+                microcontroller.turn_on_illumination()    (microcontroller.py:762)
+            Identical packet shape (bytearray(tx_buffer_length), only cmd[1] differs),
+            identical send_command() path, and the caller's existing
+            wait_till_operation_is_completed() blocks on the same ack.  The firmware
+            handlers are mirror images of each other.
+          * ShutterControlMode.Software (LDI): set_shutter_state(ch, on=False) instead of
+            on=True -- one write_and_check either way.  Known bias: on a channel switch the
+            real path also closes the previously active channel first, so it costs one extra
+            serial round trip (~2-5 ms) that we do not.  Negligible against the ~250 ms
+            emission filter move that IS measured.
+
+        Do NOT substitute microcontroller.set_illumination(source, 0): the firmware ends
+        set_illumination() with `if (illumination_is_on) turn_on_illumination();`, which
+        would drive the gate pin HIGH whenever that global happens to be set.
+        """
+        if self._dry_run:
+            self.liveController.turn_off_illumination()
+            return
+        self.liveController.turn_on_illumination()
 
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
@@ -1445,15 +1514,27 @@ class MultiPointWorker:
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
         if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_on_illumination()
+            self._illumination_on_for_frame()
             self.wait_till_operation_is_completed()
             camera_illumination_time = None
         elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
             if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
+                # nl5.start_acquisition() both fires the laser and triggers the camera, so there
+                # is no dry-run-safe variant.  MultiPointController.timing_probe_refusal_reason()
+                # refuses this case up front; this assert is the tripwire if a future entry point
+                # forgets to ask.
+                assert not self._dry_run, "NL5 DOUT acquisition has no dry-run-safe path"
                 # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
                 #   I am pretty sure this is broken!
                 self.microscope.addons.nl5.start_acquisition()
+            elif self._dry_run:
+                # HARDWARE + EDGE only.  illumination_time=None makes the hardware trigger fn
+                # send control_illumination=False, clearing the strobe-control MSB, while the
+                # camera trigger pulse keeps its fixed TRIGGER_PULSE_LENGTH_us width.  Under
+                # HardwareTriggerMode.LEVEL the pulse width IS this value, so zeroing it would
+                # destroy the trigger -- LEVEL is refused before the probe ever starts.
+                camera_illumination_time = None
         # This is some large timeout that we use just so as to not block forever
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
@@ -1543,11 +1624,13 @@ class MultiPointWorker:
                 # trigger acquisition (including turning on the illumination)
                 if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                     # TODO(imo): use illum controller
-                    self.liveController.turn_on_illumination()
+                    self._illumination_on_for_frame()
                     self.wait_till_operation_is_completed()
 
-                # read camera frame
-                self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
+                # read camera frame.  In a dry run illumination_time=None clears the hardware
+                # strobe-control bit; see acquire_camera_image() for the EDGE/LEVEL caveat.
+                rgb_illumination_time = None if self._dry_run else self.camera.get_exposure_time()
+                self.camera.send_trigger(illumination_time=rgb_illumination_time)
                 image = self.camera.read_frame()
                 if image is None:
                     self._log.warning("self.camera.read_frame() returned None")
