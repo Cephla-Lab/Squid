@@ -129,12 +129,17 @@ class ProtocolFile(BaseModel):
             if row.get("type") == IMAGING_TYPE
         ]
 
+    def imaging_dicts(self) -> List[dict]:
+        """The imaging rows as the raw dicts they are stored as - for repaint paths
+        that must not pay per-row Pydantic validation (imaging_rows() validates)."""
+        return [r for r in self.sequences if r.get("type") == IMAGING_TYPE]
+
     def round_labels(self) -> List[str]:
         """The distinct round labels, in first-appearance order."""
         return list(dict.fromkeys(r.get("round") for r in self.sequences if r.get("round")))
 
     def summary_line(self) -> str:
-        imaging = sum(1 for r in self.sequences if r.get("type") == IMAGING_TYPE)
+        imaging = len(self.imaging_dicts())
         return f"{len(self.round_labels())} rounds · {len(self.sequences)} rows · {imaging} imaging"
 
 
@@ -197,6 +202,11 @@ def render_folder(
     return pattern.format(round=round_label or "", step=step_name or "image", index=index, run=run_name)
 
 
+def included(row: dict) -> bool:
+    """The editor checkbox's default, written once: rows run unless excluded."""
+    return bool(row.get("include", True))
+
+
 def ref_for_path(path: str, base: Optional[str]) -> str:
     """How a file-backed settings/coordinates reference is written: relative to the
     protocol file when the target sits under its directory, absolute otherwise."""
@@ -208,9 +218,7 @@ def ref_for_path(path: str, base: Optional[str]) -> str:
 def rebase_file_refs(protocol: ProtocolFile, old_base: str, new_base: str) -> None:
     """File-backed references are relative to the protocol file, so saving it into
     another directory must re-point them at the same files. Header keys are untouched."""
-    for row in protocol.sequences:
-        if row.get("type") != IMAGING_TYPE:
-            continue
+    for row in protocol.imaging_dicts():
         for field in ("settings", "coordinates"):
             ref = row.get(field)
             if not ref or ref in getattr(protocol.imaging, field) or os.path.isabs(ref):

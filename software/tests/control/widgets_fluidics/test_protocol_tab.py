@@ -269,24 +269,26 @@ def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
     assert tab.protocol.sequences[3]["settings"] == "cur"  # header keys stay header keys
 
 
-def test_port_limit_peeks_at_the_config_file_before_initialize(tmp_path):
+def test_config_peek_before_initialize(tmp_path, fluidics_config_path):
     pytest.importorskip("fluidics")
-    from tests.control.fluidics_test_config import CONFIG_YAML
+    from fluidics.control.config import available_port_count
 
-    config = tmp_path / "fluidics_config.yaml"
-    config.write_text(CONFIG_YAML)
-    service = SimpleNamespace(initialized=False, default_config_path=str(config))
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
+    config = protocol_tab_module._current_config(service)
     # 3 daisy-chained 10-port valves: the last port of all but the final valve is plumbing
-    assert protocol_tab_module._port_limit(service) == 28
-    assert protocol_tab_module._port_limit(SimpleNamespace(initialized=False)) is None  # nothing to consult
+    assert available_port_count(config) == 28 and config.application == "Flow Cell"
 
-    missing = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "nope.yaml"))
-    with pytest.raises(protocol_tab_module.FluidicsConfigError, match="No fluidics configuration"):
-        protocol_tab_module._port_limit(missing)
+    # every not-knowable case is an error the operator sees, never a silent skip
+    for bad in (
+        SimpleNamespace(initialized=False),
+        SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "nope.yaml")),
+    ):
+        with pytest.raises(protocol_tab_module.FluidicsConfigError):
+            protocol_tab_module._current_config(bad)
     corrupt = tmp_path / "corrupt.yaml"
     corrupt.write_text("config_version: '2.0'\nsyringe_pump: [not, a, mapping]\n")
     with pytest.raises(protocol_tab_module.FluidicsConfigError, match="invalid"):
-        protocol_tab_module._port_limit(SimpleNamespace(initialized=False, default_config_path=str(corrupt)))
+        protocol_tab_module._current_config(SimpleNamespace(initialized=False, default_config_path=str(corrupt)))
 
 
 def test_missing_config_marks_fluidics_rows_as_errors(qtbot, quiet_dialogs, tmp_path):

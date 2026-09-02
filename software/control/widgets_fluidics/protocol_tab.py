@@ -41,6 +41,7 @@ from control.models.fluidics_protocol import (
     SettingsBlock,
     expand_rounds,
     folder_problems_by_row,
+    included,
     rebase_file_refs,
     ref_for_path,
     load_protocol,
@@ -51,6 +52,7 @@ from control.widgets_fluidics import state
 from control.widgets_fluidics.dialogs import AddRoundsDialog, pick_coordinates_source, pick_settings_source
 
 try:  # the editor degrades gracefully when the fluidics library is not installed
+    from fluidics.control.config import available_port_count, load_config
     from fluidics.sequences import (
         SEQUENCE_TYPE_LABELS,
         get_fields_for_type,
@@ -58,6 +60,7 @@ try:  # the editor degrades gracefully when the fluidics library is not installe
     )
 except ImportError:
     SEQUENCE_TYPE_LABELS = get_fields_for_type = sequence_problem = None
+    available_port_count = load_config = None
 
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
@@ -67,52 +70,45 @@ _INVALID = QColor(255, 205, 205)
 
 
 class FluidicsConfigError(RuntimeError):
-    """The fluidics configuration is missing or unreadable: the port range cannot be known.
-    A machine with the Fluidics tab claims a fluidics system, so this is a misconfiguration
-    to surface, never a reason to judge protocols with the port stage quietly skipped."""
+    """The fluidics configuration is missing or unreadable: the port range and application
+    cannot be known. A machine with the Fluidics tab claims a fluidics system, so this is a
+    misconfiguration to surface, never a reason to judge protocols with checks quietly skipped."""
 
 
-_config_port_count_cache: dict = {}  # path -> (mtime, count)
+_peeked_config_cache: Dict[str, Tuple[float, object]] = {}  # path -> (mtime, FluidicsConfig)
 
 
-def _port_limit(service) -> Optional[int]:
-    """The port count - from the live system, or peeked from the config file before
-    Initialize (parsing the YAML needs no hardware). Raises FluidicsConfigError when the
-    configured file is missing or unreadable; returns None only when there is nothing to
-    consult at all (no service, no library, no configured path)."""
+def _current_config(service):
+    """The library's FluidicsConfig - from the live system, or peeked from the config file
+    before Initialize (parsing the YAML needs no hardware; mtime-cached). Returns None only
+    when the library is not installed; raises FluidicsConfigError for every other reason the
+    configuration cannot be known."""
+    if load_config is None:
+        return None
     if service is None:
-        return None
-    try:
-        from fluidics.control.config import available_port_count, load_config
-    except ImportError:
-        return None
+        raise FluidicsConfigError("No fluidics service to consult for a configuration")
     if getattr(service, "initialized", False):
-        return available_port_count(service.config)
+        return service.config
     path = getattr(service, "default_config_path", None)
     if not path:
-        return None
-    if not os.path.isfile(path):
+        raise FluidicsConfigError("No fluidics configuration path is set")
+    try:
+        mtime = os.stat(path).st_mtime
+    except FileNotFoundError:
         raise FluidicsConfigError(
             f"No fluidics configuration at {path} — copy the instrument's config there, or Initialize with another file"
         )
-    try:
-        mtime = os.path.getmtime(path)
     except OSError as e:
         raise FluidicsConfigError(f"Cannot read the fluidics configuration at {path}: {e}")
-    cached = _config_port_count_cache.get(path)
-    if cached is None or cached[0] != mtime:
-        try:
-            count = available_port_count(load_config(path))
-        except Exception as e:
-            raise FluidicsConfigError(f"The fluidics configuration at {path} is invalid: {e}")
-        _config_port_count_cache[path] = (mtime, count)
-    return _config_port_count_cache[path][1]
-
-
-def _application(service) -> str:
-    if service is not None and getattr(service, "initialized", False):
-        return service.config.application
-    return "Flow Cell"
+    cached = _peeked_config_cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        config = load_config(path)
+    except Exception as e:
+        raise FluidicsConfigError(f"The fluidics configuration at {path} is invalid: {e}")
+    _peeked_config_cache[path] = (mtime, config)
+    return config
 
 
 class ProtocolTab(QWidget):
@@ -209,10 +205,8 @@ class ProtocolTab(QWidget):
         """None when every included imaging row has both sources; else a one-line hint."""
         missing = sum(
             1
-            for row in self._protocol.sequences
-            if row.get("type") == IMAGING_TYPE
-            and row.get("include", True)
-            and not (row.get("settings") and row.get("coordinates"))
+            for row in self._protocol.imaging_dicts()
+            if included(row) and not (row.get("settings") and row.get("coordinates"))
         )
         if missing:
             return f"{missing} imaging row(s) have no settings or coordinates"
@@ -500,20 +494,19 @@ class ProtocolTab(QWidget):
             QMessageBox.warning(self, "Not available", "Adding steps needs the updated fluidics library (fluidics.qt).")
             return
         try:
-            limit = _port_limit(self.service)
+            config = _current_config(self.service)
         except FluidicsConfigError as e:
             QMessageBox.warning(self, "Fluidics configuration", str(e))
             return
-        if limit is None:
-            QMessageBox.warning(self, "Fluidics configuration", "No fluidics configuration to list ports from.")
-            return
-        port_names = [f"Port {i}" for i in range(1, limit + 1)]
-        if self.service is not None and getattr(self.service, "initialized", False):
+        port_names = None
+        if getattr(self.service, "initialized", False):
             try:
                 port_names = self.service.system.devices.selector_valves.get_port_names()
             except Exception:
                 pass
-        dialog = AddSequenceDialog(self, _application(self.service), port_names)
+        if port_names is None:
+            port_names = [f"Port {i}" for i in range(1, available_port_count(config) + 1)]
+        dialog = AddSequenceDialog(self, config.application, port_names)
         if dialog.exec_() == QDialog.Accepted and dialog.result_dict:
             row = dict(dialog.result_dict)
             if row.get("type") == IMAGING_TYPE:
@@ -598,11 +591,15 @@ class ProtocolTab(QWidget):
     def _validate(self) -> None:
         problems: Dict[int, str] = {}
         folder_by_row = folder_problems_by_row(self._protocol)
-        application = _application(self.service)
+        application, limit, config_error = "Flow Cell", None, None
         try:
-            limit, config_error = _port_limit(self.service), None
+            config = _current_config(self.service)
         except FluidicsConfigError as e:
-            limit, config_error = None, str(e)
+            config_error = str(e)
+        else:
+            if config is not None:
+                application = config.application
+                limit = available_port_count(config)
         base = self._protocol_dir()
         for i, row in enumerate(self._protocol.sequences):
             if row.get("type") == IMAGING_TYPE:
@@ -631,10 +628,8 @@ class ProtocolTab(QWidget):
                 continue
             if sequence_problem is None:
                 continue
-            if limit is None:
-                # No readable port range is an error the operator must see, never a
-                # quietly skipped port stage.
-                problems[i] = config_error or "no fluidics configuration to judge ports against"
+            if config_error:
+                problems[i] = config_error
                 continue
             try:
                 # The library owns the verdict order and phrasing (sequence_problem), so
@@ -662,10 +657,10 @@ class ProtocolTab(QWidget):
 
     def _render_summaries(self) -> None:
         # Raw dict reads: this runs on every repaint, so no per-row Pydantic here.
-        imaging = [r for r in self._protocol.sequences if r.get("type") == IMAGING_TYPE]
-        by_ref = lambda field: {r.get(field) for r in imaging if r.get(field)}  # noqa: E731
+        imaging = self._protocol.imaging_dicts()
+        sources = len({r.get("settings") for r in imaging if r.get("settings")})
         self.settings_summary.setText(
-            f"{sum(1 for r in imaging if r.get('settings'))}/{len(imaging)} rows · {len(by_ref('settings'))} source(s)"
+            f"{sum(1 for r in imaging if r.get('settings'))}/{len(imaging)} rows · {sources} source(s)"
             if imaging
             else "—"
         )

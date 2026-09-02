@@ -1,7 +1,7 @@
 """The Temperature tab: the fluidics module's own per-channel plot widgets
-(fluidics.qt.sensor_plots), plus Squid's step-labeled run recording — the shared
-fluidics.sensor_recorder fed straight from the TEC subscription, so a protocol run's
-CSV carries the step each sample belongs to."""
+(fluidics.qt.sensor_plots), plus Squid's step-labeled run recording
+(control.core.fluidics_protocol.sensor_recorder) fed straight from the TEC
+subscription, so a protocol run's CSV carries the step each sample belongs to."""
 
 from qtpy.QtCore import QTimer
 from qtpy.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
