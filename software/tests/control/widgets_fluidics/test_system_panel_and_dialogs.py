@@ -118,3 +118,48 @@ def test_recovery_dialog_names_the_cursor_step(qtbot):
     qtbot.addWidget(dialog)
     texts = " ".join(label.text() for label in dialog.findChildren(type(dialog.layout().itemAt(0).widget())))
     assert "step 2/2" in texts and "liver" in texts
+
+
+def test_quick_op_calls_priming_or_clean_up_with_use_ports(qtbot, fluidics_config_path):
+    pytest.importorskip("fluidics")
+    from types import SimpleNamespace
+
+    from control.widgets_fluidics.display_tab import FluidicsDisplayTab
+
+    calls = []
+    operations = SimpleNamespace(
+        priming_or_clean_up=lambda port, flow, volume, use_ports=None: calls.append(
+            (port, flow, volume, tuple(use_ports))
+        )
+    )
+    system = SimpleNamespace(
+        operations=operations,
+        busy=False,
+        run_manual=lambda verb, callbacks=None: verb(),  # synchronous for the test
+        abort=lambda: None,
+    )
+    from fluidics.control.config import load_config
+
+    service = SimpleNamespace(
+        initialized=True,
+        system=system,
+        config=load_config(fluidics_config_path),
+        default_config_path=fluidics_config_path,
+    )
+    tab = FluidicsDisplayTab(service)
+    qtbot.addWidget(tab)
+    tab.fluidics_port = object()  # marks the system ready
+    tab.ports_edit.setText("2, 5, 7")
+    tab.wash_port_spin.setValue(1)
+    tab.volume_spin.setValue(50)
+    tab.flow_spin.setValue(200)
+
+    tab._quick_op("priming")
+    assert calls == [(1, 200, 50, (2, 5, 7))]  # wash port 1, one final draw over use_ports 2,5,7
+
+    calls.clear()
+    tab._quick_running = False
+    tab.repeat_spin.setValue(3)
+    tab._quick_op("clean_up")
+    assert calls == [(1, 200, 50, (2, 5, 7))] * 3  # Clean repeats
+    tab.log_view.disconnect_logging()

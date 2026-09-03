@@ -58,6 +58,12 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
 
 **Fluidics display tab** (next to Live View): the instrument side and the Protocol editor.
 
+- **Manual control** also has an inline **Prime / Clean** row (no pop-ups), the old widget's fields:
+  the ports to prime (`1-4, 25`), the wash port the final volume is drawn from, that volume, a flow
+  rate, and a repeat (Clean). It calls the library operation directly (`system.run_manual` →
+  `operations.priming_or_clean_up(wash_port, flow, volume, use_ports=...)`): each named port's tubing
+  is filled with its **config** `tubing_fluid_amount_ul`, then `volume` is drawn from the wash port.
+  **Stop** aborts it. It shares the library session with protocol runs, so the two mutually exclude.
 - **Initialize** builds the `FluidicsSystem` from `machine_configs/fluidics_config.yaml` (path editable,
   remembered in `cache/fluidics_protocol.json`) off the GUI thread; on success the upstream manual-control
   widget (`fluidics.qt.manual_control`), device status, and — when the config lists a temperature
