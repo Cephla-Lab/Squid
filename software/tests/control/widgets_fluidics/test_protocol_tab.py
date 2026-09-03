@@ -422,16 +422,24 @@ def test_round_editor_tags_a_group_from_its_header(qtbot, quiet_dialogs):
             ],
         )
     )
+    from qtpy.QtWidgets import QLineEdit
+
     # selecting the no-round group header opens a round editor, not a row editor
     no_round_group = tab.tree.topLevelItem(0)
     tab.tree.setCurrentItem(no_round_group)
     tab._rebuild_field_editor()
     assert "no round" in tab.field_group.title()
 
-    tab._apply_round_to_group((0, 1), "R00")  # give the untagged rows a round
+    # drive the real editingFinished path (a synchronous re-render here segfaulted)
+    edit = tab.field_form.itemAt(0, tab.field_form.FieldRole).widget()
+    assert isinstance(edit, QLineEdit)
+    edit.setText("R00")
+    edit.editingFinished.emit()
+    qtbot.wait(20)  # let the deferred re-render run
     assert tab.protocol.sequences[0]["round"] == "R00" and tab.protocol.sequences[1]["round"] == "R00"
     assert tab.protocol.sequences[2]["round"] == "R01"  # the other group is untouched
 
-    # renaming works the same, and blank clears the round
+    # blank clears the round
     tab._apply_round_to_group((0, 1), "")
+    qtbot.wait(20)
     assert tab.protocol.sequences[0]["round"] is None

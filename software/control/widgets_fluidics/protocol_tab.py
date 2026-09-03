@@ -811,7 +811,8 @@ class ProtocolTab(QWidget):
         for index in row_indices:
             if 0 <= index < len(self._protocol.sequences):
                 self._protocol.sequences[index]["round"] = new_label
-        self._mark_changed()
+        # Defer the re-render: destroying this line edit inside its own editingFinished is a crash.
+        QTimer.singleShot(0, self._mark_changed)
 
     def _line_edit(self, index: int, field: str, value) -> QLineEdit:
         edit = QLineEdit("" if value is None else str(value))
