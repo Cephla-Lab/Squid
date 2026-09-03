@@ -120,6 +120,27 @@ def test_progress_fraction_prices_elapsed_over_the_estimate(tmp_path):
     assert runner._progress_fraction(50.0) is None
 
 
+def test_disable_tec_at_end_powers_the_tec_down_on_a_normal_finish(tmp_path):
+    fluidics = FakeFluidicsPort()
+    imaging = FakeImagingPort()
+    resolved = resolve_protocol(_protocol(), tmp_path, fluidics=fluidics)
+    run_dir = manifest_io.create_run_dir(tmp_path, "liver")
+    runner = ProtocolRunner(
+        resolved, run_dir, imaging, fluidics, run_name="liver", poll_s=0.01, disable_tec_at_end=True
+    )
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert fluidics.tec_disabled is True
+
+
+def test_tec_is_left_alone_at_end_without_the_option(tmp_path):
+    fluidics = FakeFluidicsPort()
+    runner, *_ = _runner(tmp_path, fluidics=fluidics)
+    runner.start()
+    assert runner.wait(10) and runner.outcome == "finished"
+    assert fluidics.tec_disabled is False
+
+
 def test_24_rounds_complete_in_seconds(tmp_path):
     runner, fluidics, imaging, run_dir = _runner(tmp_path, rounds=24)
     runner.start()
