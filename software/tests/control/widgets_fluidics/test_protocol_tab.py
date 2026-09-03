@@ -197,7 +197,6 @@ def test_set_run_locked_freezes_the_structure(tab):
     tab.set_run_locked(True)
     assert not tab.add_step_button.isEnabled()
     assert not tab.add_rounds_button.isEnabled()
-    assert not tab.pattern_edit.isEnabled()
     tab.set_run_locked(False)
     assert tab.add_step_button.isEnabled()
 

@@ -72,7 +72,7 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   software's Start Recording CSV), Reagents accumulates estimated µL per port.
 - **Protocol editor**: rounds-grouped step list with include checkboxes and live validation, a field editor
   with "apply to all rows with this name", **Add rounds…** (template round × N with a port list),
-  **+ Imaging** (`folder_pattern`, default `{round}_{step}`), and per-imaging-row settings/coordinates
+  **+ Imaging** (folder auto-named, e.g. `R01_image`, editable per row), and per-imaging-row settings/coordinates
   sources: **Apply current** captures the Wellplate Multipoint panel into a header block; **From file…**
   points at a saved acquisition folder / `acquisition.yaml` / `coordinates.csv`.
 

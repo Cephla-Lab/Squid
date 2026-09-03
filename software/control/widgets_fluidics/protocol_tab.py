@@ -33,7 +33,6 @@ from qtpy.QtWidgets import (
 
 import squid.logging
 from control.models.fluidics_protocol import (
-    DEFAULT_FOLDER_PATTERN,
     IMAGING_TYPE,
     CoordinatesBlock,
     ImagingRow,
@@ -281,12 +280,8 @@ class ProtocolTab(QWidget):
         coordinates_row.addWidget(self.coordinates_file_button)
         coordinates_row.addWidget(self.coordinates_summary, 1)
 
-        self.pattern_edit = QLineEdit(DEFAULT_FOLDER_PATTERN)
-        self.pattern_edit.editingFinished.connect(self._pattern_changed)
         self.validation_label = QLabel("—")
         folders_row = QHBoxLayout()
-        folders_row.addWidget(QLabel("Folders"))
-        folders_row.addWidget(self.pattern_edit)
         folders_row.addWidget(self.validation_label, 1)
 
         self.add_step_button = QPushButton("+ Step")
@@ -351,7 +346,6 @@ class ProtocolTab(QWidget):
             self.settings_file_button,
             self.capture_button,
             self.coordinates_file_button,
-            self.pattern_edit,
             self.add_step_button,
             self.add_imaging_button,
             self.duplicate_button,
@@ -581,12 +575,6 @@ class ProtocolTab(QWidget):
         dialog = AddRoundsDialog(self._protocol, self)
         if dialog.exec_() == QDialog.Accepted and dialog.result_kwargs:
             self._protocol = expand_rounds(self._protocol, **dialog.result_kwargs)
-            self._mark_changed()
-
-    def _pattern_changed(self) -> None:
-        pattern = self.pattern_edit.text().strip() or DEFAULT_FOLDER_PATTERN
-        if pattern != self._protocol.imaging.folder_pattern:
-            self._protocol.imaging.folder_pattern = pattern
             self._mark_changed()
 
     def _expand_all(self, expand: bool) -> None:
