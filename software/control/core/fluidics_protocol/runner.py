@@ -57,6 +57,7 @@ class RunnerSnapshot:
     hold: Optional[Hold]
     outcome: Optional[str]
     elapsed_s: float
+    progress_fraction: Optional[float]  # 0..1 how-far-through, or None when there's no estimate to go on
 
 
 @dataclass
@@ -148,6 +149,7 @@ class ProtocolRunner:
 
     def snapshot(self) -> RunnerSnapshot:
         with self._lock:
+            elapsed = time.time() - self._manifest.started_at
             return RunnerSnapshot(
                 state=self._state,
                 step_index=self._current_step,
@@ -155,8 +157,20 @@ class ProtocolRunner:
                 total_steps=len(self._steps),
                 hold=self._hold,
                 outcome=self._outcome,
-                elapsed_s=time.time() - self._manifest.started_at,
+                elapsed_s=elapsed,
+                progress_fraction=self._progress_fraction(elapsed),
             )
+
+    def _progress_fraction(self, elapsed_s: float) -> Optional[float]:
+        """How far through the run, 0..1, or None when there's no time estimate to go on (the
+        view then falls back to counting completed steps). Priced off the rough total estimate,
+        so hold just under full until the run actually ends."""
+        if self._state is RunnerState.ENDED:
+            return 1.0
+        estimate = self._resolved.total_estimate_s
+        if estimate and estimate > 0:
+            return min(0.99, elapsed_s / estimate)
+        return None
 
     def start(self) -> None:
         if self._thread is not None:

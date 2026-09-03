@@ -356,17 +356,13 @@ class FluidicsProtocolWidget(QFrame):
         self.running_box.setHidden(not active)
         self.held_box.hide()
 
-    def _render_progress(self, snap, estimate) -> None:
-        """Drive the bar off elapsed-vs-estimate -- the same ratio shown beside it -- so it keeps
-        moving through a long imaging step, which the completed-steps count alone would sit at 0%
-        for. The estimate is rough, so hold just under full until the run actually ends. With no
-        estimate (an unpriced plan), fall back to counting completed steps."""
-        if snap.state is RunnerState.ENDED:
+    def _render_progress(self, snap) -> None:
+        """Map the run's progress fraction (elapsed vs. the rough estimate, held just under full
+        until it ends -- so the bar keeps moving through a long imaging step) onto the bar. With
+        no fraction (an unpriced plan), fall back to counting completed steps."""
+        if snap.progress_fraction is not None:
             self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(100)
-        elif estimate and estimate > 0:
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(min(99, int(100 * snap.elapsed_s / estimate)))
+            self.progress_bar.setValue(round(100 * snap.progress_fraction))
         elif snap.step_index is not None:
             self.progress_bar.setMaximum(snap.total_steps)
             done = snap.step_index + (0 if snap.outcome is None else 1)
@@ -563,9 +559,9 @@ class FluidicsProtocolWidget(QFrame):
             snap = runner.snapshot()
             self.state_label.setText(f"State: {snap.state.value}")
             self._render_running()
+            self._render_progress(snap)
             # imaging is priced at a rough 1 s/FOV (see IMAGING_SECONDS_PER_FOV); the total is a ballpark
             estimate = self._resolved.total_estimate_s if self._resolved else None
-            self._render_progress(snap, estimate)
             self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)} / est. {_hms(estimate)}")
             self.folder_label.setText(str(runner.run_dir))
             if snap.state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):

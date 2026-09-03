@@ -1,5 +1,6 @@
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +102,22 @@ def test_happy_path_runs_every_step_and_leaves_the_documented_run_folder(tmp_pat
     assert imaging.requests[0].settings.channels == ["A"] and imaging.requests[0].coordinates.fov_count == 1
     kinds = [type(e).__name__ for e in events]
     assert kinds[0] == "StateChanged" and kinds[-1] == "RunFinished" and kinds.count("StepStarted") == 4
+
+
+def test_progress_fraction_prices_elapsed_over_the_estimate(tmp_path):
+    # the snapshot owns "how far through the run" so it's testable without the GUI: elapsed over
+    # the rough total estimate, held just under full until the run ends, None when there's no estimate.
+    runner, *_ = _runner(tmp_path)
+    runner._resolved = SimpleNamespace(total_estimate_s=200.0)
+    runner._state = RunnerState.RUNNING
+    assert runner._progress_fraction(0.0) == 0.0
+    assert runner._progress_fraction(100.0) == 0.5
+    assert runner._progress_fraction(1000.0) == 0.99  # capped until the run actually ends
+    runner._state = RunnerState.ENDED
+    assert runner._progress_fraction(0.0) == 1.0
+    runner._resolved = SimpleNamespace(total_estimate_s=None)  # an unpriced plan
+    runner._state = RunnerState.RUNNING
+    assert runner._progress_fraction(50.0) is None
 
 
 def test_24_rounds_complete_in_seconds(tmp_path):
