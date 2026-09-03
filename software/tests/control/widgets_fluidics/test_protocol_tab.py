@@ -443,3 +443,36 @@ def test_round_editor_tags_a_group_from_its_header(qtbot, quiet_dialogs):
     tab._apply_round_to_group((0, 1), "")
     qtbot.wait(20)
     assert tab.protocol.sequences[0]["round"] is None
+
+
+def test_remove_a_whole_round_from_the_group_header(tab):
+    # tab's protocol groups as: setup, R01 (probe/wash/image), R02 (probe/image)
+    r01 = tab.tree.topLevelItem(1)
+    assert r01.text(0) == "R01"
+    tab.tree.setCurrentItem(r01)
+    tab._remove_row()
+    labels = [r.get("round") for r in tab.protocol.sequences]
+    assert "R01" not in labels  # the whole round is gone
+    assert "setup" in labels and "R02" in labels  # the others are untouched
+
+
+def test_move_a_whole_round_up_and_down(tab):
+    def round_order():
+        seen = []
+        for r in tab.protocol.sequences:
+            if r.get("round") not in seen:
+                seen.append(r.get("round"))
+        return seen
+
+    assert round_order() == ["setup", "R01", "R02"]
+    r02 = tab.tree.topLevelItem(2)
+    assert r02.text(0) == "R02"
+    tab.tree.setCurrentItem(r02)
+    tab._move_row(-1)  # R02 up, past R01
+    assert round_order() == ["setup", "R02", "R01"]
+
+    # and back down
+    tab.tree.setCurrentItem(tab.tree.topLevelItem(1))  # R02 is now the middle group
+    assert tab.tree.topLevelItem(1).text(0) == "R02"
+    tab._move_row(+1)
+    assert round_order() == ["setup", "R01", "R02"]

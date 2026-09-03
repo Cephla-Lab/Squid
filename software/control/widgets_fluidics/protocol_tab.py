@@ -367,6 +367,15 @@ class ProtocolTab(QWidget):
         data = items[0].data(0, Qt.UserRole)
         return int(data) if data is not None else None
 
+    def _selected_group_item(self) -> Optional[QTreeWidgetItem]:
+        items = self.tree.selectedItems()
+        return items[0] if items and items[0].parent() is None else None
+
+    def _group_row_indices(self, group_item: QTreeWidgetItem) -> List[int]:
+        """The (contiguous) sequence indices under a round group header."""
+        rows = [group_item.child(ci).data(0, Qt.UserRole) for ci in range(group_item.childCount())]
+        return sorted(int(r) for r in rows if r is not None)
+
     def _selected_imaging_rows(self) -> List[int]:
         if self.scope_combo.currentText() == _SCOPE_ALL:
             return [i for i, _r in self._protocol.imaging_rows()]
@@ -534,6 +543,10 @@ class ProtocolTab(QWidget):
         self._mark_changed()
 
     def _move_row(self, delta: int) -> None:
+        group = self._selected_group_item()
+        if group is not None:
+            self._move_group(group, delta)
+            return
         index = self._selected_row_index()
         if index is None:
             return
@@ -545,7 +558,30 @@ class ProtocolTab(QWidget):
         self._mark_changed()
         self._select_row(target)
 
+    def _move_group(self, group_item: QTreeWidgetItem, delta: int) -> None:
+        """Swap a whole round with the adjacent one (groups are contiguous blocks)."""
+        gi = self.tree.indexOfTopLevelItem(group_item)
+        target = gi + delta
+        if not 0 <= target < self.tree.topLevelItemCount():
+            return
+        this = self._group_row_indices(group_item)
+        other = self._group_row_indices(self.tree.topLevelItem(target))
+        if not this or not other:
+            return
+        lo, hi = sorted((this, other), key=lambda block: block[0])
+        seqs = self._protocol.sequences
+        a0, a1 = lo[0], lo[-1] + 1  # first block (contiguous)
+        b0, b1 = hi[0], hi[-1] + 1  # second block, right after it
+        self._protocol.sequences = seqs[:a0] + seqs[b0:b1] + seqs[a1:b0] + seqs[a0:a1] + seqs[b1:]
+        self._mark_changed()
+
     def _remove_row(self) -> None:
+        group = self._selected_group_item()
+        if group is not None:  # remove the whole round
+            for index in reversed(self._group_row_indices(group)):
+                del self._protocol.sequences[index]
+            self._mark_changed()
+            return
         index = self._selected_row_index()
         if index is None:
             return
