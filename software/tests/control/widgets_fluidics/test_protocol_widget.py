@@ -328,3 +328,39 @@ def test_running_card_shows_elapsed_and_estimate(qtbot, widget):
     w._refresh()
     assert "elapsed 00:01:05" in w.elapsed_label.text()
     assert "est. 01:02:03" in w.elapsed_label.text()
+
+
+def test_progress_bar_advances_with_elapsed_not_step_count(qtbot, widget):
+    # the reported bug: during a long imaging step (step_index stuck at 0) the bar sat at 0%.
+    from control.core.fluidics_protocol.events import RunnerState
+
+    w, *_ = widget
+    w._resolved = SimpleNamespace(total_estimate_s=200.0)
+
+    def snap(elapsed, state=RunnerState.RUNNING):
+        return SimpleNamespace(state=state, step_index=0, total_steps=5, elapsed_s=elapsed, outcome=None, attempt=1)
+
+    w.runner = SimpleNamespace(snapshot=lambda: snap(0.0), run_dir="/tmp/run")
+    w._refresh()
+    assert w.progress_bar.value() == 0
+    w.runner.snapshot = lambda: snap(100.0)  # half the estimate, still on step 0
+    w._refresh()
+    assert w.progress_bar.value() == 50  # moved even though the step index did not
+    w.runner.snapshot = lambda: snap(100.0, RunnerState.ENDED)
+    w._refresh()
+    assert w.progress_bar.value() == 100  # the finished run reads full
+
+
+def test_progress_bar_falls_back_to_steps_without_an_estimate(qtbot, widget):
+    from control.core.fluidics_protocol.events import RunnerState
+
+    w, *_ = widget
+    w._resolved = SimpleNamespace(total_estimate_s=None)  # unpriced plan
+    w.runner = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            state=RunnerState.RUNNING, step_index=2, total_steps=4, elapsed_s=9.0, outcome=None, attempt=1
+        ),
+        run_dir="/tmp/run",
+    )
+    w._refresh()
+    assert w.progress_bar.maximum() == 4 and w.progress_bar.value() == 2
