@@ -44,7 +44,7 @@ def _image(round_name, source_key):
         "type": "imaging",
         "round": round_name,
         "name": "image",
-        "folder": f"{round_name}_image",
+        "folder": "image",
         "settings": "cur",
         "coordinates": source_key,
     }

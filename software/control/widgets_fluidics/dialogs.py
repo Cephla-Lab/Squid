@@ -20,7 +20,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
-from control.models.fluidics_protocol import IMAGING_TYPE, ProtocolFile, expand_rounds, parse_port_list
+from control.models.fluidics_protocol import IMAGING_TYPE, ProtocolFile, expand_rounds, imaging_folder, parse_port_list
 
 _NO_PORT_ROW = "— none —"
 
@@ -118,7 +118,7 @@ class AddRoundsDialog(QDialog):
                 port = next(
                     (r["fluidic_port"] for r in rows if (r.get("name") or r["type"]) == kwargs["port_row_name"]), None
                 )
-                folders = [r.get("folder") for r in rows if r.get("type") == IMAGING_TYPE]
+                folders = [imaging_folder(label, r.get("folder")) for r in rows if r.get("type") == IMAGING_TYPE]
                 parts = [str(label)]
                 if port is not None:
                     parts.append(f"port {port}")

@@ -7,6 +7,7 @@ from control.models.fluidics_protocol import (
     SettingsBlock,
     expand_rounds,
     folder_problems,
+    imaging_folder,
     load_protocol,
     parse_port_list,
     save_protocol,
@@ -51,7 +52,7 @@ def _protocol():
                 "type": "imaging",
                 "round": "R01",
                 "name": "image",
-                "folder": "R01_image",
+                "folder": "image",
                 "settings": "cur",
                 "coordinates": "cur",
             },
@@ -87,7 +88,7 @@ def test_imaging_rows_are_validated_and_unknown_keys_rejected():
     with pytest.raises(ValueError):
         ProtocolFile(sequences=[{"type": "imaging", "folder": "x", "bogus": 1}])
     p = _protocol()
-    assert [(i, r.folder) for i, r in p.imaging_rows()] == [(3, "R01_image")]
+    assert [(i, r.folder) for i, r in p.imaging_rows()] == [(3, "image")]
 
 
 def test_strip_for_library_drops_imaging_rows_and_keeps_round():
@@ -137,13 +138,19 @@ def test_round_trip_as_a_plain_sequence_file(tmp_path):
 def test_folder_problems():
     p = _protocol()
     assert folder_problems(p) == []
-    p.sequences.append({"type": "imaging", "round": "R02", "name": "image", "folder": "R01_image"})
+    # a second R01 imaging with the same folder_name collides (both derive R01_image)
+    p.sequences.append({"type": "imaging", "round": "R01", "name": "image", "folder": "image"})
     p.sequences.append({"type": "imaging", "round": "R03", "name": "image", "folder": "bad/name"})
     p.sequences.append({"type": "imaging", "round": "R04", "name": "image"})
     problems = folder_problems(p)
-    assert any("duplicate" in m for m in problems)
+    assert any("collides" in m for m in problems)
     assert any("bad/name" in m for m in problems)
     assert any("no folder" in m for m in problems)
+
+
+def test_imaging_folder_is_round_prefixed():
+    assert imaging_folder("R02", "image") == "R02_image"
+    assert imaging_folder(None, "scan") == "scan"  # no round -> just the name
 
 
 def test_expand_rounds_copies_a_round_with_new_labels_ports_and_folders():
@@ -153,7 +160,9 @@ def test_expand_rounds_copies_a_round_with_new_labels_ports_and_folders():
     assert rounds.count("R02") == 4 and rounds.count("R03") == 4
     r02 = [r for r in out.sequences if r.get("round") == "R02"]
     assert [r["name"] for r in r02] == ["probe", "wash", "image", "cleave"]
-    assert r02[0]["fluidic_port"] == 2 and r02[2]["folder"] == "R02_image"
+    assert r02[0]["fluidic_port"] == 2
+    assert r02[2]["folder"] == "image"  # base unchanged
+    assert imaging_folder(r02[2]["round"], r02[2]["folder"]) == "R02_image"  # derived output
     assert [r for r in out.sequences if r.get("round") == "R03"][0]["fluidic_port"] == 3
     assert [r.get("round") for r in out.sequences[5:13]] == ["R02"] * 4 + ["R03"] * 4  # right after R01, in order
     assert out.sequences[-1]["round"] == "final"  # the trailing clean-up group stays last
@@ -168,8 +177,9 @@ def test_parse_port_list():
         parse_port_list("a-b")
 
 
-def test_expand_rounds_gives_each_round_its_own_folder():
-    p = _protocol()  # R01's imaging folder is "R01_image"
+def test_expand_rounds_keeps_the_folder_base_and_derives_per_round():
+    p = _protocol()  # R01's imaging folder_name is the base "image"
     out = expand_rounds(p, "R01", count=2, label_pattern="R{n:02d}", start=2)
     added = [r for r in out.sequences if r["type"] == "imaging" and r.get("round") in ("R02", "R03")]
-    assert [r["folder"] for r in added] == ["R02_image", "R03_image"]  # round label swapped in, unique
+    assert [r["folder"] for r in added] == ["image", "image"]  # the base is unchanged across rounds
+    assert [imaging_folder(r["round"], r["folder"]) for r in added] == ["R02_image", "R03_image"]  # derived, unique

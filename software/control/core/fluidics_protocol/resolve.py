@@ -37,12 +37,25 @@ class ResolvedImaging:
     coordinates: CoordinatesBlock
 
 
+# Rough placeholder: Squid has no pre-run acquisition-time estimate, so price imaging at a
+# flat 1 s per FOV just to give the operator a ballpark total. Not accurate — exposure,
+# z-stack depth, channels, and stage moves are all ignored.
+IMAGING_SECONDS_PER_FOV = 1.0
+
+
 @dataclass
 class ResolvedProtocol:
     protocol: ProtocolFile  # copy with file sources inlined
     steps: List[Step]
     imaging: Dict[int, ResolvedImaging]  # by row index
     fluidics_estimate_s: Optional[float]
+    imaging_estimate_s: float = 0.0
+
+    @property
+    def total_estimate_s(self) -> Optional[float]:
+        if self.fluidics_estimate_s is None:
+            return None
+        return self.fluidics_estimate_s + self.imaging_estimate_s
 
 
 def settings_block_from_acquisition(data: AcquisitionYAMLData, source_path: str) -> SettingsBlock:
@@ -166,6 +179,9 @@ def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[Fluidi
                 continue
             estimate += plan_seconds(fluidics.plan(rows))
 
+    imaging_estimate = sum(ri.coordinates.fov_count for ri in imaging.values()) * IMAGING_SECONDS_PER_FOV
     if problems:
         raise ProtocolProblems(problems)
-    return ResolvedProtocol(protocol=work, steps=steps, imaging=imaging, fluidics_estimate_s=estimate)
+    return ResolvedProtocol(
+        protocol=work, steps=steps, imaging=imaging, fluidics_estimate_s=estimate, imaging_estimate_s=imaging_estimate
+    )

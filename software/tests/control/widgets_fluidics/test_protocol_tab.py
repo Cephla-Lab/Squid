@@ -44,7 +44,7 @@ def _protocol():
                 "type": "imaging",
                 "round": "R01",
                 "name": "image",
-                "folder": "R01_image",
+                "folder": "image",
                 "settings": "cur",
                 "coordinates": "cur",
             },
@@ -60,7 +60,7 @@ def _protocol():
                 "type": "imaging",
                 "round": "R02",
                 "name": "image",
-                "folder": "R02_image",
+                "folder": "image",
                 "settings": "cur",
                 "coordinates": "cur",
             },
@@ -143,12 +143,12 @@ def test_add_imaging_leaves_the_folder_for_the_operator(tab):
     assert "✗" in tab.validation_label.text()  # an empty folder is flagged until named
 
 
-def test_duplicate_folder_marks_the_row_invalid(tab):
-    tab.protocol.sequences.append({"type": "imaging", "round": "R03", "name": "image", "folder": "R01_image"})
+def test_collision_in_the_derived_folder_marks_the_row_invalid(tab):
+    # another R01 imaging with the same folder_name derives the same output folder (R01_image)
+    tab.protocol.sequences.append({"type": "imaging", "round": "R01", "name": "image", "folder": "image"})
     tab._mark_changed()
     assert "✗" in tab.validation_label.text()
-    problems = list(tab._problems.values())
-    assert any("duplicate" in p for p in problems)
+    assert any("collides" in p for p in tab._problems.values())
 
 
 def test_apply_current_settings_to_all_imaging_rows(qtbot, quiet_dialogs, fluidics_config_path):
@@ -229,24 +229,22 @@ def test_removing_the_selected_row_clears_the_field_editor(tab, qtbot):
     assert tab.field_form.rowCount() == 0  # no stale editor addressing a vanished row
 
 
-def test_folder_problems_flag_only_the_offending_rows(tab):
-    # every imaging row is named "image"; only the duplicated pair may go red
+def test_folder_collisions_flag_only_the_offending_rows(tab):
+    # a second R01 imaging with the same folder_name collides (both derive R01_image);
+    # the R02 imaging derives R02_image and stays clean
     tab.protocol.sequences.append(
-        {
-            "type": "imaging",
-            "round": "R03",
-            "name": "image",
-            "folder": "R01_image",
-            "settings": "cur",
-            "coordinates": "cur",
-        }
+        {"type": "imaging", "round": "R01", "name": "image", "folder": "image", "settings": "cur", "coordinates": "cur"}
     )
     tab._mark_changed()
-    flagged = {i for i, p in tab._problems.items() if "duplicate" in p}
-    dup_rows = {i for i, r in enumerate(tab.protocol.sequences) if r.get("folder") == "R01_image"}
-    assert flagged and flagged <= dup_rows
-    ok_rows = {i for i, r in enumerate(tab.protocol.sequences) if r.get("folder") == "R02_image"}
-    assert not (ok_rows & set(tab._problems))
+    flagged = {i for i, p in tab._problems.items() if "collides" in p}
+    r01_imaging = {
+        i for i, r in enumerate(tab.protocol.sequences) if r["type"] == "imaging" and r.get("round") == "R01"
+    }
+    assert flagged and flagged <= r01_imaging
+    r02_imaging = {
+        i for i, r in enumerate(tab.protocol.sequences) if r["type"] == "imaging" and r.get("round") == "R02"
+    }
+    assert not (r02_imaging & set(tab._problems))
 
 
 def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
@@ -388,9 +386,7 @@ def test_imaging_field_editor_labels_the_folder_field(tab):
     from control.models.fluidics_protocol import ProtocolFile
 
     tab.set_protocol(
-        ProtocolFile(
-            name="one", sequences=[{"type": "imaging", "name": "image", "round": "R01", "folder": "R01_image"}]
-        )
+        ProtocolFile(name="one", sequences=[{"type": "imaging", "name": "image", "round": "R01", "folder": "image"}])
     )
     tab._select_row(0)
     tab._rebuild_field_editor()

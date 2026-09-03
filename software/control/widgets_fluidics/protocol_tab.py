@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -317,7 +318,11 @@ class ProtocolTab(QWidget):
 
         self.tree = QTreeWidget()
         self.tree.setColumnCount(7)
-        self.tree.setHeaderLabels(["Step", "Type", "Port", "Vol", "Rate", "Inc", "Status"])
+        self.tree.setHeaderLabels(["Step", "Type", "Port", "Vol", "Rate", "Incubation", "Status"])
+        header = self.tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)  # Step name takes the slack
+        for column in range(1, 7):  # Type..Status hug their contents (Status is just a "✗")
+            header.setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.itemSelectionChanged.connect(self._rebuild_field_editor)
         self.tree.itemExpanded.connect(lambda item: self._note_open(item, True))

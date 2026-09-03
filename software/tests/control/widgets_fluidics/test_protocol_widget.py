@@ -35,7 +35,7 @@ def _protocol():
                 "type": "imaging",
                 "round": "R01",
                 "name": "image",
-                "folder": "R01_image",
+                "folder": "image",
                 "settings": "cur",
                 "coordinates": "cur",
             },
@@ -323,7 +323,8 @@ def test_running_card_shows_elapsed_and_estimate(qtbot, widget):
         state=RunnerState.RUNNING, step_index=0, total_steps=2, elapsed_s=65, outcome=None, attempt=1
     )
     w.runner = SimpleNamespace(snapshot=lambda: snap, run_dir="/tmp/run")
-    w._resolved = SimpleNamespace(fluidics_estimate_s=3723)
+    # imaging priced at a rough 1 s/FOV, so the running card shows the fluidics+imaging total
+    w._resolved = SimpleNamespace(fluidics_estimate_s=3600, imaging_estimate_s=123, total_estimate_s=3723)
     w._refresh()
     assert "elapsed 00:01:05" in w.elapsed_label.text()
-    assert "fluidics est. 01:02:03" in w.elapsed_label.text()
+    assert "est. 01:02:03" in w.elapsed_label.text()

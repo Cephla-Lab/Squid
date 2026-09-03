@@ -218,6 +218,14 @@ def rebase_file_refs(protocol: ProtocolFile, old_base: str, new_base: str) -> No
             row[field] = ref_for_path(target, new_base)
 
 
+def imaging_folder(round_label: Optional[str], folder_name: str) -> str:
+    """The actual output folder for an imaging row: '{round}_{folder_name}', or just the
+    folder_name when the row carries no round. The folder_name field stays a stable base
+    (e.g. 'image') so every round reads the same, and the round supplies the uniqueness."""
+    base = (folder_name or "").strip()
+    return f"{round_label}_{base}" if round_label else base
+
+
 def folder_problems_by_row(protocol: ProtocolFile) -> Dict[int, str]:
     """Every folder rule an imaging row can break, keyed by the offending row's index
     (imaging rows commonly share a display name, so a name is no key)."""
@@ -231,11 +239,13 @@ def folder_problems_by_row(protocol: ProtocolFile) -> Dict[int, str]:
             problems[i] = f"{label} ({row.round or 'no round'}): no folder name"
             continue
         if not _FOLDER_RE.match(row.folder):
-            problems[i] = f"{label}: folder '{row.folder}' must be a plain name (letters, digits, . _ -)"
-        if row.folder in seen:
-            problems[i] = f"{label}: duplicate folder '{row.folder}' (also row {seen[row.folder] + 1})"
+            problems[i] = f"{label}: folder name '{row.folder}' must be a plain name (letters, digits, . _ -)"
+            continue
+        actual = imaging_folder(row.round, row.folder)  # the output folder is {round}_{folder_name}
+        if actual in seen:
+            problems[i] = f"{label}: folder '{actual}' collides with row {seen[actual] + 1}"
         else:
-            seen[row.folder] = i
+            seen[actual] = i
     return problems
 
 
@@ -351,11 +361,8 @@ def expand_rounds(
             copy["round"] = label
             if port_row_name is not None and copy.get("name") == port_row_name and "fluidic_port" in copy:
                 copy["fluidic_port"] = ports[k]
-            if copy.get("type") == IMAGING_TYPE:
-                # keep each round's folder distinct: swap the template round label into the
-                # folder (R01_image -> R02_image), or prefix the round when it isn't there
-                base = row.get("folder") or row.get("name") or "image"
-                copy["folder"] = base.replace(template_round, label) if template_round in base else f"{label}_{base}"
+            # the folder_name stays the same base across rounds; imaging_folder derives the
+            # per-round output folder ({round}_{folder_name}) at run time
             new_rows.append(copy)
     sequences = list(protocol.sequences)
     sequences[insert_at:insert_at] = new_rows

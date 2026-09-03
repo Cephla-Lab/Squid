@@ -263,7 +263,7 @@ class FluidicsProtocolWidget(QFrame):
         imaging_steps = sum(1 for s in resolved.steps if s.kind == "imaging")
         summary = [
             f"{imaging_steps} imaging session(s)",
-            f"fluidics est. {_hms(resolved.fluidics_estimate_s)}",
+            f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
         if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
@@ -550,9 +550,9 @@ class FluidicsProtocolWidget(QFrame):
             if snap.step_index is not None:
                 self.progress_bar.setMaximum(snap.total_steps)
                 self.progress_bar.setValue(min(snap.step_index + (0 if snap.outcome is None else 1), snap.total_steps))
-            estimate = self._resolved.fluidics_estimate_s if self._resolved else None
-            # fluidics-only: Squid has no pre-run imaging time estimate to add here
-            self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)} / fluidics est. {_hms(estimate)}")
+            # imaging is priced at a rough 1 s/FOV (see IMAGING_SECONDS_PER_FOV); the total is a ballpark
+            estimate = self._resolved.total_estimate_s if self._resolved else None
+            self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)} / est. {_hms(estimate)}")
             self.folder_label.setText(str(runner.run_dir))
             if snap.state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
                 self.pause_button.setText("Resume")
