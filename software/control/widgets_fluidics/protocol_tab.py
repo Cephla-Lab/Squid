@@ -118,7 +118,7 @@ class ProtocolTab(QWidget):
         self, service, current_source: Optional[Callable[[], Tuple[Optional[str], dict, dict]]] = None, parent=None
     ):
         super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(__name__)
         self.service = service
         self._current_source = current_source
         self._protocol = ProtocolFile()

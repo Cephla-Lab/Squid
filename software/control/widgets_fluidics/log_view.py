@@ -1,8 +1,8 @@
 """The Fluidics Log tab (always autoscrolls) and the Reagents table.
 
 The log pane polls a squid.logging.BufferingHandler on a QTimer — the WarningErrorWidget pattern.
-The FluidicsService logging bridge already forwards the library's records (fluidics.*, XCaliburD)
-into the squid logger, so everything the run says lands here."""
+The handler is attached to the fluidics loggers only (the library's fluidics.*/XCaliburD and Squid's
+fluidics packages), so the pane catches fluidics records and never sees the rest of Squid's logging."""
 
 import csv
 import logging
@@ -35,7 +35,7 @@ class FluidicsLogView(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(__name__)
         self._handler: Optional[squid.logging.BufferingHandler] = None
         self._poll_timer: Optional[QTimer] = None
 
@@ -59,11 +59,24 @@ class FluidicsLogView(QWidget):
         layout.addWidget(self.text_edit)
         self.setLayout(layout)
 
+    def _fluidics_loggers(self) -> list:
+        """The loggers whose subtrees are fluidics — the library's (forwarded records keep
+        their own names) and Squid's fluidics packages. Records propagate up to a handler
+        here, so the pane catches fluidics only without touching the rest of Squid."""
+        return [
+            logging.getLogger("fluidics"),
+            logging.getLogger("XCaliburD"),
+            squid.logging.get_logger("control.widgets_fluidics"),
+            squid.logging.get_logger("control.core.fluidics_protocol"),
+            squid.logging.get_logger("control.fluidics_system"),
+        ]
+
     def connect_logging(self) -> None:
-        """Attach the buffering handler to the squid root and start polling. GUI thread only."""
+        """Attach the buffering handler to the fluidics loggers and start polling. GUI thread only."""
         self.disconnect_logging()
         self._handler = squid.logging.BufferingHandler(min_level=_LEVELS[self.level_combo.currentText()])
-        squid.logging.get_logger().addHandler(self._handler)
+        for logger in self._fluidics_loggers():
+            logger.addHandler(self._handler)
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll)
         self._poll_timer.start(self.POLL_INTERVAL_MS)
@@ -73,7 +86,8 @@ class FluidicsLogView(QWidget):
             self._poll_timer.stop()
             self._poll_timer = None
         if self._handler is not None:
-            squid.logging.remove_handler(self._handler)
+            for logger in self._fluidics_loggers():
+                logger.removeHandler(self._handler)
             self._handler = None
 
     def _on_level_changed(self, text: str) -> None:

@@ -70,7 +70,7 @@ class FluidicsProtocolWidget(QFrame):
         parent=None,
     ):
         super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(__name__)
         self.service = service
         self.protocol_tab = protocol_tab
         self.imaging_port = imaging_port

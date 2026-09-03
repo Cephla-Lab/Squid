@@ -52,7 +52,7 @@ class QtImagingPort(QObject):
 
     def __init__(self, controller, scan_coordinates, microscope, parent=None):
         super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(__name__)
         self._controller = controller
         self._scan_coordinates = scan_coordinates
         self._microscope = microscope

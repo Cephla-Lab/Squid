@@ -41,7 +41,7 @@ class SystemPanel(QGroupBox):
 
     def __init__(self, service, parent=None):
         super().__init__("Fluidics system", parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(__name__)
         self.service = service
 
         self.path_edit = QLineEdit(state.load_ui_state().get("config_path") or service.default_config_path)

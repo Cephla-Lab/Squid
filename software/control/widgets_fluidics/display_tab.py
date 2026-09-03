@@ -33,7 +33,7 @@ class FluidicsDisplayTab(QWidget):
         parent=None,
     ):
         super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._log = squid.logging.get_logger(__name__)
         self.service = service
         self.fluidics_port = None
         self.temperature_tab = None

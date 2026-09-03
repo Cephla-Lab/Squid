@@ -7,12 +7,15 @@ pytest.importorskip("fluidics")
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
 
-def test_log_view_receives_squid_records_and_autoscrolls(qtbot):
+def test_log_view_receives_fluidics_records_and_autoscrolls(qtbot):
+    import logging
+
     view = FluidicsLogView()
     qtbot.addWidget(view)
     view.connect_logging()
     try:
-        log = squid.logging.get_logger("fluidics.test_tab")
+        log = logging.getLogger("fluidics.test_tab")  # a library-style logger
+        log.setLevel(logging.INFO)
         for i in range(60):
             log.info(f"line {i}")
         qtbot.waitUntil(lambda: "line 59" in view.text_edit.toPlainText(), timeout=3000)
@@ -58,3 +61,28 @@ def test_reagent_export_quotes_awkward_names(qtbot, tmp_path, monkeypatch):
     table._export()
     rows = list(csv_module.reader(target.open()))
     assert rows[1][1] == 'probe, "red"' and rows[1][0] == "1"
+
+
+def test_log_view_catches_fluidics_loggers_only(qtbot):
+    import logging
+
+    from control.fluidics_system import install_logging_bridge
+
+    install_logging_bridge()  # sets the library loggers to DEBUG, as in a live session
+    view = FluidicsLogView()
+    qtbot.addWidget(view)
+    view.connect_logging()
+    try:
+        logging.getLogger("fluidics.control.syringe_pump").info("library record")
+        logging.getLogger("XCaliburD").info("xcalibur record")
+        squid.logging.get_logger("control.widgets_fluidics.system_panel").info("squid fluidics record")
+        # not fluidics — must never reach the pane
+        squid.logging.get_logger("Microcontroller").info("microcontroller noise")
+        squid.logging.get_logger("control.core.multi_point_worker").info("acquisition noise")
+        qtbot.waitUntil(lambda: "squid fluidics record" in view.text_edit.toPlainText(), timeout=3000)
+        qtbot.wait(50)
+        text = view.text_edit.toPlainText()
+        assert "library record" in text and "xcalibur record" in text
+        assert "microcontroller noise" not in text and "acquisition noise" not in text
+    finally:
+        view.disconnect_logging()
