@@ -45,6 +45,8 @@ class FluidicsPort(Protocol):
 
     def restore_tec(self, state: TecState) -> None: ...
 
+    def disable_tec(self) -> None: ...  # switch every channel's TEC output off
+
 
 @dataclass
 class ImagingRequest:
