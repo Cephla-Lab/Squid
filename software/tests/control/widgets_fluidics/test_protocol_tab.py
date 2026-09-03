@@ -396,3 +396,42 @@ def test_imaging_field_editor_labels_the_folder_field(tab):
     tab._rebuild_field_editor()
     labels = [tab.field_form.itemAt(i, tab.field_form.LabelRole).widget().text() for i in range(3)]
     assert labels == ["name", "round", "folder_name"]  # the folder field reads "folder_name"
+
+
+def test_round_editor_tags_a_group_from_its_header(qtbot, quiet_dialogs):
+    from control.models.fluidics_protocol import ProtocolFile
+
+    service = SimpleNamespace(initialized=False)
+    tab = ProtocolTab(service)
+    qtbot.addWidget(tab)
+    # two untagged rows group together under "—", plus a real round
+    tab.set_protocol(
+        ProtocolFile(
+            name="mix",
+            sequences=[
+                {"type": "flow_reagent", "name": "a", "fluidic_port": 1, "flow_rate": 500, "volume": 500},
+                {"type": "flow_reagent", "name": "b", "fluidic_port": 2, "flow_rate": 500, "volume": 500},
+                {
+                    "type": "flow_reagent",
+                    "round": "R01",
+                    "name": "c",
+                    "fluidic_port": 3,
+                    "flow_rate": 500,
+                    "volume": 500,
+                },
+            ],
+        )
+    )
+    # selecting the no-round group header opens a round editor, not a row editor
+    no_round_group = tab.tree.topLevelItem(0)
+    tab.tree.setCurrentItem(no_round_group)
+    tab._rebuild_field_editor()
+    assert "no round" in tab.field_group.title()
+
+    tab._apply_round_to_group((0, 1), "R00")  # give the untagged rows a round
+    assert tab.protocol.sequences[0]["round"] == "R00" and tab.protocol.sequences[1]["round"] == "R00"
+    assert tab.protocol.sequences[2]["round"] == "R01"  # the other group is untouched
+
+    # renaming works the same, and blank clears the round
+    tab._apply_round_to_group((0, 1), "")
+    assert tab.protocol.sequences[0]["round"] is None

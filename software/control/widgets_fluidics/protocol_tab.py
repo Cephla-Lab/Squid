@@ -775,8 +775,15 @@ class ProtocolTab(QWidget):
 
     def _rebuild_field_editor(self) -> None:
         self._clear_field_editor()
+        if self._run_locked:
+            self.field_group.setTitle("Selected row")
+            return
+        items = self.tree.selectedItems()
+        if items and items[0].parent() is None:  # a round group header — edit the round label
+            self._build_round_editor(items[0])
+            return
         index = self._selected_row_index()
-        if index is None or self._run_locked:
+        if index is None:
             self.field_group.setTitle("Selected row")
             return
         row = self._protocol.sequences[index]
@@ -784,6 +791,27 @@ class ProtocolTab(QWidget):
             self._build_imaging_editor(index, row)
         else:
             self._build_fluidics_editor(index, row)
+
+    def _build_round_editor(self, group_item: QTreeWidgetItem) -> None:
+        label = group_item.data(0, Qt.UserRole + 1)
+        rows = [group_item.child(ci).data(0, Qt.UserRole) for ci in range(group_item.childCount())]
+        rows = [int(r) for r in rows if r is not None]
+        self.field_group.setTitle("Selected round — " + (label or "(no round)"))
+        edit = QLineEdit("" if label is None else str(label))
+        edit.setPlaceholderText("round label, e.g. R01 (blank = no round)")
+        edit.editingFinished.connect(lambda e=edit, r=tuple(rows): self._apply_round_to_group(r, e.text()))
+        self.field_form.addRow("round", edit)
+        note = QLabel(f"Sets the round for the {len(rows)} step(s) in this group.")
+        note.setStyleSheet("color: gray;")
+        note.setWordWrap(True)
+        self.field_form.addRow("", note)
+
+    def _apply_round_to_group(self, row_indices, text: str) -> None:
+        new_label = text.strip() or None
+        for index in row_indices:
+            if 0 <= index < len(self._protocol.sequences):
+                self._protocol.sequences[index]["round"] = new_label
+        self._mark_changed()
 
     def _line_edit(self, index: int, field: str, value) -> QLineEdit:
         edit = QLineEdit("" if value is None else str(value))
