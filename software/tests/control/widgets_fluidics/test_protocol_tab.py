@@ -383,3 +383,21 @@ def test_fluidics_rows_validate_against_the_configured_ports(tab):
     assert 1 in tab._problems
     assert "iterable" not in tab._problems[1]  # never the int-vs-collection wiring bug
     assert "999" in tab._problems[1] or "port" in tab._problems[1].lower()
+
+
+def test_add_imaging_with_no_round_gets_a_valid_folder(qtbot, quiet_dialogs):
+    from control.models.fluidics_protocol import ProtocolFile, is_valid_folder
+
+    service = SimpleNamespace(initialized=False)
+    tab = ProtocolTab(service)
+    qtbot.addWidget(tab)
+    tab.set_protocol(ProtocolFile(name="no-rounds"))  # nothing is labeled with a round
+
+    tab.tree.clearSelection()
+    tab._add_imaging()
+    tab._add_imaging()
+    folders = [r["folder"] for r in tab.protocol.sequences if r["type"] == "imaging"]
+    assert all(is_valid_folder(f) for f in folders)  # never "_image"
+    assert len(set(folders)) == len(folders)  # and unique
+    # the folder is never the problem now (missing settings still is, until you assign them)
+    assert not any("folder" in message for message in tab._problems.values())

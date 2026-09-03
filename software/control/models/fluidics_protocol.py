@@ -195,6 +195,11 @@ def save_protocol(protocol: ProtocolFile, path: str) -> None:
         raise
 
 
+def is_valid_folder(name: str) -> bool:
+    """A folder name usable on disk: starts alphanumeric, then letters/digits/._- only."""
+    return bool(name) and bool(_FOLDER_RE.match(name))
+
+
 def render_folder(
     pattern: str, *, round_label: Optional[str], step_name: Optional[str], index: int, run_name: str = ""
 ) -> str:

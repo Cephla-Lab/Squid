@@ -46,6 +46,7 @@ from control.models.fluidics_protocol import (
     ref_for_path,
     load_protocol,
     render_folder,
+    is_valid_folder,
     save_protocol,
 )
 from control.widgets_fluidics import state
@@ -533,12 +534,15 @@ class ProtocolTab(QWidget):
         index = self._selected_row_index()
         at = index + 1 if index is not None else len(self._protocol.sequences)
         round_label = self._selected_round()
+        ordinal = self._imaging_ordinal_before(at) + 1
         folder = render_folder(
             self._protocol.imaging.folder_pattern,
             round_label=round_label,
             step_name="image",
-            index=self._imaging_ordinal_before(at) + 1,
+            index=ordinal,
         )
+        if not is_valid_folder(folder):  # e.g. no round -> "_image"; give a usable unique default
+            folder = f"image_{ordinal}"
         self._protocol.sequences.insert(
             at, {"type": IMAGING_TYPE, "name": "image", "round": round_label, "folder": folder}
         )
