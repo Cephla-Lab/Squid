@@ -20,7 +20,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 IMAGING_TYPE = "imaging"
-DEFAULT_FOLDER_PATTERN = "{round}_{step}"
 _FOLDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -87,7 +86,6 @@ class CoordinatesBlock(BaseModel):
 
 
 class ImagingHeader(BaseModel):
-    folder_pattern: str = DEFAULT_FOLDER_PATTERN
     settings: Dict[str, SettingsBlock] = Field(default_factory=dict)
     coordinates: Dict[str, CoordinatesBlock] = Field(default_factory=dict)
 
@@ -193,18 +191,6 @@ def save_protocol(protocol: ProtocolFile, path: str) -> None:
         except OSError:
             pass
         raise
-
-
-def is_valid_folder(name: str) -> bool:
-    """A folder name usable on disk: starts alphanumeric, then letters/digits/._- only."""
-    return bool(name) and bool(_FOLDER_RE.match(name))
-
-
-def render_folder(
-    pattern: str, *, round_label: Optional[str], step_name: Optional[str], index: int, run_name: str = ""
-) -> str:
-    """Fill a folder pattern: {round}, {step}, {index} (imaging ordinal, 1-based), {run}."""
-    return pattern.format(round=round_label or "", step=step_name or "image", index=index, run=run_name)
 
 
 def included(row: dict) -> bool:
@@ -347,7 +333,7 @@ def expand_rounds(
 ) -> ProtocolFile:
     """Insert `count` copies of the rows labelled `template_round` right after that round, relabelled
     `label_pattern.format(n=...)` from `start`; in each copy the row named `port_row_name` gets the next
-    entry of `ports`, and imaging folders are re-rendered from the header pattern. Rows after the template
+    entry of `ports`, and each round's imaging folder gets its round label. Rows after the template
     round (a `final` clean-up group) stay last. Returns a new ProtocolFile."""
     template = [row for row in protocol.sequences if row.get("round") == template_round]
     if not template:
@@ -358,10 +344,6 @@ def expand_rounds(
             have = 0 if ports is None else len(ports)
             raise ValueError(f"{count} rounds need {count} ports for '{port_row_name}', got {have}")
     new_rows: List[dict] = []
-    # {index} in the folder pattern is the imaging ordinal at the insertion point, so rows after it keep theirs.
-    imaging_ordinal = sum(
-        1 for r in protocol.sequences[:insert_at] if r.get("type") == IMAGING_TYPE and r.get("include", True)
-    )
     for k in range(count):
         label = label_pattern.format(n=start + k)
         for row in template:
@@ -370,13 +352,10 @@ def expand_rounds(
             if port_row_name is not None and copy.get("name") == port_row_name and "fluidic_port" in copy:
                 copy["fluidic_port"] = ports[k]
             if copy.get("type") == IMAGING_TYPE:
-                imaging_ordinal += 1
-                copy["folder"] = render_folder(
-                    protocol.imaging.folder_pattern,
-                    round_label=label,
-                    step_name=copy.get("name"),
-                    index=imaging_ordinal,
-                )
+                # keep each round's folder distinct: swap the template round label into the
+                # folder (R01_image -> R02_image), or prefix the round when it isn't there
+                base = row.get("folder") or row.get("name") or "image"
+                copy["folder"] = base.replace(template_round, label) if template_round in base else f"{label}_{base}"
             new_rows.append(copy)
     sequences = list(protocol.sequences)
     sequences[insert_at:insert_at] = new_rows

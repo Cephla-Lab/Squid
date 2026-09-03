@@ -9,7 +9,6 @@ from control.models.fluidics_protocol import (
     folder_problems,
     load_protocol,
     parse_port_list,
-    render_folder,
     save_protocol,
     split_into_steps,
     strip_for_library,
@@ -135,9 +134,7 @@ def test_round_trip_as_a_plain_sequence_file(tmp_path):
     assert plain.name is None and len(plain.sequences) == 2 and plain.imaging.settings == {}
 
 
-def test_render_folder_and_folder_problems():
-    assert render_folder("{round}_{step}", round_label="R07", step_name="image", index=7) == "R07_image"
-    assert render_folder("{index:02d}_{round}_{step}", round_label="R7", step_name="image", index=7) == "07_R7_image"
+def test_folder_problems():
     p = _protocol()
     assert folder_problems(p) == []
     p.sequences.append({"type": "imaging", "round": "R02", "name": "image", "folder": "R01_image"})
@@ -171,12 +168,8 @@ def test_parse_port_list():
         parse_port_list("a-b")
 
 
-def test_expand_rounds_index_ordinal_counts_only_rows_before_the_insertion_point():
-    p = _protocol()
-    p.imaging.folder_pattern = "{index:02d}_{round}_{step}"
-    p.sequences.append({"type": "imaging", "round": "post", "name": "final_scan", "folder": "99_post_final_scan"})
-
-    out = expand_rounds(p, "R01", count=1, label_pattern="R{n:02d}", start=2)
-
-    added = [r for r in out.sequences if r.get("round") == "R02" and r["type"] == "imaging"]
-    assert added[0]["folder"] == "02_R02_image"  # ordinal 2: only R01's imaging row precedes the insertion point
+def test_expand_rounds_gives_each_round_its_own_folder():
+    p = _protocol()  # R01's imaging folder is "R01_image"
+    out = expand_rounds(p, "R01", count=2, label_pattern="R{n:02d}", start=2)
+    added = [r for r in out.sequences if r["type"] == "imaging" and r.get("round") in ("R02", "R03")]
+    assert [r["folder"] for r in added] == ["R02_image", "R03_image"]  # round label swapped in, unique

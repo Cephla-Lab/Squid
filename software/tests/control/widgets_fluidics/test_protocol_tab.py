@@ -134,13 +134,13 @@ def test_field_edit_updates_the_model_and_apply_to_all(tab, qtbot):
     qtbot.wait(20)  # let the queued re-render run
 
 
-def test_add_imaging_appends_with_a_rendered_folder(tab):
+def test_add_imaging_leaves_the_folder_for_the_operator(tab):
     tab.tree.clearSelection()
     tab._add_imaging()
     row = tab.protocol.sequences[-1]
     assert row["type"] == "imaging" and row["round"] == "R02"
-    assert row["folder"] == "R02_image"  # pattern {round}_{step}; collides -> flagged below
-    assert "✗" in tab.validation_label.text()  # duplicate folder is a problem
+    assert row["folder"] == ""  # no auto-naming; the operator types the folder name
+    assert "✗" in tab.validation_label.text()  # an empty folder is flagged until named
 
 
 def test_duplicate_folder_marks_the_row_invalid(tab):
@@ -384,19 +384,15 @@ def test_fluidics_rows_validate_against_the_configured_ports(tab):
     assert "999" in tab._problems[1] or "port" in tab._problems[1].lower()
 
 
-def test_add_imaging_with_no_round_gets_a_valid_folder(qtbot, quiet_dialogs):
-    from control.models.fluidics_protocol import ProtocolFile, is_valid_folder
+def test_imaging_field_editor_labels_the_folder_field(tab):
+    from control.models.fluidics_protocol import ProtocolFile
 
-    service = SimpleNamespace(initialized=False)
-    tab = ProtocolTab(service)
-    qtbot.addWidget(tab)
-    tab.set_protocol(ProtocolFile(name="no-rounds"))  # nothing is labeled with a round
-
-    tab.tree.clearSelection()
-    tab._add_imaging()
-    tab._add_imaging()
-    folders = [r["folder"] for r in tab.protocol.sequences if r["type"] == "imaging"]
-    assert all(is_valid_folder(f) for f in folders)  # never "_image"
-    assert len(set(folders)) == len(folders)  # and unique
-    # the folder is never the problem now (missing settings still is, until you assign them)
-    assert not any("folder" in message for message in tab._problems.values())
+    tab.set_protocol(
+        ProtocolFile(
+            name="one", sequences=[{"type": "imaging", "name": "image", "round": "R01", "folder": "R01_image"}]
+        )
+    )
+    tab._select_row(0)
+    tab._rebuild_field_editor()
+    labels = [tab.field_form.itemAt(i, tab.field_form.LabelRole).widget().text() for i in range(3)]
+    assert labels == ["name", "round", "folder_name"]  # the folder field reads "folder_name"

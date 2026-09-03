@@ -44,8 +44,6 @@ from control.models.fluidics_protocol import (
     rebase_file_refs,
     ref_for_path,
     load_protocol,
-    render_folder,
-    is_valid_folder,
     save_protocol,
 )
 from control.widgets_fluidics import state
@@ -521,25 +519,11 @@ class ProtocolTab(QWidget):
             row["round"] = self._selected_round()
             self._insert_after_selection(row)
 
-    def _imaging_ordinal_before(self, at: int) -> int:
-        return sum(1 for r in self._protocol.sequences[:at] if r.get("type") == IMAGING_TYPE and r.get("include", True))
-
     def _add_imaging(self) -> None:
         index = self._selected_row_index()
         at = index + 1 if index is not None else len(self._protocol.sequences)
         round_label = self._selected_round()
-        ordinal = self._imaging_ordinal_before(at) + 1
-        folder = render_folder(
-            self._protocol.imaging.folder_pattern,
-            round_label=round_label,
-            step_name="image",
-            index=ordinal,
-        )
-        if not is_valid_folder(folder):  # e.g. no round -> "_image"; give a usable unique default
-            folder = f"image_{ordinal}"
-        self._protocol.sequences.insert(
-            at, {"type": IMAGING_TYPE, "name": "image", "round": round_label, "folder": folder}
-        )
+        self._protocol.sequences.insert(at, {"type": IMAGING_TYPE, "name": "image", "round": round_label, "folder": ""})
         self._mark_changed()
 
     def _duplicate_row(self) -> None:
@@ -843,13 +827,13 @@ class ProtocolTab(QWidget):
         )
         self.field_form.addRow("", self._apply_all_checkbox)
 
+    _IMAGING_FIELD_LABELS = {"name": "name", "round": "round", "folder": "folder_name"}
+
     def _build_imaging_editor(self, index: int, row: dict) -> None:
         self.field_group.setTitle("Selected row — imaging")
         for fname in ("name", "round", "folder"):
-            self.field_form.addRow(fname, self._line_edit(index, fname, row.get(fname)))
-        reset = QPushButton("Reset folder to pattern")
-        reset.clicked.connect(lambda: self._reset_folder(index))
-        self.field_form.addRow("", reset)
+            label = self._IMAGING_FIELD_LABELS[fname]
+            self.field_form.addRow(label, self._line_edit(index, fname, row.get(fname)))
         for kind in ("settings", "coordinates"):
             ref = QLabel(str(row.get(kind) or "—"))
             buttons = QHBoxLayout()
@@ -863,16 +847,6 @@ class ProtocolTab(QWidget):
             container = QWidget()
             container.setLayout(buttons)
             self.field_form.addRow(kind, container)
-
-    def _reset_folder(self, index: int) -> None:
-        row = self._protocol.sequences[index]
-        row["folder"] = render_folder(
-            self._protocol.imaging.folder_pattern,
-            round_label=row.get("round"),
-            step_name=row.get("name"),
-            index=self._imaging_ordinal_before(index) + 1,
-        )
-        self._mark_changed()
 
     def _field_edited(self, index: int, field: str, widget) -> None:
         if self._run_locked or not 0 <= index < len(self._protocol.sequences):

@@ -18,7 +18,6 @@ so a combined file is not loadable there (pure-fluidics files remain interchange
 version: 1
 name: merfish_24r_liver
 imaging:
-  folder_pattern: "{round}_{step}"
   settings:
     current_1358: {channels: [Fluorescence 405 nm Ex, Fluorescence 488 nm Ex], z_stack: {nz: 7, delta_z_um: 0.5}}
   coordinates:
