@@ -23,9 +23,9 @@ from control.widgets_fluidics import state
 
 
 def _config_summary(config) -> str:
-    from fluidics.control.config import available_port_count  # importable once the service is up
+    from fluidics.control.config import available_ports  # importable once the service is up
 
-    ports = available_port_count(config)
+    ports = len(available_ports(config))
     tec = config.temperature_controller.channels if config.temperature_controller is not None else None
     sensors = len(config.flow_sensors or [])
     return f"{config.application} · {ports} ports · TEC {tec if tec is not None else '—'} · sensors {sensors}"

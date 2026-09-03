@@ -52,7 +52,7 @@ from control.widgets_fluidics import state
 from control.widgets_fluidics.dialogs import AddRoundsDialog, pick_coordinates_source, pick_settings_source
 
 try:  # the editor degrades gracefully when the fluidics library is not installed
-    from fluidics.control.config import available_port_count, load_config
+    from fluidics.control.config import available_ports, load_config
     from fluidics.sequences import (
         SEQUENCE_TYPE_LABELS,
         get_fields_for_type,
@@ -60,7 +60,7 @@ try:  # the editor degrades gracefully when the fluidics library is not installe
     )
 except ImportError:
     SEQUENCE_TYPE_LABELS = get_fields_for_type = sequence_problem = None
-    available_port_count = load_config = None
+    available_ports = load_config = None
 
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
@@ -516,7 +516,7 @@ class ProtocolTab(QWidget):
             except Exception:
                 pass
         if port_names is None:
-            port_names = [f"Port {i}" for i in range(1, available_port_count(config) + 1)]
+            port_names = [(port, f"Port {port}") for port in available_ports(config)]
         dialog = AddSequenceDialog(self, config.application, port_names)
         if dialog.exec_() == QDialog.Accepted and dialog.result_dict:
             row = dict(dialog.result_dict)
@@ -602,7 +602,7 @@ class ProtocolTab(QWidget):
     def _validate(self) -> None:
         problems: Dict[int, str] = {}
         folder_by_row = folder_problems_by_row(self._protocol)
-        application, limit, config_error = "Flow Cell", None, None
+        application, ports, config_error = "Flow Cell", None, None
         try:
             config = _current_config(self.service)
         except FluidicsConfigError as e:
@@ -610,7 +610,7 @@ class ProtocolTab(QWidget):
         else:
             if config is not None:
                 application = config.application
-                limit = available_port_count(config)
+                ports = available_ports(config)  # the ports actually plumbed, gaps and all
         base = self._protocol_dir()
         for i, row in enumerate(self._protocol.sequences):
             if row.get("type") == IMAGING_TYPE:
@@ -645,7 +645,7 @@ class ProtocolTab(QWidget):
             try:
                 # The library owns the verdict order and phrasing (sequence_problem), so
                 # Squid's rows read exactly as the standalone editor's would.
-                problem = sequence_problem(row, application, limit)
+                problem = sequence_problem(row, application, ports)
                 if problem:
                     problems[i] = problem
             except Exception as e:
@@ -686,10 +686,15 @@ class ProtocolTab(QWidget):
             else "—"
         )
         if self._problems:
-            self.validation_label.setText(f"✗ {len(self._problems)} problem(s)")
+            details = [f"row {i + 1}: {message}" for i, message in sorted(self._problems.items())]
+            first = details[0]
+            suffix = f" (+{len(details) - 1} more)" if len(details) > 1 else ""
+            self.validation_label.setText(f"✗ {first}{suffix}")
+            self.validation_label.setToolTip("\n".join(details))  # the full list on hover
             self.validation_label.setStyleSheet("color: #b00020;")
         else:
             self.validation_label.setText(f"✓ valid · {self._protocol.summary_line()}")
+            self.validation_label.setToolTip("")
             self.validation_label.setStyleSheet("color: #2e7d32;")
 
     def _render(self) -> None:

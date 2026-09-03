@@ -331,3 +331,55 @@ def test_initialize_revalidates_the_open_protocol(qtbot, quiet_dialogs, tmp_path
     service.config = load_config(fluidics_config_path)
     widget.refresh_validation()  # what wire_fluidics connects to system_ready
     assert not widget._problems
+
+
+def test_add_step_builds_the_real_dialog_and_adds_a_row(tab, monkeypatch):
+    # regression: the library's AddSequenceDialog crashed on required fields
+    # (PydanticUndefined), and Squid mocked it away — build the real one here.
+    from qtpy.QtWidgets import QDialog
+
+    from fluidics.qt.sequence_editor import AddSequenceDialog
+
+    def accept_with(self):  # constructs the real dialog (the crash was in __init__), then accepts
+        self.result_dict = {"type": "priming", "fluidic_port": 1, "flow_rate": 5000, "volume": 800}
+        return QDialog.Accepted
+
+    monkeypatch.setattr(AddSequenceDialog, "exec_", accept_with)
+    before = len(tab.protocol.sequences)
+    tab.tree.clearSelection()
+    tab._add_step()
+    assert len(tab.protocol.sequences) == before + 1
+    assert tab.protocol.sequences[-1]["type"] == "priming"
+
+
+def test_remove_deletes_the_selected_row(tab):
+    rows_before = [r.get("name") for r in tab.protocol.sequences]
+    tab._select_row(1)  # probe R01
+    tab._remove_row()
+    assert len(tab.protocol.sequences) == len(rows_before) - 1
+    assert "probe" not in [r.get("name") for r in tab.protocol.sequences if r.get("round") == "R01"]
+    # an imaging row removes just the same
+    imaging_index = next(i for i, r in enumerate(tab.protocol.sequences) if r["type"] == "imaging")
+    n = len(tab.protocol.sequences)
+    tab._select_row(imaging_index)
+    tab._remove_row()
+    assert len(tab.protocol.sequences) == n - 1
+
+
+def test_validation_label_names_the_problem(tab):
+    # an imaging row missing its sources is one problem; the label must say which
+    tab.protocol.sequences[3]["settings"] = None
+    tab._mark_changed()
+    assert tab._problems  # there is a problem
+    label = tab.validation_label.text()
+    assert "✗" in label and "no settings" in label  # the actual reason, not just a count
+    assert "no settings" in tab.validation_label.toolTip()
+
+
+def test_fluidics_rows_validate_against_the_configured_ports(tab):
+    # a port the rig does not offer is flagged with the library's phrasing, not a stray error
+    tab.protocol.sequences[1]["fluidic_port"] = 999
+    tab._mark_changed()
+    assert 1 in tab._problems
+    assert "iterable" not in tab._problems[1]  # never the int-vs-collection wiring bug
+    assert "999" in tab._problems[1] or "port" in tab._problems[1].lower()
