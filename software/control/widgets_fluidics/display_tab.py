@@ -223,25 +223,26 @@ class FluidicsDisplayTab(QWidget):
         except Exception as e:  # RuntimeError while another job holds the session
             self._log.error(f"Prime/Clean could not start: {e}")
             return
-        self._quick_running = True
+        self._set_quick_running(True)
         self._log.info(f"Manual {verb_name} started on {len(use_ports)} port(s)")
-        for widget in self._quick_widgets:
-            widget.setEnabled(False)
-        self.stop_quick_button.show()
 
     def _stop_quick_op(self) -> None:
         if self._quick_running:
             self.service.system.abort()
+
+    def _set_quick_running(self, running: bool) -> None:
+        """Flip the inline Prime/Clean row between running (fields locked, Stop shown) and idle."""
+        self._quick_running = running
+        for widget in self._quick_widgets:
+            widget.setEnabled(not running)
+        self.stop_quick_button.setVisible(running)
 
     def _poll_quick_op(self) -> None:
         # The manual verb runs on the library's job thread; when the session reads free the
         # inline row comes back (the callbacks already logged the outcome).
         if not self._quick_running or self.service.system.busy:
             return
-        self._quick_running = False
-        for widget in self._quick_widgets:
-            widget.setEnabled(True)
-        self.stop_quick_button.hide()
+        self._set_quick_running(False)
 
     def _refresh_status(self) -> None:
         try:

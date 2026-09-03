@@ -10,6 +10,7 @@ from control.models.fluidics_protocol import (
     imaging_folder,
     load_protocol,
     parse_port_list,
+    round_blocks,
     save_protocol,
     split_into_steps,
     strip_for_library,
@@ -118,6 +119,23 @@ def test_split_into_steps_skips_excluded_rows():
     steps = split_into_steps(p)
     assert [(s.kind, s.round) for s in steps] == [("fluidics", "setup"), ("fluidics", "R01"), ("fluidics", "final")]
     assert steps[1].row_indices == [1, 4]
+
+
+def test_round_blocks_group_contiguous_rows_by_round_including_imaging():
+    # unlike split_into_steps, a round block keeps the imaging row inside its round (index 3)
+    blocks = round_blocks(_protocol())
+    assert blocks == [("setup", [0]), ("R01", [1, 2, 3, 4]), ("final", [5])]
+
+
+def test_round_blocks_split_when_the_same_label_is_not_contiguous():
+    p = ProtocolFile(
+        sequences=[
+            {"type": "flow_reagent", "round": "R01"},
+            {"type": "flow_reagent", "round": None},
+            {"type": "flow_reagent", "round": "R01"},
+        ]
+    )
+    assert round_blocks(p) == [("R01", [0]), (None, [1]), ("R01", [2])]
 
 
 def test_round_trip_as_a_plain_sequence_file(tmp_path):

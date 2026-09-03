@@ -314,6 +314,22 @@ def split_into_steps(protocol: ProtocolFile) -> List[Step]:
     return steps
 
 
+def round_blocks(protocol: ProtocolFile) -> List[Tuple[Optional[str], List[int]]]:
+    """The rows grouped into the contiguous round blocks the editor shows: each maximal run of
+    consecutive rows sharing the same `round` value (a run with no round included) is one block,
+    returned as (label, [sequence indices]). This is the grouping the tree headers and the
+    whole-round move/remove/relabel operations act on, so it lives here in one place."""
+    blocks: List[Tuple[Optional[str], List[int]]] = []
+    current = object()  # sentinel unequal to any real label, including None
+    for i, row in enumerate(protocol.sequences):
+        label = row.get("round")
+        if label != current:
+            current = label
+            blocks.append((label, []))
+        blocks[-1][1].append(i)
+    return blocks
+
+
 def parse_port_list(spec: str) -> List[int]:
     """'2-4,7,9-10' -> [2, 3, 4, 7, 9, 10]."""
     ports: List[int] = []

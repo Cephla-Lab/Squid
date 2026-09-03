@@ -63,6 +63,9 @@ class FluidicsLogView(QWidget):
         """The loggers whose subtrees are fluidics — the library's (forwarded records keep
         their own names) and Squid's fluidics packages. Records propagate up to a handler
         here, so the pane catches fluidics only without touching the rest of Squid."""
+        # The two library names mirror control.fluidics_system.LIBRARY_LOGGER_NAMES; kept as
+        # literals on purpose so this pane (and its tests) stay importable when the fluidics
+        # library isn't installed. If that tuple gains a logger, add it here too.
         return [
             logging.getLogger("fluidics"),
             logging.getLogger("XCaliburD"),

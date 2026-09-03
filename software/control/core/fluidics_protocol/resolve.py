@@ -49,7 +49,11 @@ class ResolvedProtocol:
     steps: List[Step]
     imaging: Dict[int, ResolvedImaging]  # by row index
     fluidics_estimate_s: Optional[float]
-    imaging_estimate_s: float = 0.0
+
+    @property
+    def imaging_estimate_s(self) -> float:
+        # Rough ballpark: a flat IMAGING_SECONDS_PER_FOV per FOV across every imaging step.
+        return sum(ri.coordinates.fov_count for ri in self.imaging.values()) * IMAGING_SECONDS_PER_FOV
 
     @property
     def total_estimate_s(self) -> Optional[float]:
@@ -179,9 +183,6 @@ def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[Fluidi
                 continue
             estimate += plan_seconds(fluidics.plan(rows))
 
-    imaging_estimate = sum(ri.coordinates.fov_count for ri in imaging.values()) * IMAGING_SECONDS_PER_FOV
     if problems:
         raise ProtocolProblems(problems)
-    return ResolvedProtocol(
-        protocol=work, steps=steps, imaging=imaging, fluidics_estimate_s=estimate, imaging_estimate_s=imaging_estimate
-    )
+    return ResolvedProtocol(protocol=work, steps=steps, imaging=imaging, fluidics_estimate_s=estimate)

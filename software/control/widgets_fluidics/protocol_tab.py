@@ -43,6 +43,7 @@ from control.models.fluidics_protocol import (
     folder_problems_by_row,
     included,
     rebase_file_refs,
+    round_blocks,
     ref_for_path,
     load_protocol,
     save_protocol,
@@ -178,8 +179,10 @@ class ProtocolTab(QWidget):
         old_path, old_base = self.protocol_path, self._protocol_dir()
         new_base = os.path.dirname(os.path.abspath(path))
         rebased = old_base is not None and old_base != new_base
-        before = [(row, row.get("settings"), row.get("coordinates")) for row in self._protocol.imaging_dicts()]
+        # Only a rebase rewrites the file refs, so only then is a rollback snapshot worth taking.
+        before = []
         if rebased:
+            before = [(row, row.get("settings"), row.get("coordinates")) for row in self._protocol.imaging_dicts()]
             rebase_file_refs(self._protocol, old_base, new_base)
         self.protocol_path = path
         if not self.save():
@@ -719,17 +722,13 @@ class ProtocolTab(QWidget):
         selected = self._selected_row_index()
         with QSignalBlocker(self.tree):
             self.tree.clear()
-            group_item = None
-            current_label = object()  # sentinel unequal to any real label
-            for i, row in enumerate(self._protocol.sequences):
-                label = row.get("round")
-                if label != current_label:
-                    current_label = label
-                    group_item = QTreeWidgetItem([label or "—", "", "", "", "", "", ""])
-                    group_item.setData(0, Qt.UserRole + 1, label)
-                    self.tree.addTopLevelItem(group_item)
-                    group_item.setExpanded(label in self._open_groups)
-                group_item.addChild(self._render_row(i, row))
+            for label, indices in round_blocks(self._protocol):
+                group_item = QTreeWidgetItem([label or "—", "", "", "", "", "", ""])
+                group_item.setData(0, Qt.UserRole + 1, label)
+                self.tree.addTopLevelItem(group_item)
+                group_item.setExpanded(label in self._open_groups)
+                for i in indices:
+                    group_item.addChild(self._render_row(i, self._protocol.sequences[i]))
             for gi in range(self.tree.topLevelItemCount()):
                 group = self.tree.topLevelItem(gi)
                 group.setText(1, f"{group.childCount()} step(s)")
@@ -819,9 +818,9 @@ class ProtocolTab(QWidget):
         if self._run_locked:
             self.field_group.setTitle("Selected row")
             return
-        items = self.tree.selectedItems()
-        if items and items[0].parent() is None:  # a round group header — edit the round label
-            self._build_round_editor(items[0])
+        group = self._selected_group_item()
+        if group is not None:  # a round group header — edit the round label
+            self._build_round_editor(group)
             return
         index = self._selected_row_index()
         if index is None:
@@ -835,8 +834,7 @@ class ProtocolTab(QWidget):
 
     def _build_round_editor(self, group_item: QTreeWidgetItem) -> None:
         label = group_item.data(0, Qt.UserRole + 1)
-        rows = [group_item.child(ci).data(0, Qt.UserRole) for ci in range(group_item.childCount())]
-        rows = [int(r) for r in rows if r is not None]
+        rows = self._group_row_indices(group_item)
         self.field_group.setTitle("Selected round — " + (label or "(no round)"))
         edit = QLineEdit("" if label is None else str(label))
         edit.setPlaceholderText("round label, e.g. R01 (blank = no round)")
