@@ -261,7 +261,7 @@ class FluidicsProtocolWidget(QFrame):
 
         imaging_steps = sum(1 for s in resolved.steps if s.kind == "imaging")
         summary = [
-            f"{len(resolved.steps)} steps · {imaging_steps} imaging sessions",
+            f"{imaging_steps} imaging session(s)",
             f"fluidics est. {_hms(resolved.fluidics_estimate_s)}",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
