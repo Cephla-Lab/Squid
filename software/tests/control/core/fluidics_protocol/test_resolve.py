@@ -26,7 +26,7 @@ def _protocol(**imaging_row):
         "type": "imaging",
         "round": "R01",
         "name": "image",
-        "folder": "R01_image",
+        "folder": "image",
         "settings": "cur",
         "coordinates": "cur",
     }
@@ -59,8 +59,13 @@ def test_header_keys_resolve_and_fluidics_rows_are_validated(tmp_path):
     resolved = resolve_protocol(_protocol(), tmp_path, fluidics=port)
     assert [s.kind for s in resolved.steps] == ["fluidics", "imaging"]
     assert resolved.imaging[1].settings.z_stack.nz == 2 and resolved.imaging[1].coordinates.fov_count == 1
-    assert port.validated == [[{"type": "flow_reagent", "fluidic_port": 1, "flow_rate": 500, "volume": 500}]]
+    assert port.validated == [
+        [{"type": "flow_reagent", "round": "R01", "fluidic_port": 1, "flow_rate": 500, "volume": 500}]
+    ]  # round passes through - the library accepts it natively
     assert resolved.fluidics_estimate_s == 60.0
+    # imaging is priced at a rough 1 s/FOV; one FOV here, so the total is fluidics + 1 s
+    assert resolved.imaging_estimate_s == 1.0
+    assert resolved.total_estimate_s == 61.0
 
 
 def test_file_sources_are_inlined_relative_to_base_dir(tmp_path):
@@ -91,18 +96,19 @@ def test_every_problem_is_reported_at_once(tmp_path):
             "type": "imaging",
             "round": "R02",
             "name": "image",
-            "folder": "R01_image",
+            "folder": "image",
             "settings": "cur",
             "coordinates": "empty",
         }
     )
-    p.sequences.append({"type": "imaging", "round": "R03", "name": "image", "folder": "R03_image", "settings": "cur"})
+    # R03 duplicates R02's derived output folder (both R... no — same round+base collides)
+    p.sequences.append({"type": "imaging", "round": "R02", "name": "image", "folder": "image", "settings": "cur"})
 
     with pytest.raises(ProtocolProblems) as info:
         resolve_protocol(p, tmp_path, fluidics=RecordingPort(fail="fluidic_port=99 out of range"))
 
     text = "\n".join(info.value.problems)
-    assert "missing_key" in text and "nowhere.csv" in text and "duplicate folder" in text
+    assert "missing_key" in text and "nowhere.csv" in text and "collides" in text
     assert "no FOVs" in text and "no coordinates" in text and "fluidic_port=99" in text
 
 

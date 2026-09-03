@@ -206,15 +206,17 @@ class TestGetImagePixelSizeUm:
             scope.close()
 
 
-def test_fluidics_ini_keys_have_new_defaults():
-    # [SIMULATION] simulate_fluidics is parsed like the other SIMULATE_* keys; the default config
-    # path is the machine_configs template's real-file name.
-    assert control._def.SIMULATE_FLUIDICS is False
+def test_fluidics_ini_keys_exist():
+    # [SIMULATION] simulate_fluidics is parsed like the other SIMULATE_* keys. The local INI may
+    # legitimately override any of these (a fluidics machine runs with RUN_FLUIDICS = True), so only
+    # the keys' existence and types are asserted here.
+    assert isinstance(control._def.SIMULATE_FLUIDICS, bool)
     assert isinstance(control._def.RUN_FLUIDICS, bool)
-    assert control._def.FLUIDICS_CONFIG_PATH == "machine_configs/fluidics_config.yaml"
+    assert isinstance(control._def.FLUIDICS_CONFIG_PATH, str) and control._def.FLUIDICS_CONFIG_PATH
 
 
-def test_addons_fluidics_is_none_without_run_fluidics():
+def test_addons_fluidics_is_none_without_run_fluidics(monkeypatch):
+    monkeypatch.setattr(control._def, "RUN_FLUIDICS", False)
     scope = control.microscope.Microscope.build_from_global_config(True)
     try:
         assert scope.addons.fluidics is None

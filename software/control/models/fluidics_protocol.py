@@ -3,9 +3,8 @@
 A protocol is the Squid-Fluidics library's sequence file (a `sequences:` list of flow_reagent /
 priming / clean_up / set_temperature ... rows) plus, per row, an optional `round:` label and a Squid-only
 row type `imaging`, and a Squid-only `imaging:` header holding the settings and coordinate blocks the
-imaging rows point at. The library's loader reads only `sequences`, so the standalone fluidics GUI opens
-the same file. Until the library accepts `round` and `imaging` itself, `strip_for_library()` produces
-the rows every library call receives.
+imaging rows point at. The library accepts `round` natively; `imaging` is Squid-only, so
+`strip_for_library()` produces the rows every library call receives.
 
 Qt-free, library-free: fluidics rows are kept as plain dicts here and validated by the library in
 control.core.fluidics_protocol.resolve.
@@ -21,7 +20,6 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 IMAGING_TYPE = "imaging"
-DEFAULT_FOLDER_PATTERN = "{round}_{step}"
 _FOLDER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -88,7 +86,6 @@ class CoordinatesBlock(BaseModel):
 
 
 class ImagingHeader(BaseModel):
-    folder_pattern: str = DEFAULT_FOLDER_PATTERN
     settings: Dict[str, SettingsBlock] = Field(default_factory=dict)
     coordinates: Dict[str, CoordinatesBlock] = Field(default_factory=dict)
 
@@ -130,10 +127,24 @@ class ProtocolFile(BaseModel):
             if row.get("type") == IMAGING_TYPE
         ]
 
+    def imaging_dicts(self) -> List[dict]:
+        """The imaging rows as the raw dicts they are stored as - for repaint paths
+        that must not pay per-row Pydantic validation (imaging_rows() validates)."""
+        return [r for r in self.sequences if r.get("type") == IMAGING_TYPE]
+
+    def round_labels(self) -> List[str]:
+        """The distinct round labels, in first-appearance order."""
+        return list(dict.fromkeys(r.get("round") for r in self.sequences if r.get("round")))
+
+    def summary_line(self) -> str:
+        imaging = len(self.imaging_dicts())
+        return f"{len(self.round_labels())} rounds · {len(self.sequences)} rows · {imaging} imaging"
+
 
 def strip_for_library(rows: List[dict]) -> List[dict]:
-    """The rows the Squid-Fluidics library may see: no imaging rows, no `round` key. Copies; never mutates."""
-    return [{k: v for k, v in row.items() if k != "round"} for row in rows if row.get("type") != IMAGING_TYPE]
+    """The rows the Squid-Fluidics library may see: no imaging rows (`round` passes through -
+    the library accepts it natively). Copies; never mutates."""
+    return [dict(row) for row in rows if row.get("type") != IMAGING_TYPE]
 
 
 def load_protocol(path: str) -> ProtocolFile:
@@ -182,31 +193,65 @@ def save_protocol(protocol: ProtocolFile, path: str) -> None:
         raise
 
 
-def render_folder(
-    pattern: str, *, round_label: Optional[str], step_name: Optional[str], index: int, run_name: str = ""
-) -> str:
-    """Fill a folder pattern: {round}, {step}, {index} (imaging ordinal, 1-based), {run}."""
-    return pattern.format(round=round_label or "", step=step_name or "image", index=index, run=run_name)
+def included(row: dict) -> bool:
+    """The editor checkbox's default, written once: rows run unless excluded."""
+    return bool(row.get("include", True))
 
 
-def folder_problems(protocol: ProtocolFile) -> List[str]:
-    """Every folder rule an imaging row can break: present, filesystem-safe, unique among included rows."""
-    problems: List[str] = []
+def ref_for_path(path: str, base: Optional[str]) -> str:
+    """How a file-backed settings/coordinates reference is written: relative to the
+    protocol file when the target sits under its directory, absolute otherwise."""
+    if base and os.path.abspath(path).startswith(base + os.sep):
+        return os.path.relpath(path, base)
+    return path
+
+
+def rebase_file_refs(protocol: ProtocolFile, old_base: str, new_base: str) -> None:
+    """File-backed references are relative to the protocol file, so saving it into
+    another directory must re-point them at the same files. Header keys are untouched."""
+    for row in protocol.imaging_dicts():
+        for field in ("settings", "coordinates"):
+            ref = row.get(field)
+            if not ref or ref in getattr(protocol.imaging, field) or os.path.isabs(ref):
+                continue
+            target = os.path.normpath(os.path.join(old_base, ref))
+            row[field] = ref_for_path(target, new_base)
+
+
+def imaging_folder(round_label: Optional[str], folder_name: str) -> str:
+    """The actual output folder for an imaging row: '{round}_{folder_name}', or just the
+    folder_name when the row carries no round. The folder_name field stays a stable base
+    (e.g. 'image') so every round reads the same, and the round supplies the uniqueness."""
+    base = (folder_name or "").strip()
+    return f"{round_label}_{base}" if round_label else base
+
+
+def folder_problems_by_row(protocol: ProtocolFile) -> Dict[int, str]:
+    """Every folder rule an imaging row can break, keyed by the offending row's index
+    (imaging rows commonly share a display name, so a name is no key)."""
+    problems: Dict[int, str] = {}
     seen: Dict[str, int] = {}
     for i, row in protocol.imaging_rows():
         if not row.include:
             continue
         label = row.name or f"row {i + 1}"
         if not row.folder:
-            problems.append(f"{label} ({row.round or 'no round'}): no folder name")
+            problems[i] = f"{label} ({row.round or 'no round'}): no folder name"
             continue
         if not _FOLDER_RE.match(row.folder):
-            problems.append(f"{label}: folder '{row.folder}' must be a plain name (letters, digits, . _ -)")
-        if row.folder in seen:
-            problems.append(f"{label}: duplicate folder '{row.folder}' (also row {seen[row.folder] + 1})")
+            problems[i] = f"{label}: folder name '{row.folder}' must be a plain name (letters, digits, . _ -)"
+            continue
+        actual = imaging_folder(row.round, row.folder)  # the output folder is {round}_{folder_name}
+        if actual in seen:
+            problems[i] = f"{label}: folder '{actual}' collides with row {seen[actual] + 1}"
         else:
-            seen[row.folder] = i
+            seen[actual] = i
     return problems
+
+
+def folder_problems(protocol: ProtocolFile) -> List[str]:
+    """The folder rules as messages (the pre-flight list); one per offending row."""
+    return list(folder_problems_by_row(protocol).values())
 
 
 @dataclass
@@ -269,6 +314,22 @@ def split_into_steps(protocol: ProtocolFile) -> List[Step]:
     return steps
 
 
+def round_blocks(protocol: ProtocolFile) -> List[Tuple[Optional[str], List[int]]]:
+    """The rows grouped into the contiguous round blocks the editor shows: each maximal run of
+    consecutive rows sharing the same `round` value (a run with no round included) is one block,
+    returned as (label, [sequence indices]). This is the grouping the tree headers and the
+    whole-round move/remove/relabel operations act on, so it lives here in one place."""
+    blocks: List[Tuple[Optional[str], List[int]]] = []
+    current = object()  # sentinel unequal to any real label, including None
+    for i, row in enumerate(protocol.sequences):
+        label = row.get("round")
+        if label != current:
+            current = label
+            blocks.append((label, []))
+        blocks[-1][1].append(i)
+    return blocks
+
+
 def parse_port_list(spec: str) -> List[int]:
     """'2-4,7,9-10' -> [2, 3, 4, 7, 9, 10]."""
     ports: List[int] = []
@@ -298,7 +359,7 @@ def expand_rounds(
 ) -> ProtocolFile:
     """Insert `count` copies of the rows labelled `template_round` right after that round, relabelled
     `label_pattern.format(n=...)` from `start`; in each copy the row named `port_row_name` gets the next
-    entry of `ports`, and imaging folders are re-rendered from the header pattern. Rows after the template
+    entry of `ports`, and each round's imaging folder gets its round label. Rows after the template
     round (a `final` clean-up group) stay last. Returns a new ProtocolFile."""
     template = [row for row in protocol.sequences if row.get("round") == template_round]
     if not template:
@@ -309,10 +370,6 @@ def expand_rounds(
             have = 0 if ports is None else len(ports)
             raise ValueError(f"{count} rounds need {count} ports for '{port_row_name}', got {have}")
     new_rows: List[dict] = []
-    # {index} in the folder pattern is the imaging ordinal at the insertion point, so rows after it keep theirs.
-    imaging_ordinal = sum(
-        1 for r in protocol.sequences[:insert_at] if r.get("type") == IMAGING_TYPE and r.get("include", True)
-    )
     for k in range(count):
         label = label_pattern.format(n=start + k)
         for row in template:
@@ -320,14 +377,8 @@ def expand_rounds(
             copy["round"] = label
             if port_row_name is not None and copy.get("name") == port_row_name and "fluidic_port" in copy:
                 copy["fluidic_port"] = ports[k]
-            if copy.get("type") == IMAGING_TYPE:
-                imaging_ordinal += 1
-                copy["folder"] = render_folder(
-                    protocol.imaging.folder_pattern,
-                    round_label=label,
-                    step_name=copy.get("name"),
-                    index=imaging_ordinal,
-                )
+            # the folder_name stays the same base across rounds; imaging_folder derives the
+            # per-round output folder ({round}_{folder_name}) at run time
             new_rows.append(copy)
     sequences = list(protocol.sequences)
     sequences[insert_at:insert_at] = new_rows

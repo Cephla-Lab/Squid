@@ -1,8 +1,10 @@
-# Fluidics system configuration (Squid-Fluidics `FluidicsConfig`, the same file the standalone
-# fluidics GUI uses). Copy to machine_configs/fluidics_config.yaml (gitignored) and edit the serial
-# numbers, valves and port names for this instrument. Selected in Squid through FLUIDICS_CONFIG_PATH
-# (the Fluidics tab's Initialize row arrives in phase 2). Optional sections: temperature_controller,
-# flow_sensors.
+"""One simulated-instrument FluidicsConfig for the test suite.
+
+The real file is the operator's own (machine_configs/fluidics_config.yaml, gitignored,
+copied from the instrument's standalone fluidics installation); the conftest fixture
+writes this YAML to a temporary file instead of shipping an example config in the repo."""
+
+CONFIG_YAML = """\
 config_version: '2.0'
 microcontroller:
   serial_number: '15579610'
@@ -116,3 +118,6 @@ flow_sensors:
   tolerance_fraction: 0.3
   max_flow_rate_ul_min: 2000
 application: Flow Cell
+"""
+
+TEC_CONFIG_YAML = CONFIG_YAML + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"

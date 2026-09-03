@@ -40,6 +40,7 @@ from control.models.fluidics_protocol import (
     load_protocol,
     protocol_to_dict,
     save_protocol,
+    imaging_folder,
     strip_for_library,
 )
 from control.models.fluidics_run import AttemptRecord, RunCursor, RunManifest, StepRecord, TecState
@@ -388,7 +389,9 @@ class ProtocolRunner:
 
     def _run_imaging_step(self, step: ImagingStep, attempt: int) -> _StepResult:
         resolved = self._resolved.imaging[step.row_index]
-        folder = step.row.folder if attempt == 1 else f"{step.row.folder}_attempt{attempt}"
+        # the output folder is {round}_{folder_name}; the folder_name field is a stable base
+        base = imaging_folder(step.round, step.row.folder)
+        folder = base if attempt == 1 else f"{base}_attempt{attempt}"
         info = {
             "protocol": self._resolved.protocol.name,
             "run_name": self._manifest.run_name,

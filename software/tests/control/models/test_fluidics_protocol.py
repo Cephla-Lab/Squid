@@ -7,9 +7,10 @@ from control.models.fluidics_protocol import (
     SettingsBlock,
     expand_rounds,
     folder_problems,
+    imaging_folder,
     load_protocol,
     parse_port_list,
-    render_folder,
+    round_blocks,
     save_protocol,
     split_into_steps,
     strip_for_library,
@@ -52,7 +53,7 @@ def _protocol():
                 "type": "imaging",
                 "round": "R01",
                 "name": "image",
-                "folder": "R01_image",
+                "folder": "image",
                 "settings": "cur",
                 "coordinates": "cur",
             },
@@ -88,13 +89,13 @@ def test_imaging_rows_are_validated_and_unknown_keys_rejected():
     with pytest.raises(ValueError):
         ProtocolFile(sequences=[{"type": "imaging", "folder": "x", "bogus": 1}])
     p = _protocol()
-    assert [(i, r.folder) for i, r in p.imaging_rows()] == [(3, "R01_image")]
+    assert [(i, r.folder) for i, r in p.imaging_rows()] == [(3, "image")]
 
 
-def test_strip_for_library_drops_imaging_rows_and_round_labels():
+def test_strip_for_library_drops_imaging_rows_and_keeps_round():
     rows = strip_for_library(_protocol().sequences)
     assert [r["type"] for r in rows] == ["priming", "flow_reagent", "flow_reagent", "flow_reagent", "clean_up"]
-    assert all("round" not in r for r in rows)
+    assert all(r.get("round") for r in rows)  # the library accepts round natively
     assert rows[1]["fluidic_port"] == 1  # other keys untouched
 
 
@@ -120,6 +121,23 @@ def test_split_into_steps_skips_excluded_rows():
     assert steps[1].row_indices == [1, 4]
 
 
+def test_round_blocks_group_contiguous_rows_by_round_including_imaging():
+    # unlike split_into_steps, a round block keeps the imaging row inside its round (index 3)
+    blocks = round_blocks(_protocol())
+    assert blocks == [("setup", [0]), ("R01", [1, 2, 3, 4]), ("final", [5])]
+
+
+def test_round_blocks_split_when_the_same_label_is_not_contiguous():
+    p = ProtocolFile(
+        sequences=[
+            {"type": "flow_reagent", "round": "R01"},
+            {"type": "flow_reagent", "round": None},
+            {"type": "flow_reagent", "round": "R01"},
+        ]
+    )
+    assert round_blocks(p) == [("R01", [0]), (None, [1]), ("R01", [2])]
+
+
 def test_round_trip_as_a_plain_sequence_file(tmp_path):
     p = _protocol()
     path = tmp_path / "demo.yaml"
@@ -135,18 +153,22 @@ def test_round_trip_as_a_plain_sequence_file(tmp_path):
     assert plain.name is None and len(plain.sequences) == 2 and plain.imaging.settings == {}
 
 
-def test_render_folder_and_folder_problems():
-    assert render_folder("{round}_{step}", round_label="R07", step_name="image", index=7) == "R07_image"
-    assert render_folder("{index:02d}_{round}_{step}", round_label="R7", step_name="image", index=7) == "07_R7_image"
+def test_folder_problems():
     p = _protocol()
     assert folder_problems(p) == []
-    p.sequences.append({"type": "imaging", "round": "R02", "name": "image", "folder": "R01_image"})
+    # a second R01 imaging with the same folder_name collides (both derive R01_image)
+    p.sequences.append({"type": "imaging", "round": "R01", "name": "image", "folder": "image"})
     p.sequences.append({"type": "imaging", "round": "R03", "name": "image", "folder": "bad/name"})
     p.sequences.append({"type": "imaging", "round": "R04", "name": "image"})
     problems = folder_problems(p)
-    assert any("duplicate" in m for m in problems)
+    assert any("collides" in m for m in problems)
     assert any("bad/name" in m for m in problems)
     assert any("no folder" in m for m in problems)
+
+
+def test_imaging_folder_is_round_prefixed():
+    assert imaging_folder("R02", "image") == "R02_image"
+    assert imaging_folder(None, "scan") == "scan"  # no round -> just the name
 
 
 def test_expand_rounds_copies_a_round_with_new_labels_ports_and_folders():
@@ -156,7 +178,9 @@ def test_expand_rounds_copies_a_round_with_new_labels_ports_and_folders():
     assert rounds.count("R02") == 4 and rounds.count("R03") == 4
     r02 = [r for r in out.sequences if r.get("round") == "R02"]
     assert [r["name"] for r in r02] == ["probe", "wash", "image", "cleave"]
-    assert r02[0]["fluidic_port"] == 2 and r02[2]["folder"] == "R02_image"
+    assert r02[0]["fluidic_port"] == 2
+    assert r02[2]["folder"] == "image"  # base unchanged
+    assert imaging_folder(r02[2]["round"], r02[2]["folder"]) == "R02_image"  # derived output
     assert [r for r in out.sequences if r.get("round") == "R03"][0]["fluidic_port"] == 3
     assert [r.get("round") for r in out.sequences[5:13]] == ["R02"] * 4 + ["R03"] * 4  # right after R01, in order
     assert out.sequences[-1]["round"] == "final"  # the trailing clean-up group stays last
@@ -171,12 +195,9 @@ def test_parse_port_list():
         parse_port_list("a-b")
 
 
-def test_expand_rounds_index_ordinal_counts_only_rows_before_the_insertion_point():
-    p = _protocol()
-    p.imaging.folder_pattern = "{index:02d}_{round}_{step}"
-    p.sequences.append({"type": "imaging", "round": "post", "name": "final_scan", "folder": "99_post_final_scan"})
-
-    out = expand_rounds(p, "R01", count=1, label_pattern="R{n:02d}", start=2)
-
-    added = [r for r in out.sequences if r.get("round") == "R02" and r["type"] == "imaging"]
-    assert added[0]["folder"] == "02_R02_image"  # ordinal 2: only R01's imaging row precedes the insertion point
+def test_expand_rounds_keeps_the_folder_base_and_derives_per_round():
+    p = _protocol()  # R01's imaging folder_name is the base "image"
+    out = expand_rounds(p, "R01", count=2, label_pattern="R{n:02d}", start=2)
+    added = [r for r in out.sequences if r["type"] == "imaging" and r.get("round") in ("R02", "R03")]
+    assert [r["folder"] for r in added] == ["image", "image"]  # the base is unchanged across rounds
+    assert [imaging_folder(r["round"], r["folder"]) for r in added] == ["R02_image", "R03_image"]  # derived, unique

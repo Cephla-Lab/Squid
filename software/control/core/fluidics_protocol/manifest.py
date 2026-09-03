@@ -121,3 +121,18 @@ def find_unfinished_runs(base_dir: PathLike) -> List[RunManifest]:
             continue
         found.append(manifest)
     return sorted(found, key=lambda man: man.started_at, reverse=True)
+
+
+def reagent_totals(manifest) -> "tuple[dict[int, float], dict[int, float]]":
+    """Per-port reagent use: (whole-run totals, the most recent reagent-using attempt)."""
+    totals: dict = {}
+    last_step: dict = {}
+    for step in manifest.steps:
+        for attempt in step.attempts:
+            if not attempt.reagent_used_ul:
+                continue
+            for port_str, ul in attempt.reagent_used_ul.items():
+                port = int(port_str)
+                totals[port] = totals.get(port, 0.0) + ul
+            last_step = {int(p): u for p, u in attempt.reagent_used_ul.items()}
+    return totals, last_step

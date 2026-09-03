@@ -1,5 +1,4 @@
 import logging
-import pathlib
 
 import pytest
 
@@ -11,7 +10,6 @@ from control.fluidics_system import FluidicsService
 from control.models.fluidics_run import TecState
 from tests.control.core.fluidics_protocol.fakes import wait_until
 
-EXAMPLE_CONFIG = pathlib.Path(__file__).resolve().parents[4] / "machine_configs" / "fluidics_config.yaml.example"
 ROWS = [
     {"type": "flow_reagent", "fluidic_port": 1, "flow_rate": 500, "volume": 500},
     {"type": "flow_reagent", "fluidic_port": 2, "flow_rate": 500, "volume": 300},
@@ -32,8 +30,8 @@ def _wait_outcome(ticket, tries=500):
 
 
 @pytest.fixture
-def service(tmp_path):
-    svc = FluidicsService(default_config_path=str(EXAMPLE_CONFIG), simulated=True)
+def service(tmp_path, fluidics_config_path):
+    svc = FluidicsService(default_config_path=fluidics_config_path, simulated=True)
     svc.initialize(report_dir=str(tmp_path), instant=True)
     yield svc
     assert svc.close() == []
@@ -41,7 +39,9 @@ def service(tmp_path):
 
 @pytest.fixture
 def tec_service(tmp_path):
-    text = EXAMPLE_CONFIG.read_text() + "\ntemperature_controller:\n  serial_number: SIM-TEC\n  channels: 2\n"
+    from tests.control.fluidics_test_config import TEC_CONFIG_YAML
+
+    text = TEC_CONFIG_YAML
     config = tmp_path / "with_tec.yaml"
     config.write_text(text)
     svc = FluidicsService(default_config_path=str(config), simulated=True)
@@ -50,13 +50,14 @@ def tec_service(tmp_path):
     assert svc.close() == []
 
 
-def test_validate_rejects_out_of_range_ports_and_round_keys(service):
+def test_validate_rejects_out_of_range_ports_and_unknown_keys(service):
     port = LibraryFluidicsPort(service.system)
     port.validate(ROWS)
     with pytest.raises(ValueError):
         port.validate([{**ROWS[0], "fluidic_port": 99}])
+    port.validate([{**ROWS[0], "round": "R01"}])  # the pinned library understands round natively (phase 2)
     with pytest.raises(ValueError):
-        port.validate([{**ROWS[0], "round": "R01"}])  # the runner strips it; the port must not accept it silently
+        port.validate([{**ROWS[0], "no_such_key": 1}])  # junk keys must still be rejected, not dropped
 
 
 def test_run_finishes_with_reagent_totals_and_run_id(service):

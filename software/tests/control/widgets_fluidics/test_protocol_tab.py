@@ -1,0 +1,474 @@
+from types import SimpleNamespace
+
+import pytest
+from qtpy.QtCore import Qt
+
+import control.widgets_fluidics.protocol_tab as protocol_tab_module
+from control.models.fluidics_protocol import ProtocolFile, load_protocol
+from control.widgets_fluidics.protocol_tab import ProtocolTab
+
+SETTINGS = {"channels": ["A"], "z_stack": {"nz": 3, "delta_z_um": 0.5}}
+COORDS = {"regions": [{"name": "A1", "fovs": [[1.0, 2.0, 3.0], [1.5, 2.0, 3.0]]}]}
+
+
+def _protocol():
+    return ProtocolFile(
+        name="demo",
+        imaging={"settings": {"cur": SETTINGS}, "coordinates": {"cur": COORDS}},
+        sequences=[
+            {
+                "type": "priming",
+                "round": "setup",
+                "name": "prime",
+                "fluidic_port": 25,
+                "flow_rate": 5000,
+                "volume": 800,
+            },
+            {
+                "type": "flow_reagent",
+                "round": "R01",
+                "name": "probe",
+                "fluidic_port": 1,
+                "flow_rate": 2000,
+                "volume": 500,
+            },
+            {
+                "type": "flow_reagent",
+                "round": "R01",
+                "name": "wash",
+                "fluidic_port": 25,
+                "flow_rate": 5000,
+                "volume": 1000,
+            },
+            {
+                "type": "imaging",
+                "round": "R01",
+                "name": "image",
+                "folder": "image",
+                "settings": "cur",
+                "coordinates": "cur",
+            },
+            {
+                "type": "flow_reagent",
+                "round": "R02",
+                "name": "probe",
+                "fluidic_port": 2,
+                "flow_rate": 2000,
+                "volume": 500,
+            },
+            {
+                "type": "imaging",
+                "round": "R02",
+                "name": "image",
+                "folder": "image",
+                "settings": "cur",
+                "coordinates": "cur",
+            },
+        ],
+    )
+
+
+@pytest.fixture
+def quiet_dialogs(monkeypatch):
+    monkeypatch.setattr(
+        protocol_tab_module.QMessageBox, "question", staticmethod(lambda *a, **k: protocol_tab_module.QMessageBox.Yes)
+    )
+    monkeypatch.setattr(protocol_tab_module.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+    monkeypatch.setattr(protocol_tab_module.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+
+
+@pytest.fixture
+def tab(qtbot, quiet_dialogs, fluidics_config_path):
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
+    widget = ProtocolTab(service)
+    qtbot.addWidget(widget)
+    widget.set_protocol(_protocol())
+    return widget
+
+
+def _child_rows(tab):
+    rows = {}
+    for gi in range(tab.tree.topLevelItemCount()):
+        group = tab.tree.topLevelItem(gi)
+        rows[group.text(0)] = group.childCount()
+    return rows
+
+
+def test_tree_groups_rows_by_round(tab):
+    assert _child_rows(tab) == {"setup": 1, "R01": 3, "R02": 2}
+    assert "✓ valid" in tab.validation_label.text()
+    assert "2/2 rows" in tab.settings_summary.text()
+    assert "4 FOVs in blocks" in tab.coordinates_summary.text()
+
+
+def test_include_checkbox_writes_the_model(tab, qtbot):
+    group = tab.tree.topLevelItem(1)
+    child = group.child(0)  # probe
+    changed = []
+    tab.signal_protocol_changed.connect(lambda: changed.append(1))
+    child.setCheckState(0, Qt.Unchecked)
+    assert tab.protocol.sequences[1]["include"] is False
+    assert changed
+
+
+def test_field_edit_updates_the_model_and_apply_to_all(tab, qtbot):
+    tab._select_row(1)  # probe R01
+    tab._rebuild_field_editor()
+    assert tab._apply_all_checkbox is not None
+    from qtpy.QtWidgets import QSpinBox
+
+    spin = QSpinBox()
+    spin.setRange(0, 100000)
+    spin.setValue(7)
+    tab._field_edited(1, "fluidic_port", spin)
+    assert tab.protocol.sequences[1]["fluidic_port"] == 7
+    assert tab.protocol.sequences[4]["fluidic_port"] == 2  # apply-to-all was off
+
+    tab._select_row(1)
+    tab._rebuild_field_editor()
+    tab._apply_all_checkbox.setChecked(True)
+    spin.setValue(9)
+    tab._field_edited(1, "fluidic_port", spin)
+    assert tab.protocol.sequences[1]["fluidic_port"] == 9
+    assert tab.protocol.sequences[4]["fluidic_port"] == 9  # same-named probe in R02
+    qtbot.wait(20)  # let the queued re-render run
+
+
+def test_add_imaging_leaves_the_folder_for_the_operator(tab):
+    tab.tree.clearSelection()
+    tab._add_imaging()
+    row = tab.protocol.sequences[-1]
+    assert row["type"] == "imaging" and row["round"] == "R02"
+    assert row["folder"] == ""  # no auto-naming; the operator types the folder name
+    assert "✗" in tab.validation_label.text()  # an empty folder is flagged until named
+
+
+def test_collision_in_the_derived_folder_marks_the_row_invalid(tab):
+    # another R01 imaging with the same folder_name derives the same output folder (R01_image)
+    tab.protocol.sequences.append({"type": "imaging", "round": "R01", "name": "image", "folder": "image"})
+    tab._mark_changed()
+    assert "✗" in tab.validation_label.text()
+    assert any("collides" in p for p in tab._problems.values())
+
+
+def test_apply_current_settings_to_all_imaging_rows(qtbot, quiet_dialogs, fluidics_config_path):
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
+    source = lambda: (None, SETTINGS, COORDS)  # noqa: E731
+    tab = ProtocolTab(service, current_source=source)
+    qtbot.addWidget(tab)
+    protocol = _protocol()
+    for row in protocol.sequences:
+        if row["type"] == "imaging":
+            row["settings"] = None
+    tab.set_protocol(protocol)
+
+    tab._apply_current("settings")
+
+    keys = {row["settings"] for row in tab.protocol.sequences if row["type"] == "imaging"}
+    assert len(keys) == 1
+    key = keys.pop()
+    assert key.startswith("current_") and key in tab.protocol.imaging.settings
+    assert tab.protocol.imaging.settings[key].source == "Wellplate Multipoint"
+
+
+def test_capture_refuses_zero_fovs(qtbot, quiet_dialogs, fluidics_config_path):
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
+    source = lambda: (None, SETTINGS, {"regions": []})  # noqa: E731
+    tab = ProtocolTab(service, current_source=source)
+    qtbot.addWidget(tab)
+    tab.set_protocol(_protocol())
+
+    tab._apply_current("coordinates")
+
+    assert {row["coordinates"] for row in tab.protocol.sequences if row["type"] == "imaging"} == {"cur"}
+
+
+def test_save_load_round_trip_drops_unreferenced_blocks(tab, tmp_path):
+    tab.protocol.imaging.settings["orphan"] = tab.protocol.imaging.settings["cur"]
+    tab.protocol_path = str(tmp_path / "demo.yaml")
+    assert tab.save()
+
+    again = load_protocol(tab.protocol_path)
+    assert "orphan" not in again.imaging.settings
+    assert [r["type"] for r in again.sequences] == [r["type"] for r in _protocol().sequences]
+
+
+def test_set_run_locked_freezes_the_structure(tab):
+    tab.set_run_locked(True)
+    assert not tab.add_step_button.isEnabled()
+    assert not tab.add_rounds_button.isEnabled()
+    tab.set_run_locked(False)
+    assert tab.add_step_button.isEnabled()
+
+
+def test_imaging_ready_reports_missing_sources(tab):
+    assert tab.imaging_ready() is None
+    tab.protocol.sequences[3]["coordinates"] = None
+    assert "1 imaging row" in tab.imaging_ready()
+
+
+def test_run_lock_freezes_include_checkboxes(tab):
+    tab.set_run_locked(True)
+    child = tab.tree.topLevelItem(1).child(0)  # probe R01 (re-rendered by the lock)
+    assert not child.flags() & Qt.ItemIsUserCheckable  # not clickable at all
+    child.setCheckState(0, Qt.Unchecked)  # even a programmatic change reverts
+    assert tab.protocol.sequences[1].get("include", True) is True
+    assert child.checkState(0) == Qt.Checked
+    tab.set_run_locked(False)
+    child = tab.tree.topLevelItem(1).child(0)
+    assert child.flags() & Qt.ItemIsUserCheckable
+
+
+def test_removing_the_selected_row_clears_the_field_editor(tab, qtbot):
+    tab._select_row(len(tab.protocol.sequences) - 1)
+    tab._rebuild_field_editor()
+    assert tab.field_form.rowCount() > 0
+    del tab.protocol.sequences[-1]
+    tab._mark_changed()
+    qtbot.wait(20)
+    assert tab.field_form.rowCount() == 0  # no stale editor addressing a vanished row
+
+
+def test_folder_collisions_flag_only_the_offending_rows(tab):
+    # a second R01 imaging with the same folder_name collides (both derive R01_image);
+    # the R02 imaging derives R02_image and stays clean
+    tab.protocol.sequences.append(
+        {"type": "imaging", "round": "R01", "name": "image", "folder": "image", "settings": "cur", "coordinates": "cur"}
+    )
+    tab._mark_changed()
+    flagged = {i for i, p in tab._problems.items() if "collides" in p}
+    r01_imaging = {
+        i for i, r in enumerate(tab.protocol.sequences) if r["type"] == "imaging" and r.get("round") == "R01"
+    }
+    assert flagged and flagged <= r01_imaging
+    r02_imaging = {
+        i for i, r in enumerate(tab.protocol.sequences) if r["type"] == "imaging" and r.get("round") == "R02"
+    }
+    assert not (r02_imaging & set(tab._problems))
+
+
+def test_save_as_rebases_file_backed_references(tab, tmp_path, monkeypatch):
+    dir1 = tmp_path / "one"
+    dir2 = tmp_path / "two" / "deeper"
+    dir2.mkdir(parents=True)
+    dir1.mkdir()
+    tab.protocol_path = str(dir1 / "p.yaml")
+    tab.protocol.sequences[3]["coordinates"] = "acq/run1"  # file-backed, relative to dir1
+    target = str(dir2 / "p.yaml")
+    monkeypatch.setattr(protocol_tab_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (target, "")))
+    tab.protocol.sequences[5]["coordinates"] = "../two/deeper/acq2"  # lands under the new directory
+    assert tab.save_as()
+
+    # outside the new base: absolute, still the same file (matches the From file… convention)
+    assert tab.protocol.sequences[3]["coordinates"] == str(dir1 / "acq" / "run1")
+    # under the new base: relative to the new protocol file
+    assert tab.protocol.sequences[5]["coordinates"] == "acq2"
+    assert tab.protocol.sequences[3]["settings"] == "cur"  # header keys stay header keys
+
+
+def test_config_peek_before_initialize(tmp_path, fluidics_config_path):
+    pytest.importorskip("fluidics")
+    from fluidics.control.config import available_port_count
+
+    service = SimpleNamespace(initialized=False, default_config_path=fluidics_config_path)
+    config = protocol_tab_module._current_config(service)
+    # 3 daisy-chained 10-port valves: the last port of all but the final valve is plumbing
+    assert available_port_count(config) == 28 and config.application == "Flow Cell"
+
+    # every not-knowable case is an error the operator sees, never a silent skip
+    for bad in (
+        SimpleNamespace(initialized=False),
+        SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "nope.yaml")),
+    ):
+        with pytest.raises(protocol_tab_module.FluidicsConfigError):
+            protocol_tab_module._current_config(bad)
+    corrupt = tmp_path / "corrupt.yaml"
+    corrupt.write_text("config_version: '2.0'\nsyringe_pump: [not, a, mapping]\n")
+    with pytest.raises(protocol_tab_module.FluidicsConfigError, match="invalid"):
+        protocol_tab_module._current_config(SimpleNamespace(initialized=False, default_config_path=str(corrupt)))
+
+
+def test_missing_config_marks_fluidics_rows_as_errors(qtbot, quiet_dialogs, tmp_path):
+    pytest.importorskip("fluidics")
+    service = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "absent.yaml"))
+    widget = ProtocolTab(service)
+    qtbot.addWidget(widget)
+    widget.set_protocol(_protocol())
+    fluidics_rows = {i for i, r in enumerate(widget.protocol.sequences) if r["type"] != "imaging"}
+    assert fluidics_rows <= set(widget._problems)
+    assert all("No fluidics configuration" in widget._problems[i] for i in fluidics_rows)
+    assert "✗" in widget.validation_label.text()
+
+
+def test_save_as_rolls_back_when_the_write_fails(tab, tmp_path, monkeypatch):
+    dir1 = tmp_path / "one"
+    dir1.mkdir()
+    tab.protocol_path = str(dir1 / "p.yaml")
+    tab.protocol.sequences[3]["coordinates"] = "acq/run1"
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("")  # a file where a directory would be needed
+    target = str(blocker / "p.yaml")
+    monkeypatch.setattr(protocol_tab_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (target, "")))
+    assert not tab.save_as()
+    assert tab.protocol_path == str(dir1 / "p.yaml")  # still targeting the valid original
+    assert tab.protocol.sequences[3]["coordinates"] == "acq/run1"  # references not rebased away
+
+
+def test_initialize_revalidates_the_open_protocol(qtbot, quiet_dialogs, tmp_path, fluidics_config_path):
+    pytest.importorskip("fluidics")
+    from fluidics.control.config import load_config
+
+    service = SimpleNamespace(initialized=False, default_config_path=str(tmp_path / "absent.yaml"))
+    widget = ProtocolTab(service)
+    qtbot.addWidget(widget)
+    widget.set_protocol(_protocol())
+    assert widget._problems  # missing config marks the fluidics rows
+
+    service.initialized = True
+    service.config = load_config(fluidics_config_path)
+    widget.refresh_validation()  # what wire_fluidics connects to system_ready
+    assert not widget._problems
+
+
+def test_add_step_builds_the_real_dialog_and_adds_a_row(tab, monkeypatch):
+    # regression: the library's AddSequenceDialog crashed on required fields
+    # (PydanticUndefined), and Squid mocked it away — build the real one here.
+    from qtpy.QtWidgets import QDialog
+
+    from fluidics.qt.sequence_editor import AddSequenceDialog
+
+    def accept_with(self):  # constructs the real dialog (the crash was in __init__), then accepts
+        self.result_dict = {"type": "priming", "fluidic_port": 1, "flow_rate": 5000, "volume": 800}
+        return QDialog.Accepted
+
+    monkeypatch.setattr(AddSequenceDialog, "exec_", accept_with)
+    before = len(tab.protocol.sequences)
+    tab.tree.clearSelection()
+    tab._add_step()
+    assert len(tab.protocol.sequences) == before + 1
+    assert tab.protocol.sequences[-1]["type"] == "priming"
+
+
+def test_remove_deletes_the_selected_row(tab):
+    rows_before = [r.get("name") for r in tab.protocol.sequences]
+    tab._select_row(1)  # probe R01
+    tab._remove_row()
+    assert len(tab.protocol.sequences) == len(rows_before) - 1
+    assert "probe" not in [r.get("name") for r in tab.protocol.sequences if r.get("round") == "R01"]
+    # an imaging row removes just the same
+    imaging_index = next(i for i, r in enumerate(tab.protocol.sequences) if r["type"] == "imaging")
+    n = len(tab.protocol.sequences)
+    tab._select_row(imaging_index)
+    tab._remove_row()
+    assert len(tab.protocol.sequences) == n - 1
+
+
+def test_validation_label_names_the_problem(tab):
+    # an imaging row missing its sources is one problem; the label must say which
+    tab.protocol.sequences[3]["settings"] = None
+    tab._mark_changed()
+    assert tab._problems  # there is a problem
+    label = tab.validation_label.text()
+    assert "✗" in label and "no settings" in label  # the actual reason, not just a count
+    assert "no settings" in tab.validation_label.toolTip()
+
+
+def test_fluidics_rows_validate_against_the_configured_ports(tab):
+    # a port the rig does not offer is flagged with the library's phrasing, not a stray error
+    tab.protocol.sequences[1]["fluidic_port"] = 999
+    tab._mark_changed()
+    assert 1 in tab._problems
+    assert "iterable" not in tab._problems[1]  # never the int-vs-collection wiring bug
+    assert "999" in tab._problems[1] or "port" in tab._problems[1].lower()
+
+
+def test_imaging_field_editor_labels_the_folder_field(tab):
+    from control.models.fluidics_protocol import ProtocolFile
+
+    tab.set_protocol(
+        ProtocolFile(name="one", sequences=[{"type": "imaging", "name": "image", "round": "R01", "folder": "image"}])
+    )
+    tab._select_row(0)
+    tab._rebuild_field_editor()
+    labels = [tab.field_form.itemAt(i, tab.field_form.LabelRole).widget().text() for i in range(3)]
+    assert labels == ["name", "round", "folder_name"]  # the folder field reads "folder_name"
+
+
+def test_round_editor_tags_a_group_from_its_header(qtbot, quiet_dialogs):
+    from control.models.fluidics_protocol import ProtocolFile
+
+    service = SimpleNamespace(initialized=False)
+    tab = ProtocolTab(service)
+    qtbot.addWidget(tab)
+    # two untagged rows group together under "—", plus a real round
+    tab.set_protocol(
+        ProtocolFile(
+            name="mix",
+            sequences=[
+                {"type": "flow_reagent", "name": "a", "fluidic_port": 1, "flow_rate": 500, "volume": 500},
+                {"type": "flow_reagent", "name": "b", "fluidic_port": 2, "flow_rate": 500, "volume": 500},
+                {
+                    "type": "flow_reagent",
+                    "round": "R01",
+                    "name": "c",
+                    "fluidic_port": 3,
+                    "flow_rate": 500,
+                    "volume": 500,
+                },
+            ],
+        )
+    )
+    from qtpy.QtWidgets import QLineEdit
+
+    # selecting the no-round group header opens a round editor, not a row editor
+    no_round_group = tab.tree.topLevelItem(0)
+    tab.tree.setCurrentItem(no_round_group)
+    tab._rebuild_field_editor()
+    assert "no round" in tab.field_group.title()
+
+    # drive the real editingFinished path (a synchronous re-render here segfaulted)
+    edit = tab.field_form.itemAt(0, tab.field_form.FieldRole).widget()
+    assert isinstance(edit, QLineEdit)
+    edit.setText("R00")
+    edit.editingFinished.emit()
+    qtbot.wait(20)  # let the deferred re-render run
+    assert tab.protocol.sequences[0]["round"] == "R00" and tab.protocol.sequences[1]["round"] == "R00"
+    assert tab.protocol.sequences[2]["round"] == "R01"  # the other group is untouched
+
+    # blank clears the round
+    tab._apply_round_to_group((0, 1), "")
+    qtbot.wait(20)
+    assert tab.protocol.sequences[0]["round"] is None
+
+
+def test_remove_a_whole_round_from_the_group_header(tab):
+    # tab's protocol groups as: setup, R01 (probe/wash/image), R02 (probe/image)
+    r01 = tab.tree.topLevelItem(1)
+    assert r01.text(0) == "R01"
+    tab.tree.setCurrentItem(r01)
+    tab._remove_row()
+    labels = [r.get("round") for r in tab.protocol.sequences]
+    assert "R01" not in labels  # the whole round is gone
+    assert "setup" in labels and "R02" in labels  # the others are untouched
+
+
+def test_move_a_whole_round_up_and_down(tab):
+    def round_order():
+        seen = []
+        for r in tab.protocol.sequences:
+            if r.get("round") not in seen:
+                seen.append(r.get("round"))
+        return seen
+
+    assert round_order() == ["setup", "R01", "R02"]
+    r02 = tab.tree.topLevelItem(2)
+    assert r02.text(0) == "R02"
+    tab.tree.setCurrentItem(r02)
+    tab._move_row(-1)  # R02 up, past R01
+    assert round_order() == ["setup", "R02", "R01"]
+
+    # and back down
+    tab.tree.setCurrentItem(tab.tree.topLevelItem(1))  # R02 is now the middle group
+    assert tab.tree.topLevelItem(1).text(0) == "R02"
+    tab._move_row(+1)
+    assert round_order() == ["setup", "R01", "R02"]

@@ -48,7 +48,7 @@ def _protocol(rounds=1):
                 "type": "imaging",
                 "round": "R01",
                 "name": "image",
-                "folder": "R01_image",
+                "folder": "image",
                 "settings": "cur",
                 "coordinates": "cur",
             },
@@ -110,8 +110,8 @@ def test_24_rounds_complete_in_seconds(tmp_path):
     assert runner.outcome == "finished"
     folders = sorted(p.name for p in run_dir.iterdir() if p.name.endswith("_image"))
     assert folders == [f"R{n:02d}_image" for n in range(1, 25)]
-    assert fluidics.starts[3]["rows"][0]["fluidic_port"] == 2  # R02's probe port, round label stripped
-    assert all("round" not in row for start in fluidics.starts for row in start["rows"])
+    assert fluidics.starts[3]["rows"][0]["fluidic_port"] == 2  # R02's probe port
+    assert all(row["round"] == "R02" for row in fluidics.starts[3]["rows"])  # round passes through
 
 
 def test_abort_step_during_fluidics_holds_and_resume_runs_the_plan_tail(tmp_path):

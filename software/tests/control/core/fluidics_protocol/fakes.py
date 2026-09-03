@@ -172,16 +172,20 @@ class FakeImagingPort:
 
     def start(self, request: ImagingRequest) -> FakeHandle:
         entry = self.script.pop(0) if self.script else "completed"
-        self.requests.append(request)
         if entry == "raise":
+            self.requests.append(request)
             raise ImagingStartError("Laser AF reference not set")
         folder = os.path.join(request.run_dir, request.folder)
         if os.path.exists(folder):
+            self.requests.append(request)
             raise ImagingStartError(f"folder exists: {folder}")
         os.makedirs(folder)
         hold = entry == "hold"
         handle = FakeHandle(ImagingResult("completed" if hold else entry, 7, request.folder), hold=hold)
+        # Publish the handle before the request: a test that waits on requests then drives
+        # handles[0] must never see the request recorded ahead of its handle.
         self.handles.append(handle)
+        self.requests.append(request)
         return handle
 
 
