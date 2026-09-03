@@ -550,7 +550,9 @@ class FluidicsProtocolWidget(QFrame):
             if snap.step_index is not None:
                 self.progress_bar.setMaximum(snap.total_steps)
                 self.progress_bar.setValue(min(snap.step_index + (0 if snap.outcome is None else 1), snap.total_steps))
-            self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)}")
+            estimate = self._resolved.fluidics_estimate_s if self._resolved else None
+            # fluidics-only: Squid has no pre-run imaging time estimate to add here
+            self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)} / fluidics est. {_hms(estimate)}")
             self.folder_label.setText(str(runner.run_dir))
             if snap.state in (RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED):
                 self.pause_button.setText("Resume")

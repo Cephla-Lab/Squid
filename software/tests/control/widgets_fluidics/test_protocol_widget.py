@@ -313,3 +313,17 @@ def test_running_shows_round_and_advances_the_sequence_highlight(qtbot, widget):
     w._on_runner_event(SequenceProgress(step_index=0, position=1, total=2, label="R01"))
     assert "rinse" in w.sequence_label.text()
     assert highlights[-1] == 2  # advanced to the actual row flowing (row_indices[1]), not stuck on the first
+
+
+def test_running_card_shows_elapsed_and_estimate(qtbot, widget):
+    from control.core.fluidics_protocol.events import RunnerState
+
+    w, *_ = widget
+    snap = SimpleNamespace(
+        state=RunnerState.RUNNING, step_index=0, total_steps=2, elapsed_s=65, outcome=None, attempt=1
+    )
+    w.runner = SimpleNamespace(snapshot=lambda: snap, run_dir="/tmp/run")
+    w._resolved = SimpleNamespace(fluidics_estimate_s=3723)
+    w._refresh()
+    assert "elapsed 00:01:05" in w.elapsed_label.text()
+    assert "fluidics est. 01:02:03" in w.elapsed_label.text()
