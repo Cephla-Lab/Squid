@@ -540,7 +540,9 @@ class ProtocolTab(QWidget):
         index = self._selected_row_index()
         at = index + 1 if index is not None else len(self._protocol.sequences)
         round_label = self._selected_round()
-        self._protocol.sequences.insert(at, {"type": IMAGING_TYPE, "name": "image", "round": round_label, "folder": ""})
+        self._protocol.sequences.insert(
+            at, {"type": IMAGING_TYPE, "name": "image", "round": round_label, "folder": "image"}
+        )
         self._mark_changed()
 
     def _duplicate_row(self) -> None:

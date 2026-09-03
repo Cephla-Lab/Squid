@@ -316,11 +316,9 @@ def test_running_shows_round_and_advances_the_sequence_highlight(qtbot, widget):
 
 
 def test_running_card_shows_elapsed_and_estimate(qtbot, widget):
-    from control.core.fluidics_protocol.events import RunnerState
-
     w, *_ = widget
     snap = SimpleNamespace(
-        state=RunnerState.RUNNING, step_index=0, total_steps=2, elapsed_s=65, outcome=None, attempt=1
+        state=RunnerState.RUNNING, step_index=0, total_steps=2, elapsed_s=65, outcome=None, progress_fraction=None
     )
     w.runner = SimpleNamespace(snapshot=lambda: snap, run_dir="/tmp/run")
     # imaging priced at a rough 1 s/FOV, so the running card shows the fluidics+imaging total
@@ -328,3 +326,37 @@ def test_running_card_shows_elapsed_and_estimate(qtbot, widget):
     w._refresh()
     assert "elapsed 00:01:05" in w.elapsed_label.text()
     assert "est. 01:02:03" in w.elapsed_label.text()
+
+
+def test_progress_bar_follows_the_run_progress_fraction(qtbot, widget):
+    # the reported bug: during a long imaging step (step_index stuck at 0) the bar sat at 0%.
+    # the bar now maps the snapshot's progress fraction, which advances with elapsed time.
+    w, *_ = widget
+
+    def snap(fraction, state=RunnerState.RUNNING):
+        return SimpleNamespace(
+            state=state, step_index=0, total_steps=5, elapsed_s=0.0, outcome=None, progress_fraction=fraction
+        )
+
+    w.runner = SimpleNamespace(snapshot=lambda: snap(0.0), run_dir="/tmp/run")
+    w._refresh()
+    assert w.progress_bar.value() == 0
+    w.runner.snapshot = lambda: snap(0.5)  # halfway, still on step 0
+    w._refresh()
+    assert w.progress_bar.value() == 50  # moved even though the step index did not
+    w.runner.snapshot = lambda: snap(1.0, RunnerState.ENDED)
+    w._refresh()
+    assert w.progress_bar.value() == 100  # the finished run reads full
+
+
+def test_progress_bar_falls_back_to_steps_without_an_estimate(qtbot, widget):
+    # progress_fraction is None (an unpriced plan), so the bar counts completed steps instead
+    w, *_ = widget
+    w.runner = SimpleNamespace(
+        snapshot=lambda: SimpleNamespace(
+            state=RunnerState.RUNNING, step_index=2, total_steps=4, elapsed_s=9.0, outcome=None, progress_fraction=None
+        ),
+        run_dir="/tmp/run",
+    )
+    w._refresh()
+    assert w.progress_bar.maximum() == 4 and w.progress_bar.value() == 2

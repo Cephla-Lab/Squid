@@ -134,13 +134,13 @@ def test_field_edit_updates_the_model_and_apply_to_all(tab, qtbot):
     qtbot.wait(20)  # let the queued re-render run
 
 
-def test_add_imaging_leaves_the_folder_for_the_operator(tab):
+def test_add_imaging_defaults_the_folder_to_image(tab):
     tab.tree.clearSelection()
     tab._add_imaging()
     row = tab.protocol.sequences[-1]
-    assert row["type"] == "imaging" and row["round"] == "R02"
-    assert row["folder"] == ""  # no auto-naming; the operator types the folder name
-    assert "✗" in tab.validation_label.text()  # an empty folder is flagged until named
+    assert row["type"] == "imaging"
+    assert row["folder"] == "image"  # a usable default so the folder field is never blank
+    # (the row is still flagged until the operator assigns acquisition settings — that's separate)
 
 
 def test_collision_in_the_derived_folder_marks_the_row_invalid(tab):
