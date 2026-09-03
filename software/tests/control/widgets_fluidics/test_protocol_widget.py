@@ -292,3 +292,24 @@ def test_changing_the_save_to_directory_offers_recovery(qtbot, widget, monkeypat
     w.save_to_edit.setText(str(other))
     w.save_to_edit.editingFinished.emit()
     assert offers == [True]
+
+
+def test_running_shows_round_and_advances_the_sequence_highlight(qtbot, widget):
+    from control.core.fluidics_protocol.events import SequenceProgress, StepStarted
+
+    w, _fluidics, _imaging, _save_to = widget
+    fstep = SimpleNamespace(
+        kind="fluidics", round="R01", rows=[{"name": "probe"}, {"name": "rinse"}], row_indices=[0, 2]
+    )
+    w._resolved = SimpleNamespace(steps=[fstep])
+    highlights = []
+    w.protocol_tab.highlight_row = highlights.append
+
+    w._on_runner_event(StepStarted(step_index=0, attempt=1, kind="fluidics", label="R01"))
+    assert w._current_round == "R01"
+    assert "R01" in w.round_label.text() and "probe" in w.sequence_label.text()
+    assert highlights[-1] == 0  # first row of the step
+
+    w._on_runner_event(SequenceProgress(step_index=0, position=1, total=2, label="R01"))
+    assert "rinse" in w.sequence_label.text()
+    assert highlights[-1] == 2  # advanced to the actual row flowing (row_indices[1]), not stuck on the first

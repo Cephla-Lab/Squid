@@ -82,7 +82,8 @@ class FluidicsProtocolWidget(QFrame):
         self._bridge = RunnerEventBridge(self)
         self._bridge.event_received.connect(self._on_runner_event)
         self._current_step_kind: Optional[str] = None
-        self._current_step_label = ""
+        self._current_round = "—"
+        self._current_sequence = "—"
         self._since_init_ul: Dict[int, float] = {}
 
         self._build_ui()
@@ -142,7 +143,7 @@ class FluidicsProtocolWidget(QFrame):
         self.idle_box.setLayout(idle_layout)
 
         self.state_label = QLabel("—")
-        self.step_label = QLabel("—")
+        self.round_label = QLabel("—")
         self.sequence_label = QLabel("—")
         self.elapsed_label = QLabel("—")
         self.progress_bar = QProgressBar()
@@ -172,7 +173,7 @@ class FluidicsProtocolWidget(QFrame):
         self.running_box = QGroupBox()
         running_layout = QVBoxLayout()
         running_layout.addWidget(self.state_label)
-        running_layout.addWidget(self.step_label)
+        running_layout.addWidget(self.round_label)
         running_layout.addWidget(self.sequence_label)
         running_layout.addWidget(self.elapsed_label)
         running_layout.addWidget(self.progress_bar)
@@ -341,6 +342,8 @@ class FluidicsProtocolWidget(QFrame):
         self.runner = runner
         self._resolved = resolved
         self._current_step_kind = None
+        self._current_round = "—"
+        self._current_sequence = "—"
         self.protocol_tab.set_run_locked(True)
         self._set_run_visible(True)
         self.signal_acquisition_started.emit(True)
@@ -353,15 +356,13 @@ class FluidicsProtocolWidget(QFrame):
         self.running_box.setHidden(not active)
         self.held_box.hide()
 
+    def _render_running(self) -> None:
+        self.round_label.setText(f"Round: {self._current_round}")
+        self.sequence_label.setText(f"Sequence: {self._current_sequence}")
+
     def run_line(self) -> str:
-        """One line for the device-status panel: state, and the step position when running."""
-        if self.runner is None:
-            return "idle"
-        snap = self.runner.snapshot()
-        line = snap.state.value
-        if snap.step_index is not None:
-            line += f" · step {snap.step_index + 1}/{snap.total_steps}"
-        return line
+        """One line for the device-status panel: just the run state."""
+        return "idle" if self.runner is None else self.runner.snapshot().state.value
 
     def end_run_for_exit(self, timeout: float = 15.0) -> bool:
         """closeEvent path: end an active run and wait for it to unwind, pumping the event
@@ -383,14 +384,22 @@ class FluidicsProtocolWidget(QFrame):
         try:
             if isinstance(event, StepStarted):
                 self._current_step_kind = event.kind
-                self._current_step_label = event.label
                 step = self._resolved.steps[event.step_index] if self._resolved else None
                 if step is not None:
-                    row_index = step.row_index if step.kind == "imaging" else step.row_indices[0]
-                    self.protocol_tab.highlight_row(row_index)
-                self.sequence_label.setText("—")
+                    self._current_round = step.round or "—"
+                    if step.kind == "imaging":
+                        self._current_sequence = step.row.name or "imaging"
+                        self.protocol_tab.highlight_row(step.row_index)
+                    else:
+                        self._current_sequence = step.rows[0].get("name") or "—"
+                        self.protocol_tab.highlight_row(step.row_indices[0])
+                self._render_running()
             elif isinstance(event, SequenceProgress):
-                self.sequence_label.setText(f"sequence {event.position + 1}/{event.total} ({event.label})")
+                step = self._resolved.steps[event.step_index] if self._resolved else None
+                if step is not None and step.kind == "fluidics" and 0 <= event.position < len(step.row_indices):
+                    self._current_sequence = step.rows[event.position].get("name") or "—"
+                    self.protocol_tab.highlight_row(step.row_indices[event.position])  # the row actually flowing
+                    self._render_running()
             elif isinstance(event, StepEnded):
                 self._update_reagents()
             elif isinstance(event, StateChanged):
@@ -537,10 +546,8 @@ class FluidicsProtocolWidget(QFrame):
                 return
             snap = runner.snapshot()
             self.state_label.setText(f"State: {snap.state.value}")
+            self._render_running()
             if snap.step_index is not None:
-                self.step_label.setText(
-                    f"step {snap.step_index + 1}/{snap.total_steps} ({self._current_step_label}) · attempt {snap.attempt}"
-                )
                 self.progress_bar.setMaximum(snap.total_steps)
                 self.progress_bar.setValue(min(snap.step_index + (0 if snap.outcome is None else 1), snap.total_steps))
             self.elapsed_label.setText(f"elapsed {_hms(snap.elapsed_s)}")
