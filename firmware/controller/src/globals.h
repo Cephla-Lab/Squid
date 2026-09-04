@@ -140,7 +140,10 @@ extern float illumination_intensity_factor;
 extern uint8_t led_matrix_r;
 extern uint8_t led_matrix_g;
 extern uint8_t led_matrix_b;
-// volatile: cleared at strobe end inside ISR, read by set_illumination() in main loop
+// Host-owned: set true only in turn_on_illumination(); the strobe ISR only
+// ever clears it (strobe_end(), when the strobe extinguished the host's own
+// source). volatile: cleared in the ISR, read by set_illumination() in the
+// main loop.
 extern volatile bool illumination_is_on;
 
 // Multi-port illumination control (supports up to 16 ports D1-D16)

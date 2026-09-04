@@ -1453,6 +1453,8 @@ class MultiPointWorker:
                 # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
                 #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
                 #   I am pretty sure this is broken!
+                # NL5 drives the illumination on this path (no MCU strobe), so
+                # there is no strobe window to record.
                 self.microscope.addons.nl5.start_acquisition()
         # This is some large timeout that we use just so as to not block forever
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
@@ -1498,7 +1500,7 @@ class MultiPointWorker:
             )
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
-            self.camera.send_trigger(illumination_time=camera_illumination_time)
+            self.liveController.send_camera_trigger(camera_illumination_time)
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
             if self.liveController.trigger_mode == TriggerMode.HARDWARE:
@@ -1547,7 +1549,7 @@ class MultiPointWorker:
                     self.wait_till_operation_is_completed()
 
                 # read camera frame
-                self.camera.send_trigger(illumination_time=self.camera.get_exposure_time())
+                self.liveController.send_camera_trigger(self.camera.get_exposure_time())
                 image = self.camera.read_frame()
                 if image is None:
                     self._log.warning("self.camera.read_frame() returned None")
