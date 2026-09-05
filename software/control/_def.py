@@ -996,6 +996,12 @@ USE_NAPARI_WELL_SELECTION = False
 USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 
+# Well selector visibility.  When False, the well selector dock starts hidden and is only shown
+# when the user asks for it with the "Show Well Selector" button in the image display.  Switching
+# to the wellplate acquisition tab or changing plate format no longer pops it open on its own; it
+# is still force-hidden where it does not apply (glass slide, laser AF tab, during acquisition).
+SHOW_WELL_SELECTOR_BY_DEFAULT = False
+
 # NDViewer integration
 ENABLE_NDVIEWER = False
 MOSAIC_VIEW_TARGET_PIXEL_SIZE_UM = 2
