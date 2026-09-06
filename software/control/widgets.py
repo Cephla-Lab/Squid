@@ -2823,6 +2823,24 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
+def _sync_live_button(widget, live_text, idle_text, *enabled_when_idle):
+    """Make a widget's live button reflect what the LiveController actually did.
+
+    Derived from liveController.is_live rather than from the click, because
+    stop_live() can raise on a busy MCU after live is already stopped - and a
+    button stuck on "Stop" invites more toggling that restarts the trigger
+    stream against the busy MCU. Also syncs the checked state so the next click
+    sends the right `pressed` (safe: these buttons connect via clicked, so
+    setChecked does not re-enter the handler), and re-enables companion buttons
+    that are meaningless while live.
+    """
+    is_live = widget.liveController.is_live
+    widget.btn_live.setChecked(is_live)
+    widget.btn_live.setText(live_text if is_live else idle_text)
+    for button in enabled_when_idle:
+        button.setEnabled(not is_live)
+
+
 class LaserAutofocusSettingWidget(QWidget):
 
     signal_newExposureTime = Signal(float)
@@ -3039,11 +3057,7 @@ class LaserAutofocusSettingWidget(QWidget):
             else:
                 self.liveController.stop_live()
         finally:
-            # Reflect the controller's actual state - stop_live() can raise on a
-            # busy MCU after live is already stopped, and the button must not lie.
-            is_live = self.liveController.is_live
-            self.btn_live.setText("Stop Live" if is_live else "Start Live")
-            self.run_spot_detection_button.setEnabled(not is_live)
+            _sync_live_button(self, "Stop Live", "Start Live", self.run_spot_detection_button)
 
     def stop_live(self):
         """Used for stopping live when switching to other tabs"""
@@ -4596,14 +4610,9 @@ class LiveControlWidget(QFrame):
             else:
                 self.liveController.stop_live()
         finally:
-            # Show what the controller actually did, not what the click asked for:
-            # stop_live() can raise on a busy MCU after live is already stopped, and
-            # a button stuck on "Stop" invites more toggling that restarts the
-            # trigger stream against the busy MCU.
-            is_live = self.liveController.is_live
-            self.btn_live.setText("Stop" if is_live else "Live")
-            # Snapping while live is meaningless - the sample is already being exposed.
-            self.btn_snap.setEnabled(not is_live)
+            # Snap is the companion here: snapping while live is meaningless - the
+            # sample is already being exposed.
+            _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
@@ -11067,9 +11076,7 @@ class NapariLiveWidget(QWidget):
             else:
                 self.liveController.stop_live()
         finally:
-            # Reflect the controller's actual state - stop_live() can raise on a
-            # busy MCU after live is already stopped, and the button must not lie.
-            self.btn_live.setText("Stop Live" if self.liveController.is_live else "Start Live")
+            _sync_live_button(self, "Stop Live", "Start Live")
 
     def toggle_live_controls(self, show):
         if show:

@@ -1,7 +1,7 @@
 import copy
 import dataclasses
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -657,35 +657,20 @@ def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
 # the MCU to go idle before letting the worker move the stage.
 
 
-class _PreflightStub:
-    """MultiPointController-shaped object for _wait_for_microcontroller_idle."""
-
-    def __init__(self, wait_side_effects):
-        self.microcontroller = MagicMock()
-        self.microcontroller.wait_till_operation_is_completed.side_effect = wait_side_effects
-        self._log = MagicMock()
-
-    _MCU_IDLE_WAIT_ATTEMPTS = MultiPointController._MCU_IDLE_WAIT_ATTEMPTS
-    _MCU_IDLE_WAIT_TIMEOUT_S = MultiPointController._MCU_IDLE_WAIT_TIMEOUT_S
-    _wait_for_microcontroller_idle = MultiPointController._wait_for_microcontroller_idle
-
-
-def test_wait_for_microcontroller_idle_passes_when_idle():
-    stub = _PreflightStub([None])
-    assert stub._wait_for_microcontroller_idle() is True
-    assert stub.microcontroller.wait_till_operation_is_completed.call_count == 1
-
-
 def test_wait_for_microcontroller_idle_recovers_after_transient_busy():
-    stub = _PreflightStub([TimeoutError("busy"), TimeoutError("busy"), None])
-    assert stub._wait_for_microcontroller_idle() is True
-    assert stub.microcontroller.wait_till_operation_is_completed.call_count == 3
+    # The wedge clears a few seconds in; two timed-out attempts followed by a
+    # clean wait must count as success. (The give-up path is covered end-to-end
+    # by test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy.)
+    scope, tt, mpc = _controller_with_tracker()
 
+    with patch.object(
+        mpc.microcontroller,
+        "wait_till_operation_is_completed",
+        side_effect=[TimeoutError("busy"), TimeoutError("busy"), None],
+    ) as wait_mock:
+        assert mpc._wait_for_microcontroller_idle() is True
 
-def test_wait_for_microcontroller_idle_gives_up_after_three_timeouts():
-    stub = _PreflightStub([TimeoutError("busy")] * 3)
-    assert stub._wait_for_microcontroller_idle() is False
-    assert stub.microcontroller.wait_till_operation_is_completed.call_count == 3
+    assert wait_mock.call_count == 3
 
 
 def _stop_live_like_wedged_mcu(live_controller):

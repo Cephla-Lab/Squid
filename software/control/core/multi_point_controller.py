@@ -710,13 +710,12 @@ class MultiPointController:
     _MCU_IDLE_WAIT_TIMEOUT_S = 5
 
     def _wait_for_microcontroller_idle(self) -> bool:
-        """Wait for the microcontroller to finish its current command; True on success.
+        """Wait up to 15 s for the MCU to finish its current command; True on success.
 
-        A busy MCU here usually means live triggers raced a stage move and wedged the
-        firmware's single command-status slot; that clears a few seconds after the
-        trigger stream stops, so wait with patience beyond a single 5 s timeout. Each
-        attempt blocks inside wait_till_operation_is_completed, so there is no extra
-        sleeping between attempts.
+        One long wait would block identically - the loop exists only so a stalled
+        wait logs progress instead of freezing silently. See
+        LiveController.trigger_acquisition for how the MCU gets wedged and why it
+        clears once live triggers stop.
         """
         for attempt in range(self._MCU_IDLE_WAIT_ATTEMPTS):
             try:
@@ -815,9 +814,8 @@ class MultiPointController:
                 try:
                     self.liveController.stop_live()  # @@@ to do: also uncheck the live button
                 except TimeoutError:
-                    # A wedged MCU can time out the illumination-off wait after live is
-                    # already stopped and its trigger stream cancelled; the idle wait
-                    # below is the recovery point, so don't abort the start here.
+                    # Live is already stopped and its trigger timer cancelled by this
+                    # point; the idle wait below is the recovery, so don't abort here.
                     self._log.warning(
                         "Stopping live timed out waiting for the microcontroller; "
                         "waiting for it to go idle before starting the acquisition."
@@ -825,9 +823,8 @@ class MultiPointController:
             else:
                 self.liveController_was_live_before_multipoint = False
 
-            # The MCU must be idle before the worker starts moving the stage: a command
-            # wedged by live triggers racing a move clears a few seconds after the
-            # trigger stream stops, but barging ahead would time out every stage move.
+            # A wedged MCU (see LiveController.trigger_acquisition) clears once live
+            # triggers stop; wait it out rather than timing out the first stage move.
             if not self._wait_for_microcontroller_idle():
                 self._log.error(
                     f"Microcontroller still busy after "
