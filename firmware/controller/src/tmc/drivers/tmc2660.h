@@ -9,9 +9,14 @@
   TMC4361A_TMC2660_Utils.cpp (now TMC4361A_Utils.cpp). Reached through the
   tmc_driver_* dispatch in that file, which selects between this module and
   tmc2240.cpp on tmc4361A->driver_type; master's tmc4361A_tmc2660_* entry
-  points are gone. Behavior is bit-identical to master (design M5); the
-  register words come from tmc2660_regs.h and are pinned by
-  test/test_driver_regs.
+  points are gone. The register sequences and datagram words are identical to
+  master's (design M5) — they come from tmc2660_regs.h and are pinned by
+  test/test_driver_regs. The current scale is bit-identical to master at the
+  three SHIPPED sense-resistor values — 0.22 (X/Y), 0.43 (Z), 0.105 (W/W2), the
+  R_sense_* constants in def_v1.h — but NOT for an arbitrary R: this path
+  computes in float where master computed in double and narrowed, so a handful
+  of inputs sitting on truncation boundaries can differ by one CS count. See
+  driver_math.h for the sweep and for what re-opens the question.
 */
 
 void    tmc2660_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361);
