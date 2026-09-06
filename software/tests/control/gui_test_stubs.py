@@ -39,7 +39,7 @@ def get_test_qt_multi_point_controller(microscope: Microscope) -> QtMultiPointCo
         laser_autofocus_controller=ts.get_test_laser_autofocus_controller(microscope),
     )
 
-    multi_point_controller.set_base_path("/tmp/")
+    multi_point_controller.set_base_path(ts.new_acquisition_base_path())
     multi_point_controller.start_new_experiment("unit test experiment (qt)")
 
     return multi_point_controller

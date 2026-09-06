@@ -1,3 +1,6 @@
+import shutil
+import tempfile
+
 from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -9,6 +12,23 @@ from control.core.scan_coordinates import ScanCoordinates
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from squid.abc import AbstractStage, AbstractCamera
+
+# Simulated acquisitions write real image data (~180 MB per run). Every base dir a
+# stub controller writes into is registered here so the autouse fixture in
+# tests/conftest.py can delete it at test teardown - pointing them at a literal
+# "/tmp/" used to accumulate output across runs until the disk filled.
+_acquisition_output_dirs: list = []
+
+
+def new_acquisition_base_path() -> str:
+    base_path = tempfile.mkdtemp(prefix="squid_unit_test_acquisition_")
+    _acquisition_output_dirs.append(base_path)
+    return base_path
+
+
+def cleanup_stub_acquisition_dirs():
+    while _acquisition_output_dirs:
+        shutil.rmtree(_acquisition_output_dirs.pop(), ignore_errors=True)
 
 
 def get_test_live_controller(microscope: Microscope, starting_objective) -> LiveController:
@@ -85,7 +105,7 @@ def get_test_multi_point_controller(
         laser_autofocus_controller=get_test_laser_autofocus_controller(microscope),
     )
 
-    multi_point_controller.set_base_path("/tmp/")
+    multi_point_controller.set_base_path(new_acquisition_base_path())
     multi_point_controller.start_new_experiment("unit test experiment")
 
     return multi_point_controller
