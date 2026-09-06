@@ -1,6 +1,7 @@
 import copy
 import dataclasses
 import threading
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -643,3 +644,94 @@ def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
     mpc.thread.join(10)
     with open(tmp_path / "R02_image" / "acquisition.yaml", encoding="utf-8") as f:
         assert "protocol" not in yaml.safe_load(f)
+
+
+# --- MCU-idle pre-flight -----------------------------------------------------
+#
+# On 2026-09-02 an instrument wedged its MCU (live triggers racing a stage move
+# left the firmware reporting IN_PROGRESS for every command). Starting an
+# acquisition then aborted inside stop_live() - the illumination-off wait's
+# TimeoutError escaped - and even without that, the first stage move would have
+# timed out. The wedge clears a few seconds after the trigger stream stops, so
+# run_acquisition() must survive a stop_live() timeout and patiently wait for
+# the MCU to go idle before letting the worker move the stage.
+
+
+class _PreflightStub:
+    """MultiPointController-shaped object for _wait_for_microcontroller_idle."""
+
+    def __init__(self, wait_side_effects):
+        self.microcontroller = MagicMock()
+        self.microcontroller.wait_till_operation_is_completed.side_effect = wait_side_effects
+        self._log = MagicMock()
+
+    _MCU_IDLE_WAIT_ATTEMPTS = MultiPointController._MCU_IDLE_WAIT_ATTEMPTS
+    _MCU_IDLE_WAIT_TIMEOUT_S = MultiPointController._MCU_IDLE_WAIT_TIMEOUT_S
+    _wait_for_microcontroller_idle = MultiPointController._wait_for_microcontroller_idle
+
+
+def test_wait_for_microcontroller_idle_passes_when_idle():
+    stub = _PreflightStub([None])
+    assert stub._wait_for_microcontroller_idle() is True
+    assert stub.microcontroller.wait_till_operation_is_completed.call_count == 1
+
+
+def test_wait_for_microcontroller_idle_recovers_after_transient_busy():
+    stub = _PreflightStub([TimeoutError("busy"), TimeoutError("busy"), None])
+    assert stub._wait_for_microcontroller_idle() is True
+    assert stub.microcontroller.wait_till_operation_is_completed.call_count == 3
+
+
+def test_wait_for_microcontroller_idle_gives_up_after_three_timeouts():
+    stub = _PreflightStub([TimeoutError("busy")] * 3)
+    assert stub._wait_for_microcontroller_idle() is False
+    assert stub.microcontroller.wait_till_operation_is_completed.call_count == 3
+
+
+def _stop_live_like_wedged_mcu(live_controller):
+    """Mimic the real failure: is_live goes False, then the illumination-off wait raises."""
+
+    def stop_live():
+        live_controller.is_live = False
+        raise TimeoutError("illumination-off wait timed out")
+
+    return stop_live
+
+
+def test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy(tmp_path):
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("preflight abort")
+
+    mpc.liveController.is_live = True
+    with patch.object(
+        mpc.liveController, "stop_live", side_effect=_stop_live_like_wedged_mcu(mpc.liveController)
+    ), patch.object(
+        mpc.microcontroller, "wait_till_operation_is_completed", side_effect=TimeoutError("busy")
+    ) as wait_mock:
+        mpc.run_acquisition()  # must not raise
+
+    assert wait_mock.call_count == 3
+    assert mpc.thread is None
+    assert tt.finished_event.wait(5)
+    assert not tt.started_event.is_set()
+    assert mpc.last_end_reason == "failed_to_start"
+
+
+def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers(tmp_path):
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("preflight recover")
+
+    mpc.liveController.is_live = True
+    with patch.object(
+        mpc.liveController, "stop_live", side_effect=_stop_live_like_wedged_mcu(mpc.liveController)
+    ), patch.object(
+        mpc.liveController, "start_live"
+    ):  # keep post-acquisition resume from really starting live
+        mpc.run_acquisition()
+        assert tt.started_event.wait(5)
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert tt.image_count == mpc.get_acquisition_image_count()
