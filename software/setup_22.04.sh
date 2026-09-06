@@ -72,17 +72,23 @@ sudo apt remove -y python3-pyqt5 python3-pyqt5.qtsvg 2>/dev/null || true
 pip3 uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip 2>/dev/null || true
 pip3 install "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0"
 
-# install libraries. No "numpy<2" pin: napari 0.7 only needs numpy>=1.24, but the rest of
-# the current stack (opencv-python 5.x, pyqtgraph 0.14, ...) targets NumPy 2 and the
-# pinned-back packages aicsimageio drags in (tifffile 2023.2, zarr 2.15, lxml 4.9) were
-# verified to work with it.
+# install libraries. No "numpy<2" pin: napari 0.7 only needs numpy>=1.24, and the rest of
+# the current stack (opencv-python 5.x, pyqtgraph 0.14, ...) targets NumPy 2.
+#
+# aicsimageio and basicpy are deliberately NOT installed. basicpy pins scipy<1.13
+# (peng-lab/BaSiCPy#173) and scipy 1.12 ships no NumPy-2 wheel, so pip resolves the whole
+# environment back to numpy 1.26 -- which then violates napari's scipy>=1.14 and
+# opencv 5.x's numpy>=2, leaving `pip check` failing and napari unimportable. Their only
+# consumer is control/stitcher.py, which nothing in the application imports; stitching
+# lives in the separate Cephla-Lab/image-stitcher repo. If you need that module, install
+# these two into a dedicated venv rather than this one.
 pip3 install pyqtgraph qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
 # napari pinned to a tested release (patch releases change its vispy/Qt constraints). The
 # [pyqt6] extra is what makes pip enforce napari's Qt blocklist against the PyQt6 above.
 # tensorstore is required by control/ndviewer_light and by tests/control/core/test_zarr_writer.py,
 # which begins with pytest.importorskip("tensorstore") -- without it ~79 zarr tests silently skip.
-pip3 install "napari[pyqt6]==0.7.1" scikit-image dask_image ome_zarr tensorstore aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
+pip3 install "napari[pyqt6]==0.7.1" scikit-image dask_image ome_zarr tensorstore pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
