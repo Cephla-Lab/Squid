@@ -19,7 +19,25 @@
 /* ------------------------------------------------------------------------ */
 /*
   This reproduces master's historical formula BIT-IDENTICALLY for every
-  in-range input (design M5).
+  in-range input at every SHIPPED sense-resistor value — 0.22 (X/Y), 0.43 (Z)
+  and 0.105 (W/W2), the compile-time R_sense_* constants in def_v1.h.
+  That is the claim design M5 needs and the one firmware/README.md states; it
+  was verified by exhaustive sweep over the u16 milliamp domain cmd 21 can
+  carry, against BOTH of master's call-site spellings.
+
+  It is NOT bit-identical for an arbitrary R. Master computed the quotient in
+  DOUBLE at its call sites — (mA / 1000.0) * R_sense / 0.2298 — and narrowed to
+  a float parameter; this header computes in float throughout. Sweeping
+  R = 0.001..2.000 in 1 mOhm steps over the whole u16 milliamp domain turns up a
+  handful of inputs (single digits) where the two differ by one CS count, every
+  one of them sitting exactly on a truncation boundary. The exact count depends
+  on which master spelling you compare against: init.cpp used `/ 1000` and
+  stage_commands.cpp `/ 1000.0`.
+
+  Nothing on this branch can reach any of them: R_sense is populated only from
+  the def_v1.h constants above, and no command carries it. Adding a new sense
+  resistor, or making R_sense host-settable, re-opens the question — re-run the
+  sweep before doing either.
 
   It is known to be 4-7% low. tmc2660_init writes DRVCONF = 0x000E00A1, whose
   bit 6 is VSENSE = 0, selecting V_FS = 0.310 V; this formula scales for

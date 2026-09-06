@@ -489,14 +489,57 @@ int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivi
                driver-specific current scale, which is what let the same TMC2660
                formula be duplicated across those nine sites.
 
-               The register writes and their order reproduce master's
-               tmc4361A_tmc2660_update() exactly on a TMC2660 axis:
-               cScaleInit (via tmc_driver_set_current) -> writeMicrosteps ->
-               writeSPR. The last two are NOT optional and are not folded into
-               the driver seam: tmc2660_driver_set_microsteps() is a no-op by
-               design (under DRVCONF.SDOFF = 1 the TMC4361A owns microstepping),
-               so without them cmd 21 would stop writing STEP_CONF and a host
-               microstepping change would silently do nothing.
+               This FUNCTION's own register writes and their order reproduce
+               master's tmc4361A_tmc2660_update() on a TMC2660 axis: cScaleInit
+               (via tmc_driver_set_current) -> writeMicrosteps -> writeSPR. The
+               last two are NOT optional and are not folded into the driver
+               seam: tmc2660_driver_set_microsteps() is a no-op by design (under
+               DRVCONF.SDOFF = 1 the TMC4361A owns microstepping), so without
+               them cmd 21 would stop writing STEP_CONF and a host microstepping
+               change would silently do nothing.
+
+               ONE DOCUMENTED EXCEPTION to that equivalence: master always wrote
+               the current scale, wrapping a u16 milliamp request mod 32 if it
+               had to. tmc_driver_set_current REFUSES an unencodable request and
+               writes nothing at all, so the cScaleInit is skipped on that path
+               and the axis keeps its previous current. That is the M5 safety
+               carve-out, not a drift.
+
+               THE BOOT SEQUENCE IS NOT MASTER'S, AND THIS SENTENCE IS ABOUT THE
+               FUNCTION, NOT THE SEQUENCE. Master called its struct-only
+               tmc4361A_tmc2660_config() BEFORE SPI.begin() and then
+               tmc4361A_tmc2660_init() once, so each axis saw cScaleInit,
+               writeMicrosteps and writeSPR exactly once, with the real values —
+               15 bus operations per TMC2660 axis. Here the probe forces
+               tmc_driver_init() to run first (it needs SPI, and it must undo the
+               probe's SPIOUT_CONF), so this function necessarily comes after it
+               and the struct is still zeroed during that first pass. A TMC2660
+               stage axis therefore sees:
+
+                 pass 1 (tmc2660_driver_init, struct zeroed)
+                   cScaleInit with CS = 0 and SCALE_VALUES = 0
+                   writeMicrosteps SKIPPED (microsteps = 0 is not a legal MRES)
+                   writeSPR with FS_PER_REV = 0
+                 pass 2 (here, struct populated)
+                   cScaleInit / writeMicrosteps / writeSPR with the real values
+
+               ~21 bus operations per axis instead of 15. The FINAL state is
+               master's, and the transient is zero current and zero steps per
+               rev — the safe direction, and the same direction the TMC2240 path
+               takes deliberately (it seeds IHOLD_IRUN = 0 in its own init). It
+               is a claims problem, not a hazard, and it is recorded here rather
+               than fixed because making the sequence genuinely match would mean
+               splitting the driver seam's set_current into a compute half and a
+               write half — a late API change to the one seam every axis goes
+               through, for no behavioural gain.
+
+               A final-state register dump cannot detect any of this. Catching a
+               regression in the transient needs a bus TRANSCRIPT: capture the
+               boot SPI traffic and check the ordering and the intermediate
+               words, not just where the registers end up.
+
+               Same shape in init_filterwheel_axis (commands.cpp), which runs
+               this pair mid-session on W/W2.
 
   ARGUMENTS:
       TMC4361ATypeDef *tmc4361A:     Pointer to a struct containing motor driver info

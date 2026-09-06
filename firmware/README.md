@@ -174,20 +174,39 @@ and it is emitted only for axes that were actually probed.
 
 #### What happens to an unidentified axis
 
-An axis left at `DRIVER_UNKNOWN` is never written to — configuring registers on
-a chip that may not be there would be writing into the dark — so its power stage
-stays at its reset/strapped state and unenergised. Because its current scaling,
-and therefore its torque, is unknown, **every motion path rejects it**:
+An axis left at `DRIVER_UNKNOWN` has its **driver chip** left alone — the driver
+dispatcher has no `DRIVER_UNKNOWN` arm, and configuring registers on a chip that
+may not be there would be writing into the dark — so its power stage stays at its
+reset/strapped state and unenergised. (Its TMC4361A is still configured: ramp,
+limit switches and homing settings are written as usual. Those are motion-
+controller registers and command nothing on their own.)
 
-- Host move commands (`MOVE_X/Y/Z/W/W2`, `MOVETO_X/Y/Z/W/W2`, and the homing
-  branch of `HOME_OR_ZERO`) return `CMD_EXECUTION_ERROR`. Zeroing is not gated —
-  it sets the current position and commands no motion.
-- The joystick X and Y paths and the focus-wheel Z path reject **silently** —
-  they are not host commands, so there is no command to report an error against.
+Because its current scaling, and therefore its torque, is unknown, **every path
+that can put the motor in motion rejects it**. There are four such paths, and
+they are enumerated rather than asserted:
 
-That is 13 guarded sites in total (10 in `src/commands/stage_commands.cpp`,
-3 in `src/operations.cpp`), pinned by a source-scan test in
-`test/test_command_layout/` so that deleting a guard fails the suite.
+1. **Host move commands** — `MOVE_X/Y/Z/W/W2`, `MOVETO_X/Y/Z/W/W2`, and the
+   homing branch of `HOME_OR_ZERO`. Return `CMD_EXECUTION_ERROR`. Zeroing is not
+   gated: it sets the current position and commands no motion.
+2. **`ENABLE_STAGE_PID` (command 26)** — writing
+   `ENC_IN_CONF.REGULATION_MODUS = PID_BPG0` hands the axis to the TMC4361A's
+   closed loop, which then drives continuously to null the encoder error with no
+   further command. Returns `CMD_EXECUTION_ERROR`. `DISABLE_STAGE_PID` and
+   `CONFIGURE_STAGE_PID` are not gated — the first stops regulation, the second
+   writes coefficients and encoder configuration but never `REGULATION_MODUS`.
+3. **Joystick X and Y**, and **4. the focus-wheel Z path** — these reject
+   **silently**: they are not host commands, so there is no command to report an
+   error against.
+
+The `PID_BPG0` re-enables inside `finalize_homing_*` are covered transitively:
+they run only while `is_homing_*` is set, which only a guarded `HOME_OR_ZERO`
+can set, and only when `stage_PID_enabled[axis]` is set, which only the guarded
+`ENABLE_STAGE_PID` writes.
+
+That is 14 guarded sites in total (10 in `src/commands/stage_commands.cpp`,
+1 in `src/commands/commands.cpp`, 3 in `src/operations.cpp`), pinned by a
+source-scan test in `test/test_command_layout/` so that deleting a guard fails
+the suite.
 
 Guarding the joystick and focus wheel is not incidental. Rejecting a host move
 leaves `*_commanded_movement_in_progress` false, which is exactly the condition
@@ -223,6 +242,19 @@ wrapping. Pre-1.5, 1100 mA on X wrapped to `CS = 0`, i.e. *minimum* current.
 `CONFIGURE_STEPPER_DRIVER` reports no status either way, so an out-of-range
 request is still silent from the host's point of view — check the axis actually
 moves as expected after changing current in the INI.
+
+**Hold current means the same thing on both drivers.** `*_MOTOR_I_HOLD` (e.g.
+`Z_MOTOR_I_HOLD = 0.5`) is applied in exactly one place — the TMC4361A's
+`SCALE_VALUES.HOLD_SCALE_VAL` — for a TMC2660 axis and for a TMC2240 axis alike.
+The TMC2240 has a second attenuator available in its own `IHOLD` field and this
+firmware deliberately does **not** use it: `IHOLD` is written equal to `IRUN`.
+Using both would make hold current `hold_ratio²` (25% where a TMC2660 gives 50%),
+and under the family's direct-mode rule that the coil current is scaled by
+`IHOLD`, it would cut *run* current too. The cross-driver invariant is pinned by
+`test_hold_ratio_attenuates_exactly_once_on_both_drivers` in
+`test/test_driver_sequence/`. **Bench:** confirm on a TMC2240 axis that the
+standstill/running coil-current ratio is `hold_ratio`, not 1.0 and not
+`hold_ratio²`.
 
 StallGuard on the TMC2240 is **StallGuard2** — `COOLCONF.SGT` for the threshold
 and `COOLCONF.SFILT` (bit 24) for the filter — not StallGuard4/`SG4_THRS`, which

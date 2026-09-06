@@ -242,6 +242,15 @@ void init_stages()
   // These follow SPI.begin() AND tmc_driver_init() because they now write
   // registers: master could call its predecessor before SPI.begin() only
   // because that function wrote struct fields and nothing else.
+  //
+  // DEVIATION FROM MASTER'S BOOT ORDER, deliberate and documented at
+  // tmc4361A_motor_config in TMC4361A_Utils.cpp: master populated the struct
+  // first, so each TMC2660 axis wrote its current scale and STEP_CONF once.
+  // Here the probe forces driver init to run first, so those writes happen
+  // twice - once with a zeroed struct (CS = 0, FS_PER_REV = 0, microsteps write
+  // skipped) and once with the real values. Final state is master's; the
+  // transient is zero current. A final-state register dump cannot see this, so
+  // the bench check for it has to be a bus transcript.
   tmc4361A_motor_config(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
   tmc4361A_motor_config(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
   tmc4361A_motor_config(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z); // need to make current scaling on TMC2660 is > 16 (out of 31)
