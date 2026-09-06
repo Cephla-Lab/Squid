@@ -496,6 +496,13 @@ class LiveController(QObject):
 
     # software trigger related
     def trigger_acquisition(self):
+        if self.microscope.low_level_drivers.microcontroller.is_busy():
+            # Hold live while the MCU executes a command (usually a stage move):
+            # triggering mid-move corrupts the firmware's single command-status
+            # slot and wedges it - every later wait times out until the trigger
+            # stream stops. The trigger timer re-checks within 10 ms when we
+            # return False, so live resumes as soon as the move completes.
+            return False
         if not self.camera.get_ready_for_trigger():
             # TODO(imo): Before, send_trigger would pass silently for this case.  Now
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like

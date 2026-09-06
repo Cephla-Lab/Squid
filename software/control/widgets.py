@@ -3033,14 +3033,17 @@ class LaserAutofocusSettingWidget(QWidget):
         self.spinboxes[property_name] = spinbox
 
     def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
-            self.run_spot_detection_button.setEnabled(False)
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
-            self.run_spot_detection_button.setEnabled(True)
+        try:
+            if pressed:
+                self.liveController.start_live()
+            else:
+                self.liveController.stop_live()
+        finally:
+            # Reflect the controller's actual state - stop_live() can raise on a
+            # busy MCU after live is already stopped, and the button must not lie.
+            is_live = self.liveController.is_live
+            self.btn_live.setText("Stop Live" if is_live else "Start Live")
+            self.run_spot_detection_button.setEnabled(not is_live)
 
     def stop_live(self):
         """Used for stopping live when switching to other tabs"""
@@ -4586,15 +4589,21 @@ class LiveControlWidget(QFrame):
         self.setLayout(self.grid)
 
     def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop")
-            self.signal_start_live.emit()
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Live")
-        # Snapping while live is meaningless - the sample is already being exposed.
-        self.btn_snap.setEnabled(not pressed)
+        try:
+            if pressed:
+                self.liveController.start_live()
+                self.signal_start_live.emit()
+            else:
+                self.liveController.stop_live()
+        finally:
+            # Show what the controller actually did, not what the click asked for:
+            # stop_live() can raise on a busy MCU after live is already stopped, and
+            # a button stuck on "Stop" invites more toggling that restarts the
+            # trigger stream against the busy MCU.
+            is_live = self.liveController.is_live
+            self.btn_live.setText("Stop" if is_live else "Live")
+            # Snapping while live is meaningless - the sample is already being exposed.
+            self.btn_snap.setEnabled(not is_live)
 
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
@@ -11052,12 +11061,15 @@ class NapariLiveWidget(QWidget):
             self.updateContrastLimits(self.live_configuration.name, min_val, max_val)
 
     def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
+        try:
+            if pressed:
+                self.liveController.start_live()
+            else:
+                self.liveController.stop_live()
+        finally:
+            # Reflect the controller's actual state - stop_live() can raise on a
+            # busy MCU after live is already stopped, and the button must not lie.
+            self.btn_live.setText("Stop Live" if self.liveController.is_live else "Start Live")
 
     def toggle_live_controls(self, show):
         if show:
