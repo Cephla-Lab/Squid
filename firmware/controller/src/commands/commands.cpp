@@ -149,6 +149,26 @@ void callback_enable_stage_pid()
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;  // Invalid axis
 
+    /*
+      This is an actuator path, not a configuration write. PID_BPG0 sets
+      ENC_IN_CONF.REGULATION_MODUS, which hands the axis to the TMC4361A's
+      closed loop: from that write on the controller drives the motor
+      continuously to null the encoder error, with no further command from the
+      host. On an axis the probe could not identify, the current scaling — and
+      therefore the torque — is unknown, so this is gated exactly like a move.
+
+      It reports the rejection rather than dropping it silently: ENABLE_STAGE_PID
+      is a host command, so the host is owed an answer. That is the same split
+      the rest of the branch makes — host commands report through
+      axis_driver_ready, the joystick and focus-wheel paths in operations.cpp
+      reject silently because there is no command to attribute a failure to.
+
+      Note this also gates the PID_BPG0 re-enables in finalize_homing_* : they
+      fire only when stage_PID_enabled[axis] is set, and this is the only writer
+      that sets it.
+    */
+    if (!axis_driver_ready(axis)) return;
+
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
 }

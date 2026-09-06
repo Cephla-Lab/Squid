@@ -28,15 +28,21 @@ static inline void report_move_error()
   Failing loudly here is the whole point: silently moving an axis whose driver
   is unidentified is how a mis-populated board turns into a wrecked sample.
 
-  report_move_error(), NOT mark_move_failed(): every call site below rejects
-  before its callback has claimed mcu_cmd_execution_in_progress for this
-  command, so there is nothing of this command's to unwind. Clearing the flag
-  would instead unwind an unrelated motion still running on another axis —
+  report_move_error(), NOT mark_move_failed(): every call site rejects before
+  its callback has claimed mcu_cmd_execution_in_progress for this command, so
+  there is nothing of this command's to unwind. Clearing the flag would instead
+  unwind an unrelated motion still running on another axis —
   send_position_update() fires on its own timer, so the host would see
   in_progress false and read a still-moving axis as finished. This is the same
   distinction the filter-wheel `enabled` gate already makes.
+
+  Declared in stage_commands.h rather than kept static: callback_enable_stage_pid
+  in commands.cpp is a motion path too (PID_BPG0 hands the axis to the TMC4361A's
+  closed loop) and must reject through this same helper, so that the guard's
+  contract — report, do not silently drop, do not touch in_progress — has exactly
+  one definition.
 */
-static inline bool axis_driver_ready(uint8_t axis)
+bool axis_driver_ready(uint8_t axis)
 {
     if (!tmc_driver_ready(&tmc4361[axis])) {
         report_move_error();

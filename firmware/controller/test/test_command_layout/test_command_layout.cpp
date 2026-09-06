@@ -446,6 +446,36 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
                                  "tmc_driver_ready(", "tmc4361A_moveTo(");
 }
 
+/*
+  ENABLE_STAGE_PID (command 26) is the actuator path that is not a move. Writing
+  ENC_IN_CONF.REGULATION_MODUS = PID_BPG0 starts the TMC4361A's closed loop, and
+  from there the controller drives the motor to null the encoder error with no
+  further command — so on a DRIVER_UNKNOWN axis it is motion at unknown current,
+  exactly what the move guards exist to prevent.
+
+  Scanned, not compiled, for the same reason as the two cases above: commands.cpp
+  reaches Arduino through globals.h and env:native cannot build it.
+
+  Only the ENABLE side is gated. callback_disable_stage_pid writes PID_DISABLE,
+  which stops regulation — the safe direction — and callback_configure_stage_pid
+  writes PID coefficients and the encoder configuration but never
+  REGULATION_MODUS, so neither commands motion.
+*/
+void test_commands_guards_the_pid_actuator_path(void)
+{
+    const char *src = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL_MESSAGE(src, "could not open src/commands/commands.cpp from any "
+                                      "candidate working directory");
+
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "axis_driver_ready("),
+        "commands.cpp must hold exactly one axis_driver_ready call site: "
+        "callback_enable_stage_pid. Losing it lets ENABLE_STAGE_PID drive a "
+        "DRIVER_UNKNOWN axis continuously at unknown current");
+
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
+                                 "axis_driver_ready(", "tmc4361A_set_PID(");
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -483,6 +513,7 @@ int main(int argc, char **argv) {
     // Driver fail-safe guards (source scan)
     RUN_TEST(test_stage_commands_guards_every_move_entry_point);
     RUN_TEST(test_operations_guards_the_operator_driven_motion_paths);
+    RUN_TEST(test_commands_guards_the_pid_actuator_path);
 
     return UNITY_END();
 }

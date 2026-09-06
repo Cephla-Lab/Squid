@@ -214,24 +214,52 @@ void tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma,
         return;
     }
 
-    /* irun is now 0..31, so ihold only needs hold_ratio bounded. Clamp in FLOAT
-       space, before the cast: a negative or NaN hold_ratio makes the conversion
-       to uint8_t undefined behaviour rather than merely wrong, and on a
-       saturating conversion it can land at 0xFF -> IHOLD 31, full hold current.
-       The `!(x > 0)` form catches NaN as well as negatives. */
-    float ihold_f = (float)irun * hold_ratio;
-    if (!(ihold_f > 0.0f)) ihold_f = 0.0f;
-    if (ihold_f > 31.0f)   ihold_f = 31.0f;
-    uint8_t ihold = (uint8_t)ihold_f;
+    /*
+      IHOLD = IRUN, deliberately. hold_ratio is applied in exactly ONE place —
+      the TMC4361A's SCALE_VALUES.HOLD_SCALE_VAL, below — which is the same
+      single attenuator the TMC2660 path uses (tmc2660.cpp: cscaleParam
+      [HOLDSCALE_IDX] = hold_ratio * 255, and nothing else). The two drivers
+      therefore mean the same thing by `hold_ratio`.
 
+      This used to also write IHOLD = IRUN * hold_ratio, attenuating twice. With
+      Z_MOTOR_I_HOLD = 0.5 a TMC2240 Z axis held at 0.25 of run current where a
+      TMC2660 Z holds at 0.5 — the objective-sag direction, and a silent
+      divergence between two axes configured identically.
+
+      Why collapse it by raising IHOLD rather than by dropping HOLD_SCALE_VAL:
+      under GCONF.direct_mode the TMC4361A writes coil currents into the
+      TMC2240's DIRECT_MODE register (0x2D). The documentation for that register
+      in this device family (TMC2160A / TMC5160 XDIRECT — same address, same
+      9-bit signed coil A / coil B fields) states that in this mode "the current
+      is scaled by IHOLD setting" and that velocity-based current regulation is
+      not available. If that carries to the TMC2240 — and nothing in the part's
+      register map suggests otherwise — then IHOLD scales RUN current too, and
+      the old code was cutting the requested run current by hold_ratio, not just
+      the hold current.
+
+      IHOLD = IRUN is correct under all three readings of the silicon:
+        (a) IHOLD is the direct-mode scaler for all current -> full run current,
+            hold reduction still applied by the TMC4361A.
+        (b) the chip still switches IRUN -> IHOLD at standstill -> one
+            attenuator, on the TMC4361A, exactly like the TMC2660.
+        (c) IHOLD/IRUN are inert under direct_mode -> harmless.
+      Dropping HOLD_SCALE_VAL instead would be correct only under (b).
+
+      BENCH (design section 10): measure coil current on a TMC2240 axis while
+      running and at standstill, and confirm standstill/run == hold_ratio — not
+      1.0, and not hold_ratio^2. Only hardware settles which reading is true;
+      this choice is the one that is safe in all of them.
+    */
     tmc2240_cover_write(tmc4361A, TMC2240_REG_IHOLD_IRUN,
-                        tmc2240_ihold_irun_value(ihold, irun, TMC2240_DEFAULT_IHOLDDELAY));
+                        tmc2240_ihold_irun_value(irun, irun, TMC2240_DEFAULT_IHOLDDELAY));
 
-    /* The TMC4361A-side scale values are driver-agnostic and still apply.
-       HOLD_SCALE_VAL is an 8-bit field at bit 24 of SCALE_VALUES and
+    /* The TMC4361A-side scale values are driver-agnostic and carry the hold
+       reduction. HOLD_SCALE_VAL is an 8-bit field at bit 24 of SCALE_VALUES and
        cscaleParam is a signed int32_t, so an out-of-range hold_ratio would
        shift garbage across the top of the word instead of wrapping harmlessly.
-       Clamp for the same reason as above. */
+       Clamp in FLOAT space, before the cast: a negative or NaN hold_ratio makes
+       the conversion undefined behaviour rather than merely wrong. The
+       `!(x > 0)` form catches NaN as well as negatives. */
     float hold_scale_f = hold_ratio * 255.0f;
     if (!(hold_scale_f > 0.0f)) hold_scale_f = 0.0f;
     if (hold_scale_f > 255.0f)  hold_scale_f = 255.0f;

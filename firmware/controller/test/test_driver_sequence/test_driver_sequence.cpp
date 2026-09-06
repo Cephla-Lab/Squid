@@ -726,12 +726,13 @@ void test_tmc2240_set_current_refuses_out_of_range_sentinel(void)
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0xA5A5A5A5u, g_axis.tmc2240_shadow[0x10],
         "the rejected request must not touch IHOLD_IRUN, not even in the shadow");
 
-    /* Positive control: 1000 mA rms is IRUN 21, IHOLD 10 at hold 0.5. */
+    /* Positive control: 1000 mA rms is IRUN 21, and IHOLD tracks IRUN — the
+       hold reduction is the TMC4361A's HOLD_SCALE_VAL alone. */
     reset_trace();
     tmc2240_driver_set_current(&g_axis, 1000.0f, 0.5f);
 
-    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x0007150Au, cover_write_value(0x10),
-        "1000 mA at CURRENT_RANGE 1 is IRUN 21, IHOLD 10, IHOLDDELAY 7");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071515u, cover_write_value(0x10),
+        "1000 mA at CURRENT_RANGE 1 is IRUN 21, IHOLD 21, IHOLDDELAY 7");
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x7FFFFFFFu, op_value(OP_WRITE, 0x06),
         "SCALE_VALUES: hold 127, drv2/drv1/boost 255 — without it the TMC4361A "
         "transmits zero current and the motor never moves");
@@ -883,65 +884,101 @@ void test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count(void)
 }
 
 /*
-  hold_ratio outside 0..1 must be clamped in FLOAT space, before either cast.
+  hold_ratio outside 0..1 must be clamped in FLOAT space, before the cast.
 
-  A negative or NaN product makes the float-to-uint8_t conversion undefined
-  behaviour rather than merely wrong, and on a saturating conversion it lands at
-  0xFF -> IHOLD 31 after masking, i.e. FULL hold current on an axis the caller
-  just asked to hold at nothing. A post-cast `if (ihold > 31)` cannot catch that:
-  the damage is done inside the conversion. The `!(x > 0.0f)` form is what makes
-  this catch NaN as well as negatives.
+  HOLD_SCALE_VAL is an 8-bit field at bit 24 of SCALE_VALUES and cscaleParam is
+  a signed int32_t, so an unclamped value shifts garbage across the top of the
+  word instead of wrapping inside its field. A negative or NaN value also makes
+  the float-to-integer conversion undefined behaviour rather than merely wrong,
+  and the `!(x > 0.0f)` form is what makes this catch NaN as well as negatives.
 
-  HOLD_SCALE_VAL is a separate hazard: it is an 8-bit field at bit 24 of
-  SCALE_VALUES and cscaleParam is a signed int32_t, so an unclamped value shifts
-  garbage across the top of the word instead of wrapping inside its field.
-
-  HONEST LIMIT — READ BEFORE TRUSTING THE IHOLD HALF OF THIS CASE.
-  The two IHOLD assertions below are a SPECIFICATION, not a pin. Deleting
-  `if (!(ihold_f > 0.0f))` makes `(uint8_t)(-21.0f)` undefined behaviour rather
-  than defined-wrong, and measured on this toolchain the unguarded path produces
-  the same IHOLD 0 the guarded path does — so the case stays green. Rewriting
-  the block into the brief's post-cast form
-      uint8_t ihold = (uint8_t)(irun * hold_ratio); if (ihold > 31) ihold = 31;
-  also survives, for the same reason. Both were run as mutations and both
-  SURVIVED; see the task 6b report §5 item 3.
-  What IS pinned here: the IHOLD ceiling of 31 (see the case below), and both
-  ends of the HOLD_SCALE_VAL clamp — that one lands in a signed int32_t, where
-  the conversion is defined, so removing either guard changes SCALE_VALUES by a
-  measurable amount.
+  This lands in a signed int32_t, where the conversion is defined, so removing
+  either end of the clamp changes SCALE_VALUES by a measurable amount and this
+  case catches it. (The equivalent hazard on the chip-side IHOLD field no longer
+  exists: IHOLD tracks IRUN and hold_ratio never reaches it. That also retires
+  the task 6b §5 item 3 "HONEST LIMIT" — the two mutations that survived there
+  acted on code that is gone.)
 */
 void test_tmc2240_set_current_clamps_hostile_hold_ratio(void)
 {
     g_axis.current_range = 1;
 
     tmc2240_driver_set_current(&g_axis, 1000.0f, -1.0f);
-    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071500u, cover_write_value(0x10),
-        "a negative hold_ratio must yield IHOLD 0, not a wrapped 0xFF -> 31");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071515u, cover_write_value(0x10),
+        "IHOLD tracks IRUN whatever hold_ratio is; a hostile ratio must not "
+        "reach the chip-side field at all");
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FFFFFFu, op_value(OP_WRITE, 0x06),
         "a negative hold_ratio must yield HOLD_SCALE_VAL 0");
 
     reset_trace();
     tmc2240_driver_set_current(&g_axis, 1000.0f, nanf(""));
-    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071500u, cover_write_value(0x10),
-        "a NaN hold_ratio must yield IHOLD 0; a plain `x < 0` test would let it through");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071515u, cover_write_value(0x10),
+        "IHOLD tracks IRUN whatever hold_ratio is");
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00FFFFFFu, op_value(OP_WRITE, 0x06),
-        "a NaN hold_ratio must yield HOLD_SCALE_VAL 0");
+        "a NaN hold_ratio must yield HOLD_SCALE_VAL 0; a plain `x < 0` test "
+        "would let it through");
 }
 
 void test_tmc2240_set_current_clamps_hold_ratio_above_one(void)
 {
     g_axis.current_range = 1;
 
-    /* irun is 21 at 1000 mA, so 21 x 2.0 = 42 overflows the 5-bit IHOLD field
-       and 2.0 x 255 = 510 overflows the 8-bit HOLD_SCALE_VAL field. */
+    /* 2.0 x 255 = 510 overflows the 8-bit HOLD_SCALE_VAL field. */
     tmc2240_driver_set_current(&g_axis, 1000.0f, 2.0f);
 
-    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x0007151Fu, cover_write_value(0x10),
-        "hold_ratio > 1 must saturate IHOLD at 31; without the clamp 42 masks "
-        "to 10, i.e. a LOWER hold current than asked for");
+    TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071515u, cover_write_value(0x10),
+        "IHOLD tracks IRUN whatever hold_ratio is");
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0xFFFFFFFFu, op_value(OP_WRITE, 0x06),
         "hold_ratio > 1 must saturate HOLD_SCALE_VAL at 255; without the clamp "
         "510 shifts across the top of SCALE_VALUES as 0xFE000000");
+}
+
+/*
+  THE CROSS-DRIVER INVARIANT. `hold_ratio` must mean the same thing on both
+  power stages: one attenuator, the TMC4361A's SCALE_VALUES.HOLD_SCALE_VAL.
+
+  The TMC2240 has a second one available — the chip's own IHOLD field — and
+  using both makes hold current hold_ratio^2 (or, if the family's direct-mode
+  rule that "the current is scaled by IHOLD setting" holds on this part, cuts
+  RUN current by hold_ratio). Either way a TMC2240 Z axis would sag against an
+  identically configured TMC2660 Z. This case pins IHOLD == IRUN across the
+  whole hold_ratio domain, so re-introducing the second attenuator fails here.
+
+  The TMC2660 half of the invariant is asserted alongside it: the same
+  hold_ratio must land the same HOLD_SCALE_VAL in cscaleParam on both drivers.
+  (cscaleParam, not the SCALE_VALUES word, because the TMC2660 path reaches the
+  register through tmc4361A_cScaleInit, which is a recording stand-in here.)
+
+  Z ships Z_MOTOR_I_HOLD = 0.5, so 0.5 is the row that matters most; the others
+  are there so a re-introduced square cannot hide at a fixed point.
+*/
+void test_hold_ratio_attenuates_exactly_once_on_both_drivers(void)
+{
+    static const float ratios[] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+
+    for (unsigned i = 0; i < sizeof ratios / sizeof ratios[0]; i++) {
+        snprintf(g_msg, sizeof g_msg, "hold_ratio %.2f", (double)ratios[i]);
+
+        memset(&g_axis, 0, sizeof g_axis);
+        reset_trace();
+        g_axis.current_range = 1;
+        tmc2240_driver_set_current(&g_axis, 1000.0f, ratios[i]);
+
+        uint32_t ihold_irun = cover_write_value(0x10);
+        uint32_t ihold = (ihold_irun >> 0) & 0x1Fu;
+        uint32_t irun  = (ihold_irun >> 8) & 0x1Fu;
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(irun, ihold, g_msg);   /* IHOLD == IRUN */
+
+        int32_t hold_scale_2240 = g_axis.cscaleParam[HOLDSCALE_IDX];
+
+        memset(&g_axis, 0, sizeof g_axis);
+        reset_trace();
+        g_axis.r_sense = 0.22f;
+        tmc2660_driver_set_current(&g_axis, 1000.0f, ratios[i]);
+        int32_t hold_scale_2660 = g_axis.cscaleParam[HOLDSCALE_IDX];
+
+        TEST_ASSERT_EQUAL_INT32_MESSAGE(hold_scale_2660, hold_scale_2240, g_msg);
+    }
 }
 
 /* ===========================================================================
@@ -1186,6 +1223,7 @@ int main(int argc, char **argv)
     RUN_TEST(test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count);
     RUN_TEST(test_tmc2240_set_current_clamps_hostile_hold_ratio);
     RUN_TEST(test_tmc2240_set_current_clamps_hold_ratio_above_one);
+    RUN_TEST(test_hold_ratio_attenuates_exactly_once_on_both_drivers);
 
     RUN_TEST(test_probe_writes_probe_spiout_conf_first_and_does_not_restore);
     RUN_TEST(test_probe_reads_only_ioin_three_times_with_settle_delays);
