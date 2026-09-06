@@ -8,8 +8,12 @@
 
   The TMC4361A is the motion controller: ramp generation, XACTUAL/XTARGET,
   limit switches, virtual stops, encoder and PID all live in TMC4361A_Utils and
-  are driver-agnostic. Only these five operations differ between power stages,
-  and they are dispatched on tmc4361A->driver_type.
+  are driver-agnostic. What differs between power stages is the five operations
+  declared below, dispatched on tmc4361A->driver_type, plus one more that is not
+  and cannot be dispatched that way: tmc_driver_probe (driver_probe.{h,cpp}).
+  The probe is different in kind — it runs BEFORE the driver type is known, so
+  there is nothing to dispatch on yet, and it is the only driver-specific code
+  that READS the part rather than configuring it.
 
   Design: AI-docs Squid/to-do/2026-08-12-tmc2240-driver-support-design.md §6.2
 */
@@ -73,13 +77,19 @@ static inline const char *tmc_driver_name(uint8_t driver_type)
    DRIVER_UNKNOWN default set by tmc4361A_init() means a never-probed axis
    answers false here too, so the failure is safe rather than silent.
 
-   It lives in this header, rather than only in the move callbacks that enforce
-   it, so that it is reachable on the host: test_driver_sequence pins it against
-   every row of the probe's decision table. stage_commands.cpp, where the eight
-   enforcing call sites are, cannot be compiled by env:native — it reaches
-   Arduino, FastLED, PacketSerial and the Teensy pin map through globals.h /
-   functions.h — so without this seam the fail-safe decision would have no
-   automated coverage at all. */
+   Enforcement is not in one place. It is spread over three files:
+   stage_commands.cpp holds the move/home command callbacks (they reject through
+   the axis_driver_ready helper defined there), commands.cpp holds the
+   ENABLE_STAGE_PID guard (also via that helper), and operations.cpp holds the
+   joystick X/Y blocks and do_focus_control, which call this predicate directly
+   and reject silently because there is no host command to answer.
+
+   This predicate lives in the header, rather than only in those callers, so
+   that it is reachable on the host: test_driver_sequence pins it against every
+   row of the probe's decision table. None of the three enforcing files can be
+   compiled by env:native — they reach Arduino, FastLED, PacketSerial and the
+   Teensy pin map through globals.h / functions.h — so without this seam the
+   fail-safe decision would have no automated coverage at all. */
 static inline bool tmc_driver_ready(const TMC4361ATypeDef *tmc4361A)
 {
     return tmc4361A->driver_type != DRIVER_UNKNOWN;

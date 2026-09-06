@@ -58,7 +58,8 @@
   band just above that ceiling (1045-1078 mA on X) WITHOUT wrapping, and that is
   legitimate full-scale current. Rejecting there would make CS = 31 unreachable,
   so raising Z from 500 to 550 mA in the INI would silently change nothing
-  instead of going to maximum. Every value master produced is reproduced.
+  instead of going to maximum. Within the shipped-R_sense scope stated above,
+  every value master produced is reproduced.
 */
 #define TMC_CURRENT_OUT_OF_RANGE 0xFF
 
@@ -67,7 +68,8 @@ static inline uint8_t tmc2660_current_scale(float current_rms_ma, float r_sense_
     float cscale = (current_rms_ma / 1000.0f) * r_sense_ohm / 0.2298f;
     if (cscale < 0.0f) cscale = 0.0f;
 
-    /* Master's expression, unchanged, so every value it produced is reproduced. */
+    /* Master's expression, unchanged, so within the shipped-R_sense scope above
+       every value it produced is reproduced. */
     float scaled = cscale * 31.0f;
 
     /* CS is 5 bits. Master's uint8_t(scaled) stayed valid right up to scaled < 32

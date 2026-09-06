@@ -273,16 +273,17 @@ void test_response_execution_status_byte(void) {
   WHY A TEST THAT READS SOURCE AS TEXT.
 
   An axis whose driver the probe could not identify must reject motion. That is
-  enforced by guards in src/commands/stage_commands.cpp (host move commands) and
-  src/operations.cpp (joystick and focus wheel), and NEITHER FILE CAN BE
-  COMPILED BY env:native — both reach Arduino, FastLED, PacketSerial and the
-  Teensy pin map through globals.h / functions.h. test_driver_sequence pins the
+  enforced by guards in src/commands/stage_commands.cpp (host move and home
+  commands), src/commands/commands.cpp (ENABLE_STAGE_PID) and src/operations.cpp
+  (joystick and focus wheel), and NONE OF THOSE FILES CAN BE COMPILED BY
+  env:native — they reach Arduino, FastLED, PacketSerial and the Teensy pin map
+  through globals.h / functions.h. test_driver_sequence pins the
   PREDICATE (tmc_driver_ready against every row of the probe's decision table),
   but before this case nothing at all pinned the CALL SITES: deleting any guard
   line left the whole suite green and shipped an axis that moves at unknown
   current.
 
-  So this scans the two files as text. That is a blunt instrument and it is
+  So this scans those files as text. That is a blunt instrument and it is
   worth being honest about its limits:
 
     - IT IS BRITTLE TO RENAMES. Rename a callback or the helper and this fails
@@ -291,7 +292,9 @@ void test_response_execution_status_byte(void) {
       exactly the moment to re-check that every entry point is still guarded.
     - It counts raw text, comments included. The comments in both files are
       deliberately written without a "(" after the helper names so they do not
-      inflate the counts; keep it that way when editing them.
+      inflate the counts; keep it that way when editing them. (Only the scanned
+      files matter here — a comment elsewhere in the tree may spell the helper
+      with parentheses.)
     - It proves a guard is PRESENT and TEXTUALLY BEFORE the motion call in the
       same function. It cannot prove the guard is reachable, correct, or that
       the right axis was passed. Those are covered by review, not by this.

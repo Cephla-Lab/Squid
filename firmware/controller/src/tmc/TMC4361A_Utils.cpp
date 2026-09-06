@@ -429,17 +429,22 @@ void tmc4361A_writeSPR(TMC4361ATypeDef *tmc4361A) {
 }
 
 /* ---- Driver dispatch (design 6.2) ---------------------------------------
-   The five operations that differ between power stages. Everything else in this
-   file is TMC4361A-only and driver-agnostic.
+   The five operations that differ between power stages. The rest of this file
+   is TMC4361A-only and driver-agnostic, with one deliberate exception:
+   tmc4361A_cScaleInit() also emits the TMC2660 SGCSCONF cover datagram, kept
+   here byte-for-byte as master wrote it (M5). It is called only from the
+   TMC2660 path in drivers/tmc2660.cpp.
 
    DRIVER_UNKNOWN axes are never touched: the probe could not confirm anything is
    answering, so writing driver registers would be writing into the dark. That
    leaves the power stage unconfigured and therefore unenergised, which is
    design M4's fail-safe half. The other half - rejecting that axis's moves so
    the failure is loud rather than a stage that silently does not move - is now
-   in place: axis_driver_ready() in stage_commands.cpp gates every host move
-   entry point, and operations.cpp gates the joystick and focus-wheel paths.
-   Both are pinned by test_command_layout. */
+   in place, across three files: the axis_driver_ready() helper (defined in
+   stage_commands.cpp) gates the host move and home commands there and the
+   ENABLE_STAGE_PID command in commands.cpp, and operations.cpp gates the
+   joystick and focus-wheel paths directly. All three are pinned by
+   test_command_layout. */
 
 void tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
   if (tmc4361A->driver_type == DRIVER_TMC2240) tmc2240_driver_init(tmc4361A, clk_Hz_TMC4361);
