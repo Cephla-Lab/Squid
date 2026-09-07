@@ -677,6 +677,22 @@ void check_limits()
   One TMC4361A register read per enabled axis per loop iteration; nothing is
   read for axes whose loop is off, so the shipping path is unaffected.
 */
+// True while a homing sequence owns the axis. Homing must run open-loop from
+// its first move to its last, so check_closed_loop() neither re-engages a held
+// loop during it nor leaves an engaged one running.
+static bool axis_is_homing(uint8_t i)
+{
+  switch (i)
+  {
+    case x:  return is_homing_X || is_preparing_for_homing_X;
+    case y:  return is_homing_Y || is_preparing_for_homing_Y;
+    case z:  return is_homing_Z || is_preparing_for_homing_Z;
+    case w:  return is_homing_W || is_preparing_for_homing_W;
+    case w2: return is_homing_W2 || is_preparing_for_homing_W2;
+    default: return false;
+  }
+}
+
 void check_closed_loop()
 {
   for (uint8_t i = 0; i < TOTAL_AXES; i++)
@@ -689,14 +705,16 @@ void check_closed_loop()
     int32_t zone = pid_home_zone_usteps[i];
     int32_t pos = tmc4361A_currentPosition(&tmc4361[i]);
     bool in_zone = (zone > 0) && (pos > -zone) && (pos < zone);
+    bool homing = axis_is_homing(i);
 
     if (stage_PID_enabled[i])
     {
       // Home zone: the stage may be resting on its stop while the actuator
       // keeps moving, so the encoder error is meaningless there and the loop
       // would drive the actuator into its end. Drop to open loop; the ramp
-      // generator finishes the commanded move on its own.
-      if (in_zone)
+      // generator finishes the commanded move on its own. Same during homing,
+      // which ends at that very stop.
+      if (in_zone || homing)
       {
         tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
         stage_PID_enabled[i] = 0;
@@ -718,7 +736,7 @@ void check_closed_loop()
         }
       }
     }
-    else if (pid_zone_hold[i] && !in_zone && encoder_configured[i])
+    else if (pid_zone_hold[i] && !in_zone && !homing && encoder_configured[i])
     {
       // Requested, held open by the zone or by homing, now outside: re-engage,
       // but only from a small error - the loop slews by the error it starts with.
