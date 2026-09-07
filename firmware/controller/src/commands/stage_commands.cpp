@@ -537,26 +537,31 @@ void callback_home_or_zero()
         {
         case AXIS_X:
             tmc4361A_setCurrentPosition(&tmc4361[x], 0);
+            tmc4361A_write_encoder(&tmc4361[x], 0);   // keep ENC_POS aligned with XACTUAL
             X_pos = 0;
             break;
         case AXIS_Y:
             tmc4361A_setCurrentPosition(&tmc4361[y], 0);
+            tmc4361A_write_encoder(&tmc4361[y], 0);   // keep ENC_POS aligned with XACTUAL
             Y_pos = 0;
             break;
         case AXIS_Z:
             tmc4361A_setCurrentPosition(&tmc4361[z], 0);
+            tmc4361A_write_encoder(&tmc4361[z], 0);   // keep ENC_POS aligned with XACTUAL
             Z_pos = 0;
             focusPosition = 0;
             break;
         case AXIS_W:
             if (enable_filterwheel == true) {
             tmc4361A_setCurrentPosition(&tmc4361[w], 0);
+            tmc4361A_write_encoder(&tmc4361[w], 0);   // keep ENC_POS aligned with XACTUAL
             W_pos = 0;
             }
             break;
         case AXIS_W2:
             if (enable_filterwheel_w2 == true) {
             tmc4361A_setCurrentPosition(&tmc4361[w2], 0);
+            tmc4361A_write_encoder(&tmc4361[w2], 0);   // keep ENC_POS aligned with XACTUAL
             W2_pos = 0;
             }
             break;

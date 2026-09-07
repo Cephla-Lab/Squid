@@ -67,9 +67,12 @@ class Sampler(threading.Thread):
         self._stop_evt = threading.Event()  # not "_stop": Thread uses that name internally
         self._lock = threading.Lock()
 
+    def now(self):
+        return time.time() - self.t0
+
     def run(self):
         last = None
-        t0 = time.time()
+        t0 = self.t0 = time.time()
         while not self._stop_evt.is_set():
             st = self.mcu.get_encoder_state()
             row = (time.time() - t0, self.mcu.z_pos, st["encoder_pos"], st["deviation"], self.mcu.encoder_flags)
@@ -258,6 +261,15 @@ class ZTuner:
                                    "Fix ENCODER_STEP_SIZE_Z_MM / SCREW_PITCH_Z_MM before closing the loop.")
             if ratio > 0:
                 self.log("encoder sign OK")
+                # The loop nulls XACTUAL - ENC_POS in absolute terms, so the two frames must agree
+                # before it is ever closed. Firmware >= 1.6 zeroes ENC_POS with XACTUAL at homing/zero.
+                self.settle(0.3)
+                dev = self.mcu.get_encoder_state()["deviation"]
+                dev_um = dev / USTEPS_PER_MM * 1000
+                self.log(f"encoder frame offset after homing: {dev_um:+.1f} um")
+                if abs(dev) >= 32767 or abs(dev_um) > self.a.max_dev_um / 4:
+                    raise RuntimeError(f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um (clipped at 192 um); "
+                                       "the loop would slew by that amount on enable. Refusing to continue.")
                 return
             if attempt == 0:
                 self.flip = not self.flip
@@ -268,7 +280,7 @@ class ZTuner:
         """One excursion: dwell, move, dwell, move back, dwell. Returns metrics from the sampler."""
         self.sampler.clear()
         self.settle(dwell)
-        t_move = self.sampler.rows[-1][0] if self.sampler.rows else 0.0
+        t_move = self.sampler.now()
         self.move_to_depth(depth_to)
         self.settle(dwell)
         self.move_to_depth(depth_from)
@@ -282,7 +294,11 @@ class ZTuner:
         devs = [r[3] for r in rows]
         rest = [r[3] for r in rows if r[0] < t_move]
         peak = max((abs(d) for d in devs), default=0)
-        rest_rms = math.sqrt(sum(d * d for d in rest) / len(rest)) if rest else float("nan")
+        rest_mean = (sum(rest) / len(rest)) if rest else float("nan")
+        rest_rms = math.sqrt(sum((d - rest_mean) ** 2 for d in rest) / len(rest)) if rest else float("nan")
+        if peak >= 32767:
+            self.log("WARNING: loop error is pinned at the int16 clip (>=192 um at 256 usteps/FS): the encoder frame is "
+                     "offset from XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state.")
         # settling: first time after the last move where |dev| stays within tol for 0.2 s
         tol = self.a.settle_tol_um * USTEPS_PER_MM / 1000.0
         settle_s = float("nan")
@@ -302,6 +318,7 @@ class ZTuner:
         tail = [r[3] for r in rows if r[0] > rows[-1][0] - dwell] if rows else []
         crossings = sum(1 for a, b in zip(tail, tail[1:]) if (a < 0) != (b < 0))
         metrics = {"label": label, "samples": len(rows), "peak_dev_um": peak / USTEPS_PER_MM * 1000,
+                   "rest_mean_um": rest_mean / USTEPS_PER_MM * 1000,
                    "rest_rms_um": rest_rms / USTEPS_PER_MM * 1000, "tail_zero_crossings_per_s": crossings / dwell,
                    "final_dev_um": (rows[-1][3] / USTEPS_PER_MM * 1000) if rows else float("nan"),
                    "csv": path}
@@ -317,6 +334,10 @@ class ZTuner:
 
     def closed_loop_step(self, p, i, d):
         m = self.mcu
+        self.settle(0.3)
+        dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
+        if abs(dev0) > self.a.max_dev_um / 4:
+            raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
         m.set_pid_arguments(AXIS.Z, p, i, d); self.wait()
         m.turn_on_stage_pid(AXIS.Z)
         self.wait(5)

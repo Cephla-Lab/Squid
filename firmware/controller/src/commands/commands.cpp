@@ -213,6 +213,21 @@ void callback_enable_stage_pid()
         return;
     }
 
+    // Closing the loop makes the chip slew the axis by the CURRENT error at up to
+    // PID_DV_CLIP. If that error is already beyond the watchdog limit (encoder
+    // frame offset from XACTUAL, e.g. INITIALIZE zeroed ENC_POS mid-travel and
+    // nobody homed since), enabling would be exactly the run-away the watchdog
+    // exists to stop - so refuse up front instead of tripping a moment later.
+    if (pid_max_dev_usteps[axis] > 0)
+    {
+        int32_t dev = tmc4361A_read_deviation(&tmc4361[axis]);
+        if (dev > pid_max_dev_usteps[axis] || dev < -pid_max_dev_usteps[axis])
+        {
+            report_move_error();
+            return;
+        }
+    }
+
     pid_fault[axis] = false;
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;

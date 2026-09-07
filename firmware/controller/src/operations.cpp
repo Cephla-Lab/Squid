@@ -350,8 +350,14 @@ void finalize_homing_x()
   if (is_homing_X && home_X_found && ( tmc4361A_currentPosition(&tmc4361[x]) == tmc4361A_targetPosition(&tmc4361[x]) || us_since_x_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[x], 0);
-    if (stage_PID_enabled[AXIS_X])
-      tmc4361A_set_PID(&tmc4361[AXIS_X], PID_BPG0);
+    // Keep the encoder frame aligned with XACTUAL: the closed loop nulls
+    // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
+    // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
+    tmc4361A_write_encoder(&tmc4361[x], 0);
+    // Internal index x, not the protocol id AXIS_X: the two orders differ
+    // (internal y=0, x=1), so the old AXIS_X subscript re-armed the wrong axis.
+    if (stage_PID_enabled[x])
+      tmc4361A_set_PID(&tmc4361[x], PID_BPG0);
     X_pos = 0;
     is_homing_X = false;
     X_commanded_movement_in_progress = false;
@@ -366,8 +372,14 @@ void finalize_homing_y()
   if (is_homing_Y && home_Y_found && ( tmc4361A_currentPosition(&tmc4361[y]) == tmc4361A_targetPosition(&tmc4361[y]) || us_since_y_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[y], 0);
-    if (stage_PID_enabled[AXIS_Y])
-      tmc4361A_set_PID(&tmc4361[AXIS_Y], PID_BPG0);
+    // Keep the encoder frame aligned with XACTUAL: the closed loop nulls
+    // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
+    // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
+    tmc4361A_write_encoder(&tmc4361[y], 0);
+    // Internal index y, not the protocol id AXIS_Y: the two orders differ
+    // (internal y=0, x=1), so the old AXIS_Y subscript re-armed the wrong axis.
+    if (stage_PID_enabled[y])
+      tmc4361A_set_PID(&tmc4361[y], PID_BPG0);
     Y_pos = 0;
     is_homing_Y = false;
     Y_commanded_movement_in_progress = false;
@@ -382,8 +394,14 @@ void finalize_homing_z()
   if (is_homing_Z && home_Z_found && ( tmc4361A_currentPosition(&tmc4361[z]) == tmc4361A_targetPosition(&tmc4361[z]) || us_since_z_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[z], 0);
-    if (stage_PID_enabled[AXIS_Z])
-      tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_BPG0);
+    // Keep the encoder frame aligned with XACTUAL: the closed loop nulls
+    // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
+    // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
+    tmc4361A_write_encoder(&tmc4361[z], 0);
+    // Internal index z, not the protocol id AXIS_Z: the two orders differ
+    // (internal y=0, x=1), so the old AXIS_Z subscript re-armed the wrong axis.
+    if (stage_PID_enabled[z])
+      tmc4361A_set_PID(&tmc4361[z], PID_BPG0);
     Z_pos = 0;
     focusPosition = 0;
     is_homing_Z = false;
