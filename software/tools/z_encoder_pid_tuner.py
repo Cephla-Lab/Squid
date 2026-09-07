@@ -64,13 +64,13 @@ class Sampler(threading.Thread):
         super().__init__(daemon=True)
         self.mcu = mcu
         self.rows = []
-        self._stop = threading.Event()
+        self._stop_evt = threading.Event()  # not "_stop": Thread uses that name internally
         self._lock = threading.Lock()
 
     def run(self):
         last = None
         t0 = time.time()
-        while not self._stop.is_set():
+        while not self._stop_evt.is_set():
             st = self.mcu.get_encoder_state()
             row = (time.time() - t0, self.mcu.z_pos, st["encoder_pos"], st["deviation"], self.mcu.encoder_flags)
             if last is None or row[1:] != last[1:]:
@@ -80,7 +80,7 @@ class Sampler(threading.Thread):
             time.sleep(0.004)
 
     def stop(self):
-        self._stop.set()
+        self._stop_evt.set()
         self.join(timeout=1.0)
 
     def snapshot(self):
@@ -148,20 +148,28 @@ class ZTuner:
         self.loop_on = False
 
     def shutdown(self):
+        """Every step is independent: a failure in one must not skip the ones that make the board safe."""
         if self.mcu is None:
             return
-        self.loop_off()
+        steps = [
+            ("loop off", self.loop_off),
+            ("reporting off", lambda: (self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF), self.wait(5))),
+            ("velocity restored", self.restore_velocity),
+            ("sampler stopped", lambda: self.sampler.stop() if self.sampler else None),
+        ]
+        done = []
+        for name, fn in steps:
+            try:
+                fn()
+                done.append(name)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"shutdown step '{name}' failed: {e}")
         try:
-            self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF); self.wait(5)
-        except Exception as e:  # noqa: BLE001
-            self.log(f"could not disable reporting: {e}")
-        self.restore_velocity()
-        if self.sampler:
-            self.sampler.stop()
-        with open(os.path.join(self.out, "summary.json"), "w") as f:
-            json.dump(self.summary, f, indent=2, default=str)
-        self.log(f"summary written to {os.path.join(self.out, 'summary.json')}; loop off, reporting off, velocity restored")
-        self.mcu.close()
+            with open(os.path.join(self.out, "summary.json"), "w") as f:
+                json.dump(self.summary, f, indent=2, default=str)
+            self.log(f"summary written to {os.path.join(self.out, 'summary.json')}; {', '.join(done)}")
+        finally:
+            self.mcu.close()
 
     # ---------------------------------------------------------------- safety
     def check_depth(self, depth_mm):
@@ -182,9 +190,12 @@ class ZTuner:
         if self.loop_on and abs(st["deviation"]) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
             self.loop_off()
             raise RuntimeError(f"host guard: loop error {st['deviation']} usteps exceeded {self.a.max_dev_um} um")
-        if not (self.a.depth_min - 0.5 <= d <= min(self.a.depth_max, HARD_CAP_DEPTH_MM) + 0.5):
+        # Anything between the top switch (depth 0, where homing leaves us) and a little past the
+        # working window is legitimate transit; only going deeper than the window, or above home,
+        # is an anomaly. The bottom of travel is the stall the operator called non-recoverable.
+        if d < -0.1 or d > min(self.a.depth_max, HARD_CAP_DEPTH_MM) + 0.5:
             self.loop_off()
-            raise RuntimeError(f"host guard: Z at {d:.3f} mm left the window")
+            raise RuntimeError(f"host guard: Z at {d:.3f} mm left the allowed range")
 
     def move_to_depth(self, depth_mm, timeout=30.0):
         self.check_depth(depth_mm)
