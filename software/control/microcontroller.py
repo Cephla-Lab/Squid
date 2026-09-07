@@ -1350,7 +1350,8 @@ class Microcontroller:
 
         Below the deadband the TMC4361A stops correcting; the target-reached tolerance is what the
         firmware accepts as 'arrived' when acknowledging a closed-loop move. Master hard-codes both
-        to 25 microsteps, which is 0.15 um at 256 usteps/FS on Z but 2.3 um at 16. Encoded in 0.01 um,
+        to 25 microsteps, which is 0.15 um at 256 usteps/FS on Z but 2.3 um at 16; firmware 1.6
+        defaults both to two encoder counts and this command overrides that. Encoded in 0.01 um,
         so the range is 0.01 .. 655 um; None keeps the current target-reached value.
         """
         d = int(round(deadband_um * 100))

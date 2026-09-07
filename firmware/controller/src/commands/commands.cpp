@@ -157,13 +157,23 @@ void callback_configure_stage_pid()
 
     // Loop deadband (PID_TOLERANCE: below this error the chip stops correcting) and
     // target-reached tolerance (CL_TR_TOLERANCE: what tmc4361A_isRunning() accepts as
-    // arrived). Master hard-codes 25 usteps (2 on wheels), which is a physical size
-    // that scales with microstepping: 0.15 um at 256 usteps/FS on Z, 2.3 um at 16.
-    // SET_PID_TOLERANCE lets the host set both in physical units; without it the
-    // legacy values apply.
-    uint32_t legacy_tol = (axis == w || axis == w2) ? 2 : 25;
-    uint32_t pid_tol = pid_tolerance_usteps[axis] ? pid_tolerance_usteps[axis] : legacy_tol;
-    uint32_t tr_tol  = pid_tr_tolerance_usteps[axis] ? pid_tr_tolerance_usteps[axis] : legacy_tol;
+    // arrived). Both are in microsteps, so a fixed number is a physical size that
+    // scales with microstepping: master's 25 usteps is 0.15 um at 256 usteps/FS on Z
+    // but 2.3 um at 16, where a 20 x 1 um closed-loop stack landed up to 2.2 um off.
+    // Default: TWO ENCODER COUNTS, computed from the encoder resolution just written.
+    // A deadband below one count makes the loop chase the quantisation after every
+    // move (15 kHz bursts on the bench); two counts tolerates a 1-count error and was
+    // acoustically identical to open loop. This reproduces master's 25 usteps at 256
+    // usteps/FS (1.5 counts -> rounds to the same behaviour) at every resolution.
+    // SET_PID_TOLERANCE overrides both in physical units.
+    uint32_t default_tol = (axis == w || axis == w2) ? 2 : 25;  // legacy, if the encoder resolution is unusable
+    if (transitions_per_revolution > 0) {
+        uint32_t usteps_per_rev = (uint32_t)tmc4361[axis].microsteps * (uint32_t)tmc4361[axis].stepsPerRev;
+        default_tol = (2u * usteps_per_rev + (uint32_t)transitions_per_revolution / 2u) / (uint32_t)transitions_per_revolution;
+        if (default_tol < 1) default_tol = 1;
+    }
+    uint32_t pid_tol = pid_tolerance_usteps[axis] ? pid_tolerance_usteps[axis] : default_tol;
+    uint32_t tr_tol  = pid_tr_tolerance_usteps[axis] ? pid_tr_tolerance_usteps[axis] : default_tol;
 
     // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
     bool configured = false;
