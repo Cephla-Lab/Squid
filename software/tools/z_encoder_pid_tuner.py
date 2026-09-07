@@ -105,6 +105,8 @@ class ZTuner:
         self.sampler = None
         self.flip = bool(_def.ENCODER_FLIP_DIR_Z)
         self.loop_on = False
+        self.last_cmd_to_ack_s = float("nan")
+        self.cmd_to_ack_log = []
         self.summary = {"config": vars(args), "pitch_mm": PITCH_MM, "usteps_per_mm": USTEPS_PER_MM,
                         "transitions_per_rev": TRANSITIONS_PER_REV, "results": []}
 
@@ -203,14 +205,17 @@ class ZTuner:
 
     def move_to_depth(self, depth_mm, timeout=30.0):
         self.check_depth(depth_mm)
-        self.mcu.move_z_to_usteps(depth_to_usteps(depth_mm))
         t0 = time.time()
+        self.mcu.move_z_to_usteps(depth_to_usteps(depth_mm))
         while self.mcu.is_busy():
             self.guard()
             if time.time() - t0 > timeout:
                 self.loop_off()
                 raise TimeoutError("Z move did not complete")
-            time.sleep(0.01)
+            time.sleep(0.002)
+        # host-visible latency: command sent -> COMPLETED ack seen (includes the 10 ms packet cadence)
+        self.last_cmd_to_ack_s = time.time() - t0
+        self.cmd_to_ack_log.append(self.last_cmd_to_ack_s)
 
     def settle(self, seconds):
         t0 = time.time()
@@ -289,8 +294,10 @@ class ZTuner:
         self.settle(dwell)
         t_move = self.sampler.now()
         self.move_to_depth(depth_to)
+        ack_out = self.last_cmd_to_ack_s
         self.settle(dwell)
         self.move_to_depth(depth_from)
+        ack_back = self.last_cmd_to_ack_s
         self.settle(dwell)
         rows = self.sampler.snapshot()
         path = os.path.join(self.out, f"{label}.csv")
@@ -331,10 +338,11 @@ class ZTuner:
                    "rest_rms_um": rest_rms / USTEPS_PER_MM * 1000, "tail_zero_crossings_per_s": crossings / dwell,
                    "final_dev_um": (rows[-1][3] / USTEPS_PER_MM * 1000) if rows else float("nan"),
                    "settle_after_last_move_s": settle_s,
+                   "cmd_to_ack_out_s": ack_out, "cmd_to_ack_back_s": ack_back,
                    "csv": path}
-        self.log(f"{label}: peak |dev| {metrics['peak_dev_um']:.1f} um, rest rms {metrics['rest_rms_um']:.2f} um, "
-                 f"final {metrics['final_dev_um']:+.2f} um, settled {settle_s:.2f} s after the last move, "
-                 f"tail crossings {metrics['tail_zero_crossings_per_s']:.1f}/s")
+        self.log(f"{label}: cmd->ack {ack_out * 1000:.0f} / {ack_back * 1000:.0f} ms; peak |dev| {metrics['peak_dev_um']:.1f} um, "
+                 f"rest rms {metrics['rest_rms_um']:.2f} um, final {metrics['final_dev_um']:+.2f} um, "
+                 f"encoder settled {settle_s * 1000:.0f} ms after the ramp ended, tail crossings {metrics['tail_zero_crossings_per_s']:.1f}/s")
         return metrics
 
     def baseline(self):
