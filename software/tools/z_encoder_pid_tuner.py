@@ -657,7 +657,23 @@ class ZTuner:
         return res
 
     def hold(self):
-        """Closed-loop hold at the working extension for --hold-s seconds (mic records hunting), then loop off."""
+        """Closed-loop hold at the working extension for --hold-s seconds (mic records hunting), then loop off.
+        With --hold-open-s N an open-loop hold of N s at the same position is recorded first, so the
+        microphone has an ambient control window inside the same recording (the only thing that changes
+        at the boundary is the loop engaging)."""
+        if self.a.hold_open_s > 0:
+            wall_o = time.time(); devs_o = []
+            t0 = time.time()
+            while time.time() - t0 < self.a.hold_open_s:
+                self.guard()
+                devs_o.append(self.mcu.get_encoder_state()["deviation"])
+                time.sleep(0.01)
+            d_o = [d / USTEPS_PER_MM * 1000 for d in devs_o]
+            self.summary["results"].append({"phase": "hold_open", "label": f"hold_open_{self.a.hold_open_s:g}s",
+                                            "seconds": self.a.hold_open_s, "err_um_mean": sum(d_o) / len(d_o),
+                                            "err_um_max_abs": max(abs(v) for v in d_o),
+                                            "wall_start": wall_o, "wall_end": time.time()})
+            self.log(f"hold {self.a.hold_open_s:g} s OPEN loop (control): error mean {sum(d_o) / len(d_o):+.3f} um")
         self.engage_loop()
         wall0 = time.time(); devs = []
         try:
@@ -737,6 +753,7 @@ def main():
     ap.add_argument("--stack-n", type=int, default=20)
     ap.add_argument("--stack-um", type=float, default=1.0)
     ap.add_argument("--hold-s", type=float, default=20.0)
+    ap.add_argument("--hold-open-s", type=float, default=0.0, help="open-loop control hold recorded before the closed-loop hold")
     ap.add_argument("--accel-reps", type=int, default=5, help="100 um out-and-back repetitions per level")
     ap.add_argument("--lost-step-um", type=float, default=1.0, help="encoder-vs-counter offset change that counts as lost steps")
     ap.add_argument("--ack-overhead-ms", type=float, default=7.0, help="fixed command+report overhead subtracted when inferring acceleration")
