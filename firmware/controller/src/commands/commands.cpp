@@ -61,6 +61,7 @@ void init_callbacks()
     cmd_map[SET_PID_HOME_ZONE] = &callback_set_pid_home_zone;
     cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
     cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
+    cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -289,6 +290,22 @@ void callback_set_ramp_profile()
     if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
     tmc4361[axis].ramp_profile = profile;
     tmc4361A_sRampInit(&tmc4361[axis]);
+}
+
+// SET_COMPLETION_WINDOW (49): [2] protocol axis, [3..4] window in 0.1 um of travel. While a
+// move is inside the window the ramp is still finishing, but the host is told COMPLETED so an
+// exposure can start while the last part is travelled. Meant for the filter wheels, where the
+// filter's clear aperture covers the field for the last few degrees of a slot change (their
+// "mm" is one revolution, so 1e-4 rev = 0.036 deg per unit). 0 (default) = complete only at the
+// exact target with the ramp stopped, as before. Homing is not affected. Not intended for a
+// closed-loop axis: the PID completion waits for the encoder error, this does not.
+void callback_set_completion_window()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t units = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(units) / 10000.0f);
+    completion_window_usteps[axis] = v < 0 ? -v : v;
 }
 
 // SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]

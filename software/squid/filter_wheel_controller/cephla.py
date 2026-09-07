@@ -138,6 +138,13 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self.microcontroller.configure_squidfilter(axis)
         time.sleep(0.5)
 
+        # Early completion: the firmware reports a slot change done once the wheel is within the
+        # window of the slot, while the last degrees are still travelled, so the exposure can start
+        # earlier. Sized from the optics in the machine config; 0 keeps exact-target completion.
+        if SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG > 0 and tuple(self.microcontroller.firmware_version) >= (1, 6):
+            self.microcontroller.set_completion_window(axis, SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG / 360.0)
+            self.microcontroller.wait_till_operation_is_completed()
+
         # Common PID setup for both wheels (they share identical encoder settings)
         # Use protocol axis (AXIS.W / AXIS.W2), not motor_slot index (3 / 4),
         # because the firmware's protocol_axis_to_internal() handles mapping.

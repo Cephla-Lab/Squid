@@ -39,6 +39,7 @@ bool pid_zone_hold[TOTAL_AXES] = {0};
 int32_t pid_home_zone_usteps[TOTAL_AXES] = {0};
 uint32_t pid_tolerance_usteps[TOTAL_AXES] = {0};
 uint32_t pid_tr_tolerance_usteps[TOTAL_AXES] = {0};
+int32_t completion_window_usteps[TOTAL_AXES] = {0};
 
 // home safety margin
 uint16_t home_safety_margin[TOTAL_AXES] = {4, 4, 4, 4, 4};

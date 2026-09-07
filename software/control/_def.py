@@ -209,6 +209,7 @@ class CMD_SET:
     SET_PID_HOME_ZONE = 46  # Home exclusion zone (um) inside which the closed loop is held open (fw >= 1.6)
     SET_RAMP_PROFILE = 47  # Per-axis ramp profile: trapezoidal or S-shaped (fw >= 1.6)
     SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
+    SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -1106,6 +1107,11 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
+# > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the
+# last degrees are still travelled (firmware >= 1.6, SET_COMPLETION_WINDOW). Size it from the optics:
+# (filter clear aperture - image field diameter) / 2 / filter pitch radius, in degrees, minus margin.
+# 32 mm filters on a 22 mm field and a ~46 mm pitch radius allow about 6 deg; 25 mm filters about 1.9 deg.
+SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG = 0.0
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)

@@ -308,6 +308,11 @@ def test_encoder_reporting_and_pid_limits_commands():
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 15
     assert (micro.last_command[5] << 8) + micro.last_command[6] == 30
 
+    micro.set_completion_window(control._def.AXIS.W, 5.0 / 360.0)   # 5 deg of a wheel turn = 139 x 1e-4 rev
+    assert micro.last_command[1] == control._def.CMD_SET.SET_COMPLETION_WINDOW
+    assert micro.last_command[2] == control._def.AXIS.W
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 139
+
     micro.set_pid_home_zone(control._def.AXIS.Z, 500)
     assert micro.last_command[1] == control._def.CMD_SET.SET_PID_HOME_ZONE
     assert micro.last_command[2] == control._def.AXIS.Z

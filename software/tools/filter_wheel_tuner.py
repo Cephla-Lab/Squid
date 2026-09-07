@@ -139,6 +139,10 @@ class WheelTuner:
         if MICROSTEPS != int(_def.MICROSTEPPING_DEFAULT_W):
             m.configure_motor_driver(AXIS.W, MICROSTEPS, _def.W_MOTOR_RMS_CURRENT_mA, _def.W_MOTOR_I_HOLD); self.wait()
         self.set_motion(self.a.vmax, self.a.accel, self.a.ramp)
+        if self.a.window_deg > 0:
+            m.set_completion_window(AXIS.W, self.a.window_deg / 360.0); self.wait()
+            self.log(f"completion window {self.a.window_deg:g} deg ({self.a.window_deg / 360 * USTEPS_PER_REV:.1f} usteps): "
+                     f"COMPLETED is sent while the last degrees are travelled")
         m.configure_stage_pid(AXIS.W, self.transitions, bool(flip)); self.wait()
         m.set_encoder_reporting(AXIS.W, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
         self.flip = bool(flip)
@@ -186,6 +190,8 @@ class WheelTuner:
             time.sleep(0.002)
         self.check_abort()
         self.last_cmd_to_ack_s = time.time() - t0
+        self.state_at_ack = self.state()          # where the wheel was when COMPLETED arrived
+        self.state_at_ack["target"] = int(target)
 
     def move_to_slot(self, slot):
         self.move_to_usteps(slot_usteps(slot))
@@ -294,9 +300,12 @@ class WheelTuner:
             for (ta, ea, _), (tb, eb, _) in zip(tr, tr[1:]):
                 if tb - ta >= 0.008:
                     vpk = max(vpk, abs(eb - ea) / (tb - ta) / USTEPS_PER_REV)
+            ack = self.state_at_ack
             rows.append({"from": frm, "to": target, "slots": dist, "cmd_to_ack_ms": self.last_cmd_to_ack_s * 1000,
                          "dev_usteps": st["dev"], "lost_this_move": st["dev"] - dev_before, "enc_peak_rev_s": vpk,
-                         "enc": st["enc"], "xactual": st["xactual"], "t": time.time() - wall0})
+                         "enc": st["enc"], "xactual": st["xactual"], "t": time.time() - wall0,
+                         "enc_err_at_ack_deg": (ack["enc"] - ack["target"]) / USTEPS_PER_REV * 360.0,
+                         "xactual_err_at_ack_deg": (ack["xactual"] - ack["target"]) / USTEPS_PER_REV * 360.0})
         time.sleep(0.3)
         st1 = self.state()
         drift = st1["dev"] - st0["dev"]
@@ -329,11 +338,14 @@ class WheelTuner:
         worst = max(rows, key=lambda r: abs(r["lost_this_move"]))
         res["worst_move"] = {k: worst[k] for k in ("from", "to", "slots", "lost_this_move", "enc_peak_rev_s")}
         res["enc_peak_rev_s_max"] = max(r["enc_peak_rev_s"] for r in rows)
+        res["enc_err_at_ack_deg_median_abs"] = statistics.median(abs(r["enc_err_at_ack_deg"]) for r in rows)
+        res["enc_err_at_ack_deg_max_abs"] = max(abs(r["enc_err_at_ack_deg"]) for r in rows)
         self.log(f"{label}: {len(rows)} moves; adjacent cmd->ack median {res['adjacent_ms_median']:.0f} ms (max {res['adjacent_ms_max']:.0f}"
                  f"{f', trapezoid model {model:.0f}' if model == model else ''}); {dist_txt}; "
                  f"encoder drift {drift:+d} usteps ({drift / USTEPS_PER_REV * 360:+.2f} deg) over the level; "
                  f"worst single move {worst['from']}->{worst['to']} lost {worst['lost_this_move']:+d} usteps; "
-                 f"peak encoder speed {res['enc_peak_rev_s_max']:.2f} rev/s")
+                 f"peak encoder speed {res['enc_peak_rev_s_max']:.2f} rev/s; encoder still {res['enc_err_at_ack_deg_median_abs']:.2f} deg "
+                 f"(max {res['enc_err_at_ack_deg_max_abs']:.2f}) from the slot when COMPLETED arrived")
         return res
 
     def wrap(self):
@@ -471,6 +483,7 @@ def main():
     ap.add_argument("--ramp", choices=["trapezoid", "sshape"], default="trapezoid")
     ap.add_argument("--microsteps", type=int, default=int(_def.MICROSTEPPING_DEFAULT_W))
     ap.add_argument("--flip", choices=["auto", "0", "1"], default="auto")
+    ap.add_argument("--window-deg", type=float, default=0.0, help="SET_COMPLETION_WINDOW for W in degrees (0 = exact-target completion)")
     ap.add_argument("--transitions", default="auto", help="encoder transitions per revolution, or auto = measure over one turn and use it")
     ap.add_argument("--accel-list", type=float, nargs="+", default=[50, 100, 150, 200, 250, 300])
     ap.add_argument("--vel-list", type=float, nargs="+", default=[3.19, 4, 5, 6])

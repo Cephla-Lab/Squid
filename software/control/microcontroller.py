@@ -62,6 +62,7 @@ _CMD_NAMES = {
     CMD_SET.SET_PID_HOME_ZONE: "SET_PID_HOME_ZONE",
     CMD_SET.SET_RAMP_PROFILE: "SET_RAMP_PROFILE",
     CMD_SET.SET_PID_TOLERANCE: "SET_PID_TOLERANCE",
+    CMD_SET.SET_COMPLETION_WINDOW: "SET_COMPLETION_WINDOW",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1343,6 +1344,21 @@ class Microcontroller:
         cmd[1] = CMD_SET.SET_RAMP_PROFILE
         cmd[2] = int(axis)
         cmd[3] = int(profile)
+        self.send_command(cmd)
+
+    def set_completion_window(self, axis, window_mm):
+        """Report a move on `axis` complete once |position - target| <= window_mm, while the ramp is still
+        finishing (firmware >= 1.6). 0 restores completion at the exact target with the ramp stopped. Encoded
+        in 0.1 um, range 0 .. 6.5535 mm. For the filter wheels one "mm" is one revolution: pass degrees / 360.
+        """
+        u = int(round(window_mm * 10000))
+        if not (0 <= u <= 0xFFFF):
+            raise ValueError("completion window must be 0 .. 6.5535 mm (or rev)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_COMPLETION_WINDOW
+        cmd[2] = int(axis)
+        cmd[3] = (u >> 8) & 0xFF
+        cmd[4] = u & 0xFF
         self.send_command(cmd)
 
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):

@@ -84,6 +84,10 @@ static const int SET_PID_LIMITS = 45;         // [2]=axis, [3..4]=max closed-loo
 static const int SET_RAMP_PROFILE = 47;       // [2]=axis, [3]=RAMP_PROFILE_* : S-shaped (bow-limited) or trapezoidal ramp
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
+static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 um of travel (for the wheels, whose
+                                              // "mm" is one revolution, 1e-4 rev = 0.036 deg): a move reports COMPLETED as
+                                              // soon as |XACTUAL - target| <= window while the ramp finishes. 0 = at the
+                                              // exact target (default, unchanged behaviour). Not applied to homing.
 static const int SET_PID_TOLERANCE = 48;      // [2]=axis, [3..4]=loop deadband (PID_TOLERANCE) in 0.01 um, [5..6]=target-reached
                                               // tolerance (CL_TR_TOLERANCE) in 0.01 um; 0 keeps the current value
 static const int SET_PID_HOME_ZONE = 46;      // [2]=axis, [3..4]=home exclusion zone (um): within this distance of

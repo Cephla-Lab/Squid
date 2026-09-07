@@ -39,6 +39,9 @@
 //               25 usteps, which is 0.15 um at 256 usteps/FS but 2.3 um at 16);
 //               without it CONFIGURE_STAGE_PID now defaults both to two encoder
 //               counts at the configured resolution instead of 25 usteps.
+//               SET_COMPLETION_WINDOW (49) lets an axis report a move complete
+//               once within a set distance of the target while the ramp finishes
+//               (filter wheels: start exposing while the last degrees travel).
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 
