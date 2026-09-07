@@ -597,8 +597,14 @@ void callback_home_or_zero()
         switch (buffer_rx[2])
         {
         case AXIS_X:
-            if (stage_PID_enabled[AXIS_X] == 1)
-            tmc4361A_set_PID(&tmc4361[AXIS_X], PID_DISABLE);
+            if (stage_PID_enabled[x])
+            {
+                // Homing runs open-loop; keep the request so check_closed_loop() re-engages
+                // outside the home zone. Internal index x, not the protocol id AXIS_X.
+                tmc4361A_set_PID(&tmc4361[x], PID_DISABLE);
+                stage_PID_enabled[x] = 0;
+                pid_zone_hold[x] = true;
+            }
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[x], -1);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[x], 1);
             homing_direction_X = buffer_rx[3];
@@ -656,8 +662,14 @@ void callback_home_or_zero()
             */
             break;
         case AXIS_Y:
-            if (stage_PID_enabled[AXIS_Y] == 1)
-            tmc4361A_set_PID(&tmc4361[AXIS_Y], PID_DISABLE);
+            if (stage_PID_enabled[y])
+            {
+                // Homing runs open-loop; keep the request so check_closed_loop() re-engages
+                // outside the home zone. Internal index y, not the protocol id AXIS_Y.
+                tmc4361A_set_PID(&tmc4361[y], PID_DISABLE);
+                stage_PID_enabled[y] = 0;
+                pid_zone_hold[y] = true;
+            }
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[y], -1);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[y], 1);
             homing_direction_Y = buffer_rx[3];
@@ -696,8 +708,14 @@ void callback_home_or_zero()
             }
             break;
         case AXIS_Z:
-            if (stage_PID_enabled[AXIS_Z] == 1)
-            tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_DISABLE);
+            if (stage_PID_enabled[z])
+            {
+                // Homing runs open-loop; keep the request so check_closed_loop() re-engages
+                // outside the home zone. Internal index z, not the protocol id AXIS_Z.
+                tmc4361A_set_PID(&tmc4361[z], PID_DISABLE);
+                stage_PID_enabled[z] = 0;
+                pid_zone_hold[z] = true;
+            }
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[z], -1);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[z], 1);
             homing_direction_Z = buffer_rx[3];
