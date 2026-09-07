@@ -457,6 +457,69 @@ class ZTuner:
         self.log(f"zonemap: encoder stops following below {decouple} mm on the way down; follows again above {recouple} mm on the way up")
         self.summary["results"].append({"phase": "zonemap", "decouple_mm": decouple, "recouple_mm": recouple, "csv": path})
 
+    def zonetest(self):
+        """Verify the firmware home zone: loop engaged at the working extension, a move into the zone must
+        drop it to open loop (PID_ZONE flag), a move back out must re-engage it; homing with the loop
+        requested must run open-loop and re-engage after moving out."""
+        zone_mm = self.a.zone_um / 1000.0
+        if zone_mm <= 0:
+            raise RuntimeError("zonetest needs --zone-um > 0")
+        inside = zone_mm / 2.0
+        self.a.depth_min = 0.0  # this test deliberately visits the zone
+
+        def flags(tag):
+            self.settle(0.3)
+            st = self.mcu.get_encoder_state()
+            self.log(f"{tag}: z={self.current_depth():.3f} mm  loop_engaged={st['pid_enabled']}  zone_hold={st['pid_zone_hold']}  "
+                     f"fault={st['pid_fault']}  err={st['deviation'] / USTEPS_PER_MM * 1000:+.1f} um")
+            return st
+
+        def transitions(rows):
+            out = []; last = None
+            for t, x, e, d, f in rows:
+                eng = bool(f & (1 << _def.ENC_FLAG.PID_ENABLED)); hold = bool(f & (1 << _def.ENC_FLAG.PID_ZONE))
+                key = (eng, hold)
+                if key != last:
+                    out.append((round(usteps_to_depth(x), 3), "engaged" if eng else ("held" if hold else "off")))
+                    last = key
+            return out
+
+        m = self.mcu
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
+        m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
+        st = flags("A. enable at working extension")
+        if not st["pid_enabled"]:
+            raise RuntimeError("loop did not engage outside the zone")
+
+        self.sampler.clear()
+        self.move_to_depth(inside)
+        st = flags(f"B. after move into the zone ({inside:.3f} mm)")
+        self.log(f"   transitions during the move: {transitions(self.sampler.snapshot())}")
+        ok_b = (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]
+
+        self.sampler.clear()
+        self.move_to_depth(self.a.depth_mm)
+        st = flags("C. after move back out")
+        self.log(f"   transitions during the move: {transitions(self.sampler.snapshot())}")
+        ok_c = st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]
+
+        self.log("D. homing with the loop requested")
+        self.sampler.clear()
+        m.home_z(); self.wait(60)
+        st = flags("D. after homing")
+        self.log(f"   transitions during homing: {transitions(self.sampler.snapshot())}")
+        ok_d = (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]
+
+        self.sampler.clear()
+        self.move_to_depth(self.a.depth_mm)
+        st = flags("E. after moving out again")
+        self.log(f"   transitions during the move: {transitions(self.sampler.snapshot())}")
+        ok_e = st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]
+
+        verdict = {"B_drop_in_zone": ok_b, "C_reengage_out": ok_c, "D_open_during_homing": ok_d, "E_reengage_after_homing": ok_e}
+        self.summary["results"].append({"phase": "zonetest", "zone_um": self.a.zone_um, **verdict})
+        self.log(f"zonetest verdict: {verdict}  -> {'PASS' if all(verdict.values()) else 'FAIL'}")
+
     # ---------------------------------------------------------------- main
     def run(self):
         try:
@@ -470,6 +533,9 @@ class ZTuner:
             if self.a.action == "zonemap":
                 self.zonemap()
                 return
+            if self.a.action == "zonetest":
+                self.zonetest()
+                return
             if self.a.action in ("baseline", "step", "sweep"):
                 self.baseline()
             if self.a.action == "step":
@@ -482,7 +548,7 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap"])
+    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest"])
     ap.add_argument("--depth-mm", type=float, default=2.5, help="working depth below the top switch")
     ap.add_argument("--depth-min", type=float, default=1.0)
     ap.add_argument("--depth-max", type=float, default=4.5)
