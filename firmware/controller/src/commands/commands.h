@@ -19,6 +19,9 @@ void callback_send_hardware_trigger();
 void callback_set_pin_level();
 void callback_configure_stage_pid();
 void callback_enable_stage_pid();
+void callback_set_encoder_reporting();
+void callback_set_pid_limits();
+
 void callback_disable_stage_pid();
 void callback_initfilterwheel();
 void callback_initfilterwheel_w2();

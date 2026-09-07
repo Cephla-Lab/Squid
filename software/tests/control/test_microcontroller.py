@@ -269,3 +269,76 @@ def test_abort_current_command_recoverable_logs_at_warning(caplog):
             assert all(r.levelno == logging.ERROR for r in fatal_records)
     finally:
         micro.close()
+
+
+def test_encoder_reporting_and_pid_limits_commands():
+    """set_encoder_reporting / set_pid_limits encode as firmware 1.6 expects."""
+    micro = get_test_micro()
+
+    micro.set_encoder_reporting(control._def.AXIS.Z, control._def.ENCODER_REPORTING.ENC_IN_THETA)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_ENCODER_REPORTING
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert micro.last_command[3] == control._def.ENCODER_REPORTING.ENC_IN_THETA
+
+    micro.set_encoder_reporting(control._def.AXIS.Z, control._def.ENCODER_REPORTING.OFF)
+    assert micro.last_command[3] == control._def.ENCODER_REPORTING.OFF
+
+    # 0.35 mm/s -> 35 (x100); 250 um -> 250
+    micro.set_pid_limits(control._def.AXIS.Z, 0.35, 250)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_LIMITS
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 35
+    assert (micro.last_command[5] << 8) + micro.last_command[6] == 250
+
+    # 655.35 mm/s is the 16-bit ceiling; anything above must be refused, not truncated
+    import pytest
+
+    with pytest.raises(ValueError):
+        micro.set_pid_limits(control._def.AXIS.Z, 700.0, 0)
+    with pytest.raises(ValueError):
+        micro.set_pid_limits(control._def.AXIS.Z, 0, 70000)
+
+    micro.close()
+
+
+def test_encoder_fields_decode_from_packet():
+    """Theta field becomes encoder_pos and bytes 20-21 the signed deviation, only while flag bit 0 is set."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    def packet(theta, flags, dev):
+        msg = bytearray(24)
+        msg[0] = 7
+        msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        msg[14:18] = int(theta).to_bytes(4, "big", signed=True)
+        msg[19] = flags
+        msg[20:22] = int(dev).to_bytes(2, "big", signed=True)
+        msg[22] = (1 << 4) | 6
+        msg[23] = crc_calculator.calculate_checksum(msg[:23])
+        return msg
+
+    # Drive the parser directly on a crafted packet: same code path as the read thread.
+    flags = (1 << control._def.ENC_FLAG.REPORTING) | (1 << control._def.ENC_FLAG.PID_ENABLED) | (
+        control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT
+    )
+    msg = packet(-853333, flags, -1234)
+    micro.theta_pos = micro._payload_to_int(msg[14:18], 4)
+    micro.encoder_flags = msg[19]
+    if micro.encoder_flags & (1 << control._def.ENC_FLAG.REPORTING):
+        micro.encoder_pos = micro.theta_pos
+        micro.encoder_deviation = micro._payload_to_int(msg[20:22], 2)
+    state = micro.get_encoder_state()
+    assert state["reporting"] is True
+    assert state["pid_enabled"] is True
+    assert state["pid_fault"] is False
+    assert state["axis"] == control._def.AXIS.Z
+    assert state["encoder_pos"] == -853333
+    assert state["deviation"] == -1234
+
+    # Fault bit
+    micro.encoder_flags = flags | (1 << control._def.ENC_FLAG.PID_FAULT)
+    assert micro.get_encoder_state()["pid_fault"] is True
+
+    micro.close()

@@ -56,6 +56,8 @@ void init_callbacks()
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
     cmd_map[INITIALIZE] = &callback_initialize;
+    cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
+    cmd_map[SET_PID_LIMITS] = &callback_set_pid_limits;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -127,21 +129,53 @@ void callback_configure_stage_pid()
     int transitions_per_revolution = (buffer_rx[4] << 8) + buffer_rx[5];
     // Init encoder. transitions per revolution, velocity filter wait time (# of clock cycles), IIR filter exponent, vmean update frequency, invert direction (must increase as microsteps increases)
     tmc4361A_init_ABN_encoder(&tmc4361[axis], transitions_per_revolution, 32, 4, 512, flip_direction);
-    // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
-    if (axis == x)
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_X_mm), 32767, 2);
+
+    // Closed-loop correction velocity ceiling (PID_DV_CLIP): the host's
+    // SET_PID_LIMITS value if it has sent one, else the axis's max velocity as
+    // before 1.6. A bench tuning session sets this low first, so that a wrong
+    // encoder sign cannot run the axis away faster than the watchdog reacts.
+    uint32_t dv_clip;
+    if (pid_dv_clip_usteps[axis] != 0)
+        dv_clip = pid_dv_clip_usteps[axis];
+    else if (axis == x)
+        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_X_mm);
     else if (axis == y)
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Y_mm), 32767, 2);
+        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Y_mm);
     else if (axis == z)
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm), 4096, 2);
+        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm);
+    else
+        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
+
+    // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
+    bool configured = false;
+    if (axis == x || axis == y) {
+        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 32767, 2);
+        configured = true;
+    }
+    else if (axis == z) {
+        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+        configured = true;
+    }
     else if (axis == w) {
-        if (enable_filterwheel == true)
-            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
+        if (enable_filterwheel == true) {
+            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+            configured = true;
+        }
     }
     else if (axis == w2) {
-        if (enable_filterwheel_w2 == true)
-            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
+        if (enable_filterwheel_w2 == true) {
+            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+            configured = true;
+        }
     }
+
+    // Bookkeeping for ENABLE_STAGE_PID's gate and for the deviation watchdog.
+    // Default watchdog limit: 0.25 mm of loop error (0.25 rev on a wheel) - far
+    // above any sane following error, far below a travel end.
+    encoder_configured[axis] = configured;
+    pid_fault[axis] = false;
+    if (configured && pid_max_dev_usteps[axis] == 0)
+        pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], 0.25f);
 }
 
 void callback_enable_stage_pid()
@@ -169,8 +203,70 @@ void callback_enable_stage_pid()
     */
     if (!axis_driver_ready(axis)) return;
 
+    // The loop nulls XACTUAL - ENC_POS using ENC_IN_RES to scale the encoder.
+    // With no CONFIGURE_STAGE_PID since the last chip reset that scale is the
+    // reset value and the "error" is garbage: enabling would drive the axis at
+    // PID_DV_CLIP toward nowhere. Refuse, and say so through the status byte.
+    if (!encoder_configured[axis])
+    {
+        report_move_error();   // early return: nothing of this command's to unwind
+        return;
+    }
+
+    pid_fault[axis] = false;
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
+}
+
+// SET_ENCODER_REPORTING (44): [2] protocol axis, [3] ENCODER_REPORT_* mode.
+// Chooses which axis's encoder the status packet carries and how; see
+// send_position_update(). Reporting is a read-only diagnostic: it moves nothing.
+void callback_set_encoder_reporting()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    uint8_t mode = buffer_rx[3];
+
+    // Leaving mode 2 must hand the position field back to XACTUAL for every axis.
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+
+    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        encoder_report_axis = 0xFF;
+        encoder_report_mode = ENCODER_REPORT_OFF;
+        return;
+    }
+    encoder_report_axis = axis;
+    encoder_report_mode = mode;
+    if (mode == ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        if (axis == x) X_use_encoder = true;
+        else if (axis == y) Y_use_encoder = true;
+        else if (axis == z) Z_use_encoder = true;
+    }
+}
+
+// SET_PID_LIMITS (45): [2] protocol axis, [3..4] max closed-loop correction
+// velocity in mm/s x 100, [5..6] deviation watchdog limit in um. A zero field
+// keeps the current value. Written to the TMC4361A at once if the encoder is
+// configured, and re-applied by every later CONFIGURE_STAGE_PID.
+void callback_set_pid_limits()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+
+    uint16_t v_x100 = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    uint16_t dev_um = (uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]);
+
+    if (v_x100 != 0)
+    {
+        pid_dv_clip_usteps[axis] = (uint32_t)tmc4361A_vmmToMicrosteps(&tmc4361[axis], float(v_x100) / 100.0f);
+        if (encoder_configured[axis])
+            tmc4361A_set_PID_dv_clip(&tmc4361[axis], pid_dv_clip_usteps[axis]);
+    }
+    if (dev_um != 0)
+        pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dev_um) / 1000.0f);
 }
 
 void callback_disable_stage_pid()
@@ -232,6 +328,9 @@ static void init_filterwheel_axis(uint8_t axis)
     tmc4361A_sRampInit(&tmc4361[axis]);
 
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+    stage_PID_enabled[axis] = 0;
+    encoder_configured[axis] = false;   // tmc4361A_init() above reset the chip
+    pid_fault[axis] = false;
 
     tmc4361A_enableHomingLimit(&tmc4361[axis], rht_sw_pol[axis], TMC4361_homing_sw[axis], home_safety_margin[axis]);
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], -1);
@@ -343,7 +442,20 @@ void callback_initialize()
         tmc4361[i].rampParam[ASTART_IDX] = 0;
         tmc4361[i].rampParam[DFINAL_IDX] = 0;
         tmc4361A_sRampInit(&tmc4361[i]);
+
+        // tmc_driver_init() above reset the TMC4361A, which wiped ENC_IN_RES and
+        // REGULATION_MODUS: the loop is off in hardware and the encoder scale is
+        // gone, so the host must CONFIGURE_STAGE_PID again before ENABLE_STAGE_PID.
+        // Keep the bookkeeping honest about that.
+        stage_PID_enabled[i] = 0;
+        encoder_configured[i] = false;
+        pid_fault[i] = false;
     }
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
 
     // homing switch settings
     tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
@@ -384,4 +496,14 @@ void callback_reset()
     is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
+
+    // Encoder diagnostics are a host-session thing: a fresh host must see the
+    // shipping packet until it asks otherwise. Watchdog faults are cleared with it.
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+    for (uint8_t i = 0; i < TOTAL_AXES; i++)
+        pid_fault[i] = false;
 }

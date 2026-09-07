@@ -57,6 +57,8 @@ _CMD_NAMES = {
     CMD_SET.DISABLE_STAGE_PID: "DISABLE_STAGE_PID",
     CMD_SET.SET_HOME_SAFETY_MERGIN: "SET_HOME_SAFETY_MERGIN",
     CMD_SET.SET_PID_ARGUMENTS: "SET_PID_ARGUMENTS",
+    CMD_SET.SET_ENCODER_REPORTING: "SET_ENCODER_REPORTING",
+    CMD_SET.SET_PID_LIMITS: "SET_PID_LIMITS",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -636,6 +638,11 @@ class Microcontroller:
         self.z_pos = 0  # unit: microstep or encoder resolution
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
+        # Encoder reporting (firmware >= 1.6, see set_encoder_reporting). Only meaningful while
+        # encoder_flags has ENC_FLAG.REPORTING set; otherwise the packet carries zeros here.
+        self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
+        self.encoder_deviation = 0  # XACTUAL - ENC_POS of the reported axis, microsteps, clipped to int16
+        self.encoder_flags = 0  # raw status byte 19
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -1274,6 +1281,50 @@ class Microcontroller:
             self.turn_off_stage_pid(primary_axis_id)
             self.wait_till_operation_is_completed()
 
+    def set_encoder_reporting(self, axis, mode=ENCODER_REPORTING.ENC_IN_THETA):
+        """Ask firmware >= 1.6 to stream `axis`'s encoder in the status packet (see ENCODER_REPORTING).
+
+        Afterwards encoder_pos / encoder_deviation / encoder_flags update every packet. Mode OFF restores
+        the shipping packet. Older firmware ignores the command (status stays COMPLETED, flags stay 0).
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ENCODER_REPORTING
+        cmd[2] = int(axis)
+        cmd[3] = int(mode)
+        self.send_command(cmd)
+
+    def set_pid_limits(self, axis, max_correction_velocity_mm_s, max_deviation_um):
+        """Clamp the closed loop on `axis` (firmware >= 1.6).
+
+        max_correction_velocity_mm_s caps the velocity the TMC4361A may add to null the encoder error
+        (PID_DV_CLIP); max_deviation_um arms the firmware watchdog that disables the loop when the
+        error exceeds it. Pass 0 for either to leave it unchanged. Send before turn_on_stage_pid.
+        """
+        v = int(round(max_correction_velocity_mm_s * 100))
+        d = int(round(max_deviation_um))
+        if not (0 <= v <= 0xFFFF) or not (0 <= d <= 0xFFFF):
+            raise ValueError("velocity (mm/s*100) and deviation (um) must fit in 16 bits")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_LIMITS
+        cmd[2] = int(axis)
+        cmd[3] = (v >> 8) & 0xFF
+        cmd[4] = v & 0xFF
+        cmd[5] = (d >> 8) & 0xFF
+        cmd[6] = d & 0xFF
+        self.send_command(cmd)
+
+    def get_encoder_state(self):
+        """Decoded view of the last packet's encoder fields (firmware >= 1.6)."""
+        f = self.encoder_flags
+        return {
+            "reporting": bool(f & (1 << ENC_FLAG.REPORTING)),
+            "pid_enabled": bool(f & (1 << ENC_FLAG.PID_ENABLED)),
+            "pid_fault": bool(f & (1 << ENC_FLAG.PID_FAULT)),
+            "axis": (f >> ENC_FLAG.AXIS_SHIFT) & 0x07,
+            "encoder_pos": self.encoder_pos,
+            "deviation": self.encoder_deviation,
+        }
+
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PID_ARGUMENTS
@@ -1651,6 +1702,12 @@ class Microcontroller:
                 )  # unit: microstep or encoder resolution
 
                 self.button_and_switch_state = msg[18]
+                # Encoder reporting (firmware >= 1.6): theta field doubles as ENC_POS, byte 19 flags,
+                # bytes 20-21 int16 loop error. All zero unless a host enabled it.
+                self.encoder_flags = msg[19]
+                if self.encoder_flags & (1 << ENC_FLAG.REPORTING):
+                    self.encoder_pos = self.theta_pos
+                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
                 # joystick button
                 tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
                 joystick_button_pressed = tmp > 0

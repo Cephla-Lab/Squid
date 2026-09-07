@@ -204,6 +204,8 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    SET_ENCODER_REPORTING = 44  # Stream an axis's encoder position / loop error in the status packet (fw >= 1.6)
+    SET_PID_LIMITS = 45  # Closed-loop correction velocity clamp + deviation watchdog limit (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -371,6 +373,29 @@ WATCHDOG_TIMEOUT_S = DEFAULT_WATCHDOG_TIMEOUT_MS / 1000.0
 
 class VOLUMETRIC_IMAGING:
     NUM_PLANES_PER_VOLUME = 20
+
+
+class ENCODER_REPORTING:
+    """Modes for CMD_SET.SET_ENCODER_REPORTING (firmware >= 1.6).
+
+    OFF: shipping packet. ENC_IN_THETA: the status packet's theta field (bytes 14-17) carries the
+    selected axis's ENC_POS in microsteps, byte 19 carries ENC_FLAG bits and bytes 20-21 the clipped
+    int16 loop error XACTUAL - ENC_POS. ENC_AS_POSITION: as ENC_IN_THETA, and the axis's own position
+    field carries ENC_POS instead of XACTUAL.
+    """
+
+    OFF = 0
+    ENC_IN_THETA = 1
+    ENC_AS_POSITION = 2
+
+
+class ENC_FLAG:
+    """Bit positions in status byte 19 while encoder reporting is active."""
+
+    REPORTING = 0
+    PID_ENABLED = 1
+    PID_FAULT = 2  # firmware deviation watchdog disabled the closed loop
+    AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
 
 
 class CMD_EXECUTION_STATUS:

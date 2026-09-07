@@ -63,4 +63,5 @@ void loop() {
   send_position_update();
   check_position();
   check_limits();
+  check_closed_loop();
 }

@@ -30,5 +30,6 @@ void do_focus_control();
 
 void check_position();
 void check_limits();
+void check_closed_loop();
 
 #endif // OPERATIONS_H

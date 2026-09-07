@@ -11,14 +11,8 @@ static inline void mark_move_failed()
     mcu_cmd_execution_in_progress = false;
 }
 
-// Surface a failed move from an early-return path that never claimed
-// mcu_cmd_execution_in_progress for this command. Leaves in_progress
-// untouched so an unrelated motion already in flight on another axis
-// keeps its "still working" state.
-static inline void report_move_error()
-{
-    mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
-}
+// report_move_error() lives in stage_commands.h (static inline) so that
+// callback_enable_stage_pid in commands.cpp shares the one definition.
 
 /*
   An axis whose driver could not be identified is never commanded. The probe
@@ -356,6 +350,14 @@ void callback_set_pid_arguments()
     axes_pid_arg[axis].p = p;
     axes_pid_arg[axis].i = i;
     axes_pid_arg[axis].d = d;
+
+    // Apply immediately if the loop registers exist for this axis. Before 1.6
+    // the values only reached the TMC4361A through a LATER CONFIGURE_STAGE_PID,
+    // and the host sends CONFIGURE first, so its gains never arrived: the chip
+    // ran on the firmware defaults. Writing the gains here fixes that and is
+    // what lets a tuning tool sweep P/I/D on a live loop.
+    if (encoder_configured[axis])
+        tmc4361A_set_PID_gains(&tmc4361[axis], p, i, d);
 }
 
 void callback_configure_stepper_driver()

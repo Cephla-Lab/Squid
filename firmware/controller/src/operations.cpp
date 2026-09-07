@@ -620,3 +620,37 @@ void check_limits()
     }
   }
 }
+
+/*
+  Closed-loop deviation watchdog (firmware 1.6).
+
+  When ENABLE_STAGE_PID hands an axis to the TMC4361A's encoder loop, the chip
+  drives the motor on its own to null XACTUAL - ENC_POS, limited only by
+  PID_DV_CLIP. A wrong encoder sign, a bad gain, or a dropped encoder signal
+  turns that into a run-away that no host command interrupts fast enough over
+  a 10 ms packet link - and on Z a run-away ends in a stall the operator has
+  called non-recoverable. So the firmware watches the loop error itself: if
+  |ENC_POS_DEV| exceeds pid_max_dev_usteps for the axis, the loop is switched
+  off (the ramp generator keeps the axis at its open-loop target), the fault is
+  latched for the status packet, and the axis stays open-loop until the host
+  enables the loop again. The limit is per axis, set by SET_PID_LIMITS and
+  defaulted at CONFIGURE_STAGE_PID; 0 disables the watchdog for that axis.
+
+  One TMC4361A register read per enabled axis per loop iteration; nothing is
+  read for axes whose loop is off, so the shipping path is unaffected.
+*/
+void check_closed_loop()
+{
+  for (uint8_t i = 0; i < TOTAL_AXES; i++)
+  {
+    if (!stage_PID_enabled[i] || pid_max_dev_usteps[i] <= 0)
+      continue;
+    int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
+    if (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i])
+    {
+      tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
+      stage_PID_enabled[i] = 0;
+      pid_fault[i] = true;
+    }
+  }
+}

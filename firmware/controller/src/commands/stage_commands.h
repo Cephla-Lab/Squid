@@ -15,6 +15,16 @@
   operations.cpp deliberately do NOT use it: they are not host commands and must
   reject silently.
 */
+// Surface a failed motion command from an early-return path that never claimed
+// mcu_cmd_execution_in_progress for this command. Leaves in_progress untouched
+// so an unrelated motion already in flight on another axis keeps its "still
+// working" state. Header-inline: used by stage_commands.cpp and by
+// callback_enable_stage_pid in commands.cpp (the closed loop is a motion path).
+static inline void report_move_error()
+{
+    mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+}
+
 bool axis_driver_ready(uint8_t axis);
 
 void callback_move_x();

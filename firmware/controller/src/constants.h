@@ -21,8 +21,16 @@
 //               An axis whose driver could not be identified is left
 //               unconfigured and rejects moves. No protocol change: command
 //               codes, packet layout and the host contract are untouched
+// Version 1.6 = encoder / closed-loop interface: SET_ENCODER_REPORTING (44) streams
+//               an axis's ENC_POS and loop deviation in the otherwise unused theta
+//               and reserved bytes; SET_PID_LIMITS (45) clamps the closed-loop
+//               correction velocity and arms a deviation watchdog that disables
+//               the loop before it can run an axis away; SET_PID_ARGUMENTS now
+//               reaches the TMC4361A immediately (it used to be applied only by a
+//               later CONFIGURE_STAGE_PID); ENABLE_STAGE_PID is refused until the
+//               encoder has been configured. Off by default: packet unchanged.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 6
 
 #include "def/def_v1.h"
 
@@ -171,6 +179,22 @@ typedef void (*CommandCallback)();
 //
 // Always use this function when buffer_rx[2] (axis from command) is used for array access.
 // Returns 0xFF for invalid/unsupported axis values.
+// Inverse of protocol_axis_to_internal(): internal array index -> protocol axis id.
+// Used by the status packet's encoder-reporting flags. Returns 0xFF for an
+// index that is not a controlled axis.
+inline uint8_t internal_axis_to_protocol(uint8_t internal_axis)
+{
+    switch (internal_axis)
+    {
+        case x:  return AXIS_X;
+        case y:  return AXIS_Y;
+        case z:  return AXIS_Z;
+        case w:  return AXIS_W;
+        case w2: return AXIS_W2;
+        default: return 0xFF;
+    }
+}
+
 inline uint8_t protocol_axis_to_internal(int protocol_axis)
 {
     switch (protocol_axis)

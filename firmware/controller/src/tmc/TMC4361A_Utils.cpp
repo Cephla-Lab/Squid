@@ -1830,6 +1830,33 @@ void tmc4361A_set_PID(TMC4361ATypeDef *tmc4361A, uint8_t pid_mode) {
   tmc4361A_setBits(tmc4361A, TMC4361A_ENC_IN_CONF, pid_mode << TMC4361A_REGULATION_MODUS_SHIFT);
   return;
 }
+/*
+  -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_set_PID_gains() rewrites only PID_P / PID_I / PID_D, so a
+               host can retune a running loop without re-initialising the encoder
+               (tmc4361A_init_PID writes tolerances and clips as well). Same
+               masking as tmc4361A_init_PID; takes effect on the next PID cycle.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_set_PID_gains(TMC4361ATypeDef *tmc4361A, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_P_WR, pid_p & TMC4361A_PID_P_MASK);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_I_WR, pid_i & TMC4361A_PID_I_MASK);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_D_WR, pid_d & TMC4361A_PID_D_MASK);
+  return;
+}
+/*
+  -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_set_PID_dv_clip() sets PID_DV_CLIP, the ceiling on the
+               velocity the closed loop may add to null the encoder error. This is
+               the closed loop's speed limit: with a wrong encoder sign or a bad
+               gain the correction runs the axis away at exactly this speed, so
+               a bench keeps it low (well under 1 mm/s on Z) while tuning.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_set_PID_dv_clip(TMC4361ATypeDef *tmc4361A, uint32_t pid_dclip) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_DV_CLIP_WR, pid_dclip & TMC4361A_PID_DV_CLIP_MASK);
+  return;
+}
 
 /*
   -----------------------------------------------------------------------------

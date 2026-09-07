@@ -27,6 +27,14 @@ long Z_NEG_LIMIT = Z_NEG_LIMIT_MM * steps_per_mm_Z;
 bool stage_PID_enabled[TOTAL_AXES] = {0};
 PID_ARGUMENTS axes_pid_arg[TOTAL_AXES] = {0};
 
+// Encoder reporting and closed-loop safety (firmware 1.6)
+uint8_t encoder_report_axis = 0xFF;
+uint8_t encoder_report_mode = ENCODER_REPORT_OFF;
+bool encoder_configured[TOTAL_AXES] = {0};
+bool pid_fault[TOTAL_AXES] = {0};
+int32_t pid_max_dev_usteps[TOTAL_AXES] = {0};
+uint32_t pid_dv_clip_usteps[TOTAL_AXES] = {0};
+
 // home safety margin
 uint16_t home_safety_margin[TOTAL_AXES] = {4, 4, 4, 4, 4};
 

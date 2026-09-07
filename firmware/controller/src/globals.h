@@ -31,6 +31,14 @@ extern long Z_NEG_LIMIT;
 extern bool stage_PID_enabled[TOTAL_AXES];
 extern PID_ARGUMENTS axes_pid_arg[TOTAL_AXES];
 
+// Encoder reporting and closed-loop safety (firmware 1.6, see constants_protocol.h)
+extern uint8_t encoder_report_axis;             // INTERNAL axis index being reported, 0xFF = off
+extern uint8_t encoder_report_mode;             // ENCODER_REPORT_*
+extern bool encoder_configured[TOTAL_AXES];     // CONFIGURE_STAGE_PID has initialised the encoder since the last chip reset
+extern bool pid_fault[TOTAL_AXES];              // deviation watchdog disabled the loop; cleared by ENABLE_STAGE_PID / RESET
+extern int32_t pid_max_dev_usteps[TOTAL_AXES];  // watchdog limit in usteps; 0 = unset (default applied at configure)
+extern uint32_t pid_dv_clip_usteps[TOTAL_AXES]; // PID_DV_CLIP override in usteps/s; 0 = firmware default
+
 // home safety margin
 extern uint16_t home_safety_margin[TOTAL_AXES];
 

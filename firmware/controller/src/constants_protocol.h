@@ -75,6 +75,22 @@ static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and
 static const int SET_PIN_LEVEL = 41;
 static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
 static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter wheel
+// Encoder / closed-loop diagnostics (firmware 1.6). Both are OFF by default and are
+// turned off again by RESET and INITIALIZE, so the shipping packet is unchanged
+// unless a host asks. Packet use is in serial_communication.cpp.
+static const int SET_ENCODER_REPORTING = 44;  // [2]=axis, [3]=ENCODER_REPORT_* mode
+static const int SET_PID_LIMITS = 45;         // [2]=axis, [3..4]=max closed-loop correction velocity (mm/s x100),
+                                              // [5..6]=deviation watchdog limit (um); 0 keeps the current value
+// SET_ENCODER_REPORTING modes
+static const int ENCODER_REPORT_OFF = 0;
+static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,
+                                                     // bytes 20-21 = int16 ENC_POS_DEV (XACTUAL - ENC_POS, clipped)
+static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own position field carries ENC_POS
+// byte 19 flag bits, valid only while reporting is active
+static const int ENC_FLAG_REPORTING = 0;     // reporting active
+static const int ENC_FLAG_PID_ENABLED = 1;   // closed loop enabled on the reported axis
+static const int ENC_FLAG_PID_FAULT = 2;     // deviation watchdog disabled the closed loop (sticky until ENABLE_STAGE_PID or RESET)
+static const int ENC_FLAG_AXIS_SHIFT = 4;    // bits 4-6: protocol axis id being reported
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
