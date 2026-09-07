@@ -298,6 +298,11 @@ def test_encoder_reporting_and_pid_limits_commands():
     with pytest.raises(ValueError):
         micro.set_pid_limits(control._def.AXIS.Z, 0, 70000)
 
+    micro.set_pid_home_zone(control._def.AXIS.Z, 500)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_HOME_ZONE
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 500
+
     micro.close()
 
 

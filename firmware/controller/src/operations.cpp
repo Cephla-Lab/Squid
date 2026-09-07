@@ -99,6 +99,16 @@ void prepare_homing_z()
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
+        // Homing runs open-loop: it ends at the home stop, where the stage may
+        // stop following the actuator and the encoder error can only grow. The
+        // request survives (pid_requested) and check_closed_loop() re-engages the
+        // loop once the axis is back outside the home zone.
+        if (stage_PID_enabled[z])
+        {
+          tmc4361A_set_PID(&tmc4361[z], PID_DISABLE);
+          stage_PID_enabled[z] = 0;
+          pid_zone_hold[z] = true;
+        }
         tmc4361A_readInt(&tmc4361[z], TMC4361A_EVENTS);
         tmc4361A_setSpeed(&tmc4361[z], tmc4361A_vmmToMicrosteps( &tmc4361[z], LEFT_DIR * HOMING_VELOCITY_Z * MAX_VELOCITY_Z_mm ));
       }
@@ -109,6 +119,16 @@ void prepare_homing_z()
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
+        // Homing runs open-loop: it ends at the home stop, where the stage may
+        // stop following the actuator and the encoder error can only grow. The
+        // request survives (pid_requested) and check_closed_loop() re-engages the
+        // loop once the axis is back outside the home zone.
+        if (stage_PID_enabled[z])
+        {
+          tmc4361A_set_PID(&tmc4361[z], PID_DISABLE);
+          stage_PID_enabled[z] = 0;
+          pid_zone_hold[z] = true;
+        }
         tmc4361A_readInt(&tmc4361[z], TMC4361A_EVENTS);
         tmc4361A_setSpeed(&tmc4361[z], tmc4361A_vmmToMicrosteps( &tmc4361[z], RGHT_DIR * HOMING_VELOCITY_Z * MAX_VELOCITY_Z_mm ));
       }
@@ -398,10 +418,10 @@ void finalize_homing_z()
     // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
     // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
     tmc4361A_write_encoder(&tmc4361[z], 0);
-    // Internal index z, not the protocol id AXIS_Z: the two orders differ
-    // (internal y=0, x=1), so the old AXIS_Z subscript re-armed the wrong axis.
-    if (stage_PID_enabled[z])
-      tmc4361A_set_PID(&tmc4361[z], PID_BPG0);
+    // No re-arm here (master re-armed with the wrong index anyway): the loop was
+    // opened by prepare_homing_z and check_closed_loop() re-engages it once the
+    // axis leaves the home zone with a small error - and never at the stop itself,
+    // where the encoder may not be following the actuator.
     Z_pos = 0;
     focusPosition = 0;
     is_homing_Z = false;
@@ -661,14 +681,55 @@ void check_closed_loop()
 {
   for (uint8_t i = 0; i < TOTAL_AXES; i++)
   {
-    if (!stage_PID_enabled[i] || pid_max_dev_usteps[i] <= 0)
+    // Nothing is read for axes the host never asked a loop for: the shipping
+    // path costs nothing here.
+    if (!pid_requested[i])
       continue;
-    int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
-    if (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i])
+
+    int32_t zone = pid_home_zone_usteps[i];
+    int32_t pos = tmc4361A_currentPosition(&tmc4361[i]);
+    bool in_zone = (zone > 0) && (pos > -zone) && (pos < zone);
+
+    if (stage_PID_enabled[i])
     {
-      tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
-      stage_PID_enabled[i] = 0;
-      pid_fault[i] = true;
+      // Home zone: the stage may be resting on its stop while the actuator
+      // keeps moving, so the encoder error is meaningless there and the loop
+      // would drive the actuator into its end. Drop to open loop; the ramp
+      // generator finishes the commanded move on its own.
+      if (in_zone)
+      {
+        tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
+        stage_PID_enabled[i] = 0;
+        pid_zone_hold[i] = true;
+        continue;
+      }
+      // Deviation watchdog: a fault drops the REQUEST as well, so a decoupled
+      // or runaway axis stays open-loop until the host explicitly enables again.
+      if (pid_max_dev_usteps[i] > 0)
+      {
+        int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
+        if (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i])
+        {
+          tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
+          stage_PID_enabled[i] = 0;
+          pid_requested[i] = false;
+          pid_zone_hold[i] = false;
+          pid_fault[i] = true;
+        }
+      }
+    }
+    else if (pid_zone_hold[i] && !in_zone && encoder_configured[i])
+    {
+      // Requested, held open by the zone or by homing, now outside: re-engage,
+      // but only from a small error - the loop slews by the error it starts with.
+      int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
+      int32_t lim = pid_max_dev_usteps[i] > 0 ? pid_max_dev_usteps[i] : 0x7FFFFFFF;
+      if (dev <= lim && dev >= -lim)
+      {
+        tmc4361A_set_PID(&tmc4361[i], PID_BPG0);
+        stage_PID_enabled[i] = 1;
+        pid_zone_hold[i] = false;
+      }
     }
   }
 }

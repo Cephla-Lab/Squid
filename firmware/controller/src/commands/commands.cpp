@@ -58,6 +58,7 @@ void init_callbacks()
     cmd_map[INITIALIZE] = &callback_initialize;
     cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
     cmd_map[SET_PID_LIMITS] = &callback_set_pid_limits;
+    cmd_map[SET_PID_HOME_ZONE] = &callback_set_pid_home_zone;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -235,8 +236,36 @@ void callback_enable_stage_pid()
     }
 
     pid_fault[axis] = false;
+    pid_requested[axis] = true;
+
+    // Inside the home exclusion zone the encoder may not follow the actuator
+    // (stage resting on its stop while the actuator retracts), so the loop is not
+    // engaged here: it is recorded as requested and check_closed_loop() engages
+    // it once the axis is outside the zone with a small error. The status flags
+    // (ENC_FLAG_PID_ENABLED / ENC_FLAG_PID_ZONE) tell the host which it got.
+    int32_t zone = pid_home_zone_usteps[axis];
+    int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
+    if (zone > 0 && pos > -zone && pos < zone)
+    {
+        pid_zone_hold[axis] = true;
+        stage_PID_enabled[axis] = 0;
+        return;
+    }
+    pid_zone_hold[axis] = false;
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
+}
+
+// SET_PID_HOME_ZONE (46): [2] protocol axis, [3..4] zone half-width in um around
+// the home position (XACTUAL = 0). 0 disables the zone. Inside the zone the loop
+// is held open; see check_closed_loop() for the engage / release rules.
+void callback_set_pid_home_zone()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t zone_um = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    int32_t zone = (zone_um == 0) ? 0 : tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(zone_um) / 1000.0f);
+    pid_home_zone_usteps[axis] = (zone < 0) ? -zone : zone;
 }
 
 // SET_ENCODER_REPORTING (44): [2] protocol axis, [3] ENCODER_REPORT_* mode.
@@ -297,6 +326,8 @@ void callback_disable_stage_pid()
 
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
     stage_PID_enabled[axis] = 0;
+    pid_requested[axis] = false;
+    pid_zone_hold[axis] = false;
 }
 
 // Helper function for filter wheel initialization (shared by W and W2)
@@ -352,6 +383,8 @@ static void init_filterwheel_axis(uint8_t axis)
     stage_PID_enabled[axis] = 0;
     encoder_configured[axis] = false;   // tmc4361A_init() above reset the chip
     pid_fault[axis] = false;
+    pid_requested[axis] = false;
+    pid_zone_hold[axis] = false;
 
     tmc4361A_enableHomingLimit(&tmc4361[axis], rht_sw_pol[axis], TMC4361_homing_sw[axis], home_safety_margin[axis]);
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], -1);
@@ -471,6 +504,8 @@ void callback_initialize()
         stage_PID_enabled[i] = 0;
         encoder_configured[i] = false;
         pid_fault[i] = false;
+        pid_requested[i] = false;
+        pid_zone_hold[i] = false;
     }
     encoder_report_axis = 0xFF;
     encoder_report_mode = ENCODER_REPORT_OFF;
@@ -526,5 +561,9 @@ void callback_reset()
     Y_use_encoder = false;
     Z_use_encoder = false;
     for (uint8_t i = 0; i < TOTAL_AXES; i++)
+    {
         pid_fault[i] = false;
+        pid_requested[i] = false;
+        pid_zone_hold[i] = false;
+    }
 }

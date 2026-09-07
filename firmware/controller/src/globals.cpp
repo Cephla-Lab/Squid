@@ -34,6 +34,9 @@ bool encoder_configured[TOTAL_AXES] = {0};
 bool pid_fault[TOTAL_AXES] = {0};
 int32_t pid_max_dev_usteps[TOTAL_AXES] = {0};
 uint32_t pid_dv_clip_usteps[TOTAL_AXES] = {0};
+bool pid_requested[TOTAL_AXES] = {0};
+bool pid_zone_hold[TOTAL_AXES] = {0};
+int32_t pid_home_zone_usteps[TOTAL_AXES] = {0};
 
 // home safety margin
 uint16_t home_safety_margin[TOTAL_AXES] = {4, 4, 4, 4, 4};

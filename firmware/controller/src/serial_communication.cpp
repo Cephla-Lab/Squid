@@ -118,6 +118,7 @@ void send_position_update()
       byte flags = (1 << ENC_FLAG_REPORTING);
       if (stage_PID_enabled[encoder_report_axis]) flags |= (1 << ENC_FLAG_PID_ENABLED);
       if (pid_fault[encoder_report_axis])         flags |= (1 << ENC_FLAG_PID_FAULT);
+      if (pid_zone_hold[encoder_report_axis])     flags |= (1 << ENC_FLAG_PID_ZONE);
       flags |= byte((internal_axis_to_protocol(encoder_report_axis) & 0x07) << ENC_FLAG_AXIS_SHIFT);
       buffer_tx[19] = flags;
 

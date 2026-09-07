@@ -21,6 +21,7 @@ void callback_configure_stage_pid();
 void callback_enable_stage_pid();
 void callback_set_encoder_reporting();
 void callback_set_pid_limits();
+void callback_set_pid_home_zone();
 
 void callback_disable_stage_pid();
 void callback_initfilterwheel();

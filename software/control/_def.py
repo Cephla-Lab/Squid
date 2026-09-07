@@ -206,6 +206,7 @@ class CMD_SET:
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
     SET_ENCODER_REPORTING = 44  # Stream an axis's encoder position / loop error in the status packet (fw >= 1.6)
     SET_PID_LIMITS = 45  # Closed-loop correction velocity clamp + deviation watchdog limit (fw >= 1.6)
+    SET_PID_HOME_ZONE = 46  # Home exclusion zone (um) inside which the closed loop is held open (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -395,6 +396,7 @@ class ENC_FLAG:
     REPORTING = 0
     PID_ENABLED = 1
     PID_FAULT = 2  # firmware deviation watchdog disabled the closed loop
+    PID_ZONE = 3  # loop requested but held open (home zone / homing); re-engages automatically outside
     AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
 
 

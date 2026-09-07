@@ -4,8 +4,13 @@ Talks to the controller through control.microcontroller (the same path the GUI u
 whatever this tool establishes is what the software will see. Requires firmware >= 1.6
 (SET_ENCODER_REPORTING / SET_PID_LIMITS). Close the Squid GUI first: it holds the port.
 
+Geometry: home (XACTUAL = 0) is the actuator fully retracted with the stage resting on its stop; positive
+mm in the software is the actuator extending and the stage moving up. Near home the stage can rest on its
+stop while the actuator keeps retracting, so the encoder stops following: firmware >= 1.6 holds the loop
+open inside a configurable home zone (--zone-um) and `zonemap` measures where that happens.
+
 Safety model - Z must never be driven into a travel end:
-  * All motion stays inside a depth window below the top (home) switch, default 1.0 .. 4.5 mm,
+  * All motion stays inside a window of extension from home, default 1.0 .. 4.5 mm,
     hard-capped at 5.5 mm; every target is checked before it is sent and every sample after.
   * Z velocity is lowered to --vmax (default 1.0 mm/s) for the whole session and restored at exit.
   * Before the loop is ever closed, the encoder is read open-loop across a known move and must
@@ -21,7 +26,9 @@ Usage (from software/, with the project venv):
   python tools/z_encoder_pid_tuner.py baseline               # open-loop following error and rest noise
   python tools/z_encoder_pid_tuner.py step --p 4096 --i 0 --d 1
   python tools/z_encoder_pid_tuner.py sweep --p-list 1024 2048 4096 8192 16384 --d 1
-Common options: --depth-mm 2.5 --step-um 100 --vmax 1.0 --corr-vmax 0.3 --max-dev-um 200 --out z_tune
+  python tools/z_encoder_pid_tuner.py zonemap                # open-loop ENC_POS vs XACTUAL from 2 mm down to home and back
+Common options: --depth-mm 2.5 (extension from home) --step-um 100 --vmax 1.0 --corr-vmax 0.3 --max-dev-um 200
+                --zone-um 0 (home exclusion zone sent to firmware) --out z_tune
 """
 import argparse
 import csv
@@ -181,7 +188,7 @@ class ZTuner:
     def check_depth(self, depth_mm):
         lo, hi = self.a.depth_min, min(self.a.depth_max, HARD_CAP_DEPTH_MM)
         if not (lo <= depth_mm <= hi):
-            raise RuntimeError(f"refusing Z target {depth_mm:.3f} mm: outside the allowed window {lo}..{hi} mm")
+            raise RuntimeError(f"refusing Z target {depth_mm:.3f} mm extension: outside the allowed window {lo}..{hi} mm")
 
     def current_depth(self):
         return usteps_to_depth(self.mcu.z_pos)
@@ -228,12 +235,13 @@ class ZTuner:
         self.log("homing Z (toward the top switch)")
         self.mcu.home_z()
         self.wait(60)
-        self.log(f"Z homed; moving to {self.a.depth_mm} mm depth")
+        self.log(f"Z homed; moving to {self.a.depth_mm} mm extension from home")
         self.move_to_depth(self.a.depth_mm)
 
     def configure_encoder(self, flip):
         m = self.mcu
         m.set_pid_limits(AXIS.Z, self.a.corr_vmax, self.a.max_dev_um); self.wait()
+        m.set_pid_home_zone(AXIS.Z, self.a.zone_um); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
         m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
@@ -242,7 +250,7 @@ class ZTuner:
         if not st["reporting"]:
             raise RuntimeError("firmware did not start encoder reporting - is it >= 1.6? (SET_ENCODER_REPORTING ignored)")
         self.log(f"encoder configured: {TRANSITIONS_PER_REV} transitions/rev, flip={flip}, "
-                 f"correction vmax {self.a.corr_vmax} mm/s, watchdog {self.a.max_dev_um} um")
+                 f"correction vmax {self.a.corr_vmax} mm/s, watchdog {self.a.max_dev_um} um, home zone {self.a.zone_um} um")
 
     def encoder_check(self):
         """Open loop: encoder must follow XACTUAL with ratio +1 (in usteps). Fix the sign if it reads -1.
@@ -399,6 +407,56 @@ class ZTuner:
         else:
             self.log("no gain in the list met the oscillation criterion; lower the list or raise --max-crossings")
 
+    def zonemap(self):
+        """Open loop: step from --zonemap-from mm toward home in --zonemap-step um increments and back,
+        recording ENC_POS vs XACTUAL at rest, to find where the stage stops following the actuator."""
+        step_mm = self.a.zonemap_step_um / 1000.0
+        top = self.a.zonemap_from
+        pts = []
+
+        def sample(tag):
+            self.settle(0.4)
+            st = self.mcu.get_encoder_state()
+            pts.append((tag, self.mcu.z_pos, st["encoder_pos"], st["deviation"]))
+
+        # descend to home (allowed: zonemap deliberately visits the home region open-loop)
+        self.a.depth_min = 0.0
+        z = top
+        while z > -1e-9:
+            self.move_to_depth(max(z, 0.0))
+            sample("down")
+            z -= step_mm
+        z = 0.0
+        while z <= top + 1e-9:
+            self.move_to_depth(z)
+            sample("up")
+            z += step_mm
+        self.move_to_depth(self.a.depth_mm)
+        path = os.path.join(self.out, "zonemap.csv")
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["direction", "xactual_usteps", "enc_pos_usteps", "deviation_usteps", "extension_mm", "enc_mm", "dev_um"])
+            for tag, x, e, d in pts:
+                w.writerow([tag, x, e, d, usteps_to_depth(x), usteps_to_depth(e), d / USTEPS_PER_MM * 1000])
+        # where does the encoder stop following on the way down?
+        down = [(usteps_to_depth(x), usteps_to_depth(e)) for tag, x, e, d in pts if tag == "down"]
+        up = [(usteps_to_depth(x), usteps_to_depth(e)) for tag, x, e, d in pts if tag == "up"]
+        print("\nextension_mm  enc_mm   dev_um   (down)")
+        for (xm, em), (tag, x, e, d) in zip(down, [p for p in pts if p[0] == "down"]):
+            print(f"{xm:11.3f} {em:8.3f} {d / USTEPS_PER_MM * 1000:8.1f}")
+        decouple = None
+        for k in range(1, len(down)):
+            dx = down[k][0] - down[k - 1][0]; de = down[k][1] - down[k - 1][1]
+            if abs(dx) > 1e-6 and abs(de / dx) < 0.5:
+                decouple = down[k - 1][0]; break
+        recouple = None
+        for k in range(1, len(up)):
+            dx = up[k][0] - up[k - 1][0]; de = up[k][1] - up[k - 1][1]
+            if abs(dx) > 1e-6 and abs(de / dx) > 0.5:
+                recouple = up[k][0]; break
+        self.log(f"zonemap: encoder stops following below {decouple} mm on the way down; follows again above {recouple} mm on the way up")
+        self.summary["results"].append({"phase": "zonemap", "decouple_mm": decouple, "recouple_mm": recouple, "csv": path})
+
     # ---------------------------------------------------------------- main
     def run(self):
         try:
@@ -408,6 +466,9 @@ class ZTuner:
             self.home()
             self.encoder_check()
             if self.a.action == "check":
+                return
+            if self.a.action == "zonemap":
+                self.zonemap()
                 return
             if self.a.action in ("baseline", "step", "sweep"):
                 self.baseline()
@@ -421,7 +482,7 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep"])
+    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap"])
     ap.add_argument("--depth-mm", type=float, default=2.5, help="working depth below the top switch")
     ap.add_argument("--depth-min", type=float, default=1.0)
     ap.add_argument("--depth-max", type=float, default=4.5)
@@ -436,6 +497,9 @@ def main():
     ap.add_argument("--i", type=int, default=_def.PID_I_Z)
     ap.add_argument("--d", type=int, default=_def.PID_D_Z)
     ap.add_argument("--p-list", type=int, nargs="+", default=[1024, 2048, 4096, 8192, 16384])
+    ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
+    ap.add_argument("--zonemap-from", type=float, default=2.0, help="zonemap start extension, mm")
+    ap.add_argument("--zonemap-step-um", type=float, default=50.0)
     ap.add_argument("--out", default="z_tune")
     args = ap.parse_args()
     if args.depth_max > HARD_CAP_DEPTH_MM:

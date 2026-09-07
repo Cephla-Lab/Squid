@@ -59,6 +59,7 @@ _CMD_NAMES = {
     CMD_SET.SET_PID_ARGUMENTS: "SET_PID_ARGUMENTS",
     CMD_SET.SET_ENCODER_REPORTING: "SET_ENCODER_REPORTING",
     CMD_SET.SET_PID_LIMITS: "SET_PID_LIMITS",
+    CMD_SET.SET_PID_HOME_ZONE: "SET_PID_HOME_ZONE",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1313,6 +1314,23 @@ class Microcontroller:
         cmd[6] = d & 0xFF
         self.send_command(cmd)
 
+    def set_pid_home_zone(self, axis, zone_um):
+        """Home exclusion zone for the closed loop on `axis` (firmware >= 1.6).
+
+        Within zone_um of the home position the firmware holds the loop open (the stage may rest on its
+        stop while the actuator moves, so the encoder error is meaningless there) and re-engages it
+        automatically once outside with a small error. Homing always runs open-loop. 0 disables the zone.
+        """
+        z = int(round(zone_um))
+        if not (0 <= z <= 0xFFFF):
+            raise ValueError("zone (um) must fit in 16 bits")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_HOME_ZONE
+        cmd[2] = int(axis)
+        cmd[3] = (z >> 8) & 0xFF
+        cmd[4] = z & 0xFF
+        self.send_command(cmd)
+
     def get_encoder_state(self):
         """Decoded view of the last packet's encoder fields (firmware >= 1.6)."""
         f = self.encoder_flags
@@ -1320,6 +1338,7 @@ class Microcontroller:
             "reporting": bool(f & (1 << ENC_FLAG.REPORTING)),
             "pid_enabled": bool(f & (1 << ENC_FLAG.PID_ENABLED)),
             "pid_fault": bool(f & (1 << ENC_FLAG.PID_FAULT)),
+            "pid_zone_hold": bool(f & (1 << ENC_FLAG.PID_ZONE)),
             "axis": (f >> ENC_FLAG.AXIS_SHIFT) & 0x07,
             "encoder_pos": self.encoder_pos,
             "deviation": self.encoder_deviation,
