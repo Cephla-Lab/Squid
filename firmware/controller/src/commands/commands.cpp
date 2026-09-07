@@ -60,6 +60,7 @@ void init_callbacks()
     cmd_map[SET_PID_LIMITS] = &callback_set_pid_limits;
     cmd_map[SET_PID_HOME_ZONE] = &callback_set_pid_home_zone;
     cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
+    cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -154,25 +155,35 @@ void callback_configure_stage_pid()
     else
         dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
 
+    // Loop deadband (PID_TOLERANCE: below this error the chip stops correcting) and
+    // target-reached tolerance (CL_TR_TOLERANCE: what tmc4361A_isRunning() accepts as
+    // arrived). Master hard-codes 25 usteps (2 on wheels), which is a physical size
+    // that scales with microstepping: 0.15 um at 256 usteps/FS on Z, 2.3 um at 16.
+    // SET_PID_TOLERANCE lets the host set both in physical units; without it the
+    // legacy values apply.
+    uint32_t legacy_tol = (axis == w || axis == w2) ? 2 : 25;
+    uint32_t pid_tol = pid_tolerance_usteps[axis] ? pid_tolerance_usteps[axis] : legacy_tol;
+    uint32_t tr_tol  = pid_tr_tolerance_usteps[axis] ? pid_tr_tolerance_usteps[axis] : legacy_tol;
+
     // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
     bool configured = false;
     if (axis == x || axis == y) {
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 32767, 2);
+        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 32767, 2);
         configured = true;
     }
     else if (axis == z) {
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
         configured = true;
     }
     else if (axis == w) {
         if (enable_filterwheel == true) {
-            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
             configured = true;
         }
     }
     else if (axis == w2) {
         if (enable_filterwheel_w2 == true) {
-            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
             configured = true;
         }
     }
@@ -268,6 +279,40 @@ void callback_set_ramp_profile()
     if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
     tmc4361[axis].ramp_profile = profile;
     tmc4361A_sRampInit(&tmc4361[axis]);
+}
+
+// SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]
+// target-reached tolerance in 0.01 um; 0 keeps the current value. Applied at once if
+// the encoder is configured (the two registers are plain writes) and by every later
+// CONFIGURE_STAGE_PID. Minimum 1 ustep.
+void callback_set_pid_tolerance()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t dead_c = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    uint16_t tr_c   = (uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]);
+    if (dead_c != 0)
+    {
+        int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dead_c) / 100000.0f);
+        if (v < 0) v = -v;
+        pid_tolerance_usteps[axis] = v < 1 ? 1 : (uint32_t)v;
+        if (encoder_configured[axis])
+        {
+            tmc4361A_writeInt(&tmc4361[axis], TMC4361A_PID_TOLERANCE_WR, pid_tolerance_usteps[axis]);
+            tmc4361[axis].pid_tolerance = pid_tolerance_usteps[axis];
+        }
+    }
+    if (tr_c != 0)
+    {
+        int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(tr_c) / 100000.0f);
+        if (v < 0) v = -v;
+        pid_tr_tolerance_usteps[axis] = v < 1 ? 1 : (uint32_t)v;
+        if (encoder_configured[axis])
+        {
+            tmc4361A_writeInt(&tmc4361[axis], TMC4361A_CL_TR_TOLERANCE_WR, pid_tr_tolerance_usteps[axis]);
+            tmc4361[axis].target_tolerance = pid_tr_tolerance_usteps[axis];
+        }
+    }
 }
 
 // SET_PID_HOME_ZONE (46): [2] protocol axis, [3..4] zone half-width in um around

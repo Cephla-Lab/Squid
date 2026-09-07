@@ -208,6 +208,7 @@ class CMD_SET:
     SET_PID_LIMITS = 45  # Closed-loop correction velocity clamp + deviation watchdog limit (fw >= 1.6)
     SET_PID_HOME_ZONE = 46  # Home exclusion zone (um) inside which the closed loop is held open (fw >= 1.6)
     SET_RAMP_PROFILE = 47  # Per-axis ramp profile: trapezoidal or S-shaped (fw >= 1.6)
+    SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254

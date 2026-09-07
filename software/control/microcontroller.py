@@ -61,6 +61,7 @@ _CMD_NAMES = {
     CMD_SET.SET_PID_LIMITS: "SET_PID_LIMITS",
     CMD_SET.SET_PID_HOME_ZONE: "SET_PID_HOME_ZONE",
     CMD_SET.SET_RAMP_PROFILE: "SET_RAMP_PROFILE",
+    CMD_SET.SET_PID_TOLERANCE: "SET_PID_TOLERANCE",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1342,6 +1343,27 @@ class Microcontroller:
         cmd[1] = CMD_SET.SET_RAMP_PROFILE
         cmd[2] = int(axis)
         cmd[3] = int(profile)
+        self.send_command(cmd)
+
+    def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):
+        """Closed-loop deadband and target-reached tolerance for `axis`, in um (firmware >= 1.6).
+
+        Below the deadband the TMC4361A stops correcting; the target-reached tolerance is what the
+        firmware accepts as 'arrived' when acknowledging a closed-loop move. Master hard-codes both
+        to 25 microsteps, which is 0.15 um at 256 usteps/FS on Z but 2.3 um at 16. Encoded in 0.01 um,
+        so the range is 0.01 .. 655 um; None keeps the current target-reached value.
+        """
+        d = int(round(deadband_um * 100))
+        t = 0 if target_reached_um is None else int(round(target_reached_um * 100))
+        if not (1 <= d <= 0xFFFF) or not (0 <= t <= 0xFFFF):
+            raise ValueError("tolerances must be 0.01 .. 655.35 um")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_TOLERANCE
+        cmd[2] = int(axis)
+        cmd[3] = (d >> 8) & 0xFF
+        cmd[4] = d & 0xFF
+        cmd[5] = (t >> 8) & 0xFF
+        cmd[6] = t & 0xFF
         self.send_command(cmd)
 
     def get_encoder_state(self):

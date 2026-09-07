@@ -23,6 +23,7 @@ void callback_set_encoder_reporting();
 void callback_set_pid_limits();
 void callback_set_pid_home_zone();
 void callback_set_ramp_profile();
+void callback_set_pid_tolerance();
 
 void callback_disable_stage_pid();
 void callback_initfilterwheel();

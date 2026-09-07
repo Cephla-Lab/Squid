@@ -34,6 +34,9 @@
 //               trapezoidal or S-shaped ramp per axis; a status packet is sent
 //               the moment a command completes and completion is checked every
 //               1 ms (was 10 ms).
+//               SET_PID_TOLERANCE (48) sets the closed-loop deadband and the
+//               target-reached tolerance in physical units (master hard-codes
+//               25 usteps, which is 0.15 um at 256 usteps/FS but 2.3 um at 16).
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 
