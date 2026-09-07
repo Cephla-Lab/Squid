@@ -129,6 +129,12 @@ void callback_configure_stage_pid()
     int transitions_per_revolution = (buffer_rx[4] << 8) + buffer_rx[5];
     // Init encoder. transitions per revolution, velocity filter wait time (# of clock cycles), IIR filter exponent, vmean update frequency, invert direction (must increase as microsteps increases)
     tmc4361A_init_ABN_encoder(&tmc4361[axis], transitions_per_revolution, 32, 4, 512, flip_direction);
+    // Align the encoder frame with XACTUAL under the scale and direction just
+    // written. ENC_POS is derived from the raw count, so a zero taken earlier
+    // (homing, or the chip reset) under a different ENC_IN_RES / invert setting
+    // does not survive this write - the first bench run found the loop error
+    // pinned at the int16 clip for exactly that reason.
+    tmc4361A_write_encoder(&tmc4361[axis], tmc4361A_currentPosition(&tmc4361[axis]));
 
     // Closed-loop correction velocity ceiling (PID_DV_CLIP): the host's
     // SET_PID_LIMITS value if it has sent one, else the axis's max velocity as

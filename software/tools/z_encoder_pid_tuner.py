@@ -239,9 +239,15 @@ class ZTuner:
                  f"correction vmax {self.a.corr_vmax} mm/s, watchdog {self.a.max_dev_um} um")
 
     def encoder_check(self):
-        """Open loop: encoder must follow XACTUAL with ratio +1 (in usteps). Fix the sign if it reads -1."""
+        """Open loop: encoder must follow XACTUAL with ratio +1 (in usteps). Fix the sign if it reads -1.
+
+        The encoder is configured (scale, direction, limits, reporting) BEFORE homing in run(), so the
+        zero written at homing is taken under the final scale; firmware >= 1.6 also re-aligns ENC_POS
+        to XACTUAL inside CONFIGURE_STAGE_PID, so a re-configuration here (sign retry) stays aligned.
+        """
         for attempt in range(2):
-            self.configure_encoder(self.flip)
+            if attempt > 0:
+                self.configure_encoder(self.flip)
             self.settle(0.5)
             z0, e0 = self.mcu.z_pos, self.mcu.get_encoder_state()["encoder_pos"]
             self.move_to_depth(self.a.depth_mm + 0.5)
@@ -385,6 +391,7 @@ class ZTuner:
         try:
             self.connect()
             self.configure_z()
+            self.configure_encoder(self.flip)   # before homing: the homing zero must be taken under the final encoder scale
             self.home()
             self.encoder_check()
             if self.a.action == "check":
