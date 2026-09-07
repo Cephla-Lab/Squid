@@ -986,7 +986,10 @@ void tmc4361A_moveToExtreme(TMC4361ATypeDef *tmc4361A, int32_t vel, int8_t dir) 
   -----------------------------------------------------------------------------
 */
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | TMC4361A_RAMP_SSHAPE); // positioning mode, s-shaped ramp
+  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request).
+  // Clear the two profile bits first: a plain setBits cannot change SSHAPE (2) into TRAPEZ (1).
+  tmc4361A_rstBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
+  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE));
   tmc4361A_rstBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_USE_ASTART_AND_VSTART_MASK); // keep astart, vstart = 0
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW1, tmc4361A->rampParam[BOW1_IDX]); // determines the value which increases the absolute acceleration value.
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW2, tmc4361A->rampParam[BOW2_IDX]); // determines the value which decreases the absolute acceleration value.

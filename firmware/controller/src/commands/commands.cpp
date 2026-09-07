@@ -59,6 +59,7 @@ void init_callbacks()
     cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
     cmd_map[SET_PID_LIMITS] = &callback_set_pid_limits;
     cmd_map[SET_PID_HOME_ZONE] = &callback_set_pid_home_zone;
+    cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -254,6 +255,19 @@ void callback_enable_stage_pid()
     pid_zone_hold[axis] = false;
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
+}
+
+// SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
+// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
+// INITIALIZE (the host sets it once with the other motion parameters).
+void callback_set_ramp_profile()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint8_t profile = buffer_rx[3];
+    if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
+    tmc4361[axis].ramp_profile = profile;
+    tmc4361A_sRampInit(&tmc4361[axis]);
 }
 
 // SET_PID_HOME_ZONE (46): [2] protocol axis, [3..4] zone half-width in um around

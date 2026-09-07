@@ -60,6 +60,7 @@ _CMD_NAMES = {
     CMD_SET.SET_ENCODER_REPORTING: "SET_ENCODER_REPORTING",
     CMD_SET.SET_PID_LIMITS: "SET_PID_LIMITS",
     CMD_SET.SET_PID_HOME_ZONE: "SET_PID_HOME_ZONE",
+    CMD_SET.SET_RAMP_PROFILE: "SET_RAMP_PROFILE",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1329,6 +1330,18 @@ class Microcontroller:
         cmd[2] = int(axis)
         cmd[3] = (z >> 8) & 0xFF
         cmd[4] = z & 0xFF
+        self.send_command(cmd)
+
+    def set_ramp_profile(self, axis, profile):
+        """Select the TMC4361A ramp profile for `axis` (firmware >= 1.6): RAMP_PROFILE.TRAPEZOID or SSHAPE.
+
+        The S-shaped ramp is bow-limited and its 24-bit bow registers clamp the jerk on fine-pitch,
+        high-microstep axes (Z: a 1 um move takes ~50 ms); the trapezoid is acceleration-limited.
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_RAMP_PROFILE
+        cmd[2] = int(axis)
+        cmd[3] = int(profile)
         self.send_command(cmd)
 
     def get_encoder_state(self):

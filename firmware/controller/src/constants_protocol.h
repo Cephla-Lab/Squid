@@ -81,6 +81,9 @@ static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter 
 static const int SET_ENCODER_REPORTING = 44;  // [2]=axis, [3]=ENCODER_REPORT_* mode
 static const int SET_PID_LIMITS = 45;         // [2]=axis, [3..4]=max closed-loop correction velocity (mm/s x100),
                                               // [5..6]=deviation watchdog limit (um); 0 keeps the current value
+static const int SET_RAMP_PROFILE = 47;       // [2]=axis, [3]=RAMP_PROFILE_* : S-shaped (bow-limited) or trapezoidal ramp
+static const int RAMP_PROFILE_TRAPEZOID = 1;
+static const int RAMP_PROFILE_SSHAPE = 2;
 static const int SET_PID_HOME_ZONE = 46;      // [2]=axis, [3..4]=home exclusion zone (um): within this distance of
                                               // the home position the loop is held open (see check_closed_loop);
                                               // 0 disables the zone

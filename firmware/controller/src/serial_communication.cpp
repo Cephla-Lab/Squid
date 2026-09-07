@@ -50,7 +50,15 @@ void process_serial_message()
 
 void send_position_update()
 {
-  if (us_since_last_pos_update > interval_send_pos_update)
+  // Besides the regular cadence, send a packet the moment a command stops being
+  // in progress, so the host learns of completion within one loop iteration
+  // instead of up to one interval later. The status byte is the same one the
+  // periodic packet would carry.
+  static bool last_in_progress = false;
+  bool completed_now = last_in_progress && !mcu_cmd_execution_in_progress;
+  last_in_progress = mcu_cmd_execution_in_progress;
+
+  if (us_since_last_pos_update > interval_send_pos_update || completed_now || flag_send_pos_update)
   {
     us_since_last_pos_update = 0;
 

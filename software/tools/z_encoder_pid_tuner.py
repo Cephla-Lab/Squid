@@ -42,14 +42,22 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import control._def as _def  # noqa: E402  (loads the machine configuration)
-from control._def import AXIS, ENCODER_REPORTING  # noqa: E402
+from control._def import AXIS, ENCODER_REPORTING, RAMP_PROFILE  # noqa: E402
 from control.microcontroller import Microcontroller, get_microcontroller_serial_device  # noqa: E402
 
 FULLSTEPS_PER_REV = 200
-MICROSTEPS = 256            # the tool sets this explicitly, so usteps/mm is known regardless of GUI history
+# --microsteps sets these before anything runs (the tool configures the driver explicitly, so usteps/mm is
+# known regardless of GUI history). Defaults to the ini's MICROSTEPPING_DEFAULT_Z, which is what the GUI uses.
+MICROSTEPS = int(_def.MICROSTEPPING_DEFAULT_Z)
 PITCH_MM = _def.SCREW_PITCH_Z_MM
 ENC_STEP_MM = _def.ENCODER_STEP_SIZE_Z_MM
 USTEPS_PER_MM = MICROSTEPS * FULLSTEPS_PER_REV / PITCH_MM
+
+
+def set_microsteps(n):
+    global MICROSTEPS, USTEPS_PER_MM
+    MICROSTEPS = int(n)
+    USTEPS_PER_MM = MICROSTEPS * FULLSTEPS_PER_REV / PITCH_MM
 TRANSITIONS_PER_REV = int(round(PITCH_MM / ENC_STEP_MM))
 SIGN = _def.STAGE_MOVEMENT_SIGN_Z           # -1 on the Squid+: "down" (positive depth) is negative usteps
 HARD_CAP_DEPTH_MM = 5.5                     # never command below this, whatever the arguments say
@@ -140,8 +148,10 @@ class ZTuner:
         m.configure_motor_driver(AXIS.Z, MICROSTEPS, _def.Z_MOTOR_RMS_CURRENT_mA, _def.Z_MOTOR_I_HOLD); self.wait()
         m.set_leadscrew_pitch(AXIS.Z, PITCH_MM); self.wait()
         m.set_max_velocity_acceleration(AXIS.Z, self.a.vmax, self.a.accel); self.wait()
+        prof = RAMP_PROFILE.TRAPEZOID if self.a.ramp == "trapezoid" else RAMP_PROFILE.SSHAPE
+        m.set_ramp_profile(AXIS.Z, prof); self.wait()
         self.log(f"Z configured: {MICROSTEPS} usteps/FS, pitch {PITCH_MM} mm, {_def.Z_MOTOR_RMS_CURRENT_mA} mA, "
-                 f"vmax {self.a.vmax} mm/s, accel {self.a.accel} mm/s2 ({USTEPS_PER_MM:.0f} usteps/mm)")
+                 f"vmax {self.a.vmax} mm/s, accel {self.a.accel} mm/s2, ramp {self.a.ramp} ({USTEPS_PER_MM:.0f} usteps/mm)")
 
     def restore_velocity(self):
         try:
@@ -566,8 +576,12 @@ def main():
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--zonemap-from", type=float, default=2.0, help="zonemap start extension, mm")
     ap.add_argument("--zonemap-step-um", type=float, default=50.0)
+    ap.add_argument("--microsteps", type=int, default=int(_def.MICROSTEPPING_DEFAULT_Z),
+                    help="Z microsteps per full step to configure (ini default %d; 256 was used for the first sessions)" % int(_def.MICROSTEPPING_DEFAULT_Z))
+    ap.add_argument("--ramp", choices=["sshape", "trapezoid"], default="sshape", help="TMC4361A ramp profile for Z during the session")
     ap.add_argument("--out", default="z_tune")
     args = ap.parse_args()
+    set_microsteps(args.microsteps)
     if args.depth_max > HARD_CAP_DEPTH_MM:
         print(f"--depth-max capped at {HARD_CAP_DEPTH_MM} mm")
     ZTuner(args).run()

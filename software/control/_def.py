@@ -207,6 +207,7 @@ class CMD_SET:
     SET_ENCODER_REPORTING = 44  # Stream an axis's encoder position / loop error in the status packet (fw >= 1.6)
     SET_PID_LIMITS = 45  # Closed-loop correction velocity clamp + deviation watchdog limit (fw >= 1.6)
     SET_PID_HOME_ZONE = 46  # Home exclusion zone (um) inside which the closed loop is held open (fw >= 1.6)
+    SET_RAMP_PROFILE = 47  # Per-axis ramp profile: trapezoidal or S-shaped (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -388,6 +389,13 @@ class ENCODER_REPORTING:
     OFF = 0
     ENC_IN_THETA = 1
     ENC_AS_POSITION = 2
+
+
+class RAMP_PROFILE:
+    """CMD_SET.SET_RAMP_PROFILE values (firmware >= 1.6)."""
+
+    TRAPEZOID = 1  # acceleration-limited; fast small moves
+    SSHAPE = 2  # bow (jerk) limited; the firmware default and master behaviour
 
 
 class ENC_FLAG:

@@ -29,6 +29,11 @@
 //               reaches the TMC4361A immediately (it used to be applied only by a
 //               later CONFIGURE_STAGE_PID); ENABLE_STAGE_PID is refused until the
 //               encoder has been configured. Off by default: packet unchanged.
+//               Also: SET_PID_HOME_ZONE (46) holds the loop open near home and
+//               makes homing open-loop; SET_RAMP_PROFILE (47) selects a
+//               trapezoidal or S-shaped ramp per axis; a status packet is sent
+//               the moment a command completes and completion is checked every
+//               1 ms (was 10 ms).
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 
@@ -128,7 +133,7 @@ const uint8_t DAC8050x_CONFIG_ADDR = 0x03;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 static const int TIMER_PERIOD = 500; // in us
 static const int interval_send_pos_update = 10000; // in us
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 1000;  // in us (was 10000: completion was detected up to 10 ms late)
 static const int interval_send_joystick_update = 30000; // in us
 static const int interval_check_limit = 20000; // in us
 
