@@ -76,7 +76,8 @@ class Sampler(threading.Thread):
         while not self._stop_evt.is_set():
             st = self.mcu.get_encoder_state()
             row = (time.time() - t0, self.mcu.z_pos, st["encoder_pos"], st["deviation"], self.mcu.encoder_flags)
-            if last is None or row[1:] != last[1:]:
+            # record on change, and at least every 50 ms so rest periods are represented
+            if last is None or row[1:] != last[1:] or row[0] - last[0] >= 0.05:
                 with self._lock:
                     self.rows.append(row)
                 last = row
@@ -305,21 +306,23 @@ class ZTuner:
         if peak >= 32767:
             self.log("WARNING: loop error is pinned at the int16 clip (>=192 um at 256 usteps/FS): the encoder frame is "
                      "offset from XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state.")
-        # settling: first time after the last move where |dev| stays within tol for 0.2 s
+        # settling time: from the end of the last commanded move (last change of XACTUAL) until |dev|
+        # stays within tol for 0.2 s
         tol = self.a.settle_tol_um * USTEPS_PER_MM / 1000.0
         settle_s = float("nan")
         if rows:
-            t_end = rows[-1][0]
+            t_last_move = max((rows[k][0] for k in range(1, len(rows)) if rows[k][1] != rows[k - 1][1]), default=rows[0][0])
             inside_since = None
             for t, _, _, d, _ in rows:
+                if t < t_last_move:
+                    continue
                 if abs(d) <= tol:
                     inside_since = t if inside_since is None else inside_since
                     if t - inside_since >= 0.2:
-                        settle_s = inside_since
+                        settle_s = inside_since - t_last_move
                         break
                 else:
                     inside_since = None
-            settle_s = t_end - settle_s if not math.isnan(settle_s) else float("nan")
         # oscillation: sign changes per second in the deviation while at rest at the end
         tail = [r[3] for r in rows if r[0] > rows[-1][0] - dwell] if rows else []
         crossings = sum(1 for a, b in zip(tail, tail[1:]) if (a < 0) != (b < 0))
@@ -327,9 +330,11 @@ class ZTuner:
                    "rest_mean_um": rest_mean / USTEPS_PER_MM * 1000,
                    "rest_rms_um": rest_rms / USTEPS_PER_MM * 1000, "tail_zero_crossings_per_s": crossings / dwell,
                    "final_dev_um": (rows[-1][3] / USTEPS_PER_MM * 1000) if rows else float("nan"),
+                   "settle_after_last_move_s": settle_s,
                    "csv": path}
         self.log(f"{label}: peak |dev| {metrics['peak_dev_um']:.1f} um, rest rms {metrics['rest_rms_um']:.2f} um, "
-                 f"final {metrics['final_dev_um']:+.2f} um, tail crossings {metrics['tail_zero_crossings_per_s']:.1f}/s")
+                 f"final {metrics['final_dev_um']:+.2f} um, settled {settle_s:.2f} s after the last move, "
+                 f"tail crossings {metrics['tail_zero_crossings_per_s']:.1f}/s")
         return metrics
 
     def baseline(self):
