@@ -64,8 +64,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
         else:
             self._configs = configs
 
-        # Track per-wheel positions (wheel_id -> position index)
+        # Track per-wheel positions (wheel_id -> position index) and, for shortest-path
+        # moves that cross the index flag, the number of whole turns the driver's
+        # coordinate has accumulated since homing (wheel_id -> int, may be negative).
         self._positions: Dict[int, int] = {}
+        self._turns: Dict[int, int] = {}
 
         for wheel_id, config in self._configs.items():
             _log.info(
@@ -79,10 +82,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 self._configure_wheel(wheel_id, config)
                 # Initialize position tracking to min_index
                 self._positions[wheel_id] = config.min_index
+                self._turns[wheel_id] = 0
         else:
             # Just initialize position tracking without hardware init
             for wheel_id, config in self._configs.items():
                 self._positions[wheel_id] = config.min_index
+                self._turns[wheel_id] = 0
             _log.warning(
                 f"skip_init=True: assuming all wheels at min_index without homing — "
                 f"tracked positions may not match physical state"
@@ -112,6 +117,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # wrong absolute slot because X_ACTUAL would still be at the
     # limit-switch latch value.
     _MIN_FIRMWARE_VERSION = (1, 2)
+
+    # Shortest-path slot changes. The wheel is rotary with no end stop, and on the bench
+    # (2026-09-07, firmware 1.6, Squid+ 8-slot wheel with encoder) it crossed its index
+    # flag in both directions without the flag stopping it, so a slot change takes the
+    # shorter way round: 8 -> 1 is one slot (~80 ms), not seven (~300 ms). The driver
+    # coordinate stays continuous across the flag via a per-wheel turn counter; homing
+    # re-anchors it. Set to False to keep every move on the flag-free arc as before.
+    wrap: bool = True
 
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
@@ -143,6 +156,34 @@ class SquidFilterWheel(AbstractFilterWheelController):
         return int(
             STAGE_MOVEMENT_SIGN_W * delta_mm / (SCREW_PITCH_W_MM / (MICROSTEPPING_DEFAULT_W * FULLSTEPS_PER_REV_W))
         )
+
+    def _wrap_enabled(self) -> bool:
+        return bool(self.wrap)
+
+    @staticmethod
+    def _usteps_per_turn() -> int:
+        return SquidFilterWheel._delta_to_usteps(SCREW_PITCH_W_MM)
+
+    @staticmethod
+    def _shortest_slot_delta(delta: int, slots: int) -> int:
+        """Signed slot delta with the smaller magnitude around the circle; a half-turn tie goes forward."""
+        half = slots // 2
+        return ((delta + half - 1) % slots) - (half - 1)
+
+    def _plan_move(self, wheel_id: int, target_pos: int):
+        """Absolute driver target (usteps) and the turn count it lands on, for a move from the tracked
+        position to `target_pos`. With wrapping enabled the shorter way round is taken, crossing the
+        index flag when that is shorter; the turn counter keeps the driver coordinate continuous."""
+        config = self._configs[wheel_id]
+        slots = config.max_index - config.min_index + 1
+        current_pos = self._positions[wheel_id]
+        delta = target_pos - current_pos
+        if self._wrap_enabled():
+            delta = self._shortest_slot_delta(delta, slots)
+        linear = self._turns.get(wheel_id, 0) * slots + (current_pos - config.min_index) + delta
+        turns, idx = divmod(linear, slots)
+        usteps = self._target_pos_to_usteps(config, config.min_index + idx) + turns * self._usteps_per_turn()
+        return usteps, turns
 
     @staticmethod
     def _target_pos_to_usteps(config: SquidFilterWheelConfig, target_pos: int) -> int:
@@ -220,12 +261,13 @@ class SquidFilterWheel(AbstractFilterWheelController):
         if target_pos == current_pos:
             return
 
-        target_usteps = self._target_pos_to_usteps(config, target_pos)
-        _log.info(f"Filter wheel {wheel_id}: {current_pos} -> {target_pos} (usteps={target_usteps})")
+        target_usteps, target_turns = self._plan_move(wheel_id, target_pos)
+        _log.info(f"Filter wheel {wheel_id}: {current_pos} -> {target_pos} (usteps={target_usteps}, turns={target_turns})")
 
         try:
             self._move_to_usteps_with_resend(wheel_id, target_usteps)
             self._positions[wheel_id] = target_pos
+            self._turns[wheel_id] = target_turns
             return
         except self._RECOVERABLE_MOVE_ERRORS as e:
             # CMD_EXECUTION_ERROR survived a resend, or the ack never arrived
@@ -239,10 +281,13 @@ class SquidFilterWheel(AbstractFilterWheelController):
         if self.microcontroller.last_command_aborted_error is not None:
             self.microcontroller.acknowledge_aborted_command()
         self._home_wheel(wheel_id)
+        # Homing re-anchored the coordinate (turns = 0): plan the retry from there.
+        target_usteps, target_turns = self._plan_move(wheel_id, target_pos)
         try:
             self._move_to_usteps(wheel_id, target_usteps)
             self.microcontroller.wait_till_operation_is_completed()
             self._positions[wheel_id] = target_pos
+            self._turns[wheel_id] = target_turns
             _log.info(f"Filter wheel {wheel_id} recovery via re-home succeeded, now at position {target_pos}")
         except self._RECOVERABLE_MOVE_ERRORS:
             _log.error(f"Filter wheel {wheel_id} movement failed even after re-home. Hardware may need attention.")
@@ -290,6 +335,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise
 
         self._positions[wheel_id] = config.min_index
+        self._turns[wheel_id] = 0
         _log.info(f"Filter wheel {wheel_id} homed in {time.monotonic() - home_start:.2f}s")
 
     def initialize(self, filter_wheel_indices: List[int]):
@@ -355,7 +401,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
         config = self._configs[wheel_id]
         current_pos = self._positions[wheel_id]
         new_pos = current_pos + direction
+        slots = config.max_index - config.min_index + 1
 
+        if self._wrap_enabled():
+            new_pos = config.min_index + (new_pos - config.min_index) % slots
         if config.min_index <= new_pos <= config.max_index:
             self._move_to_position(wheel_id, new_pos)
 
