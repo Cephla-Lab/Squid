@@ -308,6 +308,7 @@ class ZTuner:
 
     def record(self, label, depth_from, depth_to, dwell=1.0):
         """One excursion: dwell, move, dwell, move back, dwell. Returns metrics from the sampler."""
+        wall_start = time.time()
         self.sampler.clear()
         self.settle(dwell)
         t_move = self.sampler.now()
@@ -357,6 +358,7 @@ class ZTuner:
                    "final_dev_um": (rows[-1][3] / USTEPS_PER_MM * 1000) if rows else float("nan"),
                    "settle_after_last_move_s": settle_s,
                    "cmd_to_ack_out_s": ack_out, "cmd_to_ack_back_s": ack_back,
+                   "wall_start": wall_start, "wall_end": time.time(),
                    "csv": path}
         self.log(f"{label}: cmd->ack {ack_out * 1000:.0f} / {ack_back * 1000:.0f} ms; peak |dev| {metrics['peak_dev_um']:.1f} um, "
                  f"rest rms {metrics['rest_rms_um']:.2f} um, final {metrics['final_dev_um']:+.2f} um, "
@@ -530,6 +532,150 @@ class ZTuner:
         self.summary["results"].append({"phase": "zonetest", "zone_um": self.a.zone_um, **verdict})
         self.log(f"zonetest verdict: {verdict}  -> {'PASS' if all(verdict.values()) else 'FAIL'}")
 
+    def accelsweep(self):
+        """Open loop: for each acceleration in --accel-list, do N x 100 um and 2 x 1 mm excursions at --vmax
+        and judge (a) lost steps from the change of ENC_POS - XACTUAL at rest across the level, (b) the
+        effective acceleration from the command-to-ack time of the 100 um moves, (c) the mic (recorded by
+        the caller; wall-clock stamps are written to the summary). Stops at the first level that loses
+        steps or trips the guard. Never goes near the travel ends: everything happens at --depth-mm +- 1 mm.
+
+        Register ceiling: AMAX is a 22-bit value in usteps/s^2 on the TMC4361A. Above
+        (2^22 - 1) / usteps_per_mm the firmware silently clamps, so levels beyond it are skipped.
+        """
+        amax_cap = (2 ** 22 - 1) / USTEPS_PER_MM
+        self.log(f"AMAX register ceiling at {MICROSTEPS} usteps/FS: {amax_cap:.0f} mm/s2")
+        m = self.mcu
+        levels = []
+        for accel in self.a.accel_list:
+            if accel > amax_cap:
+                self.log(f"skipping {accel} mm/s2: above the register ceiling ({amax_cap:.0f})")
+                continue
+            m.set_max_velocity_acceleration(AXIS.Z, self.a.vmax, accel); self.wait()
+            self.settle(0.5)
+            st0 = m.get_encoder_state(); off0 = st0["deviation"]
+            wall0 = time.time()
+            acks_100 = []; acks_1000 = []
+            try:
+                for _ in range(self.a.accel_reps):
+                    self.move_to_depth(self.a.depth_mm + 0.1); acks_100.append(self.last_cmd_to_ack_s)
+                    self.settle(0.15)
+                    self.move_to_depth(self.a.depth_mm); acks_100.append(self.last_cmd_to_ack_s)
+                    self.settle(0.15)
+                for _ in range(2):
+                    self.move_to_depth(self.a.depth_mm + 1.0); acks_1000.append(self.last_cmd_to_ack_s)
+                    self.settle(0.2)
+                    self.move_to_depth(self.a.depth_mm); acks_1000.append(self.last_cmd_to_ack_s)
+                    self.settle(0.2)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"accel {accel}: aborted: {e}")
+                levels.append({"accel": accel, "error": str(e)})
+                break
+            self.settle(0.5)
+            st1 = m.get_encoder_state(); off1 = st1["deviation"]
+            lost_um = (off1 - off0) / USTEPS_PER_MM * 1000.0
+            t100 = sorted(acks_100)[len(acks_100) // 2] if acks_100 else float("nan")
+            t1000 = sorted(acks_1000)[len(acks_1000) // 2] if acks_1000 else float("nan")
+            # Trapezoid timing after subtracting the fixed command+report overhead (--ack-overhead-ms):
+            # acceleration-limited (a*d <= v^2): t = 2*sqrt(d/a)  ->  a = 4d/t^2
+            # velocity-limited  (a*d  > v^2): t = d/v + v/a     ->  a = v/(t - d/v)
+            d_mm = 0.1; v = self.a.vmax
+            t_mv = t100 - self.a.ack_overhead_ms / 1000.0
+            if t_mv <= 0:
+                a_eff = float("nan")
+            elif accel * d_mm <= v * v:
+                a_eff = 4 * d_mm / (t_mv ** 2)
+            else:
+                a_eff = v / (t_mv - d_mm / v) if t_mv > d_mm / v else float("nan")
+            row = {"accel": accel, "ack_100um_median_s": t100, "ack_1mm_median_s": t1000,
+                   "implied_accel_mm_s2": a_eff, "lost_um": lost_um, "off_before": off0, "off_after": off1,
+                   "wall_start": wall0, "wall_end": time.time()}
+            levels.append(row)
+            self.log(f"accel {accel:4.0f} mm/s2: 100 um ack {t100 * 1000:5.1f} ms (implied {a_eff:5.0f} mm/s2), "
+                     f"1 mm ack {t1000 * 1000:5.1f} ms, encoder offset change {lost_um:+.2f} um")
+            if abs(lost_um) > self.a.lost_step_um:
+                self.log(f"STOP: {lost_um:+.2f} um of position lost at {accel} mm/s2 (limit {self.a.lost_step_um} um)")
+                break
+        self.summary["results"].append({"phase": "accelsweep", "vmax": self.a.vmax, "microsteps": MICROSTEPS,
+                                        "ramp": self.a.ramp, "amax_register_cap": amax_cap, "levels": levels})
+        good = [l for l in levels if "error" not in l and abs(l["lost_um"]) <= self.a.lost_step_um]
+        if good:
+            self.log(f"highest acceleration with no lost steps: {good[-1]['accel']:.0f} mm/s2 "
+                     f"(100 um in {good[-1]['ack_100um_median_s'] * 1000:.0f} ms command-to-ack)")
+        self.restore_velocity()
+
+    def engage_loop(self):
+        m = self.mcu
+        self.settle(0.3)
+        dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
+        if abs(dev0) > self.a.max_dev_um / 4:
+            raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
+        m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
+        self.settle(0.3)
+        if not m.get_encoder_state()["pid_enabled"]:
+            self.loop_on = False
+            raise RuntimeError("ENABLE_STAGE_PID did not take")
+
+    def stack(self, closed):
+        """Focus-stack pattern: --stack-n steps of --stack-um up from the working extension, then back down
+        in one move. Per step: command-to-ack time and the encoder error at rest (0.15 s after the ack).
+        Open loop (closed=False) or closed loop (closed=True)."""
+        n, du = self.a.stack_n, self.a.stack_um / 1000.0
+        label = f"stack_{'closed' if closed else 'open'}_{n}x{self.a.stack_um:g}um"
+        if closed:
+            self.engage_loop()
+        wall0 = time.time()
+        acks = []; errs = []; encs = []
+        try:
+            for k in range(1, n + 1):
+                self.move_to_depth(self.a.depth_mm + k * du)
+                acks.append(self.last_cmd_to_ack_s)
+                self.settle(0.15)
+                st = self.mcu.get_encoder_state()
+                errs.append(st["deviation"] / USTEPS_PER_MM * 1000)
+                encs.append(usteps_to_depth(st["encoder_pos"]))
+            self.move_to_depth(self.a.depth_mm)
+            self.settle(0.3)
+        finally:
+            if closed:
+                self.loop_off()
+        # step-to-step encoder increments vs commanded
+        inc = [(encs[i] - encs[i - 1]) * 1000 for i in range(1, len(encs))]
+        acks_ms = sorted(a_ * 1000 for a_ in acks)
+        res = {"phase": "stack", "label": label, "closed": closed, "n": n, "step_um": self.a.stack_um,
+               "ack_ms_median": acks_ms[len(acks_ms) // 2], "ack_ms_max": acks_ms[-1],
+               "err_um_mean": sum(errs) / len(errs), "err_um_max_abs": max(abs(e) for e in errs),
+               "enc_increment_um_mean": (sum(inc) / len(inc)) if inc else float("nan"),
+               "enc_increment_um_min": min(inc) if inc else float("nan"), "enc_increment_um_max": max(inc) if inc else float("nan"),
+               "wall_start": wall0, "wall_end": time.time()}
+        self.summary["results"].append(res)
+        self.log(f"{label}: ack median {res['ack_ms_median']:.0f} ms (max {res['ack_ms_max']:.0f}); encoder error mean {res['err_um_mean']:+.2f} um, "
+                 f"max |err| {res['err_um_max_abs']:.2f} um; encoder step increments mean {res['enc_increment_um_mean']:.3f} um "
+                 f"(min {res['enc_increment_um_min']:.3f}, max {res['enc_increment_um_max']:.3f}) for commanded {self.a.stack_um:g} um")
+        return res
+
+    def hold(self):
+        """Closed-loop hold at the working extension for --hold-s seconds (mic records hunting), then loop off."""
+        self.engage_loop()
+        wall0 = time.time(); devs = []
+        try:
+            t0 = time.time()
+            while time.time() - t0 < self.a.hold_s:
+                self.guard()
+                devs.append(self.mcu.get_encoder_state()["deviation"])
+                time.sleep(0.01)
+        finally:
+            self.loop_off()
+        import statistics
+        d_um = [d / USTEPS_PER_MM * 1000 for d in devs]
+        cross = sum(1 for a_, b_ in zip(d_um, d_um[1:]) if (a_ < 0) != (b_ < 0))
+        res = {"phase": "hold", "label": f"hold_closed_{self.a.hold_s:g}s", "seconds": self.a.hold_s,
+               "err_um_mean": statistics.mean(d_um), "err_um_std": statistics.pstdev(d_um), "err_um_max_abs": max(abs(v) for v in d_um),
+               "zero_crossings_per_s": cross / self.a.hold_s, "wall_start": wall0, "wall_end": time.time()}
+        self.summary["results"].append(res)
+        self.log(f"hold {self.a.hold_s:g} s closed loop: error mean {res['err_um_mean']:+.3f} um, std {res['err_um_std']:.3f} um, "
+                 f"max |err| {res['err_um_max_abs']:.2f} um, zero crossings {res['zero_crossings_per_s']:.1f}/s")
+
     # ---------------------------------------------------------------- main
     def run(self):
         try:
@@ -546,6 +692,16 @@ class ZTuner:
             if self.a.action == "zonetest":
                 self.zonetest()
                 return
+            if self.a.action == "accelsweep":
+                self.accelsweep()
+                return
+            if self.a.action == "stack":
+                self.stack(closed=False)
+                self.stack(closed=True)
+                return
+            if self.a.action == "hold":
+                self.hold()
+                return
             if self.a.action in ("baseline", "step", "sweep"):
                 self.baseline()
             if self.a.action == "step":
@@ -558,7 +714,7 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest"])
+    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "stack", "hold"])
     ap.add_argument("--depth-mm", type=float, default=2.5, help="working depth below the top switch")
     ap.add_argument("--depth-min", type=float, default=1.0)
     ap.add_argument("--depth-max", type=float, default=4.5)
@@ -574,6 +730,13 @@ def main():
     ap.add_argument("--d", type=int, default=_def.PID_D_Z)
     ap.add_argument("--p-list", type=int, nargs="+", default=[1024, 2048, 4096, 8192, 16384])
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
+    ap.add_argument("--accel-list", type=float, nargs="+", default=[100, 150, 200, 250, 300, 350, 390])
+    ap.add_argument("--stack-n", type=int, default=20)
+    ap.add_argument("--stack-um", type=float, default=1.0)
+    ap.add_argument("--hold-s", type=float, default=20.0)
+    ap.add_argument("--accel-reps", type=int, default=5, help="100 um out-and-back repetitions per level")
+    ap.add_argument("--lost-step-um", type=float, default=1.0, help="encoder-vs-counter offset change that counts as lost steps")
+    ap.add_argument("--ack-overhead-ms", type=float, default=7.0, help="fixed command+report overhead subtracted when inferring acceleration")
     ap.add_argument("--zonemap-from", type=float, default=2.0, help="zonemap start extension, mm")
     ap.add_argument("--zonemap-step-um", type=float, default=50.0)
     ap.add_argument("--microsteps", type=int, default=int(_def.MICROSTEPPING_DEFAULT_Z),
