@@ -57,6 +57,45 @@ from control._def import *
 from PIL import Image, ImageDraw, ImageFont
 
 
+# Z-stack modes offered by the multipoint tabs.  These map onto the backend's
+# Z_STACKING_CONFIG_MAP indices via z_mode_to_stacking_index() below.
+#   From Bottom -- stack starts at the focus plane and runs upward (the historical behavior)
+#   Set Range   -- absolute Z-min/Z-max; incompatible with laser AF, which is disabled
+#   Relative    -- stack is CENTRED on the focus plane, so the laser AF / contrast AF /
+#                  focus map / stored-point reference can sit mid-sample
+Z_MODE_FROM_BOTTOM = "From Bottom"
+Z_MODE_SET_RANGE = "Set Range"
+Z_MODE_RELATIVE = "Relative"
+Z_MODES = [Z_MODE_FROM_BOTTOM, Z_MODE_SET_RANGE, Z_MODE_RELATIVE]
+
+
+def z_mode_to_stacking_index(z_mode: str) -> int:
+    """Map a GUI z-mode label to a control._def.Z_STACKING_CONFIG_MAP index."""
+    return 1 if z_mode == Z_MODE_RELATIVE else 0  # 1 = "FROM CENTER", 0 = "FROM BOTTOM"
+
+
+# Slack allowed when rounding the half-stack up, in units of half-steps.  set_deltaZ snaps
+# dz to a whole Z microstep (~0.094 um), so a nominal 5.000 um becomes 4.969 and a plain
+# ceil() of range/(2*dz) tips just past the integer -- turning a requested 20 um / 5 um
+# stack from 5 slices into 7.  Absorbing that costs at most 0.1 * dz of coverage.
+_RELATIVE_STACK_RATIO_TOLERANCE = 0.05
+
+
+def relative_stack_Nz(z_range_um: float, dz_um: float) -> int:
+    """Number of slices covering z_range_um at dz_um, forced ODD.
+
+    An odd Nz puts exactly one slice on the focus plane and makes the stack symmetric
+    about it, which is what MultiPointWorker's round((NZ - 1) / 2) offset assumes.  The
+    count is rounded up, so the range actually covered -- (Nz - 1) * dz -- normally
+    exceeds the requested range, by up to one step.  The tolerance below means it can also
+    fall short, but never by more than 0.1 * dz.
+    """
+    if dz_um <= 0:
+        return 1
+    half_steps = z_range_um / (2 * dz_um) - _RELATIVE_STACK_RATIO_TOLERANCE
+    return 2 * max(1, math.ceil(half_steps)) + 1
+
+
 def error_dialog(message: str, title: str = "Error"):
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
@@ -6167,6 +6206,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_NZ.setValue(1)
         self.entry_NZ.setKeyboardTracking(False)
 
+        # "Relative" mode: total z travel the stack covers, centred on whatever plane the
+        # active focus method (laser AF, contrast AF, focus map, stored point z) lands on.
+        self.entry_zRange = QDoubleSpinBox()
+        self.entry_zRange.setKeyboardTracking(False)
+        self.entry_zRange.setMinimum(0.1)
+        self.entry_zRange.setMaximum(2000)
+        self.entry_zRange.setSingleStep(1)
+        self.entry_zRange.setValue(Acquisition.DZ * 4)
+        self.entry_zRange.setDecimals(3)
+        self.entry_zRange.setSuffix(" μm")
+        self.entry_zRange.setToolTip(
+            "Total z range the stack covers, centred on the focus plane.\n"
+            "Nz is rounded up to the next odd number so one slice sits exactly on it."
+        )
+        self.label_zRange = QLabel("range")
+        self.label_actual_range = QLabel("")
+        self.label_actual_range.setToolTip("Actual z range covered: (Nz - 1) x dz")
+
         self.entry_dt = QDoubleSpinBox()
         self.entry_dt.setKeyboardTracking(False)
         self.entry_dt.setMinimum(0)
@@ -6242,8 +6299,12 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_skipSaving = QCheckBox("Skip Saving")
         self.checkbox_skipSaving.setChecked(False)
 
-        self.checkbox_set_z_range = QCheckBox("Set Z-range")
-        self.checkbox_set_z_range.toggled.connect(self.toggle_z_range_controls)
+        # Z mode: replaces the old two-state "Set Z-range" checkbox so "Relative"
+        # (stack centred on the focus plane) can be offered alongside it.
+        self.label_z_mode = QLabel("Z mode")
+        self.combobox_z_mode = QComboBox()
+        self.combobox_z_mode.addItems(Z_MODES)
+        self.combobox_z_mode.currentTextChanged.connect(self.on_z_mode_changed)
 
         # Add new components for Z-range
         self.entry_minZ = QDoubleSpinBox()
@@ -6267,9 +6328,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # self.entry_maxZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_maxZ_button = QPushButton("Set")
         self.set_maxZ_button.clicked.connect(self.set_z_max)
-
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
@@ -6356,11 +6414,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         # Create second row layouts
         dz_half = QHBoxLayout()
+        dz_half.addWidget(self.label_zRange)
+        dz_half.addWidget(self.entry_zRange)
         dz_half.addWidget(QLabel("dz"))
         dz_half.addWidget(self.entry_deltaZ)
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.label_actual_range)
         dz_half.addSpacerItem(edge_spacer)
 
         dt_half = QHBoxLayout()
@@ -6409,7 +6470,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             if IS_PIEZO_ONLY:
                 self.checkbox_usePiezo.setChecked(True)
                 self.checkbox_usePiezo.setVisible(False)
-        grid_af.addWidget(self.checkbox_set_z_range)
+        z_mode_row = QHBoxLayout()
+        z_mode_row.setContentsMargins(0, 0, 0, 0)
+        z_mode_row.addWidget(self.label_z_mode)
+        z_mode_row.addWidget(self.combobox_z_mode)
+        grid_af.addLayout(z_mode_row)
         grid_af.addWidget(self.checkbox_skipSaving)
 
         grid_config = QHBoxLayout()
@@ -6487,7 +6552,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
         self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
         self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        # self.combobox_z_stack.currentIndexChanged.connect(self.signal_z_stacking.emit)
 
         self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
         self.multipointController.signal_region_progress.connect(self.update_region_progress)
@@ -6512,7 +6576,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.shortcut = QShortcut(QKeySequence(";"), self)
         self.shortcut.activated.connect(self.btn_add.click)
 
-        self.toggle_z_range_controls(False)
+        self._apply_z_mode_ui()  # hides Z-min/Z-max and the Relative range entry initially
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
         self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
 
@@ -6573,6 +6637,58 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.updateGeometry()
         self.update()
 
+    def on_z_mode_changed(self, mode):
+        """Handle Z mode dropdown change"""
+        self._apply_z_mode_ui(mode)
+        self._log.debug(f"Z mode changed to: {mode}")
+
+    def _apply_z_mode_ui(self, mode=None):
+        """Bring every z control into the state the given z mode requires."""
+        if mode is None:
+            mode = self.combobox_z_mode.currentText()
+
+        # Z-min/Z-max belong to "Set Range" only.  toggle_z_range_controls also owns the
+        # laser-AF force-off and the Nz enablement for that mode.
+        self.toggle_z_range_controls(mode == Z_MODE_SET_RANGE)
+
+        is_relative = mode == Z_MODE_RELATIVE
+        for widget in (self.label_zRange, self.entry_zRange, self.label_actual_range):
+            widget.setVisible(is_relative)
+
+        # In Relative mode Nz is derived from range and dz, so it is display-only -- but
+        # unlike "Set Range", laser AF is exactly the point of the mode and stays available.
+        if is_relative:
+            self.entry_NZ.setEnabled(False)
+            self.checkbox_withReflectionAutofocus.setEnabled(True)
+        elif mode == Z_MODE_FROM_BOTTOM:
+            self.entry_NZ.setEnabled(True)
+
+        self._connect_relative_z_signals(is_relative)
+        if is_relative:
+            self.update_Nz_relative()
+
+    def _connect_relative_z_signals(self, connect):
+        """Wire (or unwire) the range/dz -> Nz recompute for Relative mode."""
+        for signal in (self.entry_zRange.valueChanged, self.entry_deltaZ.valueChanged):
+            # Always drop first: _apply_z_mode_ui runs from several entry points, and Qt
+            # happily stacks duplicate connections.
+            try:
+                signal.disconnect(self.update_Nz_relative)
+            except TypeError:
+                pass
+            if connect:
+                signal.connect(self.update_Nz_relative)
+
+    def update_Nz_relative(self):
+        """Recompute the read-only Nz for Relative mode, and show the range actually covered."""
+        dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            self.label_actual_range.setText("")
+            return
+        nz = relative_stack_Nz(self.entry_zRange.value(), dz)
+        self.entry_NZ.setValue(nz)
+        self.label_actual_range.setText(f"(± {(nz - 1) * dz / 2:.2f} μm)")
+
     def init_z(self, z_pos_mm=None):
         if z_pos_mm is None:
             z_pos_mm = self.stage.get_pos().z_mm
@@ -6631,6 +6747,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         z_min = self.entry_minZ.value()
         z_max = self.entry_maxZ.value()
         dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            return  # entry_deltaZ has minimum 0; don't blow up mid-edit
         nz = math.ceil((z_max - z_min) / dz) + 1
         self.entry_NZ.setValue(nz)
 
@@ -6777,16 +6895,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
         "Apply current settings" share this. Returns None, or a reason nothing further should happen.
         """
-        if self.checkbox_set_z_range.isChecked():
+        z_mode = self.combobox_z_mode.currentText()
+        if z_mode == Z_MODE_SET_RANGE:
             # Set Z-range (convert from μm to mm)
             minZ = self.entry_minZ.value() / 1000
             maxZ = self.entry_maxZ.value() / 1000
             self.multipointController.set_z_range(minZ, maxZ)
+        elif z_mode == Z_MODE_RELATIVE:
+            # The stack is centred on whatever plane autofocus / the focus map / the
+            # stored per-point z lands on, so there is no absolute range to set.
+            # z_range[0] is only the per-time-point seed (initialize_z_stack).
+            z = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z, z)
         else:
             z = self.stage.get_pos().z_mm
             dz = self.entry_deltaZ.value()
             Nz = self.entry_NZ.value()
             self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        self.multipointController.set_z_stacking_config(z_mode_to_stacking_index(z_mode))
 
         if self.checkbox_useFocusMap.isChecked():
             self.focusMapWidget.fit_surface()
@@ -7271,6 +7397,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        # NZ is 1 here so the stacking config is inert, but the controller keeps it between
+        # runs -- reset it so a snap after a Relative acquisition can't inherit FROM CENTER.
+        self.multipointController.set_z_stacking_config(0)
 
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
@@ -7345,7 +7474,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withAutofocus.setEnabled(enabled)
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
-        self.checkbox_set_z_range.setEnabled(enabled)
+        self.combobox_z_mode.setEnabled(enabled)
+        self.entry_zRange.setEnabled(enabled)
+
+        # Nz is derived (read-only) in "Set Range" and "Relative"; the blanket
+        # entry_NZ.setEnabled(enabled) above would otherwise hand it back to the user.
+        # Deliberately not a full _apply_z_mode_ui() -- this runs after every acquisition,
+        # and re-applying "Set Range" would re-reference the laser AF as a side effect.
+        if enabled and self.combobox_z_mode.currentText() in (Z_MODE_SET_RANGE, Z_MODE_RELATIVE):
+            self.entry_NZ.setEnabled(False)
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -7402,8 +7539,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NY,
             self.entry_NZ,
             self.entry_deltaZ,
+            self.entry_zRange,
             self.entry_Nt,
             self.entry_dt,
+            self.combobox_z_mode,
             self.list_configurations,
             self.checkbox_withAutofocus,
             self.checkbox_withReflectionAutofocus,
@@ -7435,6 +7574,18 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
 
+            z_mode_map = {
+                "FROM BOTTOM": Z_MODE_FROM_BOTTOM,
+                "SET RANGE": Z_MODE_SET_RANGE,
+                "FROM CENTER": Z_MODE_RELATIVE,
+            }
+            z_mode = z_mode_map.get(yaml_data.z_stacking_config, Z_MODE_FROM_BOTTOM)
+            self.combobox_z_mode.setCurrentText(z_mode)
+            if z_mode == Z_MODE_RELATIVE:
+                # The YAML carries nz/dz, not a range; derive the range the stack covers so
+                # the (read-only) Nz recompute reproduces the same nz.
+                self.entry_zRange.setValue(max(0.1, (yaml_data.nz - 1) * yaml_data.delta_z_um))
+
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
 
@@ -7458,6 +7609,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Unblock all signals
             for widget in widgets_to_block:
                 widget.blockSignals(False)
+
+            # Signals were blocked, so bring the z controls in line with the loaded mode
+            self._apply_z_mode_ui()
 
             # Update FOV positions to reflect new NX, NY, delta values
             self.update_fov_positions()
@@ -7589,7 +7743,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.cached_loaded_file_path = None
 
         # Add state tracking for Z parameters
-        self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
+        self.stored_z_params = {
+            "dz": None,
+            "nz": None,
+            "z_min": None,
+            "z_max": None,
+            "z_range": None,
+            "z_mode": Z_MODE_FROM_BOTTOM,
+        }
 
         # Add state tracking for Time parameters
         self.stored_time_params = {"dt": None, "nt": None}
@@ -7705,6 +7866,25 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_NZ.setValue(1)
         self.entry_NZ.setEnabled(False)
 
+        # "Relative" mode: total z travel the stack covers, centred on whatever plane the
+        # active focus method (laser AF, contrast AF, focus map, stored point z) lands on.
+        self.entry_zRange = QDoubleSpinBox()
+        self.entry_zRange.setKeyboardTracking(False)
+        self.entry_zRange.setMinimum(0.1)
+        self.entry_zRange.setMaximum(2000)
+        self.entry_zRange.setSingleStep(1)
+        self.entry_zRange.setValue(Acquisition.DZ * 4)
+        self.entry_zRange.setDecimals(3)
+        self.entry_zRange.setSuffix(" μm")
+        self.entry_zRange.setToolTip(
+            "Total z range the stack covers, centred on the focus plane.\n"
+            "Nz is rounded up to the next odd number so one slice sits exactly on it."
+        )
+        self.entry_zRange.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.label_zRange = QLabel("range")
+        self.label_actual_range = QLabel("")
+        self.label_actual_range.setToolTip("Actual z range covered: (Nz - 1) x dz")
+
         self.entry_dt = QDoubleSpinBox()
         self.entry_dt.setKeyboardTracking(False)
         self.entry_dt.setMinimum(0)
@@ -7719,10 +7899,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.setMaximum(5000)
         self.entry_Nt.setSingleStep(1)
         self.entry_Nt.setValue(1)
-
-        self.combobox_z_stack = QComboBox()
-        self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
-        self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.list_configurations = QListWidget()
         self.channel_sequence = enable_channel_sequence(
@@ -7817,7 +7993,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.checkbox_z.setChecked(False)
 
         self.combobox_z_mode = QComboBox()
-        self.combobox_z_mode.addItems(["From Bottom", "Set Range"])
+        self.combobox_z_mode.addItems(Z_MODES)
         self.combobox_z_mode.setEnabled(False)  # Initially disabled since Z is unchecked
 
         z_layout = QHBoxLayout()
@@ -7904,10 +8080,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.dz_layout = QHBoxLayout()
         self.dz_layout.setContentsMargins(4, 2, 4, 2)
+        self.dz_layout.addWidget(self.label_zRange)
+        self.dz_layout.addWidget(self.entry_zRange)
         self.dz_layout.addWidget(QLabel("dz"))
         self.dz_layout.addWidget(self.entry_deltaZ)
         self.dz_layout.addWidget(QLabel("Nz"))
         self.dz_layout.addWidget(self.entry_NZ)
+        self.dz_layout.addWidget(self.label_actual_range)
 
         self.z_controls_dz_frame.setLayout(self.dz_layout)
         grid.addWidget(self.z_controls_dz_frame, 0, 0)
@@ -8159,6 +8338,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "nt": self.entry_Nt.value(),
                 "dz": self.entry_deltaZ.value(),
                 "nz": self.entry_NZ.value(),
+                "z_range_um": self.entry_zRange.value(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
             }
@@ -8190,6 +8370,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(True)
             self.entry_deltaZ.blockSignals(True)
             self.entry_NZ.blockSignals(True)
+            self.entry_zRange.blockSignals(True)
             self.list_configurations.blockSignals(True)
             self.checkbox_withAutofocus.blockSignals(True)
             self.checkbox_withReflectionAutofocus.blockSignals(True)
@@ -8216,8 +8397,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             self.checkbox_z.setChecked(settings.get("z_enabled", False))
 
-            z_mode = settings.get("z_mode", "From Bottom")
-            if z_mode in ["From Bottom", "Set Range"]:
+            z_mode = settings.get("z_mode", Z_MODE_FROM_BOTTOM)
+            if z_mode in Z_MODES:
                 self.combobox_z_mode.setCurrentText(z_mode)
 
             self.checkbox_time.setChecked(settings.get("time_enabled", False))
@@ -8226,6 +8407,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.setValue(settings.get("nt", 1))
             self.entry_deltaZ.setValue(settings.get("dz", 1.0))
             self.entry_NZ.setValue(settings.get("nz", 1))
+            self.entry_zRange.setValue(settings.get("z_range_um", self.entry_zRange.value()))
 
             # Restore autofocus settings
             self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
@@ -8242,6 +8424,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(False)
             self.entry_deltaZ.blockSignals(False)
             self.entry_NZ.blockSignals(False)
+            self.entry_zRange.blockSignals(False)
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
             self.checkbox_withReflectionAutofocus.blockSignals(False)
@@ -8257,10 +8440,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             # Ensure Z controls and Z mode combobox are properly enabled based on loaded Z state
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
             if self.checkbox_z.isChecked():
+                # show_z_controls defers the per-mode wiring to _apply_z_mode_ui, so the
+                # loaded Z mode is honoured here without a special case per mode.
                 self.show_z_controls(True)
-                # Also ensure Z range controls are properly toggled based on loaded Z mode
-                if self.combobox_z_mode.currentText() == "Set Range":
-                    self.toggle_z_range_controls(True)
 
             # Ensure Time controls are properly shown based on loaded Time state
             if self.checkbox_time.isChecked():
@@ -8580,9 +8762,55 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
     def on_z_mode_changed(self, mode):
         """Handle Z mode dropdown change"""
-        # Show/hide Z-min/Z-max controls based on mode
-        self.toggle_z_range_controls(mode == "Set Range")
+        self._apply_z_mode_ui(mode)
         self._log.debug(f"Z mode changed to: {mode}")
+
+    def _apply_z_mode_ui(self, mode=None):
+        """Bring every z control into the state the given z mode requires.
+
+        Single source of truth for the three-way mode UI, so on_z_mode_changed, the
+        cache-load path and show_z_controls cannot drift apart.  setEnabled_all
+        deliberately re-applies only the Nz enablement -- see the note there.
+        """
+        if mode is None:
+            mode = self.combobox_z_mode.currentText()
+
+        # Z-min/Z-max belong to "Set Range" only.  toggle_z_range_controls also owns the
+        # laser-AF force-off and the Nz enablement for that mode.
+        self.toggle_z_range_controls(mode == Z_MODE_SET_RANGE)
+
+        is_relative = mode == Z_MODE_RELATIVE
+        z_enabled = self.checkbox_z.isChecked()
+        for widget in (self.label_zRange, self.entry_zRange, self.label_actual_range):
+            widget.setVisible(is_relative and z_enabled)
+
+        # In Relative mode Nz is derived from range and dz, so it is display-only -- but
+        # unlike "Set Range", laser AF is exactly the point of the mode and stays available.
+        if is_relative:
+            self.entry_NZ.setEnabled(False)
+            self.checkbox_withReflectionAutofocus.setEnabled(True)
+        elif mode == Z_MODE_FROM_BOTTOM:
+            self.entry_NZ.setEnabled(True)
+
+        self._connect_relative_z_signals(is_relative)
+        if is_relative:
+            self.update_Nz_relative()
+
+    def _connect_relative_z_signals(self, connect):
+        """Wire (or unwire) the range/dz -> Nz recompute for Relative mode.
+
+        Guarded the same way as the Set Range connections in toggle_z_range_controls, since
+        Qt raises TypeError when disconnecting a slot that was never connected.
+        """
+        for signal in (self.entry_zRange.valueChanged, self.entry_deltaZ.valueChanged):
+            # Always drop first: _apply_z_mode_ui runs from several entry points, and Qt
+            # happily stacks duplicate connections.
+            try:
+                signal.disconnect(self.update_Nz_relative)
+            except TypeError:
+                pass
+            if connect:
+                signal.connect(self.update_Nz_relative)
 
     def on_time_toggled(self, checked):
         """Handle Time checkbox toggle"""
@@ -8657,6 +8885,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.stored_z_params["nz"] = self.entry_NZ.value()
         self.stored_z_params["z_min"] = self.entry_minZ.value()
         self.stored_z_params["z_max"] = self.entry_maxZ.value()
+        self.stored_z_params["z_range"] = self.entry_zRange.value()
         self.stored_z_params["z_mode"] = self.combobox_z_mode.currentText()
 
     def restore_z_parameters(self):
@@ -8669,6 +8898,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_minZ.setValue(self.stored_z_params["z_min"])
         if self.stored_z_params["z_max"] is not None:
             self.entry_maxZ.setValue(self.stored_z_params["z_max"])
+        if self.stored_z_params["z_range"] is not None:
+            self.entry_zRange.setValue(self.stored_z_params["z_range"])
         self.combobox_z_mode.setCurrentText(self.stored_z_params["z_mode"])
 
     def hide_z_controls(self):
@@ -8686,13 +8917,18 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 if widget:
                     widget.setVisible(False)
 
+        # Relative mode's range entry lives in dz_layout, but the loop above only hides the
+        # widgets it owns directly -- make sure the recompute is unwired while Z is off so a
+        # stray dz edit cannot overwrite the forced Nz=1 below.
+        self._connect_relative_z_signals(False)
+
         # Set single-slice parameters
         current_z = self.stage.get_pos().z_mm * 1000  # Convert to μm
         self.entry_NZ.setValue(1)
         self.entry_minZ.setValue(current_z)
         self.entry_maxZ.setValue(current_z)
         self.combobox_z_mode.blockSignals(True)
-        self.combobox_z_mode.setCurrentText("From Bottom")
+        self.combobox_z_mode.setCurrentText(Z_MODE_FROM_BOTTOM)
         self.combobox_z_mode.blockSignals(False)
 
     def show_z_controls(self, visible):
@@ -8703,10 +8939,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             if widget:
                 widget.setVisible(visible)
 
-        # Show/hide Z-min/Z-max based on dropdown selection AND visibility
-        # Only show range controls if Z is enabled (visible=True) AND mode is "Set Range"
-        show_range = visible and self.combobox_z_mode.currentText() == "Set Range"
-        self.toggle_z_range_controls(show_range)
+        if visible:
+            # Applies Z-min/Z-max visibility, the range entry, Nz enablement and the laser
+            # AF availability for the current mode.
+            self._apply_z_mode_ui()
+        else:
+            self.toggle_z_range_controls(False)
 
     def store_time_parameters(self):
         """Store current Time parameters before hiding controls"""
@@ -9022,8 +9260,20 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         z_min = self.entry_minZ.value()
         z_max = self.entry_maxZ.value()
         dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            return  # entry_deltaZ has minimum 0; don't blow up mid-edit
         nz = math.ceil((z_max - z_min) / dz) + 1
         self.entry_NZ.setValue(nz)
+
+    def update_Nz_relative(self):
+        """Recompute the read-only Nz for Relative mode, and show the range actually covered."""
+        dz = self.entry_deltaZ.value()
+        if dz <= 0:
+            self.label_actual_range.setText("")
+            return
+        nz = relative_stack_Nz(self.entry_zRange.value(), dz)
+        self.entry_NZ.setValue(nz)
+        self.label_actual_range.setText(f"(± {(nz - 1) * dz / 2:.2f} μm)")
 
     def set_z_min(self):
         z_value = self.stage.get_pos().z_mm * 1000  # Convert to μm
@@ -9189,17 +9439,27 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.scanCoordinates.sort_coordinates()
 
-        if self.combobox_z_mode.currentText() == "Set Range":
+        z_mode = self.combobox_z_mode.currentText()
+        if z_mode == Z_MODE_SET_RANGE:
             # Set Z-range (convert from μm to mm)
             minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
             maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
             self.multipointController.set_z_range(minZ, maxZ)
             self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        elif z_mode == Z_MODE_RELATIVE:
+            # The stack is centred on whatever plane autofocus / the focus map lands on,
+            # so there is no absolute range to set.  z_range[0] is only the per-time-point
+            # seed position (MultiPointWorker.initialize_z_stack); the real centre comes
+            # from perform_autofocus() and prepare_z_stack() offsets half a stack below it.
+            z = self.stage.get_pos().z_mm
+            self.multipointController.set_z_range(z, z)
+            self._log.debug(f"Relative z-stack centred on focus plane, seed z={z} [mm]")
         else:
             z = self.stage.get_pos().z_mm
-            dz = self.entry_deltaZ.value()
+            dz = self.entry_deltaZ.value()  # μm
             Nz = self.entry_NZ.value()
-            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+        self.multipointController.set_z_stacking_config(z_mode_to_stacking_index(z_mode))
 
         if self.checkbox_useFocusMap.isChecked():
             # Try to fit the surface; on success set the surface fitter in the controller
@@ -9364,9 +9624,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.combobox_xy_mode.setEnabled(self.checkbox_xy.isChecked())
             self.combobox_z_mode.setEnabled(self.checkbox_z.isChecked())
 
-            # Restore Z controls based on Z mode
-            if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() == "Set Range":
-                # In Set Range mode, Nz should be disabled
+            # Restore Z controls based on Z mode (Nz is derived, so read-only, in both
+            # "Set Range" and "Relative")
+            if self.checkbox_z.isChecked() and self.combobox_z_mode.currentText() in (
+                Z_MODE_SET_RANGE,
+                Z_MODE_RELATIVE,
+            ):
                 self.entry_NZ.setEnabled(False)
 
             # Restore coverage based on XY mode
@@ -9410,6 +9673,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
+        # NZ is 1 here so the stacking config is inert, but the controller keeps it between
+        # runs -- reset it so a snap after a Relative acquisition can't inherit FROM CENTER.
+        self.multipointController.set_z_stacking_config(0)
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
@@ -9562,6 +9828,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         widgets_to_block = [
             self.entry_NZ,
             self.entry_deltaZ,
+            self.entry_zRange,
             self.entry_Nt,
             self.entry_dt,
             self.entry_overlap,
@@ -9589,11 +9856,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Z mode - map YAML config to combobox text
             z_mode_map = {
-                "FROM BOTTOM": "From Bottom",
-                "SET RANGE": "Set Range",
+                "FROM BOTTOM": Z_MODE_FROM_BOTTOM,
+                "SET RANGE": Z_MODE_SET_RANGE,
+                "FROM CENTER": Z_MODE_RELATIVE,
             }
-            z_mode = z_mode_map.get(yaml_data.z_stacking_config, "From Bottom")
+            z_mode = z_mode_map.get(yaml_data.z_stacking_config, Z_MODE_FROM_BOTTOM)
             self.combobox_z_mode.setCurrentText(z_mode)
+            if z_mode == Z_MODE_RELATIVE:
+                # The YAML carries nz/dz, not a range; derive the range the stack covers so
+                # the (read-only) Nz recompute reproduces the same nz.
+                self.entry_zRange.setValue(max(0.1, (yaml_data.nz - 1) * yaml_data.delta_z_um))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
