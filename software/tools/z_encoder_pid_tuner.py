@@ -257,6 +257,10 @@ class ZTuner:
         m.set_pid_home_zone(AXIS.Z, self.a.zone_um); self.wait()
         if self.a.tol_um > 0:
             m.set_pid_tolerance(AXIS.Z, self.a.tol_um, self.a.tol_um); self.wait()
+        if self.a.window_um > 0:
+            # COMPLETED is reported once |XACTUAL - target| <= window (firmware 1.6, command 49); with the
+            # rest-only loop this is the position error the correction still has to close when the ack arrives
+            m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
         m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
@@ -871,6 +875,7 @@ def main():
     ap.add_argument("--p-list", type=int, nargs="+", default=[1024, 2048, 4096, 8192, 16384])
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
+    ap.add_argument("--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)")
     ap.add_argument("--align-after-home", action="store_true",
                     help="re-align the encoder frame to XACTUAL at --depth-mm after homing (stages with a decoupled gap above home)")
     ap.add_argument("--accel-list", type=float, nargs="+", default=[100, 150, 200, 250, 300, 350, 390])
