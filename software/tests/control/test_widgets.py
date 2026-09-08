@@ -17,8 +17,8 @@ import control.widgets
 from control.core import core as core_module
 from control.core.scan_coordinates import ScanCoordinates
 from control.widgets import (
-    check_ram_available_with_error_dialog,
     FocusMapWidget,
+    mosaic_ram_exceeds_available,
     NDViewerTab,
     RecordingWidget,
     SurfacePlotWidget,
@@ -29,19 +29,19 @@ from squid.config import CameraPixelFormat
 import tests.control.test_stubs as ts
 
 
-def test_check_ram_available_with_error_dialog_performance_mode():
-    """Test that RAM check is skipped when performance mode is enabled."""
+def test_mosaic_ram_exceeds_available_performance_mode():
+    """Test that the check is skipped when performance mode is already enabled."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
 
-    # When performance mode is enabled, should always return True (skip check)
-    result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=True)
-    assert result is True
+    # Mosaic view is already off, so there is nothing that could fail to fit.
+    result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=True)
+    assert result is False
 
 
-def test_check_ram_available_with_error_dialog_sufficient_ram():
-    """Test that check passes when sufficient RAM is available."""
+def test_mosaic_ram_exceeds_available_sufficient_ram():
+    """Test that the mosaic fits when sufficient RAM is available."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
@@ -61,16 +61,16 @@ def test_check_ram_available_with_error_dialog_sufficient_ram():
         mpc.scanCoordinates.add_flexible_region(1, x_min, y_min, z_mid, 3, 3, 0)
         mpc.set_selected_configurations(all_configuration_names[0:1])
 
-        # With a small scan area and real available RAM, should pass
-        result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=False)
-        assert result is True
+        # With a small scan area and real available RAM, the mosaic fits
+        result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=False)
+        assert result is False
 
     finally:
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
 
 
-def test_check_ram_available_with_error_dialog_insufficient_ram():
-    """Test that check fails when insufficient RAM is available."""
+def test_mosaic_ram_exceeds_available_insufficient_ram():
+    """Test that the shortfall is reported when insufficient RAM is available."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
@@ -94,17 +94,17 @@ def test_check_ram_available_with_error_dialog_insufficient_ram():
         mock_vmem = MagicMock()
         mock_vmem.available = 1024  # Only 1KB available
 
+        # No dialog patch needed: the predicate only logs now, it never opens a window.
         with patch("psutil.virtual_memory", return_value=mock_vmem):
-            with patch("control.widgets.error_dialog"):  # Mock dialog to avoid GUI
-                result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=False)
-                assert result is False
+            result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=False)
+            assert result is True
 
     finally:
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
 
 
-def test_check_ram_available_with_error_dialog_zero_estimate():
-    """Test that check passes when RAM estimate is 0 (no regions or napari disabled)."""
+def test_mosaic_ram_exceeds_available_zero_estimate():
+    """Test that a 0-byte estimate fits (no regions, or napari disabled)."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     logger = logging.getLogger("test")
@@ -112,12 +112,12 @@ def test_check_ram_available_with_error_dialog_zero_estimate():
     # Clear regions so estimate returns 0
     mpc.scanCoordinates.clear_regions()
 
-    # Should pass since 0 bytes required
-    result = check_ram_available_with_error_dialog(mpc, logger, performance_mode=False)
-    assert result is True
+    # Fits, since 0 bytes are required
+    result = mosaic_ram_exceeds_available(mpc, logger, performance_mode=False)
+    assert result is False
 
 
-def test_check_ram_available_with_error_dialog_factor_of_safety():
+def test_mosaic_ram_exceeds_available_factor_of_safety():
     """Test that factor of safety is applied to RAM estimate."""
     scope = control.microscope.Microscope.build_from_global_config(True)
     mpc = ts.get_test_multi_point_controller(microscope=scope)
@@ -148,22 +148,80 @@ def test_check_ram_available_with_error_dialog_factor_of_safety():
         mock_vmem.available = base_estimate  # Exactly equal to base estimate
 
         with patch("psutil.virtual_memory", return_value=mock_vmem):
-            with patch("control.widgets.error_dialog"):
-                # With default factor_of_safety=1.15, should fail (needs 15% more)
-                result = check_ram_available_with_error_dialog(
-                    mpc, logger, factor_of_safety=1.15, performance_mode=False
-                )
-                assert result is False
+            # With default factor_of_safety=1.15, this does not fit (needs 15% more)
+            result = mosaic_ram_exceeds_available(mpc, logger, factor_of_safety=1.15, performance_mode=False)
+            assert result is True
 
-                # With factor_of_safety=1.0, should pass (exact match)
-                mock_vmem.available = base_estimate
-                result = check_ram_available_with_error_dialog(
-                    mpc, logger, factor_of_safety=1.0, performance_mode=False
-                )
-                assert result is True
+            # With factor_of_safety=1.0, this fits (exact match)
+            mock_vmem.available = base_estimate
+            result = mosaic_ram_exceeds_available(mpc, logger, factor_of_safety=1.0, performance_mode=False)
+            assert result is False
 
     finally:
         control._def.USE_NAPARI_FOR_MOSAIC_DISPLAY = original_use_napari
+
+
+# ============================================================================
+# SquidXplorer launcher tests
+# ============================================================================
+
+
+def test_resolve_squidxplorer_command_configured_python(tmp_path, monkeypatch):
+    """A configured interpreter runs the viewer module with the run folder as one argv element."""
+    from control.squidxplorer_launcher import resolve_squidxplorer_command
+
+    fake_python = tmp_path / "python.exe"
+    fake_python.write_text("")
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_PYTHON", str(fake_python), raising=False)
+
+    run_dir = r"C:\data\WELLPLATE 2026-07-30_10-00-00"
+    command = resolve_squidxplorer_command(run_dir)
+    assert command == [str(fake_python), "-m", "squidmip._viewer", run_dir]
+    # The dataset path must survive as a single element — SquidXplorer reads a bare argv[1].
+    assert command[-1] == run_dir
+
+
+def test_resolve_squidxplorer_command_path_fallback(monkeypatch):
+    """An unset (or bogus) interpreter falls back to squidmip-view on PATH."""
+    from control import squidxplorer_launcher
+
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_PYTHON", "", raising=False)
+    monkeypatch.setattr(squidxplorer_launcher.shutil, "which", lambda name: r"C:\bin\squidmip-view.exe")
+
+    command = squidxplorer_launcher.resolve_squidxplorer_command(r"C:\data\run")
+    assert command == [r"C:\bin\squidmip-view.exe", r"C:\data\run"]
+
+
+def test_resolve_squidxplorer_command_not_installed(monkeypatch):
+    """Neither configured nor on PATH resolves to nothing, so the caller can explain."""
+    from control import squidxplorer_launcher
+
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_PYTHON", "", raising=False)
+    monkeypatch.setattr(squidxplorer_launcher.shutil, "which", lambda name: None)
+
+    assert squidxplorer_launcher.resolve_squidxplorer_command(r"C:\data\run") is None
+
+
+def test_squidxplorer_environment_sets_lock_dir(monkeypatch):
+    """A configured lock dir reaches the viewer, so it can open alongside another SquidXplorer."""
+    from control.squidxplorer_launcher import squidxplorer_environment
+
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_GUI_LOCK_DIR", r"C:\viewer\.venv\gui-locks", raising=False)
+    monkeypatch.setenv("SOME_UNRELATED_VAR", "kept")
+
+    env = squidxplorer_environment()
+    assert env["SQUIDMIP_GUI_LOCK_DIR"] == r"C:\viewer\.venv\gui-locks"
+    # The rest of the environment has to come along - the viewer needs PATH and friends.
+    assert env["SOME_UNRELATED_VAR"] == "kept"
+
+
+def test_squidxplorer_environment_unset_inherits(monkeypatch):
+    """No configured lock dir means no env override at all, so SquidXplorer's default applies."""
+    from control.squidxplorer_launcher import squidxplorer_environment
+
+    monkeypatch.setattr(control._def, "SQUIDXPLORER_GUI_LOCK_DIR", "", raising=False)
+
+    assert squidxplorer_environment() is None
 
 
 # ============================================================================
