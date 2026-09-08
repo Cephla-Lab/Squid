@@ -1,5 +1,7 @@
 import time
 
+import pytest
+
 import squid.config
 import squid.camera.utils
 from squid.abc import CameraAcquisitionMode
@@ -54,6 +56,7 @@ def _bare_toupcam(strobe_time_us, exposure_ms):
     cam._log = squid.logging.get_logger("test_toupcam_fps")
     cam._strobe_info = StrobeInfo(strobe_time_us=float(strobe_time_us), trigger_delay_us=15666.0)
     cam._exposure_time = float(exposure_ms)
+    cam._current_mode_key = lambda: (3104, 2084, 2)  # 2x2 binning, 16-bit; no SDK behind a bare instance
     return cam
 
 
@@ -106,14 +109,45 @@ class _FakeToupcamSdk:
         self.puts.append(value)
 
 
-def test_set_frame_rate_fallback_returns_continuous_max_when_option_unavailable():
-    # Range never readable and nothing cached (a model without PRECISE_FRAMERATE): fall back
-    # to the readout/exposure-limited continuous max (~28 fps), NOT ~14 fps, and write nothing.
+def test_set_frame_rate_without_cached_range_bounds_by_readout_and_still_writes():
+    # Range unreadable (stream stopped) and nothing cached (mode changed since the last
+    # stream start): bound the request by the readout/exposure-limited continuous max
+    # (~28 fps, NOT the ~14 fps of the triggered frame time), write that, and report it.
     cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
     cam._camera = _FakeToupcamSdk(readable=False)
     achievable = cam.set_frame_rate(30.0)
     assert 27.5 < achievable < 28.5, achievable
-    assert cam._camera.puts == []
+    assert cam._camera.puts == [280]
+    # A request below the readout max is written as-is (the camera clamps to its own minimum).
+    assert cam.set_frame_rate(10.0) == 10.0
+    assert cam._camera.puts == [280, 100]
+
+
+def test_set_frame_rate_range_unreadable_and_unwritable_falls_back_to_continuous_max():
+    # A model with no PRECISE_FRAMERATE support at all: no write goes through, report the
+    # free-run maximum so the caller downsamples in software.
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
+    cam._camera = _FakeToupcamSdk(readable=False, writable=False)
+    achievable = cam.set_frame_rate(10.0)
+    assert 27.5 < achievable < 28.5, achievable
+
+
+def test_mode_change_invalidates_cached_range():
+    # The cached (min, max) belongs to one (resolution, bit depth); a mode change must drop it
+    # so a stopped-stream set_frame_rate() can't clamp the new mode to the old maximum
+    # (28 fps at 2x2 16-bit vs 63 fps at 3x3 on the ITR3CMOS26000KMA).
+    from control.camera_toupcam import ToupcamCamera
+
+    cam = _bare_toupcam(strobe_time_us=15821.0, exposure_ms=2.0)  # 3x3 readout: ~63 fps
+    cam._camera = _FakeToupcamSdk(min_tenths=19, max_tenths=280, readable=True)
+    cam._refresh_precise_framerate_range()  # cached (19, 280) for the 2x2 mode key
+    cam._camera.readable = False  # stream stopped
+    cam._current_mode_key = lambda: (2064, 1386, 2)  # switched to 3x3
+    # What _update_internal_settings does on a mode change:
+    if cam._current_mode_key() != cam._precise_framerate_mode_key:
+        cam._precise_framerate_range_tenths = None
+    assert cam.set_frame_rate(1000.0) == pytest.approx(1000.0 / 15.821, abs=0.1)
+    assert cam._camera.puts[-1] == 632
 
 
 def test_set_frame_rate_applies_hint_while_streaming():
