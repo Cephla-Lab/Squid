@@ -651,6 +651,75 @@ class ZTuner:
                      f"(100 um in {good[-1]['ack_100um_median_s'] * 1000:.0f} ms command-to-ack)")
         self.restore_velocity()
 
+    def velsweep(self):
+        """Open loop: for each velocity in --vel-list (at --accel), --vel-reps excursions of --excursion-mm up
+        from --depth-mm and back. Per level: lost steps (change of ENC_POS - XACTUAL at rest), command-to-ack,
+        and from the 250 Hz trace the in-motion encoder lag and the cruise-phase encoder velocity ripple:
+        a stage or motor resonance shows as a speed band where the ripple grows, the lag jumps, or the
+        encoder stops while the counter runs (stall samples). Wall-clock stamps per level for the mic."""
+        m = self.mcu
+        levels = []
+        d_mm = self.a.excursion_mm
+        if self.a.closed:
+            self.engage_loop()
+            self.log("velsweep with the loop ENGAGED during the moves (a fault at a level ends the sweep)")
+        for v in self.a.vel_list:
+            m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel); self.wait()
+            self.settle(0.5)
+            off0 = m.get_encoder_state()["deviation"]
+            wall0 = time.time()
+            acks = []; lag_max = 0.0; ripple = []; stall_samples = 0; cruise_samples = 0; lag_cruise = []
+            try:
+                for _ in range(self.a.vel_reps):
+                    for target in (self.a.depth_mm + d_mm, self.a.depth_mm):
+                        self.sampler.clear()
+                        self.move_to_depth(target); acks.append(self.last_cmd_to_ack_s)
+                        rows = self.sampler.snapshot()
+                        # counter and encoder velocities between successive samples (>= 8 ms apart)
+                        for (ta, xa, ea, da, _), (tb, xb, eb, db, _) in zip(rows, rows[1:]):
+                            dt = tb - ta
+                            if dt < 0.008:
+                                continue
+                            vx = abs(xb - xa) / dt / USTEPS_PER_MM
+                            ve = abs(eb - ea) / dt / USTEPS_PER_MM
+                            lag_max = max(lag_max, abs(db) / USTEPS_PER_MM * 1000.0)
+                            if vx > 0.8 * v:                       # cruise
+                                cruise_samples += 1
+                                ripple.append(ve - vx)
+                                lag_cruise.append(db / USTEPS_PER_MM * 1000.0)
+                                if ve < 0.2 * vx:
+                                    stall_samples += 1
+                        self.settle(0.25)
+            except Exception as e:  # noqa: BLE001
+                self.log(f"vmax {v}: aborted: {e}")
+                levels.append({"vmax": v, "error": str(e), "wall_start": wall0, "wall_end": time.time()})
+                break
+            self.settle(0.5)
+            off1 = m.get_encoder_state()["deviation"]
+            lost_um = (off1 - off0) / USTEPS_PER_MM * 1000.0
+            import statistics
+            row = {"vmax": v, "accel": self.a.accel, "excursion_mm": d_mm, "reps": self.a.vel_reps,
+                   "ack_median_s": statistics.median(acks) if acks else float("nan"),
+                   "model_s": model_move_s(d_mm, v, self.a.accel) if "model_move_s" in globals() else float("nan"),
+                   "lost_um": lost_um, "lag_max_um": lag_max,
+                   "lag_cruise_mean_um": statistics.mean(lag_cruise) if lag_cruise else float("nan"),
+                   "cruise_ripple_std_mm_s": statistics.pstdev(ripple) if len(ripple) > 1 else float("nan"),
+                   "cruise_samples": cruise_samples, "stall_samples": stall_samples,
+                   "wall_start": wall0, "wall_end": time.time()}
+            levels.append(row)
+            self.log(f"vmax {v:4.1f} mm/s: {d_mm:g} mm ack {row['ack_median_s'] * 1000:5.0f} ms; lost {lost_um:+.2f} um; "
+                     f"in-motion lag mean {row['lag_cruise_mean_um']:+.1f} um (max |{lag_max:.1f}|); cruise ripple std {row['cruise_ripple_std_mm_s']:.2f} mm/s "
+                     f"over {cruise_samples} samples; stall samples {stall_samples}")
+            if abs(lost_um) > self.a.lost_step_um:
+                self.log(f"STOP: {lost_um:+.2f} um lost at {v} mm/s (limit {self.a.lost_step_um} um)")
+                break
+        self.summary["results"].append({"phase": "velsweep", "accel": self.a.accel, "microsteps": MICROSTEPS,
+                                        "ramp": self.a.ramp, "levels": levels})
+        good = [l for l in levels if "error" not in l and abs(l["lost_um"]) <= self.a.lost_step_um]
+        if good:
+            self.log(f"highest velocity with no lost steps: {good[-1]['vmax']:.1f} mm/s")
+        self.restore_velocity()
+
     def engage_loop(self):
         m = self.mcu
         self.settle(0.3)
@@ -759,6 +828,9 @@ class ZTuner:
             if self.a.action == "accelsweep":
                 self.accelsweep()
                 return
+            if self.a.action == "velsweep":
+                self.velsweep()
+                return
             if self.a.action == "stack":
                 self.stack(closed=False)
                 self.stack(closed=True)
@@ -778,7 +850,11 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "stack", "hold"])
+    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "velsweep", "stack", "hold"])
+    ap.add_argument("--vel-list", type=float, nargs="+", default=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
+    ap.add_argument("--vel-reps", type=int, default=3)
+    ap.add_argument("--excursion-mm", type=float, default=2.0, help="velsweep excursion up from --depth-mm")
+    ap.add_argument("--closed", action="store_true", help="velsweep: keep the closed loop engaged during the moves")
     ap.add_argument("--depth-mm", type=float, default=2.5, help="working depth below the top switch")
     ap.add_argument("--depth-min", type=float, default=1.0)
     ap.add_argument("--depth-max", type=float, default=4.5)
