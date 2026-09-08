@@ -1,5 +1,7 @@
-"""Tests for ImageDisplayWindow's Ctrl+Scroll Z-navigation event filter."""
+"""Tests for ImageDisplayWindow's Ctrl+Scroll Z-navigation event filter and center crosshair."""
 
+import numpy as np
+import pyqtgraph as pg
 import pytest
 from qtpy.QtCore import Qt, QPointF, QPoint
 from qtpy.QtGui import QWheelEvent
@@ -101,3 +103,101 @@ def test_wheel_step_size_picks_up_live_def_changes(image_display_window, monkeyp
     image_display_window.eventFilter(image_display_window, _wheel_event(120, Qt.ControlModifier | Qt.ShiftModifier))
 
     assert received == [pytest.approx(7.5), pytest.approx(99.0)]
+
+
+# --- Center crosshair -------------------------------------------------------
+
+
+# Deliberately non-square (h=100, w=200) so an x/y swap fails loudly; a square
+# frame would let a transposed center pass.
+FRAME = np.zeros((100, 200), dtype=np.uint16)
+CENTER_X = 100.0  # width / 2
+CENTER_Y = 50.0  # height / 2
+
+
+@pytest.fixture
+def crosshair_window(qtbot):
+    win = ImageDisplayWindow(enable_crosshair=True)
+    qtbot.addWidget(win)
+    return win
+
+
+def test_crosshair_button_absent_when_not_enabled(image_display_window):
+    """The laser-AF focus view opts out and must not grow a crosshair button."""
+    assert image_display_window.btn_crosshair is None
+    assert image_display_window.enable_crosshair is False
+
+
+def test_crosshair_button_disabled_until_first_image(crosshair_window):
+    assert crosshair_window.btn_crosshair is not None
+    assert crosshair_window.btn_crosshair.isEnabled() is False
+    crosshair_window.display_image(FRAME)
+    assert crosshair_window.btn_crosshair.isEnabled() is True
+
+
+def test_toggle_creates_and_shows_lines_then_hides(crosshair_window):
+    crosshair_window.display_image(FRAME)
+    assert crosshair_window.crosshair_v is None  # created lazily, not before first toggle
+
+    crosshair_window.btn_crosshair.setChecked(True)
+    crosshair_window.toggle_crosshair()
+    assert isinstance(crosshair_window.crosshair_v, pg.InfiniteLine)
+    assert isinstance(crosshair_window.crosshair_h, pg.InfiniteLine)
+    assert crosshair_window.crosshair_v.isVisible() is True
+    assert crosshair_window.crosshair_h.isVisible() is True
+
+    crosshair_window.btn_crosshair.setChecked(False)
+    crosshair_window.toggle_crosshair()
+    assert crosshair_window.crosshair_v.isVisible() is False
+    assert crosshair_window.crosshair_h.isVisible() is False
+
+
+def test_crosshair_is_centered_on_the_frame(crosshair_window):
+    crosshair_window.display_image(FRAME)
+    crosshair_window.btn_crosshair.setChecked(True)
+    crosshair_window.toggle_crosshair()
+
+    assert crosshair_window.crosshair_v.value() == pytest.approx(CENTER_X)
+    assert crosshair_window.crosshair_h.value() == pytest.approx(CENTER_Y)
+
+
+def test_crosshair_recenters_when_frame_size_changes(crosshair_window):
+    crosshair_window.display_image(FRAME)
+    crosshair_window.btn_crosshair.setChecked(True)
+    crosshair_window.toggle_crosshair()
+
+    crosshair_window.display_image(np.zeros((40, 60), dtype=np.uint16))
+    assert crosshair_window.crosshair_v.value() == pytest.approx(30.0)
+    assert crosshair_window.crosshair_h.value() == pytest.approx(20.0)
+
+
+def test_same_shape_frame_does_not_reposition(crosshair_window, monkeypatch):
+    """display_image runs at frame rate; the shape guard must skip the Qt calls."""
+    crosshair_window.display_image(FRAME)
+    crosshair_window.btn_crosshair.setChecked(True)
+    crosshair_window.toggle_crosshair()
+
+    calls = []
+    monkeypatch.setattr(crosshair_window.crosshair_v, "setPos", lambda *a: calls.append(a))
+    monkeypatch.setattr(crosshair_window.crosshair_h, "setPos", lambda *a: calls.append(a))
+
+    crosshair_window.display_image(FRAME)
+    assert calls == []
+
+
+def test_crosshair_works_with_lut(qtbot):
+    """show_LUT=True is the real live-view configuration: the lines must be added to the
+    inner ViewBox via _active_view(), not to the outer pg.ImageView."""
+    win = ImageDisplayWindow(show_LUT=True, enable_crosshair=True)
+    qtbot.addWidget(win)
+    win.display_image(FRAME)
+    win.btn_crosshair.setChecked(True)
+    win.toggle_crosshair()
+
+    # getViewBox(), not ViewBox.addedItems — pyqtgraph does not track items added with
+    # ignoreBounds=True in addedItems, but they are still parented to the ViewBox.
+    view = win._active_view()
+    assert win.crosshair_v.getViewBox() is view
+    assert win.crosshair_h.getViewBox() is view
+    assert win.crosshair_v.value() == pytest.approx(CENTER_X)
+    assert win.crosshair_h.value() == pytest.approx(CENTER_Y)

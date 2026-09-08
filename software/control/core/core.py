@@ -854,11 +854,13 @@ class ImageDisplayWindow(QMainWindow):
         window_title="",
         show_LUT=False,
         autoLevels=False,
+        enable_crosshair=False,
     ):
         super().__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.liveController = liveController
         self.contrastManager = contrastManager
+        self.enable_crosshair = enable_crosshair
         self.setWindowTitle(window_title)
         self.setWindowFlags(self.windowFlags() | Qt.CustomizeWindowHint)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint)
@@ -883,6 +885,12 @@ class ImageDisplayWindow(QMainWindow):
         self.normal_cursor = QCursor(Qt.ArrowCursor)  # Normal cursor
         self.preview_line = None
         self.start_point_marker = None
+
+        # Crosshair state. The InfiniteLines are created lazily on first toggle
+        # (_ensure_crosshair_items) so a window that never shows the crosshair pays nothing.
+        self.crosshair_v = None  # vertical line, positioned at image center x
+        self.crosshair_h = None  # horizontal line, positioned at image center y
+        self._crosshair_shape = None  # (h, w) the lines are currently centered on
 
         # Create main layout
         layout = QVBoxLayout()
@@ -916,6 +924,18 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_well_selector = QPushButton("Show Well Selector")
         self.btn_well_selector.setCheckable(False)
 
+        # Add crosshair toggle button. Only built for windows that opted in, so the
+        # laser-AF focus view doesn't grow a button it can't use. Disabled until the
+        # first image arrives — there is no frame to center on before that.
+        self.btn_crosshair = None
+        if self.enable_crosshair:
+            self.btn_crosshair = QPushButton("Crosshair")
+            self.btn_crosshair.setCheckable(True)
+            self.btn_crosshair.setChecked(False)
+            self.btn_crosshair.setEnabled(False)
+            self.btn_crosshair.setToolTip("Show a fixed crosshair at the center of the live image.")
+            self.btn_crosshair.clicked.connect(self.toggle_crosshair)
+
         # Add labels to status layout with spacing
         status_layout.addWidget(self.cursor_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
@@ -925,6 +945,9 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
+        if self.btn_crosshair is not None:
+            status_layout.addWidget(self.btn_crosshair)  # Add crosshair button
+            status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
@@ -1122,6 +1145,53 @@ class ImageDisplayWindow(QMainWindow):
 
     def _active_view(self):
         return self.graphics_widget.view.getView() if self.show_LUT else self.graphics_widget.view
+
+    def _ensure_crosshair_items(self):
+        """Create the two crosshair InfiniteLines on first use. Idempotent."""
+        if self.crosshair_v is not None:
+            return
+        pen = pg.mkPen(color=(255, 255, 0, 180), width=1)
+        # movable=False so the lines never intercept mouse events — the line profiler's
+        # click-to-draw and click-to-move both rely on clicks reaching the view.
+        self.crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pen)
+        self.crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pen)
+        view = self._active_view()
+        for item in (self.crosshair_v, self.crosshair_h):
+            item.setZValue(20)  # above the image and the ROI (which uses 10)
+            item.hide()
+            # ignoreBounds keeps infinite lines out of auto-range, so toggling the
+            # crosshair never changes the current zoom.
+            view.addItem(item, ignoreBounds=True)
+
+    def _update_crosshair_position(self, image):
+        """Center the crosshair on the frame. No-op unless the frame size changed.
+
+        display_image runs at frame rate, so the shape guard keeps the common path to a
+        single tuple comparison with no Qt calls.
+        """
+        shape = image.shape[:2]
+        if shape == self._crosshair_shape:
+            return
+        self._crosshair_shape = shape
+        height, width = shape
+        # imageAxisOrder is "row-major" (set above), so image[row, col] -> x=col, y=row.
+        self.crosshair_v.setPos(width / 2.0)
+        self.crosshair_h.setPos(height / 2.0)
+
+    def toggle_crosshair(self):
+        """Show/hide the fixed center crosshair."""
+        if not self.enable_crosshair:
+            return
+        self._ensure_crosshair_items()
+        show = self.btn_crosshair.isChecked()
+        if show:
+            # The lines are created before any frame has been seen when the user toggles
+            # between acquisitions; center them on the frame currently on screen.
+            current = getattr(self.graphics_widget.img, "image", None)
+            if current is not None:
+                self._update_crosshair_position(current)
+        self.crosshair_v.setVisible(show)
+        self.crosshair_h.setVisible(show)
 
     def _remove_line_preview_items(self):
         view = self._active_view()
@@ -1399,6 +1469,8 @@ class ImageDisplayWindow(QMainWindow):
         if self.first_image:
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
+            if self.btn_crosshair is not None:
+                self.btn_crosshair.setEnabled(True)
 
         if ENABLE_TRACKING:
             image = np.copy(image)
@@ -1428,6 +1500,9 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
+
+        if self.crosshair_v is not None:
+            self._update_crosshair_position(image)
 
         # Update pixel value based on last valid position
         if self.has_valid_position:
