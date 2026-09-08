@@ -46,6 +46,20 @@ def _engine_summary_label(status: Optional[SquidLaserEngineStatus], connection_l
     return "Warming up"
 
 
+def _is_engine_measured(module) -> bool:
+    """Whether this engine actually measures the module's temperature.
+
+    Firmware only holds ACTIVE while a channel sits at setpoint: it drops back
+    to WARMING_UP below -0.5 °C and to CHECK_ERROR at or above the +5 °C error
+    threshold. A module reporting ACTIVE far outside that band therefore is not
+    being regulated here — its TEC controller is wired to something else — and
+    its temperature/ΔT columns are floor readings rather than measurements.
+    """
+    if module.state != LaserChannelState.ACTIVE:
+        return True
+    return -0.5 < module.setpoint_diff_c < 5.0
+
+
 def _format_temp(info) -> str:
     return "/".join(f"{m.temperature_c:.1f}" for m in info.modules) + " °C"
 
@@ -116,6 +130,11 @@ class LaserEngineWidget(QWidget):
                 continue
             state = info.display_state
             on_off = "ON" if info.laser_ttl_on else "OFF"
+            if not any(_is_engine_measured(m) for m in info.modules):
+                # Showing the floor readings here would look like an ACTIVE
+                # channel sitting far below setpoint. Report the state only.
+                self._channel_lines[key].setText(f"{key:>4}  {on_off:<3}  {state.name:<14}  TEC not engine-controlled")
+                continue
             self._channel_lines[key].setText(
                 f"{key:>4}  {on_off:<3}  {state.name:<14}  {_format_temp(info)}  ΔT {_format_diff(info)}"
             )
