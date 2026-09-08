@@ -266,3 +266,27 @@ def test_set_frame_rate_skips_live_write_when_value_already_set_and_records_live
     assert cam.set_frame_rate(15.0) == 15.0
     assert cam._camera.puts == [200, 150]
     assert cam.frame_rate_hint_live_write_ts == ts_before
+
+
+def test_get_max_frame_rate_is_a_pure_readout_and_exposure_query():
+    # 2x2 16-bit readout 35.666 ms: 28 fps at short exposures, exposure-limited beyond.
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=2.0)
+    cam._camera = _FakeToupcamSdk()
+    assert 27.5 < cam.get_max_frame_rate() < 28.5
+    assert cam.get_max_frame_rate(100.0) == pytest.approx(10.0)
+    assert cam.get_max_frame_rate(2.0) == pytest.approx(cam.get_max_frame_rate())
+    assert cam._camera.puts == []  # never writes
+    # Bounded by the cached SDK maximum for the current mode when it is lower.
+    cam._precise_framerate_range_tenths = (19, 250)
+    cam._precise_framerate_mode_key = cam._current_mode_key()
+    assert cam.get_max_frame_rate(2.0) == pytest.approx(25.0)
+    # A cache for another mode is ignored.
+    cam._precise_framerate_mode_key = (1, 1, 1)
+    assert 27.5 < cam.get_max_frame_rate(2.0) < 28.5
+
+
+def test_simulated_camera_max_frame_rate_matches_its_set_frame_rate_clamp():
+    cam = _sim_camera()
+    cam.set_exposure_time(10)
+    assert cam.get_max_frame_rate() == pytest.approx(cam.set_frame_rate(10_000.0))
+    assert cam.get_max_frame_rate(97.0) == pytest.approx(1000.0 / (97.0 + cam.get_strobe_time()))

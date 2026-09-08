@@ -446,15 +446,18 @@ class RecordZStackWorker(MultiPointWorkerBase):
 
         rec_channel_name = rec_channel.name if rec_channel is not None else "REC"
         rec_color = rec_channel.display_color if rec_channel is not None else "#FFFFFF"
-        # Nz=1 keeps extra_squid_attrs=None so single-plane output metadata is
-        # byte-identical to before per-plane recording existed.
-        extra_attrs = None
+        # requested vs effective fps travel with the data: the store is sized and
+        # timed from the rate the camera can deliver, which may be below what the
+        # user typed (the GUI warns before starting; this is the on-disk record).
+        extra_attrs = {"requested_fps": float(self.params.fps), "effective_fps": float(effective_fps)}
         if n_planes > 1:
-            extra_attrs = {
-                "plane_index": plane_idx,
-                "plane_z_offset_um": plane_offset_um,
-                "n_planes": n_planes,
-            }
+            extra_attrs.update(
+                {
+                    "plane_index": plane_idx,
+                    "plane_z_offset_um": plane_offset_um,
+                    "n_planes": n_planes,
+                }
+            )
         cfg = ZarrAcquisitionConfig(
             output_path=out,
             shape=(T, 1, 1, y, x),
