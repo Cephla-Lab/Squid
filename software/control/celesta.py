@@ -16,15 +16,22 @@ import squid.logging
 
 log = squid.logging.get_logger(__name__)
 
+# Per-request HTTP timeout. Without one, urlopen() blocks indefinitely when the
+# Celesta is unplugged, powered off, or on a different subnet, which hangs
+# Microscope.build_from_global_config() before the GUI window ever appears.
+DEFAULT_TIMEOUT_S = 5.0
 
-def lumencor_httpcommand(command="GET IP", ip="192.168.201.200"):
+
+def lumencor_httpcommand(command="GET IP", ip="192.168.201.200", timeout=DEFAULT_TIMEOUT_S):
     """
     Sends commands to the lumencor system via http.
     Plese find commands here:
     http://lumencor.com/wp-content/uploads/sites/11/2019/01/57-10018.pdf
+
+    ``timeout`` (seconds) bounds both the TCP connect and the response read.
     """
     command_full = r"http://" + ip + "/service/?command=" + command.replace(" ", "%20")
-    with urllib.request.urlopen(command_full) as response:
+    with urllib.request.urlopen(command_full, timeout=timeout) as response:
         message = eval(response.read())  # the default is conveniently JSON so eval creates dictionary
     return message
 
@@ -41,6 +48,7 @@ class CELESTA(LightSource):
         """
         self.on = False
         self.ip = kwds.get("ip", "192.168.201.200")
+        self.timeout = kwds.get("timeout", DEFAULT_TIMEOUT_S)
         [self.pmin, self.pmax] = 0, 1000
         try:
             # See if the system returns back the right IP.
@@ -51,7 +59,7 @@ class CELESTA(LightSource):
         except:
             log.error(traceback.format_exc())
             self.live = False
-            log.error("Failed to connect to Lumencor Laser at ip: 192.168.201.200")
+            log.error(f"Failed to connect to Lumencor Laser at ip: {self.ip} (timeout={self.timeout}s)")
 
         if self.live:
             [self.pmin, self.pmax] = self.get_intensity_range()
@@ -75,6 +83,9 @@ class CELESTA(LightSource):
             750: 6,
         }
 
+    def _command(self, command):
+        return lumencor_httpcommand(command=command, ip=self.ip, timeout=self.timeout)
+
     def initialize(self):
         pass
 
@@ -86,27 +97,27 @@ class CELESTA(LightSource):
 
     def get_number_lasers(self):
         """Return the number of lasers the current lumencor system can control"""
-        self.message = lumencor_httpcommand(command="GET CHMAP", ip=self.ip)
+        self.message = self._command("GET CHMAP")
         if self.message["message"][0] == "A":
             return len(self.message["message"].split(" ")) - 2
         return 0
 
     def get_color(self, laser_id):
         """Returns the color of the current laser"""
-        self.message = lumencor_httpcommand(command="GET CHMAP", ip=self.ip)
+        self.message = self._command("GET CHMAP")
         colors = self.message["message"].split(" ")[2:]
         log.info(colors)
         return colors[int(laser_id)]
 
     def get_IP(self):
-        self.message = lumencor_httpcommand(command="GET IP", ip=self.ip)
+        self.message = self._command("GET IP")
         return self.message
 
     def get_shutter_control_mode(self):
         """
         Return True/False the lasers can be controlled with TTL.
         """
-        self.message = lumencor_httpcommand(command="GET TTLENABLE", ip=self.ip)
+        self.message = self._command("GET TTLENABLE")
         response = self.message["message"]
         if response[-1] == "1":
             return ShutterControlMode.TTL
@@ -121,13 +132,13 @@ class CELESTA(LightSource):
             ttl_enable = "1"
         else:
             ttl_enable = "0"
-        self.message = lumencor_httpcommand(command="SET TTLENABLE " + ttl_enable, ip=self.ip)
+        self.message = self._command("SET TTLENABLE " + ttl_enable)
 
     def get_shutter_state(self, laser_id):
         """
         Return True/False the laser is on/off.
         """
-        self.message = lumencor_httpcommand(command="GET CH " + str(laser_id), ip=self.ip)
+        self.message = self._command("GET CH " + str(laser_id))
         response = self.message["message"]
         self.on = response[-1] == "1"
         return self.on
@@ -137,7 +148,7 @@ class CELESTA(LightSource):
         Return [minimum power, maximum power].
         """
         max_int = 1000  # default
-        self.message = lumencor_httpcommand(command="GET MAXINT", ip=self.ip)
+        self.message = self._command("GET MAXINT")
         if self.message["message"][0] == "A":
             max_int = float(self.message["message"].split(" ")[-1])
         return [0, max_int]
@@ -146,7 +157,7 @@ class CELESTA(LightSource):
         """
         Return the current laser power.
         """
-        self.message = lumencor_httpcommand(command="GET CHINT " + str(laser_id), ip=self.ip)
+        self.message = self._command("GET CHINT " + str(laser_id))
         log.debug("command = 'GET CHINT " + str(laser_id) + "'")
         response = self.message["message"]
         power = float(response.split(" ")[-1])
@@ -158,19 +169,17 @@ class CELESTA(LightSource):
         Turn the laser on/off.
         """
         if on:
-            self.message = lumencor_httpcommand(command="SET CH " + str(laser_id) + " 1", ip=self.ip)
+            self.message = self._command("SET CH " + str(laser_id) + " 1")
             self.on = True
         else:
-            self.message = lumencor_httpcommand(command="SET CH " + str(laser_id) + " 0", ip=self.ip)
+            self.message = self._command("SET CH " + str(laser_id) + " 0")
             self.on = False
         log.debug(f"Turning On/Off {self.on} {self.message}")
 
     def set_intensity(self, laser_id, intensity):
         log.debug(f"Setting intensity to {intensity}")
         power_in_mw = self.pmax * intensity / 100
-        self.message = lumencor_httpcommand(
-            command="SET CHINT " + str(laser_id) + " " + str(int(power_in_mw)), ip=self.ip
-        )
+        self.message = self._command("SET CHINT " + str(laser_id) + " " + str(int(power_in_mw)))
         if self.message["message"][0] == "A":
             return True
         return False
