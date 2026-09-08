@@ -472,6 +472,17 @@ static void init_filterwheel_axis(uint8_t axis)
     pid_requested[axis] = false;
     pid_zone_hold[axis] = false;
 
+    // The index flag is enabled as the LEFT stop switch above, but enableHomingLimit()
+    // sets STOP_LEFT_IS_HOME, which turns that input into the HOME_REF input. The
+    // TMC4361 datasheet (9.3, "Homing with STOPL and STOPR"): with stop_left_is_home=1
+    // the ramp stops "only after STOPL is switching to active state and the home
+    // uncertainty region is crossed" (X_HOME +/- HOME_SAFETY_MARGIN). This firmware never
+    // starts home tracking (START_HOME_TRACKING), so that condition is never met and the
+    // flag does not stop the wheel in either direction; homing polls the switch state and
+    // uses X_LATCH instead (check_homing_w). Bench-verified 2026-09-07: forward and
+    // backward crossings, full turns and single slots, all completed. The host relies on
+    // this to take the shortest path between slots (SquidFilterWheel.wrap). The same
+    // mechanism is why X/Y/Z are stopped on their switches in software (check_limits).
     tmc4361A_enableHomingLimit(&tmc4361[axis], rht_sw_pol[axis], TMC4361_homing_sw[axis], home_safety_margin[axis]);
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], -1);
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], 1);
