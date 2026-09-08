@@ -6,7 +6,6 @@ import pathlib
 import tempfile
 import time
 import yaml
-from datetime import datetime
 from enum import Enum
 from threading import Thread
 from typing import Optional, Tuple, Any
@@ -17,6 +16,7 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
+from control.core.acquisition_setup import create_experiment_dir, PrewarmedJobRunnerSlot
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -201,13 +201,10 @@ class MultiPointController:
         self._memory_monitor: Optional[MemoryMonitor] = None
         self._slack_notifier = None  # Optional SlackNotifier for notifications
 
-        # Pre-warm job runner subprocess at controller init (reduces acquisition start delay)
-        # Backpressure values (tuple) are created here and shared with both the pre-warmed runner
-        # and the BackpressureController in the worker, ensuring consistent tracking.
-        self._prewarmed_job_runner: Optional["JobRunner"] = None
-        self._prewarmed_bp_values: Optional["BackpressureValues"] = None
+        # Pre-warm job runner subprocess at controller init (reduces acquisition start delay).
+        self._prewarm = PrewarmedJobRunnerSlot(self._log)
         if control._def.Acquisition.USE_MULTIPROCESSING:
-            self._start_prewarmed_job_runner()
+            self._prewarm.start()
 
         self.NX = 1
         self.deltaX = control._def.Acquisition.DX
@@ -258,82 +255,14 @@ class MultiPointController:
 
         self._start_position: Optional[squid.abc.Pos] = None
 
-    def _start_prewarmed_job_runner(self):
-        """Start a job runner subprocess that warms up in the background.
-
-        This reduces acquisition start delay by having the subprocess already
-        running when the user clicks 'Start Acquisition'.
-
-        Also creates backpressure values that will be used by both the
-        pre-warmed runner and the BackpressureController in the worker.
-
-        Known limitation: Pre-warming for the NEXT acquisition is started when
-        the CURRENT acquisition begins (i.e., when ``get_prewarmed_job_runner()``
-        is called). If the user starts another acquisition before pre-warming
-        finishes (~1.2s), the worker will wait for the subprocess. This only
-        affects rapid-fire manual clicking; real workloads (full plate scans,
-        time-lapse with intervals >2s) are unaffected.
-        """
-        from control.core.job_processing import JobRunner
-        from control.core.backpressure import create_backpressure_values
-
-        self._log.info("Pre-warming job runner subprocess...")
-        # Create shared backpressure values for cross-process tracking
-        self._prewarmed_bp_values = create_backpressure_values()
-
-        self._prewarmed_job_runner = JobRunner(
-            bp_pending_jobs=self._prewarmed_bp_values[0],
-            bp_pending_bytes=self._prewarmed_bp_values[1],
-            bp_capacity_event=self._prewarmed_bp_values[2],
-        )
-        self._prewarmed_job_runner.start()
-
-    def _cleanup_prewarmed_runner(
-        self,
-        runner: Optional["JobRunner"],
-        timeout_s: float = 1.0,
-        context: str = "",
-    ) -> None:
-        """Shutdown a pre-warmed job runner.
-
-        Args:
-            runner: JobRunner to shutdown, or None
-            timeout_s: Timeout for runner shutdown
-            context: Context string for error messages (e.g., "during close")
-        """
-        if runner is not None:
-            try:
-                runner.shutdown(timeout_s=timeout_s)
-            except Exception as e:
-                self._log.error(f"Error shutting down pre-warmed runner {context}: {e}")
-
     def get_prewarmed_job_runner(self) -> Tuple[Optional["JobRunner"], Optional["BackpressureValues"]]:
-        """Get the pre-warmed job runner and its shared backpressure values.
+        """Consume the pre-warmed job runner and its shared backpressure values.
 
-        Returns:
-            Tuple of (runner, bp_values) where:
-            - runner: JobRunner instance or None if not available
-            - bp_values: BackpressureValues tuple or None
-
-        The runner and values are cleared (so they're only used once).
-
-        Usage:
-            runner, bp_values = controller.get_prewarmed_job_runner()
-            worker = MultiPointWorker(..., prewarmed_job_runner=runner,
-                                      prewarmed_bp_values=bp_values)
+        Delegates to the shared PrewarmedJobRunnerSlot: returns (runner, bp_values)
+        — both None when multiprocessing is off — and immediately starts warming a
+        fresh runner for the next acquisition.
         """
-        runner = self._prewarmed_job_runner
-        bp_values = self._prewarmed_bp_values
-
-        # Clear references (so they're only used once)
-        self._prewarmed_job_runner = None
-        self._prewarmed_bp_values = None
-
-        # Start warming up a new one for the next acquisition
-        if control._def.Acquisition.USE_MULTIPROCESSING:
-            self._start_prewarmed_job_runner()
-
-        return runner, bp_values
+        return self._prewarm.take()
 
     def set_alignment_widget(self, alignment_widget):
         """Set the alignment widget for coordinate offset during acquisitions."""
@@ -466,16 +395,10 @@ class MultiPointController:
         add_timestamp=False: folder = experiment_ID verbatim; raises FileExistsError if it already exists
         (the fluidics protocol runner names session folders itself and never reuses one).
         """
-        if add_timestamp:
-            self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
-        else:
-            self.experiment_ID = experiment_ID
+        self.experiment_ID, experiment_dir = create_experiment_dir(
+            self.base_path, experiment_ID, add_timestamp=add_timestamp
+        )
         self.recording_start_time = time.time()
-        # create a new folder
-        experiment_dir = os.path.join(self.base_path, self.experiment_ID)
-        if not add_timestamp and os.path.exists(experiment_dir):
-            raise FileExistsError(experiment_dir)
-        utils.ensure_directory_exists(experiment_dir)
         # Save acquisition configuration via ConfigRepository
         self.liveController.microscope.config_repo.save_acquisition_output(
             output_dir=experiment_dir,
@@ -973,10 +896,7 @@ class MultiPointController:
                 # Clean up pre-warmed runner if worker creation failed.
                 # Note: get_prewarmed_job_runner() already started a NEW pre-warmed runner,
                 # so we're cleaning up the one that was handed off to us.
-                self._cleanup_prewarmed_runner(
-                    prewarmed_runner,
-                    context="after worker creation failure",
-                )
+                self._prewarm.shutdown_runner(prewarmed_runner, context="after worker creation failure")
                 raise
 
             # Signal after worker creation so backpressure_controller is available
@@ -1167,15 +1087,7 @@ class MultiPointController:
                       _PROCESS_TERMINATE_TIMEOUT_S.
         """
         # Clean up pre-warmed job runner if it exists
-        if self._prewarmed_job_runner is not None:
-            self._log.info("Shutting down pre-warmed job runner...")
-        self._cleanup_prewarmed_runner(
-            self._prewarmed_job_runner,
-            timeout_s=self._PROCESS_TERMINATE_TIMEOUT_S,
-            context="during close",
-        )
-        self._prewarmed_job_runner = None
-        self._prewarmed_bp_values = None
+        self._prewarm.close(timeout_s=self._PROCESS_TERMINATE_TIMEOUT_S)
 
         # Abort any running acquisition
         try:

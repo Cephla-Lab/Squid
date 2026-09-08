@@ -20,6 +20,7 @@ from control._def import *
 
 import threading
 import control.toupcam as toupcam
+import control.toupcam_exceptions
 from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
@@ -50,7 +51,33 @@ def get_sn_by_model(camera_model: ToupcamCameraModel):
     return None  # return None if no device with the specified model_name is connected
 
 
+def clamp_precise_framerate_tenths(fps: float, min_tenths: int, max_tenths: int) -> int:
+    """Clamp fps (in frames per second) to the allowed range in tenths.
+
+    Args:
+        fps: Desired frame rate in frames per second
+        min_tenths: Minimum allowed value in tenths (0.1 fps units)
+        max_tenths: Maximum allowed value in tenths (0.1 fps units)
+
+    Returns:
+        Clamped value in tenths of fps
+    """
+    tenths = int(round(fps * 10.0))
+    return max(min_tenths, min(max_tenths, tenths))
+
+
 class ToupcamCamera(AbstractCamera):
+    # Last successfully read (min, max) PRECISE_FRAMERATE range in tenths of fps; see
+    # _refresh_precise_framerate_range.  Class-level default so it exists before __init__ runs.
+    _precise_framerate_range_tenths: Optional[Tuple[int, int]] = None
+    # (width, height, bytes/pixel) the cached range was read for; the range depends on
+    # resolution and bit depth, so a mode change invalidates it (see _update_internal_settings).
+    _precise_framerate_mode_key: Optional[Tuple[int, int, int]] = None
+    # time.time() of the last PRECISE_FRAMERATE write made while the stream was running.
+    # Such a write corrupts the frame integrating at that moment when a hardware ROI is
+    # set; ContinuousFrameSource discards frames delivered within a period of it.
+    frame_rate_hint_live_write_ts: Optional[float] = None
+
     TOUPCAM_OPTION_RAW_RAW_VAL = 1
     TOUPCAM_OPTION_RAW_RGB_VAL = 0
     PIXEL_SIZE_UM = 3.76
@@ -319,6 +346,18 @@ class ToupcamCamera(AbstractCamera):
             self._raw_camera_stream_started = False
             self._log.exception("failed to start camera, hr=0x{:x}".format(ex.hr))
             raise ex
+        # The PRECISE_FRAMERATE range is only readable while the stream runs; grab
+        # it now so set_frame_rate() calls made while stopped can clamp against
+        # the current mode's range (see _refresh_precise_framerate_range).  Only in
+        # CONTINUOUS mode: the option paces free-run only, and a trigger-mode
+        # stream (the z-stack phase) must not overwrite the cached free-run range.
+        # Outside the try above so nothing here can flip _raw_camera_stream_started
+        # while the SDK stream is actually running.
+        try:
+            if self.get_acquisition_mode() == CameraAcquisitionMode.CONTINUOUS:
+                self._refresh_precise_framerate_range()
+        except Exception:
+            self._log.debug("precise-framerate range refresh skipped after stream start", exc_info=True)
 
     def _on_frame_callback(self):
         """
@@ -441,6 +480,14 @@ class ToupcamCamera(AbstractCamera):
         if len(getattr(self, "_internal_read_buffer", b"")) != buffer_size:
             with self._raw_frame_callback_lock:
                 self._internal_read_buffer = bytes(buffer_size)
+
+        # A resolution / bit-depth change moves the PRECISE_FRAMERATE range (28 fps at
+        # 2x2 16-bit vs 63 fps at 3x3 on the ITR3CMOS26000KMA): drop the cached range so a
+        # stopped-stream set_frame_rate() cannot clamp the new mode to the old maximum.
+        mode_key = (int(width), int(height), int(pixel_size))
+        if mode_key != self._precise_framerate_mode_key:
+            self._precise_framerate_mode_key = mode_key
+            self._precise_framerate_range_tenths = None
 
         image_exposure_time_ms = self.get_exposure_time()
         camera_exposure_time_ms = self._calculate_camera_exposure_time(image_exposure_time_ms)
@@ -572,6 +619,135 @@ class ToupcamCamera(AbstractCamera):
     def get_exposure_limits(self) -> Tuple[float, float]:
         (min_exposure, max_exposure, default_exposure) = self._camera.get_ExpTimeRange()
         return min_exposure / 1000.0, max_exposure / 1000.0  # us -> ms
+
+    def _continuous_max_framerate(self) -> float:
+        """Highest frame rate the sensor can sustain in CONTINUOUS (free-run) mode, in fps.
+
+        In continuous mode the exposure pipelines with sensor readout, so the frame period
+        is max(readout, exposure).  This deliberately does NOT use get_total_frame_time()
+        (== readout + trigger_delay + exposure), which is the *sequential* software/hardware-
+        trigger period and under-reports the free-run rate by ~2x.  strobe_time_us is the
+        pure, exposure-independent readout period.  The triggered-mode timing getters
+        (get_strobe_time/get_total_frame_time/_calculate_strobe_info) are left untouched.
+        """
+        readout_ms = self._strobe_info.strobe_time_us / 1000.0
+        frame_ms = max(readout_ms, self.get_exposure_time())
+        return 1000.0 / frame_ms
+
+    def _refresh_precise_framerate_range(self) -> Optional[Tuple[int, int]]:
+        """Return (min, max) PRECISE_FRAMERATE in tenths of fps, refreshing the cache when possible.
+
+        The range query is only answered while the pull-mode stream is running; while the
+        camera is stopped it fails with E_UNEXPECTED (verified on an ITR3CMOS26000KMA), so a
+        failed read falls back to the last successful one.  Returns None when the option has
+        never been readable (model without PRECISE_FRAMERATE support).
+        """
+        try:
+            max_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+            min_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)
+            mode_key = self._current_mode_key()
+        except Exception as ex:
+            # HRESULTException while stopped is the normal case; anything else
+            # (ROI / pixel-format lookups) must not escape either — a stale or
+            # missing cache only costs the hardware pacing, never the stream.
+            self._log.debug(f"precise-framerate range read failed (stream stopped?): {ex}")
+            return self._precise_framerate_range_tenths
+        self._precise_framerate_range_tenths = (int(min_tenths), int(max_tenths))
+        self._precise_framerate_mode_key = mode_key
+        return self._precise_framerate_range_tenths
+
+    def _current_mode_key(self) -> Tuple[int, int, int]:
+        """(width, height, bytes/pixel) — what the PRECISE_FRAMERATE range depends on."""
+        _, _, width, height = self._camera.get_Roi()
+        return int(width), int(height), int(self._get_pixel_size_in_bytes())
+
+    def get_max_frame_rate(self, exposure_time_ms: Optional[float] = None) -> float:
+        """Highest free-run rate for the current binning / ROI / bit depth at the given exposure.
+
+        Pure query (no SDK writes): the readout-limited estimate of _continuous_max_framerate
+        at that exposure, bounded by the cached PRECISE_FRAMERATE maximum when the cache is for
+        the current mode.  Within ~1.5% of the SDK's own maximum in every mode measured.
+        """
+        exposure = self.get_exposure_time() if exposure_time_ms is None else float(exposure_time_ms)
+        readout_ms = self._strobe_info.strobe_time_us / 1000.0
+        fps = 1000.0 / max(readout_ms, exposure)
+        rng = self._precise_framerate_range_tenths
+        if rng is not None:
+            try:
+                if self._precise_framerate_mode_key == self._current_mode_key():
+                    fps = min(fps, rng[1] / 10.0)
+            except Exception:
+                pass
+        return fps
+
+    def set_frame_rate(self, fps: float) -> float:
+        """Set the frame rate via the PRECISE_FRAMERATE option (CONTINUOUS mode only).
+
+        _calculate_strobe_info (~:128-140) drives PRECISE_FRAMERATE to MAX on mode
+        switch; set_frame_rate must be called **after** entering CONTINUOUS to take
+        effect, and recording restores nothing (next acquisition resets exposure → MAX again).
+
+        Works whether or not the stream is running: the option *write* is accepted while
+        the camera is stopped and takes effect on the next Start (the range *read* is not,
+        hence the cached range — see _refresh_precise_framerate_range).
+
+        Args:
+            fps: Desired frame rate in frames per second. If None or <= 0, returns
+                 the camera's achievable continuous maximum without changing settings.
+
+        Returns:
+            The frame rate the camera will actually deliver, in fps: the requested rate
+            clamped to the PRECISE_FRAMERATE range and then bounded by the exposure/readout-
+            limited continuous maximum (PRECISE_FRAMERATE only slows the sensor down — its
+            reported maximum ignores the exposure time, so at 100 ms exposure the camera
+            still delivers 10 fps whatever the option says).  When the option is unavailable
+            on this model it is the continuous maximum (see _continuous_max_framerate).
+        """
+        continuous_max = self._continuous_max_framerate()
+        if fps is None or fps <= 0:
+            return continuous_max
+        framerate_range = self._refresh_precise_framerate_range()
+        if framerate_range is not None:
+            min_tenths, max_tenths = framerate_range
+            tenths = clamp_precise_framerate_tenths(fps, min_tenths, max_tenths)
+        else:
+            # Range unknown: the stream has not run since the last resolution /
+            # bit-depth change.  Bound the request by the readout-limited maximum
+            # (within ~1.5% of the SDK's MAX_PRECISE_FRAMERATE in every binning /
+            # bit-depth mode measured on the ITR3CMOS26000KMA) and try the write —
+            # but the SDK validates a stopped-state write against the range of the
+            # mode it last streamed in, so it may well be rejected (see below).
+            tenths = max(1, int(round(min(fps, continuous_max) * 10.0)))
+        live = self._raw_camera_stream_started
+        if live:
+            # Writing PRECISE_FRAMERATE into a RUNNING stream corrupts the frame being
+            # integrated at that moment when a hardware ROI is set (bench: 1.8-3.6x
+            # over-exposed, saturated on a bright scene; full-frame is unaffected), so
+            # skip the write when the camera already reports the value.  It cannot be
+            # avoided altogether: with a ROI the SDK re-clamps a stopped-state write
+            # to the full-frame maximum at Start, so a higher rate only takes while
+            # running — callers discard the frames around the write (see
+            # frame_rate_hint_live_write_ts / ContinuousFrameSource.start).
+            try:
+                if int(self._camera.get_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE)) == tenths:
+                    return min(tenths / 10.0, continuous_max)
+            except toupcam.HRESULTException:
+                pass
+        try:
+            self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, tenths)
+            if live:
+                self.frame_rate_hint_live_write_ts = time.time()
+        except toupcam.HRESULTException as ex:
+            # The sensor keeps whatever PRECISE_FRAMERATE was set before (it does not
+            # fall back to free-run), so the caller should re-apply the hint once the
+            # stream is running — ContinuousFrameSource.start() does exactly that.
+            self._log.warning(
+                f"set precise-framerate {tenths / 10.0:g} fps rejected while the stream is stopped "
+                f"({control.toupcam_exceptions.explain(ex)}); the previous pacing stays in effect "
+                "until the hint is re-applied with the stream running"
+            )
+            return continuous_max
+        return min(tenths / 10.0, continuous_max)
 
     @staticmethod
     def _user_gain_to_toupcam(user_gain):
