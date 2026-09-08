@@ -1,3 +1,5 @@
+import time
+
 import numpy as np
 import pytest
 
@@ -1208,3 +1210,62 @@ def test_measured_spacing_lands_in_zarr_metadata(tmp_path):
     ms = meta["attributes"]["ome"]["multiscales"][0]
     t_axis = [a["name"] for a in ms["axes"]].index("t")
     assert ms["datasets"][0]["coordinateTransformations"][0]["scale"][t_axis] == pytest.approx(0.15)
+
+
+def test_frame_source_discards_frames_around_a_live_frame_rate_write():
+    """toupcam with a hardware ROI: the stopped-state hint is re-clamped at Start, so the
+    post-start write is what sets the rate, and it corrupts the frame integrating at that
+    moment.  The source drops what arrives within a period (+20 ms) of the write."""
+    from control.core.streaming_capture import ContinuousFrameSource
+
+    class _Cam:
+        frame_rate_hint_live_write_ts = None
+
+        def __init__(self):
+            self.cb = None
+            self.streaming = False
+
+        def set_acquisition_mode(self, mode):
+            pass
+
+        def set_frame_rate(self, fps):
+            if self.streaming:
+                self.frame_rate_hint_live_write_ts = time.time()  # wrote into the running stream
+            return fps
+
+        def add_frame_callback(self, cb):
+            self.cb = cb
+            return 1
+
+        def remove_frame_callback(self, cb_id):
+            pass
+
+        def start_streaming(self):
+            self.streaming = True
+
+        def stop_streaming(self):
+            self.streaming = False
+
+    cam = _Cam()
+    src = ContinuousFrameSource(cam, fps=10.0, already_configured=True)
+    got = []
+    src.start(got.append)
+    t_write = cam.frame_rate_hint_live_write_ts
+    assert t_write is not None
+    cam.cb(_FakeFrame(t_write + 0.05, "corrupt"))  # integrating during the write -> dropped
+    cam.cb(_FakeFrame(t_write + 0.11, "in-flight"))  # inside period+20 ms window -> dropped
+    cam.cb(_FakeFrame(t_write + 0.13, "clean"))  # past the window -> delivered
+    cam.cb(_FakeFrame(t_write + 0.23, "clean2"))
+    src.stop()
+    assert [f.frame for f in got] == ["clean", "clean2"]
+    assert src._discarded == 2
+
+    # No live write (camera already had the value, or full-frame stopped write stuck): nothing dropped.
+    cam2 = _Cam()
+    cam2.set_frame_rate = lambda fps: fps
+    src2 = ContinuousFrameSource(cam2, fps=10.0, already_configured=True)
+    got2 = []
+    src2.start(got2.append)
+    cam2.cb(_FakeFrame(time.time(), "first"))
+    src2.stop()
+    assert [f.frame for f in got2] == ["first"]
