@@ -1,7 +1,7 @@
 """Camera settings persistence for session continuity.
 
-This module provides save/load functionality for camera settings (binning, pixel format)
-to maintain user preferences across application restarts. Settings are stored as YAML
+This module provides save/load functionality for camera settings (binning, pixel format,
+sensor mode) to maintain user preferences across application restarts. Settings are stored as YAML
 in the cache directory.
 
 Typical usage:
@@ -37,10 +37,13 @@ class CachedCameraSettings:
         binning: Tuple of (x, y) binning factors. Must be positive integers.
         pixel_format: String representation of CameraPixelFormat enum value,
             or None if not cached.
+        sensor_mode: Driver-defined sensor mode name, or None if not cached
+            or the camera does not support sensor mode selection.
     """
 
     binning: Tuple[int, int]
     pixel_format: Optional[str]
+    sensor_mode: Optional[str] = None
 
     def __post_init__(self):
         if len(self.binning) != 2:
@@ -50,7 +53,7 @@ class CachedCameraSettings:
 
 
 def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CACHE_PATH) -> None:
-    """Save current camera settings (binning and pixel format) to a YAML cache file.
+    """Save current camera settings (binning, pixel format, sensor mode) to a YAML cache file.
 
     Creates parent directories if they do not exist. This function is fail-safe -
     errors are logged but do not raise exceptions, allowing application shutdown
@@ -64,6 +67,7 @@ def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CAC
     try:
         binning = camera.get_binning()
         pixel_format = camera.get_pixel_format()
+        sensor_mode = camera.get_sensor_mode()
     except (AttributeError, RuntimeError) as e:
         _log.error(f"Cannot read camera settings - camera may be disconnected: {e}")
         return
@@ -71,13 +75,14 @@ def save_camera_settings(camera: AbstractCamera, cache_path: Path = _DEFAULT_CAC
     settings = {
         "binning": list(binning),
         "pixel_format": pixel_format.value if pixel_format else None,
+        "sensor_mode": sensor_mode,
     }
 
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         with open(cache_path, "w") as f:
             yaml.safe_dump(settings, f, default_flow_style=False)
-        _log.info(f"Camera settings saved: binning={binning}, pixel_format={pixel_format}")
+        _log.info(f"Camera settings saved: binning={binning}, pixel_format={pixel_format}, sensor_mode={sensor_mode}")
     except PermissionError as e:
         _log.error(f"Cannot save camera settings - permission denied for {cache_path}: {e}")
     except OSError as e:
@@ -116,6 +121,12 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
         _log.error(f"Cannot read camera settings cache - file system error: {e}")
         return None
 
+    if not isinstance(settings, dict):
+        _log.error(
+            f"Camera settings cache at {cache_path} does not contain a mapping. Delete this file to reset to defaults."
+        )
+        return None
+
     try:
         binning_raw = settings.get("binning")
         if not isinstance(binning_raw, list) or len(binning_raw) != 2:
@@ -128,6 +139,7 @@ def load_camera_settings(cache_path: Path = _DEFAULT_CACHE_PATH) -> Optional[Cac
         return CachedCameraSettings(
             binning=(int(binning_raw[0]), int(binning_raw[1])),
             pixel_format=settings.get("pixel_format"),
+            sensor_mode=settings.get("sensor_mode"),
         )
     except (TypeError, ValueError) as e:
         _log.error(f"Camera settings cache contains invalid data: {e}")

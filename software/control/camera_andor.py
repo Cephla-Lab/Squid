@@ -486,7 +486,7 @@ class AndorCamera(AbstractCamera):
             # Default to continuous if we can't determine
             return CameraAcquisitionMode.CONTINUOUS
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 

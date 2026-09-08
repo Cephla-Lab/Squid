@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -864,8 +865,8 @@ def test_recording_path_plane_naming():
     from control.core.record_zstack_worker import RecordZStackWorker
 
     fake_self = SimpleNamespace(experiment_path="/exp")
-    single = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1)
-    multi = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1, plane_idx=2, n_planes=3)
+    single = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1).replace(os.sep, "/")
+    multi = RecordZStackWorker._recording_path(fake_self, 0, "B2", 1, plane_idx=2, n_planes=3).replace(os.sep, "/")
     assert single.endswith("recording/t0/B2/fov_1.ome.zarr")  # Nz=1 keeps today's name
     assert multi.endswith("recording/t0/B2/fov_1_z2.ome.zarr")
 

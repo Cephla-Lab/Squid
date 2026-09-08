@@ -96,6 +96,8 @@ class HamamatsuCamera(AbstractCamera):
 
         self._camera: Dcam = camera
         self._capabilities: HamamatsuCapabilities = capabilities
+        self._sensor_modes: Dict[str, int] = self._discover_sensor_modes()
+        self._sensor_mode_names_by_value: Dict[int, str] = {v: name for (name, v) in self._sensor_modes.items()}
         self._is_streaming = threading.Event()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
@@ -104,6 +106,9 @@ class HamamatsuCamera(AbstractCamera):
         # We just set it to some sane value to start.
         self._exposure_time_ms: int = 20
         self.set_exposure_time(self._exposure_time_ms)
+
+        if self._config.default_sensor_mode:
+            self.set_sensor_mode(self._config.default_sensor_mode)
 
     def close(self):
         self._cleanup_read_thread()
@@ -209,6 +214,56 @@ class HamamatsuCamera(AbstractCamera):
             raise CameraError("Failed to get strobe delay properties from camera")
 
         return (line_interval_s + trigger_delay_s) * 1000.0
+
+    # READOUTSPEED values for the ORCA-Fusion BT (C15440-20UP), slowest (best SNR)
+    # first. DCAM's own value texts are just the numbers, so we name the modes
+    # after Hamamatsu's documented scan modes.
+    _READOUTSPEED_NAMES = {1: "Ultra Quiet", 2: "Standard", 3: "Fast"}
+
+    def _discover_sensor_modes(self) -> Dict[str, int]:
+        # Squid's "sensor mode" maps to DCAM's READOUTSPEED property, and is
+        # unrelated to DCAM's own SENSORMODE property (area/subarray mode).
+        modes = {}
+        readout_speed_attr = self._camera.prop_getattr(DCAM_IDPROP.READOUTSPEED)
+        if readout_speed_attr is False:
+            self._log.info("READOUTSPEED is not supported on this model; sensor mode selection unavailable.")
+            return modes
+
+        # Clamp to >=1: a fractional valuestep in (0, 1) would int() down to 0 and
+        # crash range(). max(1, ...) also covers the 0/unset case identically to
+        # the old truthiness check, since int(0.0) == 0 -> max(1, 0) == 1.
+        step = max(1, int(readout_speed_attr.valuestep))
+        for value in range(int(readout_speed_attr.valuemin), int(readout_speed_attr.valuemax) + 1, step):
+            modes[self._READOUTSPEED_NAMES.get(value, str(value))] = value
+        return modes
+
+    def get_available_sensor_modes(self) -> Sequence[str]:
+        return list(self._sensor_modes.keys())
+
+    def get_sensor_mode(self) -> Optional[str]:
+        if not self._sensor_modes:
+            return None
+        value = self._camera.prop_getvalue(DCAM_IDPROP.READOUTSPEED)
+        if value is False:
+            raise CameraError("Failed to read READOUTSPEED from camera")
+        return self._sensor_mode_names_by_value.get(int(value))
+
+    def set_sensor_mode(self, mode: str):
+        if not self._sensor_modes:
+            raise NotImplementedError("Sensor mode selection is not supported by this camera model.")
+        if mode not in self._sensor_modes:
+            raise ValueError(f"Unknown sensor mode '{mode}'. Valid modes: {list(self._sensor_modes.keys())}")
+
+        # Hold the trigger lock (reentrant with _pause_streaming's) across the whole
+        # switch so racing triggers are dropped until the new readout speed AND the
+        # recalculated exposure/strobe are in effect, not just until streaming restarts.
+        with self._trigger_lock:
+            with self._pause_streaming():
+                if not self._set_prop(DCAM_IDPROP.READOUTSPEED, self._sensor_modes[mode]):
+                    raise CameraError(f"Failed to set sensor mode to '{mode}'")
+
+            # Force exposure + strobe delay recalculation, since readout speed changes the line interval.
+            self.set_exposure_time(self._exposure_time_ms)
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
@@ -334,6 +389,9 @@ class HamamatsuCamera(AbstractCamera):
 
     def stop_streaming(self):
         self._log.debug("Stopping Hamamatsu streaming.")
+        # Clear the flag before tearing down capture so get_ready_for_trigger()
+        # reports not-ready for the whole teardown, not just after it.
+        self._is_streaming.clear()
         success = True
         if not self._camera.cap_stop():
             self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
@@ -345,7 +403,6 @@ class HamamatsuCamera(AbstractCamera):
 
         self._log.debug(f"Stopped with {success=}")
         self._trigger_sent.clear()
-        self._is_streaming.clear()
         return success
 
     def get_is_streaming(self):
@@ -430,7 +487,7 @@ class HamamatsuCamera(AbstractCamera):
         else:
             raise ValueError(f"Unknown dcam trigger source mode {dcam_mode=}")
 
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and not self._hw_trigger_fn:
             raise CameraError("In HARDWARE_TRIGGER mode, but no hw trigger function given.")
 
@@ -451,43 +508,51 @@ class HamamatsuCamera(AbstractCamera):
             self._trigger_sent.set()
 
     def get_ready_for_trigger(self) -> bool:
+        # Not ready while streaming is stopped (e.g. inside _pause_streaming() during a
+        # sensor mode / ROI / pixel format change) - callers like LiveController skip
+        # and retry instead of triggering into a stopped stream.
+        if not self.get_is_streaming():
+            return False
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()
 
     def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
         # Numbers are in unbinned pixels. Supports C15440-20UP (ORCA-Fusion BT) only.
-        with self._pause_streaming():
-            roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
+        # Trigger lock held across the pause AND the strobe/exposure recalculation, as
+        # in set_sensor_mode.
+        with self._trigger_lock:
+            with self._pause_streaming():
+                roi_mode_on = self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.ON)
 
-            def fail(msg):
-                """
-                This is a helper for turning off roi mode if any of the sets below fail.
-                """
-                self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
-                raise ValueError(msg)
+                def fail(msg):
+                    """
+                    This is a helper for turning off roi mode if any of the sets below fail.
+                    """
+                    self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYMODE, DCAMPROP.MODE.OFF)
+                    raise ValueError(msg)
 
-            if not roi_mode_on:
-                raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
+                if not roi_mode_on:
+                    raise CameraError("Failed to turn on roi mode on camera, cannot set roi.")
 
-            offset_x = control.utils.truncate_to_interval(offset_x, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
-                fail("Could not set roi x offset.")
+                offset_x = control.utils.truncate_to_interval(offset_x, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHPOS, int(offset_x)):
+                    fail("Could not set roi x offset.")
 
-            width = control.utils.truncate_to_interval(width, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
-                fail("Could not set roi width.")
+                width = control.utils.truncate_to_interval(width, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYHSIZE, int(width)):
+                    fail("Could not set roi width.")
 
-            offset_y = control.utils.truncate_to_interval(offset_y, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
-                fail("Could not set roi y offset.")
+                offset_y = control.utils.truncate_to_interval(offset_y, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVPOS, int(offset_y)):
+                    fail("Could not set roi y offset.")
 
-            height = control.utils.truncate_to_interval(height, 4)
-            if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
-                fail("Could not set roi height.")
+                height = control.utils.truncate_to_interval(height, 4)
+                if not self._camera.prop_setvalue(DCAM_IDPROP.SUBARRAYVSIZE, int(height)):
+                    fail("Could not set roi height.")
 
-        # Force exposure + strobe delay recalculation if needed
-        self.set_exposure_time(self.get_exposure_time())
+            # Force exposure + strobe delay recalculation if needed
+            self.set_exposure_time(self.get_exposure_time())
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         return (

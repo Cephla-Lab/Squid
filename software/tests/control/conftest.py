@@ -1,59 +1,13 @@
 """
 Pytest fixtures for control module tests.
 
-This module provides fixtures to ensure proper cleanup of Microcontroller instances,
-preventing background threads from causing segfaults in subsequent tests.
+Microcontroller/Microscope/MultiPointController cleanup is handled suite-wide
+by the autouse fixture in tests/conftest.py.
 """
-
-import logging
-from unittest.mock import patch
 
 import pytest
 
-import control.microcontroller
 from control.firmware_sim_serial import FirmwareSimSerial
-
-logger = logging.getLogger(__name__)
-
-
-def _make_tracking_init(original_init, instances_list):
-    """Create a wrapper that tracks Microcontroller instances."""
-
-    def _tracking_init(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
-        instances_list.append(self)
-
-    return _tracking_init
-
-
-@pytest.fixture(autouse=True)
-def cleanup_microcontrollers():
-    """
-    Fixture that automatically cleans up all Microcontroller instances after each test.
-
-    This prevents background threads from causing segfaults when subsequent tests run,
-    especially those involving Qt event loops. The Microcontroller.read_received_packet
-    method runs in a background thread that must be stopped via close().
-    """
-    # Track instances created during this test (scoped to this fixture invocation)
-    active_microcontrollers = []
-
-    # Capture original __init__ at fixture runtime, not module load time
-    original_init = control.microcontroller.Microcontroller.__init__
-
-    with patch.object(
-        control.microcontroller.Microcontroller, "__init__", _make_tracking_init(original_init, active_microcontrollers)
-    ):
-        yield
-
-    # Clean up all tracked instances
-    for micro in active_microcontrollers:
-        try:
-            if hasattr(micro, "terminate_reading_received_packet_thread"):
-                if not micro.terminate_reading_received_packet_thread:
-                    micro.close()
-        except Exception as e:
-            logger.warning(f"Failed to close Microcontroller in test cleanup: {e}")
 
 
 @pytest.fixture
@@ -86,3 +40,13 @@ def firmware_sim_nonstrict():
 def _watchdog_state_to_tmp(tmp_path, monkeypatch):
     # Keep acquisition breadcrumbs out of the real user state dir during tests.
     monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path / "watchdog"))
+
+
+@pytest.fixture(scope="session")
+def fluidics_config_path(tmp_path_factory) -> str:
+    """A simulated-instrument FluidicsConfig written once per session."""
+    from tests.control.fluidics_test_config import CONFIG_YAML
+
+    path = tmp_path_factory.mktemp("fluidics_config") / "fluidics_config.yaml"
+    path.write_text(CONFIG_YAML, encoding="utf-8")
+    return str(path)

@@ -351,6 +351,38 @@ class ScanCoordinates:
         self.region_fov_coordinates[region_id] = [(center_x, center_y)]
         self._update_callback(AddScanCoordinateRegion(fov_centers=[FovCenter(x_mm=center_x, y_mm=center_y)]))
 
+    def add_region_from_fovs(self, region_id, fovs, shape="Manual"):
+        """Add a region from an explicit FOV list - the Load-Coordinates shape of region.
+
+        Each FOV is (x, y) or (x, y, z) in mm. Z is kept only when every FOV has one (the worker moves
+        Z per FOV only for 3-tuples; a region must be homogeneous). Validates before mutating and fires
+        the AddScanCoordinateRegion update so the navigation viewer and focus map stay in sync.
+        """
+        fovs = list(fovs)
+        if not fovs:
+            raise ValueError(f"Region {region_id} has no FOVs")
+        has_z = all(len(fov) > 2 for fov in fovs)
+        coords = []
+        for fov in fovs:
+            x, y = float(fov[0]), float(fov[1])
+            if not self.validate_coordinates(x, y):
+                raise ValueError(f"FOV (x,y)=({x},{y}) of region {region_id} is outside the software XY limits")
+            if has_z:
+                z = float(fov[2])
+                if not control._def.SOFTWARE_POS_LIMIT.Z_NEGATIVE <= z <= control._def.SOFTWARE_POS_LIMIT.Z_POSITIVE:
+                    raise ValueError(f"FOV z={z} of region {region_id} is outside the software Z limits")
+                coords.append((x, y, z))
+            else:
+                coords.append((x, y))
+        center = [sum(c[0] for c in coords) / len(coords), sum(c[1] for c in coords) / len(coords)]
+        if has_z:
+            center.append(sum(c[2] for c in coords) / len(coords))
+        self.region_centers[region_id] = center
+        self.region_shapes[region_id] = shape
+        self.region_fov_coordinates[region_id] = coords
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(coords)))
+        self._log.info(f"Added Region from {len(coords)} FOVs: {region_id}")
+
     def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
         grid_width_mm = (Nx - 1) * dx
@@ -641,7 +673,8 @@ class ScanCoordinates:
     def get_region_shape(self, region_id):
         if not self.validate_region(region_id):
             return None
-        return self.region_shapes[region_id]
+        # Regions registered without a shape (widget code that writes the dicts directly) are bounding boxes
+        return self.region_shapes.get(region_id, "Square")
 
     def get_scan_bounds(self):
         """Get bounds of all scan regions with margin"""
@@ -671,28 +704,6 @@ class ScanCoordinates:
         margin = max(width, height) * 0.00  # 0.05
 
         return {"x": (min_x - margin, max_x + margin), "y": (min_y - margin, max_y + margin)}
-
-    def update_fov_z_level(self, region_id, fov, new_z):
-        """Update z-level for a specific FOV and its region center"""
-        if not self.validate_region(region_id):
-            print(f"Region {region_id} not found")
-            return
-
-        # Update FOV coordinates
-        fov_coords = self.region_fov_coordinates[region_id]
-        if fov < len(fov_coords):
-            # Handle both (x,y) and (x,y,z) cases
-            x, y = fov_coords[fov][:2]  # Takes first two elements regardless of length
-            self.region_fov_coordinates[region_id][fov] = (x, y, new_z)
-
-        # If first FOV, update region center coordinates
-        if fov == 0:
-            if len(self.region_centers[region_id]) == 3:
-                self.region_centers[region_id][2] = new_z
-            else:
-                self.region_centers[region_id].append(new_z)
-
-        self._log.info(f"Updated z-level to {new_z} for region:{region_id}, fov:{fov}")
 
 
 class ScanCoordinatesSiLA2(ScanCoordinates):
@@ -757,7 +768,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                                 + row * wellplate_settings["well_spacing_mm"]
                                 + control._def.WELLPLATE_OFFSET_Y_mm
                             )
-                            self.region_centers[self._index_to_row(row) + str(col + 1)] = (x_mm, y_mm)
+                            self.region_centers[self._index_to_row(row) + str(col + 1)] = [x_mm, y_mm]
                 else:
                     x_mm = (
                         wellplate_settings["a1_x_mm"]
@@ -769,7 +780,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
                         + start_row_index * wellplate_settings["well_spacing_mm"]
                         + control._def.WELLPLATE_OFFSET_Y_mm
                     )
-                    self.region_centers[start_row + start_col] = (x_mm, y_mm)
+                    self.region_centers[start_row + start_col] = [x_mm, y_mm]
             else:
                 raise ValueError(f"Invalid well format: {desc}. Expected format is 'A1' or 'A1:B2' for ranges.")
 
