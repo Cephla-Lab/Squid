@@ -727,6 +727,43 @@ class ZTuner:
             self.log(f"highest velocity with no lost steps: {good[-1]['vmax']:.1f} mm/s")
         self.restore_velocity()
 
+    def engageprobe(self):
+        """Is the loop engaged while the axis moves slowly? Engage, then move --excursion-mm up and back at each
+        velocity in --vel-list (set VMAX below and above --open-above to see both regimes) and count the status
+        samples taken in motion that carry the PID_ENABLED flag. Firmware with SET_PID_OPEN_ABOVE keeps the
+        loop engaged below the threshold and opens it above; rest-only firmware opens it for every move."""
+        m = self.mcu
+        self.engage_loop()
+        try:
+            for v in self.a.vel_list:
+                m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel); self.wait()
+                self.settle(0.3)
+                moving_eng = moving_tot = 0; trans = []; last = None
+                for target in (self.a.depth_mm + self.a.excursion_mm, self.a.depth_mm):
+                    self.sampler.clear()
+                    self.move_to_depth(target)
+                    rows = self.sampler.snapshot()
+                    for (ta, xa, ea, da, fa), (tb, xb, eb, db, fb) in zip(rows, rows[1:]):
+                        if xb == xa:
+                            continue                      # at rest: not counted
+                        moving_tot += 1
+                        eng = bool(fb & (1 << _def.ENC_FLAG.PID_ENABLED))
+                        moving_eng += eng
+                        key = (eng, bool(fb & (1 << _def.ENC_FLAG.PID_ZONE)))
+                        if key != last:
+                            trans.append((round(usteps_to_depth(xb), 3), "engaged" if eng else ("held" if key[1] else "off")))
+                            last = key
+                    self.settle(0.3)
+                frac = moving_eng / moving_tot if moving_tot else float("nan")
+                verdict = "ENGAGED in flight" if frac > 0.9 else ("OPEN in flight" if frac < 0.1 else "mixed")
+                self.log(f"vmax {v:4.2f} mm/s: {moving_eng}/{moving_tot} in-motion samples with the loop engaged -> {verdict}; "
+                         f"transitions {trans[:8]}")
+                self.summary["results"].append({"phase": "engageprobe", "vmax": v, "moving_samples": moving_tot,
+                                                "engaged_samples": moving_eng, "transitions": trans[:20]})
+        finally:
+            self.loop_off()
+            self.restore_velocity()
+
     def engage_loop(self):
         m = self.mcu
         self.settle(0.3)
@@ -838,6 +875,9 @@ class ZTuner:
             if self.a.action == "velsweep":
                 self.velsweep()
                 return
+            if self.a.action == "engageprobe":
+                self.engageprobe()
+                return
             if self.a.action == "stack":
                 self.stack(closed=False)
                 self.stack(closed=True)
@@ -857,7 +897,7 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "velsweep", "stack", "hold"])
+    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "velsweep", "engageprobe", "stack", "hold"])
     ap.add_argument("--vel-list", type=float, nargs="+", default=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
     ap.add_argument("--vel-reps", type=int, default=3)
     ap.add_argument("--excursion-mm", type=float, default=2.0, help="velsweep excursion up from --depth-mm")
