@@ -42,6 +42,8 @@
 //               SET_COMPLETION_WINDOW (49) lets an axis report a move complete
 //               once within a set distance of the target while the ramp finishes
 //               (filter wheels: start exposing while the last degrees travel).
+//               The closed loop re-engages after a home-zone hold or a homing
+//               only once the axis is at rest, never while the ramp runs.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 

@@ -274,6 +274,15 @@ void callback_enable_stage_pid()
         stage_PID_enabled[axis] = 0;
         return;
     }
+    // Never engage while the ramp runs (see check_closed_loop): coming in at speed
+    // adds the correction velocity on top of VMAX and stalled the second bench Z.
+    // Record the request; check_closed_loop() engages it when the axis stops.
+    if (tmc4361A_isRunning(&tmc4361[axis], 0))
+    {
+        pid_zone_hold[axis] = true;
+        stage_PID_enabled[axis] = 0;
+        return;
+    }
     pid_zone_hold[axis] = false;
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;

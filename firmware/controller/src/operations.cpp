@@ -751,7 +751,15 @@ void check_closed_loop()
     else if (pid_zone_hold[i] && !in_zone && !homing && encoder_configured[i])
     {
       // Requested, held open by the zone or by homing, now outside: re-engage,
-      // but only from a small error - the loop slews by the error it starts with.
+      // but only from a small error - the loop slews by the error it starts with -
+      // and ONLY AT REST. Engaging while the ramp runs adds the correction velocity
+      // (up to PID_DV_CLIP) on top of VMAX and steps the velocity output; on the
+      // second bench Z (2026-09-07) that stalled the motor the instant the loop
+      // came in at 3 mm/s on leaving the home zone, and the ramp then ran on with
+      // the stage standing still. The commanded move finishes open-loop and the
+      // loop closes when the axis stops, correcting whatever error is left then.
+      if (tmc4361A_isRunning(&tmc4361[i], 0))
+        continue;
       int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
       int32_t lim = pid_max_dev_usteps[i] > 0 ? pid_max_dev_usteps[i] : 0x7FFFFFFF;
       if (dev <= lim && dev >= -lim)
