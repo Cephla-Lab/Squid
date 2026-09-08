@@ -487,6 +487,13 @@ class ZTuner:
             if abs(dx) > 1e-6 and abs(de / dx) > 0.5:
                 recouple = up[k][0]; break
         self.log(f"zonemap: encoder stops following below {decouple} mm on the way down; follows again above {recouple} mm on the way up")
+        if decouple is not None and recouple is not None:
+            gap = max(float(decouple), float(recouple))
+            floor = math.ceil((gap + 0.1) * 20) / 20.0        # gap + 0.1 mm margin, rounded up to 0.05 mm
+            self.log(f"zonemap: ini values for this stage -> z_home_gap_mm = {gap:.2f}; [SOFTWARE_POS_LIMIT] z_negative = {floor:.2f} "
+                     f"(floor for every move); z_park_at_min_after_homing = True; pid_home_zone_z_um <= {floor * 1000:.0f}")
+        else:
+            self.log("zonemap: no decoupled region above home on this stage (z_home_gap_mm = 0)")
         self.summary["results"].append({"phase": "zonemap", "decouple_mm": decouple, "recouple_mm": recouple, "csv": path})
 
     def zonetest(self):

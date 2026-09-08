@@ -772,6 +772,16 @@ HOMING_ENABLED_X = True
 HOMING_ENABLED_Y = True
 HOMING_ENABLED_Z = False
 
+# Z stages where the actuator homes below the stage's stop have a gap above home in which the actuator
+# moves and the stage does not (encoder still). Measure it with tools/z_encoder_pid_tuner.py zonemap and
+# save it here per instrument (0.64 mm on the second bench controller, 2026-09-07; 0 on the Squid+ bench).
+# Policy: the stage never works inside the gap. SOFTWARE_POS_LIMIT.Z_NEGATIVE is the floor for every move
+# (set it >= gap + 0.1 mm, e.g. 0.75); homing is the only motion allowed below it (open loop), and after a
+# homing the stage is brought to the floor when Z_PARK_AT_MIN_AFTER_HOMING is set. PID_HOME_ZONE_Z_UM must
+# not exceed the floor, so the closed loop engages at the parked position.
+Z_HOME_GAP_MM = 0.0
+Z_PARK_AT_MIN_AFTER_HOMING = False
+
 SLEEP_TIME_S = 0.005
 
 LED_MATRIX_R_FACTOR = 0

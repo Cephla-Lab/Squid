@@ -250,6 +250,16 @@ class CephlaStage(AbstractStage):
             self._microcontroller.home_z(homing_direction=z_dir)
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(z_timeout)
+        if z and getattr(_def, "Z_PARK_AT_MIN_AFTER_HOMING", False):
+            # Homing is the only motion allowed below the Z soft floor: on a stage whose actuator homes
+            # below the stage's stop, the region above home is a gap where the stage does not follow.
+            # Park at the floor so every later move (and the closed loop, which engages at rest outside
+            # its home zone) starts from a coupled position.
+            floor_mm = self._config.Z_AXIS.MIN_POSITION
+            if blocking:
+                self.move_z_to(floor_mm, blocking=True)
+            else:
+                _log.warning(f"Z homed non-blocking: not parking at the {floor_mm} mm floor; caller must move Z")
 
         if theta:
             self._microcontroller.home_theta(homing_direction=theta_dir)
