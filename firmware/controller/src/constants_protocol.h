@@ -75,6 +75,8 @@ static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and
 static const int SET_PIN_LEVEL = 41;
 static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
 static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter wheel
+static const int SET_ILLUMINATION_LED_MATRIX_PIXEL = 45;  // Set one LED in the user framebuffer [index,g,r,b]
+static const int CLEAR_ILLUMINATION_LED_MATRIX = 46;  // Zero the user framebuffer (no show)
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
@@ -135,6 +137,7 @@ static const int ILLUMINATION_SOURCE_LED_ARRAY_LEFT_DOT = 5;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT = 6;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7;
 static const int ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8;
+static const int ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE = 10;  // display host-painted per-pixel framebuffer
 static const int ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20;
 
 // Illumination Control TTL Ports - port-based names (preferred)

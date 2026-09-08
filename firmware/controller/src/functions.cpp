@@ -134,6 +134,42 @@ void set_right_dot(CRGB * matrix, uint8_t r, uint8_t g, uint8_t b)
   matrix[124].setRGB(r, g, b);
 }
 
+// Host-painted framebuffer for the PROGRAMMABLE source. The host sets each LED
+// individually (SET_ILLUMINATION_LED_MATRIX_PIXEL); when the programmable source is
+// turned on we copy this into `matrix` and show it. Kept separate from `matrix` so it
+// survives the clear_matrix() that strobe-off does between acquisition frames.
+CRGB led_matrix_user[NUM_LEDS] = {0};
+
+// Set a single LED in the host-painted framebuffer (no show). The payload bytes mirror
+// SET_ILLUMINATION_LED_MATRIX exactly (host sends g*255, r*255, b*255), so a pixel painted
+// here renders identically to the same color drawn by the built-in full/half patterns.
+// The built-in path calls setRGB(host_red, host_green, host_blue) after scaling (the R/G
+// swap already happened on the host), so we do the same here.
+void set_illumination_led_matrix_pixel(uint8_t index, uint8_t byte_g, uint8_t byte_r, uint8_t byte_b)
+{
+  if (index >= NUM_LEDS)
+    return;
+  uint8_t g = (float(byte_g) / 255) * LED_MATRIX_MAX_INTENSITY;
+  uint8_t r = (float(byte_r) / 255) * LED_MATRIX_MAX_INTENSITY;
+  uint8_t b = (float(byte_b) / 255) * LED_MATRIX_MAX_INTENSITY;
+  led_matrix_user[index].setRGB(r * RED_ADJUSTMENT_FACTOR, g * GREEN_ADJUSTMENT_FACTOR, b * BLUE_ADJUSTMENT_FACTOR);
+}
+
+// Zero the host-painted framebuffer (no show). Call before painting a fresh pattern.
+void clear_illumination_led_matrix_buffer()
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+    led_matrix_user[i].setRGB(0, 0, 0);
+}
+
+// Copy the host-painted framebuffer into the live matrix and display it.
+void turn_on_LED_matrix_user(CRGB * matrix)
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+    matrix[i] = led_matrix_user[i];
+  FastLED.show();
+}
+
 void clear_matrix(CRGB * matrix)
 {
   for (int i = 0; i < NUM_LEDS; i++)
@@ -252,6 +288,9 @@ static void turn_on_illumination_source(int source)
     case ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF:
       turn_on_LED_matrix_pattern(matrix,ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF,led_matrix_r,led_matrix_g,led_matrix_b);
       break;
+    case ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE:
+      turn_on_LED_matrix_user(matrix);
+      break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:
       break;
     case ILLUMINATION_D1:
@@ -320,6 +359,9 @@ static void turn_off_illumination_source(int source)
       clear_matrix(matrix);
       break;
     case ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF:
+      clear_matrix(matrix);
+      break;
+    case ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE:
       clear_matrix(matrix);
       break;
     case ILLUMINATION_SOURCE_LED_EXTERNAL_FET:

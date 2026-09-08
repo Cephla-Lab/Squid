@@ -23,6 +23,17 @@ void callback_set_illumination_led_matrix()
     set_illumination_led_matrix(buffer_rx[2], buffer_rx[3], buffer_rx[4], buffer_rx[5]);
 }
 
+void callback_set_illumination_led_matrix_pixel()
+{
+    // [2]=LED index (0..127), [3]=g*255, [4]=r*255, [5]=b*255 (same channel order as SET_ILLUMINATION_LED_MATRIX)
+    set_illumination_led_matrix_pixel(buffer_rx[2], buffer_rx[3], buffer_rx[4], buffer_rx[5]);
+}
+
+void callback_clear_illumination_led_matrix()
+{
+    clear_illumination_led_matrix_buffer();
+}
+
 void callback_set_illumination_intensity_factor()
 {
     uint8_t factor   = uint8_t(buffer_rx[2]);
