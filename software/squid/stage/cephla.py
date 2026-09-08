@@ -116,6 +116,14 @@ class CephlaStage(AbstractStage):
             )
         mc.turn_on_stage_pid(microcontroller_axis_number)
         mc.wait_till_operation_is_completed()
+        _log.info(
+            f"axis {microcontroller_axis_number}: closed loop requested - P {pid.P} I {pid.I} D {pid.D}, "
+            f"clamp {pid.CORRECTION_VMAX} mm/s, watchdog {pid.MAX_DEVIATION_UM} um, home zone {pid.HOME_ZONE_UM} um, "
+            f"tolerance {pid.TOLERANCE_UM or 'default (2 counts)'} um, loop open above {pid.OPEN_ABOVE_MM_S} mm/s "
+            f"({'rest-only' if pid.OPEN_ABOVE_MM_S == 0 else 'engaged below that speed'}), "
+            f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
+            f"ramp {axis_config.RAMP_PROFILE}"
+        )
 
     def x_mm_to_usteps(self, mm: float):
         return self._config.X_AXIS.convert_real_units_to_ustep(mm)
