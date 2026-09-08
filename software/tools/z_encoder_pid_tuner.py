@@ -500,7 +500,7 @@ class ZTuner:
         self.a.depth_min = 0.0  # this test deliberately visits the zone
 
         def flags(tag):
-            self.settle(0.3)
+            time.sleep(0.3)                      # plain sleep: a fault flag is a result here, not a reason to abort
             st = self.mcu.get_encoder_state()
             self.log(f"{tag}: z={self.current_depth():.3f} mm  loop_engaged={st['pid_enabled']}  zone_hold={st['pid_zone_hold']}  "
                      f"fault={st['pid_fault']}  err={st['deviation'] / USTEPS_PER_MM * 1000:+.1f} um")
