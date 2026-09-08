@@ -4,8 +4,11 @@ from typing import Optional, Callable
 import control.microcontroller
 import control._def as _def
 import control.utils as utils
+import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig, AxisConfig
+
+_log = squid.logging.get_logger(__name__)
 
 
 class CephlaStage(AbstractStage):
@@ -30,18 +33,69 @@ class CephlaStage(AbstractStage):
         self._configure_axis(_def.AXIS.Y, stage_config.Y_AXIS)
         self._configure_axis(_def.AXIS.Z, stage_config.Z_AXIS)
 
+    # Firmware from which the ramp profile, closed-loop limits, home zone and tolerance commands exist.
+    _MIN_FIRMWARE_FOR_LOOP_SETTINGS = (1, 6)
+
+    def _fw_has_loop_settings(self) -> bool:
+        fw = self._microcontroller.firmware_version
+        try:
+            return tuple(fw) >= self._MIN_FIRMWARE_FOR_LOOP_SETTINGS
+        except TypeError:
+            return False
+
     def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
-        if axis_config.USE_ENCODER:
-            # TODO(imo): The original navigationController had a "flip_direction" on configure_encoder, but it was unused in the implementation?
-            self._microcontroller.configure_stage_pid(
-                axis=microcontroller_axis_number,
-                transitions_per_revolution=axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE,
-            )
-            if axis_config.PID and axis_config.PID.ENABLED:
-                self._microcontroller.set_pid_arguments(
-                    microcontroller_axis_number, axis_config.PID.P, axis_config.PID.I, axis_config.PID.D
+        mc = self._microcontroller
+        new_fw = self._fw_has_loop_settings()
+
+        if axis_config.RAMP_PROFILE != "sshape":
+            if new_fw:
+                profile = {"trapezoid": _def.RAMP_PROFILE.TRAPEZOID, "sshape": _def.RAMP_PROFILE.SSHAPE}[
+                    axis_config.RAMP_PROFILE
+                ]
+                mc.set_ramp_profile(microcontroller_axis_number, profile)
+                mc.wait_till_operation_is_completed()
+            else:
+                _log.warning(
+                    f"axis {microcontroller_axis_number}: ramp profile {axis_config.RAMP_PROFILE!r} needs firmware "
+                    f">= 1.6 (have {mc.firmware_version}); keeping the firmware default"
                 )
-                self._microcontroller.turn_on_stage_pid(microcontroller_axis_number)
+
+        if not (axis_config.HAS_ENCODER or axis_config.USE_ENCODER):
+            return
+
+        # The encoder must be configured before the axis is homed: homing zeroes ENC_POS together with
+        # XACTUAL under the scale and direction written here (firmware >= 1.6 also re-aligns ENC_POS to
+        # XACTUAL inside CONFIGURE_STAGE_PID). The stage is constructed before the startup homing.
+        mc.configure_stage_pid(
+            axis=microcontroller_axis_number,
+            transitions_per_revolution=axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE,
+            flip_direction=axis_config.ENCODER_FLIP_DIR,
+        )
+        mc.wait_till_operation_is_completed()
+
+        pid = axis_config.PID
+        if not (pid and pid.ENABLED):
+            return
+
+        mc.set_pid_arguments(microcontroller_axis_number, pid.P, pid.I, pid.D)
+        mc.wait_till_operation_is_completed()
+        if new_fw:
+            if pid.CORRECTION_VMAX > 0 or pid.MAX_DEVIATION_UM > 0:
+                mc.set_pid_limits(microcontroller_axis_number, pid.CORRECTION_VMAX, pid.MAX_DEVIATION_UM)
+                mc.wait_till_operation_is_completed()
+            if pid.HOME_ZONE_UM > 0:
+                mc.set_pid_home_zone(microcontroller_axis_number, pid.HOME_ZONE_UM)
+                mc.wait_till_operation_is_completed()
+            if pid.TOLERANCE_UM > 0:
+                mc.set_pid_tolerance(microcontroller_axis_number, pid.TOLERANCE_UM, pid.TOLERANCE_UM)
+                mc.wait_till_operation_is_completed()
+        elif pid.CORRECTION_VMAX > 0 or pid.MAX_DEVIATION_UM > 0 or pid.HOME_ZONE_UM > 0 or pid.TOLERANCE_UM > 0:
+            _log.warning(
+                f"axis {microcontroller_axis_number}: closed-loop limits / home zone / tolerance need firmware >= 1.6 "
+                f"(have {mc.firmware_version}); enabling the loop without them"
+            )
+        mc.turn_on_stage_pid(microcontroller_axis_number)
+        mc.wait_till_operation_is_completed()
 
     def x_mm_to_usteps(self, mm: float):
         return self._config.X_AXIS.convert_real_units_to_ustep(mm)

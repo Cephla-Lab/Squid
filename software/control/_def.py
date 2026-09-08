@@ -720,7 +720,7 @@ PID_D_Y = int(0)
 
 PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
-PID_D_Z = int(1)
+PID_D_Z = int(0)  # D on a quantised encoder error dithers at kHz (bench 2026-09-07: audible whine at D 1); keep 0
 
 PID_P_W = int(1 << 12)
 PID_I_W = int(1)
@@ -731,6 +731,32 @@ ENCODER_FLIP_DIR_X = True
 ENCODER_FLIP_DIR_Y = True
 ENCODER_FLIP_DIR_Z = True
 ENCODER_FLIP_DIR_W = False
+
+# Ramp profile per stage axis (firmware >= 1.6, SET_RAMP_PROFILE): "sshape" (firmware default) or
+# "trapezoid". Bench 2026-09-07: at 16 usteps/FS the trapezoid takes Z from 89 ms to 11 ms for a
+# 1 um move; at 256 usteps/FS the S-shape is jerk-limited by the BOW register anyway.
+RAMP_PROFILE_X = "sshape"
+RAMP_PROFILE_Y = "sshape"
+RAMP_PROFILE_Z = "sshape"
+
+# Closed-loop safety limits per stage axis (firmware >= 1.6, SET_PID_LIMITS). Correction velocity
+# clamp in mm/s and deviation watchdog in um; 0 keeps the firmware defaults (axis max velocity,
+# 250 um). Home exclusion zone in um (SET_PID_HOME_ZONE): the loop is held open within this
+# distance of home and homing runs open-loop; 0 = none. Deadband / target-reached tolerance in um
+# (SET_PID_TOLERANCE); 0 = firmware default of two encoder counts. Bench Z values: clamp 1 mm/s,
+# watchdog 200 um, zone 200 um, tolerance 0 (default).
+PID_CORRECTION_VMAX_X_mm = 0.0
+PID_CORRECTION_VMAX_Y_mm = 0.0
+PID_CORRECTION_VMAX_Z_mm = 0.0
+PID_MAX_DEVIATION_X_UM = 0
+PID_MAX_DEVIATION_Y_UM = 0
+PID_MAX_DEVIATION_Z_UM = 0
+PID_HOME_ZONE_X_UM = 0
+PID_HOME_ZONE_Y_UM = 0
+PID_HOME_ZONE_Z_UM = 0
+PID_TOLERANCE_X_UM = 0.0
+PID_TOLERANCE_Y_UM = 0.0
+PID_TOLERANCE_Z_UM = 0.0
 
 # distance for each count (um)
 ENCODER_RESOLUTION_UM_X = 0.05
