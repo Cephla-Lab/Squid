@@ -1,7 +1,8 @@
 import queue
 import threading
 import time
-from typing import Callable, Optional, Tuple
+from collections import deque
+from typing import Any, Callable, Deque, Optional, Tuple
 
 import numpy as np
 
@@ -26,35 +27,75 @@ class CountStop:
 
 
 class RecordingRouter:
-    """Maps incoming frames to (t,c,z)=(slot,0,0), downsampling to `fps`.
+    """Maps incoming frames to (t,c,z)=(slot,0,0) at `fps`.
 
-    Each accepted frame goes to the slot NEAREST its arrival time relative to
-    the first frame (``slot = round(elapsed / period)``, ties rounding down);
-    a frame whose nearest slot is already filled is rejected.  This anchors
-    pacing absolutely (host-delivery jitter around the period cannot reject
-    at-rate frames or halve the capture rate) and, after a delivery stall, a
-    burst of frames does NOT back-fill the missed slots — the stall stays in
+    Two regimes, chosen by the caller from what the camera reported for the
+    requested rate (see RecordZStackWorker.record):
+
+    ``paced=False`` (default) — the camera free-runs FASTER than `fps` and the
+    router downsamples: each accepted frame goes to the slot NEAREST its arrival
+    time relative to the first frame (``slot = round(elapsed / period)``, ties
+    rounding down); a frame whose nearest slot is already filled is rejected.
+    This anchors pacing absolutely (host-delivery jitter around the period cannot
+    reject at-rate frames or halve the capture rate) and, after a delivery stall,
+    a burst of frames does NOT back-fill the missed slots — the stall stays in
     the data as fill-value holes, keeping the time axis honest (the store is
     then sealed incomplete by the under-delivery path).
+
+    ``paced=True`` — the camera delivers at (or below) `fps`, either because it
+    paces itself to the hint (ToupTek PRECISE_FRAMERATE, simulated camera) or
+    because `fps` IS its free-run maximum.  Every frame is a wanted frame, so
+    frames fill slots sequentially and are never rejected: a sensor free-running
+    a few percent off the nominal rate, or a frame whose host-side callback ran
+    late (a GUI repaint holding the GIL), must not cost a slot.  Only a gap of at
+    least ``max(stall_periods * period, min_stall_s)`` since the previous frame
+    is treated as a real stall and leaves ``round(gap / period) - 1`` holes; the
+    absolute floor matters at high rates, where a period is shorter than an
+    ordinary host hiccup (at 108 fps a 20-50 ms GIL pause is 2-5 periods and cost
+    0.5% of frames without it).  A genuine one-frame camera drop inside that
+    window is absorbed as a one-period shift of the remaining time axis — for a
+    hardware-paced USB3 sensor that is rare, and far cheaper than a recording
+    flagged incomplete.  On the bench the nearest-slot rule rejected ~4% of
+    frames at the camera's 28 fps maximum (sensor at ~28.5 fps) and sealed every
+    such recording incomplete.
     """
 
-    def __init__(self, fps: float):
+    def __init__(self, fps: float, paced: bool = False, stall_periods: float = 1.75, min_stall_s: float = 0.1):
         self._period = 1.0 / fps if fps and fps > 0 else 0.0
+        self._paced = bool(paced)
+        self._stall_gap = max(float(stall_periods) * self._period, float(min_stall_s))
         self._t_index = 0  # next unfilled slot
         self._first_ts: Optional[float] = None
+        self._last_ts: Optional[float] = None
+
+    @property
+    def paced(self) -> bool:
+        return self._paced
 
     def route(self, timestamp: float) -> Optional[Tuple[int, int, int]]:
         if self._first_ts is None:
             self._first_ts = timestamp
             slot = 0
-        elif self._period > 0:
+        elif self._period <= 0:
+            slot = self._t_index
+        elif self._paced:
+            gap = timestamp - self._last_ts
+            holes = 0
+            if gap >= self._stall_gap:
+                holes = max(0, int(gap / self._period + 0.5) - 1)
+                if holes:
+                    _log.warning(
+                        f"recording stall: {gap * 1000:.0f} ms between frames at slot {self._t_index} "
+                        f"({holes} slot(s) left as fill)"
+                    )
+            slot = self._t_index + holes
+        else:
             # Nearest slot; the epsilon makes exact half-period ties round DOWN
             # so a 2x-rate camera still has alternate frames rejected.
             slot = int((timestamp - self._first_ts) / self._period + 0.5 - 1e-9)
             if slot < self._t_index:
                 return None
-        else:
-            slot = self._t_index
+        self._last_ts = timestamp
         idx = (slot, 0, 0)
         self._t_index = slot + 1
         return idx
@@ -75,9 +116,21 @@ class RecordingWriter:
     concurrently with the drain thread still inside `write_frame`.
     """
 
-    def __init__(self, config: ZarrAcquisitionConfig, max_queue: int = 256, max_bytes: int = 2 * 1024**3):
+    def __init__(
+        self,
+        config: ZarrAcquisitionConfig,
+        max_queue: int = 256,
+        max_bytes: int = 2 * 1024**3,
+        max_inflight: int = 8,
+    ):
         self._writer = ZarrWriter(config)
         self._q: "queue.Queue" = queue.Queue(maxsize=max_queue)
+        # Writes submitted to TensorStore but not yet reaped.  Keeping several in
+        # flight lets encode / file create / write / fsync of consecutive frames
+        # overlap; reaping synchronously after every submit (the old write_frame
+        # loop) capped the drain at ~25 frames/s of 8 MB frames on an NVMe bench,
+        # well under the camera's 28 fps, while 8 in flight sustains >100.
+        self._max_inflight = max(1, int(max_inflight))
         self._thread = threading.Thread(target=self._drain, daemon=True)
         self._dropped = 0
         self._write_errors = 0
@@ -154,12 +207,27 @@ class RecordingWriter:
             if self._dropped == 1 or self._dropped % 100 == 0:
                 _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
 
+    def _reap(self, future, nbytes: int, t: int) -> None:
+        """Wait for one submitted write; count a failure; release its byte accounting."""
+        try:
+            future.result()
+        except Exception as e:
+            self._write_errors += 1
+            _log.error(f"recording write_frame failed t={t}: {e}")
+        finally:
+            with self._bytes_lock:
+                self._held_bytes -= nbytes
+
     def _drain(self) -> None:
         """Background thread: sole owner of ZarrWriter after start().
 
         Reads the queue with a short timeout so it can notice an abort between
-        frames.  On exit, calls writer.abort() or writer.finalize() as appropriate.
+        frames.  Each frame is submitted to TensorStore and reaped later, keeping
+        up to ``max_inflight`` writes outstanding; every submission is reaped
+        (and its errors counted) before the store is sealed.  On exit, calls
+        writer.abort() or writer.finalize() as appropriate.
         """
+        inflight: Deque[Tuple[Any, int, int]] = deque()
         try:
             while True:
                 if self._abort_requested.is_set():
@@ -169,19 +237,31 @@ class RecordingWriter:
                 except queue.Empty:
                     if self._flush_and_exit.is_set():
                         break  # backlog flushed after a wedged finalize()
+                    # Idle: reap what has completed so errors surface promptly.
+                    while inflight and getattr(inflight[0][0], "done", lambda: False)():
+                        self._reap(*inflight.popleft())
                     continue
                 if item is _SENTINEL:
                     break
                 frame, t, c, z = item
+                nbytes = int(getattr(frame, "nbytes", 0))
                 try:
-                    self._writer.write_frame(frame, t=t, c=c, z=z)
+                    future = self._writer.submit_frame(frame, t=t, c=c, z=z)
                 except Exception as e:
                     self._write_errors += 1
                     _log.error(f"recording write_frame failed t={t}: {e}")
-                finally:
                     with self._bytes_lock:
-                        self._held_bytes -= int(getattr(frame, "nbytes", 0))
+                        self._held_bytes -= nbytes
+                    continue
+                inflight.append((future, nbytes, t))
+                while len(inflight) >= self._max_inflight:
+                    self._reap(*inflight.popleft())
         finally:
+            # Every submission is reaped before sealing, on every exit path
+            # (sentinel, abort, flush-and-exit): the seal must reflect all
+            # write errors, and abort()/finalize() must not race in-flight I/O.
+            while inflight:
+                self._reap(*inflight.popleft())
             if self._abort_requested.is_set():
                 self._writer.abort()
             elif self._write_errors > 0 or self._dropped > 0 or self._incomplete_info is not None:
@@ -313,13 +393,22 @@ class ContinuousFrameSource:
 
     def start(self, on_frame: Callable) -> None:
         # Order matters: switching to CONTINUOUS resets the frame-rate strategy to
-        # MAX on toupcam, wiping any earlier fps hint.  Set the mode FIRST, then the
-        # frame rate, so the PRECISE_FRAMERATE hint survives the mode switch.
+        # MAX on toupcam, wiping any earlier fps hint, so the mode switch comes
+        # first.  The hint itself is (re)applied AFTER the stream is up: on toupcam
+        # the PRECISE_FRAMERATE range is only readable, and a write only validated
+        # against the current resolution / bit depth, while the pull-mode stream
+        # runs — a hint written while stopped after a binning change is rejected
+        # (or clamped to the previous mode's range) and the sensor keeps pacing at
+        # whatever was set before.  The caller's earlier set_frame_rate() probe
+        # already sized the dataset; this call just makes the hardware match it.
         if not self._already_configured:
             self._camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-            self._camera.set_frame_rate(self._fps)
         self._cb_id = self._camera.add_frame_callback(on_frame)
         self._camera.start_streaming()
+        try:
+            self._camera.set_frame_rate(self._fps)
+        except Exception:
+            _log.exception("failed to apply the frame-rate hint after stream start")
 
     def stop(self) -> None:
         self._camera.stop_streaming()

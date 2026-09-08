@@ -634,7 +634,9 @@ class ZarrWriter:
         The returned object's ``.result()`` blocks until the write is committed (and raises if it
         failed). TensorStore copies the source array as part of the write, so ``image`` may be
         released once the future completes. Keeping several submissions in flight lets TensorStore
-        overlap encode, file creation, write and fsync of consecutive frames.
+        overlap encode, file creation, write and fsync of consecutive frames (on the bench a single synchronous
+        writer topped out at ~25 frames/s of 8 MB frames, while 4-8 in flight sustained >100 frames/s
+        to the same NVMe).
 
         Args:
             image: 2D image array (Y, X)
