@@ -1296,3 +1296,46 @@ def test_run_acquisition_writes_both_yaml_files(tmp_path, monkeypatch):
     experiment_dir = next(tmp_path.iterdir())
     assert (experiment_dir / "acquisition_channels.yaml").exists()
     assert (experiment_dir / "acquisition.yaml").exists()
+
+
+def test_record_routes_sequentially_when_camera_paces_and_downsamples_when_it_cannot(tmp_path, monkeypatch):
+    """The router regime follows what set_frame_rate reports: achievable <= requested (the
+    camera paces itself, or the request is its maximum) -> every frame is wanted and slots
+    are sequential; achievable > requested (no hardware pacing) -> downsample by arrival."""
+    pytest.importorskip("tensorstore")
+    import control.core.record_zstack_worker as rzw
+
+    captured = {}
+
+    class _SpyRouter(rzw.RecordingRouter):
+        def __init__(self, fps, paced=False, **kw):
+            captured["fps"], captured["paced"] = fps, paced
+            super().__init__(fps, paced=paced, **kw)
+
+    monkeypatch.setattr(rzw, "RecordingRouter", _SpyRouter)
+
+    # 1) camera honours the hint (simulated camera clamps to the request): paced.
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path / "paced", recording_enabled=True, zstack_enabled=False
+    )
+    worker.run()
+    assert not aborted["v"]
+    assert captured["paced"] is True and captured["fps"] == 10.0
+
+    # 2) camera reports it free-runs faster than requested: downsample regime.
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path / "free", recording_enabled=True, zstack_enabled=False
+    )
+    monkeypatch.setattr(type(scope.camera), "set_frame_rate", lambda self, fps: 100.0)
+    worker.run()
+    assert not aborted["v"]
+    assert captured["paced"] is False and captured["fps"] == 10.0
+
+    # 3) camera is the limit (reports a lower achievable rate): paced at that rate.
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path / "limited", recording_enabled=True, zstack_enabled=False
+    )
+    monkeypatch.setattr(type(scope.camera), "set_frame_rate", lambda self, fps: 5.0)
+    worker.run()
+    assert not aborted["v"]
+    assert captured["paced"] is True and captured["fps"] == 5.0

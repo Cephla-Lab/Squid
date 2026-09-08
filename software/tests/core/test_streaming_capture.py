@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from control.core.streaming_capture import CountStop, RecordingRouter, StreamingCapture
 
@@ -389,6 +390,30 @@ def test_streaming_capture_logs_dropped_summary(caplog):
 # ---------------------------------------------------------------------------
 
 
+class _DoneFuture:
+    """Stand-in for a completed TensorStore write future."""
+
+    def done(self):
+        return True
+
+    def result(self):
+        return None
+
+
+def _patch_submit(monkeypatch, fn):
+    """Fake ZarrWriter.submit_frame so the drain thread runs ``fn`` synchronously at submission
+    (blocking or raising there, exactly like the old synchronous write_frame did) and receives
+    an already-completed future.  Keeps the wedge / error / queue-full scenarios below meaningful
+    now that the drain pipelines submissions."""
+    from control.core.zarr_writer import ZarrWriter
+
+    def submit(self, image, t, c, z, fov=None):
+        fn(self, image, t, c, z, fov)
+        return _DoneFuture()
+
+    monkeypatch.setattr(ZarrWriter, "submit_frame", submit)
+
+
 def _stub_zarr_cfg(tmp_path):
     from control.core.zarr_writer import ZarrAcquisitionConfig
 
@@ -418,7 +443,7 @@ def test_recording_writer_write_errors_seal_incomplete(tmp_path, monkeypatch):
     def boom(self, image, t, c, z, fov=None):
         raise RuntimeError("disk full")
 
-    monkeypatch.setattr(ZarrWriter, "write_frame", boom)
+    _patch_submit(monkeypatch, boom)
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append("finalize"))
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append("abort"))
 
@@ -441,7 +466,7 @@ def test_recording_writer_finalize_bounded_when_drain_wedged(tmp_path, monkeypat
 
     release = threading.Event()
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: release.wait(20))
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
@@ -523,7 +548,7 @@ def test_recording_writer_byte_bound_drops(tmp_path, monkeypatch):
 
     release = threading.Event()
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: release.wait(20))
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
@@ -550,7 +575,7 @@ def test_dropped_frames_seal_store_incomplete(tmp_path, monkeypatch):
     release = threading.Event()
     calls = []
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(10))
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: release.wait(10))
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append("finalize"))
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append("abort"))
 
@@ -576,7 +601,7 @@ def test_finalize_wedged_flag_feeds_fail_fast(tmp_path, monkeypatch):
 
     release = threading.Event()
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: release.wait(20))
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: release.wait(20))
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
@@ -604,7 +629,7 @@ def test_finalize_total_time_respects_timeout_budget(tmp_path, monkeypatch):
     from control.core.streaming_capture import RecordingWriter
 
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: _time.sleep(0.95))
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: _time.sleep(0.95))
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
@@ -638,7 +663,7 @@ def test_under_delivery_marks_store_incomplete(tmp_path, monkeypatch):
 
     calls = []
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: None)
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: None)
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append(("finalize",)))
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append(("abort", k)))
 
@@ -711,7 +736,7 @@ def test_wedged_finalize_flushes_backlog_instead_of_discarding(tmp_path, monkeyp
         written.append(t)
 
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", slow_write)
+    _patch_submit(monkeypatch, slow_write)
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
@@ -740,7 +765,7 @@ def test_join_timeout_is_not_wedged(tmp_path, monkeypatch):
     from control.core.streaming_capture import RecordingWriter
 
     monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
-    monkeypatch.setattr(ZarrWriter, "write_frame", lambda self, image, t, c, z, fov=None: _time.sleep(0.4))
+    _patch_submit(monkeypatch, lambda self, image, t, c, z, fov=None: _time.sleep(0.4))
     monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
     monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
 
@@ -752,22 +777,26 @@ def test_join_timeout_is_not_wedged(tmp_path, monkeypatch):
     assert rw.finalize_wedged is False, "slow-but-progressing drain wrongly flagged wedged"
 
 
-def test_frame_source_skips_reconfig_when_already_configured():
-    """R11: record() already probes set_acquisition_mode + set_frame_rate for
-    the achievable fps; ContinuousFrameSource repeating both doubles the camera
-    reconfiguration (mode switch + strobe/exposure re-send) on every FOV."""
+def test_frame_source_skips_mode_switch_when_already_configured_but_applies_rate_after_start():
+    """R11: record() already probes set_acquisition_mode + set_frame_rate for the
+    achievable fps; ContinuousFrameSource must not repeat the mode switch (a strobe/
+    exposure re-send on every FOV).  The frame-rate hint, however, is applied once
+    more AFTER start_streaming(): on toupcam a hint written while the stream is
+    stopped can be rejected against a stale range after a binning change, and the
+    sensor then keeps its previous pacing."""
     from control.core.streaming_capture import ContinuousFrameSource
 
     class _CountingCamera:
         def __init__(self):
             self.mode_calls = 0
-            self.rate_calls = 0
+            self.rate_calls = []
+            self.streaming = False
 
         def set_acquisition_mode(self, mode):
             self.mode_calls += 1
 
         def set_frame_rate(self, fps):
-            self.rate_calls += 1
+            self.rate_calls.append((fps, self.streaming))
             return fps
 
         def add_frame_callback(self, cb):
@@ -777,24 +806,23 @@ def test_frame_source_skips_reconfig_when_already_configured():
             pass
 
         def start_streaming(self):
-            pass
+            self.streaming = True
 
         def stop_streaming(self):
-            pass
+            self.streaming = False
 
     cam = _CountingCamera()
     src = ContinuousFrameSource(cam, fps=10.0, already_configured=True)
     src.start(lambda f: None)
     src.stop()
-    assert cam.mode_calls == 0 and cam.rate_calls == 0, (
-        f"already-configured source still reconfigured the camera " f"(mode={cam.mode_calls}, rate={cam.rate_calls})"
-    )
+    assert cam.mode_calls == 0, f"already-configured source still switched the mode ({cam.mode_calls})"
+    assert cam.rate_calls == [(10.0, True)]  # exactly one hint, with the stream running
 
     cam2 = _CountingCamera()
     src2 = ContinuousFrameSource(cam2, fps=10.0)
     src2.start(lambda f: None)
     src2.stop()
-    assert cam2.mode_calls == 1 and cam2.rate_calls == 1  # default behavior unchanged
+    assert cam2.mode_calls == 1 and cam2.rate_calls == [(10.0, True)]
 
 
 def test_zarr_config_extra_squid_attrs_written(tmp_path):
@@ -828,3 +856,172 @@ def test_zarr_config_extra_squid_attrs_written(tmp_path):
     assert squid_attrs["plane_index"] == 2
     assert squid_attrs["plane_z_offset_um"] == 6.0
     assert squid_attrs["n_planes"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Pipelined drain: submissions are reaped later, errors still counted, window bounded
+# ---------------------------------------------------------------------------
+
+
+def test_recording_writer_reaps_future_errors_and_seals_incomplete(tmp_path, monkeypatch):
+    """A write that fails *after* submission (future.result() raises) must still count as a
+    write error and seal the store incomplete, even though the drain no longer blocks per frame."""
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    class _FailingFuture:
+        def done(self):
+            return True
+
+        def result(self):
+            raise RuntimeError("commit failed: disk full")
+
+    calls = []
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "submit_frame", lambda self, image, t, c, z, fov=None: _FailingFuture())
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: calls.append("finalize"))
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: calls.append(("abort", k.get("mark_aborted"))))
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_inflight=4)
+    rw.start()
+    for t in range(3):
+        rw.enqueue(np.zeros((4, 4), np.uint16), t, 0, 0)
+    rw.finalize()
+
+    assert rw.write_error_count == 3
+    assert calls == [("abort", False)], calls
+    assert rw._held_bytes == 0  # byte accounting released on reap, not leaked
+
+
+def test_recording_writer_bounds_inflight_submissions(tmp_path, monkeypatch):
+    """At most max_inflight writes are outstanding: the drain must reap the oldest before
+    submitting more, so a stalled store cannot accumulate unbounded TensorStore buffers."""
+    import threading
+    import time as _time
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+    submitted = []
+
+    class _BlockingFuture:
+        def done(self):
+            return release.is_set()
+
+        def result(self):
+            release.wait(20)
+
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    # Record (writer, t): drain threads leaked by earlier wedge tests in this module also
+    # hit this class-level fake, so only this writer's submissions are asserted on.
+    monkeypatch.setattr(
+        ZarrWriter,
+        "submit_frame",
+        lambda self, image, t, c, z, fov=None: (submitted.append((self, t)), _BlockingFuture())[1],
+    )
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=64, max_inflight=4)
+    mine = lambda: [t for w, t in submitted if w is rw._writer]
+    rw.start()
+    for t in range(12):
+        rw.enqueue(np.zeros((4, 4), np.uint16), t, 0, 0)
+    _time.sleep(0.5)
+    # 4 submitted; the drain is blocked reaping the oldest before submitting the 5th.
+    assert mine() == [0, 1, 2, 3], mine()
+    assert rw.dropped_count == 0
+    release.set()
+    rw.finalize()
+    assert mine() == list(range(12))
+    assert rw.write_error_count == 0
+    assert rw._held_bytes == 0
+
+
+def test_recording_writer_pipelined_real_store_is_complete(tmp_path):
+    """End to end through a real TensorStore store with the default in-flight window: every
+    frame lands in its slot and the store seals complete."""
+    import json
+
+    pytest.importorskip("tensorstore")
+    from control.core.streaming_capture import RecordingWriter
+    from control.core.zarr_writer import ZarrAcquisitionConfig
+
+    T = 40
+    cfg = ZarrAcquisitionConfig(
+        output_path=str(tmp_path / "pipelined.ome.zarr"),
+        shape=(T, 1, 1, 16, 16),
+        dtype=np.uint16,
+        pixel_size_um=1.0,
+        z_step_um=None,
+        time_increment_s=0.1,
+        channel_names=["BF"],
+        channel_colors=["#FFFFFF"],
+        channel_wavelengths=[None],
+        is_hcs=False,
+    )
+    rw = RecordingWriter(cfg)
+    rw.start()
+    for t in range(T):
+        rw.enqueue(np.full((16, 16), t + 1, np.uint16), t, 0, 0)
+    rw.finalize()
+    assert rw.write_error_count == 0 and rw.dropped_count == 0
+
+    import tensorstore as ts
+
+    ds = ts.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": cfg.output_path}}).result()
+    for t in range(T):
+        assert int(np.asarray(ds[t, 0, 0].read().result())[0, 0]) == t + 1
+    meta = json.load(open(tmp_path / "pipelined.ome.zarr" / "zarr.json"))
+    assert meta["attributes"]["_squid"]["acquisition_complete"] is True
+
+
+# ---------------------------------------------------------------------------
+# Paced router: camera delivers at (or below) the target rate -> sequential slots
+# ---------------------------------------------------------------------------
+
+
+def test_paced_router_takes_every_frame_sequentially_despite_rate_mismatch():
+    # Sensor free-running ~2% fast (period 98 ms vs nominal 100 ms): the nearest-slot
+    # rule would reject a frame every ~50 as a "duplicate"; paced routing never does.
+    r = RecordingRouter(fps=10.0, paced=True)
+    slots = [r.route(100.0 + k * 0.098) for k in range(120)]
+    assert slots == [(k, 0, 0) for k in range(120)]
+
+
+def test_paced_router_absorbs_a_late_callback():
+    # Frame 3 delivered 70 ms late (host stall), frame 4 on time -> gap 170 ms then
+    # 30 ms; neither is a stall, no hole, no rejection.
+    r = RecordingRouter(fps=10.0, paced=True)
+    assert r.route(100.00) == (0, 0, 0)
+    assert r.route(100.10) == (1, 0, 0)
+    assert r.route(100.20) == (2, 0, 0)
+    assert r.route(100.37) == (3, 0, 0)  # 70 ms late
+    assert r.route(100.40) == (4, 0, 0)  # catch-up frame
+
+
+def test_paced_router_absolute_floor_absorbs_host_hiccups_at_high_fps():
+    # 100 fps (10 ms period): a 60 ms host pause is 6 periods but under the 100 ms floor,
+    # so it is delivery jitter, not a stall; a 250 ms gap is a stall (24 holes).
+    r = RecordingRouter(fps=100.0, paced=True)
+    assert r.route(100.00) == (0, 0, 0)
+    assert r.route(100.01) == (1, 0, 0)
+    assert r.route(100.07) == (2, 0, 0)  # 60 ms late
+    assert r.route(100.08) == (3, 0, 0)
+    assert r.route(100.33) == (28, 0, 0)  # 250 ms gap -> round(25) - 1 = 24 holes
+
+
+def test_paced_router_keeps_holes_for_a_real_stall():
+    # Two whole periods with no frame (gap 300 ms at 10 fps) -> two slots stay holes.
+    r = RecordingRouter(fps=10.0, paced=True)
+    assert r.route(100.0) == (0, 0, 0)
+    assert r.route(100.1) == (1, 0, 0)
+    assert r.route(100.4) == (4, 0, 0)  # slots 2 and 3 are fill holes
+    assert r.route(100.5) == (5, 0, 0)
+
+
+def test_unpaced_router_still_downsamples_a_2x_source():
+    # Regression guard: the default regime is unchanged for cameras that free-run faster.
+    r = RecordingRouter(fps=10.0)
+    slots = [r.route(100.0 + k * 0.05) for k in range(10)]
+    assert slots == [(0, 0, 0), None, (1, 0, 0), None, (2, 0, 0), None, (3, 0, 0), None, (4, 0, 0), None]

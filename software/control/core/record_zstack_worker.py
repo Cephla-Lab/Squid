@@ -138,6 +138,11 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # Achievable recording fps, probed once on the first FOV (the recording
         # exposure is fixed, so the camera's clamp can't change between FOVs).
         self._effective_fps: Optional[float] = None
+        # True when the camera reported it will deliver at (or below) the requested
+        # rate — it paces itself to the hint, or the request is at its free-run
+        # maximum — so every frame is wanted and the RecordingRouter fills slots
+        # sequentially instead of downsampling by arrival time.
+        self._paced: bool = False
         # Set at the top of run(); _wait_for_dt paces timepoint STARTS from it.
         self._acq_start_time: Optional[float] = None
 
@@ -343,6 +348,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
         if self._effective_fps is None:
             effective_fps = self.params.fps
+            paced = False
             try:
                 achievable_fps = self.camera.set_frame_rate(self.params.fps)
                 if achievable_fps and 0 < achievable_fps < self.params.fps:
@@ -351,9 +357,18 @@ class RecordZStackWorker(MultiPointWorkerBase):
                         f"(achievable ≈ {achievable_fps:.2f}); recording at the achievable rate"
                     )
                     effective_fps = achievable_fps
+                # A camera that reports it will deliver at (or below) the requested
+                # rate delivers only wanted frames: route sequentially.  A camera
+                # that reports a HIGHER rate free-runs faster than requested (no
+                # hardware pacing) and must be downsampled by arrival time.
+                paced = bool(achievable_fps) and achievable_fps <= self.params.fps * (1 + 1e-6)
             except Exception:
                 log.exception("set_frame_rate probe failed; assuming the requested fps")
             self._effective_fps = effective_fps
+            self._paced = paced
+            log.info(
+                f"recording at {effective_fps:g} fps ({'camera-paced, sequential slots' if paced else 'free-run, downsampled by arrival time'})"
+            )
         else:
             try:
                 self.camera.set_frame_rate(self._effective_fps)
@@ -451,7 +466,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
         writer = RecordingWriter(cfg)
         cap = StreamingCapture(
             ContinuousFrameSource(self.camera, effective_fps, already_configured=True),
-            RecordingRouter(effective_fps),
+            RecordingRouter(effective_fps, paced=self._paced),
             CountStop(T),
             writer,
             abort_fn=self.abort_requested_fn,
