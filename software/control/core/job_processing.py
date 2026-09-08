@@ -917,9 +917,22 @@ class JobRunner(multiprocessing.Process):
         if self.is_alive():
             self.terminate()
             self.join(timeout=1.0)
-        # Clean up multiprocessing primitives to avoid semaphore leaks
+        # Clean up multiprocessing primitives to avoid semaphore leaks.
+        #
+        # cancel_join_thread() must come first. A Queue feeds the underlying pipe from a
+        # background thread; if we terminated the worker above while it still had unread
+        # data queued, that thread stays blocked in a pipe write that no longer has a
+        # reader, and join_thread() then waits on it forever. This deadlocks reliably on
+        # Windows, where the pipe is a named pipe whose write blocks once the buffer fills
+        # and the child is gone (on Linux a small payload fits the buffer, so the write
+        # completes and the hang is usually not observed).
+        #
+        # Discarding those bytes is correct here: we are shutting the runner down and
+        # dropping both queues, so nothing will ever read them.
+        self._input_queue.cancel_join_thread()
         self._input_queue.close()
         self._input_queue.join_thread()
+        self._output_queue.cancel_join_thread()
         self._output_queue.close()
         self._output_queue.join_thread()
         # Clear references to allow garbage collection of Event and Value semaphores

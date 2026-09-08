@@ -135,6 +135,13 @@ class UnifiedMosaicWidget(QWidget):
 
         self.mode = _load_last_view_mode()
         self.layers_initialized = False
+        # Deferred-redraw flag. Painting this napari/vispy canvas while its tab is
+        # hidden fails on PyQt6 (the hidden QOpenGLWidget has an incomplete
+        # framebuffer → GL_INVALID_FRAMEBUFFER_OPERATION, which corrupts the shared
+        # GL program and cascades into "Cannot SIZE object N" on later frames). Tile
+        # numpy data is still written while hidden (so saves stay correct); only the
+        # GL refresh is deferred and flushed in showEvent once the tab is visible.
+        self._pending_refresh = False
         self.mosaic_dtype = None
         self.viewer_pixel_size_mm = None
 
@@ -282,11 +289,38 @@ class UnifiedMosaicWidget(QWidget):
         if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[PLATE_BOUNDARIES_LAYER])
         if canvas_changed and self.mode == DisplayMode.PLATE:
-            self._fit_view_to_plate()
+            if self._display_active():
+                self._fit_view_to_plate()
+            else:
+                self._pending_refresh = True
 
     def _image_layers(self):
         """Iterate napari image layers, skipping shape/boundary overlays."""
         return [lyr for lyr in self.viewer.layers if lyr.name not in NON_IMAGE_LAYERS and hasattr(lyr, "data")]
+
+    def _display_active(self) -> bool:
+        """Whether the mosaic canvas is on-screen and safe to repaint.
+
+        A napari/vispy canvas embedded in a hidden QTabWidget page cannot be
+        painted on PyQt6 (the hidden QOpenGLWidget has no valid framebuffer), so
+        callers defer GL refreshes to showEvent when this returns False.
+        """
+        return self.isVisible()
+
+    def showEvent(self, event):
+        """Flush any GL refreshes that were deferred while the tab was hidden.
+
+        Tile data written while hidden is already in each layer's array; here we
+        repaint once the framebuffer is valid so the tab shows the latest mosaic.
+        """
+        super().showEvent(event)
+        if self._pending_refresh:
+            self._pending_refresh = False
+            for lyr in self._image_layers():
+                lyr.refresh()
+            if self.mode == DisplayMode.PLATE:
+                self._draw_plate_boundaries()
+            self.resetView()
 
     def enable_shape_drawing(self, enable):
         """Set Manual-ROI drawing on/off. Idempotent: the upstream signal
@@ -535,8 +569,11 @@ class UnifiedMosaicWidget(QWidget):
 
             layer = self.viewer.layers[channel_name]
             blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)])
-            layer.refresh()
-            self._draw_plate_boundaries()
+            if self._display_active():
+                layer.refresh()
+                self._draw_plate_boundaries()
+            else:
+                self._pending_refresh = True
             # The fit-the-whole-plate camera reset only fires when the canvas
             # is (re)allocated — in setPlateLayout when slot dims/coverage
             # change and in _create_channel_layer when a layer is created.
@@ -556,6 +593,8 @@ class UnifiedMosaicWidget(QWidget):
         mosaic_height = int(math.ceil((self.viewer_extents[1] - self.viewer_extents[0]) / self.viewer_pixel_size_mm))
         mosaic_width = int(math.ceil((self.viewer_extents[3] - self.viewer_extents[2]) / self.viewer_pixel_size_mm))
 
+        display_active = self._display_active()
+
         if layer.data.shape[:2] != (mosaic_height, mosaic_width):
             y_offset = int(math.floor((prev_top_left[0] - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
             x_offset = int(math.floor((prev_top_left[1] - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
@@ -567,14 +606,20 @@ class UnifiedMosaicWidget(QWidget):
                 x_end = min(x_offset + lyr.data.shape[1], new_data.shape[1])
                 new_data[y_offset:y_end, x_offset:x_end] = lyr.data[: y_end - y_offset, : x_end - x_offset]
                 lyr.data = new_data
-            self.resetView()
             # Keep ROI vertices anchored to their stage-coordinate positions after the shift.
             self._update_shape_layer_position()
+            if display_active:
+                self.resetView()
 
         y_pos = int(math.floor((tl_y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
         x_pos = int(math.floor((tl_x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
         blit_tiles_to_canvas(layer.data, [(image, y_pos, x_pos)])
-        layer.refresh()
+        # Painting a hidden tab's canvas fails on PyQt6 (see _display_active); defer
+        # the GL refresh to showEvent. The tile is already in layer.data either way.
+        if display_active:
+            layer.refresh()
+        else:
+            self._pending_refresh = True
 
     def _create_channel_layer(self, channel_name, reference_image):
         """Create a new napari image layer for a channel.
@@ -613,9 +658,13 @@ class UnifiedMosaicWidget(QWidget):
         layer.mouse_double_click_callbacks.append(self._on_double_click)
         # Fit the view when the first plate-sized canvas is created so the user
         # immediately sees the full plate; subsequent tiles preserve any
-        # pan/zoom they've made since.
+        # pan/zoom they've made since. Deferred to showEvent when the tab is
+        # hidden — painting a hidden canvas fails on PyQt6 (see _display_active).
         if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
-            self._fit_view_to_plate()
+            if self._display_active():
+                self._fit_view_to_plate()
+            else:
+                self._pending_refresh = True
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""

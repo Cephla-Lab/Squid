@@ -11,7 +11,7 @@ import os
 
 # Pin the Qt binding before importing qtpy, matching the convention used by
 # every other Qt-using module in this codebase.
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 
 import getpass
 from typing import NamedTuple, Optional

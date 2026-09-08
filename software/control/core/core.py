@@ -4,7 +4,7 @@ import sys
 import tempfile
 
 # qt libraries
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 import qtpy
 import pyqtgraph as pg
 from qtpy.QtCore import *
@@ -1683,9 +1683,6 @@ class NavigationViewer(QFrame):
         rows,
         cols,
     ):
-        if isinstance(sample_format, QVariant):
-            sample_format = sample_format.value()
-
         if sample_format == "glass slide":
             if IS_HCS:
                 sample = "4 glass slide"
