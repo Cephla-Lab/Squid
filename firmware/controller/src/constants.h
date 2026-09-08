@@ -45,7 +45,9 @@
 //               The closed loop re-engages after a home-zone hold or a homing
 //               only once the axis is at rest, never while the ramp runs; the
 //               first engage after a homing aligns ENC_POS to XACTUAL (stages
-//               whose actuator homes below the stage's stop).
+//               whose actuator homes below the stage's stop). The loop is
+//               rest-only: opened for every move, re-engaged when the ramp
+//               stops, COMPLETED reported after that correction settles.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 

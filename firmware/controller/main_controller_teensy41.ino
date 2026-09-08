@@ -61,7 +61,7 @@ void loop() {
   do_focus_control();
 
   send_position_update();
+  check_closed_loop();   // before check_position: a loop re-engaging as the ramp stops makes COMPLETED wait for the correction
   check_position();
   check_limits();
-  check_closed_loop();
 }

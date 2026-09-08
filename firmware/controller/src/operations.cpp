@@ -705,6 +705,25 @@ static bool axis_is_homing(uint8_t i)
   }
 }
 
+// Rest-only closed loop. The TMC4361A loop adds a correction velocity while the
+// ramp runs; at the gains that give a fast, tight settle (P 65535 at 16 usteps/FS)
+// any error above the deadband saturates the correction, which then switches at
+// the loop rate and shakes the motor at a few hundred hertz. On the second bench Z
+// (2026-09-07) that limit cycle was present at every speed (velocity ripple 0.5 mm/s
+// vs 0.05 open loop, +/-16 um error swings, 12 dB louder) and stalled the motor at
+// 2.5 mm/s and above, while open loop ran clean to 4 mm/s. Imaging needs the stage
+// in position at rest, not tracked to the micron in flight, so a requested loop is
+// opened for every move and re-engaged (check_closed_loop, at rest only) when the
+// ramp stops; check_position then reports COMPLETED after that correction settles.
+void pid_open_for_move(uint8_t axis)
+{
+  if (!pid_requested[axis] || !stage_PID_enabled[axis])
+    return;
+  tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+  stage_PID_enabled[axis] = 0;
+  pid_zone_hold[axis] = true;
+}
+
 void check_closed_loop()
 {
   for (uint8_t i = 0; i < TOTAL_AXES; i++)
@@ -738,6 +757,13 @@ void check_closed_loop()
         tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
         stage_PID_enabled[i] = 0;
         pid_zone_hold[i] = true;
+        continue;
+      }
+      // Rest-only loop (see pid_open_for_move): a move that did not come through a
+      // stage command - joystick, focus wheel - opens the loop here, within 1 ms.
+      if (tmc4361A_isRunning(&tmc4361[i], 0))
+      {
+        pid_open_for_move(i);
         continue;
       }
       // Deviation watchdog: a fault drops the REQUEST as well, so a decoupled
