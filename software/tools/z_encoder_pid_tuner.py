@@ -257,6 +257,9 @@ class ZTuner:
         m.set_pid_home_zone(AXIS.Z, self.a.zone_um); self.wait()
         if self.a.tol_um > 0:
             m.set_pid_tolerance(AXIS.Z, self.a.tol_um, self.a.tol_um); self.wait()
+        if self.a.open_above > 0:
+            # loop opened above this ramp velocity and re-engaged below it; 0 = rest-only (firmware default)
+            m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
         if self.a.window_um > 0:
             # COMPLETED is reported once |XACTUAL - target| <= window (firmware 1.6, command 49); with the
             # rest-only loop this is the position error the correction still has to close when the ack arrives
@@ -876,6 +879,8 @@ def main():
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
     ap.add_argument("--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)")
+    ap.add_argument("--open-above", type=float, default=0.0,
+                    help="ramp velocity (mm/s) above which the loop is opened during moves; 0 = rest-only, >= vmax = in-flight")
     ap.add_argument("--align-after-home", action="store_true",
                     help="re-align the encoder frame to XACTUAL at --depth-mm after homing (stages with a decoupled gap above home)")
     ap.add_argument("--accel-list", type=float, nargs="+", default=[100, 150, 200, 250, 300, 350, 390])

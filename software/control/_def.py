@@ -210,6 +210,7 @@ class CMD_SET:
     SET_RAMP_PROFILE = 47  # Per-axis ramp profile: trapezoidal or S-shaped (fw >= 1.6)
     SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
+    SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -757,6 +758,24 @@ PID_HOME_ZONE_Z_UM = 0
 PID_TOLERANCE_X_UM = 0.0
 PID_TOLERANCE_Y_UM = 0.0
 PID_TOLERANCE_Z_UM = 0.0
+
+# When the closed loop is engaged during a move (firmware >= 1.6, SET_PID_OPEN_ABOVE). The loop is opened
+# while the ramp runs faster than this (mm/s) and re-engages as it slows; 0 = rest-only (opened for every
+# move, engaged at rest: +11 ms on a 1 um step, measured 2026-09-08 on a TMC2660 stage); a value at or
+# above the axis max velocity keeps the loop engaged throughout (the Squid+ bench qualification, +2-3 ms).
+# About 1 mm/s keeps focus steps of a few um fully closed-loop and opens only repositioning moves; use it
+# on a stage whose motor does not hold VMAX plus the correction (the second bench Z stalled at 2.5 mm/s).
+PID_OPEN_ABOVE_X_mm = 0.0
+PID_OPEN_ABOVE_Y_mm = 0.0
+PID_OPEN_ABOVE_Z_mm = 0.0
+
+# Completion window per stage axis in um (firmware >= 1.6, SET_COMPLETION_WINDOW): a move is acknowledged
+# once the step counter - and, with the loop engaged, the encoder - is within this distance of the target
+# while the ramp finishes. 0 = acknowledge at the exact target (closed loop: encoder inside the two-count
+# target tolerance, i.e. 0.1 um on a 0.1 um encoder).
+COMPLETION_WINDOW_X_UM = 0.0
+COMPLETION_WINDOW_Y_UM = 0.0
+COMPLETION_WINDOW_Z_UM = 0.0
 
 # distance for each count (um)
 ENCODER_RESOLUTION_UM_X = 0.05

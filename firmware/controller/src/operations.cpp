@@ -586,13 +586,19 @@ void do_focus_control()
 // SET_COMPLETION_WINDOW: a commanded move counts as complete once XACTUAL is within the
 // axis's window of the target, while the ramp is still finishing. Off (0) for every axis
 // unless the host sets it; the filter wheels use it so an exposure can start while the
-// last degrees are travelled.
+// last degrees are travelled. With the closed loop engaged the encoder error must be
+// inside the window as well: the counter reaching the target says nothing about where
+// the stage is until the correction has run (measured 2026-09-08: a 0.3 um window on a
+// closed-loop Z acknowledged 13 ms before the encoder had settled).
 static inline bool within_completion_window(uint8_t axis, int32_t target)
 {
   int32_t win = completion_window_usteps[axis];
   if (win <= 0) return false;
   int32_t d = tmc4361A_currentPosition(&tmc4361[axis]) - target;
-  return (d < 0 ? -d : d) <= win;
+  if ((d < 0 ? -d : d) > win) return false;
+  if (!stage_PID_enabled[axis]) return true;
+  int32_t e = tmc4361A_read_deviation(&tmc4361[axis]);
+  return (e < 0 ? -e : e) <= win;
 }
 
 void check_position()
@@ -705,16 +711,21 @@ static bool axis_is_homing(uint8_t i)
   }
 }
 
-// Rest-only closed loop. The TMC4361A loop adds a correction velocity while the
-// ramp runs; at the gains that give a fast, tight settle (P 65535 at 16 usteps/FS)
-// any error above the deadband saturates the correction, which then switches at
-// the loop rate and shakes the motor at a few hundred hertz. On the second bench Z
-// (2026-09-07) that limit cycle was present at every speed (velocity ripple 0.5 mm/s
-// vs 0.05 open loop, +/-16 um error swings, 12 dB louder) and stalled the motor at
-// 2.5 mm/s and above, while open loop ran clean to 4 mm/s. Imaging needs the stage
-// in position at rest, not tracked to the micron in flight, so a requested loop is
-// opened for every move and re-engaged (check_closed_loop, at rest only) when the
-// ramp stops; check_position then reports COMPLETED after that correction settles.
+// Closed loop open above a ramp velocity (SET_PID_OPEN_ABOVE). The TMC4361A loop adds
+// a correction velocity while the ramp runs; at the gains that give a fast, tight
+// settle (P 65535 at 16 usteps/FS) the in-flight error at cruise speed saturates the
+// correction, which then switches at the loop rate and shakes the motor at a few
+// hundred hertz. On the second bench Z (2026-09-07) that limit cycle was present at
+// every cruise speed (velocity ripple 0.5 mm/s vs 0.05 open loop, +/-16 um error
+// swings, 12 dB louder) and stalled the motor at 2.5 mm/s and above, while open loop
+// ran clean to 4 mm/s. Focus steps never reach such speeds (1 um at 300 mm/s2 peaks
+// at 0.55 mm/s), and they are the moves where every millisecond of settling counts,
+// so the loop is kept while the ramp is slow and opened above pid_open_above_pps:
+// 0 (default) = rest-only, opened for every move and re-engaged when the ramp stops
+// (+11 ms on a 1 um step, measured 2026-09-08); a threshold around 1 mm/s keeps
+// focus steps fully closed-loop and opens only repositioning moves, which re-engage
+// as the ramp slows down again; >= VMAX = engaged throughout. check_position reports
+// COMPLETED once the encoder error is inside the target tolerance.
 void pid_open_for_move(uint8_t axis)
 {
   if (!pid_requested[axis] || !stage_PID_enabled[axis])
@@ -722,6 +733,14 @@ void pid_open_for_move(uint8_t axis)
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
   stage_PID_enabled[axis] = 0;
   pid_zone_hold[axis] = true;
+}
+
+void pid_before_move(uint8_t axis)
+{
+  // Rest-only: open before the ramp starts rather than 1 ms into it. With a velocity
+  // threshold the loop stays on until the ramp actually exceeds it (small steps never do).
+  if (pid_open_above_pps[axis] == 0)
+    pid_open_for_move(axis);
 }
 
 void check_closed_loop()
@@ -745,6 +764,9 @@ void check_closed_loop()
     if (homing)
       pid_realign_pending[i] = true;
 
+    int32_t v_abs = tmc4361A_speed(&tmc4361[i]);   // VACTUAL, pps
+    if (v_abs < 0) v_abs = -v_abs;
+
     if (stage_PID_enabled[i])
     {
       // Home zone: the stage may be resting on its stop while the actuator
@@ -759,9 +781,11 @@ void check_closed_loop()
         pid_zone_hold[i] = true;
         continue;
       }
-      // Rest-only loop (see pid_open_for_move): a move that did not come through a
-      // stage command - joystick, focus wheel - opens the loop here, within 1 ms.
-      if (tmc4361A_isRunning(&tmc4361[i], 0))
+      // Open above the velocity threshold (see pid_open_for_move); with the threshold
+      // at 0 any motion opens the loop - a move that did not come through a stage
+      // command (joystick, focus wheel) is caught here, within 1 ms.
+      int32_t v_open = pid_open_above_pps[i];
+      if (v_open == 0 ? tmc4361A_isRunning(&tmc4361[i], 0) : (v_abs > v_open))
       {
         pid_open_for_move(i);
         continue;
@@ -783,21 +807,28 @@ void check_closed_loop()
     }
     else if (pid_zone_hold[i] && !in_zone && !homing && encoder_configured[i])
     {
-      // Requested, held open by the zone or by homing, now outside: re-engage,
-      // but only from a small error - the loop slews by the error it starts with -
-      // and ONLY AT REST. Engaging while the ramp runs adds the correction velocity
-      // (up to PID_DV_CLIP) on top of VMAX and steps the velocity output; on the
-      // second bench Z (2026-09-07) that stalled the motor the instant the loop
-      // came in at 3 mm/s on leaving the home zone, and the ramp then ran on with
-      // the stage standing still. The commanded move finishes open-loop and the
-      // loop closes when the axis stops, correcting whatever error is left then.
-      if (tmc4361A_isRunning(&tmc4361[i], 0))
+      // Requested, held open by the zone, by homing or by a fast move, now allowed:
+      // re-engage, but only from a small error - the loop slews by the error it
+      // starts with - and only once the ramp is slow enough. Engaging while the ramp
+      // runs fast adds the correction velocity (up to PID_DV_CLIP) on top of VMAX and
+      // steps the velocity output; on the second bench Z (2026-09-07) that stalled
+      // the motor the instant the loop came in at 3 mm/s on leaving the home zone,
+      // and the ramp then ran on with the stage standing still. Rest-only (threshold
+      // 0) waits for the axis to stop; a threshold re-engages below 7/8 of it, so a
+      // long move closes its loop during the deceleration and a cruise exactly at
+      // the threshold does not toggle the loop every millisecond.
+      int32_t v_open = pid_open_above_pps[i];
+      bool running = tmc4361A_isRunning(&tmc4361[i], 0);
+      if (v_open == 0 ? running : (v_abs > v_open - v_open / 8))
         continue;
       if (pid_realign_pending[i])
       {
         // First engage after a homing: take the counter's frame as the encoder's.
         // The loop then corrects only deviations that arise from here on, which is
         // the same position semantics open loop has always had on such a stage.
+        // Only at rest: the two frames must be compared with nothing in motion.
+        if (running)
+          continue;
         tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
         pid_realign_pending[i] = false;
       }

@@ -48,6 +48,11 @@
 //               whose actuator homes below the stage's stop). The loop is
 //               rest-only: opened for every move, re-engaged when the ramp
 //               stops, COMPLETED reported after that correction settles.
+//               SET_PID_OPEN_ABOVE (50) makes that a velocity threshold: the
+//               loop stays engaged while the ramp is slower than it (focus
+//               steps), opens above it and re-engages as the ramp slows; 0 is
+//               rest-only, >= VMAX is the in-flight loop. A completion window on
+//               a closed-loop axis now also requires the encoder error inside it.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 

@@ -1,7 +1,7 @@
 #include "stage_commands.h"
 
 #include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
-#include "../operations.h"                   // pid_open_for_move
+#include "../operations.h"                   // pid_before_move
 
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
@@ -88,7 +88,7 @@ void callback_move_z()
     // moveTo(z, focusPosition) every loop, so a rejected move that had already
     // written focusPosition would be carried out anyway on the next pass.
     if (!axis_driver_ready(z)) return;
-    pid_open_for_move(z);
+    pid_before_move(z);
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
     Z_direction = sgn(relative_position);
@@ -188,7 +188,7 @@ void callback_move_to_y()
 void callback_move_to_z()
 {
     if (!axis_driver_ready(z)) return;
-    pid_open_for_move(z);
+    pid_before_move(z);
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
     Z_commanded_target_position = absolute_position;

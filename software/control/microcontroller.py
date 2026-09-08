@@ -1361,6 +1361,22 @@ class Microcontroller:
         cmd[4] = u & 0xFF
         self.send_command(cmd)
 
+    def set_pid_open_above(self, axis, velocity_mm_s):
+        """Ramp velocity (mm/s) above which a requested closed loop on `axis` is opened while the axis
+        moves; it re-engages as the ramp slows below it (firmware >= 1.6). 0 = rest-only (open for every
+        move, engaged at rest); a value at or above the axis max velocity keeps the loop engaged
+        throughout. Encoded in 0.01 mm/s, range 0 .. 655.35 mm/s.
+        """
+        v = int(round(velocity_mm_s * 100))
+        if not (0 <= v <= 0xFFFF):
+            raise ValueError("velocity must be 0 .. 655.35 mm/s")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_OPEN_ABOVE
+        cmd[2] = int(axis)
+        cmd[3] = (v >> 8) & 0xFF
+        cmd[4] = v & 0xFF
+        self.send_command(cmd)
+
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):
         """Closed-loop deadband and target-reached tolerance for `axis`, in um (firmware >= 1.6).
 

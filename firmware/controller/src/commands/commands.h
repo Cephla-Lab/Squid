@@ -25,6 +25,7 @@ void callback_set_pid_home_zone();
 void callback_set_ramp_profile();
 void callback_set_pid_tolerance();
 void callback_set_completion_window();
+void callback_set_pid_open_above();
 
 void callback_disable_stage_pid();
 void callback_initfilterwheel();

@@ -93,6 +93,10 @@ static const int SET_PID_TOLERANCE = 48;      // [2]=axis, [3..4]=loop deadband 
 static const int SET_PID_HOME_ZONE = 46;      // [2]=axis, [3..4]=home exclusion zone (um): within this distance of
                                               // the home position the loop is held open (see check_closed_loop);
                                               // 0 disables the zone
+static const int SET_PID_OPEN_ABOVE = 50;     // [2]=axis, [3..4]=ramp velocity (mm/s x100) above which a requested
+                                              // closed loop is opened while the axis moves; it re-engages as the ramp
+                                              // slows below it (see check_closed_loop). 0 (default) = rest-only: open
+                                              // for every move, engaged only at rest. >= VMAX = engaged throughout.
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,

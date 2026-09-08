@@ -60,6 +60,16 @@ class CephlaStage(AbstractStage):
                     f">= 1.6 (have {mc.firmware_version}); keeping the firmware default"
                 )
 
+        if axis_config.COMPLETION_WINDOW_UM > 0:
+            if new_fw:
+                mc.set_completion_window(microcontroller_axis_number, axis_config.COMPLETION_WINDOW_UM / 1000.0)
+                mc.wait_till_operation_is_completed()
+            else:
+                _log.warning(
+                    f"axis {microcontroller_axis_number}: completion window needs firmware >= 1.6 "
+                    f"(have {mc.firmware_version}); moves complete at the exact target"
+                )
+
         if not (axis_config.HAS_ENCODER or axis_config.USE_ENCODER):
             return
 
@@ -89,7 +99,16 @@ class CephlaStage(AbstractStage):
             if pid.TOLERANCE_UM > 0:
                 mc.set_pid_tolerance(microcontroller_axis_number, pid.TOLERANCE_UM, pid.TOLERANCE_UM)
                 mc.wait_till_operation_is_completed()
-        elif pid.CORRECTION_VMAX > 0 or pid.MAX_DEVIATION_UM > 0 or pid.HOME_ZONE_UM > 0 or pid.TOLERANCE_UM > 0:
+            if pid.OPEN_ABOVE_MM_S > 0:
+                mc.set_pid_open_above(microcontroller_axis_number, pid.OPEN_ABOVE_MM_S)
+                mc.wait_till_operation_is_completed()
+        elif (
+            pid.CORRECTION_VMAX > 0
+            or pid.MAX_DEVIATION_UM > 0
+            or pid.HOME_ZONE_UM > 0
+            or pid.TOLERANCE_UM > 0
+            or pid.OPEN_ABOVE_MM_S > 0
+        ):
             _log.warning(
                 f"axis {microcontroller_axis_number}: closed-loop limits / home zone / tolerance need firmware >= 1.6 "
                 f"(have {mc.firmware_version}); enabling the loop without them"

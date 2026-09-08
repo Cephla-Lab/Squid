@@ -62,6 +62,7 @@ void init_callbacks()
     cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
     cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
+    cmd_map[SET_PID_OPEN_ABOVE] = &callback_set_pid_open_above;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -316,6 +317,25 @@ void callback_set_completion_window()
     uint16_t units = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
     int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(units) / 10000.0f);
     completion_window_usteps[axis] = v < 0 ? -v : v;
+}
+
+// SET_PID_OPEN_ABOVE (50): [2] protocol axis, [3..4] ramp velocity in 0.01 mm/s. A requested
+// closed loop is opened while |VACTUAL| exceeds this and re-engages once the ramp has slowed
+// below it (7/8 of it, for hysteresis). The loop misbehaves only when its correction saturates,
+// which happens at cruise speed (second bench Z, 2026-09-07: limit cycle at every cruise speed,
+// stall from 2.5 mm/s); focus steps of a few um never get there (1 um at 300 mm/s2 peaks at
+// 0.55 mm/s), so with the threshold around 1 mm/s they run fully closed-loop with the in-flight
+// timing, and only repositioning moves open the loop. 0 (default) is rest-only; a value at or
+// above VMAX keeps the loop engaged throughout (the behaviour the Squid+ bench qualified).
+// Stored in pps (VACTUAL units) at the current microstep setting.
+void callback_set_pid_open_above()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t v_x100 = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    // vmmToMicrosteps returns the VMAX register format (8 fractional bits); VACTUAL is integer pps
+    int32_t pps = tmc4361A_vmmToMicrosteps(&tmc4361[axis], float(v_x100) / 100.0f) >> 8;
+    pid_open_above_pps[axis] = pps < 0 ? -pps : pps;
 }
 
 // SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]

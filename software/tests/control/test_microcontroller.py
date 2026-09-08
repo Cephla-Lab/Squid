@@ -318,6 +318,11 @@ def test_encoder_reporting_and_pid_limits_commands():
     assert micro.last_command[2] == control._def.AXIS.Z
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 500
 
+    micro.set_pid_open_above(control._def.AXIS.Z, 1.0)   # loop open above 1 mm/s = 100 x 0.01 mm/s
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_OPEN_ABOVE
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 100
+
     micro.close()
 
 

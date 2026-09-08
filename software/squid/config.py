@@ -155,6 +155,9 @@ class PIDConfig(pydantic.BaseModel):
     MAX_DEVIATION_UM: float = 0.0  # deviation watchdog: the firmware opens the loop above this error
     HOME_ZONE_UM: float = 0.0  # loop held open within this distance of home; homing runs open-loop
     TOLERANCE_UM: float = 0.0  # deadband and target-reached tolerance; 0 = two encoder counts
+    # Ramp velocity (native units/s) above which the loop is opened while the axis moves, re-engaging as it
+    # slows. 0 = rest-only; >= MAX_SPEED = engaged throughout; ~1 mm/s keeps focus steps closed-loop only.
+    OPEN_ABOVE_MM_S: float = 0.0
 
 
 class AxisConfig(pydantic.BaseModel):
@@ -197,6 +200,9 @@ class AxisConfig(pydantic.BaseModel):
     ENCODER_FLIP_DIR: bool = False
     # Ramp profile: "sshape" (firmware default) or "trapezoid" (firmware >= 1.6).
     RAMP_PROFILE: str = "sshape"
+    # Completion window in um (firmware >= 1.6): a move is acknowledged once the counter (and, closed-loop, the
+    # encoder) is within this of the target while the ramp finishes. 0 = exact target.
+    COMPLETION_WINDOW_UM: float = 0.0
 
     def convert_to_real_units(self, usteps: float):
         if self.USE_ENCODER:
@@ -238,6 +244,7 @@ def _pid_config_from_def(axis: str) -> PIDConfig:
         MAX_DEVIATION_UM=float(getattr(_def, f"PID_MAX_DEVIATION_{axis}_UM", 0)),
         HOME_ZONE_UM=float(getattr(_def, f"PID_HOME_ZONE_{axis}_UM", 0)),
         TOLERANCE_UM=float(getattr(_def, f"PID_TOLERANCE_{axis}_UM", 0.0)),
+        OPEN_ABOVE_MM_S=float(getattr(_def, f"PID_OPEN_ABOVE_{axis}_mm", 0.0)),
     )
 
 
@@ -260,6 +267,7 @@ _stage_config = StageConfig(
         HAS_ENCODER=bool(_def.HAS_ENCODER_X),
         ENCODER_FLIP_DIR=bool(_def.ENCODER_FLIP_DIR_X),
         RAMP_PROFILE=str(getattr(_def, "RAMP_PROFILE_X", "sshape")),
+        COMPLETION_WINDOW_UM=float(getattr(_def, "COMPLETION_WINDOW_X_UM", 0.0)),
     ),
     Y_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Y,
@@ -277,6 +285,7 @@ _stage_config = StageConfig(
         HAS_ENCODER=bool(_def.HAS_ENCODER_Y),
         ENCODER_FLIP_DIR=bool(_def.ENCODER_FLIP_DIR_Y),
         RAMP_PROFILE=str(getattr(_def, "RAMP_PROFILE_Y", "sshape")),
+        COMPLETION_WINDOW_UM=float(getattr(_def, "COMPLETION_WINDOW_Y_UM", 0.0)),
     ),
     Z_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Z,
@@ -294,6 +303,7 @@ _stage_config = StageConfig(
         HAS_ENCODER=bool(_def.HAS_ENCODER_Z),
         ENCODER_FLIP_DIR=bool(_def.ENCODER_FLIP_DIR_Z),
         RAMP_PROFILE=str(getattr(_def, "RAMP_PROFILE_Z", "sshape")),
+        COMPLETION_WINDOW_UM=float(getattr(_def, "COMPLETION_WINDOW_Z_UM", 0.0)),
     ),
     THETA_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_THETA,

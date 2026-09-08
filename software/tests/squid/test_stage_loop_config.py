@@ -55,9 +55,13 @@ def test_full_bench_configuration_reaches_the_controller_in_order():
             MAX_DEVIATION_UM=200,
             HOME_ZONE_UM=200,
             TOLERANCE_UM=0.2,
+            OPEN_ABOVE_MM_S=3.5,
         ),
+        COMPLETION_WINDOW_UM=0.3,
     )
     _, mc = _stage(z)
+    mc.set_completion_window.assert_called_once_with(_def.AXIS.Z, 0.3 / 1000.0)
+    mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 3.5)
     mc.set_ramp_profile.assert_called_once_with(_def.AXIS.Z, _def.RAMP_PROFILE.TRAPEZOID)
     mc.configure_stage_pid.assert_called_once_with(
         axis=_def.AXIS.Z, transitions_per_revolution=0.3 / 100e-6, flip_direction=True
@@ -100,6 +104,8 @@ def test_zero_limits_are_not_sent():
     mc.set_pid_limits.assert_not_called()
     mc.set_pid_home_zone.assert_not_called()
     mc.set_pid_tolerance.assert_not_called()
+    mc.set_pid_open_above.assert_not_called()
+    mc.set_completion_window.assert_not_called()
     mc.turn_on_stage_pid.assert_called_once()
 
 
@@ -107,10 +113,15 @@ def test_old_firmware_enables_the_loop_but_skips_the_new_commands():
     z = _axis(
         HAS_ENCODER=True,
         RAMP_PROFILE="trapezoid",
-        PID=PIDConfig(ENABLED=True, P=16384, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=200),
+        PID=PIDConfig(
+            ENABLED=True, P=16384, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=200, OPEN_ABOVE_MM_S=1.0
+        ),
+        COMPLETION_WINDOW_UM=0.3,
     )
     _, mc = _stage(z, firmware=(1, 5))
     mc.set_ramp_profile.assert_not_called()
+    mc.set_pid_open_above.assert_not_called()
+    mc.set_completion_window.assert_not_called()
     mc.set_pid_limits.assert_not_called()
     mc.set_pid_home_zone.assert_not_called()
     mc.configure_stage_pid.assert_called_once()
@@ -125,3 +136,5 @@ def test_process_config_carries_the_machine_constants():
     assert cfg.Z_AXIS.HAS_ENCODER == bool(_def.HAS_ENCODER_Z)
     assert cfg.Z_AXIS.ENCODER_FLIP_DIR == bool(_def.ENCODER_FLIP_DIR_Z)
     assert cfg.Z_AXIS.RAMP_PROFILE in ("sshape", "trapezoid")
+    assert cfg.Z_AXIS.PID.OPEN_ABOVE_MM_S == float(getattr(_def, "PID_OPEN_ABOVE_Z_mm", 0.0))
+    assert cfg.Z_AXIS.COMPLETION_WINDOW_UM == float(getattr(_def, "COMPLETION_WINDOW_Z_UM", 0.0))
