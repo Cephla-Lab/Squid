@@ -80,7 +80,9 @@ class CephlaStage(AbstractStage):
         # XACTUAL inside CONFIGURE_STAGE_PID). The stage is constructed before the startup homing.
         mc.configure_stage_pid(
             axis=microcontroller_axis_number,
-            transitions_per_revolution=axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE,
+            # 0.3 mm / 100 nm is 2999.9999999999995 in floating point; the firmware takes an integer count, and
+            # truncating to 2999 would scale the encoder by 0.033 % (0.8 um over 2.5 mm of travel). Round.
+            transitions_per_revolution=int(round(axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE)),
             flip_direction=axis_config.ENCODER_FLIP_DIR,
         )
         mc.wait_till_operation_is_completed()

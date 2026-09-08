@@ -65,7 +65,7 @@ def test_full_bench_configuration_reaches_the_controller_in_order():
     mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 3.5)
     mc.set_ramp_profile.assert_called_once_with(_def.AXIS.Z, _def.RAMP_PROFILE.TRAPEZOID)
     mc.configure_stage_pid.assert_called_once_with(
-        axis=_def.AXIS.Z, transitions_per_revolution=0.3 / 100e-6, flip_direction=True
+        axis=_def.AXIS.Z, transitions_per_revolution=3000, flip_direction=True   # rounded, not 2999.999...
     )
     mc.set_pid_arguments.assert_called_once_with(_def.AXIS.Z, 65535, 0, 0)
     mc.set_pid_limits.assert_called_once_with(_def.AXIS.Z, 1.0, 200)
