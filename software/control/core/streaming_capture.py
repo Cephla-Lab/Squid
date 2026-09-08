@@ -451,12 +451,39 @@ class ContinuousFrameSource:
         # already sized the dataset; this call just makes the hardware match it.
         if not self._already_configured:
             self._camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-        self._cb_id = self._camera.add_frame_callback(on_frame)
+        self._discard_until: Optional[float] = None
+        self._discarded = 0
+
+        def _filtered(camera_frame):
+            # A frame-rate hint written into the running stream corrupts the frame
+            # integrating at that moment (toupcam with a hardware ROI, where the
+            # stopped-state write is re-clamped at Start and the running write is the
+            # only way to reach the ROI's higher rate).  Drop what the camera delivers
+            # within a period of that write — the corrupted frame and at most one
+            # clean in-flight one — so it never becomes frame 0 of the recording.
+            until = self._discard_until
+            if until is not None:
+                if camera_frame.timestamp < until:
+                    self._discarded += 1
+                    return
+                self._discard_until = None
+                if self._discarded:
+                    _log.info(f"discarded {self._discarded} frame(s) around the live frame-rate write")
+            on_frame(camera_frame)
+
+        self._cb_id = self._camera.add_frame_callback(_filtered)
         self._camera.start_streaming()
+        t_start = time.time()
         try:
             self._camera.set_frame_rate(self._fps)
         except Exception:
             _log.exception("failed to apply the frame-rate hint after stream start")
+        # isinstance, not a None check: the simulated camera answers unknown
+        # attributes with a sentinel object instead of raising.
+        live_write = getattr(self._camera, "frame_rate_hint_live_write_ts", None)
+        if isinstance(live_write, (int, float)) and live_write >= t_start:
+            period = 1.0 / self._fps if self._fps and self._fps > 0 else 0.0
+            self._discard_until = live_write + period + 0.02
 
     def stop(self) -> None:
         self._camera.stop_streaming()
