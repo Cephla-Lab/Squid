@@ -661,6 +661,25 @@ class ToupcamCamera(AbstractCamera):
         _, _, width, height = self._camera.get_Roi()
         return int(width), int(height), int(self._get_pixel_size_in_bytes())
 
+    def get_max_frame_rate(self, exposure_time_ms: Optional[float] = None) -> float:
+        """Highest free-run rate for the current binning / ROI / bit depth at the given exposure.
+
+        Pure query (no SDK writes): the readout-limited estimate of _continuous_max_framerate
+        at that exposure, bounded by the cached PRECISE_FRAMERATE maximum when the cache is for
+        the current mode.  Within ~1.5% of the SDK's own maximum in every mode measured.
+        """
+        exposure = self.get_exposure_time() if exposure_time_ms is None else float(exposure_time_ms)
+        readout_ms = self._strobe_info.strobe_time_us / 1000.0
+        fps = 1000.0 / max(readout_ms, exposure)
+        rng = self._precise_framerate_range_tenths
+        if rng is not None:
+            try:
+                if self._precise_framerate_mode_key == self._current_mode_key():
+                    fps = min(fps, rng[1] / 10.0)
+            except Exception:
+                pass
+        return fps
+
     def set_frame_rate(self, fps: float) -> float:
         """Set the frame rate via the PRECISE_FRAMERATE option (CONTINUOUS mode only).
 

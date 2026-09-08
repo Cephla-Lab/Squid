@@ -513,6 +513,8 @@ def test_recording_uses_achievable_fps_when_camera_clamps(tmp_path):
         f"dataset sized for the requested fps (T={squid_attrs['shape'][0]}), "
         f"expected achievable-rate T={expected_T}"
     )
+    assert squid_attrs["requested_fps"] == 10.0
+    assert abs(squid_attrs["effective_fps"] - achievable) < 1e-6
     assert abs(squid_attrs["time_increment_s"] - 1.0 / achievable) < 1e-6, (
         f"time_increment_s={squid_attrs['time_increment_s']} does not match the "
         f"achievable rate (1/{achievable:.2f})"

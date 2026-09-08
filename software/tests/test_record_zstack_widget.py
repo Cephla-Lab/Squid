@@ -2255,3 +2255,53 @@ def test_validate_wires_recording_nz_dz(qtbot, simulated_widget_deps, monkeypatc
     assert result is None
     assert captured.get("recording_nz") == 3
     assert captured.get("recording_dz_um") == 4.0
+
+
+def test_toggle_acquisition_confirm_warns_when_camera_cannot_reach_requested_fps(qtbot, simulated_widget_deps):
+    """The camera's own max-rate estimate for the recording exposure goes into the confirmation
+    dialog when the user asked for more, with the rate and frame count the run will really use."""
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+    camera = MagicMock()
+    camera.get_max_frame_rate.return_value = 28.0
+    simulated_widget_deps["liveController"].camera = camera
+
+    w = _make_valid_recording_widget(qtbot, simulated_widget_deps)
+    w.entry_fps.setValue(100.0)
+    w.entry_duration.setValue(3.0)
+
+    captured = {}
+
+    def fake_question(parent, title, text, *args, **kwargs):
+        captured["text"] = text
+        return QMessageBox.Yes
+
+    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
+        w.toggle_acquisition(True)
+
+    assert "at most 28.0 fps, not 100" in captured["text"]
+    assert "28.0 fps (84 frames for 3 s)" in captured["text"]
+    camera.get_max_frame_rate.assert_called_once_with(w._recording_exposure())
+    ctrl.run_acquisition.assert_called_once()
+
+
+def test_toggle_acquisition_confirm_has_no_limit_note_when_rate_is_reachable(qtbot, simulated_widget_deps):
+    ctrl = _make_stub_controller()
+    simulated_widget_deps["recordZStackController"] = ctrl
+    camera = MagicMock()
+    camera.get_max_frame_rate.return_value = 28.0
+    simulated_widget_deps["liveController"].camera = camera
+
+    w = _make_valid_recording_widget(qtbot, simulated_widget_deps)
+    w.entry_fps.setValue(10.0)
+    captured = {}
+
+    def fake_question(parent, title, text, *args, **kwargs):
+        captured["text"] = text
+        return QMessageBox.Yes
+
+    with patch("control.widgets.QMessageBox.question", side_effect=fake_question):
+        w.toggle_acquisition(True)
+
+    assert "Camera limit" not in captured["text"]
+    ctrl.run_acquisition.assert_called_once()

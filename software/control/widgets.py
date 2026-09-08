@@ -17274,6 +17274,31 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             return None
         return self._recording_ch_combo.currentText() or None
 
+    def _camera_fps_limit_note(self, requested_fps: float, duration_s: float) -> Optional[str]:
+        """Text for the confirmation dialog when the camera cannot reach requested_fps at the
+        recording exposure in its current binning / ROI, else None.  Unknown (no camera, or a
+        camera that cannot estimate) means no note."""
+        camera = getattr(self.liveController, "camera", None)
+        query = getattr(camera, "get_max_frame_rate", None)
+        if not callable(query):
+            return None
+        exposure_ms = self._recording_exposure()
+        try:
+            achievable = float(query(exposure_ms))
+        except Exception:
+            return None
+        if not achievable > 0 or requested_fps <= achievable * 1.01:
+            return None
+        from control.core.record_zstack_controller import frame_count
+
+        frames = max(1, frame_count(achievable, duration_s))
+        return (
+            f"Camera limit: at {exposure_ms:g} ms exposure in the current binning/ROI the camera can "
+            f"deliver at most {achievable:.1f} fps, not {requested_fps:g}.\n"
+            f"The recording will be made at {achievable:.1f} fps ({frames} frames for {duration_s:g} s) "
+            f"and the file metadata will record that rate."
+        )
+
     def _recording_exposure(self) -> float:
         return self._recording_exp_spin.value()
 
@@ -17924,10 +17949,20 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
                     )
                 else:
                     summary = f"1 plane @ {offsets[0]:+.1f} µm — {per_fov_s:.1f} s/FOV"
+                # Tell the user up front when the camera cannot deliver the requested
+                # fps for the recording exposure in the current binning / ROI: the
+                # worker records at the achievable rate and stamps that rate into the
+                # store's metadata (time_increment_s, effective_fps), so the number
+                # they typed is not the number they get.
+                limit_note = self._camera_fps_limit_note(self.entry_fps.value(), self.entry_duration.value())
+                text = f"Recording: {summary}"
+                if limit_note:
+                    text += f"\n\n{limit_note}"
+                    self._log.warning(limit_note.replace("\n", " "))
                 reply = QMessageBox.question(
                     self,
                     "Confirm Recording",
-                    f"Recording: {summary}\n\nStart acquisition?",
+                    f"{text}\n\nStart acquisition?",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.Yes,
                 )
