@@ -53,6 +53,8 @@
 //               steps), opens above it and re-engages as the ramp slows; 0 is
 //               rest-only, >= VMAX is the in-flight loop. A completion window on
 //               a closed-loop axis now also requires the encoder error inside it.
+//               RESET returns every loop setting (clamp, watchdog, zone, tolerances,
+//               completion window, loop-mode threshold) to the firmware default.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 

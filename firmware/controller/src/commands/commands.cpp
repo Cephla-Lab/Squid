@@ -692,5 +692,17 @@ void callback_reset()
         pid_fault[i] = false;
         pid_requested[i] = false;
         pid_zone_hold[i] = false;
+        pid_realign_pending[i] = false;
+        // The loop CONFIGURATION goes back to the firmware defaults as well. The host sends
+        // only the values it wants to change (0 = keep the default), so anything a tool or an
+        // earlier session left here would otherwise survive the reset: on 2026-09-08 a 3.5 mm/s
+        // loop-mode threshold outlived a RESET and a "rest-only" test ran engaged in flight.
+        pid_max_dev_usteps[i] = 0;
+        pid_dv_clip_usteps[i] = 0;
+        pid_home_zone_usteps[i] = 0;
+        pid_tolerance_usteps[i] = 0;
+        pid_tr_tolerance_usteps[i] = 0;
+        completion_window_usteps[i] = 0;
+        pid_open_above_pps[i] = 0;
     }
 }

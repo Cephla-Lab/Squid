@@ -257,13 +257,12 @@ class ZTuner:
         m.set_pid_home_zone(AXIS.Z, self.a.zone_um); self.wait()
         if self.a.tol_um > 0:
             m.set_pid_tolerance(AXIS.Z, self.a.tol_um, self.a.tol_um); self.wait()
-        if self.a.open_above > 0:
-            # loop opened above this ramp velocity and re-engaged below it; 0 = rest-only (firmware default)
-            m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
-        if self.a.window_um > 0:
-            # COMPLETED is reported once |XACTUAL - target| <= window (firmware 1.6, command 49); with the
-            # rest-only loop this is the position error the correction still has to close when the ack arrives
-            m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
+        # Loop mode (SET_PID_OPEN_ABOVE: opened above this ramp velocity, re-engaged below; 0 = rest-only) and
+        # completion window (0 = exact target) are states, not 'keep the current value': always send them. On
+        # firmware before 2026-09-08 a threshold left by an earlier run survived the controller reset and a
+        # 'rest-only' run of this tool ran engaged in flight.
+        m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
+        m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
         m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
@@ -676,12 +675,17 @@ class ZTuner:
             off0 = m.get_encoder_state()["deviation"]
             wall0 = time.time()
             acks = []; lag_max = 0.0; ripple = []; stall_samples = 0; cruise_samples = 0; lag_cruise = []
+            all_rows = []
             try:
                 for _ in range(self.a.vel_reps):
                     for target in (self.a.depth_mm + d_mm, self.a.depth_mm):
                         self.sampler.clear()
-                        self.move_to_depth(target); acks.append(self.last_cmd_to_ack_s)
-                        rows = self.sampler.snapshot()
+                        try:
+                            self.move_to_depth(target); acks.append(self.last_cmd_to_ack_s)
+                        finally:
+                            all_rows.extend(self.sampler.snapshot())
+                            self._write_rows(f"velsweep_v{v:g}.csv", all_rows)
+                        rows = all_rows[-len(self.sampler.snapshot()):] if False else self.sampler.snapshot()
                         # counter and encoder velocities between successive samples (>= 8 ms apart)
                         for (ta, xa, ea, da, _), (tb, xb, eb, db, _) in zip(rows, rows[1:]):
                             dt = tb - ta
@@ -763,6 +767,17 @@ class ZTuner:
         finally:
             self.loop_off()
             self.restore_velocity()
+
+    def _write_rows(self, name, rows):
+        """Sampler rows (t, XACTUAL, ENC_POS, deviation, flags) as CSV in the output folder."""
+        import csv
+        with open(os.path.join(self.a.out, name), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["t_s", "extension_mm", "enc_mm", "dev_um", "engaged", "zone_hold", "fault"])
+            for t, x, e, d, fl in rows:
+                w.writerow([f"{t:.3f}", f"{usteps_to_depth(x):.5f}", f"{usteps_to_depth(e):.5f}", f"{d / USTEPS_PER_MM * 1000:.2f}",
+                            int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))), int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))),
+                            int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT)))])
 
     def engage_loop(self):
         m = self.mcu
