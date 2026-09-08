@@ -52,9 +52,11 @@ void init_power()
   // power good pin
   pinMode(pin_PG, INPUT_PULLUP);
 
-  // wait for PG to turn high
+  // wait up to 2s for PG to turn high, then continue regardless so a stuck or
+  // unwired PG line can never block boot
   delay(100);
-  while (!digitalRead(pin_PG))
+  elapsedMillis pg_wait;
+  while (!digitalRead(pin_PG) && pg_wait < 2000)
   {
     delay(50);
   }
