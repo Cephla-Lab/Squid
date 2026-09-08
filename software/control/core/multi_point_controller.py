@@ -1,15 +1,18 @@
+import collections
+import contextlib
 import dataclasses
 import json
 import math
 import os
 import pathlib
+import shutil
 import tempfile
 import time
 import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -170,6 +173,58 @@ def _save_acquisition_yaml(
         _log.error("Failed to write acquisition YAML file '%s': %s", yaml_path, exc)
 
 
+def _noop(*_args, **_kwargs):
+    return None
+
+
+# Every callback the worker can fire, silenced.  A timing probe must not reach
+# QtMultiPointController's signal bridge, or it would trigger the whole
+# acquisition-finished fan-out: mosaic auto-save, NDViewer end_acquisition, the RAM and
+# backpressure monitor teardown, the z-plot, and the workflow runner.
+_QUIET_CALLBACKS = MultiPointControllerFunctions(
+    signal_acquisition_start=_noop,
+    signal_acquisition_finished=_noop,
+    signal_new_image=_noop,
+    signal_current_configuration=_noop,
+    signal_current_fov=_noop,
+    signal_overall_progress=_noop,
+    signal_region_progress=_noop,
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class TimePointEstimate:
+    """How long one time point will take, and whether that came from hardware or a model."""
+
+    seconds: float
+    measured: bool
+    per_fov_s: float
+    n_fovs: int
+
+
+@dataclasses.dataclass
+class TimingProbeResult:
+    """Outcome of a no-illumination timing probe.  See run_timing_probe()."""
+
+    ok: bool
+    per_fov_s: Optional[float] = None
+    move_s: Optional[float] = None
+    acquire_s: Optional[float] = None
+    af_s: Optional[float] = None
+    n_fovs_probed: int = 0
+    laser_af_failures: int = 0
+    aborted: bool = False
+    note: str = ""
+
+    def usable(self) -> bool:
+        """True when this measurement should be trusted as a per-FOV duration.
+
+        An aborted probe measured a partial FOV, and a probe whose autofocus failed did
+        not do the work a real FOV will do -- neither is representative.
+        """
+        return bool(self.ok and self.per_fov_s and not self.aborted and not self.laser_af_failures)
+
+
 class MultiPointController:
     def __init__(
         self,
@@ -240,6 +295,15 @@ class MultiPointController:
         self.use_manual_focus_map = False
         self.base_path = None
         self.skip_saving = False
+        self.dry_run = False
+
+        # Measured per-FOV duration from run_timing_probe(), with the configuration
+        # fingerprint it was measured against.  In memory only and deliberately not cached to
+        # disk: a per-FOV duration describes this machine right now, and one reloaded from a
+        # previous session would look authoritative while being silently wrong.
+        self._measured_per_fov_s: Optional[float] = None
+        self._measured_key: Optional[tuple] = None
+        self._measured_context: dict = {}
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
         self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
@@ -447,6 +511,15 @@ class MultiPointController:
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
 
+    def set_dry_run(self, dry_run: bool):
+        """Dry run: the real acquisition path runs, but the illumination is never opened.
+
+        Set ONLY by run_timing_probe().  The flag on its own does not make a run safe --
+        timing_probe_refusal_reason() holds the guards that do, and _illumination_fuse()
+        is the runtime backstop.
+        """
+        self.dry_run = dry_run
+
     def set_xy_mode(self, xy_mode):
         self.xy_mode = xy_mode
 
@@ -559,6 +632,454 @@ class MultiPointController:
             # We don't init all fields in __init__, so it's easy to get attribute errors.  We consider
             # this "not configured" and want it to be a ValueError.
             raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
+
+    # Rough per-operation costs used by get_estimated_time_point_duration_s().  Calibrated
+    # against a real 4-FOV / 10-z / 1-channel / 500 ms / laser-AF run that took 31.5 [s].
+    _EST_XY_MOVE_OVERHEAD_S = 0.22  # blocking stage.move_x_to + move_y_to, beyond the stabilization sleeps
+    _EST_FRAME_OVERHEAD_S = 0.115  # per frame, beyond the exposure (config switch, trigger, dispatch)
+    _EST_LASER_AF_S = 1.0  # per FOV, laser reflection AF
+    _EST_CONTRAST_AF_S = 3.0  # per AF event, contrast-based AF (very rough)
+    _EST_TIME_POINT_OVERHEAD_S = 0.5  # folder creation, coordinates.csv, .done file
+
+    def get_timing_measure_key(self) -> tuple:
+        """Everything that changes the PER-FOV cost of an acquisition.
+
+        A measurement whose key no longer matches the current configuration is silently
+        discarded, so the operator can never be shown a stale number as if it were fresh.
+
+        NOTE: the FOV count is deliberately absent.  per_fov_s scales out of the time point
+        model, so adding wells does not invalidate a measurement -- and that is exactly the
+        edit where a good estimate matters most.  It is recorded as context instead.
+        """
+        try:
+            binning = tuple(self.camera.get_binning())
+        except Exception:
+            binning = None
+        return (
+            self.objectiveStore.current_objective,
+            tuple(
+                (config.name, float(config.exposure_time), getattr(config, "emission_filter_position", None))
+                for config in self.selected_configurations
+            ),
+            int(self.NZ),
+            round(float(self.deltaZ), 6),
+            self.z_stacking_config,
+            bool(self.use_piezo),
+            bool(self.do_autofocus),
+            bool(self.do_reflection_af),
+            bool(self.skip_saving),
+            # Move duration depends on how far the stage travels, so geometry is part of the key.
+            round(float(self.deltaX), 6),
+            round(float(self.deltaY), 6),
+            round(float(self.overlap_percent), 3),
+            round(float(self.scan_size_mm), 4),
+            binning,
+            self.base_path,  # a different target volume writes at a different speed
+            control._def.FILE_SAVING_OPTION,
+            bool(control._def.MERGE_CHANNELS),
+        )
+
+    def set_measured_per_fov_s(self, per_fov_s: float, context: Optional[dict] = None) -> None:
+        """Record a measured per-FOV duration, fingerprinted against the current settings.
+
+        Must be called while the controller still holds the user's real configuration --
+        run_timing_probe() restores everything it overrode before reporting back, precisely
+        so the key computed here matches the acquisition the operator is about to start.
+        """
+        self._measured_per_fov_s = float(per_fov_s)
+        self._measured_key = self.get_timing_measure_key()
+        self._measured_context = dict(context or {})
+        self._log.info(f"Measured per-FOV duration: {per_fov_s:.2f} [s]")
+
+    def clear_measured_per_fov_s(self) -> None:
+        self._measured_per_fov_s = None
+        self._measured_key = None
+        self._measured_context = {}
+
+    def get_time_point_estimate(self) -> TimePointEstimate:
+        """How long ONE time point will take, measured if we have a fresh measurement.
+
+        Falls back to the open-loop model (see the _EST_* constants) when no timing probe
+        has been run, or when the configuration has changed since one was.
+        """
+        model_seconds = self._modelled_time_point_duration_s()
+        n_fovs = self._planned_fov_count()
+
+        measured = self._measured_per_fov_s is not None and self._measured_key == self.get_timing_measure_key()
+        if measured:
+            per_fov_s = self._measured_per_fov_s
+            seconds = n_fovs * per_fov_s + self._EST_TIME_POINT_OVERHEAD_S
+        else:
+            per_fov_s = (model_seconds - self._EST_TIME_POINT_OVERHEAD_S) / n_fovs
+            seconds = model_seconds
+        return TimePointEstimate(seconds=seconds, measured=measured, per_fov_s=per_fov_s, n_fovs=n_fovs)
+
+    def _planned_fov_count(self) -> int:
+        return sum(
+            len(region_coords) for (_region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()
+        )
+
+    def get_estimated_time_point_duration_s(self) -> float:
+        """Seconds for one time point -- measured when available, modelled otherwise.
+
+        Kept as the simple scalar accessor; see get_time_point_estimate() when you need to
+        know whether the number was measured on hardware or merely modelled.
+
+        Raises a ValueError if the class is not configured for a valid acquisition.
+        """
+        return self.get_time_point_estimate().seconds
+
+    def _modelled_time_point_duration_s(self) -> float:
+        """
+        Return a ROUGH estimate, in seconds, of how long ONE time point of the currently
+        configured acquisition will take.
+
+        This is a coarse, open-loop model built from exposure times, FOV count, Z levels,
+        channel count and autofocus settings plus a handful of empirically calibrated
+        per-operation constants.  It does NOT model stage travel distance, disk or queue
+        backpressure, filter wheel moves, fluidics, laser engine warmup, or AF retries.
+        Treat +/- 30% as normal.  run_timing_probe() measures the same quantity on real
+        hardware and is far more accurate; this is the fallback when it has not been run.
+
+        Raises a ValueError if the class is not configured for a valid acquisition.
+        """
+        try:
+            n_fovs = sum(
+                len(region_coords)
+                for (_region_id, region_coords) in self.scanCoordinates.region_fov_coordinates.items()
+            )
+            n_channels = len(self.selected_configurations)
+            if n_fovs <= 0 or n_channels <= 0:
+                raise ValueError("Cannot estimate time point duration with no FOVs or no channels selected.")
+
+            # Every channel costs its own exposure plus a fixed per-frame overhead.
+            exposure_s = sum(float(config.exposure_time) / 1000.0 for config in self.selected_configurations)
+            per_z_level_s = exposure_s + n_channels * self._EST_FRAME_OVERHEAD_S
+
+            if self.use_piezo:
+                z_step_s = control._def.MULTIPOINT_PIEZO_DELAY_MS / 1000.0
+            else:
+                z_step_s = control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000.0
+
+            xy_move_s = (
+                control._def.SCAN_STABILIZATION_TIME_MS_X + control._def.SCAN_STABILIZATION_TIME_MS_Y
+            ) / 1000.0 + self._EST_XY_MOVE_OVERHEAD_S
+
+            # Laser AF runs at every FOV.  Contrast AF only runs when the z-stack shape allows
+            # it, and then only once every NUMBER_OF_FOVS_PER_AF FOVs -- see
+            # MultiPointWorker.perform_autofocus.
+            if self.do_reflection_af:
+                af_per_fov_s = self._EST_LASER_AF_S
+            elif self.do_autofocus and (self.NZ == 1 or self.z_stacking_config == "FROM CENTER"):
+                af_per_fov_s = self._EST_CONTRAST_AF_S / max(1, control._def.Acquisition.NUMBER_OF_FOVS_PER_AF)
+            else:
+                af_per_fov_s = 0.0
+
+            per_fov_s = xy_move_s + af_per_fov_s + self.NZ * (z_step_s + per_z_level_s)
+            return n_fovs * per_fov_s + self._EST_TIME_POINT_OVERHEAD_S
+        except AttributeError:
+            # We don't init all fields in __init__, so it's easy to get attribute errors.  We
+            # consider this "not configured" and want it to be a ValueError.
+            raise ValueError("Not properly configured for an acquisition, cannot estimate time point duration.")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Timing probe: measure per-FOV duration on real hardware, without illuminating
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    _TIMING_PROBE_DIR_PREFIX = "_timing_probe_"
+
+    def _flatten_planned_fovs(self) -> List[Tuple[str, Tuple[float, ...]]]:
+        """Planned FOVs in the order run_coordinate_acquisition() will visit them."""
+        flattened = []
+        for region_id, coords in self.scanCoordinates.region_fov_coordinates.items():
+            for coord in coords:
+                flattened.append((region_id, tuple(coord)))
+        return flattened
+
+    def timing_probe_refusal_reason(self) -> Optional[str]:
+        """None if a no-illumination timing probe is safe here, else an operator-facing reason."""
+        if self.acquisition_in_progress():
+            return "An acquisition is already running."
+        if not self.base_path:
+            return "No saving directory set."
+        if not self.selected_configurations:
+            return "No channels selected."
+        if not self._flatten_planned_fovs():
+            return "No FOVs planned."
+        if not self.validate_acquisition_settings():
+            return "Laser autofocus has no reference position."
+        if control._def.ENABLE_NL5 and control._def.NL5_USE_DOUT:
+            # nl5.start_acquisition() fires the laser and triggers the camera together.
+            return "NL5 confocal has no non-illuminating acquisition path."
+        if (
+            self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
+            and control._def.HARDWARE_TRIGGER_MODE == control._def.HardwareTriggerMode.LEVEL
+        ):
+            # Under LEVEL the camera trigger pulse width IS illumination_on_time, so we cannot
+            # zero the strobe without also destroying the trigger.
+            return "Hardware LEVEL trigger cannot be run without illumination."
+        if self.do_autofocus and not self.do_reflection_af:
+            # Contrast AF is a contrast search: run dark it never early-exits and parks z at
+            # the bottom of its range.  Laser AF uses a separate reflection laser and is fine.
+            return "Contrast autofocus needs illumination; simulate with laser AF or AF off."
+        if self.protocol_info is not None:
+            # A fluidics protocol run is queued: the ProtocolRunner drives reagents in step with
+            # imaging, and a dry run would advance the sequence without acquiring anything.
+            return "Fluidics runs are not simulated."
+        return None
+
+    @contextlib.contextmanager
+    def _illumination_fuse(self):
+        """Make every illumination-opening path RAISE for the duration of a dry run.
+
+        Suppression by flag is only as good as the last refactor, and the failure mode here
+        is silent: a leak bleaches the operator's sample with no error.  This turns any
+        unanticipated attempt to open the light into a loud abort instead.
+
+        Deliberately NOT fused: microcontroller.turn_on_AF_laser().  That is the separate
+        reflection-autofocus laser, which must fire for laser AF to run at all.
+        """
+        live_controller = self.liveController
+        microcontroller = self.microcontroller
+
+        def _blocked(name):
+            def _raise(*_args, **_kwargs):
+                raise RuntimeError(f"Timing probe attempted to open illumination via {name}")
+
+            return _raise
+
+        live_controller.turn_on_illumination = _blocked("LiveController.turn_on_illumination")
+        microcontroller.turn_on_illumination = _blocked("Microcontroller.turn_on_illumination")
+        try:
+            # Start from a known-dark state so nothing can re-assert a gate pin mid-probe.
+            microcontroller.turn_off_illumination()
+            microcontroller.wait_till_operation_is_completed()
+            yield
+        finally:
+            # These are instance attributes shadowing the bound methods; deleting restores them.
+            for obj, name in ((live_controller, "turn_on_illumination"), (microcontroller, "turn_on_illumination")):
+                try:
+                    delattr(obj, name)
+                except AttributeError:
+                    pass
+            try:
+                microcontroller.turn_off_illumination()
+                microcontroller.wait_till_operation_is_completed()
+            except Exception:
+                self._log.exception("Timing probe: failed to force illumination off on exit")
+
+    def _build_probe_scan_plan(self, probe_fovs) -> ScanPositionInformation:
+        """A two-FOV scan plan built directly, so the real plan is never touched.
+
+        run_acquisition() applies the focus map by mutating the live ScanCoordinates; a probe
+        must not do that, so the z interpolation is applied to this copy only.
+        """
+        fov_coords = collections.OrderedDict()
+        for region_id, coord in probe_fovs:
+            fov_coords.setdefault(region_id, []).append(coord)
+
+        if self.focus_map:
+            for region_id, coords in fov_coords.items():
+                fov_coords[region_id] = [
+                    (c[0], c[1], self.focus_map.interpolate(c[0], c[1], region_id)) for c in coords
+                ]
+
+        return ScanPositionInformation(
+            scan_region_coords_mm=[self.scanCoordinates.region_centers[r] for r in fov_coords],
+            scan_region_names=list(fov_coords),
+            scan_region_fov_coords_mm=fov_coords,
+        )
+
+    def _harvest_probe_timing(self, worker, n_probed: int) -> TimingProbeResult:
+        """Turn the worker's timers into a per-FOV duration.
+
+        Uses the SECOND FOV when there is one, because its move_to_coordinate is a real
+        inter-FOV hop at the true scan step; the first FOV's move starts from wherever the
+        stage happened to be and also absorbs job-runner cold start.
+        """
+        timing = worker._timing
+        moves = timing.get_intervals("move_to_coordinate")
+        acquires = timing.get_intervals("acquire_at_position")
+        autofocuses = timing.get_intervals("perform_autofocus")
+
+        if not moves or not acquires:
+            return TimingProbeResult(
+                ok=False, aborted=worker.abort_requested_fn(), note="Simulation produced no timings"
+            )
+
+        index = 1 if (len(moves) > 1 and len(acquires) > 1) else 0
+        move_s = moves[index]
+        acquire_s = acquires[index]
+        af_s = autofocuses[index] if len(autofocuses) > index else 0.0
+        per_fov_s = move_s + acquire_s
+
+        note = ""
+        if index == 0:
+            # Only one FOV was planned, so its move was a no-op.  Fall back to the model's
+            # XY term so the number stays comparable with a multi-FOV estimate.
+            per_fov_s += (
+                control._def.SCAN_STABILIZATION_TIME_MS_X + control._def.SCAN_STABILIZATION_TIME_MS_Y
+            ) / 1000.0 + self._EST_XY_MOVE_OVERHEAD_S
+            note = "single-FOV plan: XY move modelled, not measured"
+
+        return TimingProbeResult(
+            ok=True,
+            per_fov_s=per_fov_s,
+            move_s=move_s,
+            acquire_s=acquire_s,
+            af_s=af_s,
+            n_fovs_probed=n_probed,
+            laser_af_failures=getattr(worker, "_laser_af_failures", 0),
+            aborted=worker.abort_requested_fn(),
+            note=note,
+        )
+
+    def _finish_timing_probe(self, probe_dir: str, saved: dict) -> None:
+        """Always runs: restore the stage, the live view, the settings, and delete the folder."""
+        try:
+            if self._start_position:
+                position = self._start_position
+                self._log.info(f"Timing probe: returning to {position}")
+                self.stage.move_x_to(position.x_mm)
+                self.stage.move_y_to(position.y_mm)
+                self.stage.move_z_to(position.z_mm)
+                self._start_position = None
+        except Exception:
+            self._log.exception("Timing probe: failed to restore the stage position")
+
+        try:
+            self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
+            if self.configuration_before_running_multipoint is not None:
+                self.liveController.set_microscope_mode(self.configuration_before_running_multipoint)
+            if self.liveController_was_live_before_multipoint and control._def.RESUME_LIVE_AFTER_ACQUISITION:
+                self.liveController.start_live()
+        except Exception:
+            self._log.exception("Timing probe: failed to restore the live/camera state")
+
+        try:
+            shutil.rmtree(probe_dir, ignore_errors=True)
+        except Exception:
+            self._log.exception(f"Timing probe: failed to delete {probe_dir}")
+
+        for attribute, value in saved.items():
+            setattr(self, attribute, value)
+        self.multiPointWorker = None
+        self.thread = None
+
+    def sweep_stale_timing_probe_dirs(self, older_than_s: float = 3600.0) -> None:
+        """Delete timing-probe folders orphaned by a crash mid-probe."""
+        if not self.base_path or not os.path.isdir(self.base_path):
+            return
+        try:
+            for name in os.listdir(self.base_path):
+                if not name.startswith(self._TIMING_PROBE_DIR_PREFIX):
+                    continue
+                path = os.path.join(self.base_path, name)
+                if os.path.isdir(path) and (time.time() - os.path.getmtime(path)) > older_than_s:
+                    self._log.info(f"Removing stale timing probe folder {path}")
+                    shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            self._log.exception("Failed to sweep stale timing probe folders")
+
+    def run_timing_probe(self, on_finished) -> Optional[str]:
+        """Run the first two planned FOVs on real hardware, dark, and time the second.
+
+        Every real cost is exercised -- stage moves, autofocus, channel switching (including
+        the emission filter wheel), exposures and disk writes -- so the resulting per-FOV
+        duration reflects this instrument rather than a table of constants.  The sample is
+        never illuminated; see MultiPointWorker._illumination_on_for_frame().
+
+        KNOWN LIMIT: two FOVs measure write dispatch and first-touch latency but not
+        steady-state disk backpressure, so on a slow or network volume the number still reads
+        optimistic.
+
+        Returns None once the probe thread is running (on_finished(TimingProbeResult) is
+        called when it ends), or a refusal string if the probe cannot safely run.
+        """
+        reason = self.timing_probe_refusal_reason()
+        if reason:
+            return reason
+
+        probe_fovs = self._flatten_planned_fovs()[:2]
+        probe_scan_plan = self._build_probe_scan_plan(probe_fovs)
+        experiment_id = self._TIMING_PROBE_DIR_PREFIX + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        probe_dir = os.path.join(self.base_path, experiment_id)
+
+        saved = {
+            "Nt": self.Nt,
+            "deltat": self.deltat,
+            "experiment_ID": self.experiment_ID,
+            "dry_run": self.dry_run,
+            "z_range": self.z_range,
+        }
+
+        try:
+            self.Nt = 1
+            self.deltat = 0
+            self.dry_run = True
+            self.experiment_ID = experiment_id
+            utils.ensure_directory_exists(probe_dir)
+
+            self.abort_acqusition_requested = False
+            self._start_position = self.stage.get_pos()
+            if self.z_range is None:
+                self.z_range = (
+                    self._start_position.z_mm,
+                    self._start_position.z_mm + self.deltaZ * (self.NZ - 1),
+                )
+
+            self.configuration_before_running_multipoint = self.liveController.currentConfiguration
+            self.liveController_was_live_before_multipoint = self.liveController.is_live
+            if self.liveController.is_live:
+                self.liveController.stop_live()
+            self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
+            self.camera.enable_callbacks(True)
+
+            self.timestamp_acquisition_started = time.time()
+            acquisition_params = self.build_params(
+                scan_position_information=probe_scan_plan,
+                # Read, do NOT consume: run_acquisition() clears these because it owns the run.
+                region_laser_af_offsets=dict(self.region_laser_af_offsets),
+            )
+
+            prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
+            self.multiPointWorker = MultiPointWorker(
+                scope=self.microscope,
+                live_controller=self.liveController,
+                auto_focus_controller=self.autofocusController,
+                laser_auto_focus_controller=self.laserAutoFocusController,
+                objective_store=self.objectiveStore,
+                acquisition_parameters=acquisition_params,
+                callbacks=_QUIET_CALLBACKS,
+                abort_requested_fn=lambda: self.abort_acqusition_requested,
+                request_abort_fn=self.request_abort_aquisition,
+                extra_job_classes=[],
+                alignment_widget=self._alignment_widget,
+                slack_notifier=None,  # no Slack traffic for a probe
+                prewarmed_job_runner=prewarmed_runner,
+                prewarmed_bp_values=prewarmed_bp_values,
+                run_state_writer=None,  # -> NullRunStateWriter, no watchdog breadcrumb
+            )
+            worker = self.multiPointWorker
+        except Exception:
+            self._finish_timing_probe(probe_dir, saved)
+            raise
+
+        def _probe_thread():
+            result = TimingProbeResult(ok=False, note="Simulation failed")
+            try:
+                with self._illumination_fuse():
+                    worker.run()
+                result = self._harvest_probe_timing(worker, len(probe_fovs))
+            except Exception:
+                self._log.exception("Timing probe failed")
+            finally:
+                self._finish_timing_probe(probe_dir, saved)
+                on_finished(result)
+
+        self.thread = Thread(target=_probe_thread, name="Timing probe thread", daemon=True)
+        self.thread.start()
+        return None
 
     def _temporary_get_an_image_hack(self) -> Tuple[np.array, bool]:
         was_streaming = self.camera.get_is_streaming()
@@ -1052,6 +1573,7 @@ class MultiPointController:
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
             skip_saving=self.skip_saving,
+            dry_run=self.dry_run,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
