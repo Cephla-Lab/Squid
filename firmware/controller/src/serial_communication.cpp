@@ -73,7 +73,8 @@ void send_position_update()
     // Encoder reporting (firmware 1.6, SET_ENCODER_REPORTING). Two extra TMC4361A
     // reads per packet, only while a host has asked for them. ENC_POS is in
     // microsteps (the chip scales the encoder by ENC_IN_RES), so it is directly
-    // comparable with XACTUAL; ENC_POS_DEV is the loop error XACTUAL - ENC_POS.
+    // comparable with XACTUAL; ENC_POS_DEV is ENC_POS - XACTUAL as the chip reports it
+    // (bench-verified: positive = encoder ahead of the step counter).
     int32_t enc_pos = 0;
     int32_t enc_dev = 0;
     if (encoder_report_axis != 0xFF)

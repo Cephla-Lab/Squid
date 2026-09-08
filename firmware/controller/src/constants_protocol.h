@@ -96,7 +96,7 @@ static const int SET_PID_HOME_ZONE = 46;      // [2]=axis, [3..4]=home exclusion
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,
-                                                     // bytes 20-21 = int16 ENC_POS_DEV (XACTUAL - ENC_POS, clipped)
+                                                     // bytes 20-21 = int16 ENC_POS_DEV (ENC_POS - XACTUAL as the chip reports it, clipped)
 static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own position field carries ENC_POS
 // byte 19 flag bits, valid only while reporting is active
 static const int ENC_FLAG_REPORTING = 0;     // reporting active

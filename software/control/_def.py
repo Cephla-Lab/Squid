@@ -384,7 +384,7 @@ class ENCODER_REPORTING:
 
     OFF: shipping packet. ENC_IN_THETA: the status packet's theta field (bytes 14-17) carries the
     selected axis's ENC_POS in microsteps, byte 19 carries ENC_FLAG bits and bytes 20-21 the clipped
-    int16 loop error XACTUAL - ENC_POS. ENC_AS_POSITION: as ENC_IN_THETA, and the axis's own position
+    int16 loop error ENC_POS - XACTUAL (positive = encoder ahead of the counter). ENC_AS_POSITION: as ENC_IN_THETA, and the axis's own position
     field carries ENC_POS instead of XACTUAL.
     """
 

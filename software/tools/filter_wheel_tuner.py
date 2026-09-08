@@ -1,7 +1,7 @@
 """Filter-wheel (W axis) speed tuning, with the wheel's encoder as the lost-step detector.
 
 Talks to the controller through control.microcontroller (the GUI's path). Needs firmware >= 1.6:
-SET_ENCODER_REPORTING streams the wheel's ENC_POS and the loop error XACTUAL - ENC_POS (the wheel has
+SET_ENCODER_REPORTING streams the wheel's ENC_POS and the loop error ENC_POS - XACTUAL (the wheel has
 no position field in the status packet, so this is the only way to see where it is), SET_RAMP_PROFILE
 selects trapezoid vs S-shape. Close the Squid GUI first: it holds the port.
 
