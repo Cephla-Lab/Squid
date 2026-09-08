@@ -86,6 +86,24 @@ def zstack_offsets_um(z_min_um: float, z_max_um: float, step_um: float) -> List[
     return [round(z_min_um + i * step_um, 6) for i in range(zstack_plane_count(z_min_um, z_max_um, step_um))]
 
 
+def resolve_effective_fps(camera, requested_fps: float, exposure_time_ms: float) -> float:
+    """The rate a recording at *exposure_time_ms* will actually run at: *requested_fps*
+    bounded by ``camera.get_max_frame_rate(exposure_time_ms)`` (readout / exposure /
+    ROI-limited free-run maximum).  A camera without the query, or one that fails it,
+    leaves the request unchanged.
+    """
+    query = getattr(camera, "get_max_frame_rate", None)
+    if not callable(query):
+        return float(requested_fps)
+    try:
+        achievable = float(query(exposure_time_ms))
+    except Exception:
+        return float(requested_fps)
+    if not achievable > 0:
+        return float(requested_fps)
+    return float(min(requested_fps, achievable))
+
+
 def recording_plane_offsets_um(bottom_um: float, nz: int, dz_um: float) -> List[float]:
     """Offsets (µm, relative to the z reference) of the Nz recording planes.
 
@@ -156,6 +174,7 @@ def _save_record_zstack_yaml(
             "enabled": params.recording_enabled,
             "channel": _serialize_for_yaml(params.recording_channel) if params.recording_channel else None,
             "fps": params.fps,
+            "effective_fps": params.effective_fps,
             "duration_s": params.duration_s,
             "bottom_z_offset_um": params.recording_bottom_z_offset_um,
             "nz": params.recording_Nz,
@@ -206,6 +225,12 @@ class RecordZStackAcquisitionParameters:
     recording_channel: Optional[AcquisitionChannel] = None
     fps: float = 10.0
     duration_s: float = 1.0
+    # Rate the recording will actually be made at: min(fps, what the camera can
+    # deliver at the recording exposure in its current binning / ROI).  Resolved
+    # by RecordZStackController.run_acquisition BEFORE the run starts (so every
+    # FOV and timepoint uses one known rate and acquisition.yaml records it); the
+    # widget shows the same number in the confirmation dialog.
+    effective_fps: Optional[float] = None
     # Recording planes: plane j at z_ref + recording_bottom_z_offset_um + j*recording_dz_um.
     recording_bottom_z_offset_um: float = 0.0
     recording_Nz: int = 1
@@ -280,11 +305,25 @@ class RecordZStackController:
         from control.core.record_zstack_worker import RecordZStackWorker
 
         if params.recording_enabled and params.recording_channel is None:
-            # The worker probes the achievable fps once and re-applies the recording
-            # channel (exposure) at every FOV; without a channel the z-stack phase's
-            # last channel would set the exposure for later FOVs and the cached rate
-            # would be wrong.  The widget always supplies one; reject the rest.
+            # The worker applies the recording channel (exposure) at every FOV;
+            # without a channel the z-stack phase's last channel would set the
+            # exposure for later FOVs and the resolved rate would be wrong.  The
+            # widget always supplies one; reject the rest.
             raise ValueError("recording_enabled requires a recording_channel")
+        if params.recording_enabled:
+            # Fix the recording rate now, before anything starts: the camera's
+            # free-run maximum at the recording exposure bounds the request, and
+            # every FOV / timepoint, the dataset size, time_increment_s and
+            # acquisition.yaml all use this one number.
+            exposure_ms = params.recording_channel.camera_settings.exposure_time_ms
+            params.effective_fps = resolve_effective_fps(self._microscope.camera, params.fps, exposure_ms)
+            if params.effective_fps < params.fps * (1 - 1e-6):
+                log.warning(
+                    f"camera cannot deliver {params.fps:g} fps at {exposure_ms:g} ms exposure "
+                    f"(max {params.effective_fps:.2f}); recording at {params.effective_fps:.2f} fps"
+                )
+            else:
+                log.info(f"recording at {params.effective_fps:g} fps")
 
         # Resolve and create a timestamped unique output directory.
         resolved_id, experiment_dir = create_experiment_dir(params.base_path, params.experiment_id)

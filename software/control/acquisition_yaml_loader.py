@@ -79,6 +79,7 @@ class RecordZStackYAMLData:
     recording_enabled: bool = False
     recording_channel: Optional[Dict] = None
     fps: float = 10.0
+    effective_fps: Optional[float] = None  # informational: the rate the saved run was made at
     duration_s: float = 1.0
     recording_bottom_z_offset_um: float = 0.0
     recording_nz: int = 1
@@ -121,6 +122,7 @@ def _parse_record_zstack_yaml_data(data: dict, acq: dict) -> RecordZStackYAMLDat
         recording_enabled=recording.get("enabled", False),
         recording_channel=recording.get("channel"),
         fps=recording.get("fps", 10.0),
+        effective_fps=recording.get("effective_fps"),
         duration_s=recording.get("duration_s", 1.0),
         recording_bottom_z_offset_um=recording.get("bottom_z_offset_um", 0.0),
         recording_nz=recording.get("nz", 1),
