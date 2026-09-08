@@ -70,6 +70,9 @@ class ToupcamCamera(AbstractCamera):
     # Last successfully read (min, max) PRECISE_FRAMERATE range in tenths of fps; see
     # _refresh_precise_framerate_range.  Class-level default so it exists before __init__ runs.
     _precise_framerate_range_tenths: Optional[Tuple[int, int]] = None
+    # (width, height, bytes/pixel) the cached range was read for; the range depends on
+    # resolution and bit depth, so a mode change invalidates it (see _update_internal_settings).
+    _precise_framerate_mode_key: Optional[Tuple[int, int, int]] = None
 
     TOUPCAM_OPTION_RAW_RAW_VAL = 1
     TOUPCAM_OPTION_RAW_RGB_VAL = 0
@@ -289,12 +292,6 @@ class ToupcamCamera(AbstractCamera):
         self._start_raw_camera_stream()
         self._update_internal_settings()
 
-        # (min, max) PRECISE_FRAMERATE in tenths of fps.  The SDK only answers the
-        # range query while the pull-mode stream is running (E_UNEXPECTED once
-        # Stop() has been called), so read it here, with the stream just started,
-        # and keep the last good value for set_frame_rate() calls made while stopped.
-        self._refresh_precise_framerate_range()
-
         # Per-frame timing diagnostics — accumulates a small rolling window
         # in _on_frame_callback and logs every N frames so we can see where
         # the per-frame time goes in continuous vs trigger mode.
@@ -341,6 +338,10 @@ class ToupcamCamera(AbstractCamera):
             self._log.debug("Starting raw stream in PullModeWithCallback.")
             self._camera.StartPullModeWithCallback(self._event_callback, self)
             self._raw_camera_stream_started = True
+            # The PRECISE_FRAMERATE range is only readable while the stream runs;
+            # grab it now so set_frame_rate() calls made while stopped can clamp
+            # against the current mode's range (see _refresh_precise_framerate_range).
+            self._refresh_precise_framerate_range()
         except toupcam.HRESULTException as ex:
             self._raw_camera_stream_started = False
             self._log.exception("failed to start camera, hr=0x{:x}".format(ex.hr))
@@ -467,6 +468,14 @@ class ToupcamCamera(AbstractCamera):
         if len(getattr(self, "_internal_read_buffer", b"")) != buffer_size:
             with self._raw_frame_callback_lock:
                 self._internal_read_buffer = bytes(buffer_size)
+
+        # A resolution / bit-depth change moves the PRECISE_FRAMERATE range (28 fps at
+        # 2x2 16-bit vs 63 fps at 3x3 on the ITR3CMOS26000KMA): drop the cached range so a
+        # stopped-stream set_frame_rate() cannot clamp the new mode to the old maximum.
+        mode_key = (int(width), int(height), int(pixel_size))
+        if mode_key != self._precise_framerate_mode_key:
+            self._precise_framerate_mode_key = mode_key
+            self._precise_framerate_range_tenths = None
 
         image_exposure_time_ms = self.get_exposure_time()
         camera_exposure_time_ms = self._calculate_camera_exposure_time(image_exposure_time_ms)
@@ -625,13 +634,16 @@ class ToupcamCamera(AbstractCamera):
             max_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
             min_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)
         except toupcam.HRESULTException as ex:
-            if self._precise_framerate_range_tenths is None:
-                self._log.warning(
-                    f"precise-framerate range read failed and no cached range: {control.toupcam_exceptions.explain(ex)}"
-                )
+            self._log.debug(f"precise-framerate range read failed (stream stopped?): {ex}")
             return self._precise_framerate_range_tenths
         self._precise_framerate_range_tenths = (int(min_tenths), int(max_tenths))
+        self._precise_framerate_mode_key = self._current_mode_key()
         return self._precise_framerate_range_tenths
+
+    def _current_mode_key(self) -> Tuple[int, int, int]:
+        """(width, height, bytes/pixel) — what the PRECISE_FRAMERATE range depends on."""
+        _, _, width, height = self._camera.get_Roi()
+        return int(width), int(height), int(self._get_pixel_size_in_bytes())
 
     def set_frame_rate(self, fps: float) -> float:
         """Set the frame rate via the PRECISE_FRAMERATE option (CONTINUOUS mode only).
@@ -660,14 +672,28 @@ class ToupcamCamera(AbstractCamera):
         if fps is None or fps <= 0:
             return continuous_max
         framerate_range = self._refresh_precise_framerate_range()
-        if framerate_range is None:
-            return continuous_max
-        min_tenths, max_tenths = framerate_range
-        tenths = clamp_precise_framerate_tenths(fps, min_tenths, max_tenths)
+        if framerate_range is not None:
+            min_tenths, max_tenths = framerate_range
+            tenths = clamp_precise_framerate_tenths(fps, min_tenths, max_tenths)
+        else:
+            # Range unknown: the stream has not run since the last resolution /
+            # bit-depth change.  Bound the request by the readout-limited maximum
+            # (within ~1.5% of the SDK's MAX_PRECISE_FRAMERATE in every binning /
+            # bit-depth mode measured on the ITR3CMOS26000KMA) and try the write —
+            # but the SDK validates a stopped-state write against the range of the
+            # mode it last streamed in, so it may well be rejected (see below).
+            tenths = max(1, int(round(min(fps, continuous_max) * 10.0)))
         try:
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, tenths)
         except toupcam.HRESULTException as ex:
-            self._log.warning(f"set precise-framerate failed: {control.toupcam_exceptions.explain(ex)}")
+            # The sensor keeps whatever PRECISE_FRAMERATE was set before (it does not
+            # fall back to free-run), so the caller should re-apply the hint once the
+            # stream is running — ContinuousFrameSource.start() does exactly that.
+            self._log.warning(
+                f"set precise-framerate {tenths / 10.0:g} fps rejected while the stream is stopped "
+                f"({control.toupcam_exceptions.explain(ex)}); the previous pacing stays in effect "
+                "until the hint is re-applied with the stream running"
+            )
             return continuous_max
         return min(tenths / 10.0, continuous_max)
 
