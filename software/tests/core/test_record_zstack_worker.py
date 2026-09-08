@@ -1482,3 +1482,15 @@ def test_zstack_phase_invokes_signal_new_image(tmp_path):
     )
     worker.run()
     assert len(new_image_calls) == 3 * 2  # planes x channels x 1 FOV x 1 timepoint
+
+
+def test_controller_rejects_recording_without_a_channel():
+    """V8: a recording phase with no channel would let the z-stack phase's last channel set
+    the exposure for later FOVs while the cached fps/pacing assume the recording channel."""
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
+
+    params = RecordZStackAcquisitionParameters(
+        base_path="/tmp", experiment_id="x", recording_enabled=True, recording_channel=None
+    )
+    with pytest.raises(ValueError, match="recording_channel"):
+        RecordZStackController.run_acquisition(object(), params)

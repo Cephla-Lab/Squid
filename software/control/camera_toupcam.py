@@ -338,14 +338,22 @@ class ToupcamCamera(AbstractCamera):
             self._log.debug("Starting raw stream in PullModeWithCallback.")
             self._camera.StartPullModeWithCallback(self._event_callback, self)
             self._raw_camera_stream_started = True
-            # The PRECISE_FRAMERATE range is only readable while the stream runs;
-            # grab it now so set_frame_rate() calls made while stopped can clamp
-            # against the current mode's range (see _refresh_precise_framerate_range).
-            self._refresh_precise_framerate_range()
         except toupcam.HRESULTException as ex:
             self._raw_camera_stream_started = False
             self._log.exception("failed to start camera, hr=0x{:x}".format(ex.hr))
             raise ex
+        # The PRECISE_FRAMERATE range is only readable while the stream runs; grab
+        # it now so set_frame_rate() calls made while stopped can clamp against
+        # the current mode's range (see _refresh_precise_framerate_range).  Only in
+        # CONTINUOUS mode: the option paces free-run only, and a trigger-mode
+        # stream (the z-stack phase) must not overwrite the cached free-run range.
+        # Outside the try above so nothing here can flip _raw_camera_stream_started
+        # while the SDK stream is actually running.
+        try:
+            if self.get_acquisition_mode() == CameraAcquisitionMode.CONTINUOUS:
+                self._refresh_precise_framerate_range()
+        except Exception:
+            self._log.debug("precise-framerate range refresh skipped after stream start", exc_info=True)
 
     def _on_frame_callback(self):
         """
@@ -633,11 +641,15 @@ class ToupcamCamera(AbstractCamera):
         try:
             max_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
             min_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)
-        except toupcam.HRESULTException as ex:
+            mode_key = self._current_mode_key()
+        except Exception as ex:
+            # HRESULTException while stopped is the normal case; anything else
+            # (ROI / pixel-format lookups) must not escape either — a stale or
+            # missing cache only costs the hardware pacing, never the stream.
             self._log.debug(f"precise-framerate range read failed (stream stopped?): {ex}")
             return self._precise_framerate_range_tenths
         self._precise_framerate_range_tenths = (int(min_tenths), int(max_tenths))
-        self._precise_framerate_mode_key = self._current_mode_key()
+        self._precise_framerate_mode_key = mode_key
         return self._precise_framerate_range_tenths
 
     def _current_mode_key(self) -> Tuple[int, int, int]:

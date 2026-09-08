@@ -764,8 +764,38 @@ class ZarrWriter:
         """Number of writes currently pending."""
         return len(self._pending_futures)
 
-    def finalize(self) -> None:
-        """Finalize the dataset (blocking)."""
+    def _stamp_time_increment(self, zarr_json: dict, time_increment_s: float) -> None:
+        """Replace the t-axis spacing in the store's metadata with a measured value.
+
+        Updates ``_squid.time_increment_s`` and the OME multiscale ``scale`` entry for
+        the t axis, keeping the configured value as ``_squid.nominal_time_increment_s``.
+        Used when the recording source ran off its nominal rate (see
+        StreamingCapture._report_delivered_rate) so the time axis on disk is honest.
+        """
+        attrs = zarr_json.get("attributes", {})
+        squid_attrs = attrs.get("_squid")
+        if squid_attrs is not None:
+            squid_attrs.setdefault("nominal_time_increment_s", squid_attrs.get("time_increment_s"))
+            squid_attrs["time_increment_s"] = time_increment_s
+        try:
+            multiscale = attrs["ome"]["multiscales"][0]
+            t_axis = [a["name"] for a in multiscale["axes"]].index("t")
+            for dataset in multiscale["datasets"]:
+                for transform in dataset.get("coordinateTransformations", []):
+                    if transform.get("type") == "scale":
+                        transform["scale"][t_axis] = time_increment_s
+        except (KeyError, IndexError, ValueError, TypeError):
+            log.warning("could not update the OME t-axis scale with the measured time increment")
+        zarr_json["attributes"] = attrs
+
+    def finalize(self, time_increment_s: Optional[float] = None) -> None:
+        """Finalize the dataset (blocking).
+
+        Args:
+            time_increment_s: measured t-axis spacing to stamp into the metadata in
+                place of the configured one (see _stamp_time_increment); None keeps
+                the configured value.
+        """
         if self._finalized:
             log.warning("Writer already finalized")
             return
@@ -785,6 +815,8 @@ class ZarrWriter:
                 if "_squid" in attrs:
                     attrs["_squid"]["acquisition_complete"] = True
                     zarr_json["attributes"] = attrs
+                if time_increment_s is not None:
+                    self._stamp_time_increment(zarr_json, time_increment_s)
                 with open(zarr_json_path, "w") as f:
                     json.dump(zarr_json, f, indent=2)
         except (OSError, json.JSONDecodeError) as e:
@@ -795,7 +827,12 @@ class ZarrWriter:
         self._cleanup_event_loop()
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
-    def abort(self, mark_aborted: bool = True, extra_attrs: Optional[Dict[str, object]] = None) -> None:
+    def abort(
+        self,
+        mark_aborted: bool = True,
+        extra_attrs: Optional[Dict[str, object]] = None,
+        time_increment_s: Optional[float] = None,
+    ) -> None:
         """Seal the store as incomplete and clean up (blocking).
 
         Args:
@@ -805,6 +842,8 @@ class ZarrWriter:
                 "user pressed Stop" from "finished with missing planes".
             extra_attrs: extra keys merged into ``_squid`` (e.g. error/drop
                 counts) alongside ``acquisition_complete: False``.
+            time_increment_s: measured t-axis spacing to stamp into the
+                metadata in place of the configured one; None keeps it.
 
         Uses try-finally to ensure cleanup always happens, even if an
         unexpected exception occurs during abort.
@@ -828,6 +867,8 @@ class ZarrWriter:
                             attrs["_squid"]["aborted"] = True
                         if extra_attrs:
                             attrs["_squid"].update(extra_attrs)
+                    if time_increment_s is not None:
+                        self._stamp_time_increment(zarr_json, time_increment_s)
                         zarr_json["attributes"] = attrs
                     with open(zarr_json_path, "w") as f:
                         json.dump(zarr_json, f, indent=2)

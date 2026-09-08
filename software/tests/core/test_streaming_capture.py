@@ -1089,3 +1089,122 @@ def test_display_fps_zero_means_no_preview():
     )
     assert cap.run() == 5
     assert shown == []
+
+
+# ---------------------------------------------------------------------------
+# Review fixes: measured t-axis spacing (paced source off its nominal rate), stall logging
+# ---------------------------------------------------------------------------
+
+
+class _MeasuringWriter(_ListWriter):
+    def __init__(self):
+        super().__init__()
+        self.measured = None
+
+    def set_measured_time_increment(self, seconds):
+        self.measured = seconds
+
+
+def test_paced_router_measures_delivered_period_and_counts_stalls():
+    r = RecordingRouter(fps=10.0, paced=True)
+    assert r.measured_period() is None
+    for k in range(5):
+        r.route(100.0 + k * 0.2)
+    # 200 ms gaps at a 100 ms nominal period are stalls (>= 175 ms): one hole each, so
+    # 4 stalls / 4 holes, and the measured spacing per spanned slot is still 100 ms.
+    assert r.stall_count == 4 and r.hole_count == 4
+    assert r.measured_period() == pytest.approx(0.1)
+    r2 = RecordingRouter(fps=10.0, paced=True)
+    for k in range(11):
+        r2.route(100.0 + k * 0.15)  # 150 ms gaps: under the stall gap, absorbed sequentially
+    assert r2.stall_count == 0 and r2.nominal_period == pytest.approx(0.1)
+    assert r2.measured_period() == pytest.approx(0.15)
+
+
+def test_capture_stamps_measured_spacing_when_paced_source_runs_slow():
+    # Paced at 10 fps, source actually delivering every 150 ms: every slot fills (no holes,
+    # store complete) but the t axis is 1.5x longer than nominal -> the writer is told.
+    frames = [_FakeFrame(100.0 + i * 0.15, np.zeros((4, 4), np.uint16)) for i in range(20)]
+    w = _MeasuringWriter()
+    cap = StreamingCapture(
+        _FakeSource(frames), RecordingRouter(fps=10.0, paced=True), CountStop(20), w, abort_fn=lambda: False
+    )
+    assert cap.run() == 20
+    assert w.finalized
+    assert w.measured == pytest.approx(0.15)
+
+
+def test_capture_keeps_nominal_spacing_within_tolerance():
+    # 1% slow: within tolerance, nominal value kept (no measured stamp).
+    frames = [_FakeFrame(100.0 + i * 0.101, np.zeros((4, 4), np.uint16)) for i in range(20)]
+    w = _MeasuringWriter()
+    cap = StreamingCapture(
+        _FakeSource(frames), RecordingRouter(fps=10.0, paced=True), CountStop(20), w, abort_fn=lambda: False
+    )
+    assert cap.run() == 20
+    assert w.measured is None
+
+
+def test_capture_stamps_measured_spacing_when_paced_source_runs_fast():
+    frames = [_FakeFrame(100.0 + i * 0.05, np.zeros((4, 4), np.uint16)) for i in range(20)]
+    w = _MeasuringWriter()
+    cap = StreamingCapture(
+        _FakeSource(frames), RecordingRouter(fps=10.0, paced=True), CountStop(20), w, abort_fn=lambda: False
+    )
+    assert cap.run() == 20
+    assert w.measured == pytest.approx(0.05)
+
+
+def test_measured_spacing_lands_in_zarr_metadata(tmp_path):
+    """End to end: a paced recording that ran 1.5x slow seals complete with time_increment_s
+    (both _squid and the OME t scale) rewritten to the measured spacing and the nominal kept;
+    a 2x-slow one (real stalls, holes) seals incomplete with the per-slot spacing unchanged."""
+    import json
+
+    pytest.importorskip("tensorstore")
+    from control.core.streaming_capture import RecordingWriter
+    from control.core.zarr_writer import ZarrAcquisitionConfig
+
+    T = 12
+
+    def cfg(name):
+        return ZarrAcquisitionConfig(
+            output_path=str(tmp_path / name),
+            shape=(T, 1, 1, 8, 8),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+            z_step_um=None,
+            time_increment_s=0.1,
+            channel_names=["BF"],
+            channel_colors=["#FFFFFF"],
+            channel_wavelengths=[None],
+            is_hcs=False,
+        )
+
+    # 200 ms gaps ARE stalls at 10 fps (>= 175 ms): one hole per gap, slots 0,2,4,... fill and the
+    # router runs past T after 6 frames -> the incomplete seal path.
+    frames = [_FakeFrame(100.0 + i * 0.2, np.full((8, 8), i + 1, np.uint16)) for i in range(T)]
+    w = RecordingWriter(cfg("stalls.ome.zarr"))
+    cap = StreamingCapture(
+        _FakeSource(frames), RecordingRouter(fps=10.0, paced=True), CountStop(T), w, abort_fn=lambda: False
+    )
+    assert cap.run() == 6
+    sq = json.load(open(tmp_path / "stalls.ome.zarr" / "zarr.json"))["attributes"]["_squid"]
+    assert sq["acquisition_complete"] is False and sq["captured_frames"] == 6
+    assert sq["time_increment_s"] == pytest.approx(0.1)  # per-slot spacing is still the nominal 100 ms
+
+    # 150 ms gaps: no holes, every slot filled, complete -- and the t axis stamped honestly.
+    frames = [_FakeFrame(100.0 + i * 0.15, np.full((8, 8), i + 1, np.uint16)) for i in range(T)]
+    w2 = RecordingWriter(cfg("slow.ome.zarr"))
+    cap2 = StreamingCapture(
+        _FakeSource(frames), RecordingRouter(fps=10.0, paced=True), CountStop(T), w2, abort_fn=lambda: False
+    )
+    assert cap2.run() == T
+    meta = json.load(open(tmp_path / "slow.ome.zarr" / "zarr.json"))
+    sq = meta["attributes"]["_squid"]
+    assert sq["acquisition_complete"] is True
+    assert sq["time_increment_s"] == pytest.approx(0.15)
+    assert sq["nominal_time_increment_s"] == pytest.approx(0.1)
+    ms = meta["attributes"]["ome"]["multiscales"][0]
+    t_axis = [a["name"] for a in ms["axes"]].index("t")
+    assert ms["datasets"][0]["coordinateTransformations"][0]["scale"][t_axis] == pytest.approx(0.15)

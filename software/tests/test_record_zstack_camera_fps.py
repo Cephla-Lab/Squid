@@ -193,3 +193,35 @@ def test_set_frame_rate_write_failure_falls_back_to_continuous_max():
     cam._camera = _FakeToupcamSdk(writable=False)
     achievable = cam.set_frame_rate(10.0)
     assert 27.5 < achievable < 28.5, achievable
+
+
+def test_refresh_range_never_raises_and_only_caches_in_continuous_mode():
+    # V4: a failing ROI / pixel-format lookup inside the refresh must not escape into
+    # _start_raw_camera_stream (it would desync the streaming flag from the SDK stream).
+    from squid.abc import CameraAcquisitionMode
+
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=2.0)
+    cam._camera = _FakeToupcamSdk()
+
+    def boom():
+        raise RuntimeError("get_Roi failed")
+
+    cam._current_mode_key = boom
+    assert cam._refresh_precise_framerate_range() is None  # swallowed, nothing cached
+    cam._current_mode_key = lambda: (3104, 2084, 2)
+
+    # B4: the post-start refresh runs only for a CONTINUOUS (free-run) stream; a
+    # trigger-mode stream (z-stack phase) must not overwrite the free-run range.
+    class _StartingSdk(_FakeToupcamSdk):
+        def StartPullModeWithCallback(self, cb, ctx):
+            pass
+
+    cam._camera = _StartingSdk(min_tenths=48, max_tenths=1085)
+    cam._raw_camera_stream_started = False
+    cam.get_acquisition_mode = lambda: CameraAcquisitionMode.SOFTWARE_TRIGGER
+    cam._start_raw_camera_stream()
+    assert cam._raw_camera_stream_started is True
+    assert cam._precise_framerate_range_tenths is None
+    cam.get_acquisition_mode = lambda: CameraAcquisitionMode.CONTINUOUS
+    cam._start_raw_camera_stream()
+    assert cam._precise_framerate_range_tenths == (48, 1085)
