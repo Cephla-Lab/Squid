@@ -73,6 +73,10 @@ class ToupcamCamera(AbstractCamera):
     # (width, height, bytes/pixel) the cached range was read for; the range depends on
     # resolution and bit depth, so a mode change invalidates it (see _update_internal_settings).
     _precise_framerate_mode_key: Optional[Tuple[int, int, int]] = None
+    # time.time() of the last PRECISE_FRAMERATE write made while the stream was running.
+    # Such a write corrupts the frame integrating at that moment when a hardware ROI is
+    # set; ContinuousFrameSource discards frames delivered within a period of it.
+    frame_rate_hint_live_write_ts: Optional[float] = None
 
     TOUPCAM_OPTION_RAW_RAW_VAL = 1
     TOUPCAM_OPTION_RAW_RGB_VAL = 0
@@ -695,8 +699,25 @@ class ToupcamCamera(AbstractCamera):
             # but the SDK validates a stopped-state write against the range of the
             # mode it last streamed in, so it may well be rejected (see below).
             tenths = max(1, int(round(min(fps, continuous_max) * 10.0)))
+        live = self._raw_camera_stream_started
+        if live:
+            # Writing PRECISE_FRAMERATE into a RUNNING stream corrupts the frame being
+            # integrated at that moment when a hardware ROI is set (bench: 1.8-3.6x
+            # over-exposed, saturated on a bright scene; full-frame is unaffected), so
+            # skip the write when the camera already reports the value.  It cannot be
+            # avoided altogether: with a ROI the SDK re-clamps a stopped-state write
+            # to the full-frame maximum at Start, so a higher rate only takes while
+            # running — callers discard the frames around the write (see
+            # frame_rate_hint_live_write_ts / ContinuousFrameSource.start).
+            try:
+                if int(self._camera.get_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE)) == tenths:
+                    return min(tenths / 10.0, continuous_max)
+            except toupcam.HRESULTException:
+                pass
         try:
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, tenths)
+            if live:
+                self.frame_rate_hint_live_write_ts = time.time()
         except toupcam.HRESULTException as ex:
             # The sensor keeps whatever PRECISE_FRAMERATE was set before (it does not
             # fall back to free-run), so the caller should re-apply the hint once the
