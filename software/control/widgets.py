@@ -6085,7 +6085,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.dropdown_location_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_add = QPushButton("Add")
         self.btn_remove = QPushButton("Remove")
-        self.btn_previous = QPushButton("Previous")
+        self.btn_previous = QPushButton("Prev")
         self.btn_next = QPushButton("Next")
         self.btn_clear = QPushButton("Clear")
 
@@ -6100,7 +6100,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.table_location_list.setColumnCount(4)
         header_labels = ["x", "y", "z", "ID"]
         self.table_location_list.setHorizontalHeaderLabels(header_labels)
-        self.btn_update_z = QPushButton("Update Z")
+        self.btn_update_xy = QPushButton("Set XY")
+        self.btn_update_z = QPushButton("Set Z")
 
         self.entry_deltaX = QDoubleSpinBox()
         self.entry_deltaX.setMinimum(0)
@@ -6304,14 +6305,24 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         temp3.addWidget(QLabel("Location List"))
         temp3.addWidget(self.dropdown_location_list)
         self.grid_location_list_line1.addLayout(temp3, 0, 0, 1, 6)  # Span across all columns except the last
-        self.grid_location_list_line1.addWidget(self.btn_update_z, 0, 6, 1, 2)  # Align with other buttons
+        # Set XY / Set Z split the width the single Update Z button used to occupy
+        self.grid_location_list_line1.addWidget(self.btn_update_xy, 0, 6, 1, 1)
+        self.grid_location_list_line1.addWidget(self.btn_update_z, 0, 7, 1, 1)
 
         self.grid_location_list_line2 = QGridLayout()
         # Make all buttons span 2 columns for consistent width
         self.grid_location_list_line2.addWidget(self.btn_add, 1, 0, 1, 2)
         self.grid_location_list_line2.addWidget(self.btn_remove, 1, 2, 1, 2)
-        self.grid_location_list_line2.addWidget(self.btn_next, 1, 4, 1, 2)
+        # Prev / Next split the width the single Next button used to occupy
+        self.grid_location_list_line2.addWidget(self.btn_previous, 1, 4, 1, 1)
+        self.grid_location_list_line2.addWidget(self.btn_next, 1, 5, 1, 1)
         self.grid_location_list_line2.addWidget(self.btn_clear, 1, 6, 1, 2)
+
+        # Even column widths, so the split buttons are genuinely half-width instead of
+        # shrinking to fit their text
+        for i in range(8):
+            self.grid_location_list_line1.setColumnStretch(i, 1)
+            self.grid_location_list_line2.setColumnStretch(i, 1)
 
         self.grid_location_list_line3 = QGridLayout()
         self.grid_location_list_line3.addWidget(self.btn_import_locations, 2, 0, 1, 3)
@@ -6506,6 +6517,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.table_location_list.cellClicked.connect(self.cell_was_clicked)
         self.table_location_list.cellChanged.connect(self.cell_was_changed)
         self.btn_show_table_location_list.clicked.connect(self.table_location_list.show)
+        self.btn_update_xy.clicked.connect(self.update_xy)
         self.btn_update_z.clicked.connect(self.update_z)
         self.dropdown_location_list.currentIndexChanged.connect(self.go_to)
 
@@ -6615,17 +6627,96 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         ):
             error_dialog("Failed to set reference for reflection autofocus. Is the laser autofocus initialized?")
 
-    def update_z(self):
-        z_mm = self.stage.get_pos().z_mm
+    @staticmethod
+    def _location_str(x_mm, y_mm, z_mm):
+        """Single source of truth for the location list display string."""
+        return f"x:{round(x_mm,3)} mm  y:{round(y_mm,3)} mm  z:{round(z_mm * 1000,1)} μm"
+
+    def _selected_location_index(self):
+        """Current location list index, or None when there is nothing selected."""
         index = self.dropdown_location_list.currentIndex()
+        if index < 0 or index >= len(self.location_list):
+            return None
+        return index
+
+    def update_z(self):
+        index = self._selected_location_index()
+        if index is None:
+            self._log.error("Cannot update Z, because no location is selected")
+            return
+
+        z_mm = self.stage.get_pos().z_mm
+        region_id = self.location_ids[index]
         self.location_list[index, 2] = z_mm
-        self.scanCoordinates.region_centers[self.location_ids[index]][2] = z_mm
-        self.scanCoordinates.region_fov_coordinates[self.location_ids[index]] = [
-            (coord[0], coord[1], z_mm)
-            for coord in self.scanCoordinates.region_fov_coordinates[self.location_ids[index]]
-        ]
-        location_str = f"x:{round(self.location_list[index,0],3)} mm  y:{round(self.location_list[index,1],3)} mm  z:{round(z_mm * 1000.0,3)} μm"
-        self.dropdown_location_list.setItemText(index, location_str)
+
+        # Z does not change the grid footprint, so the FOVs only need their z rewritten
+        if region_id in self.scanCoordinates.region_centers:
+            self.scanCoordinates.region_centers[region_id][2] = z_mm
+        if region_id in self.scanCoordinates.region_fov_coordinates:
+            self.scanCoordinates.region_fov_coordinates[region_id] = [
+                (coord[0], coord[1], z_mm) for coord in self.scanCoordinates.region_fov_coordinates[region_id]
+            ]
+
+        self.dropdown_location_list.setItemText(
+            index, self._location_str(self.location_list[index, 0], self.location_list[index, 1], z_mm)
+        )
+        # Keep the table in sync without re-entering cell_was_changed
+        self.table_location_list.blockSignals(True)
+        if self.table_location_list.rowCount() > index:
+            self.table_location_list.setItem(index, 2, QTableWidgetItem(str(round(z_mm * 1000, 1))))
+        self.table_location_list.blockSignals(False)
+
+    def update_xy(self):
+        index = self._selected_location_index()
+        if index is None:
+            self._log.error("Cannot update XY, because no location is selected")
+            return
+
+        pos = self.stage.get_pos()
+        x = pos.x_mm
+        y = pos.y_mm
+        z = self.location_list[index, 2]  # Z is left alone, that is what Set Z is for
+        region_id = self.location_ids[index]
+
+        # Erase the old grid rectangles before the region is re-tiled at the new center
+        if region_id in self.scanCoordinates.region_fov_coordinates:
+            self.navigationViewer.deregister_fovs_from_image(self.scanCoordinates.region_fov_coordinates[region_id])
+
+        self.location_list[index, 0] = x
+        self.location_list[index, 1] = y
+
+        # Re-tile the region at the new center; this re-registers its FOVs on the viewer
+        if self.use_overlap:
+            self.scanCoordinates.add_flexible_region(
+                region_id,
+                x,
+                y,
+                z,
+                self.entry_NX.value(),
+                self.entry_NY.value(),
+                overlap_percent=self.entry_overlap.value(),
+            )
+        else:
+            self.scanCoordinates.add_flexible_region_with_step_size(
+                region_id,
+                x,
+                y,
+                z,
+                self.entry_NX.value(),
+                self.entry_NY.value(),
+                self.entry_deltaX.value(),
+                self.entry_deltaY.value(),
+            )
+
+        self.dropdown_location_list.setItemText(index, self._location_str(x, y, z))
+        # Keep the table in sync without re-entering cell_was_changed
+        self.table_location_list.blockSignals(True)
+        if self.table_location_list.rowCount() > index:
+            self.table_location_list.setItem(index, 0, QTableWidgetItem(str(round(x, 3))))
+            self.table_location_list.setItem(index, 1, QTableWidgetItem(str(round(y, 3))))
+        self.table_location_list.blockSignals(False)
+
+        self.refresh_position_labels()
 
     def update_Nz(self):
         z_min = self.entry_minZ.value()
@@ -6745,6 +6836,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self.entry_deltaX.value(),
                     self.entry_deltaY.value(),
                 )
+
+        self.refresh_position_labels()
 
     def set_deltaZ(self, value):
         if self.checkbox_usePiezo.isChecked():
@@ -6960,6 +7053,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Re-enable signals
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
+            self.refresh_position_labels()
             print(f"Added Region: {region_id} - x={x}, y={y}, z={z}")
         else:
             print("Invalid Region: Duplicate Location")
@@ -7020,6 +7114,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Re-enable signals
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
+            self.refresh_position_labels()
 
     def next(self):
         index = self.dropdown_location_list.currentIndex()
@@ -7040,8 +7135,15 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.stage.move_z_to(z)
 
     def previous(self):
+        num_regions = self.dropdown_location_list.count()
+        if num_regions <= 0:
+            self._log.error("Cannot move to previous location, because there are no locations in the list")
+            return
+
         index = self.dropdown_location_list.currentIndex()
-        index = max(index - 1, 0)
+        # With nothing selected, stepping back should land on the last entry, not on
+        # (-1 - 1) % num_regions, which would silently skip to the second to last.
+        index = num_regions - 1 if index < 0 else (index - 1) % num_regions
         self.dropdown_location_list.setCurrentIndex(index)
         x = self.location_list[index, 0]
         y = self.location_list[index, 1]
@@ -7058,6 +7160,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.table_location_list.setRowCount(0)
         self.navigationViewer.clear_overlay()
 
+        self.refresh_position_labels()
         self._log.info("Cleared all locations and overlays.")
 
     def clear_only_location_list(self):
@@ -7065,6 +7168,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.location_ids = np.empty((0,), dtype="<U20")
         self.dropdown_location_list.clear()
         self.table_location_list.setRowCount(0)
+        self.refresh_position_labels()
 
     def go_to(self, index):
         if index != -1:
@@ -7076,6 +7180,22 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.stage.move_y_to(y)
                 self.stage.move_z_to(z)
                 self.table_location_list.selectRow(index)
+                self.navigationViewer.set_current_position(index, self._current_region_fovs(index))
+
+    def _current_region_fovs(self, index):
+        """FOV coordinates of the region at index, or None if there is no such region."""
+        if 0 <= index < len(self.location_ids):
+            return self.scanCoordinates.region_fov_coordinates.get(self.location_ids[index])
+        return None
+
+    def refresh_position_labels(self):
+        """Redraw the position number labels on the scan grid. Call after the list changes."""
+        labels = [
+            (self.location_list[i, 0], self.location_list[i, 1], str(i + 1)) for i in range(len(self.location_list))
+        ]
+        index = self.dropdown_location_list.currentIndex()
+        self.navigationViewer.set_position_labels(labels, current_index=index)
+        self.navigationViewer.set_current_position(index, self._current_region_fovs(index))
 
     def cell_was_clicked(self, row, column):
         self.dropdown_location_list.setCurrentIndex(row)
@@ -7137,6 +7257,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
         self.dropdown_location_list.setItemText(row, location_str)
         self.go_to(row)
+        self.refresh_position_labels()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_A and event.modifiers() == Qt.ControlModifier:
@@ -7251,6 +7372,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self._log.warning("Duplicate values not added based on x and y.")
             self.table_location_list.blockSignals(False)
             self.dropdown_location_list.blockSignals(False)
+            self.refresh_position_labels()
             self._log.debug(self.location_list)
 
     def on_snap_images(self):
@@ -7525,6 +7647,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                     self.entry_deltaX.value(),
                     self.entry_deltaY.value(),
                 )
+
+        self.refresh_position_labels()
 
 
 class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
