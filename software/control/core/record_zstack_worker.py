@@ -352,23 +352,29 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # after their own mode switch.  Every plane records at the same fps.
         self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
         if self._effective_fps is None:
-            effective_fps = self.params.fps
+            # The rate was resolved by the controller before the run started
+            # (params.effective_fps, also in acquisition.yaml); a caller that built
+            # the params by hand falls back to the requested rate.  Applying the
+            # hint tells us whether the camera paces itself and, as a safety net,
+            # whether it can do even less than resolved.
+            target_fps = self.params.effective_fps or self.params.fps
+            effective_fps = target_fps
             paced = False
             try:
-                achievable_fps = self.camera.set_frame_rate(self.params.fps)
-                if achievable_fps and 0 < achievable_fps < self.params.fps:
+                achievable_fps = self.camera.set_frame_rate(target_fps)
+                if achievable_fps and 0 < achievable_fps < target_fps * (1 - 0.01):
                     log.warning(
-                        f"camera cannot deliver {self.params.fps:g} fps "
-                        f"(achievable ≈ {achievable_fps:.2f}); recording at the achievable rate"
+                        f"camera reports {achievable_fps:.2f} fps, below the resolved {target_fps:g} fps; "
+                        f"recording at {achievable_fps:.2f} fps (acquisition.yaml has the resolved value)"
                     )
                     effective_fps = achievable_fps
-                # A camera that reports it will deliver at (or below) the requested
+                # A camera that reports it will deliver at (or below) the target
                 # rate delivers only wanted frames: route sequentially.  A camera
-                # that reports a HIGHER rate free-runs faster than requested (no
+                # that reports a HIGHER rate free-runs faster than the target (no
                 # hardware pacing) and must be downsampled by arrival time.
-                paced = bool(achievable_fps) and achievable_fps <= self.params.fps * (1 + 1e-6)
+                paced = bool(achievable_fps) and achievable_fps <= target_fps * (1 + 1e-6)
             except Exception:
-                log.exception("set_frame_rate probe failed; assuming the requested fps")
+                log.exception("set_frame_rate failed; assuming the resolved fps")
             self._effective_fps = effective_fps
             self._paced = paced
             log.info(

@@ -17278,19 +17278,14 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         """Text for the confirmation dialog when the camera cannot reach requested_fps at the
         recording exposure in its current binning / ROI, else None.  Unknown (no camera, or a
         camera that cannot estimate) means no note."""
-        camera = getattr(self.liveController, "camera", None)
-        query = getattr(camera, "get_max_frame_rate", None)
-        if not callable(query):
-            return None
-        exposure_ms = self._recording_exposure()
-        try:
-            achievable = float(query(exposure_ms))
-        except Exception:
-            return None
-        if not achievable > 0 or requested_fps <= achievable * 1.01:
-            return None
-        from control.core.record_zstack_controller import frame_count
+        from control.core.record_zstack_controller import frame_count, resolve_effective_fps
 
+        camera = getattr(self.liveController, "camera", None)
+        exposure_ms = self._recording_exposure()
+        # Same resolution the controller applies before the run starts.
+        achievable = resolve_effective_fps(camera, requested_fps, exposure_ms)
+        if requested_fps <= achievable * 1.01:
+            return None
         frames = max(1, frame_count(achievable, duration_s))
         return (
             f"Camera limit: at {exposure_ms:g} ms exposure in the current binning/ROI the camera can "

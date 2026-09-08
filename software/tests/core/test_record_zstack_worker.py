@@ -1496,3 +1496,89 @@ def test_controller_rejects_recording_without_a_channel():
     )
     with pytest.raises(ValueError, match="recording_channel"):
         RecordZStackController.run_acquisition(object(), params)
+
+
+def test_resolve_effective_fps_bounds_the_request_by_the_camera_maximum():
+    from unittest.mock import MagicMock
+
+    from control.core.record_zstack_controller import resolve_effective_fps
+
+    cam = MagicMock()
+    cam.get_max_frame_rate.return_value = 28.0
+    assert resolve_effective_fps(cam, 30.0, 2.0) == 28.0
+    assert resolve_effective_fps(cam, 10.0, 2.0) == 10.0
+    cam.get_max_frame_rate.assert_called_with(2.0)
+    # No query, or a failing one: the request stands.
+    assert resolve_effective_fps(object(), 30.0, 2.0) == 30.0
+    cam.get_max_frame_rate.side_effect = RuntimeError("no sdk")
+    assert resolve_effective_fps(cam, 30.0, 2.0) == 30.0
+
+
+def test_controller_resolves_effective_fps_before_the_run_and_records_it(tmp_path, monkeypatch):
+    """The rate is fixed in run_acquisition, before the worker exists: params.effective_fps is
+    set, acquisition.yaml carries it, and the worker sizes every store from it."""
+    pytest.importorskip("tensorstore")
+    import yaml
+    import control._def
+    import tests.control.test_stubs as ts
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import (
+        RecordZStackAcquisitionParameters,
+        RecordZStackController,
+        frame_count,
+    )
+    from control.core.scan_coordinates import ScanCoordinates
+
+    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
+    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
+    scope = _build_simulated_microscope(64, 48)
+    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
+    laser_af = ts.get_test_laser_autofocus_controller(scope)
+    channels = live_controller.get_channels(scope.objective_store.default_objective)
+    rec_channel = channels[0].model_copy(deep=True)
+    rec_channel.camera_settings.exposure_time_ms = 200.0  # sim camera: max = 1000/(200+3) ~ 4.9 fps
+
+    z_cfg = scope.stage.get_config().Z_AXIS
+    scope.stage.move_z_to((z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0)
+    x0 = scope.stage.get_config().X_AXIS.MIN_POSITION + 1.0
+    y0 = scope.stage.get_config().Y_AXIS.MIN_POSITION + 1.0
+    scan = ScanCoordinates(objectiveStore=scope.objective_store, stage=scope.stage, camera=scope.camera)
+    scan.region_fov_coordinates = {"A1": [(x0, y0)]}
+
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=laser_af,
+        objective_store=scope.objective_store,
+        scan_coordinates=scan,
+        callbacks=NoOpCallbacks,
+    )
+    params = RecordZStackAcquisitionParameters(
+        base_path=str(tmp_path),
+        experiment_id="resolved",
+        recording_enabled=True,
+        recording_channel=rec_channel,
+        fps=30.0,
+        duration_s=1.0,
+    )
+    expected = scope.camera.get_max_frame_rate(200.0)
+    assert expected < 30.0  # precondition: the sim camera cannot do 30 fps at 200 ms
+    controller.run_acquisition(params)
+    assert params.effective_fps == pytest.approx(expected)  # resolved before the worker ran
+    controller.join(timeout=120)
+    assert not controller.acquisition_in_progress()
+    controller.close()
+
+    exp_dir = next(d for d in tmp_path.iterdir() if d.is_dir())
+    saved = yaml.safe_load(open(exp_dir / "acquisition.yaml"))
+    assert saved["recording"]["fps"] == 30.0
+    assert saved["recording"]["effective_fps"] == pytest.approx(expected)
+    import json
+
+    zarr_json = next(exp_dir.glob("recording/**/zarr.json"))
+    sq = json.load(open(zarr_json))["attributes"]["_squid"]
+    assert sq["shape"][0] == max(1, frame_count(expected, 1.0))
+    assert sq["requested_fps"] == 30.0 and sq["effective_fps"] == pytest.approx(expected)
+    # The store's spacing is the resolved one unless the simulated camera delivered more than 2%
+    # off it, in which case the measured spacing is stamped and the resolved one kept alongside.
+    assert sq.get("nominal_time_increment_s", sq["time_increment_s"]) == pytest.approx(1.0 / expected)
