@@ -1,0 +1,11 @@
+# Static-analysis gate for the protocol-v2 firmware core (design D9 robustness).
+# Focused, high-signal checks; CI runs it over src/protocol, src/boot, src/hal.
+# WarningsAsErrors makes any enabled diagnostic fail CI.
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'src/(protocol|boot|hal)/'
+FormatStyle: none
