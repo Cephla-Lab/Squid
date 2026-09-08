@@ -57,6 +57,7 @@ def _bare_toupcam(strobe_time_us, exposure_ms):
     cam._strobe_info = StrobeInfo(strobe_time_us=float(strobe_time_us), trigger_delay_us=15666.0)
     cam._exposure_time = float(exposure_ms)
     cam._current_mode_key = lambda: (3104, 2084, 2)  # 2x2 binning, 16-bit; no SDK behind a bare instance
+    cam._raw_camera_stream_started = False  # stopped unless a test says otherwise
     return cam
 
 
@@ -225,3 +226,43 @@ def test_refresh_range_never_raises_and_only_caches_in_continuous_mode():
     cam.get_acquisition_mode = lambda: CameraAcquisitionMode.CONTINUOUS
     cam._start_raw_camera_stream()
     assert cam._precise_framerate_range_tenths == (48, 1085)
+
+
+def test_set_frame_rate_skips_live_write_when_value_already_set_and_records_live_writes():
+    # While streaming, a write corrupts the frame in flight (hardware ROI), so the driver reads
+    # PRECISE_FRAMERATE back first and only writes when the camera does not already have the
+    # value; a live write that does happen is timestamped for ContinuousFrameSource.
+    import time as _time
+
+    class _Sdk(_FakeToupcamSdk):
+        def __init__(self, current):
+            super().__init__()
+            self.current = current
+
+        def get_Option(self, opt):
+            import control.toupcam as toupcam
+
+            if opt == toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE:
+                return self.current
+            return super().get_Option(opt)
+
+        def put_Option(self, opt, value):
+            super().put_Option(opt, value)
+            self.current = value
+
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=2.0)
+    cam._camera = _Sdk(current=100)
+    cam._raw_camera_stream_started = True
+    assert cam.set_frame_rate(10.0) == 10.0
+    assert cam._camera.puts == []  # already at 100 tenths: no live write
+    assert cam.frame_rate_hint_live_write_ts is None
+    t0 = _time.time()
+    assert cam.set_frame_rate(20.0) == 20.0
+    assert cam._camera.puts == [200]
+    assert cam.frame_rate_hint_live_write_ts is not None and cam.frame_rate_hint_live_write_ts >= t0
+    # Stopped: always write, never timestamp.
+    cam._raw_camera_stream_started = False
+    ts_before = cam.frame_rate_hint_live_write_ts
+    assert cam.set_frame_rate(15.0) == 15.0
+    assert cam._camera.puts == [200, 150]
+    assert cam.frame_rate_hint_live_write_ts == ts_before
