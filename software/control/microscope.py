@@ -16,6 +16,7 @@ from control.lighting import LightSourceType, IntensityControlMode, ShutterContr
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
+from control.startup_progress import NULL_REPORTER, StartupReporter, is_squid_filter_wheel
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
@@ -93,10 +94,29 @@ def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
     return bool(component_override)
 
 
+def _close_serial_connection(device) -> None:
+    """Release a device that owns a SerialDevice but has no close() of its own.
+
+    XLight and SciMicroscopyLEDArray both fall into this category, which is why
+    the teardown registry takes an explicit callable instead of duck-typing a
+    .close() method.
+    """
+    if device is None:
+        return
+    connection = getattr(device, "serial_connection", None)
+    if connection is not None:
+        connection.close()
+
+
 class MicroscopeAddons:
     @staticmethod
     def build_from_global_config(
-        stage: AbstractStage, micro: Optional[Microcontroller], simulated: bool = False, skip_init: bool = False
+        stage: AbstractStage,
+        micro: Optional[Microcontroller],
+        simulated: bool = False,
+        skip_init: bool = False,
+        *,
+        reporter: StartupReporter = NULL_REPORTER,
     ) -> "MicroscopeAddons":
         # Per-component simulation settings
         spinning_disk_simulated = _should_simulate(simulated, control._def.SIMULATE_SPINNING_DISK)
@@ -105,53 +125,74 @@ class MicroscopeAddons:
         laser_af_camera_simulated = _should_simulate(simulated, control._def.SIMULATE_LASER_AF_CAMERA)
         fluidics_simulated = _should_simulate(simulated, control._def.SIMULATE_FLUIDICS)
 
+        # Every device below is wrapped in reporter.step(). None of these are
+        # marked core, so a failure is recorded and the sweep carries on - the
+        # operator gets one dialog listing everything that is off, instead of
+        # power-cycling one box at a time. Each device is also registered with
+        # the reporter as soon as it exists, because these locals are the only
+        # reference to them until this function returns; without that an abort
+        # would strand every open port.
         xlight = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
             # TODO: For user compatibility, when ENABLE_SPINNING_DISK_CONFOCAL is True, we use XLight/Cicero on default.
             # This needs to be changed when we figure out better machine configuration structure.
-            xlight = (
-                serial_peripherals.XLight(
-                    control._def.XLIGHT_SERIAL_NUMBER,
-                    control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL,
+            with reporter.step("spinning_disk"):
+                xlight = (
+                    serial_peripherals.XLight(
+                        control._def.XLIGHT_SERIAL_NUMBER,
+                        control._def.XLIGHT_SLEEP_TIME_FOR_WHEEL,
+                    )
+                    if not spinning_disk_simulated
+                    else serial_peripherals.XLight_Simulation()
                 )
-                if not spinning_disk_simulated
-                else serial_peripherals.XLight_Simulation()
-            )
+                # XLight has no close() of its own.
+                reporter.register_opened("spinning disk", lambda: _close_serial_connection(xlight))
 
         dragonfly = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and control._def.USE_DRAGONFLY:
-            dragonfly = (
-                serial_peripherals.Dragonfly(SN=control._def.DRAGONFLY_SERIAL_NUMBER)
-                if not spinning_disk_simulated
-                else serial_peripherals.Dragonfly_Simulation()
-            )
+            with reporter.step("spinning_disk"):
+                dragonfly = (
+                    serial_peripherals.Dragonfly(SN=control._def.DRAGONFLY_SERIAL_NUMBER)
+                    if not spinning_disk_simulated
+                    else serial_peripherals.Dragonfly_Simulation()
+                )
+                reporter.register_opened("spinning disk", dragonfly.close)
 
         nl5 = None
         if control._def.ENABLE_NL5:
-            nl5 = NL5.NL5() if not simulated else NL5.NL5_Simulation()
+            with reporter.step("nl5"):
+                nl5 = NL5.NL5() if not simulated else NL5.NL5_Simulation()
 
         cellx = None
         if control._def.ENABLE_CELLX:
-            cellx = (
-                serial_peripherals.CellX(control._def.CELLX_SN)
-                if not simulated
-                else serial_peripherals.CellX_Simulation()
-            )
+            with reporter.step("cellx"):
+                cellx = (
+                    serial_peripherals.CellX(control._def.CELLX_SN)
+                    if not simulated
+                    else serial_peripherals.CellX_Simulation()
+                )
+                reporter.register_opened("CellX", cellx.close)
 
         emission_filter_wheel = None
         fw_config = squid.config.get_filter_wheel_config()
         if fw_config:
-            emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
-                fw_config, microcontroller=micro, simulated=filter_wheel_simulated, skip_init=skip_init
-            )
+            # The Squid variant rides on the microcontroller and raises hard
+            # without it; Zaber/Optospin own their own port and are survivable.
+            fw_core = is_squid_filter_wheel(fw_config)
+            with reporter.step("filter_wheel", core=fw_core):
+                emission_filter_wheel = squid.filter_wheel_controller.utils.get_filter_wheel_controller(
+                    fw_config, microcontroller=micro, simulated=filter_wheel_simulated, skip_init=skip_init
+                )
+                reporter.register_opened("emission filter wheel", emission_filter_wheel.close)
 
         objective_changer = None
         if control._def.USE_XERYON:
-            objective_changer = (
-                ObjectiveChanger2PosController(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
-                if not objective_changer_simulated
-                else ObjectiveChanger2PosController_Simulation(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
-            )
+            with reporter.step("objective_changer"):
+                objective_changer = (
+                    ObjectiveChanger2PosController(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
+                    if not objective_changer_simulated
+                    else ObjectiveChanger2PosController_Simulation(sn=control._def.XERYON_SERIAL_NUMBER, stage=stage)
+                )
         elif control._def.USE_OBJECTIVE_TURRET:
             turret_kwargs = dict(
                 serial_number=control._def.OBJECTIVE_TURRET_SERIAL_NUMBER,
@@ -161,57 +202,69 @@ class MicroscopeAddons:
                 offset_pulses=control._def.OBJECTIVE_TURRET_OFFSET_PULSES,
                 stage=stage,
             )
-            objective_changer = (
-                ObjectiveTurret4PosController(**turret_kwargs)
-                if not objective_changer_simulated
-                else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
-            )
+            with reporter.step("objective_changer"):
+                objective_changer = (
+                    ObjectiveTurret4PosController(**turret_kwargs)
+                    if not objective_changer_simulated
+                    else ObjectiveTurret4PosControllerSimulation(**turret_kwargs)
+                )
+                reporter.register_opened("objective turret", objective_changer.close)
 
         camera_focus = None
         if control._def.SUPPORT_LASER_AUTOFOCUS:
-            camera_focus = squid.camera.utils.get_camera(
-                squid.config.get_autofocus_camera_config(), simulated=laser_af_camera_simulated
-            )
+            with reporter.step("camera_focus"):
+                camera_focus = squid.camera.utils.get_camera(
+                    squid.config.get_autofocus_camera_config(), simulated=laser_af_camera_simulated
+                )
+                reporter.register_opened("laser autofocus camera", camera_focus.close)
 
         fluidics = None
         if control._def.RUN_FLUIDICS:
-            # Uninitialized on purpose: the Fluidics tab's Initialize button loads the config and brings the
-            # system up (blocking, off the GUI thread). See control/fluidics_system.py.
-            fluidics = FluidicsService(
-                default_config_path=control._def.FLUIDICS_CONFIG_PATH, simulated=fluidics_simulated
-            )
+            with reporter.step("fluidics"):
+                # Uninitialized on purpose: the Fluidics tab's Initialize button loads the config and brings the
+                # system up (blocking, off the GUI thread). See control/fluidics_system.py.
+                fluidics = FluidicsService(
+                    default_config_path=control._def.FLUIDICS_CONFIG_PATH, simulated=fluidics_simulated
+                )
 
         piezo_stage = None
         if control._def.HAS_OBJECTIVE_PIEZO:
-            if not micro:
-                raise ValueError("Cannot create PiezoStage without a Microcontroller.")
-            piezo_stage = PiezoStage(
-                microcontroller=micro,
-                config={
-                    "OBJECTIVE_PIEZO_HOME_UM": control._def.OBJECTIVE_PIEZO_HOME_UM,
-                    "OBJECTIVE_PIEZO_RANGE_UM": control._def.OBJECTIVE_PIEZO_RANGE_UM,
-                    "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
-                    "OBJECTIVE_PIEZO_FLIP_DIR": control._def.OBJECTIVE_PIEZO_FLIP_DIR,
-                },
-            )
+            with reporter.step("piezo", core=True):
+                if not micro:
+                    raise ValueError("Cannot create PiezoStage without a Microcontroller.")
+                piezo_stage = PiezoStage(
+                    microcontroller=micro,
+                    config={
+                        "OBJECTIVE_PIEZO_HOME_UM": control._def.OBJECTIVE_PIEZO_HOME_UM,
+                        "OBJECTIVE_PIEZO_RANGE_UM": control._def.OBJECTIVE_PIEZO_RANGE_UM,
+                        "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": control._def.OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE,
+                        "OBJECTIVE_PIEZO_FLIP_DIR": control._def.OBJECTIVE_PIEZO_FLIP_DIR,
+                    },
+                )
 
         sci_microscopy_led_array = None
         if control._def.SUPPORT_SCIMICROSCOPY_LED_ARRAY:
-            # to do: add error handling
-            sci_microscopy_led_array = serial_peripherals.SciMicroscopyLEDArray(
-                control._def.SCIMICROSCOPY_LED_ARRAY_SN,
-                control._def.SCIMICROSCOPY_LED_ARRAY_DISTANCE,
-                control._def.SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY,
-            )
-            sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
+            with reporter.step("led_array"):
+                sci_microscopy_led_array = serial_peripherals.SciMicroscopyLEDArray(
+                    control._def.SCIMICROSCOPY_LED_ARRAY_SN,
+                    control._def.SCIMICROSCOPY_LED_ARRAY_DISTANCE,
+                    control._def.SCIMICROSCOPY_LED_ARRAY_TURN_ON_DELAY,
+                )
+                # SciMicroscopyLEDArray has no close() of its own.
+                reporter.register_opened(
+                    "SciMicroscopy LED array", lambda: _close_serial_connection(sci_microscopy_led_array)
+                )
+                sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
         laser_engine = None
         if control._def.USE_SQUID_LASER_ENGINE:
-            laser_engine = (
-                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
-                if not simulated
-                else squid_laser_engine.SquidLaserEngine_Simulation()
-            )
+            with reporter.step("laser_engine"):
+                laser_engine = (
+                    squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+                    if not simulated
+                    else squid_laser_engine.SquidLaserEngine_Simulation()
+                )
+                reporter.register_opened("laser engine", laser_engine.close)
 
         return MicroscopeAddons(
             xlight,
@@ -253,66 +306,82 @@ class MicroscopeAddons:
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
 
-    def prepare_for_use(self, skip_init: bool = False):
+    def prepare_for_use(self, skip_init: bool = False, *, reporter: StartupReporter = NULL_REPORTER):
         """
         Prepare all the addon hardware for immediate use.
 
         Args:
             skip_init: If True, skip homing operations (e.g., during restart).
+            reporter: Startup progress sink; defaults to a no-op.
         """
         if self.emission_filter_wheel:
-            fw_config = squid.config.get_filter_wheel_config()
-            self.emission_filter_wheel.initialize(fw_config.indices)
-            if not skip_init:
-                try:
-                    self.emission_filter_wheel.home()
-                except Exception:
-                    # A filter-wheel homing failure must not brick the whole
-                    # microscope: the wheel controller leaves its tracked
-                    # position unchanged (and possibly stale) on failure, so
-                    # treat the position as unknown, come up anyway, and let the
-                    # operator re-home from the GUI rather than aborting startup
-                    # before the window even opens.
-                    _log.error(
-                        "Filter wheel homing failed during startup; continuing with the "
-                        "filter wheel position unknown. Re-home from the GUI before relying "
-                        "on filter selection.",
-                        exc_info=True,
-                    )
+            with reporter.step("prep_filter_wheel") as progress:
+                fw_config = squid.config.get_filter_wheel_config()
+                self.emission_filter_wheel.initialize(fw_config.indices)
+                if not skip_init:
+                    try:
+                        self.emission_filter_wheel.home()
+                    except Exception:
+                        # A filter-wheel homing failure must not brick the whole
+                        # microscope: the wheel controller leaves its tracked
+                        # position unchanged (and possibly stale) on failure, so
+                        # treat the position as unknown, come up anyway, and let the
+                        # operator re-home from the GUI rather than aborting startup
+                        # before the window even opens.
+                        _log.error(
+                            "Filter wheel homing failed during startup; continuing with the "
+                            "filter wheel position unknown. Re-home from the GUI before relying "
+                            "on filter selection.",
+                            exc_info=True,
+                        )
+                        # A warning row, deliberately not a failure: machines
+                        # that boot fine today must keep booting.
+                        progress.warning("homing failed - position unknown, re-home from the GUI")
         if self.piezo_stage and not skip_init:
-            self.piezo_stage.home()
+            with reporter.step("prep_piezo"):
+                self.piezo_stage.home()
         if self.squid_laser_engine:
-            # start() may raise if the USB device is missing — intentional hard fail
-            # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
-            self.squid_laser_engine.start()
-            self.squid_laser_engine.wake_up_all()  # fire-and-forget
+            with reporter.step("prep_laser_engine") as progress:
+                # start() may raise if the USB device is missing — intentional hard fail
+                # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
+                self.squid_laser_engine.start()
+                self.squid_laser_engine.wake_up_all()  # fire-and-forget
+                # Reaching ACTIVE takes minutes; that wait belongs to the
+                # acquisition-time gate (wait_until_ready), not to startup.
+                progress.detail("started; warms up in the background")
 
 
 class LowLevelDrivers:
     @staticmethod
-    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "LowLevelDrivers":
+    def build_from_global_config(
+        simulated: bool = False, skip_init: bool = False, *, reporter: StartupReporter = NULL_REPORTER
+    ) -> "LowLevelDrivers":
         # Per-component simulation for microcontroller
         mcu_simulated = _should_simulate(simulated, control._def.SIMULATE_MICROCONTROLLER)
 
-        micro_serial_device = (
-            control.microcontroller.get_microcontroller_serial_device(
-                version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
+        # Core: without the microcontroller there is no stage, no illumination
+        # and no triggering, so there is nothing useful left to probe.
+        with reporter.step("microcontroller", core=True):
+            micro_serial_device = (
+                control.microcontroller.get_microcontroller_serial_device(
+                    version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
+                )
+                if not mcu_simulated
+                else control.microcontroller.get_microcontroller_serial_device(simulated=True)
             )
-            if not mcu_simulated
-            else control.microcontroller.get_microcontroller_serial_device(simulated=True)
-        )
-        # Skip MCU reset/initialize when restarting (hardware already configured)
-        micro = control.microcontroller.Microcontroller(
-            serial_device=micro_serial_device,
-            reset_and_initialize=not skip_init,
-        )
+            # Skip MCU reset/initialize when restarting (hardware already configured)
+            micro = control.microcontroller.Microcontroller(
+                serial_device=micro_serial_device,
+                reset_and_initialize=not skip_init,
+            )
+            reporter.register_opened("microcontroller", micro.close)
 
         return LowLevelDrivers(microcontroller=micro)
 
     def __init__(self, microcontroller: Optional[Microcontroller] = None):
         self.microcontroller: Optional[Microcontroller] = microcontroller
 
-    def prepare_for_use(self, skip_init: bool = False):
+    def prepare_for_use(self, skip_init: bool = False, *, reporter: StartupReporter = NULL_REPORTER):
         # Note: Currently no homing operations here, but accepting skip_init for API consistency
         if self.microcontroller and control._def.HAS_OBJECTIVE_PIEZO:
             # Configure DAC gains for objective piezo
@@ -324,44 +393,52 @@ class LowLevelDrivers:
 
 class Microscope:
     @staticmethod
-    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "Microscope":
-        low_level_devices = LowLevelDrivers.build_from_global_config(simulated, skip_init=skip_init)
+    def build_from_global_config(
+        simulated: bool = False, skip_init: bool = False, *, reporter: StartupReporter = NULL_REPORTER
+    ) -> "Microscope":
+        low_level_devices = LowLevelDrivers.build_from_global_config(simulated, skip_init=skip_init, reporter=reporter)
 
         # Per-component simulation for camera
         camera_simulated = _should_simulate(simulated, control._def.SIMULATE_CAMERA)
 
         stage_config = squid.config.get_stage_config()
-        if control._def.USE_PRIOR_STAGE:
-            stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
-        else:
-            if low_level_devices.microcontroller is None:
-                raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
-            stage = CephlaStage(low_level_devices.microcontroller, stage_config)
+        with reporter.step("stage_xy", core=True):
+            if control._def.USE_PRIOR_STAGE:
+                stage = PriorStage(sn=control._def.PRIOR_STAGE_SN, stage_config=stage_config)
+            else:
+                if low_level_devices.microcontroller is None:
+                    raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
+                stage = CephlaStage(low_level_devices.microcontroller, stage_config)
+            reporter.register_opened("XY stage", stage.close)
 
         if control._def.USE_PI_FOCUS_STAGE:
             pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
-            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
-            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
-            pi_sn = control._def.PI_FOCUS_STAGE_SN
-            pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
-            z_stage = squid.stage.pi.connect_pi_focus_stage(
-                simulated=pi_simulated,
-                serialnum=pi_sn,
-                serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
-                baudrate=control._def.PI_FOCUS_BAUDRATE,
-                axis=control._def.PI_FOCUS_AXIS,
-                reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
-                velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
-                home_mm=control._def.OBJECTIVE_RETRACTED_POS_MM,
-                invert_z=control._def.PI_FOCUS_INVERT_Z,
-                home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
-                z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
-                stage_config=stage_config,
-            )
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+            # Referencing physically sweeps the axis and blocks inside pipython
+            # with no callback, so Abort cannot interrupt it.
+            with reporter.step("stage_z", core=True, interruptible=False):
+                # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
+                # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
+                pi_sn = control._def.PI_FOCUS_STAGE_SN
+                pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
+                z_stage = squid.stage.pi.connect_pi_focus_stage(
+                    simulated=pi_simulated,
+                    serialnum=pi_sn,
+                    serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
+                    baudrate=control._def.PI_FOCUS_BAUDRATE,
+                    axis=control._def.PI_FOCUS_AXIS,
+                    reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
+                    velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
+                    home_mm=control._def.OBJECTIVE_RETRACTED_POS_MM,
+                    invert_z=control._def.PI_FOCUS_INVERT_Z,
+                    home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
+                    z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                    stage_config=stage_config,
+                )
+                reporter.register_opened("Z focus stage", z_stage.close)
+                stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
 
         addons = MicroscopeAddons.build_from_global_config(
-            stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
+            stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init, reporter=reporter
         )
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
@@ -389,41 +466,76 @@ class Microscope:
 
             return True
 
-        camera = squid.camera.utils.get_camera(
-            config=squid.config.get_camera_config(),
-            simulated=camera_simulated,
-            hw_trigger_fn=acquisition_camera_hw_trigger_fn,
-            hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
-        )
+        with reporter.step("camera", core=True):
+            camera = squid.camera.utils.get_camera(
+                config=squid.config.get_camera_config(),
+                simulated=camera_simulated,
+                hw_trigger_fn=acquisition_camera_hw_trigger_fn,
+                hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
+            )
+            reporter.register_opened("main camera", camera.close)
 
+        # The external light source is built as its own (independent) step so a
+        # warm-up or power failure there is reported without stopping the sweep,
+        # then consumed by the illumination controller below. light_source stays
+        # None if that step failed, which the controller step turns into a clear
+        # message instead of an UnboundLocalError.
+        light_source = None
+        light_source_type = None
         if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
-            ldi = serial_peripherals.LDI()
-
-            illumination_controller = IlluminationController(
-                low_level_devices.microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
-            )
+            light_source_type = LightSourceType.LDI
+            # initialize() is normally called from IlluminationController, but
+            # doing it here first lets the warm-up handshake report progress and
+            # honour Abort. By the time IlluminationController repeats it, the
+            # engine is in RUN state and it is one fast round trip.
+            with reporter.step("light_source") as progress:
+                ldi = serial_peripherals.LDI()
+                # Register the raw port close, NOT IlluminationController.close():
+                # that one politely walks every channel and takes ~55s against a
+                # wedged LDI, which is an eternity on the abort path.
+                reporter.register_opened("LDI", ldi.serial_connection.close)
+                ldi.initialize(
+                    timeout_s=reporter.device_timeout_s,
+                    cancel_fn=reporter.cancel_fn(),
+                    on_retry=progress.on_warmup_retry,
+                    sleep_fn=reporter.sleep_fn,
+                )
+                light_source = ldi
         elif control._def.USE_CELESTA_ETHERNET_CONTROL and not simulated:
-            celesta = control.celesta.CELESTA()
-            illumination_controller = IlluminationController(
-                low_level_devices.microcontroller,
-                IntensityControlMode.Software,
-                ShutterControlMode.TTL,
-                LightSourceType.CELESTA,
-                celesta,
-            )
+            light_source_type = LightSourceType.CELESTA
+            with reporter.step("light_source"):
+                light_source = control.celesta.CELESTA()
         elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
-            andor_laser = control.illumination_andor.AndorLaser(
-                control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
-            )
-            illumination_controller = IlluminationController(
-                low_level_devices.microcontroller,
-                IntensityControlMode.Software,
-                ShutterControlMode.TTL,
-                LightSourceType.AndorLaser,
-                andor_laser,
-            )
-        else:
-            illumination_controller = IlluminationController(low_level_devices.microcontroller)
+            light_source_type = LightSourceType.AndorLaser
+            with reporter.step("light_source"):
+                light_source = control.illumination_andor.AndorLaser(
+                    control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
+                )
+
+        with reporter.step("illumination_controller", core=True):
+            if light_source_type is not None and light_source is None:
+                raise RuntimeError(
+                    "The configured light source did not initialize, so illumination cannot be "
+                    "set up. See the light source entry above for the underlying failure."
+                )
+            if light_source_type == LightSourceType.LDI:
+                illumination_controller = IlluminationController(
+                    low_level_devices.microcontroller,
+                    light_source.intensity_mode,
+                    light_source.shutter_mode,
+                    LightSourceType.LDI,
+                    light_source,
+                )
+            elif light_source_type is not None:
+                illumination_controller = IlluminationController(
+                    low_level_devices.microcontroller,
+                    IntensityControlMode.Software,
+                    ShutterControlMode.TTL,
+                    light_source_type,
+                    light_source,
+                )
+            else:
+                illumination_controller = IlluminationController(low_level_devices.microcontroller)
 
         return Microscope(
             stage=stage,
@@ -433,6 +545,7 @@ class Microscope:
             low_level_drivers=low_level_devices,
             simulated=simulated,
             skip_init=skip_init,
+            reporter=reporter,
         )
 
     def __init__(
@@ -446,7 +559,11 @@ class Microscope:
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
         skip_init: bool = False,
+        *,
+        reporter: StartupReporter = NULL_REPORTER,
     ):
+        # reporter is deliberately not stored on self: it owns a QWidget, and a
+        # Microscope outlives the startup window.
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._closed = False
 
@@ -470,15 +587,16 @@ class Microscope:
         # by run_auto_migration() in main_hcs.py before Microscope is created
 
         # Load default profile (ensures configs exist)
-        profiles = self.config_repo.get_available_profiles()
-        if profiles:
-            self.config_repo.load_profile(profiles[0])
-        else:
-            # Create a default profile if none exist - load_profile() will call
-            # ensure_default_configs() to generate configs from illumination_channel_config.yaml
-            self._log.info("No profiles found, creating 'default' profile")
-            self.config_repo.create_profile("default")
-            self.config_repo.load_profile("default")
+        with reporter.step("config_profiles", core=True):
+            profiles = self.config_repo.get_available_profiles()
+            if profiles:
+                self.config_repo.load_profile(profiles[0])
+            else:
+                # Create a default profile if none exist - load_profile() will call
+                # ensure_default_configs() to generate configs from illumination_channel_config.yaml
+                self._log.info("No profiles found, creating 'default' profile")
+                self.config_repo.create_profile("default")
+                self.config_repo.load_profile("default")
 
         self.contrast_manager: ContrastManager = ContrastManager()
         self.stream_handler: StreamHandler = StreamHandler(handler_functions=stream_handler_callbacks)
@@ -498,10 +616,14 @@ class Microscope:
 
         # Sync confocal mode from hardware (must be after LiveController creation)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:
-            self._sync_confocal_mode_from_hardware()
+            with reporter.step("confocal_sync") as progress:
+                if not self._sync_confocal_mode_from_hardware():
+                    # This path already swallows its own errors and boots anyway;
+                    # surface it as a warning rather than changing that.
+                    progress.warning("could not read disk state from hardware")
 
         if not skip_prepare_for_use:
-            self._prepare_for_use(skip_init=skip_init)
+            self._prepare_for_use(skip_init=skip_init, reporter=reporter)
 
     @property
     def config_repo(self) -> ConfigRepository:
@@ -515,93 +637,106 @@ class Microscope:
         self._config_repo = repo
         self.illumination_controller.config_repo = repo
 
-    def _prepare_for_use(self, skip_init: bool = False):
-        self.low_level_drivers.prepare_for_use(skip_init=skip_init)
-        self.addons.prepare_for_use(skip_init=skip_init)
+    def _prepare_for_use(self, skip_init: bool = False, *, reporter: StartupReporter = NULL_REPORTER):
+        self.low_level_drivers.prepare_for_use(skip_init=skip_init, reporter=reporter)
+        self.addons.prepare_for_use(skip_init=skip_init, reporter=reporter)
 
         # Configure serial watchdog for illumination safety (requires firmware v1.1+)
         if self.low_level_drivers.microcontroller:
-            mcu = self.low_level_drivers.microcontroller
-            if mcu.firmware_version >= (1, 1):
-                timeout_s = control._def.WATCHDOG_TIMEOUT_S
-                mcu.set_watchdog_timeout(timeout_s)
-                mcu.wait_till_operation_is_completed()
-                mcu.start_heartbeat(interval_s=timeout_s / 2)
-                self._log.info(f"Illumination watchdog enabled: timeout={timeout_s}s, heartbeat={timeout_s / 2}s")
+            with reporter.step("prep_watchdog") as progress:
+                mcu = self.low_level_drivers.microcontroller
+                if mcu.firmware_version >= (1, 1):
+                    timeout_s = control._def.WATCHDOG_TIMEOUT_S
+                    mcu.set_watchdog_timeout(timeout_s)
+                    mcu.wait_till_operation_is_completed()
+                    mcu.start_heartbeat(interval_s=timeout_s / 2)
+                    self._log.info(f"Illumination watchdog enabled: timeout={timeout_s}s, heartbeat={timeout_s / 2}s")
+                else:
+                    self._log.warning(
+                        f"Illumination watchdog not available: firmware v{mcu.firmware_version[0]}.{mcu.firmware_version[1]} "
+                        "requires v1.1+"
+                    )
+                    progress.warning(
+                        f"not available: firmware v{mcu.firmware_version[0]}.{mcu.firmware_version[1]} requires v1.1+"
+                    )
+
+        with reporter.step("prep_camera", core=True):
+            self.camera.set_pixel_format(
+                squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+            )
+            if control._def.DEFAULT_TRIGGER_MODE == control._def.TriggerMode.HARDWARE:
+                if not self.low_level_drivers.microcontroller:
+                    raise RuntimeError("Hardware trigger mode requires a microcontroller, but none is configured.")
+                self._log.info("Setting acquisition mode to HARDWARE_TRIGGER")
+                self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                self.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
+                self.live_controller.trigger_mode = control._def.TriggerMode.HARDWARE
             else:
-                self._log.warning(
-                    f"Illumination watchdog not available: firmware v{mcu.firmware_version[0]}.{mcu.firmware_version[1]} "
-                    "requires v1.1+"
-                )
+                self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+                self.live_controller.trigger_mode = control._def.TriggerMode.SOFTWARE
 
-        self.camera.set_pixel_format(
-            squid.config.CameraPixelFormat.from_string(control._def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
-        )
-        if control._def.DEFAULT_TRIGGER_MODE == control._def.TriggerMode.HARDWARE:
-            if not self.low_level_drivers.microcontroller:
-                raise RuntimeError("Hardware trigger mode requires a microcontroller, but none is configured.")
-            self._log.info("Setting acquisition mode to HARDWARE_TRIGGER")
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.low_level_drivers.microcontroller.set_trigger_mode(control._def.HARDWARE_TRIGGER_MODE)
-            self.live_controller.trigger_mode = control._def.TriggerMode.HARDWARE
-        else:
-            self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
-            self.live_controller.trigger_mode = control._def.TriggerMode.SOFTWARE
-
-        if self.addons.camera_focus:
-            self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
-            self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            if self.addons.camera_focus:
+                self.addons.camera_focus.set_pixel_format(squid.config.CameraPixelFormat.from_string("MONO8"))
+                self.addons.camera_focus.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
 
         if not skip_init:
-            try:
-                stage_config = self.stage.get_config()
-                x_config = stage_config.X_AXIS
-                y_config = stage_config.Y_AXIS
-                z_config = stage_config.Z_AXIS
-                self._log.info(
-                    f"Setting stage limits: x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}], "
-                    f"y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}], "
-                    f"z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
-                )
-                self.stage.set_limits(
-                    x_pos_mm=x_config.MAX_POSITION,
-                    x_neg_mm=x_config.MIN_POSITION,
-                    y_pos_mm=y_config.MAX_POSITION,
-                    y_neg_mm=y_config.MIN_POSITION,
-                    z_pos_mm=z_config.MAX_POSITION,
-                    z_neg_mm=z_config.MIN_POSITION,
-                )
-                self.home_xyz()
-            except TimeoutError:
-                self._log.error("Hardware setup timed out, resetting microcontroller")
-                if self.low_level_drivers.microcontroller:
-                    self.low_level_drivers.microcontroller.reset()
-                raise
+            # Homing blocks in a microcontroller condition-variable wait with no
+            # callback hook, so Abort only takes effect once it returns.
+            with reporter.step("prep_home_xyz", core=True, interruptible=False):
+                try:
+                    stage_config = self.stage.get_config()
+                    x_config = stage_config.X_AXIS
+                    y_config = stage_config.Y_AXIS
+                    z_config = stage_config.Z_AXIS
+                    self._log.info(
+                        f"Setting stage limits: x=[{x_config.MIN_POSITION},{x_config.MAX_POSITION}], "
+                        f"y=[{y_config.MIN_POSITION},{y_config.MAX_POSITION}], "
+                        f"z=[{z_config.MIN_POSITION},{z_config.MAX_POSITION}]"
+                    )
+                    self.stage.set_limits(
+                        x_pos_mm=x_config.MAX_POSITION,
+                        x_neg_mm=x_config.MIN_POSITION,
+                        y_pos_mm=y_config.MAX_POSITION,
+                        y_neg_mm=y_config.MIN_POSITION,
+                        z_pos_mm=z_config.MAX_POSITION,
+                        z_neg_mm=z_config.MIN_POSITION,
+                    )
+                    self.home_xyz()
+                except TimeoutError:
+                    self._log.error("Hardware setup timed out, resetting microcontroller")
+                    if self.low_level_drivers.microcontroller:
+                        self.low_level_drivers.microcontroller.reset()
+                    raise
 
         if self.addons.objective_changer:
-            # Xeryon always re-homes (findIndex is fast and required). The turret skips
-            # homing on a software restart: the controller retains its position counter
-            # across close()/re-init (the motor is de-energized but the drive stays
-            # powered), so a re-home would just be wasted motion.
-            if control._def.USE_XERYON or not skip_init:
-                self.addons.objective_changer.home()
+            with reporter.step("prep_objective", interruptible=False):
+                self._position_objective_changer(skip_init=skip_init)
+
+    def _position_objective_changer(self, skip_init: bool = False):
+        """Home the objective changer and move to the default objective."""
+        # Xeryon always re-homes (findIndex is fast and required). The turret skips
+        # homing on a software restart: the controller retains its position counter
+        # across close()/re-init (the motor is de-energized but the drive stays
+        # powered), so a re-home would just be wasted motion.
+        if control._def.USE_XERYON or not skip_init:
+            self.addons.objective_changer.home()
+        if control._def.USE_XERYON:
+            self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
+        try:
             if control._def.USE_XERYON:
-                self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
-            try:
-                if control._def.USE_XERYON:
-                    self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
-                else:
-                    # Turret: when Z was just homed it sits at the home reference (0.0, below the
-                    # working soft floor), so don't restore Z to it after rotating — the cached-Z
-                    # restore at GUI startup positions Z. Later objective changes (Z not freshly
-                    # homed) restore the live focus position as before.
-                    restore_z = skip_init or not control._def.HOMING_ENABLED_Z
-                    self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE, restore_z=restore_z)
-            except KeyError as e:
-                raise RuntimeError(
-                    f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} "
-                    f"is not configured for the active objective changer"
-                ) from e
+                self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
+            else:
+                # Turret: when Z was just homed it sits at the home reference (0.0, below the
+                # working soft floor), so don't restore Z to it after rotating — the cached-Z
+                # restore at GUI startup positions Z. Later objective changes (Z not freshly
+                # homed) restore the live focus position as before.
+                restore_z = skip_init or not control._def.HOMING_ENABLED_Z
+                self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE, restore_z=restore_z)
+        except KeyError as e:
+            raise RuntimeError(
+                f"DEFAULT_OBJECTIVE={control._def.DEFAULT_OBJECTIVE!r} "
+                f"is not configured for the active objective changer"
+            ) from e
 
     def _sync_confocal_mode_from_hardware(self) -> bool:
         """Sync confocal mode state from spinning disk hardware.

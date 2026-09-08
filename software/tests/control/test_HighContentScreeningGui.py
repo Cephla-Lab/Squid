@@ -6,6 +6,23 @@ import control.gui_hcs
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
+import control.startup_progress_window
+from control.startup_progress import (
+    StartupCoreDeviceError,
+    StartupReporter,
+    StepState,
+    declare_expected_steps,
+)
+
+
+@pytest.fixture(autouse=True)
+def no_stray_startup_dialog(monkeypatch):
+    """A startup summary dialog reaching exec_() in a test would hang CI forever."""
+
+    def fail(self, *args, **kwargs):
+        raise RuntimeError(f"Unexpected startup summary dialog: {self.details_text()}")
+
+    monkeypatch.setattr(control.startup_progress_window.StartupSummaryDialog, "exec_", fail)
 
 
 @pytest.fixture
@@ -139,3 +156,82 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_startup_reporter_records_every_step(qtbot, confirm_exit_yes):
+    """End-to-end: a healthy simulated startup leaves no row unfinished."""
+    reporter = StartupReporter()
+    scope = control.microscope.Microscope.build_from_global_config(True, reporter=reporter)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True, reporter=reporter)
+    qtbot.add_widget(win)
+
+    assert reporter.failures == []
+    unfinished = [r.key for r in reporter.results if not r.finished]
+    assert unfinished == [], f"steps left hanging: {unfinished}"
+    assert reporter.get("camera").state is StepState.READY
+    assert reporter.get("gui_widgets").state is StepState.READY
+
+
+def test_independent_failure_does_not_stop_the_sweep(qtbot, monkeypatch, confirm_exit_yes):
+    """The whole point of the feature: report every problem in one pass.
+
+    A dead spinning disk must not prevent the cameras and the illumination
+    controller from being probed, so the operator gets one list instead of
+    discovering the next failure on the next launch.
+    """
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("spinning disk is powered off")
+
+    # Force the peripheral on rather than inheriting it from whatever .ini the run picked up:
+    # the committed configurations all ship enable_spinning_disk_confocal = False, so without
+    # this the step never runs and the assertion below silently has nothing to find.
+    monkeypatch.setattr(control._def, "ENABLE_SPINNING_DISK_CONFOCAL", True)
+    monkeypatch.setattr(control._def, "USE_DRAGONFLY", False)
+    monkeypatch.setattr(control.microscope.serial_peripherals, "XLight_Simulation", boom)
+
+    reporter = StartupReporter()
+    scope = control.microscope.Microscope.build_from_global_config(True, reporter=reporter)
+    try:
+        assert [f.key for f in reporter.failures] == ["spinning_disk"]
+        # Everything after the failure still ran.
+        assert reporter.get("camera").state is StepState.READY
+        assert reporter.get("illumination_controller").state is StepState.READY
+        assert reporter.get("prep_camera").state is StepState.READY
+    finally:
+        scope.close()
+
+
+def test_core_failure_stops_the_sweep(qtbot, monkeypatch, confirm_exit_yes):
+    """A device nothing can work without stops immediately, still legibly."""
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("camera not found")
+
+    monkeypatch.setattr(control.microscope.squid.camera.utils, "get_camera", boom)
+
+    reporter = StartupReporter()
+    # Declare up front, as main_hcs does, so rows for steps that never run still
+    # exist and can be seen sitting at Pending.
+    declare_expected_steps(reporter, simulated=True, skip_init=False)
+    with pytest.raises(StartupCoreDeviceError) as excinfo:
+        control.microscope.Microscope.build_from_global_config(True, reporter=reporter)
+
+    assert excinfo.value.step_key == "camera"
+    # Steps after the core failure never ran, and say so rather than claiming success.
+    assert reporter.get("illumination_controller").state is StepState.PENDING
+
+
+def test_devices_are_registered_for_teardown(qtbot, confirm_exit_yes):
+    """An abort mid-build has no Microscope to close, so the reporter's registry
+    is the only handle on what was opened."""
+    reporter = StartupReporter()
+    scope = control.microscope.Microscope.build_from_global_config(True, reporter=reporter)
+    try:
+        labels = [label for label, _ in reporter.opened]
+        assert "microcontroller" in labels
+        assert "main camera" in labels
+        # Construction order, so reversing it tears down in the required order.
+        assert labels.index("microcontroller") < labels.index("main camera")
+    finally:
+        scope.close()

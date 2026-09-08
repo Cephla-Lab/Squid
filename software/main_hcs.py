@@ -15,28 +15,41 @@ import squid.logging
 
 squid.logging.setup_uncaught_exception_logging()
 
-# app specific libraries
-import control.gui_hcs as gui
-from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
-import control._def
-import control.utils
-import control.microscope
 from control.single_instance import acquire_single_instance_lock
 
-# Import auto-migration function
-from tools.migrate_acquisition_configs import run_auto_migration
+# NOTE: the heavy application imports (control.gui_hcs and friends) are NOT done
+# here. control/widgets.py imports napari at module scope, which costs several
+# seconds, and doing that before QApplication exists means the desktop icon
+# looks dead for the whole of it with no way to show anything. They are imported
+# inside __main__ instead, once the startup window is up and can say so.
 
 
-if USE_TERMINAL_CONSOLE:
-    from control.console import ConsoleThread
+def _teardown_and_exit(error, reporter, instance_lock, log_path):
+    """Report a failed or aborted startup, release hardware, and exit.
 
-if ENABLE_MCP_SERVER_SUPPORT:
-    from control.microscope_control_server import MicroscopeControlServer
-    from control.widgets_claude import ClaudeApiKeyDialog, load_claude_api_key_from_cache
-    import shlex
-    import subprocess
-    import shutil
-    import tempfile
+    Never returns.
+    """
+    log.error(f"Startup did not complete: {error}", exc_info=error)
+
+    errors = reporter.close_all()
+    for message in errors:
+        log.warning(f"Teardown problem: {message}")
+
+    try:
+        reporter.show_summary(error)
+    except Exception:
+        log.error("Could not show the startup summary dialog.", exc_info=True)
+
+    # aboutToQuit is emitted from Qt's exec() cleanup, and app.exec_() was never
+    # entered on this path - so the lock must be released explicitly or it is
+    # left behind for the next launch to trip over.
+    try:
+        instance_lock.unlock()
+    except Exception:
+        log.warning("Could not release the single-instance lock.", exc_info=True)
+
+    logging.shutdown()
+    sys.exit(1)
 
 
 if __name__ == "__main__":
@@ -84,6 +97,10 @@ if __name__ == "__main__":
     # main_hcs.py exits via os._exit(), which skips destructors. aboutToQuit
     # fires before app.exec_() returns, so unlock() runs and the lock file is
     # removed on a normal exit.
+    #
+    # This only covers exits that reach app.exec_(). A startup failure or abort
+    # happens before that, where Qt never runs its exec() cleanup and this
+    # signal never fires - _teardown_and_exit() unlocks explicitly for that.
     app.aboutToQuit.connect(instance_lock.unlock)
 
     log = squid.logging.get_logger("main_hcs")
@@ -92,45 +109,106 @@ if __name__ == "__main__":
         log.info("Turning on debug logging.")
         squid.logging.set_stdout_log_level(logging.DEBUG)
 
-    if not squid.logging.add_file_logging(f"{squid.logging.get_default_log_directory()}/main_hcs.log"):
+    log_path = f"{squid.logging.get_default_log_directory()}/main_hcs.log"
+    if not squid.logging.add_file_logging(log_path):
         log.error("Couldn't setup logging to file!")
         sys.exit(1)
 
-    log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
+    # Only the startup-progress modules are imported before the window exists;
+    # they are small and pull in no Qt beyond what is already loaded.
+    from control.startup_progress import StartupError, StartupFailed, declare_expected_steps
+    from control.startup_progress_window import QtStartupReporter
+    import control._def
 
-    # Auto-migrate legacy acquisition configurations if present
-    run_auto_migration()
+    with QtStartupReporter(app, log_path=log_path, device_timeout_s=control._def.STARTUP_DEVICE_TIMEOUT_S) as reporter:
+        declare_expected_steps(reporter, simulated=args.simulation, skip_init=args.skip_init)
+        reporter.show()
 
-    # This allows shutdown via ctrl+C even after the gui has popped up.
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
+        try:
+            with reporter.step("imports", core=True, interruptible=False):
+                import control.gui_hcs as gui
+                from control._def import (
+                    USE_TERMINAL_CONSOLE,
+                    ENABLE_MCP_SERVER_SUPPORT,
+                    CONTROL_SERVER_HOST,
+                    CONTROL_SERVER_PORT,
+                )
+                import control.utils
+                import control.microscope
+                from tools.migrate_acquisition_configs import run_auto_migration
 
-    microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
-    win = gui.HighContentScreeningGui(
-        microscope=microscope,
-        is_simulation=args.simulation,
-        live_only_mode=args.live_only,
-        skip_init=args.skip_init,
-    )
+                if USE_TERMINAL_CONSOLE:
+                    from control.console import ConsoleThread
 
-    microscope_utils_menu = QMenu("Utils", win)
+                if ENABLE_MCP_SERVER_SUPPORT:
+                    from control.microscope_control_server import MicroscopeControlServer
+                    from control.widgets_claude import ClaudeApiKeyDialog, load_claude_api_key_from_cache
+                    import shlex
+                    import subprocess
+                    import shutil
+                    import tempfile
 
-    stage_utils_action = QAction("Stage Utils", win)
-    stage_utils_action.triggered.connect(win.stageUtils.show)
-    microscope_utils_menu.addAction(stage_utils_action)
+                log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
 
-    if control._def.USE_OBJECTIVE_TURRET:
-        reset_turret_action = QAction("Reset Objective Turret", win)
-        reset_turret_action.triggered.connect(win.resetObjectiveTurret)
-        microscope_utils_menu.addAction(reset_turret_action)
+                # Auto-migrate legacy acquisition configurations if present
+                run_auto_migration()
 
-    workflow_runner_action = QAction("Workflow Runner...", win)
-    workflow_runner_action.triggered.connect(win.openWorkflowRunner)
-    microscope_utils_menu.addAction(workflow_runner_action)
+            # This allows shutdown via ctrl+C even after the gui has popped up.
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    menu_bar = win.menuBar()
-    menu_bar.addMenu(microscope_utils_menu)
+            microscope = control.microscope.Microscope.build_from_global_config(
+                args.simulation, skip_init=args.skip_init, reporter=reporter
+            )
+            if reporter.failures:
+                # Independent device failures were collected rather than raised so
+                # the window could show them all at once. Stop here regardless:
+                # the GUI dereferences several of these unconditionally (e.g.
+                # SpinningDiskConfocalWidget(self.xlight)) and would crash with a
+                # far less useful message than the summary we can show now.
+                raise StartupFailed(reporter.results)
 
-    # Show startup warning if simulated disk I/O mode is enabled
+            reporter.attach_laser_engine(microscope.addons.squid_laser_engine)
+
+            win = gui.HighContentScreeningGui(
+                microscope=microscope,
+                is_simulation=args.simulation,
+                live_only_mode=args.live_only,
+                skip_init=args.skip_init,
+                reporter=reporter,
+            )
+        except StartupError as e:
+            _teardown_and_exit(e, reporter, instance_lock, log_path)
+        except Exception as e:
+            # Anything that escaped the per-step handling still deserves a
+            # dialog rather than a silent death. Deliberately Exception and not
+            # BaseException, so SystemExit and KeyboardInterrupt still pass
+            # straight through.
+            _teardown_and_exit(e, reporter, instance_lock, log_path)
+
+        microscope_utils_menu = QMenu("Utils", win)
+
+        stage_utils_action = QAction("Stage Utils", win)
+        stage_utils_action.triggered.connect(win.stageUtils.show)
+        microscope_utils_menu.addAction(stage_utils_action)
+
+        if control._def.USE_OBJECTIVE_TURRET:
+            reset_turret_action = QAction("Reset Objective Turret", win)
+            reset_turret_action.triggered.connect(win.resetObjectiveTurret)
+            microscope_utils_menu.addAction(reset_turret_action)
+
+        workflow_runner_action = QAction("Workflow Runner...", win)
+        workflow_runner_action.triggered.connect(win.openWorkflowRunner)
+        microscope_utils_menu.addAction(workflow_runner_action)
+
+        menu_bar = win.menuBar()
+        menu_bar.addMenu(microscope_utils_menu)
+
+        win.showMaximized()
+    # Leaving the `with` closes the startup window, now that the main one is up.
+
+    # Show startup warning if simulated disk I/O mode is enabled. Deliberately
+    # after the startup window is gone: this is a modal dialog, and it would
+    # otherwise open underneath an always-on-top window.
     if control._def.SIMULATED_DISK_IO_ENABLED:
         QMessageBox.warning(
             None,
@@ -142,8 +220,6 @@ if __name__ == "__main__":
             "To disable: Settings > Settings... > Dev tab",
             QMessageBox.Ok,
         )
-
-    win.showMaximized()
 
     if USE_TERMINAL_CONSOLE:
         console_locals = {"microscope": win.microscope}

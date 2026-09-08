@@ -1659,6 +1659,26 @@ class PreferencesDialog(QDialog):
         throttle_group.content.addLayout(throttle_layout)
         layout.addWidget(throttle_group)
 
+        # Startup section
+        startup_group = CollapsibleGroupBox("Startup", collapsed=True)
+        startup_layout = QFormLayout()
+
+        self.startup_timeout_spinbox = QDoubleSpinBox()
+        self.startup_timeout_spinbox.setRange(10.0, 600.0)
+        self.startup_timeout_spinbox.setSingleStep(10.0)
+        self.startup_timeout_spinbox.setValue(
+            self._get_config_float("GENERAL", "startup_device_timeout_s", control._def.STARTUP_DEVICE_TIMEOUT_S)
+        )
+        self.startup_timeout_spinbox.setSuffix(" s")
+        self.startup_timeout_spinbox.setToolTip(
+            "How long to keep retrying a device that reports it is still warming up during startup.\n"
+            "Raise this if a laser engine powered on just before launch is not ready in time."
+        )
+        startup_layout.addRow("Startup Device Timeout:", self.startup_timeout_spinbox)
+
+        startup_group.content.addLayout(startup_layout)
+        layout.addWidget(startup_group)
+
         # Diagnostics section
         diagnostics_group = CollapsibleGroupBox("Diagnostics", collapsed=True)
         diagnostics_layout = QFormLayout()
@@ -2022,6 +2042,7 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "acquisition_max_pending_jobs", str(self.max_pending_jobs_spinbox.value()))
         self.config.set("GENERAL", "acquisition_max_pending_mb", str(self.max_pending_mb_spinbox.value()))
         self.config.set("GENERAL", "acquisition_throttle_timeout_s", str(self.throttle_timeout_spinbox.value()))
+        self.config.set("GENERAL", "startup_device_timeout_s", str(self.startup_timeout_spinbox.value()))
 
         # Advanced - Position Limits
         self.config.set("SOFTWARE_POS_LIMIT", "x_positive", str(self.limit_x_pos.value()))
@@ -2169,6 +2190,7 @@ class PreferencesDialog(QDialog):
         control._def.ACQUISITION_MAX_PENDING_JOBS = self.max_pending_jobs_spinbox.value()
         control._def.ACQUISITION_MAX_PENDING_MB = self.max_pending_mb_spinbox.value()
         control._def.ACQUISITION_THROTTLE_TIMEOUT_S = self.throttle_timeout_spinbox.value()
+        control._def.STARTUP_DEVICE_TIMEOUT_S = self.startup_timeout_spinbox.value()
 
         # Software position limits
         control._def.SOFTWARE_POS_LIMIT.X_POSITIVE = self.limit_x_pos.value()
@@ -2412,6 +2434,11 @@ class PreferencesDialog(QDialog):
         new_val = self.throttle_timeout_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Throttle Timeout", f"{old_val} s", f"{new_val} s", False))
+
+        old_val = self._get_config_float("GENERAL", "startup_device_timeout_s", control._def.STARTUP_DEVICE_TIMEOUT_S)
+        new_val = self.startup_timeout_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Startup Device Timeout", f"{old_val} s", f"{new_val} s", False))
 
         # Advanced - Position Limits (live update)
         old_val = self._get_config_float("SOFTWARE_POS_LIMIT", "x_positive", 115)
@@ -5246,7 +5273,16 @@ class NavigationWidget(QFrame):
         self.position_update_timer = QTimer()
         self.position_update_timer.setInterval(100)
         self.position_update_timer.timeout.connect(self._update_position)
-        self.position_update_timer.start()
+        # Deliberately not started here. _update_position calls stage.get_pos(),
+        # and this widget is constructed while the startup window is pumping the
+        # event loop - a tick during initialization would poll a stage that is
+        # still homing (and on a PI stage would block on the lock the reference
+        # sweep holds). The main window starts it from showEvent.
+
+    def start_polling(self):
+        """Begin live position polling. Called once the main window is shown."""
+        if not self.position_update_timer.isActive():
+            self.position_update_timer.start()
 
     def _update_position(self):
         pos = self.stage.get_pos()

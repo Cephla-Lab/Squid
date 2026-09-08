@@ -865,6 +865,13 @@ ACQUISITION_MAX_PENDING_JOBS = 10  # Max jobs in flight before throttling
 ACQUISITION_MAX_PENDING_MB = 2000.0  # Max pending MB before throttling
 ACQUISITION_THROTTLE_TIMEOUT_S = 30.0  # Max wait time when throttled
 
+# Startup Settings
+# How long to keep retrying a device that answers "still warming up" during
+# initialization before giving up. A laser engine powered on moments before
+# launch can need a minute or more; the old fixed 5-attempt retry gave up after
+# about 5 seconds and killed startup outright.
+STARTUP_DEVICE_TIMEOUT_S = 90.0
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
