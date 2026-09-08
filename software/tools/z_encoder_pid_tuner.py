@@ -210,7 +210,10 @@ class ZTuner:
         if st["pid_fault"]:
             self.loop_off()
             raise RuntimeError("firmware watchdog disabled the loop (PID_FAULT) - deviation exceeded the limit")
-        if self.loop_on and abs(st["deviation"]) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
+        if st["pid_enabled"] and abs(st["deviation"]) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
+            # only while the firmware reports the loop ENGAGED: while it is held open (home zone, homing,
+            # or the gap above home on a stage whose actuator homes below its stop) the deviation is
+            # expected to be large and means nothing
             self.loop_off()
             raise RuntimeError(f"host guard: loop error {st['deviation']} usteps exceeded {self.a.max_dev_um} um")
         # Anything between the top switch (depth 0, where homing leaves us) and a little past the

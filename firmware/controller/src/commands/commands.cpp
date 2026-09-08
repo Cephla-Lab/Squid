@@ -260,6 +260,7 @@ void callback_enable_stage_pid()
 
     pid_fault[axis] = false;
     pid_requested[axis] = true;
+    pid_realign_pending[axis] = false;   // an explicit enable takes the frames as they are (gate below)
 
     // Inside the home exclusion zone the encoder may not follow the actuator
     // (stage resting on its stop while the actuator retracts), so the loop is not

@@ -42,6 +42,7 @@ extern bool pid_requested[TOTAL_AXES];          // host asked for the loop (ENAB
 extern bool pid_zone_hold[TOTAL_AXES];          // loop requested but held open by the home zone / homing; re-engages outside
 extern int32_t pid_home_zone_usteps[TOTAL_AXES];// home exclusion zone half-width in usteps; 0 = none
 extern uint32_t pid_tolerance_usteps[TOTAL_AXES];    // loop deadband override; 0 = legacy 25 usteps (2 on wheels)
+extern bool pid_realign_pending[TOTAL_AXES];    // a homing ran while the loop was requested: align ENC_POS to XACTUAL at the next engage
 extern int32_t completion_window_usteps[TOTAL_AXES];  // SET_COMPLETION_WINDOW: early COMPLETED when within this of the target; 0 = off
 extern uint32_t pid_tr_tolerance_usteps[TOTAL_AXES]; // target-reached tolerance override; 0 = legacy
 

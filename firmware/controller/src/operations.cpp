@@ -718,6 +718,13 @@ void check_closed_loop()
     int32_t pos = tmc4361A_currentPosition(&tmc4361[i]);
     bool in_zone = (zone > 0) && (pos > -zone) && (pos < zone);
     bool homing = axis_is_homing(i);
+    // Homing re-zeroes both frames at the switch. On a stage whose actuator homes
+    // below the stage's stop (0.64 mm gap on the second bench Z) the encoder then
+    // stands still for the first part of the travel out, so when the axis reaches
+    // a coupled position the two frames differ by the gap - a mechanical offset,
+    // not a loop error. Remember that a homing happened; the next engage aligns.
+    if (homing)
+      pid_realign_pending[i] = true;
 
     if (stage_PID_enabled[i])
     {
@@ -760,6 +767,14 @@ void check_closed_loop()
       // loop closes when the axis stops, correcting whatever error is left then.
       if (tmc4361A_isRunning(&tmc4361[i], 0))
         continue;
+      if (pid_realign_pending[i])
+      {
+        // First engage after a homing: take the counter's frame as the encoder's.
+        // The loop then corrects only deviations that arise from here on, which is
+        // the same position semantics open loop has always had on such a stage.
+        tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
+        pid_realign_pending[i] = false;
+      }
       int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
       int32_t lim = pid_max_dev_usteps[i] > 0 ? pid_max_dev_usteps[i] : 0x7FFFFFFF;
       if (dev <= lim && dev >= -lim)
