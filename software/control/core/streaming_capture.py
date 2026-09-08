@@ -67,10 +67,38 @@ class RecordingRouter:
         self._t_index = 0  # next unfilled slot
         self._first_ts: Optional[float] = None
         self._last_ts: Optional[float] = None
+        self._stalls = 0  # paced mode: gaps treated as stalls
+        self._holes = 0  # paced mode: slots left as fill by those stalls
 
     @property
     def paced(self) -> bool:
         return self._paced
+
+    @property
+    def nominal_period(self) -> Optional[float]:
+        return self._period if self._period > 0 else None
+
+    @property
+    def stall_count(self) -> int:
+        return self._stalls
+
+    @property
+    def hole_count(self) -> int:
+        return self._holes
+
+    def measured_period(self) -> Optional[float]:
+        """Mean wall-clock spacing per slot actually delivered: (last - first) / slots spanned.
+
+        Holes count as spanned slots (their time really elapsed), so this is the true
+        time increment of the store's t axis.  None until two frames were routed.
+        In paced mode slot advance is purely sequential, so a source that runs slower
+        or faster than the nominal rate is absorbed without holes and only this
+        measurement can tell — the capture stamps it into the store when it differs
+        from the nominal period (see StreamingCapture.run).
+        """
+        if self._first_ts is None or self._last_ts is None or self._t_index < 2:
+            return None
+        return (self._last_ts - self._first_ts) / (self._t_index - 1)
 
     def route(self, timestamp: float) -> Optional[Tuple[int, int, int]]:
         if self._first_ts is None:
@@ -84,10 +112,15 @@ class RecordingRouter:
             if gap >= self._stall_gap:
                 holes = max(0, int(gap / self._period + 0.5) - 1)
                 if holes:
-                    _log.warning(
-                        f"recording stall: {gap * 1000:.0f} ms between frames at slot {self._t_index} "
-                        f"({holes} slot(s) left as fill)"
-                    )
+                    self._stalls += 1
+                    self._holes += holes
+                    # Hot camera-callback thread: log the first stall and then only
+                    # every 50th; the capture logs a per-run summary after stop().
+                    if self._stalls == 1 or self._stalls % 50 == 0:
+                        _log.warning(
+                            f"recording stall: {gap * 1000:.0f} ms between frames at slot {self._t_index} "
+                            f"({holes} slot(s) left as fill; {self._stalls} stall(s) so far)"
+                        )
             slot = self._t_index + holes
         else:
             # Nearest slot; the epsilon makes exact half-period ties round DOWN
@@ -152,6 +185,10 @@ class RecordingWriter:
         # arrived (camera stall) — drops/errors are counted here, but only the
         # capture knows about frames it expected and never saw.
         self._incomplete_info: Optional[Tuple[int, int]] = None
+        # Measured t-axis spacing reported by the capture when it differs from the
+        # nominal one (source ran slower/faster than the paced rate); stamped into
+        # the store's metadata by whichever seal path runs.
+        self._measured_time_increment_s: Optional[float] = None
         # True only once the drain thread has actually been started.  finalize()/
         # abort() must not join (or push the sentinel to) a thread that never
         # started, otherwise a failure in start()'s initialize() would surface as
@@ -262,8 +299,9 @@ class RecordingWriter:
             # write errors, and abort()/finalize() must not race in-flight I/O.
             while inflight:
                 self._reap(*inflight.popleft())
+            measured = self._measured_time_increment_s
             if self._abort_requested.is_set():
-                self._writer.abort()
+                self._writer.abort(time_increment_s=measured)
             elif self._write_errors > 0 or self._dropped > 0 or self._incomplete_info is not None:
                 # Never stamp acquisition_complete=True on a store with failed
                 # writes, dropped frames, or frames that never arrived: some
@@ -279,9 +317,9 @@ class RecordingWriter:
                 if self._incomplete_info is not None:
                     extra["captured_frames"], extra["expected_frames"] = self._incomplete_info
                 _log.error(f"recording store sealed INCOMPLETE: {extra}")
-                self._writer.abort(mark_aborted=False, extra_attrs=extra)
+                self._writer.abort(mark_aborted=False, extra_attrs=extra, time_increment_s=measured)
             else:
-                self._writer.finalize()
+                self._writer.finalize(time_increment_s=measured)
 
     @property
     def dropped_count(self) -> int:
@@ -301,6 +339,16 @@ class RecordingWriter:
         finalize() returned), so fail-fast callers must treat wedged as failure.
         """
         return self._finalize_wedged
+
+    def set_measured_time_increment(self, seconds: float) -> None:
+        """Record the t-axis spacing the source actually delivered (see RecordingRouter.measured_period).
+
+        Called by StreamingCapture before finalize()/abort(); the seal rewrites the
+        store's ``time_increment_s`` (and the OME t scale) with it, keeping the
+        nominal value alongside, so a recording that ran off its nominal rate is
+        never mis-timed on disk.
+        """
+        self._measured_time_increment_s = float(seconds)
 
     def mark_incomplete(self, captured: int, expected: int) -> None:
         """Record that the capture under-delivered (frames never arrived).
@@ -513,6 +561,42 @@ class StreamingCapture:
             _log.exception("live-preview display_fn failed; disabling preview for this capture")
             self._display_fn = None
 
+    # Relative deviation of the delivered spacing from the nominal one above which the
+    # store is stamped with the measured value.  Host-timestamp jitter on the first and
+    # last frame is well under 1% over any recording longer than a couple of seconds.
+    RATE_DEVIATION_TOLERANCE = 0.02
+
+    def _report_delivered_rate(self) -> None:
+        """After the source stopped: summarise stalls, and hand the writer the measured
+        t-axis spacing when the source ran off the nominal rate.
+
+        In paced mode the router never rejects frames, so a camera delivering slower
+        (or faster) than the rate it reported fills every slot and the store would
+        seal complete with a wrong ``time_increment_s``.  Measuring the spacing from
+        the routed timestamps and stamping it keeps the time axis honest (the nominal
+        value is kept alongside for reference).
+        """
+        router = self._router
+        stalls = getattr(router, "stall_count", 0)
+        if stalls:
+            _log.warning(f"recording had {stalls} stall(s), {getattr(router, 'hole_count', 0)} slot(s) left as fill")
+        measure = getattr(router, "measured_period", None)
+        nominal = getattr(router, "nominal_period", None)
+        if measure is None or not nominal:
+            return
+        measured = measure()
+        if measured is None or measured <= 0:
+            return
+        deviation = (measured - nominal) / nominal
+        if abs(deviation) <= self.RATE_DEVIATION_TOLERANCE:
+            return
+        _log.warning(
+            f"recording delivered at {1.0 / measured:.2f} fps, nominal {1.0 / nominal:.2f} fps "
+            f"({deviation * 100:+.1f}%); the store's time_increment_s is stamped with the measured spacing"
+        )
+        if hasattr(self._writer, "set_measured_time_increment"):
+            self._writer.set_measured_time_increment(measured)
+
     def run(self, timeout: Optional[float] = None) -> int:
         """Start capture, block until done (or timeout), and return emitted count."""
         self._writer.start()
@@ -543,6 +627,7 @@ class StreamingCapture:
             # self._emitted here is safe without a lock: no callback thread mutates
             # it after this point (and CPython int load/store is atomic anyway).
             expected = self._expected
+            self._report_delivered_rate()
             if self._aborted:
                 # Aborted mid-capture: seal the recording as incomplete, not complete.
                 self._writer.abort()

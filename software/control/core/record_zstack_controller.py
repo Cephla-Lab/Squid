@@ -279,6 +279,13 @@ class RecordZStackController:
         from control.core.acquisition_setup import create_experiment_dir
         from control.core.record_zstack_worker import RecordZStackWorker
 
+        if params.recording_enabled and params.recording_channel is None:
+            # The worker probes the achievable fps once and re-applies the recording
+            # channel (exposure) at every FOV; without a channel the z-stack phase's
+            # last channel would set the exposure for later FOVs and the cached rate
+            # would be wrong.  The widget always supplies one; reject the rest.
+            raise ValueError("recording_enabled requires a recording_channel")
+
         # Resolve and create a timestamped unique output directory.
         resolved_id, experiment_dir = create_experiment_dir(params.base_path, params.experiment_id)
         params.experiment_id = resolved_id
