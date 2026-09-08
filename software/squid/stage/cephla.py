@@ -89,8 +89,19 @@ class CephlaStage(AbstractStage):
         if not (pid and pid.ENABLED):
             return
 
-        mc.set_pid_arguments(microcontroller_axis_number, pid.P, pid.I, pid.D)
+        # P is 16 bits on the wire in SET_PID_ARGUMENTS; the chip register is 24 bits. A larger P is sent in
+        # full with SET_PID_P24 on firmware >= 1.6 (older firmware gets 65535, the most it can take).
+        mc.set_pid_arguments(microcontroller_axis_number, min(int(pid.P), 0xFFFF), pid.I, pid.D)
         mc.wait_till_operation_is_completed()
+        if int(pid.P) > 0xFFFF:
+            if new_fw:
+                mc.set_pid_p24(microcontroller_axis_number, int(pid.P))
+                mc.wait_till_operation_is_completed()
+            else:
+                _log.warning(
+                    f"axis {microcontroller_axis_number}: P {pid.P} needs firmware >= 1.6 (have {mc.firmware_version}); "
+                    f"using 65535"
+                )
         if new_fw:
             if pid.CORRECTION_VMAX > 0 or pid.MAX_DEVIATION_UM > 0:
                 mc.set_pid_limits(microcontroller_axis_number, pid.CORRECTION_VMAX, pid.MAX_DEVIATION_UM)

@@ -211,6 +211,7 @@ class CMD_SET:
     SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
     SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
+    SET_PID_P24 = 51  # Full 24-bit proportional gain (SET_PID_ARGUMENTS carries 16 bits) (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254

@@ -41,6 +41,7 @@ void callback_set_lim();
 void callback_set_lim_switch_polarity();
 void callback_set_home_safety_margin();
 void callback_set_pid_arguments();
+void callback_set_pid_p24();
 void callback_configure_stepper_driver();
 void callback_set_max_velocity_acceleration();
 void callback_set_lead_screw_pitch();

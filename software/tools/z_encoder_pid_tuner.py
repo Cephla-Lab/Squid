@@ -264,7 +264,7 @@ class ZTuner:
         m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
         m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
-        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
+        self.set_gains(self.a.p, self.a.i, self.a.d)
         m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
         time.sleep(0.2)
         st = m.get_encoder_state()
@@ -403,7 +403,7 @@ class ZTuner:
         dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
-        m.set_pid_arguments(AXIS.Z, p, i, d); self.wait()
+        self.set_gains(p, i, d)
         m.turn_on_stage_pid(AXIS.Z)
         self.wait(5)
         self.loop_on = True
@@ -542,7 +542,7 @@ class ZTuner:
             return path
 
         m = self.mcu
-        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
+        self.set_gains(self.a.p, self.a.i, self.a.d)
         m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
         st = flags("A. enable at working extension")
         if not st["pid_enabled"]:
@@ -779,13 +779,19 @@ class ZTuner:
                             int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))), int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))),
                             int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT)))])
 
+    def set_gains(self, p, i, d):
+        """P above 65535 goes through SET_PID_P24 (24-bit register); the 16-bit command gets 65535."""
+        self.mcu.set_pid_arguments(AXIS.Z, min(int(p), 0xFFFF), i, d); self.wait()
+        if int(p) > 0xFFFF:
+            self.mcu.set_pid_p24(AXIS.Z, int(p)); self.wait()
+
     def engage_loop(self):
         m = self.mcu
         self.settle(0.3)
         dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
-        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
+        self.set_gains(self.a.p, self.a.i, self.a.d)
         m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
         self.settle(0.3)
         if not m.get_encoder_state()["pid_enabled"]:

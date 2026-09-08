@@ -97,6 +97,9 @@ static const int SET_PID_OPEN_ABOVE = 50;     // [2]=axis, [3..4]=ramp velocity 
                                               // closed loop is opened while the axis moves; it re-engages as the ramp
                                               // slows below it (see check_closed_loop). 0 (default) = rest-only: open
                                               // for every move, engaged only at rest. >= VMAX = engaged throughout.
+static const int SET_PID_P24 = 51;            // [2]=axis, [3..5]=proportional gain, 24 bits (the TMC4361A register
+                                              // width; SET_PID_ARGUMENTS carries 16). PID_P/256 per second is the
+                                              // loop's rate constant: 65535 -> 4 ms time constant. Applied at once.
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,

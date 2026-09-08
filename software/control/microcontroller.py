@@ -63,6 +63,8 @@ _CMD_NAMES = {
     CMD_SET.SET_RAMP_PROFILE: "SET_RAMP_PROFILE",
     CMD_SET.SET_PID_TOLERANCE: "SET_PID_TOLERANCE",
     CMD_SET.SET_COMPLETION_WINDOW: "SET_COMPLETION_WINDOW",
+    CMD_SET.SET_PID_OPEN_ABOVE: "SET_PID_OPEN_ABOVE",
+    CMD_SET.SET_PID_P24: "SET_PID_P24",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1413,6 +1415,11 @@ class Microcontroller:
         }
 
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
+        """Closed-loop gains. P is carried in 16 bits here; a P above 65535 (the TMC4361A register is
+        24 bits wide) must go through set_pid_p24 on firmware >= 1.6 - this method refuses to truncate it.
+        """
+        if not (0 <= int(pid_p) <= 0xFFFF):
+            raise ValueError("P above 65535 needs set_pid_p24 (firmware >= 1.6)")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PID_ARGUMENTS
         cmd[2] = int(axis)
@@ -1422,6 +1429,21 @@ class Microcontroller:
 
         cmd[5] = int(pid_i)
         cmd[6] = int(pid_d)
+        self.send_command(cmd)
+
+    def set_pid_p24(self, axis, pid_p):
+        """Full 24-bit proportional gain for `axis` (firmware >= 1.6). PID_P/256 per second is the loop's
+        rate constant: 65535 gives a 4 ms time constant, 262140 about 1 ms. I and D stay as last set.
+        """
+        p = int(pid_p)
+        if not (0 <= p <= 0xFFFFFF):
+            raise ValueError("P must be 0 .. 16777215")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_P24
+        cmd[2] = int(axis)
+        cmd[3] = (p >> 16) & 0xFF
+        cmd[4] = (p >> 8) & 0xFF
+        cmd[5] = p & 0xFF
         self.send_command(cmd)
 
     def set_lim(self, limit_code, usteps):

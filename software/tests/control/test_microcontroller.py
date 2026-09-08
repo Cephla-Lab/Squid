@@ -318,6 +318,14 @@ def test_encoder_reporting_and_pid_limits_commands():
     assert micro.last_command[2] == control._def.AXIS.Z
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 500
 
+    micro.set_pid_p24(control._def.AXIS.Z, 262140)   # 4 x 65535: 24-bit P
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_P24
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 16) + (micro.last_command[4] << 8) + micro.last_command[5] == 262140
+    import pytest as _pytest
+    with _pytest.raises(ValueError):
+        micro.set_pid_arguments(control._def.AXIS.Z, 70000, 0, 0)   # must not truncate silently
+
     micro.set_pid_open_above(control._def.AXIS.Z, 1.0)   # loop open above 1 mm/s = 100 x 0.01 mm/s
     assert micro.last_command[1] == control._def.CMD_SET.SET_PID_OPEN_ABOVE
     assert micro.last_command[2] == control._def.AXIS.Z

@@ -363,6 +363,22 @@ void callback_set_pid_arguments()
         tmc4361A_set_PID_gains(&tmc4361[axis], p, i, d);
 }
 
+// SET_PID_P24 (51): [2] protocol axis, [3..5] proportional gain, 24 bits. The TMC4361A's PID_P
+// register is 24 bits wide while SET_PID_ARGUMENTS carries 16. PID_P/256 per second is the
+// loop's rate constant, so P 65535 means a 4 ms time constant - and on a rest-only loop that
+// constant is the whole of the settling time added to a move (+11 ms on a focus step, 2026-09-08).
+// Higher gains are meant for the rest-only loop, where the loop is only ever engaged at rest;
+// engaged in flight they saturate the correction sooner. I and D stay as last set.
+void callback_set_pid_p24()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint32_t p = (uint32_t(buffer_rx[3]) << 16) + (uint32_t(buffer_rx[4]) << 8) + uint32_t(buffer_rx[5]);
+    axes_pid_arg[axis].p = p;
+    if (encoder_configured[axis])
+        tmc4361A_set_PID_gains(&tmc4361[axis], p, axes_pid_arg[axis].i, axes_pid_arg[axis].d);
+}
+
 void callback_configure_stepper_driver()
 {
     switch (buffer_rx[2])

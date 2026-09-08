@@ -76,6 +76,22 @@ def test_full_bench_configuration_reaches_the_controller_in_order():
     assert names == ["configure_stage_pid", "set_pid_arguments", "turn_on_stage_pid"]
 
 
+def test_large_p_goes_through_the_24_bit_command():
+    z = _axis(HAS_ENCODER=True, PID=PIDConfig(ENABLED=True, P=262140, I=0, D=0))
+    _, mc = _stage(z)
+    mc.set_pid_arguments.assert_called_once_with(_def.AXIS.Z, 65535, 0, 0)
+    mc.set_pid_p24.assert_called_once_with(_def.AXIS.Z, 262140)
+    names = [c[0] for c in mc.method_calls if c[0] in ("set_pid_arguments", "set_pid_p24", "turn_on_stage_pid")]
+    assert names == ["set_pid_arguments", "set_pid_p24", "turn_on_stage_pid"]
+
+
+def test_large_p_on_old_firmware_is_capped():
+    z = _axis(HAS_ENCODER=True, PID=PIDConfig(ENABLED=True, P=262140, I=0, D=0))
+    _, mc = _stage(z, firmware=(1, 5))
+    mc.set_pid_arguments.assert_called_once_with(_def.AXIS.Z, 65535, 0, 0)
+    mc.set_pid_p24.assert_not_called()
+
+
 def test_encoder_without_loop_is_configured_but_not_enabled():
     z = _axis(HAS_ENCODER=True, ENCODER_FLIP_DIR=True, PID=PIDConfig(ENABLED=False, P=4096, I=0, D=0))
     _, mc = _stage(z)

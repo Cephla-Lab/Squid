@@ -63,6 +63,7 @@ void init_callbacks()
     cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[SET_PID_OPEN_ABOVE] = &callback_set_pid_open_above;
+    cmd_map[SET_PID_P24] = &callback_set_pid_p24;
     cmd_map[RESET] = &callback_reset;
 }
 
