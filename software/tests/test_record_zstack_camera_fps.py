@@ -72,18 +72,90 @@ def test_continuous_max_framerate_is_exposure_limited_for_long_exposure():
     assert 9.5 < fps < 10.5, fps  # 1000/100
 
 
+class _FakeToupcamSdk:
+    """Just enough of the toupcam SDK object for set_frame_rate.
+
+    ``readable=False`` mimics a stopped pull-mode stream: on the ITR3CMOS26000KMA the
+    MIN/MAX_PRECISE_FRAMERATE *reads* fail with E_UNEXPECTED while the camera is stopped,
+    but the PRECISE_FRAMERATE *write* is accepted and takes effect on the next Start.
+    """
+
+    E_UNEXPECTED = -2147418113
+
+    def __init__(self, min_tenths=19, max_tenths=280, readable=True, writable=True):
+        import control.toupcam as toupcam
+
+        self._toupcam = toupcam
+        self.min_tenths, self.max_tenths = min_tenths, max_tenths
+        self.readable, self.writable = readable, writable
+        self.puts = []
+
+    def get_Option(self, opt):
+        if not self.readable:
+            raise self._toupcam.HRESULTException(self.E_UNEXPECTED)
+        if opt == self._toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE:
+            return self.max_tenths
+        if opt == self._toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE:
+            return self.min_tenths
+        raise AssertionError(f"unexpected get_Option({opt})")
+
+    def put_Option(self, opt, value):
+        if not self.writable:
+            raise self._toupcam.HRESULTException(self.E_UNEXPECTED)
+        assert opt == self._toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE
+        self.puts.append(value)
+
+
 def test_set_frame_rate_fallback_returns_continuous_max_when_option_unavailable():
-    # On this camera get_Option(MAX_PRECISE_FRAMERATE) raises E_UNEXPECTED, so set_frame_rate
-    # must fall back to the readout/exposure-limited continuous max (~28 fps), NOT ~14 fps.
-    import control.toupcam as toupcam
-
+    # Range never readable and nothing cached (a model without PRECISE_FRAMERATE): fall back
+    # to the readout/exposure-limited continuous max (~28 fps), NOT ~14 fps, and write nothing.
     cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
-
-    class _FailingOptionCam:
-        def get_Option(self, opt):
-            raise toupcam.HRESULTException(-2147418113)  # E_UNEXPECTED, as seen on the real device
-
-    cam._camera = _FailingOptionCam()
-    # Request 30 fps; camera can't reach it, so we get its true continuous max (~28), not ~14.
+    cam._camera = _FakeToupcamSdk(readable=False)
     achievable = cam.set_frame_rate(30.0)
+    assert 27.5 < achievable < 28.5, achievable
+    assert cam._camera.puts == []
+
+
+def test_set_frame_rate_applies_hint_while_streaming():
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
+    cam._camera = _FakeToupcamSdk()
+    assert cam.set_frame_rate(10.0) == 10.0
+    assert cam._camera.puts == [100]
+    assert cam._precise_framerate_range_tenths == (19, 280)
+
+
+def test_set_frame_rate_uses_cached_range_while_stopped():
+    # The bug seen on hardware: record() calls set_frame_rate right after the frame-shape probe
+    # stopped the stream, the range read raised E_UNEXPECTED, and the hint was silently dropped
+    # (camera then free-ran at 28 fps).  With the range cached from the last read the write
+    # must still go through and the returned rate must be the requested one.
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
+    cam._camera = _FakeToupcamSdk(readable=True)
+    cam._refresh_precise_framerate_range()  # populated while "streaming"
+    cam._camera.readable = False  # stream stopped
+    assert cam.set_frame_rate(10.0) == 10.0
+    assert cam._camera.puts == [100]
+
+
+def test_set_frame_rate_clamps_to_range():
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=1.0)
+    cam._camera = _FakeToupcamSdk(min_tenths=19, max_tenths=280)
+    assert cam.set_frame_rate(1.0) == 1.9  # below MIN -> MIN
+    assert cam.set_frame_rate(100.0) == 28.0  # above MAX -> MAX (== readout-limited max here)
+    assert cam._camera.puts == [19, 280]
+
+
+def test_set_frame_rate_is_bounded_by_exposure():
+    # MAX_PRECISE_FRAMERATE ignores exposure: at 100 ms exposure the camera still reports 28 fps
+    # max but delivers 10 fps.  The returned rate sizes the recording, so it must be 10, not 28.
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=100.0)
+    cam._camera = _FakeToupcamSdk()
+    assert cam.set_frame_rate(30.0) == 10.0
+    assert cam._camera.puts == [280]
+
+
+def test_set_frame_rate_write_failure_falls_back_to_continuous_max():
+    cam = _bare_toupcam(strobe_time_us=35666.0, exposure_ms=20.0)
+    cam._camera = _FakeToupcamSdk(writable=False)
+    achievable = cam.set_frame_rate(10.0)
     assert 27.5 < achievable < 28.5, achievable

@@ -67,6 +67,10 @@ def clamp_precise_framerate_tenths(fps: float, min_tenths: int, max_tenths: int)
 
 
 class ToupcamCamera(AbstractCamera):
+    # Last successfully read (min, max) PRECISE_FRAMERATE range in tenths of fps; see
+    # _refresh_precise_framerate_range.  Class-level default so it exists before __init__ runs.
+    _precise_framerate_range_tenths: Optional[Tuple[int, int]] = None
+
     TOUPCAM_OPTION_RAW_RAW_VAL = 1
     TOUPCAM_OPTION_RAW_RGB_VAL = 0
     PIXEL_SIZE_UM = 3.76
@@ -284,6 +288,12 @@ class ToupcamCamera(AbstractCamera):
         self._configure_camera()
         self._start_raw_camera_stream()
         self._update_internal_settings()
+
+        # (min, max) PRECISE_FRAMERATE in tenths of fps.  The SDK only answers the
+        # range query while the pull-mode stream is running (E_UNEXPECTED once
+        # Stop() has been called), so read it here, with the stream just started,
+        # and keep the last good value for set_frame_rate() calls made while stopped.
+        self._refresh_precise_framerate_range()
 
         # Per-frame timing diagnostics — accumulates a small rolling window
         # in _on_frame_callback and logs every N frames so we can see where
@@ -603,6 +613,26 @@ class ToupcamCamera(AbstractCamera):
         frame_ms = max(readout_ms, self.get_exposure_time())
         return 1000.0 / frame_ms
 
+    def _refresh_precise_framerate_range(self) -> Optional[Tuple[int, int]]:
+        """Return (min, max) PRECISE_FRAMERATE in tenths of fps, refreshing the cache when possible.
+
+        The range query is only answered while the pull-mode stream is running; while the
+        camera is stopped it fails with E_UNEXPECTED (verified on an ITR3CMOS26000KMA), so a
+        failed read falls back to the last successful one.  Returns None when the option has
+        never been readable (model without PRECISE_FRAMERATE support).
+        """
+        try:
+            max_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
+            min_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)
+        except toupcam.HRESULTException as ex:
+            if self._precise_framerate_range_tenths is None:
+                self._log.warning(
+                    f"precise-framerate range read failed and no cached range: {control.toupcam_exceptions.explain(ex)}"
+                )
+            return self._precise_framerate_range_tenths
+        self._precise_framerate_range_tenths = (int(min_tenths), int(max_tenths))
+        return self._precise_framerate_range_tenths
+
     def set_frame_rate(self, fps: float) -> float:
         """Set the frame rate via the PRECISE_FRAMERATE option (CONTINUOUS mode only).
 
@@ -610,31 +640,36 @@ class ToupcamCamera(AbstractCamera):
         switch; set_frame_rate must be called **after** entering CONTINUOUS to take
         effect, and recording restores nothing (next acquisition resets exposure → MAX again).
 
+        Works whether or not the stream is running: the option *write* is accepted while
+        the camera is stopped and takes effect on the next Start (the range *read* is not,
+        hence the cached range — see _refresh_precise_framerate_range).
+
         Args:
             fps: Desired frame rate in frames per second. If None or <= 0, returns
                  the camera's achievable continuous maximum without changing settings.
 
         Returns:
-            The achievable frame rate in fps.  When the PRECISE_FRAMERATE option can be
-            read/set, that is the clamped requested rate; otherwise (the option is
-            unavailable on this model) it is the sensor's readout/exposure-limited
-            continuous maximum (see _continuous_max_framerate).
+            The frame rate the camera will actually deliver, in fps: the requested rate
+            clamped to the PRECISE_FRAMERATE range and then bounded by the exposure/readout-
+            limited continuous maximum (PRECISE_FRAMERATE only slows the sensor down — its
+            reported maximum ignores the exposure time, so at 100 ms exposure the camera
+            still delivers 10 fps whatever the option says).  When the option is unavailable
+            on this model it is the continuous maximum (see _continuous_max_framerate).
         """
+        continuous_max = self._continuous_max_framerate()
         if fps is None or fps <= 0:
-            return self._continuous_max_framerate()
-        try:
-            max_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MAX_PRECISE_FRAMERATE)
-            min_tenths = self._camera.get_Option(toupcam.TOUPCAM_OPTION_MIN_PRECISE_FRAMERATE)
-        except toupcam.HRESULTException as ex:
-            self._log.warning(f"precise-framerate range read failed: {control.toupcam_exceptions.explain(ex)}")
-            return self._continuous_max_framerate()
+            return continuous_max
+        framerate_range = self._refresh_precise_framerate_range()
+        if framerate_range is None:
+            return continuous_max
+        min_tenths, max_tenths = framerate_range
         tenths = clamp_precise_framerate_tenths(fps, min_tenths, max_tenths)
         try:
             self._camera.put_Option(toupcam.TOUPCAM_OPTION_PRECISE_FRAMERATE, tenths)
         except toupcam.HRESULTException as ex:
             self._log.warning(f"set precise-framerate failed: {control.toupcam_exceptions.explain(ex)}")
-            return self._continuous_max_framerate()
-        return tenths / 10.0
+            return continuous_max
+        return min(tenths / 10.0, continuous_max)
 
     @staticmethod
     def _user_gain_to_toupcam(user_gain):
