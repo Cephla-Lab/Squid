@@ -295,13 +295,28 @@ class ZTuner:
                 self.log("encoder sign OK")
                 # The loop nulls XACTUAL - ENC_POS in absolute terms, so the two frames must agree
                 # before it is ever closed. Firmware >= 1.6 zeroes ENC_POS with XACTUAL at homing/zero.
+                if self.a.align_after_home:
+                    # Stages whose actuator homes below the stage's stop have a decoupled gap above home
+                    # (zonemap measures it: 0.64 mm on the second bench Z). Re-align the encoder frame to
+                    # XACTUAL here, at a coupled position, so the loop only corrects deviations that arise
+                    # while coupled. The home zone (--zone-um) must cover the gap.
+                    self.mcu.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=self.flip); self.wait()
+                    self.settle(0.3)
+                    self.log(f"encoder frame re-aligned to XACTUAL at {self.a.depth_mm} mm extension (--align-after-home)")
                 self.settle(0.3)
                 dev = self.mcu.get_encoder_state()["deviation"]
                 dev_um = dev / USTEPS_PER_MM * 1000
                 self.log(f"encoder frame offset after homing: {dev_um:+.1f} um")
                 if abs(dev) >= 32767 or abs(dev_um) > self.a.max_dev_um / 4:
-                    raise RuntimeError(f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um (clipped at 192 um); "
-                                       "the loop would slew by that amount on enable. Refusing to continue.")
+                    if self.a.action == "zonemap":
+                        # the zone map never closes the loop: it is the tool that measures exactly this
+                        # offset (a stage that rests on its stop while the actuator homes below it)
+                        self.log("frame offset exceeds the gate; continuing because zonemap is open-loop only")
+                        return
+                    raise RuntimeError(f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um "
+                                       f"(int16 clip {32767 / USTEPS_PER_MM * 1000:.0f} um at this microstepping); "
+                                       "the loop would slew by that amount on enable. Refusing to continue. "
+                                       "Run `zonemap` to see where the encoder decouples from the counter.")
                 return
             if attempt == 0:
                 self.flip = not self.flip
@@ -498,6 +513,18 @@ class ZTuner:
                     last = key
             return out
 
+        def dump(tag, rows):
+            """Save the sampled trace of a phase (extension, encoder, deviation, flags) - kept on failure too."""
+            path = os.path.join(self.out, f"zonetest_{tag}.csv")
+            with open(path, "w", newline="") as f:
+                w = csv.writer(f)
+                w.writerow(["t_s", "extension_mm", "enc_mm", "dev_um", "engaged", "zone_hold", "fault"])
+                for t, x, e, d, fl in rows:
+                    w.writerow([f"{t:.4f}", f"{usteps_to_depth(x):.5f}", f"{usteps_to_depth(e):.5f}",
+                                f"{d / USTEPS_PER_MM * 1000:.2f}", int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))),
+                                int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))), int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT)))])
+            return path
+
         m = self.mcu
         m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
@@ -505,32 +532,41 @@ class ZTuner:
         if not st["pid_enabled"]:
             raise RuntimeError("loop did not engage outside the zone")
 
-        self.sampler.clear()
-        self.move_to_depth(inside)
-        st = flags(f"B. after move into the zone ({inside:.3f} mm)")
-        self.log(f"   transitions during the move: {transitions(self.sampler.snapshot())}")
-        ok_b = (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]
+        verdict = {"B_drop_in_zone": False, "C_reengage_out": False, "D_open_during_homing": False, "E_reengage_after_homing": False}
+        phases = [
+            ("B", "B_drop_in_zone", lambda: self.move_to_depth(inside), f"B. after move into the zone ({inside:.3f} mm)",
+             lambda st: (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]),
+            ("C", "C_reengage_out", lambda: self.move_to_depth(self.a.depth_mm), "C. after move back out",
+             lambda st: st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]),
+            ("D", "D_open_during_homing", lambda: (m.home_z(), self.wait(60)), "D. after homing",
+             lambda st: (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]),
+            ("E", "E_reengage_after_homing", lambda: self.move_to_depth(self.a.depth_mm), "E. after moving out again",
+             lambda st: st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]),
+        ]
+        for tag, key, action, label, judge in phases:
+            self.sampler.clear()
+            failed = None
+            try:
+                action()
+            except RuntimeError as e:  # the guard raises on a firmware fault or a host-side deviation trip
+                failed = str(e)
+            rows = self.sampler.snapshot()
+            path = dump(tag, rows)
+            st = flags(label)
+            self.log(f"   transitions during the phase: {transitions(rows)}  (trace {os.path.basename(path)})")
+            if failed:
+                # where did the deviation run away? the last 12 samples before the fault flag tell
+                fault_rows = [r for r in rows if r[4] & (1 << _def.ENC_FLAG.PID_FAULT)]
+                if fault_rows:
+                    k = rows.index(fault_rows[0])
+                    for t, x, e, d, fl in rows[max(0, k - 12):k + 2]:
+                        self.log(f"      t={t:7.3f}s  z={usteps_to_depth(x):.3f} mm  enc={usteps_to_depth(e):.3f} mm  "
+                                 f"dev={d / USTEPS_PER_MM * 1000:+.1f} um  engaged={int(bool(fl & 2))} hold={int(bool(fl & 8))} fault={int(bool(fl & 4))}")
+                self.log(f"   phase {tag} ABORTED: {failed}")
+                verdict[key] = False
+                break
+            verdict[key] = bool(judge(st))
 
-        self.sampler.clear()
-        self.move_to_depth(self.a.depth_mm)
-        st = flags("C. after move back out")
-        self.log(f"   transitions during the move: {transitions(self.sampler.snapshot())}")
-        ok_c = st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]
-
-        self.log("D. homing with the loop requested")
-        self.sampler.clear()
-        m.home_z(); self.wait(60)
-        st = flags("D. after homing")
-        self.log(f"   transitions during homing: {transitions(self.sampler.snapshot())}")
-        ok_d = (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]
-
-        self.sampler.clear()
-        self.move_to_depth(self.a.depth_mm)
-        st = flags("E. after moving out again")
-        self.log(f"   transitions during the move: {transitions(self.sampler.snapshot())}")
-        ok_e = st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]
-
-        verdict = {"B_drop_in_zone": ok_b, "C_reengage_out": ok_c, "D_open_during_homing": ok_d, "E_reengage_after_homing": ok_e}
         self.summary["results"].append({"phase": "zonetest", "zone_um": self.a.zone_um, **verdict})
         self.log(f"zonetest verdict: {verdict}  -> {'PASS' if all(verdict.values()) else 'FAIL'}")
 
@@ -749,6 +785,8 @@ def main():
     ap.add_argument("--p-list", type=int, nargs="+", default=[1024, 2048, 4096, 8192, 16384])
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
+    ap.add_argument("--align-after-home", action="store_true",
+                    help="re-align the encoder frame to XACTUAL at --depth-mm after homing (stages with a decoupled gap above home)")
     ap.add_argument("--accel-list", type=float, nargs="+", default=[100, 150, 200, 250, 300, 350, 390])
     ap.add_argument("--stack-n", type=int, default=20)
     ap.add_argument("--stack-um", type=float, default=1.0)
