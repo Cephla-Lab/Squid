@@ -158,7 +158,9 @@ void callback_move_to_x()
     if (!axis_driver_ready(x)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     X_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[x]));
-    X_commanded_target_position = absolute_position;
+    // Clamp to the travel limits like the relative move does: beyond them the TMC4361A's virtual limit
+    // hard-stops the ramp short of the target and the command would stay IN_PROGRESS for ever.
+    X_commanded_target_position = min(max(absolute_position, X_NEG_LIMIT), X_POS_LIMIT);
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[x], X_commanded_target_position) == 0)
     {
@@ -175,7 +177,7 @@ void callback_move_to_y()
     if (!axis_driver_ready(y)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Y_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[y]));
-    Y_commanded_target_position = absolute_position;
+    Y_commanded_target_position = min(max(absolute_position, Y_NEG_LIMIT), Y_POS_LIMIT);
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[y], Y_commanded_target_position) == 0)
     {
@@ -192,7 +194,7 @@ void callback_move_to_z()
     if (!axis_driver_ready(z)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
-    Z_commanded_target_position = absolute_position;
+    Z_commanded_target_position = min(max(absolute_position, Z_NEG_LIMIT), Z_POS_LIMIT);
     long ramp_target = pid_before_move(z, Z_commanded_target_position);   // may be pre-compensated, see callback_move_z
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[z], ramp_target) == 0)
