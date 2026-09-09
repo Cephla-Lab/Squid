@@ -797,29 +797,41 @@ class ZTuner:
         for step_um in self.a.residual_steps_um:
             d = step_um / 1000.0
             per_dir = {"+": [], "-": []}
+            delta = {"+": [], "-": []}          # change of the offset caused by the move itself
+            self.settle(0.3)
+            prev = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000.0
             for k in range(self.a.residual_reps):
                 self.move_to_depth(self.a.depth_mm + (k + 1) * d); self.settle(0.15)
                 st = m.get_encoder_state()
                 # deeper = counter decreasing on this Z (sign -1): direction "-" in counter terms
-                per_dir["-"].append(st["deviation"] / USTEPS_PER_MM * 1000.0)
+                cur = st["deviation"] / USTEPS_PER_MM * 1000.0
+                per_dir["-"].append(cur); delta["-"].append(cur - prev); prev = cur
             for k in range(self.a.residual_reps - 1, -1, -1):
                 self.move_to_depth(self.a.depth_mm + k * d); self.settle(0.15)
                 st = m.get_encoder_state()
-                per_dir["+"].append(st["deviation"] / USTEPS_PER_MM * 1000.0)
+                cur = st["deviation"] / USTEPS_PER_MM * 1000.0
+                per_dir["+"].append(cur); delta["+"].append(cur - prev); prev = cur
             import statistics
             row = {"phase": "residual", "step_um": step_um, "reps": self.a.residual_reps}
             for key, name in (("-", "neg"), ("+", "pos")):
                 v = per_dir[key]
                 row[f"{name}_mean_um"] = statistics.mean(v); row[f"{name}_std_um"] = statistics.pstdev(v) if len(v) > 1 else 0.0
                 row[f"{name}_min_um"] = min(v); row[f"{name}_max_um"] = max(v)
+                dv = delta[key]
+                row[f"{name}_delta_mean_um"] = statistics.mean(dv); row[f"{name}_delta_std_um"] = statistics.pstdev(dv) if len(dv) > 1 else 0.0
+                row[f"{name}_values_um"] = [round(x, 3) for x in v]
             out.append(row)
+            self.log(f"  per-move change of the offset (what a pre-compensation could remove): deeper {row['neg_delta_mean_um']:+.2f} um std {row['neg_delta_std_um']:.2f}; "
+                     f"shallower {row['pos_delta_mean_um']:+.2f} um std {row['pos_delta_std_um']:.2f}; the rest of the offset is the static frame offset")
             self.log(f"residual after {step_um:g} um moves (ENC - XACTUAL at rest, counter sign): "
                      f"counter-decreasing (deeper) {row['neg_mean_um']:+.2f} um std {row['neg_std_um']:.2f} [{row['neg_min_um']:+.2f}, {row['neg_max_um']:+.2f}]; "
                      f"counter-increasing (shallower) {row['pos_mean_um']:+.2f} um std {row['pos_std_um']:.2f} [{row['pos_min_um']:+.2f}, {row['pos_max_um']:+.2f}]")
         self.summary["results"].extend(out)
         if out:
-            self.log("SET_PID_PRECOMP values (um, firmware sign): --precomp-pos-um "
-                     f"{statistics.mean(r['pos_mean_um'] for r in out):+.2f} --precomp-neg-um {statistics.mean(r['neg_mean_um'] for r in out):+.2f}")
+            self.log("SET_PID_PRECOMP candidates = half the direction asymmetry of the offset (um, firmware sign): --precomp-pos-um "
+                     f"{statistics.mean((r['pos_mean_um'] - r['neg_mean_um']) / 2 for r in out):+.2f} --precomp-neg-um "
+                     f"{statistics.mean((r['neg_mean_um'] - r['pos_mean_um']) / 2 for r in out):+.2f}  "
+                     "(the common part is the static frame offset the loop nulls once at rest)")
 
     def engage_loop(self):
         m = self.mcu
