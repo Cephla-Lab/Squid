@@ -66,6 +66,7 @@ _CMD_NAMES = {
     CMD_SET.SET_PID_OPEN_ABOVE: "SET_PID_OPEN_ABOVE",
     CMD_SET.SET_PID_P24: "SET_PID_P24",
     CMD_SET.SET_PID_KEEP_CLOSED_BELOW: "SET_PID_KEEP_CLOSED_BELOW",
+    CMD_SET.SET_PID_PRECOMP: "SET_PID_PRECOMP",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1392,6 +1393,26 @@ class Microcontroller:
         cmd[2] = int(axis)
         cmd[3] = (u >> 8) & 0xFF
         cmd[4] = u & 0xFF
+        self.send_command(cmd)
+
+    def set_pid_precomp(self, axis, residual_pos_um, residual_neg_um):
+        """Open-loop residual (encoder minus counter at rest) after counter-increasing and counter-decreasing
+        moves on `axis`, in um (firmware >= 1.6). Rest-only moves are aimed past the target by it and the counter
+        is rewritten to the true target at rest. Encoded as signed 0.01 um, range +/-327 um; 0, 0 = off.
+        """
+        vals = []
+        for v in (residual_pos_um, residual_neg_um):
+            u = int(round(v * 100))
+            if not (-0x8000 <= u <= 0x7FFF):
+                raise ValueError("residual must be within +/-327.67 um")
+            vals.append(u & 0xFFFF)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_PRECOMP
+        cmd[2] = int(axis)
+        cmd[3] = (vals[0] >> 8) & 0xFF
+        cmd[4] = vals[0] & 0xFF
+        cmd[5] = (vals[1] >> 8) & 0xFF
+        cmd[6] = vals[1] & 0xFF
         self.send_command(cmd)
 
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):

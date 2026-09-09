@@ -47,6 +47,9 @@ extern int32_t completion_window_usteps[TOTAL_AXES];  // SET_COMPLETION_WINDOW: 
 extern int32_t pid_open_above_pps[TOTAL_AXES];  // SET_PID_OPEN_ABOVE: loop opened above this ramp velocity (pps); 0 = rest-only
 extern int32_t pid_keep_closed_usteps[TOTAL_AXES]; // SET_PID_KEEP_CLOSED_BELOW: commanded moves up to this length stay closed-loop; 0 = off
 extern bool pid_short_move[TOTAL_AXES];         // the move in progress is such a short move: check_closed_loop leaves the loop engaged
+extern int32_t pid_precomp_usteps[TOTAL_AXES][2]; // SET_PID_PRECOMP: open-loop residual (ENC - XACTUAL) after [0] counter-decreasing, [1] counter-increasing moves
+extern int32_t pid_true_target[TOTAL_AXES];     // true target of a pre-compensated move; the counter is rewritten to it at rest
+extern bool pid_true_target_pending[TOTAL_AXES];
 extern uint32_t pid_tr_tolerance_usteps[TOTAL_AXES]; // target-reached tolerance override; 0 = legacy
 
 // home safety margin

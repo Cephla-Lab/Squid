@@ -106,6 +106,12 @@ static const int SET_PID_KEEP_CLOSED_BELOW = 52; // [2]=axis, [3..4]=move length
                                               // correction needs ~100 ms of motion to build, a short focus step never
                                               // gets there. Longer moves and joystick motion follow SET_PID_OPEN_ABOVE.
                                               // 0 (default) = off.
+static const int SET_PID_PRECOMP = 53;        // [2]=axis, [3..4]=int16 open-loop residual after counter-INCREASING moves,
+                                              // [5..6]=int16 after counter-DECREASING moves, both ENC_POS - XACTUAL at rest
+                                              // in 0.01 um as the tuner measures them. A rest-only move then aims the ramp
+                                              // at target - residual, and when the axis stops the counter is rewritten to
+                                              // the true target before the loop engages, so the loop closes ~0.3 um instead
+                                              // of the whole residual. 0 = off.
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,

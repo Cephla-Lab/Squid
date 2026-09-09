@@ -27,6 +27,7 @@ void callback_set_pid_tolerance();
 void callback_set_completion_window();
 void callback_set_pid_open_above();
 void callback_set_pid_keep_closed_below();
+void callback_set_pid_precomp();
 
 void callback_disable_stage_pid();
 void callback_initfilterwheel();

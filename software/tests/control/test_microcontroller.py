@@ -326,6 +326,12 @@ def test_encoder_reporting_and_pid_limits_commands():
     with _pytest.raises(ValueError):
         micro.set_pid_arguments(control._def.AXIS.Z, 70000, 0, 0)   # must not truncate silently
 
+    micro.set_pid_precomp(control._def.AXIS.Z, 3.5, -3.5)   # residuals +3.50 / -3.50 um as signed 0.01 um
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_PRECOMP
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 350
+    assert (micro.last_command[5] << 8) + micro.last_command[6] == (-350) & 0xFFFF
+
     micro.set_pid_keep_closed_below(control._def.AXIS.Z, 100)   # moves up to 100 um stay closed-loop
     assert micro.last_command[1] == control._def.CMD_SET.SET_PID_KEEP_CLOSED_BELOW
     assert micro.last_command[2] == control._def.AXIS.Z

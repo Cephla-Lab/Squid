@@ -92,10 +92,12 @@ void callback_move_z()
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
     Z_direction = sgn(relative_position);
     Z_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, Z_POS_LIMIT) : max(current_position + relative_position, Z_NEG_LIMIT) );
-    pid_before_move(z, Z_commanded_target_position);
-    focusPosition = Z_commanded_target_position;
+    // the ramp may be aimed past the commanded target by the open-loop residual (SET_PID_PRECOMP);
+    // Z_commanded_target_position stays the true target check_position waits for
+    long ramp_target = pid_before_move(z, Z_commanded_target_position);
+    focusPosition = ramp_target;
     mcu_cmd_execution_in_progress = true;
-    if ( tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
+    if ( tmc4361A_moveTo(&tmc4361[z], ramp_target) == 0)
     {
         Z_commanded_movement_in_progress = true;
     }
@@ -191,11 +193,11 @@ void callback_move_to_z()
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
     Z_commanded_target_position = absolute_position;
-    pid_before_move(z, Z_commanded_target_position);
+    long ramp_target = pid_before_move(z, Z_commanded_target_position);   // may be pre-compensated, see callback_move_z
     mcu_cmd_execution_in_progress = true;
-    if (tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
+    if (tmc4361A_moveTo(&tmc4361[z], ramp_target) == 0)
     {
-        focusPosition = absolute_position;
+        focusPosition = ramp_target;
         Z_commanded_movement_in_progress = true;
     }
     else

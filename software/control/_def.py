@@ -213,6 +213,7 @@ class CMD_SET:
     SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
     SET_PID_P24 = 51  # Full 24-bit proportional gain (SET_PID_ARGUMENTS carries 16 bits) (fw >= 1.6)
     SET_PID_KEEP_CLOSED_BELOW = 52  # Commanded moves up to this length (um) keep the loop engaged in flight (fw >= 1.6)
+    SET_PID_PRECOMP = 53  # Open-loop residual per direction; rest-only moves are aimed past the target by it (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -780,6 +781,18 @@ PID_OPEN_ABOVE_Z_mm = 0.0
 PID_KEEP_CLOSED_BELOW_X_UM = 0
 PID_KEEP_CLOSED_BELOW_Y_UM = 0
 PID_KEEP_CLOSED_BELOW_Z_UM = 0
+
+# Open-loop residual pre-compensation (firmware >= 1.6, SET_PID_PRECOMP): the encoder-minus-counter offset an
+# open-loop move leaves at rest, in um, after counter-increasing (POS) and counter-decreasing (NEG) moves, as
+# measured by tools/z_encoder_pid_tuner.py residual. A rest-only move is then aimed past the target by that
+# amount and the counter is rewritten to the true target when the axis stops, so the loop has a fraction of a
+# micron to close instead of the whole residual. 0 = off. Measure per instrument; sign as the tuner prints it.
+PID_PRECOMP_POS_X_UM = 0.0
+PID_PRECOMP_NEG_X_UM = 0.0
+PID_PRECOMP_POS_Y_UM = 0.0
+PID_PRECOMP_NEG_Y_UM = 0.0
+PID_PRECOMP_POS_Z_UM = 0.0
+PID_PRECOMP_NEG_Z_UM = 0.0
 
 # Completion window per stage axis in um (firmware >= 1.6, SET_COMPLETION_WINDOW): a move is acknowledged
 # once the step counter - and, with the loop engaged, the encoder - is within this distance of the target

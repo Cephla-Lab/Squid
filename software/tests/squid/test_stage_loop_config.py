@@ -57,11 +57,14 @@ def test_full_bench_configuration_reaches_the_controller_in_order():
             TOLERANCE_UM=0.2,
             OPEN_ABOVE_MM_S=3.5,
             KEEP_CLOSED_BELOW_UM=100,
+            PRECOMP_POS_UM=3.5,
+            PRECOMP_NEG_UM=-3.4,
         ),
         COMPLETION_WINDOW_UM=0.3,
     )
     _, mc = _stage(z)
     mc.set_pid_keep_closed_below.assert_called_once_with(_def.AXIS.Z, 100)
+    mc.set_pid_precomp.assert_called_once_with(_def.AXIS.Z, 3.5, -3.4)
     # the window is a state and is sent for every stage axis (X and Y get 0); Z gets its value
     assert mc.set_completion_window.call_args_list[-1].args == (_def.AXIS.Z, 0.3 / 1000.0)
     mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 3.5)
@@ -126,6 +129,7 @@ def test_zero_limits_are_not_sent():
     # loop mode and completion window are states: 0 (rest-only / exact target) is sent explicitly
     mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 0.0)
     mc.set_pid_keep_closed_below.assert_called_once_with(_def.AXIS.Z, 0.0)
+    mc.set_pid_precomp.assert_called_once_with(_def.AXIS.Z, 0.0, 0.0)
     assert mc.set_completion_window.call_args_list[-1].args == (_def.AXIS.Z, 0.0)
     mc.turn_on_stage_pid.assert_called_once()
 

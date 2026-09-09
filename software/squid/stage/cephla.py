@@ -118,6 +118,8 @@ class CephlaStage(AbstractStage):
             mc.wait_till_operation_is_completed()
             mc.set_pid_keep_closed_below(microcontroller_axis_number, pid.KEEP_CLOSED_BELOW_UM)   # 0 = off
             mc.wait_till_operation_is_completed()
+            mc.set_pid_precomp(microcontroller_axis_number, pid.PRECOMP_POS_UM, pid.PRECOMP_NEG_UM)   # 0, 0 = off
+            mc.wait_till_operation_is_completed()
         elif (
             pid.CORRECTION_VMAX > 0
             or pid.MAX_DEVIATION_UM > 0
@@ -137,6 +139,7 @@ class CephlaStage(AbstractStage):
             f"tolerance {pid.TOLERANCE_UM or 'default (2 counts)'} um, loop open above {pid.OPEN_ABOVE_MM_S} mm/s "
             f"({'rest-only' if pid.OPEN_ABOVE_MM_S == 0 else 'engaged below that speed'}), "
             f"moves up to {pid.KEEP_CLOSED_BELOW_UM} um stay closed-loop in flight, "
+            f"residual pre-compensation {pid.PRECOMP_POS_UM:+.2f} / {pid.PRECOMP_NEG_UM:+.2f} um, "
             f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
             f"ramp {axis_config.RAMP_PROFILE}"
         )

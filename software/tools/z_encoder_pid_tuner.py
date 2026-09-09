@@ -263,6 +263,7 @@ class ZTuner:
         # 'rest-only' run of this tool ran engaged in flight.
         m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
         m.set_pid_keep_closed_below(AXIS.Z, self.a.keep_closed_below); self.wait()   # 0 = off
+        m.set_pid_precomp(AXIS.Z, self.a.precomp_pos_um, self.a.precomp_neg_um); self.wait()   # 0, 0 = off
         m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
         self.set_gains(self.a.p, self.a.i, self.a.d)
@@ -786,6 +787,40 @@ class ZTuner:
         if int(p) > 0xFFFF:
             self.mcu.set_pid_p24(AXIS.Z, int(p)); self.wait()
 
+    def residual(self):
+        """Open-loop residual per direction: ENC_POS - XACTUAL at rest after a move, in um, for each step size in
+        --residual-steps-um, --residual-reps moves up (deeper) then the same number back down. Reports mean and std per
+        direction and size, in the firmware's sign convention (positive direction = counter increasing), which is what
+        SET_PID_PRECOMP takes. The loop stays off."""
+        m = self.mcu
+        out = []
+        for step_um in self.a.residual_steps_um:
+            d = step_um / 1000.0
+            per_dir = {"+": [], "-": []}
+            for k in range(self.a.residual_reps):
+                self.move_to_depth(self.a.depth_mm + (k + 1) * d); self.settle(0.15)
+                st = m.get_encoder_state()
+                # deeper = counter decreasing on this Z (sign -1): direction "-" in counter terms
+                per_dir["-"].append(st["deviation"] / USTEPS_PER_MM * 1000.0)
+            for k in range(self.a.residual_reps - 1, -1, -1):
+                self.move_to_depth(self.a.depth_mm + k * d); self.settle(0.15)
+                st = m.get_encoder_state()
+                per_dir["+"].append(st["deviation"] / USTEPS_PER_MM * 1000.0)
+            import statistics
+            row = {"phase": "residual", "step_um": step_um, "reps": self.a.residual_reps}
+            for key, name in (("-", "neg"), ("+", "pos")):
+                v = per_dir[key]
+                row[f"{name}_mean_um"] = statistics.mean(v); row[f"{name}_std_um"] = statistics.pstdev(v) if len(v) > 1 else 0.0
+                row[f"{name}_min_um"] = min(v); row[f"{name}_max_um"] = max(v)
+            out.append(row)
+            self.log(f"residual after {step_um:g} um moves (ENC - XACTUAL at rest, counter sign): "
+                     f"counter-decreasing (deeper) {row['neg_mean_um']:+.2f} um std {row['neg_std_um']:.2f} [{row['neg_min_um']:+.2f}, {row['neg_max_um']:+.2f}]; "
+                     f"counter-increasing (shallower) {row['pos_mean_um']:+.2f} um std {row['pos_std_um']:.2f} [{row['pos_min_um']:+.2f}, {row['pos_max_um']:+.2f}]")
+        self.summary["results"].extend(out)
+        if out:
+            self.log("SET_PID_PRECOMP values (um, firmware sign): --precomp-pos-um "
+                     f"{statistics.mean(r['pos_mean_um'] for r in out):+.2f} --precomp-neg-um {statistics.mean(r['neg_mean_um'] for r in out):+.2f}")
+
     def engage_loop(self):
         m = self.mcu
         self.settle(0.3)
@@ -900,6 +935,9 @@ class ZTuner:
             if self.a.action == "engageprobe":
                 self.engageprobe()
                 return
+            if self.a.action == "residual":
+                self.residual()
+                return
             if self.a.action == "stack":
                 self.stack(closed=False)
                 self.stack(closed=True)
@@ -919,7 +957,9 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "velsweep", "engageprobe", "stack", "hold"])
+    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "velsweep", "engageprobe", "residual", "stack", "hold"])
+    ap.add_argument("--residual-steps-um", type=float, nargs="+", default=[1.0, 10.0, 100.0])
+    ap.add_argument("--residual-reps", type=int, default=10)
     ap.add_argument("--vel-list", type=float, nargs="+", default=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
     ap.add_argument("--vel-reps", type=int, default=3)
     ap.add_argument("--excursion-mm", type=float, default=2.0, help="velsweep excursion up from --depth-mm")
@@ -941,6 +981,8 @@ def main():
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
     ap.add_argument("--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)")
+    ap.add_argument("--precomp-pos-um", type=float, default=0.0, help="open-loop residual after counter-increasing moves (residual action)")
+    ap.add_argument("--precomp-neg-um", type=float, default=0.0, help="open-loop residual after counter-decreasing moves")
     ap.add_argument("--keep-closed-below", type=float, default=0.0,
                     help="commanded moves up to this length (um) keep the loop engaged in flight; 0 = off")
     ap.add_argument("--open-above", type=float, default=0.0,

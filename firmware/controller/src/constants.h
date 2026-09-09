@@ -59,6 +59,9 @@
 //               SET_PID_KEEP_CLOSED_BELOW (52): commanded moves up to a length keep
 //               the loop engaged throughout (short focus steps settle in-flight);
 //               longer moves follow the loop-mode threshold.
+//               SET_PID_PRECOMP (53): a rest-only move aims the open-loop ramp past
+//               the target by the measured residual and the counter is rewritten to
+//               the true target at rest, so the loop closes a fraction of a micron.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 
