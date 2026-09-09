@@ -82,7 +82,10 @@ class ZMotionSelfTest:
 
     # A stepper loses sync in whole full steps (usually four at once); the open-loop residual and its
     # hysteresis are a few tenths of a micron. One full step (pitch / steps per rev) separates the two.
-    CLOSED_ERROR_LIMIT_UM = 0.25  # two encoder counts on a 0.1 um encoder
+    # The loop holds the error inside its two-count deadband, but a single sample can catch a transient count
+    # or two before the next correction (0.28 um once in 20 steps on the bench). 0.5 um separates a working
+    # loop from a failing one without flagging that; open loop leaves 3-5 um on the same stage.
+    CLOSED_ERROR_LIMIT_UM = 0.5
     CLOSED_ACK_LIMIT_MS = 200.0
     SCALE_TOLERANCE = 0.05
 
