@@ -41,6 +41,8 @@ uint32_t pid_tolerance_usteps[TOTAL_AXES] = {0};
 uint32_t pid_tr_tolerance_usteps[TOTAL_AXES] = {0};
 int32_t completion_window_usteps[TOTAL_AXES] = {0};
 int32_t pid_open_above_pps[TOTAL_AXES] = {0};
+int32_t pid_keep_closed_usteps[TOTAL_AXES] = {0};
+bool pid_short_move[TOTAL_AXES] = {false};
 bool pid_realign_pending[TOTAL_AXES] = {false};
 
 // home safety margin

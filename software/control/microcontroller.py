@@ -65,6 +65,7 @@ _CMD_NAMES = {
     CMD_SET.SET_COMPLETION_WINDOW: "SET_COMPLETION_WINDOW",
     CMD_SET.SET_PID_OPEN_ABOVE: "SET_PID_OPEN_ABOVE",
     CMD_SET.SET_PID_P24: "SET_PID_P24",
+    CMD_SET.SET_PID_KEEP_CLOSED_BELOW: "SET_PID_KEEP_CLOSED_BELOW",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1377,6 +1378,20 @@ class Microcontroller:
         cmd[2] = int(axis)
         cmd[3] = (v >> 8) & 0xFF
         cmd[4] = v & 0xFF
+        self.send_command(cmd)
+
+    def set_pid_keep_closed_below(self, axis, length_um):
+        """Commanded moves on `axis` no longer than length_um keep the closed loop engaged for their whole
+        duration, whatever the loop-mode threshold says (firmware >= 1.6). 0 = off. Range 0 .. 65535 um.
+        """
+        u = int(round(length_um))
+        if not (0 <= u <= 0xFFFF):
+            raise ValueError("length must be 0 .. 65535 um")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_KEEP_CLOSED_BELOW
+        cmd[2] = int(axis)
+        cmd[3] = (u >> 8) & 0xFF
+        cmd[4] = u & 0xFF
         self.send_command(cmd)
 
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):

@@ -100,6 +100,12 @@ static const int SET_PID_OPEN_ABOVE = 50;     // [2]=axis, [3..4]=ramp velocity 
 static const int SET_PID_P24 = 51;            // [2]=axis, [3..5]=proportional gain, 24 bits (the TMC4361A register
                                               // width; SET_PID_ARGUMENTS carries 16). PID_P/256 per second is the
                                               // loop's rate constant: 65535 -> 4 ms time constant. Applied at once.
+static const int SET_PID_KEEP_CLOSED_BELOW = 52; // [2]=axis, [3..4]=move length (um). A commanded move (MOVE/MOVETO) no
+                                              // longer than this keeps the closed loop engaged for its whole duration,
+                                              // whatever SET_PID_OPEN_ABOVE says: the limit cycle of a saturated
+                                              // correction needs ~100 ms of motion to build, a short focus step never
+                                              // gets there. Longer moves and joystick motion follow SET_PID_OPEN_ABOVE.
+                                              // 0 (default) = off.
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,

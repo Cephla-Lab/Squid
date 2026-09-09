@@ -212,6 +212,7 @@ class CMD_SET:
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
     SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
     SET_PID_P24 = 51  # Full 24-bit proportional gain (SET_PID_ARGUMENTS carries 16 bits) (fw >= 1.6)
+    SET_PID_KEEP_CLOSED_BELOW = 52  # Commanded moves up to this length (um) keep the loop engaged in flight (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -769,6 +770,15 @@ PID_TOLERANCE_Z_UM = 0.0
 PID_OPEN_ABOVE_X_mm = 0.0
 PID_OPEN_ABOVE_Y_mm = 0.0
 PID_OPEN_ABOVE_Z_mm = 0.0
+
+# Commanded moves (MOVE / MOVETO) no longer than this (um) keep the closed loop engaged for their whole
+# duration, whatever PID_OPEN_ABOVE says (firmware >= 1.6, SET_PID_KEEP_CLOSED_BELOW). The correction's
+# limit cycle needs ~100 ms of continuous motion to build; a 100 um step cruises for 23 ms and settles
+# in-flight in +2-3 ms instead of the +11 ms of a rest-only correction. Longer moves and joystick motion
+# follow PID_OPEN_ABOVE. 0 = off. Bench 2026-09-08: 100 on the Squid+ Z.
+PID_KEEP_CLOSED_BELOW_X_UM = 0
+PID_KEEP_CLOSED_BELOW_Y_UM = 0
+PID_KEEP_CLOSED_BELOW_Z_UM = 0
 
 # Completion window per stage axis in um (firmware >= 1.6, SET_COMPLETION_WINDOW): a move is acknowledged
 # once the step counter - and, with the loop engaged, the encoder - is within this distance of the target

@@ -64,6 +64,7 @@ void init_callbacks()
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[SET_PID_OPEN_ABOVE] = &callback_set_pid_open_above;
     cmd_map[SET_PID_P24] = &callback_set_pid_p24;
+    cmd_map[SET_PID_KEEP_CLOSED_BELOW] = &callback_set_pid_keep_closed_below;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -337,6 +338,18 @@ void callback_set_pid_open_above()
     // vmmToMicrosteps returns the VMAX register format (8 fractional bits); VACTUAL is integer pps
     int32_t pps = tmc4361A_vmmToMicrosteps(&tmc4361[axis], float(v_x100) / 100.0f) >> 8;
     pid_open_above_pps[axis] = pps < 0 ? -pps : pps;
+}
+
+// SET_PID_KEEP_CLOSED_BELOW (52): [2] protocol axis, [3..4] move length in um. Commanded moves up to
+// this length run with the loop engaged throughout (see pid_before_move); 0 = off. Stored in usteps
+// at the current microstep setting.
+void callback_set_pid_keep_closed_below()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t um = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    int32_t u = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(um) / 1000.0f);
+    pid_keep_closed_usteps[axis] = u < 0 ? -u : u;
 }
 
 // SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]
@@ -705,5 +718,7 @@ void callback_reset()
         pid_tr_tolerance_usteps[i] = 0;
         completion_window_usteps[i] = 0;
         pid_open_above_pps[i] = 0;
+        pid_keep_closed_usteps[i] = 0;
+        pid_short_move[i] = false;
     }
 }

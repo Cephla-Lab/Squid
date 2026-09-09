@@ -45,6 +45,8 @@ extern uint32_t pid_tolerance_usteps[TOTAL_AXES];    // loop deadband override; 
 extern bool pid_realign_pending[TOTAL_AXES];    // a homing ran while the loop was requested: align ENC_POS to XACTUAL at the next engage
 extern int32_t completion_window_usteps[TOTAL_AXES];  // SET_COMPLETION_WINDOW: early COMPLETED when within this of the target; 0 = off
 extern int32_t pid_open_above_pps[TOTAL_AXES];  // SET_PID_OPEN_ABOVE: loop opened above this ramp velocity (pps); 0 = rest-only
+extern int32_t pid_keep_closed_usteps[TOTAL_AXES]; // SET_PID_KEEP_CLOSED_BELOW: commanded moves up to this length stay closed-loop; 0 = off
+extern bool pid_short_move[TOTAL_AXES];         // the move in progress is such a short move: check_closed_loop leaves the loop engaged
 extern uint32_t pid_tr_tolerance_usteps[TOTAL_AXES]; // target-reached tolerance override; 0 = legacy
 
 // home safety margin

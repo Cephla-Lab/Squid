@@ -88,11 +88,11 @@ void callback_move_z()
     // moveTo(z, focusPosition) every loop, so a rejected move that had already
     // written focusPosition would be carried out anyway on the next pass.
     if (!axis_driver_ready(z)) return;
-    pid_before_move(z);
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
     Z_direction = sgn(relative_position);
     Z_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, Z_POS_LIMIT) : max(current_position + relative_position, Z_NEG_LIMIT) );
+    pid_before_move(z, Z_commanded_target_position);
     focusPosition = Z_commanded_target_position;
     mcu_cmd_execution_in_progress = true;
     if ( tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
@@ -188,10 +188,10 @@ void callback_move_to_y()
 void callback_move_to_z()
 {
     if (!axis_driver_ready(z)) return;
-    pid_before_move(z);
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
     Z_commanded_target_position = absolute_position;
+    pid_before_move(z, Z_commanded_target_position);
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
     {

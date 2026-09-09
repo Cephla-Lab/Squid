@@ -33,7 +33,8 @@ void check_limits();
 void check_closed_loop();
 // Open a requested closed loop for the duration of a move (it re-engages at rest); see check_closed_loop().
 void pid_open_for_move(uint8_t axis);
-// Called by the stage move commands before the ramp starts: opens a rest-only loop (SET_PID_OPEN_ABOVE 0).
-void pid_before_move(uint8_t axis);
+// Called by the stage move commands before the ramp starts, with the commanded target: a move no longer
+// than SET_PID_KEEP_CLOSED_BELOW keeps the loop engaged; otherwise a rest-only loop (SET_PID_OPEN_ABOVE 0) opens.
+void pid_before_move(uint8_t axis, int32_t target);
 
 #endif // OPERATIONS_H

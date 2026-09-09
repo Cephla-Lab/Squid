@@ -262,6 +262,7 @@ class ZTuner:
         # firmware before 2026-09-08 a threshold left by an earlier run survived the controller reset and a
         # 'rest-only' run of this tool ran engaged in flight.
         m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
+        m.set_pid_keep_closed_below(AXIS.Z, self.a.keep_closed_below); self.wait()   # 0 = off
         m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
         self.set_gains(self.a.p, self.a.i, self.a.d)
@@ -940,6 +941,8 @@ def main():
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
     ap.add_argument("--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)")
+    ap.add_argument("--keep-closed-below", type=float, default=0.0,
+                    help="commanded moves up to this length (um) keep the loop engaged in flight; 0 = off")
     ap.add_argument("--open-above", type=float, default=0.0,
                     help="ramp velocity (mm/s) above which the loop is opened during moves; 0 = rest-only, >= vmax = in-flight")
     ap.add_argument("--align-after-home", action="store_true",
