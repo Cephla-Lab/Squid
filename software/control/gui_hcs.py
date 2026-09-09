@@ -2059,6 +2059,20 @@ class HighContentScreeningGui(QMainWindow):
         self.slackSettingsDialog.raise_()
         self.slackSettingsDialog.activateWindow()
 
+    def openMotionSelfTest(self):
+        """Open the Z motion self-test window (Utils menu). Runs on the live controller connection."""
+        from control.widgets_motion_selftest import MotionSelfTestDialog
+        import squid.config
+
+        mcu = self.microscope.low_level_drivers.microcontroller
+        if mcu is None or getattr(mcu, "firmware_version", (0, 0)) < (1, 6):
+            QMessageBox.information(self, "Motion self-test", "Needs a real controller on firmware 1.6 or newer.")
+            return
+        if getattr(self, "motionSelfTestDialog", None) is None:
+            self.motionSelfTestDialog = MotionSelfTestDialog(mcu, squid.config.get_stage_config().Z_AXIS, parent=self)
+        self.motionSelfTestDialog.show()
+        self.motionSelfTestDialog.raise_()
+
     def openWorkflowRunner(self):
         """Open the Workflow Runner dialog."""
         from control.widgets_workflow import WorkflowRunnerDialog
