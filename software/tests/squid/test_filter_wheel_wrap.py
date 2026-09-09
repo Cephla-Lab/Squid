@@ -34,6 +34,19 @@ def test_shortest_slot_delta_prefers_the_short_way_and_forward_on_ties(delta, ex
     assert SquidFilterWheel._shortest_slot_delta(delta, 8) == expected
 
 
+@pytest.mark.parametrize("delta, expected", [(1, 1), (3, 3), (4, -3), (-3, -3), (-4, 3), (6, -1), (7, 0)])
+def test_shortest_slot_delta_on_an_odd_wheel(delta, expected):
+    assert SquidFilterWheel._shortest_slot_delta(delta, 7) == expected
+
+
+def test_wrap_is_off_on_firmware_before_1_4():
+    w, mc, _ = _wheel()
+    mc.firmware_version = (1, 3)
+    assert w._wrap_enabled() is False
+    mc.firmware_version = (1, 4)
+    assert w._wrap_enabled() is True
+
+
 def test_eight_to_one_is_one_slot_forward_across_the_flag():
     w, mc, cfg = _wheel()
     w._positions[1] = 8

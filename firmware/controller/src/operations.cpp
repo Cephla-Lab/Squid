@@ -596,7 +596,9 @@ static inline bool within_completion_window(uint8_t axis, int32_t target)
   if (win <= 0) return false;
   int32_t d = tmc4361A_currentPosition(&tmc4361[axis]) - target;
   if ((d < 0 ? -d : d) > win) return false;
-  if (!stage_PID_enabled[axis]) return true;
+  // A requested loop is opened for the move in rest-only mode and re-engages at rest, so the
+  // encoder condition has to hold whenever the loop is REQUESTED, not only while it is engaged.
+  if (!pid_requested[axis] && !stage_PID_enabled[axis]) return true;
   int32_t e = tmc4361A_read_deviation(&tmc4361[axis]);
   return (e < 0 ? -e : e) <= win;
 }
@@ -777,9 +779,7 @@ void check_closed_loop()
       // which ends at that very stop.
       if (in_zone || homing)
       {
-        tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
-        stage_PID_enabled[i] = 0;
-        pid_zone_hold[i] = true;
+        pid_open_for_move(i);
         continue;
       }
       // Open above the velocity threshold (see pid_open_for_move); with the threshold
@@ -840,6 +840,15 @@ void check_closed_loop()
         tmc4361A_set_PID(&tmc4361[i], PID_BPG0);
         stage_PID_enabled[i] = 1;
         pid_zone_hold[i] = false;
+      }
+      else
+      {
+        // At rest, outside the zone, frames aligned, and still beyond the watchdog limit: the
+        // encoder stopped following during the open-loop move (lost encoder, stuck stage). Say
+        // so, the same way the engaged watchdog does, instead of silently never re-engaging.
+        pid_requested[i] = false;
+        pid_zone_hold[i] = false;
+        pid_fault[i] = true;
       }
     }
   }

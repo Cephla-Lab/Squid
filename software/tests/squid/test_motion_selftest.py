@@ -158,6 +158,44 @@ def test_gap_map_opens_the_floor_and_restores_it():
     assert stage.limits[-1] == {"z_neg_mm": 0.75}        # and put back
 
 
+def test_cancel_away_from_depth_still_restores_everything():
+    axis = _axis(pid=PID, min_pos=0.75)
+    mcu = FakeMcu(axis, gap_mm=0.64)
+    stage = FakeStage()
+    state = {"moves": 0}
+    orig = mcu.move_z_to_usteps
+
+    def counting_move(u):
+        state["moves"] += 1
+        orig(u)
+
+    mcu.move_z_to_usteps = counting_move
+    # cancel in the middle of the gap map, with Z near the switch and the floor opened
+    t = ZMotionSelfTest(mcu, axis, log=lambda s: None, cancel=lambda: state["moves"] >= 12, hold_s=0.05,
+                        settle_scale=0.0, stage=stage)
+    report = t.run()
+    assert report.aborted == "cancelled by the operator"
+    assert stage.limits[-1] == {"z_neg_mm": 0.75}                       # floor put back
+    assert abs(axis.convert_to_real_units(mcu.z_pos) - t.depth) < 1e-3    # Z back at the working depth (one microstep is 94 nm)
+    assert mcu.pid_enabled is True                                        # loop back on
+    assert mcu.reporting is False                                         # reporting off
+
+
+def test_aborted_move_is_reported_not_counted():
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis)
+    mcu.last_command_aborted_error = None
+    orig = mcu.move_z_to_usteps
+
+    def failing_move(u):
+        orig(u)
+        mcu.last_command_aborted_error = "CMD_EXECUTION_ERROR"
+
+    mcu.move_z_to_usteps = failing_move
+    report, _ = _run(mcu, axis)
+    assert report.aborted and "aborted by the controller" in report.aborted
+
+
 def test_cancel_stops_early_and_restores():
     axis = _axis(pid=PID)
     mcu = FakeMcu(axis)

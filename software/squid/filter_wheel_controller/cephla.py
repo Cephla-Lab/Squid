@@ -151,7 +151,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
         if HAS_ENCODER_W:
             self.microcontroller.set_pid_arguments(axis, PID_P_W, PID_I_W, PID_D_W)
             self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
-            self.microcontroller.turn_on_stage_pid(axis, ENABLE_PID_W)
+            if ENABLE_PID_W:
+                self.microcontroller.turn_on_stage_pid(axis)
 
     @staticmethod
     def _delta_to_usteps(delta_mm: float) -> int:
@@ -165,7 +166,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
         )
 
     def _wrap_enabled(self) -> bool:
-        return bool(self.wrap)
+        # firmware before 1.4 leaves xmin at the latch after homing and rejects negative targets,
+        # which is where a backward wrap lands
+        return bool(self.wrap) and tuple(self.microcontroller.firmware_version) >= (1, 4)
 
     @staticmethod
     def _usteps_per_turn() -> int:
@@ -174,8 +177,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
     @staticmethod
     def _shortest_slot_delta(delta: int, slots: int) -> int:
         """Signed slot delta with the smaller magnitude around the circle; a half-turn tie goes forward."""
-        half = slots // 2
-        return ((delta + half - 1) % slots) - (half - 1)
+        d = delta % slots
+        if 2 * d > slots:   # more than half a turn forward: go backward instead; an exact half turn goes forward
+            d -= slots
+        return d
 
     def _plan_move(self, wheel_id: int, target_pos: int):
         """Absolute driver target (usteps) and the turn count it lands on, for a move from the tracked

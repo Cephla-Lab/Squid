@@ -728,9 +728,12 @@ PID_I_W = int(1)
 PID_D_W = int(1)
 
 # flip direction True or False
-ENCODER_FLIP_DIR_X = True
-ENCODER_FLIP_DIR_Y = True
-ENCODER_FLIP_DIR_Z = True
+# Encoder counting direction relative to the motor (CONFIGURE_STAGE_PID flip bit). False is what master
+# always sent; the Squid+ Z needs True and its template says so. A wrong sign runs the closed loop away
+# until the watchdog opens it, so set it per instrument.
+ENCODER_FLIP_DIR_X = False
+ENCODER_FLIP_DIR_Y = False
+ENCODER_FLIP_DIR_Z = False
 ENCODER_FLIP_DIR_W = False
 
 # Ramp profile per stage axis (firmware >= 1.6, SET_RAMP_PROFILE): "sshape" (firmware default) or

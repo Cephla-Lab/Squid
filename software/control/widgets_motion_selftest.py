@@ -83,7 +83,7 @@ class MotionSelfTestDialog(QDialog):
         buttons.addWidget(self.btn_close)
         layout.addLayout(buttons)
 
-        self.btn_start.clicked.connect(self.start)
+        self.btn_start.clicked.connect(lambda: self.start())   # not `self.start`: Qt would pass checked=False as `confirm`
         self.btn_cancel.clicked.connect(self.cancel)
         self.btn_copy.clicked.connect(self.copy_report)
         self.btn_close.clicked.connect(self.close)
@@ -109,6 +109,9 @@ class MotionSelfTestDialog(QDialog):
         self.btn_copy.setEnabled(False)
         self.btn_close.setEnabled(False)
 
+        # the test drives the same controller connection as the main window: keep the operator off it meanwhile
+        if self.parent() is not None:
+            self.parent().setEnabled(False)
         self._worker = _SelfTestWorker(None)
         test = ZMotionSelfTest(
             self.microcontroller, self.axis_config, log=self._worker.signal_log.emit, cancel=lambda: self._cancel,
@@ -152,6 +155,8 @@ class MotionSelfTestDialog(QDialog):
         self._thread.wait(2000)
         self._thread = None
         self._worker = None
+        if self.parent() is not None:
+            self.parent().setEnabled(True)
         self.signal_finished.emit(report.passed)
 
     def closeEvent(self, event):

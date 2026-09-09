@@ -272,6 +272,7 @@ void callback_enable_stage_pid()
     int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
     if (zone > 0 && pos > -zone && pos < zone)
     {
+        if (stage_PID_enabled[axis]) tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);   // bookkeeping and chip agree
         pid_zone_hold[axis] = true;
         stage_PID_enabled[axis] = 0;
         return;
@@ -281,6 +282,7 @@ void callback_enable_stage_pid()
     // Record the request; check_closed_loop() engages it when the axis stops.
     if (tmc4361A_isRunning(&tmc4361[axis], 0))
     {
+        if (stage_PID_enabled[axis]) tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
         pid_zone_hold[axis] = true;
         stage_PID_enabled[axis] = 0;
         return;
@@ -690,6 +692,9 @@ void callback_reset()
     Z_use_encoder = false;
     for (uint8_t i = 0; i < TOTAL_AXES; i++)
     {
+        // an engaged loop would otherwise keep regulating with no watchdog until INITIALIZE
+        if (stage_PID_enabled[i]) tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
+        stage_PID_enabled[i] = 0;
         pid_fault[i] = false;
         pid_requested[i] = false;
         pid_zone_hold[i] = false;

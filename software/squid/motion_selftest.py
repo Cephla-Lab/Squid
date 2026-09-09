@@ -154,8 +154,9 @@ class ZMotionSelfTest:
         if self.cancel():
             raise SelfTestCancelled()
 
-    def _guard(self):
-        self._check_cancel()
+    def _guard(self, check_cancel: bool = True):
+        if check_cancel:
+            self._check_cancel()
         if not self.encoder_ok:
             return
         st = self._enc()
@@ -165,18 +166,23 @@ class ZMotionSelfTest:
             self.mcu.turn_off_stage_pid(AXIS.Z)
             raise RuntimeError(f"loop error {self._dev_um(st['deviation']):+.0f} um exceeded {self.max_dev_um:.0f} um; loop opened")
 
-    def _move(self, mm: float, timeout_s: float = 30.0, allow_below_floor: bool = False) -> float:
+    def _move(self, mm: float, timeout_s: float = 30.0, allow_below_floor: bool = False, check_cancel: bool = True) -> float:
         lo = 0.0 if allow_below_floor else float(self.axis.MIN_POSITION)
         if mm < lo - 1e-9 or mm > float(self.axis.MAX_POSITION) + 1e-9:
             raise RuntimeError(f"refusing Z target {mm:.3f} mm: outside {lo:.2f}..{self.axis.MAX_POSITION:.2f} mm")
-        self._check_cancel()
+        if check_cancel:
+            self._check_cancel()
         t0 = time.time()
         self.mcu.move_z_to_usteps(self._usteps(mm))
         while self.mcu.is_busy():
-            self._guard()
+            self._guard(check_cancel)
             if time.time() - t0 > timeout_s:
                 raise TimeoutError("Z move did not complete")
             time.sleep(0.002)
+        # the controller clears 'busy' on an abort too (execution error, ack timeout): that is not a completed move
+        err = getattr(self.mcu, "last_command_aborted_error", None)
+        if err is not None:
+            raise RuntimeError(f"Z move aborted by the controller: {err}")
         self._last_ack_s = time.time() - t0
         return self._last_ack_s
 
@@ -434,20 +440,30 @@ class ZMotionSelfTest:
         )
 
     def restore(self):
-        try:
-            self._close_floor()
-            if self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01 and not self.mcu.is_busy():
-                self._move(self.depth)   # back to the working depth after an abort
-            if self.encoder_ok or self.loop_configured:
-                if self.loop_configured:
-                    st = self._enc() if self.encoder_ok else {"pid_enabled": False}
-                    if not st["pid_enabled"]:
-                        self.mcu.turn_on_stage_pid(AXIS.Z)
-                        self._wait(5)
-                self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF)
-                self._wait()
-        except Exception as e:  # noqa: BLE001 - restoring must not mask the report
-            self.log(f"restore: {e}")
+        # Every step here runs regardless of how the run ended (cancel included) and regardless of the
+        # others failing: floor back, Z back to the working depth, loop back to its configured state,
+        # encoder reporting off.
+        for step in (self._close_floor, self._restore_position, self._restore_loop, self._restore_reporting):
+            try:
+                step()
+            except Exception as e:  # noqa: BLE001 - restoring must not mask the report
+                self.log(f"restore ({step.__name__.lstrip('_')}): {e}")
+
+    def _restore_position(self):
+        if self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01 and not self.mcu.is_busy():
+            self._move(self.depth, check_cancel=False)
+
+    def _restore_loop(self):
+        if self.loop_configured:
+            st = self._enc() if self.encoder_ok else {"pid_enabled": False}
+            if not st["pid_enabled"]:
+                self.mcu.turn_on_stage_pid(AXIS.Z)
+                self._wait(5)
+
+    def _restore_reporting(self):
+        if self.encoder_ok or self.loop_configured:
+            self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF)
+            self._wait()
 
     # ------------------------------------------------------------------ driver
     def run(self) -> SelfTestReport:

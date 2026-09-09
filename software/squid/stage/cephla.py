@@ -116,8 +116,12 @@ class CephlaStage(AbstractStage):
                 f"axis {microcontroller_axis_number}: closed-loop limits / home zone / tolerance need firmware >= 1.6 "
                 f"(have {mc.firmware_version}); enabling the loop without them"
             )
-        mc.turn_on_stage_pid(microcontroller_axis_number)
-        mc.wait_till_operation_is_completed()
+        try:
+            mc.turn_on_stage_pid(microcontroller_axis_number)
+            mc.wait_till_operation_is_completed()
+        except Exception as e:  # noqa: BLE001 - the firmware refuses the loop on a bad frame offset; run open-loop
+            _log.error(f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop")
+            return
         _log.info(
             f"axis {microcontroller_axis_number}: closed loop requested - P {pid.P} I {pid.I} D {pid.D}, "
             f"clamp {pid.CORRECTION_VMAX} mm/s, watchdog {pid.MAX_DEVIATION_UM} um, home zone {pid.HOME_ZONE_UM} um, "
