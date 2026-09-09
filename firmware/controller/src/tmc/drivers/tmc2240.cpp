@@ -201,7 +201,7 @@ void tmc2240_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361)
     tmc4361A_writeSPR(tmc4361A);
 }
 
-void tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio)
+bool tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio)
 {
     uint8_t irun = tmc2240_irun(current_rms_ma, tmc4361A->current_range);
     if (irun == TMC2240_IRUN_OUT_OF_RANGE) {
@@ -210,8 +210,8 @@ void tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma,
            reporting a fault. The axis stays at whatever current it had.
            Returning here is also what keeps the 0xFF sentinel away from
            tmc2240_ihold_irun_value, whose 0x1F mask would turn it into IRUN 31,
-           i.e. MAXIMUM current. */
-        return;
+           i.e. MAXIMUM current. The caller reports it. */
+        return false;
     }
 
     /*
@@ -269,6 +269,7 @@ void tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma,
     tmc4361A->cscaleParam[DRV1SCALE_IDX] = 255;
     tmc4361A->cscaleParam[BSTSCALE_IDX]  = 255;
     tmc2240_write_scale_values(tmc4361A);
+    return true;
 }
 
 void tmc2240_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps)

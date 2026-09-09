@@ -371,7 +371,8 @@ void callback_configure_stepper_driver()
             steps_per_mm_X = FULLSTEPS_PER_REV_X * MICROSTEPPING_X / SCREW_PITCH_X_MM;
             X_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
             X_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_motor_config(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
+            if (!tmc4361A_motor_config(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X))
+                report_move_error();   // current not encodable for this driver / R_sense: axis kept its previous current
             break;
         }
         case AXIS_Y:
@@ -383,7 +384,8 @@ void callback_configure_stepper_driver()
             steps_per_mm_Y = FULLSTEPS_PER_REV_Y * MICROSTEPPING_Y / SCREW_PITCH_Y_MM;
             Y_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
             Y_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_motor_config(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
+            if (!tmc4361A_motor_config(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y))
+                report_move_error();   // current not encodable for this driver / R_sense: axis kept its previous current
             break;
         }
         case AXIS_Z:
@@ -395,7 +397,8 @@ void callback_configure_stepper_driver()
             steps_per_mm_Z = FULLSTEPS_PER_REV_Z * MICROSTEPPING_Z / SCREW_PITCH_Z_MM;
             Z_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
             Z_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_motor_config(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z);
+            if (!tmc4361A_motor_config(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z))
+                report_move_error();   // current not encodable for this driver / R_sense: axis kept its previous current
             break;
         }
         case AXIS_W:
@@ -408,7 +411,8 @@ void callback_configure_stepper_driver()
             steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;
             W_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
             W_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_motor_config(&tmc4361[w], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+            if (!tmc4361A_motor_config(&tmc4361[w], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W))
+                report_move_error();   // current not encodable for this driver / R_sense: axis kept its previous current
             }
             break;
         }
@@ -423,7 +427,8 @@ void callback_configure_stepper_driver()
             steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;
             W_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
             W_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_motor_config(&tmc4361[w2], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+            if (!tmc4361A_motor_config(&tmc4361[w2], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W))
+                report_move_error();   // current not encodable for this driver / R_sense: axis kept its previous current
             }
             break;
         }

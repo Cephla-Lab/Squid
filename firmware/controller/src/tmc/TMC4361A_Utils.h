@@ -23,7 +23,7 @@
 // The five driver operations themselves (init / set_current / set_microsteps /
 // enable / config_stallguard) are declared in drivers/stepper_driver.h; their
 // dispatch bodies live in TMC4361A_Utils.cpp next to this function.
-void tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx = NO_DAC, uint32_t dac_fullscale_msteps = 0);
+bool tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx = NO_DAC, uint32_t dac_fullscale_msteps = 0);
 void tmc4361A_setMaxSpeed(TMC4361ATypeDef *tmc4361A, int32_t velocity);
 void tmc4361A_setSpeed(TMC4361ATypeDef *tmc4361A, int32_t velocity);
 void tmc4361A_init_ABN_encoder(TMC4361ATypeDef *tmc4361A, uint32_t enc_res, uint8_t filter_wait_time, uint8_t filter_exponent, uint16_t filter_vmean, bool invert);
