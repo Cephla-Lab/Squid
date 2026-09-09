@@ -59,15 +59,15 @@ void tmc2660_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361)
   bring-up paths set it immediately after tmc4361A_init() (init.cpp for X/Y/Z,
   init_filterwheel_axis in commands.cpp for W/W2).
 */
-void tmc2660_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio)
+bool tmc2660_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio)
 {
     uint8_t cs = tmc2660_current_scale(current_rms_ma, tmc4361A->r_sense);
     if (cs == TMC_CURRENT_OUT_OF_RANGE) {
         /* Requested current exceeds what this R_sense can express. Refuse rather
            than saturate, matching the TMC2240 path; the axis keeps its previous
            current. Letting the sentinel through to tmc2660_sgcsconf_datagram
-           would mask 0xFF to CS = 31, i.e. MAXIMUM current. */
-        return;
+           would mask 0xFF to CS = 31, i.e. MAXIMUM current. The caller reports it. */
+        return false;
     }
 
     tmc4361A->cscaleParam[CSCALE_IDX]    = cs;
@@ -79,6 +79,7 @@ void tmc2660_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma,
     /* cScaleInit writes SGCSCONF (via cover) plus the TMC4361A SCALE_VALUES,
        exactly as master does. */
     tmc4361A_cScaleInit(tmc4361A);
+    return true;
 }
 
 void tmc2660_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps)

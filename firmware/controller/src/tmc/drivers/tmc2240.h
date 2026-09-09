@@ -37,7 +37,7 @@ void     tmc2240_cover_write(TMC4361ATypeDef *tmc4361A, uint8_t address, uint32_
 uint32_t tmc2240_cover_read(TMC4361ATypeDef *tmc4361A, uint8_t address);
 
 void    tmc2240_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361);
-void    tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio);
+bool    tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio);
 void    tmc2240_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps);
 void    tmc2240_driver_enable(TMC4361ATypeDef *tmc4361A, bool enable);
 int16_t tmc2240_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity,

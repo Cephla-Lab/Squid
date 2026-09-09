@@ -451,9 +451,10 @@ void tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
   else if (tmc4361A->driver_type == DRIVER_TMC2660) tmc2660_driver_init(tmc4361A, clk_Hz_TMC4361);
 }
 
-void tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio) {
-  if (tmc4361A->driver_type == DRIVER_TMC2240) tmc2240_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
-  else if (tmc4361A->driver_type == DRIVER_TMC2660) tmc2660_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
+bool tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio) {
+  if (tmc4361A->driver_type == DRIVER_TMC2240) return tmc2240_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
+  if (tmc4361A->driver_type == DRIVER_TMC2660) return tmc2660_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
+  return true;   // no identified driver: nothing to refuse, the probe gate keeps the axis from moving
 }
 
 void tmc_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps) {
@@ -575,7 +576,7 @@ int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivi
             struct fields and nothing else.
   -----------------------------------------------------------------------------
 */
-void tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio,
+bool tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio,
                            float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps,
                            uint8_t dac_idx, uint32_t dac_fullscale_msteps) {
   tmc4361A_setPitch(tmc4361A, pitch_mm);
@@ -586,7 +587,7 @@ void tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, floa
   tmc4361A->dac_fullscale_msteps = dac_fullscale_msteps;
 
   // Driver-side: current scaling, and on a TMC2240 the CHOPCONF.MRES mirror.
-  tmc_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
+  bool current_ok = tmc_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
   tmc_driver_set_microsteps(tmc4361A, microsteps);
 
   // TMC4361A-side: STEP_CONF. Both drivers need it - the 4361A generates the
@@ -596,6 +597,9 @@ void tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, floa
   tmc4361A_writeSPR(tmc4361A);
 
   return;
+  // false: the current request could not be encoded and the axis kept its previous current
+  // (everything else above was applied); the command callback reports it to the host.
+  return current_ok;
 }
 
 /*

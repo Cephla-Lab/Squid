@@ -98,7 +98,7 @@ static inline bool tmc_driver_ready(const TMC4361ATypeDef *tmc4361A)
 /* The five dispatched operations. Implementations in tmc2660.cpp / tmc2240.cpp;
    dispatch bodies in TMC4361A_Utils.cpp. */
 void    tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361);
-void    tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio);
+bool    tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio);
 void    tmc_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps);
 void    tmc_driver_enable(TMC4361ATypeDef *tmc4361A, bool enable);
 int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity,
