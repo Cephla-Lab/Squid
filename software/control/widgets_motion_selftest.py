@@ -38,8 +38,9 @@ class _SelfTestWorker(QObject):
 class MotionSelfTestDialog(QDialog):
     signal_finished = Signal(bool)   # report.passed, once the run is over
 
-    def __init__(self, microcontroller, axis_config, parent=None):
+    def __init__(self, microcontroller, axis_config, stage=None, parent=None):
         super().__init__(parent)
+        self.stage = stage
         self.setWindowTitle("Motion self-test (Z)")
         self.setMinimumSize(720, 520)
         self.microcontroller = microcontroller
@@ -110,7 +111,8 @@ class MotionSelfTestDialog(QDialog):
 
         self._worker = _SelfTestWorker(None)
         test = ZMotionSelfTest(
-            self.microcontroller, self.axis_config, log=self._worker.signal_log.emit, cancel=lambda: self._cancel
+            self.microcontroller, self.axis_config, log=self._worker.signal_log.emit, cancel=lambda: self._cancel,
+            stage=self.stage,
         )
         self._worker.test = test
         self._thread = QThread(self)

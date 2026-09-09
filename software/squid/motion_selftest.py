@@ -91,6 +91,7 @@ class ZMotionSelfTest:
         mcu,
         axis: AxisConfig,
         log: Callable[[str], None] = print,
+        stage=None,
         cancel: Optional[Callable[[], bool]] = None,
         working_depth_mm: Optional[float] = None,
         gap_scan_from_mm: float = 1.0,
@@ -102,6 +103,12 @@ class ZMotionSelfTest:
         self.mcu = mcu
         self.axis = axis
         self.log = log
+        # The GUI sends the ini's travel limits to the firmware at startup, and the TMC4361A hard-stops at
+        # them: a move below the Z floor never reaches its target and the command stays in progress. The gap
+        # map has to visit the switch (the gap lies below the floor by policy), so with a stage it opens the
+        # floor for that check and restores it afterwards. Without a stage the limits are left as they are.
+        self.stage = stage
+        self._floor_opened = False
         self.cancel = cancel or (lambda: False)
         self.usteps_per_mm = abs(float(axis.convert_real_units_to_ustep(1.0)))
         lo, hi = float(axis.MIN_POSITION), float(axis.MAX_POSITION)
@@ -251,10 +258,21 @@ class ZMotionSelfTest:
         self._add("encoder scale and sign", ok_scale and ok_sign, summary, ratio=ratio, frame_offset_um=offset_um)
         self.encoder_ok = ok_scale and ok_sign
 
+    def _open_floor(self):
+        if self.stage is not None and not self._floor_opened and float(self.axis.MIN_POSITION) > 0:
+            self.stage.set_limits(z_neg_mm=0.0)
+            self._floor_opened = True
+
+    def _close_floor(self):
+        if self._floor_opened:
+            self.stage.set_limits(z_neg_mm=float(self.axis.MIN_POSITION))
+            self._floor_opened = False
+
     def gap_map(self):
         if not self.encoder_ok:
             self._add("gap above home", None, "skipped (encoder not usable)")
             return
+        self._open_floor()
         pts = []
 
         def sample(tag):
@@ -273,6 +291,7 @@ class ZMotionSelfTest:
             sample("up")
             z += self.gap_step_mm
         self._move(self.depth)
+        self._close_floor()
         down = [(x, e) for t, x, e in pts if t == "down"]
         up = [(x, e) for t, x, e in pts if t == "up"]
         # Edge of the gap from the first partial step: the stage travelled (encoder delta) part of the step
@@ -413,6 +432,9 @@ class ZMotionSelfTest:
 
     def restore(self):
         try:
+            self._close_floor()
+            if self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01 and not self.mcu.is_busy():
+                self._move(self.depth)   # back to the working depth after an abort
             if self.encoder_ok or self.loop_configured:
                 if self.loop_configured:
                     st = self._enc() if self.encoder_ok else {"pid_enabled": False}

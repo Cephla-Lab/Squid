@@ -26,6 +26,9 @@ def connect():
     drivers.prepare_for_use()
     cfg = squid.config.get_stage_config()
     stage = CephlaStage(drivers.microcontroller, cfg)  # configures the axes exactly as the GUI does
+    # and sends the ini's travel limits to the firmware, as the GUI's Microscope does at startup
+    z = cfg.Z_AXIS
+    stage.set_limits(z_pos_mm=z.MAX_POSITION, z_neg_mm=z.MIN_POSITION)
     return drivers.microcontroller, stage, cfg
 
 
@@ -46,7 +49,7 @@ def main():
         from qtpy.QtCore import QTimer
 
         app = QApplication(sys.argv)
-        dlg = MotionSelfTestDialog(mcu, cfg.Z_AXIS)
+        dlg = MotionSelfTestDialog(mcu, cfg.Z_AXIS, stage=stage)
         dlg.show()
         if a.autostart:
             dlg.signal_finished.connect(lambda ok: (print(dlg.log_view.toPlainText()), print('DIALOG DONE:', 'PASS' if ok else 'FAIL'), QTimer.singleShot(1500, app.quit)))
@@ -55,7 +58,7 @@ def main():
         mcu.close()
         sys.exit(rc)
 
-    test = ZMotionSelfTest(mcu, cfg.Z_AXIS, working_depth_mm=a.depth_mm, stack_n=a.stack_n, hold_s=a.hold_s)
+    test = ZMotionSelfTest(mcu, cfg.Z_AXIS, stage=stage, working_depth_mm=a.depth_mm, stack_n=a.stack_n, hold_s=a.hold_s)
     report = test.run()
     mcu.close()
     sys.exit(0 if report.passed else 1)

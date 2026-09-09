@@ -2069,7 +2069,9 @@ class HighContentScreeningGui(QMainWindow):
             QMessageBox.information(self, "Motion self-test", "Needs a real controller on firmware 1.6 or newer.")
             return
         if getattr(self, "motionSelfTestDialog", None) is None:
-            self.motionSelfTestDialog = MotionSelfTestDialog(mcu, squid.config.get_stage_config().Z_AXIS, parent=self)
+            self.motionSelfTestDialog = MotionSelfTestDialog(
+                mcu, squid.config.get_stage_config().Z_AXIS, stage=self.microscope.stage, parent=self
+            )
         self.motionSelfTestDialog.show()
         self.motionSelfTestDialog.raise_()
 

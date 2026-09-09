@@ -138,6 +138,26 @@ def test_open_loop_instrument_skips_the_loop_check():
     assert report.passed
 
 
+class FakeStage:
+    def __init__(self):
+        self.limits = []
+
+    def set_limits(self, **kw):
+        self.limits.append(kw)
+
+
+def test_gap_map_opens_the_floor_and_restores_it():
+    axis = _axis(pid=PID, min_pos=0.75)
+    mcu = FakeMcu(axis, gap_mm=0.64)
+    stage = FakeStage()
+    t = ZMotionSelfTest(mcu, axis, log=lambda s: None, hold_s=0.05, settle_scale=0.0, stage=stage)
+    report = t.run()
+    gap = next(r for r in report.results if r.name == "gap above home")
+    assert 0.6 <= gap.values["gap_mm"] <= 0.7          # the switch was reached, the gap measured
+    assert stage.limits[0] == {"z_neg_mm": 0.0}          # floor opened for the gap map
+    assert stage.limits[-1] == {"z_neg_mm": 0.75}        # and put back
+
+
 def test_cancel_stops_early_and_restores():
     axis = _axis(pid=PID)
     mcu = FakeMcu(axis)
