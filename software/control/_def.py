@@ -775,7 +775,8 @@ PID_OPEN_ABOVE_Z_mm = 0.0
 # duration, whatever PID_OPEN_ABOVE says (firmware >= 1.6, SET_PID_KEEP_CLOSED_BELOW). The correction's
 # limit cycle needs ~100 ms of continuous motion to build; a 100 um step cruises for 23 ms and settles
 # in-flight in +2-3 ms instead of the +11 ms of a rest-only correction. Longer moves and joystick motion
-# follow PID_OPEN_ABOVE. 0 = off. Bench 2026-09-08: 100 on the Squid+ Z.
+# follow PID_OPEN_ABOVE. 0 = off. Measured 2026-09-08 on the Squid+ Z: 100 saved 2 ms on 1 um steps and nothing
+# on larger ones, and made single 100 um steps slower (12 um in-flight lag at 3 mm/s) - leave 0 unless a stage shows otherwise.
 PID_KEEP_CLOSED_BELOW_X_UM = 0
 PID_KEEP_CLOSED_BELOW_Y_UM = 0
 PID_KEEP_CLOSED_BELOW_Z_UM = 0
