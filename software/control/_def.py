@@ -211,9 +211,6 @@ class CMD_SET:
     SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
     SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
-    SET_PID_P24 = 51  # Full 24-bit proportional gain (SET_PID_ARGUMENTS carries 16 bits) (fw >= 1.6)
-    SET_PID_KEEP_CLOSED_BELOW = 52  # Commanded moves up to this length (um) keep the loop engaged in flight (fw >= 1.6)
-    SET_PID_PRECOMP = 53  # Open-loop residual per direction; rest-only moves are aimed past the target by it (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -771,28 +768,6 @@ PID_TOLERANCE_Z_UM = 0.0
 PID_OPEN_ABOVE_X_mm = 0.0
 PID_OPEN_ABOVE_Y_mm = 0.0
 PID_OPEN_ABOVE_Z_mm = 0.0
-
-# Commanded moves (MOVE / MOVETO) no longer than this (um) keep the closed loop engaged for their whole
-# duration, whatever PID_OPEN_ABOVE says (firmware >= 1.6, SET_PID_KEEP_CLOSED_BELOW). The correction's
-# limit cycle needs ~100 ms of continuous motion to build; a 100 um step cruises for 23 ms and settles
-# in-flight in +2-3 ms instead of the +11 ms of a rest-only correction. Longer moves and joystick motion
-# follow PID_OPEN_ABOVE. 0 = off. Measured 2026-09-08 on the Squid+ Z: 100 saved 2 ms on 1 um steps and nothing
-# on larger ones, and made single 100 um steps slower (12 um in-flight lag at 3 mm/s) - leave 0 unless a stage shows otherwise.
-PID_KEEP_CLOSED_BELOW_X_UM = 0
-PID_KEEP_CLOSED_BELOW_Y_UM = 0
-PID_KEEP_CLOSED_BELOW_Z_UM = 0
-
-# Open-loop residual pre-compensation (firmware >= 1.6, SET_PID_PRECOMP): the encoder-minus-counter offset an
-# open-loop move leaves at rest, in um, after counter-increasing (POS) and counter-decreasing (NEG) moves, as
-# measured by tools/z_encoder_pid_tuner.py residual. A rest-only move is then aimed past the target by that
-# amount and the counter is rewritten to the true target when the axis stops, so the loop has a fraction of a
-# micron to close instead of the whole residual. 0 = off. Measure per instrument; sign as the tuner prints it.
-PID_PRECOMP_POS_X_UM = 0.0
-PID_PRECOMP_NEG_X_UM = 0.0
-PID_PRECOMP_POS_Y_UM = 0.0
-PID_PRECOMP_NEG_Y_UM = 0.0
-PID_PRECOMP_POS_Z_UM = 0.0
-PID_PRECOMP_NEG_Z_UM = 0.0
 
 # Completion window per stage axis in um (firmware >= 1.6, SET_COMPLETION_WINDOW): a move is acknowledged
 # once the step counter - and, with the loop engaged, the encoder - is within this distance of the target

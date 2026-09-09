@@ -55,13 +55,6 @@
 //               a closed-loop axis now also requires the encoder error inside it.
 //               RESET returns every loop setting (clamp, watchdog, zone, tolerances,
 //               completion window, loop-mode threshold) to the firmware default.
-//               SET_PID_P24 (51) carries the full 24-bit proportional gain.
-//               SET_PID_KEEP_CLOSED_BELOW (52): commanded moves up to a length keep
-//               the loop engaged throughout (short focus steps settle in-flight);
-//               longer moves follow the loop-mode threshold.
-//               SET_PID_PRECOMP (53): a rest-only move aims the open-loop ramp past
-//               the target by the measured residual and the counter is rewritten to
-//               the true target at rest, so the loop closes a fraction of a micron.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 6
 
@@ -77,7 +70,7 @@
 
 // PID arguments
 typedef struct pid_arguments {
-	uint32_t 	p;
+	uint16_t 	p;
 	uint8_t 	i;
 	uint8_t 	d;
 } PID_ARGUMENTS;

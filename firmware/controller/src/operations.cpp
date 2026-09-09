@@ -722,13 +722,12 @@ static bool axis_is_homing(uint8_t i)
 // at 0.55 mm/s), and they are the moves where every millisecond of settling counts,
 // so the loop is kept while the ramp is slow and opened above pid_open_above_pps:
 // 0 (default) = rest-only, opened for every move and re-engaged when the ramp stops
-// (+11 ms on a 1 um step, measured 2026-09-08); a threshold around 1 mm/s keeps
-// focus steps fully closed-loop and opens only repositioning moves, which re-engage
-// as the ramp slows down again; >= VMAX = engaged throughout. check_position reports
-// COMPLETED once the encoder error is inside the target tolerance.
+// (+11 ms on a 1 um step, measured 2026-09-08; the recommended mode - the in-flight
+// loop limit-cycled and stalled the motor on both bench stages); a threshold between
+// keeps the loop while the ramp is slower than it; >= VMAX = engaged throughout.
+// check_position reports COMPLETED once the encoder error is inside the tolerance.
 void pid_open_for_move(uint8_t axis)
 {
-  pid_short_move[axis] = false;
   if (!pid_requested[axis] || !stage_PID_enabled[axis])
     return;
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
@@ -736,51 +735,12 @@ void pid_open_for_move(uint8_t axis)
   pid_zone_hold[axis] = true;
 }
 
-static bool axis_move_in_progress(uint8_t i)
+void pid_before_move(uint8_t axis)
 {
-  if (i == x) return X_commanded_movement_in_progress;
-  if (i == y) return Y_commanded_movement_in_progress;
-  if (i == z) return Z_commanded_movement_in_progress;
-  if (i == w) return W_commanded_movement_in_progress;
-  if (i == w2) return W2_commanded_movement_in_progress;
-  return false;
-}
-
-int32_t pid_before_move(uint8_t axis, int32_t target)
-{
-  // Short move (SET_PID_KEEP_CLOSED_BELOW): keep the loop engaged for the whole move. The
-  // limit cycle of a saturated correction needs ~100 ms of continuous motion to build (both
-  // bench stages, 2026-09-08 traces); a 100 um step cruises for 23 ms, and hundreds of them ran
-  // clean in flight at P 65535 on both stages, settling in +2-3 ms instead of the +11 ms a
-  // rest-only correction needs. Only for an engaged loop: a held loop stays held (rest-only).
-  int32_t d = target - tmc4361A_currentPosition(&tmc4361[axis]);
-  if (d < 0) d = -d;
-  if (pid_keep_closed_usteps[axis] > 0 && d <= pid_keep_closed_usteps[axis] &&
-      pid_requested[axis] && stage_PID_enabled[axis])
-  {
-    pid_short_move[axis] = true;
-    return target;
-  }
-  pid_short_move[axis] = false;
   // Rest-only: open before the ramp starts rather than 1 ms into it. With a velocity
   // threshold the loop stays on until the ramp actually exceeds it (small steps never do).
   if (pid_open_above_pps[axis] == 0)
     pid_open_for_move(axis);
-  // Pre-compensation (SET_PID_PRECOMP): aim the open-loop ramp past the target by the
-  // residual this direction leaves, remember the true target, rewrite the counter at rest.
-  // Only for a requested rest-only loop, which is what finishes the move.
-  if (pid_requested[axis] && pid_open_above_pps[axis] == 0 && d > 0)
-  {
-    int32_t r = pid_precomp_usteps[axis][target > tmc4361A_currentPosition(&tmc4361[axis]) ? 1 : 0];
-    if (r != 0)
-    {
-      pid_true_target[axis] = target;
-      pid_true_target_pending[axis] = true;
-      return target - r;
-    }
-  }
-  pid_true_target_pending[axis] = false;
-  return target;
 }
 
 void check_closed_loop()
@@ -807,18 +767,6 @@ void check_closed_loop()
     int32_t v_abs = tmc4361A_speed(&tmc4361[i]);   // VACTUAL, pps
     if (v_abs < 0) v_abs = -v_abs;
 
-    // Pre-compensated move has stopped: the stage is (nearly) at the true target while the
-    // counter is short of it by the residual. Rewrite target and counter to the true target -
-    // no motion results, the two are written back to back - so the loop below engages with
-    // only the remaining fraction of a micron to close and check_position sees the target.
-    if (pid_true_target_pending[i] && !homing && !tmc4361A_isRunning(&tmc4361[i], 0))
-    {
-      tmc4361A_writeInt(&tmc4361[i], TMC4361A_X_TARGET, pid_true_target[i]);
-      tmc4361A_writeInt(&tmc4361[i], TMC4361A_XACTUAL, pid_true_target[i]);
-      if (i == z)
-        focusPosition = pid_true_target[i];
-      pid_true_target_pending[i] = false;
-    }
 
     if (stage_PID_enabled[i])
     {
@@ -832,27 +780,16 @@ void check_closed_loop()
         tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
         stage_PID_enabled[i] = 0;
         pid_zone_hold[i] = true;
-        pid_short_move[i] = false;
         continue;
       }
-      // A short commanded move (pid_before_move) keeps the loop engaged until the command
-      // completes; the deviation watchdog below still guards it.
-      if (pid_short_move[i])
+      // Open above the velocity threshold (see pid_open_for_move); with the threshold
+      // at 0 any motion opens the loop - a move that did not come through a stage
+      // command (joystick, focus wheel) is caught here, within 1 ms.
+      int32_t v_open = pid_open_above_pps[i];
+      if (v_open == 0 ? tmc4361A_isRunning(&tmc4361[i], 0) : (v_abs > v_open))
       {
-        if (!axis_move_in_progress(i) && !tmc4361A_isRunning(&tmc4361[i], 0))
-          pid_short_move[i] = false;
-      }
-      // Otherwise open above the velocity threshold (see pid_open_for_move); with the
-      // threshold at 0 any motion opens the loop - a move that did not come through a
-      // stage command (joystick, focus wheel) is caught here, within 1 ms.
-      else
-      {
-        int32_t v_open = pid_open_above_pps[i];
-        if (v_open == 0 ? tmc4361A_isRunning(&tmc4361[i], 0) : (v_abs > v_open))
-        {
-          pid_open_for_move(i);
-          continue;
-        }
+        pid_open_for_move(i);
+        continue;
       }
       // Deviation watchdog: a fault drops the REQUEST as well, so a decoupled
       // or runaway axis stays open-loop until the host explicitly enables again.

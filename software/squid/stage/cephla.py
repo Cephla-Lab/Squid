@@ -91,19 +91,8 @@ class CephlaStage(AbstractStage):
         if not (pid and pid.ENABLED):
             return
 
-        # P is 16 bits on the wire in SET_PID_ARGUMENTS; the chip register is 24 bits. A larger P is sent in
-        # full with SET_PID_P24 on firmware >= 1.6 (older firmware gets 65535, the most it can take).
-        mc.set_pid_arguments(microcontroller_axis_number, min(int(pid.P), 0xFFFF), pid.I, pid.D)
+        mc.set_pid_arguments(microcontroller_axis_number, pid.P, pid.I, pid.D)
         mc.wait_till_operation_is_completed()
-        if int(pid.P) > 0xFFFF:
-            if new_fw:
-                mc.set_pid_p24(microcontroller_axis_number, int(pid.P))
-                mc.wait_till_operation_is_completed()
-            else:
-                _log.warning(
-                    f"axis {microcontroller_axis_number}: P {pid.P} needs firmware >= 1.6 (have {mc.firmware_version}); "
-                    f"using 65535"
-                )
         if new_fw:
             if pid.CORRECTION_VMAX > 0 or pid.MAX_DEVIATION_UM > 0:
                 mc.set_pid_limits(microcontroller_axis_number, pid.CORRECTION_VMAX, pid.MAX_DEVIATION_UM)
@@ -115,10 +104,6 @@ class CephlaStage(AbstractStage):
                 mc.set_pid_tolerance(microcontroller_axis_number, pid.TOLERANCE_UM, pid.TOLERANCE_UM)
                 mc.wait_till_operation_is_completed()
             mc.set_pid_open_above(microcontroller_axis_number, pid.OPEN_ABOVE_MM_S)   # 0 = rest-only
-            mc.wait_till_operation_is_completed()
-            mc.set_pid_keep_closed_below(microcontroller_axis_number, pid.KEEP_CLOSED_BELOW_UM)   # 0 = off
-            mc.wait_till_operation_is_completed()
-            mc.set_pid_precomp(microcontroller_axis_number, pid.PRECOMP_POS_UM, pid.PRECOMP_NEG_UM)   # 0, 0 = off
             mc.wait_till_operation_is_completed()
         elif (
             pid.CORRECTION_VMAX > 0
@@ -138,8 +123,6 @@ class CephlaStage(AbstractStage):
             f"clamp {pid.CORRECTION_VMAX} mm/s, watchdog {pid.MAX_DEVIATION_UM} um, home zone {pid.HOME_ZONE_UM} um, "
             f"tolerance {pid.TOLERANCE_UM or 'default (2 counts)'} um, loop open above {pid.OPEN_ABOVE_MM_S} mm/s "
             f"({'rest-only' if pid.OPEN_ABOVE_MM_S == 0 else 'engaged below that speed'}), "
-            f"moves up to {pid.KEEP_CLOSED_BELOW_UM} um stay closed-loop in flight, "
-            f"residual pre-compensation {pid.PRECOMP_POS_UM:+.2f} / {pid.PRECOMP_NEG_UM:+.2f} um, "
             f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
             f"ramp {axis_config.RAMP_PROFILE}"
         )

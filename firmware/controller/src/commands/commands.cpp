@@ -63,9 +63,6 @@ void init_callbacks()
     cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[SET_PID_OPEN_ABOVE] = &callback_set_pid_open_above;
-    cmd_map[SET_PID_P24] = &callback_set_pid_p24;
-    cmd_map[SET_PID_KEEP_CLOSED_BELOW] = &callback_set_pid_keep_closed_below;
-    cmd_map[SET_PID_PRECOMP] = &callback_set_pid_precomp;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -341,35 +338,6 @@ void callback_set_pid_open_above()
     pid_open_above_pps[axis] = pps < 0 ? -pps : pps;
 }
 
-// SET_PID_KEEP_CLOSED_BELOW (52): [2] protocol axis, [3..4] move length in um. Commanded moves up to
-// this length run with the loop engaged throughout (see pid_before_move); 0 = off. Stored in usteps
-// at the current microstep setting.
-void callback_set_pid_keep_closed_below()
-{
-    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
-    if (axis == 0xFF) return;
-    uint16_t um = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
-    int32_t u = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(um) / 1000.0f);
-    pid_keep_closed_usteps[axis] = u < 0 ? -u : u;
-}
-
-// SET_PID_PRECOMP (53): [2] protocol axis, [3..4] residual after counter-increasing moves, [5..6] after
-// counter-decreasing moves; int16, 0.01 um, ENC_POS - XACTUAL at rest (the tuner's 'residual' action).
-// On the Squid+ Z an open-loop move leaves the stage 3.5 +/- 0.3 um short of the counter, always the
-// same way for a given direction (2026-09-08, 96 + 60 + 30 + 30 moves); a rest-only loop then spends
-// two to three time constants closing it. Aiming the open-loop ramp past the target by that residual
-// lands the stage within ~0.3 um, and rewriting the counter to the true target at rest leaves the loop
-// one time constant of work. See pid_before_move / check_closed_loop.
-void callback_set_pid_precomp()
-{
-    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
-    if (axis == 0xFF) return;
-    int16_t pos = int16_t((uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]));
-    int16_t neg = int16_t((uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]));
-    // signed: xmmToMicrosteps scales by |usteps per mm|, direction is in the sign of the value
-    pid_precomp_usteps[axis][1] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(pos) / 100000.0f);
-    pid_precomp_usteps[axis][0] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(neg) / 100000.0f);
-}
 
 // SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]
 // target-reached tolerance in 0.01 um; 0 keeps the current value. Applied at once if
@@ -737,10 +705,5 @@ void callback_reset()
         pid_tr_tolerance_usteps[i] = 0;
         completion_window_usteps[i] = 0;
         pid_open_above_pps[i] = 0;
-        pid_keep_closed_usteps[i] = 0;
-        pid_short_move[i] = false;
-        pid_precomp_usteps[i][0] = 0;
-        pid_precomp_usteps[i][1] = 0;
-        pid_true_target_pending[i] = false;
     }
 }

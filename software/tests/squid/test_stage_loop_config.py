@@ -56,15 +56,10 @@ def test_full_bench_configuration_reaches_the_controller_in_order():
             HOME_ZONE_UM=200,
             TOLERANCE_UM=0.2,
             OPEN_ABOVE_MM_S=3.5,
-            KEEP_CLOSED_BELOW_UM=100,
-            PRECOMP_POS_UM=3.5,
-            PRECOMP_NEG_UM=-3.4,
         ),
         COMPLETION_WINDOW_UM=0.3,
     )
     _, mc = _stage(z)
-    mc.set_pid_keep_closed_below.assert_called_once_with(_def.AXIS.Z, 100)
-    mc.set_pid_precomp.assert_called_once_with(_def.AXIS.Z, 3.5, -3.4)
     # the window is a state and is sent for every stage axis (X and Y get 0); Z gets its value
     assert mc.set_completion_window.call_args_list[-1].args == (_def.AXIS.Z, 0.3 / 1000.0)
     mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 3.5)
@@ -79,22 +74,6 @@ def test_full_bench_configuration_reaches_the_controller_in_order():
     mc.turn_on_stage_pid.assert_called_once_with(_def.AXIS.Z)
     names = [c[0] for c in mc.method_calls if c[0] in ("configure_stage_pid", "set_pid_arguments", "turn_on_stage_pid")]
     assert names == ["configure_stage_pid", "set_pid_arguments", "turn_on_stage_pid"]
-
-
-def test_large_p_goes_through_the_24_bit_command():
-    z = _axis(HAS_ENCODER=True, PID=PIDConfig(ENABLED=True, P=262140, I=0, D=0))
-    _, mc = _stage(z)
-    mc.set_pid_arguments.assert_called_once_with(_def.AXIS.Z, 65535, 0, 0)
-    mc.set_pid_p24.assert_called_once_with(_def.AXIS.Z, 262140)
-    names = [c[0] for c in mc.method_calls if c[0] in ("set_pid_arguments", "set_pid_p24", "turn_on_stage_pid")]
-    assert names == ["set_pid_arguments", "set_pid_p24", "turn_on_stage_pid"]
-
-
-def test_large_p_on_old_firmware_is_capped():
-    z = _axis(HAS_ENCODER=True, PID=PIDConfig(ENABLED=True, P=262140, I=0, D=0))
-    _, mc = _stage(z, firmware=(1, 5))
-    mc.set_pid_arguments.assert_called_once_with(_def.AXIS.Z, 65535, 0, 0)
-    mc.set_pid_p24.assert_not_called()
 
 
 def test_encoder_without_loop_is_configured_but_not_enabled():
@@ -128,8 +107,6 @@ def test_zero_limits_are_not_sent():
     mc.set_pid_tolerance.assert_not_called()
     # loop mode and completion window are states: 0 (rest-only / exact target) is sent explicitly
     mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 0.0)
-    mc.set_pid_keep_closed_below.assert_called_once_with(_def.AXIS.Z, 0.0)
-    mc.set_pid_precomp.assert_called_once_with(_def.AXIS.Z, 0.0, 0.0)
     assert mc.set_completion_window.call_args_list[-1].args == (_def.AXIS.Z, 0.0)
     mc.turn_on_stage_pid.assert_called_once()
 

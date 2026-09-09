@@ -262,11 +262,9 @@ class ZTuner:
         # firmware before 2026-09-08 a threshold left by an earlier run survived the controller reset and a
         # 'rest-only' run of this tool ran engaged in flight.
         m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
-        m.set_pid_keep_closed_below(AXIS.Z, self.a.keep_closed_below); self.wait()   # 0 = off
-        m.set_pid_precomp(AXIS.Z, self.a.precomp_pos_um, self.a.precomp_neg_um); self.wait()   # 0, 0 = off
         m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
-        self.set_gains(self.a.p, self.a.i, self.a.d)
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
         time.sleep(0.2)
         st = m.get_encoder_state()
@@ -405,7 +403,7 @@ class ZTuner:
         dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
-        self.set_gains(p, i, d)
+        m.set_pid_arguments(AXIS.Z, p, i, d); self.wait()
         m.turn_on_stage_pid(AXIS.Z)
         self.wait(5)
         self.loop_on = True
@@ -544,7 +542,7 @@ class ZTuner:
             return path
 
         m = self.mcu
-        self.set_gains(self.a.p, self.a.i, self.a.d)
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
         st = flags("A. enable at working extension")
         if not st["pid_enabled"]:
@@ -781,17 +779,11 @@ class ZTuner:
                             int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))), int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))),
                             int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT)))])
 
-    def set_gains(self, p, i, d):
-        """P above 65535 goes through SET_PID_P24 (24-bit register); the 16-bit command gets 65535."""
-        self.mcu.set_pid_arguments(AXIS.Z, min(int(p), 0xFFFF), i, d); self.wait()
-        if int(p) > 0xFFFF:
-            self.mcu.set_pid_p24(AXIS.Z, int(p)); self.wait()
-
     def residual(self):
         """Open-loop residual per direction: ENC_POS - XACTUAL at rest after a move, in um, for each step size in
         --residual-steps-um, --residual-reps moves up (deeper) then the same number back down. Reports mean and std per
-        direction and size, in the firmware's sign convention (positive direction = counter increasing), which is what
-        SET_PID_PRECOMP takes. The loop stays off."""
+        direction and size, in the firmware's sign convention (positive direction = counter increasing). The loop
+        stays off. Measured 2026-09-08: the offset is a static frame offset, the per-move change is at the noise floor."""
         m = self.mcu
         out = []
         for step_um in self.a.residual_steps_um:
@@ -828,9 +820,8 @@ class ZTuner:
                      f"counter-increasing (shallower) {row['pos_mean_um']:+.2f} um std {row['pos_std_um']:.2f} [{row['pos_min_um']:+.2f}, {row['pos_max_um']:+.2f}]")
         self.summary["results"].extend(out)
         if out:
-            self.log("SET_PID_PRECOMP candidates = half the direction asymmetry of the offset (um, firmware sign): --precomp-pos-um "
-                     f"{statistics.mean((r['pos_mean_um'] - r['neg_mean_um']) / 2 for r in out):+.2f} --precomp-neg-um "
-                     f"{statistics.mean((r['neg_mean_um'] - r['pos_mean_um']) / 2 for r in out):+.2f}  "
+            self.log("direction asymmetry of the offset (half the pos-neg difference, um): "
+                     f"{statistics.mean((r['pos_mean_um'] - r['neg_mean_um']) / 2 for r in out):+.2f}  "
                      "(the common part is the static frame offset the loop nulls once at rest)")
 
     def engage_loop(self):
@@ -839,7 +830,7 @@ class ZTuner:
         dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
-        self.set_gains(self.a.p, self.a.i, self.a.d)
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
         m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
         self.settle(0.3)
         if not m.get_encoder_state()["pid_enabled"]:
@@ -993,10 +984,6 @@ def main():
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
     ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
     ap.add_argument("--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)")
-    ap.add_argument("--precomp-pos-um", type=float, default=0.0, help="open-loop residual after counter-increasing moves (residual action)")
-    ap.add_argument("--precomp-neg-um", type=float, default=0.0, help="open-loop residual after counter-decreasing moves")
-    ap.add_argument("--keep-closed-below", type=float, default=0.0,
-                    help="commanded moves up to this length (um) keep the loop engaged in flight; 0 = off")
     ap.add_argument("--open-above", type=float, default=0.0,
                     help="ramp velocity (mm/s) above which the loop is opened during moves; 0 = rest-only, >= vmax = in-flight")
     ap.add_argument("--align-after-home", action="store_true",

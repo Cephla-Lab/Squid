@@ -158,12 +158,6 @@ class PIDConfig(pydantic.BaseModel):
     # Ramp velocity (native units/s) above which the loop is opened while the axis moves, re-engaging as it
     # slows. 0 = rest-only; >= MAX_SPEED = engaged throughout; ~1 mm/s keeps focus steps closed-loop only.
     OPEN_ABOVE_MM_S: float = 0.0
-    # Commanded moves up to this length (um) keep the loop engaged in flight regardless of OPEN_ABOVE; 0 = off.
-    KEEP_CLOSED_BELOW_UM: float = 0.0
-    # Open-loop residual (encoder - counter at rest, um) after counter-increasing / -decreasing moves; a rest-only
-    # move is aimed past the target by it (firmware >= 1.6). 0 = off.
-    PRECOMP_POS_UM: float = 0.0
-    PRECOMP_NEG_UM: float = 0.0
 
 
 class AxisConfig(pydantic.BaseModel):
@@ -251,9 +245,6 @@ def _pid_config_from_def(axis: str) -> PIDConfig:
         HOME_ZONE_UM=float(getattr(_def, f"PID_HOME_ZONE_{axis}_UM", 0)),
         TOLERANCE_UM=float(getattr(_def, f"PID_TOLERANCE_{axis}_UM", 0.0)),
         OPEN_ABOVE_MM_S=float(getattr(_def, f"PID_OPEN_ABOVE_{axis}_mm", 0.0)),
-        KEEP_CLOSED_BELOW_UM=float(getattr(_def, f"PID_KEEP_CLOSED_BELOW_{axis}_UM", 0)),
-        PRECOMP_POS_UM=float(getattr(_def, f"PID_PRECOMP_POS_{axis}_UM", 0.0)),
-        PRECOMP_NEG_UM=float(getattr(_def, f"PID_PRECOMP_NEG_{axis}_UM", 0.0)),
     )
 
 

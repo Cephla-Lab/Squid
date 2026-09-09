@@ -64,9 +64,6 @@ _CMD_NAMES = {
     CMD_SET.SET_PID_TOLERANCE: "SET_PID_TOLERANCE",
     CMD_SET.SET_COMPLETION_WINDOW: "SET_COMPLETION_WINDOW",
     CMD_SET.SET_PID_OPEN_ABOVE: "SET_PID_OPEN_ABOVE",
-    CMD_SET.SET_PID_P24: "SET_PID_P24",
-    CMD_SET.SET_PID_KEEP_CLOSED_BELOW: "SET_PID_KEEP_CLOSED_BELOW",
-    CMD_SET.SET_PID_PRECOMP: "SET_PID_PRECOMP",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -1381,40 +1378,6 @@ class Microcontroller:
         cmd[4] = v & 0xFF
         self.send_command(cmd)
 
-    def set_pid_keep_closed_below(self, axis, length_um):
-        """Commanded moves on `axis` no longer than length_um keep the closed loop engaged for their whole
-        duration, whatever the loop-mode threshold says (firmware >= 1.6). 0 = off. Range 0 .. 65535 um.
-        """
-        u = int(round(length_um))
-        if not (0 <= u <= 0xFFFF):
-            raise ValueError("length must be 0 .. 65535 um")
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.SET_PID_KEEP_CLOSED_BELOW
-        cmd[2] = int(axis)
-        cmd[3] = (u >> 8) & 0xFF
-        cmd[4] = u & 0xFF
-        self.send_command(cmd)
-
-    def set_pid_precomp(self, axis, residual_pos_um, residual_neg_um):
-        """Open-loop residual (encoder minus counter at rest) after counter-increasing and counter-decreasing
-        moves on `axis`, in um (firmware >= 1.6). Rest-only moves are aimed past the target by it and the counter
-        is rewritten to the true target at rest. Encoded as signed 0.01 um, range +/-327 um; 0, 0 = off.
-        """
-        vals = []
-        for v in (residual_pos_um, residual_neg_um):
-            u = int(round(v * 100))
-            if not (-0x8000 <= u <= 0x7FFF):
-                raise ValueError("residual must be within +/-327.67 um")
-            vals.append(u & 0xFFFF)
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.SET_PID_PRECOMP
-        cmd[2] = int(axis)
-        cmd[3] = (vals[0] >> 8) & 0xFF
-        cmd[4] = vals[0] & 0xFF
-        cmd[5] = (vals[1] >> 8) & 0xFF
-        cmd[6] = vals[1] & 0xFF
-        self.send_command(cmd)
-
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):
         """Closed-loop deadband and target-reached tolerance for `axis`, in um (firmware >= 1.6).
 
@@ -1451,11 +1414,11 @@ class Microcontroller:
         }
 
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
-        """Closed-loop gains. P is carried in 16 bits here; a P above 65535 (the TMC4361A register is
-        24 bits wide) must go through set_pid_p24 on firmware >= 1.6 - this method refuses to truncate it.
+        """Closed-loop gains. P is carried in 16 bits; the bench found P 65535 to be the usable maximum
+        (above it the loop saturates at rest), so a larger value is refused rather than truncated.
         """
         if not (0 <= int(pid_p) <= 0xFFFF):
-            raise ValueError("P above 65535 needs set_pid_p24 (firmware >= 1.6)")
+            raise ValueError("P must be 0 .. 65535")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PID_ARGUMENTS
         cmd[2] = int(axis)
@@ -1465,21 +1428,6 @@ class Microcontroller:
 
         cmd[5] = int(pid_i)
         cmd[6] = int(pid_d)
-        self.send_command(cmd)
-
-    def set_pid_p24(self, axis, pid_p):
-        """Full 24-bit proportional gain for `axis` (firmware >= 1.6). PID_P/256 per second is the loop's
-        rate constant: 65535 gives a 4 ms time constant, 262140 about 1 ms. I and D stay as last set.
-        """
-        p = int(pid_p)
-        if not (0 <= p <= 0xFFFFFF):
-            raise ValueError("P must be 0 .. 16777215")
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.SET_PID_P24
-        cmd[2] = int(axis)
-        cmd[3] = (p >> 16) & 0xFF
-        cmd[4] = (p >> 8) & 0xFF
-        cmd[5] = p & 0xFF
         self.send_command(cmd)
 
     def set_lim(self, limit_code, usteps):
