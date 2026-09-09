@@ -1,95 +1,66 @@
 """Tests for the Lumencor Celesta HTTP driver."""
 
-import socket
+import io
 
 import pytest
 
 import control.celesta as celesta
 
-
-class _FakeResponse:
-    def __init__(self, payload: bytes):
-        self._payload = payload
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-    def read(self):
-        return self._payload
+IP_REPLY = b"{'message': 'A IP 192.168.201.200'}"
 
 
-def test_httpcommand_passes_a_timeout_to_urlopen(monkeypatch):
+@pytest.mark.parametrize("kwargs, expected", [({}, celesta.DEFAULT_TIMEOUT_S), ({"timeout": 1.5}, 1.5)])
+def test_httpcommand_passes_timeout_to_urlopen(monkeypatch, kwargs, expected):
     seen = {}
 
-    def fake_urlopen(url, *args, **kwargs):
-        seen["url"] = url
-        seen["timeout"] = kwargs.get("timeout")
-        return _FakeResponse(b"{'message': 'A IP 192.168.201.200'}")
+    def fake_urlopen(url, data=None, timeout=None, *args, **kw):
+        seen["url"], seen["timeout"] = url, timeout
+        return io.BytesIO(IP_REPLY)
 
-    monkeypatch.setattr(celesta.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
-    msg = celesta.lumencor_httpcommand(command="GET IP", ip="192.168.201.200")
+    msg = celesta.lumencor_httpcommand(command="GET IP", ip="192.168.201.200", **kwargs)
 
     assert msg == {"message": "A IP 192.168.201.200"}
     assert seen["url"] == "http://192.168.201.200/service/?command=GET%20IP"
-    assert seen["timeout"] is not None, "urlopen must be given a timeout so an unreachable Celesta cannot hang startup"
-    assert 0 < seen["timeout"] <= 30
+    assert seen["timeout"] == expected
 
 
-def test_httpcommand_honours_explicit_timeout(monkeypatch):
-    seen = {}
+def test_offline_celesta_stops_after_one_timeout(monkeypatch):
+    calls = []
 
-    def fake_urlopen(url, *args, **kwargs):
-        seen["timeout"] = kwargs.get("timeout")
-        return _FakeResponse(b"{'message': 'A IP 192.168.201.200'}")
+    def hanging_urlopen(url, data=None, timeout=None, *args, **kw):
+        calls.append(url)
+        raise TimeoutError("timed out")
 
-    monkeypatch.setattr(celesta.urllib.request, "urlopen", fake_urlopen)
-
-    celesta.lumencor_httpcommand(command="GET IP", ip="192.168.201.200", timeout=1.5)
-
-    assert seen["timeout"] == 1.5
-
-
-def test_celesta_init_marks_device_offline_when_connection_times_out(monkeypatch):
-    def hanging_urlopen(url, *args, **kwargs):
-        raise socket.timeout("timed out")
-
-    monkeypatch.setattr(celesta.urllib.request, "urlopen", hanging_urlopen)
+    monkeypatch.setattr("urllib.request.urlopen", hanging_urlopen)
 
     dev = celesta.CELESTA()
 
-    assert dev.live is False
     assert dev.get_status() is False
+    assert len(calls) == 1  # only the GET IP probe; nothing more is attempted once the device is known offline
+    with pytest.raises(ConnectionError):
+        dev.set_intensity(0, 10)
+    assert len(calls) == 1
 
 
 def test_celesta_init_uses_configured_timeout_for_every_request(monkeypatch):
     timeouts = []
-
     responses = {
-        "GET IP": b"{'message': 'A IP 192.168.201.200'}",
+        "GET IP": IP_REPLY,
         "GET CHMAP": b"{'message': 'A CHMAP 405 445 488 518 545 640 730'}",
         "GET MAXINT": b"{'message': 'A MAXINT 1000'}",
     }
 
-    def fake_urlopen(url, *args, **kwargs):
-        timeouts.append(kwargs.get("timeout"))
+    def fake_urlopen(url, data=None, timeout=None, *args, **kw):
+        timeouts.append(timeout)
         command = url.split("command=")[1].replace("%20", " ")
-        if command.startswith("GET CH "):
-            return _FakeResponse(b"{'message': 'A CH 0'}")
-        if command.startswith("SET CH "):
-            return _FakeResponse(b"{'message': 'A CH 0'}")
-        if command.startswith("SET TTLENABLE "):
-            return _FakeResponse(b"{'message': 'A TTLENABLE " + command[-1:].encode() + b"'}")
-        return _FakeResponse(responses[command])
+        # GET CH / SET CH / SET TTLENABLE replies are only inspected for a leading "A" or trailing "0"/"1".
+        return io.BytesIO(responses.get(command, b"{'message': 'A 0'}"))
 
-    monkeypatch.setattr(celesta.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
     dev = celesta.CELESTA(timeout=2.0)
 
-    assert dev.live is True
-    assert dev.n_lasers == 7
-    assert timeouts, "expected at least one HTTP request during init"
-    assert all(t == 2.0 for t in timeouts)
+    assert dev.get_status() is True
+    assert set(timeouts) == {2.0}

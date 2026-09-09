@@ -16,9 +16,7 @@ import squid.logging
 
 log = squid.logging.get_logger(__name__)
 
-# Per-request HTTP timeout. Without one, urlopen() blocks indefinitely when the
-# Celesta is unplugged, powered off, or on a different subnet, which hangs
-# Microscope.build_from_global_config() before the GUI window ever appears.
+# urlopen() has no default timeout; an unreachable Celesta would otherwise hang GUI startup.
 DEFAULT_TIMEOUT_S = 5.0
 
 
@@ -42,14 +40,15 @@ class CELESTA(LightSource):
     Please connect the provided cat5e, RJ45 ethernet cable between the PC and Lumencor system.
     """
 
-    def __init__(self, **kwds):
+    def __init__(self, ip="192.168.201.200", timeout=DEFAULT_TIMEOUT_S):
         """
         Connect to the Lumencor system via HTTP and check if you get the right response.
         """
         self.on = False
-        self.ip = kwds.get("ip", "192.168.201.200")
-        self.timeout = kwds.get("timeout", DEFAULT_TIMEOUT_S)
+        self.ip = ip
+        self.timeout = timeout
         [self.pmin, self.pmax] = 0, 1000
+        self.live = True  # until the probe below fails; _command() then refuses further requests
         try:
             # See if the system returns back the right IP.
             self.message = self.get_IP()
@@ -84,6 +83,8 @@ class CELESTA(LightSource):
         }
 
     def _command(self, command):
+        if not self.live:
+            raise ConnectionError(f"Celesta at {self.ip} is offline (startup probe failed); not sending {command!r}")
         return lumencor_httpcommand(command=command, ip=self.ip, timeout=self.timeout)
 
     def initialize(self):
