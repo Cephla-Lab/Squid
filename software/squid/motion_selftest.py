@@ -322,6 +322,11 @@ class ZMotionSelfTest:
         if not self.encoder_ok:
             self._add("lost steps (open loop)", None, "skipped (encoder not usable)")
             return
+        # one warm-up pair so the reference is taken with the same direction history as the measurement
+        # (the open-loop offset has a few tenths of a micron of direction hysteresis)
+        self._move(self.depth + 0.1)
+        self._settle(0.15)
+        self._move(self.depth)
         self._settle(0.5)
         dev0 = self._enc()["deviation"]
         acks = []
