@@ -37,6 +37,7 @@ class FakeMcu:
         self.enc_zero_mm = 0.0
         self.reporting = False
         self.pid_enabled = False
+        self.pid_on_calls = 0  # how many times the loop was switched on, restore included
         self.calls = []
 
     # -- model
@@ -69,6 +70,7 @@ class FakeMcu:
 
     def turn_on_stage_pid(self, axis):
         self.pid_enabled = True
+        self.pid_on_calls += 1
 
     def turn_off_stage_pid(self, axis):
         self.pid_enabled = False
@@ -123,6 +125,22 @@ def test_reversed_encoder_fails_and_recommends_the_flip():
     closed = next(r for r in report.results if r.name == "closed loop")
     assert closed.passed is False
     assert not report.passed
+
+
+def test_reversed_encoder_leaves_the_loop_off():
+    """A loop engaged on an encoder that failed validation regulates against a bad measurement.
+
+    The encoder is the loop's only feedback, so if its scale or sign is wrong the correction is
+    wrong too - on Z that ends in the stall the operator calls non-recoverable. Restore must
+    leave the loop off and say so, even though the ini asks for it.
+    """
+    axis = _axis(pid=PID, flip=True)
+    mcu = FakeMcu(axis, ratio=-1.0)
+    report, log = _run(mcu, axis)
+
+    assert mcu.pid_on_calls == 0
+    assert mcu.pid_enabled is False
+    assert any("left OFF" in line for line in log), log
 
 
 def test_gap_stage_is_measured_and_the_floor_is_recommended():

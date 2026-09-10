@@ -483,11 +483,22 @@ class ZMotionSelfTest:
             self._move(self.depth, check_cancel=False)
 
     def _restore_loop(self):
-        if self.loop_configured:
-            st = self._enc() if self.encoder_ok else {"pid_enabled": False}
-            if not st["pid_enabled"]:
-                self.mcu.turn_on_stage_pid(AXIS.Z)
-                self._wait(5)
+        if not self.loop_configured:
+            return
+        if not self.encoder_ok:
+            # The encoder is the loop's only feedback. If its scale or sign is wrong, or the
+            # firmware never reported it, a loop engaged on it corrects by the wrong amount or
+            # in the wrong direction - on Z that ends in the stall the operator has called
+            # non-recoverable. Restoring the ini's ENABLED here would hand exactly that state
+            # back to the operator, so the loop stays off and the report says why.
+            self.log(
+                "closed loop left OFF: the encoder failed validation (scale/sign or reporting); "
+                "fix the ini and restart before enabling the loop"
+            )
+            return
+        if not self._enc()["pid_enabled"]:
+            self.mcu.turn_on_stage_pid(AXIS.Z)
+            self._wait(5)
 
     def _restore_reporting(self):
         if self.encoder_ok or self.loop_configured:
