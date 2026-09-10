@@ -38,7 +38,6 @@ class _BuildParamsStub:
         self.display_resolution_scaling = 1.0
         self.z_stacking_config = "FROM CENTER"
         self.z_range = (0.0, 0.0)
-        self.use_fluidics = False
         self.skip_saving = False
         self.xy_mode = "Current Position"
 

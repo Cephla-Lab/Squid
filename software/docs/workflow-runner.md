@@ -2,6 +2,8 @@
 
 The Workflow Runner allows you to automate sequences of external scripts and acquisitions. This is useful for integrating Squid with external hardware such as liquid handling systems, fluidics controllers, or robotic arms.
 
+Fluidics rounds on the integrated fluidics system are run by the protocol runner (see [fluidics-protocol.md](fluidics-protocol.md)), not by workflow scripts.
+
 ## Accessing the Workflow Runner
 
 Open the Workflow Runner from the menu: **Utils > Workflow Runner**

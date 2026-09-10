@@ -69,6 +69,12 @@ pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy 
 # `||` keeps an install failure non-fatal under set -e.
 pip3 install pipython || echo "WARNING: pipython install failed; continuing (only needed for USE_PI_FOCUS_STAGE)." >&2
 
+# Fluidics library (RUN_FLUIDICS), vendored as the fluidics_v2 submodule. It declares PyQt5 as a
+# dependency, so install it --no-deps to keep pip from pulling a PyQt5 wheel over apt's; its real
+# runtime deps follow. `||` keeps a checkout without submodules working (fluidics simply stays off).
+pip3 install cobs platformdirs ruamel.yaml pyyaml "pydantic>=2,<3"
+pip3 install --no-deps -e fluidics_v2/software || echo "WARNING: fluidics library install failed; continuing (only needed for RUN_FLUIDICS)." >&2
+
 # install camera drivers
 cd "$DAHENG_CAMERA_DRIVER_ROOT"
 ./Galaxy_camera.run

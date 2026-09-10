@@ -1,4 +1,5 @@
 from typing import Optional, Callable
+import math
 import os
 
 import squid.logging
@@ -9,36 +10,52 @@ import control.utils
 
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
-
-"""
-Attempts to load a cached stage position and return it.
-"""
+_MAX_CACHE_BYTES = 4096
 
 
 def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
+    """Load the stage position written by cache_position(), or None if there is no usable one.
+
+    A cache file that cannot be read or parsed (truncated by a crash mid-write, edited by hand,
+    filled with garbage, ...) is treated exactly like a missing one: a warning is logged and None
+    is returned, so an unreadable cache cannot stop the software from starting.  A well-formed but
+    stale position is returned as-is; it is not range checked against the stage's axis limits.
+    """
     if not os.path.isfile(cache_path):
         _log.debug(f"Cache file '{cache_path}' not found, no cached pos found.")
         return None
-    with open(cache_path, "r") as f:
-        for line in f:
-            try:
-                x, y, z = line.strip("\n").strip().split(",")
-                x = float(x)
-                y = float(y)
-                z = float(z)
-                return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=None)
-            except RuntimeError as e:
-                raise e
-                pass
-    return None
 
+    try:
+        with open(cache_path, "r") as f:
+            # A valid cache is one short line, so cap the read: a stray large file at this path
+            # must not pull hundreds of MB into memory during startup.  Read one byte past the cap
+            # so an oversized file is rejected below instead of parsed from its truncated prefix.
+            contents = f.read(_MAX_CACHE_BYTES + 1)
+    except (OSError, UnicodeDecodeError) as e:
+        _log.warning(
+            f"Cached position file '{cache_path}' could not be read ({e}). "
+            "Continuing as if there is no cached position."
+        )
+        return None
 
-"""
-Write out the current x, y, z position, in mm, so we can use it later as a cached position.
-"""
+    try:
+        if len(contents) > _MAX_CACHE_BYTES:
+            raise ValueError(f"file is larger than {_MAX_CACHE_BYTES} bytes")
+        x, y, z = (float(v) for v in contents.strip().split(","))
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            raise ValueError("non-finite coordinate")
+    except ValueError as e:
+        _log.warning(
+            f"Cached position file '{cache_path}' is corrupted ({e}), contents={contents[:100].strip()!r}. "
+            "Continuing as if there is no cached position."
+        )
+        return None
+
+    return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=None)
 
 
 def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH):
+    """Write out the current x, y, z position, in mm, so we can use it later as a cached position."""
     if stage_config is not None:  # StageConfig not implemented for Prior stage
         x_min = stage_config.X_AXIS.MIN_POSITION
         x_max = stage_config.X_AXIS.MAX_POSITION
@@ -50,9 +67,13 @@ def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACH
             raise ValueError(
                 f"Position {pos} is not cacheable because it is outside of the min/max of at least one axis. x_range=({x_min}, {x_max}), y_range=({y_min}, {y_max}), z_range=({z_min}, {z_max})"
             )
-    with open(cache_path, "w") as f:
-        _log.debug(f"Writing position={pos} to cache path='{cache_path}'")
+    _log.debug(f"Writing position={pos} to cache path='{cache_path}'")
+    # Atomic write: a crash between truncating and writing would leave a partial file that
+    # get_cached_position() can only discard, losing the position it was meant to preserve.
+    tmp_path = f"{cache_path}.tmp"
+    with open(tmp_path, "w") as f:
         f.write(",".join([str(pos.x_mm), str(pos.y_mm), str(pos.z_mm)]))
+    os.replace(tmp_path, cache_path)
 
 
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):

@@ -2,7 +2,7 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
@@ -10,6 +10,24 @@ from control._def import ILLUMINATION_CODE
 
 # Number of illumination ports supported (matches firmware)
 NUM_ILLUMINATION_PORTS = 16
+
+# Default wavelength -> source code mappings for TTL control, used when no
+# illumination channel config is available. Multiple wavelengths can map to
+# the same port (e.g., 470nm and 488nm both to D2).
+_DEFAULT_CHANNEL_MAPPINGS_TTL = {
+    405: ILLUMINATION_CODE.ILLUMINATION_D1,
+    470: ILLUMINATION_CODE.ILLUMINATION_D2,
+    488: ILLUMINATION_CODE.ILLUMINATION_D2,
+    545: ILLUMINATION_CODE.ILLUMINATION_D3,
+    550: ILLUMINATION_CODE.ILLUMINATION_D3,
+    555: ILLUMINATION_CODE.ILLUMINATION_D3,
+    561: ILLUMINATION_CODE.ILLUMINATION_D3,
+    638: ILLUMINATION_CODE.ILLUMINATION_D4,
+    640: ILLUMINATION_CODE.ILLUMINATION_D4,
+    730: ILLUMINATION_CODE.ILLUMINATION_D5,
+    735: ILLUMINATION_CODE.ILLUMINATION_D5,
+    750: ILLUMINATION_CODE.ILLUMINATION_D5,
+}
 
 
 class LightSourceType(Enum):
@@ -78,6 +96,7 @@ class IlluminationController:
         light_source_type=None,
         light_source=None,
         disable_intensity_calibration=False,
+        config_repo: Optional[ConfigRepository] = None,
     ):
         """
         Args:
@@ -87,34 +106,16 @@ class IlluminationController:
             light_source_type: Type of light source (SquidLED, SquidLaser, etc.)
             light_source: External light source object (for software control)
             disable_intensity_calibration: Set True to control LED/laser current directly
+            config_repo: Shared configuration repository. Pass the microscope's repo so
+                port-mapping edits saved from the GUI take effect without a restart.
         """
         self.microcontroller = microcontroller
+        self.config_repo = config_repo if config_repo is not None else ConfigRepository()
         self.intensity_control_mode = intensity_control_mode
         self.shutter_control_mode = shutter_control_mode
         self.light_source_type = light_source_type
         self.light_source = light_source
         self.disable_intensity_calibration = disable_intensity_calibration
-        # Default wavelength -> source code mappings
-        # Maps common wavelengths to their corresponding laser port source codes
-        # Multiple wavelengths can map to the same port (e.g., 470nm and 488nm both to D2)
-        default_mappings = {
-            405: ILLUMINATION_CODE.ILLUMINATION_D1,
-            470: ILLUMINATION_CODE.ILLUMINATION_D2,
-            488: ILLUMINATION_CODE.ILLUMINATION_D2,
-            545: ILLUMINATION_CODE.ILLUMINATION_D3,
-            550: ILLUMINATION_CODE.ILLUMINATION_D3,
-            555: ILLUMINATION_CODE.ILLUMINATION_D3,
-            561: ILLUMINATION_CODE.ILLUMINATION_D3,
-            638: ILLUMINATION_CODE.ILLUMINATION_D4,
-            640: ILLUMINATION_CODE.ILLUMINATION_D4,
-            730: ILLUMINATION_CODE.ILLUMINATION_D5,
-            735: ILLUMINATION_CODE.ILLUMINATION_D5,
-            750: ILLUMINATION_CODE.ILLUMINATION_D5,
-        }
-
-        # Try to load mappings from file
-        self.channel_mappings_TTL = self._load_channel_mappings(default_mappings)
-
         self.channel_mappings_software = {}
         self.is_on = {}
         self.intensity_settings = {}
@@ -132,15 +133,24 @@ class IlluminationController:
         if self.light_source_type is None and self.disable_intensity_calibration is False:
             self._load_intensity_calibrations()
 
-    def _load_channel_mappings(self, default_mappings: Dict[int, int]) -> Dict[int, int]:
+    @property
+    def channel_mappings_TTL(self) -> Dict[int, int]:
+        """Wavelength (nm) -> source code mapping for TTL control.
+
+        Computed from the shared config repository on every access so that
+        port-mapping edits saved from the GUI take effect immediately.
+        """
+        return self._load_channel_mappings()
+
+    def _load_channel_mappings(self) -> Dict[int, int]:
         """Load channel mappings from illumination_channel_config.yaml, fallback to default if not found.
 
         Returns:
             Dict mapping wavelength (nm) to source_code for TTL control.
         """
+        default_mappings = _DEFAULT_CHANNEL_MAPPINGS_TTL
         try:
-            config_repo = ConfigRepository()
-            illumination_config = config_repo.get_illumination_config()
+            illumination_config = self.config_repo.get_illumination_config()
 
             if illumination_config is None:
                 return default_mappings

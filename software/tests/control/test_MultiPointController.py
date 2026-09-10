@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import threading
 
 import pytest
@@ -373,7 +374,6 @@ def test_acquisition_parameters_has_apply_channel_offset_default_true():
         display_resolution_scaling=1.0,
         z_stacking_config="FROM CENTER",
         z_range=(0.0, 0.0),
-        use_fluidics=False,
     )
     assert p.apply_channel_offset is True
 
@@ -406,7 +406,6 @@ def test_acquisition_parameters_apply_channel_offset_can_be_overridden():
         display_resolution_scaling=1.0,
         z_stacking_config="FROM CENTER",
         z_range=(0.0, 0.0),
-        use_fluidics=False,
         apply_channel_offset=False,
     )
     assert p.apply_channel_offset is False
@@ -475,3 +474,172 @@ def test_acquisition_moves_to_per_fov_z():
     # Every image of this single-FOV, NZ=1 acquisition was captured at the per-FOV z.
     assert captured_z_mm, "no images were captured"
     assert all(z == pytest.approx(z_target, abs=1e-3) for z in captured_z_mm)
+
+
+def test_engine_has_no_fluidics_coupling():
+    from dataclasses import fields
+
+    assert "use_fluidics" not in {f.name for f in fields(AcquisitionParameters)}
+    assert not hasattr(MultiPointController, "set_use_fluidics")
+
+
+def test_start_new_experiment_without_timestamp_uses_the_folder_verbatim(tmp_path):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    mpc.set_base_path(str(tmp_path))
+
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+
+    assert mpc.experiment_ID == "R01_image"
+    assert (tmp_path / "R01_image" / "acquisition parameters.json").exists()
+    with pytest.raises(FileExistsError):
+        mpc.start_new_experiment("R01_image", add_timestamp=False)
+
+
+def test_start_new_experiment_default_still_appends_a_timestamp(tmp_path):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    mpc.set_base_path(str(tmp_path))
+
+    mpc.start_new_experiment("my exp")
+
+    assert mpc.experiment_ID.startswith("my_exp_")
+    assert len(mpc.experiment_ID) > len("my_exp_")
+
+
+class CountingTracker(TestAcquisitionTracker):
+    def __init__(self):
+        super().__init__()
+        self.finished_count = 0
+
+    def get_callbacks(self) -> MultiPointControllerFunctions:
+        callbacks = super().get_callbacks()
+
+        def finished():
+            self.finished_count += 1
+            self.finished_event.set()
+
+        return dataclasses.replace(callbacks, signal_acquisition_finished=finished)
+
+
+def _controller_with_tracker():
+    control._def.MERGE_CHANNELS = False
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = CountingTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    return scope, tt, mpc
+
+
+def test_completed_run_reports_end_reason_and_image_count():
+    scope, tt, mpc = _controller_with_tracker()
+    assert mpc.last_end_reason is None
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "completed"
+    assert mpc.last_image_count == tt.image_count > 0
+
+
+def test_user_abort_reports_user_abort():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.run_acquisition()
+    mpc.request_abort_aquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "user_abort"
+
+
+def test_validation_failure_reports_failed_to_start_exactly_once():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.laserAutoFocusController.laser_af_properties.has_reference = False
+    mpc.set_reflection_af_flag(True)
+
+    mpc.run_acquisition()
+
+    assert tt.finished_event.is_set()
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "failed_to_start"
+    assert not mpc.acquisition_in_progress()
+
+
+def test_focus_map_without_scan_bounds_reports_failed_to_start_and_restores_the_camera():
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_gen_focus_map_flag(True)
+    mpc.scanCoordinates.get_scan_bounds = lambda: None  # the focus-map early return
+    callbacks_before = scope.camera.get_callbacks_enabled()
+
+    mpc.run_acquisition()
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "failed_to_start"
+    assert scope.camera.get_callbacks_enabled() == callbacks_before
+    assert not mpc.acquisition_in_progress()
+
+
+def test_worker_construction_failure_reports_failed_to_start_once_and_reraises(monkeypatch):
+    import control.core.multi_point_controller as mpc_module
+
+    class BrokenWorker:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(mpc_module, "MultiPointWorker", BrokenWorker)
+    scope, tt, mpc = _controller_with_tracker()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        mpc.run_acquisition()
+
+    assert tt.finished_count == 1
+    assert mpc.last_end_reason == "failed_to_start"
+
+
+def test_acquisition_yaml_has_region_fovs_and_the_protocol_section(tmp_path):
+    import yaml
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+    mpc.protocol_info = {"name": "demo", "round": "R01", "step": "image", "run_name": "liver"}
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    with open(tmp_path / "R01_image" / "acquisition.yaml", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    regions = {r["name"]: r for r in data["wellplate_scan"]["regions"]}
+    expected = [list(fov) for fov in mpc.scanCoordinates.region_fov_coordinates["region_1"]]
+    assert regions["region_1"]["fovs"] == expected
+    assert len(regions["region_grid"]["fovs"]) == 9
+    assert data["protocol"] == {"name": "demo", "round": "R01", "step": "image", "run_name": "liver"}
+    assert "fluidics" not in data
+    assert mpc.protocol_info is None
+
+
+def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
+    import yaml
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+    mpc.protocol_info = {"name": "demo", "round": "R01"}
+    mpc.laserAutoFocusController.laser_af_properties.has_reference = False
+    mpc.set_reflection_af_flag(True)
+    mpc.run_acquisition()  # validation failure
+    assert mpc.last_end_reason == "failed_to_start" and mpc.protocol_info is None
+
+    mpc.set_reflection_af_flag(False)
+    tt.finished_event.clear()
+    mpc.start_new_experiment("R02_image", add_timestamp=False)
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+    with open(tmp_path / "R02_image" / "acquisition.yaml", encoding="utf-8") as f:
+        assert "protocol" not in yaml.safe_load(f)

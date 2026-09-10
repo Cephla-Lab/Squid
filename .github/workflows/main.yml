@@ -27,6 +27,10 @@ jobs:
           swap-storage: true
       - name: Checkout the Squid repo
         uses: actions/checkout@v4
+      - name: Fetch the fluidics library submodule
+        # Only this one: control/ndviewer_light stays uninitialized (its own tests do not collect
+        # standalone). The setup script pip-installs it --no-deps.
+        run: git submodule update --init software/fluidics_v2
       - name: Run the setup script for Ubuntu 22.04
         run: ./setup_22.04.sh -r=${{ github.workspace }}
         working-directory: ./software
