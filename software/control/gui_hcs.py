@@ -2157,6 +2157,16 @@ class HighContentScreeningGui(QMainWindow):
         if mcu is None or getattr(mcu, "firmware_version", (0, 0)) < (1, 6):
             QMessageBox.information(self, "Motion self-test", "Needs a real controller on firmware 1.6 or newer.")
             return
+        # The routine homes Z as its second step; refuse before the dialog rather than let the
+        # operator press Run and get an aborted report.
+        if not control._def.HOMING_ENABLED_Z:
+            QMessageBox.information(
+                self,
+                "Motion self-test",
+                "Z homing is disabled in this configuration (homing_enabled_z = False). "
+                "The self-test homes Z and cannot run here.",
+            )
+            return
         if getattr(self, "motionSelfTestDialog", None) is None:
             self.motionSelfTestDialog = MotionSelfTestDialog(
                 mcu, squid.config.get_stage_config().Z_AXIS, stage=self.microscope.stage, parent=self

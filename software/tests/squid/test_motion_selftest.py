@@ -228,3 +228,24 @@ def test_cancel_stops_early_and_restores():
     assert not report.passed
     assert mcu.reporting is False  # reporting switched back off
     assert mcu.pid_enabled is True  # loop back to its configured state
+
+
+def test_refuses_to_run_when_z_homing_is_disabled(monkeypatch):
+    """home_and_park() calls home_z() unconditionally, so a configuration that disables Z
+    homing cannot run the self-test: two shipped inis set homing_enabled_z = False, and on
+    those machines the axis is deliberately never driven onto its switch."""
+    import control._def
+
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis)
+    report, log = _run(mcu, axis)
+
+    assert not report.passed, report.text()
+    preflight = next(r for r in report.results if r.name == "preflight")
+    assert preflight.passed is False
+    assert "homing_enabled_z" in preflight.summary
+    assert ("home",) not in mcu.calls
+    # the run stops at preflight: none of the motion checks were attempted
+    assert [r.name for r in report.results] == ["preflight"]

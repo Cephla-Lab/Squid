@@ -27,6 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+import control._def
 from control._def import AXIS, ENCODER_REPORTING
 from squid.config import AxisConfig
 
@@ -206,6 +207,17 @@ class ZMotionSelfTest:
 
     # ------------------------------------------------------------------ checks
     def preflight(self):
+        # home_and_park() homes Z unconditionally, so a configuration that disables Z homing
+        # cannot run this routine at all: on those machines (two shipped inis set
+        # homing_enabled_z = False) the axis is deliberately never driven onto its switch, and
+        # home_z() would do exactly that. Read through the module so an ini override is seen.
+        if not control._def.HOMING_ENABLED_Z:
+            message = "Z homing is disabled (homing_enabled_z = False); the self-test homes Z and cannot run"
+            self._add("preflight", False, message)
+            # Same mechanism any failing step uses: run() catches this, records it as
+            # report.aborted and goes straight to restore().
+            raise RuntimeError(message)
+
         fw = tuple(self.mcu.firmware_version) if getattr(self.mcu, "firmware_version", None) else (0, 0)
         has_encoder = bool(self.axis.HAS_ENCODER or self.axis.USE_ENCODER)
         new_fw = fw >= (1, 6)
