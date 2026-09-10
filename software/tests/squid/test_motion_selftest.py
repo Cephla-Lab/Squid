@@ -45,6 +45,10 @@ class FakeMcu:
         # opens the loop and latches PID_FAULT (None = never).
         self.fault_after = fault_after
         self._reads_engaged = 0
+        # In-flight model: a move keeps is_busy() True for this many polls (0 = instantaneous).
+        # Lets a test cancel while Z is still moving, as on the real controller.
+        self.busy_polls = 0
+        self._busy_left = 0
         self.pid_on_calls = 0  # how many times the loop was switched on, restore included
         self.calls = []
 
@@ -61,6 +65,7 @@ class FakeMcu:
     def move_z_to_usteps(self, u):
         self.calls.append(("move", u))
         self.z_pos = int(u)
+        self._busy_left = self.busy_polls
 
     def home_z(self):
         self.calls.append(("home",))
@@ -68,6 +73,9 @@ class FakeMcu:
         self.enc_zero_mm = self._stage_mm(0.0)  # homing zeroes both frames at the switch
 
     def is_busy(self):
+        if self._busy_left > 0:
+            self._busy_left -= 1
+            return True
         return False
 
     def wait_till_operation_is_completed(self, timeout=5):
@@ -79,7 +87,7 @@ class FakeMcu:
     def configure_stage_pid(self, axis, transitions_per_revolution, flip_direction=False):
         # Firmware >= 1.6: CONFIGURE_STAGE_PID re-aligns ENC_POS to XACTUAL at the current position
         # and clears a latched fault.
-        self.calls.append(("configure",))
+        self.calls.append(("configure_while_moving",) if self._busy_left > 0 else ("configure",))
         mm = self.axis.convert_to_real_units(self.z_pos)
         self.enc_zero_mm = self._stage_mm(mm) - mm
         self.pid_fault = False
@@ -318,3 +326,64 @@ def test_refuses_to_run_when_z_homing_is_disabled(monkeypatch):
     assert ("home",) not in mcu.calls
     # the run stops at preflight: none of the motion checks were attempted
     assert [r.name for r in report.results] == ["preflight"]
+
+
+def test_cancel_mid_move_realigns_only_after_z_has_stopped_at_the_working_depth():
+    # Cancellation raises inside _move() while the controller is still busy. The cleanup must
+    # wait for the move to finish, bring Z back to the working depth, and only then re-align the
+    # encoder frame and re-enable: CONFIGURE_STAGE_PID during motion would capture a wrong offset.
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis)
+    mcu.busy_polls = 6
+    state = {"moves": 0}
+    orig = mcu.move_z_to_usteps
+
+    def counting_move(u):
+        state["moves"] += 1
+        orig(u)
+
+    mcu.move_z_to_usteps = counting_move
+    t = ZMotionSelfTest(
+        mcu, axis, log=lambda s: None, cancel=lambda: state["moves"] >= 3, hold_s=0.05, settle_scale=0.0
+    )
+    report = t.run()
+    assert report.aborted == "cancelled by the operator"
+    assert ("configure_while_moving",) not in mcu.calls, mcu.calls
+    assert ("configure",) in mcu.calls
+    last_move = max(i for i, c in enumerate(mcu.calls) if c[0] == "move")
+    assert mcu.calls.index(("configure",)) > last_move  # re-align after the restore move, not before
+    assert abs(axis.convert_to_real_units(mcu.z_pos) - t.depth) < 1e-3
+    assert mcu.pid_enabled is True
+
+
+def test_cancel_with_z_never_stopping_leaves_the_loop_off():
+    # If the controller never reports idle, nothing about Z's resting position is known: skip the
+    # re-align, leave the loop off, and say so - never CONFIGURE a moving axis.
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis)
+    state = {"moves": 0}
+    orig = mcu.move_z_to_usteps
+
+    def counting_move(u):
+        state["moves"] += 1
+        if state["moves"] >= 3:
+            mcu.busy_polls = 10**9  # from the cancelled move on, the controller never reports idle
+        orig(u)
+
+    mcu.move_z_to_usteps = counting_move
+    log = []
+    t = ZMotionSelfTest(
+        mcu,
+        axis,
+        log=log.append,
+        cancel=lambda: state["moves"] >= 3,
+        hold_s=0.05,
+        settle_scale=0.0,
+        idle_timeout_s=0.05,
+    )
+    report = t.run()
+    assert report.aborted == "cancelled by the operator"
+    assert ("configure_while_moving",) not in mcu.calls, mcu.calls
+    assert ("configure",) not in mcu.calls
+    assert mcu.pid_enabled is False
+    assert any("left OFF" in line and "still moving" in line for line in log), log

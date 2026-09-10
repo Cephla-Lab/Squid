@@ -103,6 +103,7 @@ class ZMotionSelfTest:
         stack_n: int = 20,
         hold_s: float = 5.0,
         settle_scale: float = 1.0,
+        idle_timeout_s: float = 30.0,
     ):
         self.mcu = mcu
         self.axis = axis
@@ -124,6 +125,8 @@ class ZMotionSelfTest:
         self.stack_n = stack_n
         self.hold_s = hold_s
         self.settle_scale = settle_scale  # tests run the sequence without the physical settling waits
+        self.idle_timeout_s = idle_timeout_s  # how long restore() waits for a cancelled move to finish
+        self._at_rest = False  # set by restore(): the controller reported idle after the run ended
         self.pid = axis.PID
         self.loop_configured = bool(self.pid and self.pid.ENABLED)
         self.max_dev_um = float(self.pid.MAX_DEVIATION_UM) if self.pid and self.pid.MAX_DEVIATION_UM else 250.0
@@ -473,14 +476,34 @@ class ZMotionSelfTest:
         # Every step here runs regardless of how the run ended (cancel included) and regardless of the
         # others failing: floor back, Z back to the working depth, loop back to its configured state,
         # encoder reporting off.
-        for step in (self._close_floor, self._restore_position, self._restore_loop, self._restore_reporting):
+        for step in (
+            self._wait_for_rest,
+            self._close_floor,
+            self._restore_position,
+            self._restore_loop,
+            self._restore_reporting,
+        ):
             try:
                 step()
             except Exception as e:  # noqa: BLE001 - restoring must not mask the report
                 self.log(f"restore ({step.__name__.lstrip('_')}): {e}")
 
+    def _wait_for_rest(self):
+        # A cancel raises inside _move() while the controller is still busy: Z keeps moving to the
+        # target it was given. Everything below that needs a resting axis (the return to the working
+        # depth, and above all the encoder re-alignment) waits for the controller to report idle. No
+        # cancel checks here - the run is already over.
+        t0 = time.time()
+        while self.mcu.is_busy():
+            if time.time() - t0 > self.idle_timeout_s:
+                self._at_rest = False
+                self.log(f"restore: Z still moving after {self.idle_timeout_s:.0f} s; position and loop not restored")
+                return
+            time.sleep(0.002)
+        self._at_rest = True
+
     def _restore_position(self):
-        if self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01 and not self.mcu.is_busy():
+        if self._at_rest and self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01:
             self._move(self.depth, check_cancel=False)
 
     def _realign_frames(self):
@@ -532,6 +555,21 @@ class ZMotionSelfTest:
             )
             return
         if not st["pid_enabled"]:
+            # The re-alignment takes the counter's frame as the encoder's at the CURRENT position, so
+            # it needs a known resting position: the axis idle (not a cancelled move still running)
+            # and back at the working depth (not somewhere inside a gap stage's decoupled region).
+            # Anything else: leave the loop off rather than capture a wrong offset.
+            if not self._at_rest:
+                self.log(
+                    "closed loop left OFF: Z was still moving after the cancel, no known resting position to re-align at"
+                )
+                return
+            if abs(self._pos_mm() - self.depth) > 0.01:
+                self.log(
+                    f"closed loop left OFF: Z is at {self._pos_mm():.3f} mm, not the working depth {self.depth:.2f} mm; "
+                    f"re-align needs a known resting position"
+                )
+                return
             self._realign_frames()
             self.mcu.turn_on_stage_pid(AXIS.Z)
             self._wait(5)
