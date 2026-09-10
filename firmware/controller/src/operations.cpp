@@ -1,6 +1,7 @@
 #include "operations.h"
 
 #include "tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "pid_policy.h"                  // pid_engage_pending
 
 /*
   THE OPERATOR-DRIVEN MOTION PATHS ARE PART OF THE FAIL-SAFE.
@@ -583,6 +584,10 @@ void do_focus_control()
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
 }
 
+// Defined with check_closed_loop() below, next to the rest of the closed-loop policy;
+// check_position() needs it to tell a held-open loop apart from a homing move.
+static bool axis_is_homing(uint8_t i);
+
 // SET_COMPLETION_WINDOW: a commanded move counts as complete once XACTUAL is within the
 // axis's window of the target, while the ramp is still finishing. Off (0) for every axis
 // unless the host sets it; the filter wheels use it so an exposure can start while the
@@ -590,11 +595,11 @@ void do_focus_control()
 // inside the window as well: the counter reaching the target says nothing about where
 // the stage is until the correction has run (measured 2026-09-08: a 0.3 um window on a
 // closed-loop Z acknowledged 13 ms before the encoder had settled).
-static inline bool within_completion_window(uint8_t axis, int32_t target)
+static inline bool within_completion_window(uint8_t axis, int32_t target, int32_t pos)
 {
   int32_t win = completion_window_usteps[axis];
   if (win <= 0) return false;
-  int32_t d = tmc4361A_currentPosition(&tmc4361[axis]) - target;
+  int32_t d = pos - target;
   if ((d < 0 ? -d : d) > win) return false;
   // A requested loop is opened for the move in rest-only mode and re-engages at rest, so the
   // encoder condition has to hold whenever the loop is REQUESTED, not only while it is engaged.
@@ -607,34 +612,66 @@ void check_position()
 {
   if(us_since_last_check_position > interval_check_position) {
     us_since_last_check_position = 0;
-    // check if commanded position has been reached
-    if (X_commanded_movement_in_progress && !is_homing_X && ((tmc4361A_currentPosition(&tmc4361[x]) == X_commanded_target_position && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) || within_completion_window(x, X_commanded_target_position))) // homing is handled separately
+    // check if commanded position has been reached. XACTUAL is read once per axis
+    // and reused by both completion tests and by pid_engage_pending(), so the
+    // three of them cannot disagree about where the axis is.
+    //
+    // pid_engage_pending(): a rest-only loop is opened for the move and re-engaged
+    // by check_closed_loop(), which runs just before this function but reads STATUS
+    // separately. If the ramp stops between the two reads the axis looks finished
+    // here while the loop is still held open, and COMPLETED would go out before the
+    // encoder correction had run at all. X, Y and Z only - the filter wheels have no
+    // encoder loop.
+    if (X_commanded_movement_in_progress && !is_homing_X) // homing is handled separately
     {
-      X_commanded_movement_in_progress = false;
-      mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      int32_t pos = tmc4361A_currentPosition(&tmc4361[x]);
+      if (((pos == X_commanded_target_position && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) || within_completion_window(x, X_commanded_target_position, pos))
+          && !pid_engage_pending(pid_requested[x], pid_zone_hold[x], axis_is_homing(x), pid_home_zone_usteps[x], pos))
+      {
+        X_commanded_movement_in_progress = false;
+        mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      }
     }
-    if (Y_commanded_movement_in_progress && !is_homing_Y && ((tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y])) || within_completion_window(y, Y_commanded_target_position)))
+    if (Y_commanded_movement_in_progress && !is_homing_Y)
     {
-      Y_commanded_movement_in_progress = false;
-      mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      int32_t pos = tmc4361A_currentPosition(&tmc4361[y]);
+      if (((pos == Y_commanded_target_position && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y])) || within_completion_window(y, Y_commanded_target_position, pos))
+          && !pid_engage_pending(pid_requested[y], pid_zone_hold[y], axis_is_homing(y), pid_home_zone_usteps[y], pos))
+      {
+        Y_commanded_movement_in_progress = false;
+        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      }
     }
-    if (Z_commanded_movement_in_progress && !is_homing_Z && ((tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z])) || within_completion_window(z, Z_commanded_target_position)))
+    if (Z_commanded_movement_in_progress && !is_homing_Z)
     {
-      Z_commanded_movement_in_progress = false;
-      mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      int32_t pos = tmc4361A_currentPosition(&tmc4361[z]);
+      if (((pos == Z_commanded_target_position && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z])) || within_completion_window(z, Z_commanded_target_position, pos))
+          && !pid_engage_pending(pid_requested[z], pid_zone_hold[z], axis_is_homing(z), pid_home_zone_usteps[z], pos))
+      {
+        Z_commanded_movement_in_progress = false;
+        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      }
     }
     if (enable_filterwheel == true) {
-      if (W_commanded_movement_in_progress && !is_homing_W && ((tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w])) || within_completion_window(w, W_commanded_target_position)))
+      if (W_commanded_movement_in_progress && !is_homing_W)
       {
-        W_commanded_movement_in_progress = false;
-        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+        int32_t pos = tmc4361A_currentPosition(&tmc4361[w]);
+        if ((pos == W_commanded_target_position && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w])) || within_completion_window(w, W_commanded_target_position, pos))
+        {
+          W_commanded_movement_in_progress = false;
+          mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+        }
       }
     }
     if (enable_filterwheel_w2 == true) {
-      if (W2_commanded_movement_in_progress && !is_homing_W2 && ((tmc4361A_currentPosition(&tmc4361[w2]) == W2_commanded_target_position && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2])) || within_completion_window(w2, W2_commanded_target_position)))
+      if (W2_commanded_movement_in_progress && !is_homing_W2)
       {
-        W2_commanded_movement_in_progress = false;
-        mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+        int32_t pos = tmc4361A_currentPosition(&tmc4361[w2]);
+        if ((pos == W2_commanded_target_position && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2])) || within_completion_window(w2, W2_commanded_target_position, pos))
+        {
+          W2_commanded_movement_in_progress = false;
+          mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
+        }
       }
     }
   }

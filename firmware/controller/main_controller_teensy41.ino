@@ -61,7 +61,13 @@ void loop() {
   do_focus_control();
 
   send_position_update();
-  check_closed_loop();   // before check_position: a loop re-engaging as the ramp stops makes COMPLETED wait for the correction
+  // Ordering is a latency choice, not the correctness one: check_closed_loop() gets
+  // the chance to re-engage a rest-only loop before check_position() looks at the
+  // axis, so a settled move is acknowledged on this iteration rather than the next.
+  // Correctness is check_position()'s own pid_engage_pending() test - the two
+  // functions read STATUS separately, ~0.36 ms apart, so a ramp that stops between
+  // the reads would otherwise be acknowledged with the loop still held open.
+  check_closed_loop();
   check_position();
   check_limits();
 }
