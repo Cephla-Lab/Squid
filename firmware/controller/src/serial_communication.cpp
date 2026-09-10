@@ -113,6 +113,15 @@ void send_position_update()
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
+    // Closed-loop fault bits (firmware 1.6). Unconditional: byte 19's fault flag only exists
+    // while encoder reporting is on, and the acquisition path never asks for it, so a latched
+    // watchdog fault would otherwise never reach the host once the failed move had been
+    // reported. Protocol axis order X / Y / Z from the internal indices x / y / z.
+    buffer_tx[18] &= ~ ((1 << BIT_POS_PID_FAULT_X) | (1 << BIT_POS_PID_FAULT_Y) | (1 << BIT_POS_PID_FAULT_Z));
+    if (pid_fault[x]) buffer_tx[18] |= (1 << BIT_POS_PID_FAULT_X);
+    if (pid_fault[y]) buffer_tx[18] |= (1 << BIT_POS_PID_FAULT_Y);
+    if (pid_fault[z]) buffer_tx[18] |= (1 << BIT_POS_PID_FAULT_Z);
+
     // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved)
     // are zero unless encoder reporting is on. The host ignores all of them
     // unless it asked, so the shipping packet is byte-identical to 1.5.

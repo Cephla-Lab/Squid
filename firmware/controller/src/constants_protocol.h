@@ -142,6 +142,14 @@ static const int AXIS_W2 = 6;
 // Button/switch bit positions in response packet
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
 
+// Status byte 18, bits 4-6: closed-loop fault latched on X / Y / Z (protocol order). Set in
+// every packet, whether or not encoder reporting is on, so a fault with no command in flight
+// still reaches the host. Sticky until CONFIGURE_STAGE_PID / ENABLE_STAGE_PID / INITIALIZE / RESET
+// clears the latch (DISABLE_STAGE_PID drops the request but leaves the fault standing).
+static const int BIT_POS_PID_FAULT_X = 4;
+static const int BIT_POS_PID_FAULT_Y = 5;
+static const int BIT_POS_PID_FAULT_Z = 6;
+
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;
 static const int LIM_CODE_X_NEGATIVE = 1;

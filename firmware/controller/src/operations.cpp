@@ -745,6 +745,26 @@ void pid_before_move(uint8_t axis)
     pid_open_for_move(axis);
 }
 
+// A closed-loop fault on `axis` (internal index) fails the command that is moving that
+// axis, if any: the encoder says the stage is not where the counter says, so a completion
+// on the counter would be a lie. Mirrors check_position's bookkeeping: clear this axis's
+// in-progress flag, keep mcu_cmd_execution_in_progress true while any other axis still
+// moves, and set the status the host reads on the next packet.
+static void fail_commanded_move(uint8_t axis)
+{
+  bool *flag = axis == x ? &X_commanded_movement_in_progress
+             : axis == y ? &Y_commanded_movement_in_progress
+             : axis == z ? &Z_commanded_movement_in_progress
+             : axis == w ? &W_commanded_movement_in_progress
+             : axis == w2 ? &W2_commanded_movement_in_progress : (bool *)0;
+  if (flag == (bool *)0 || !*flag) return;
+  *flag = false;
+  mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+  mcu_cmd_execution_in_progress = X_commanded_movement_in_progress || Y_commanded_movement_in_progress
+                               || Z_commanded_movement_in_progress || W_commanded_movement_in_progress
+                               || W2_commanded_movement_in_progress;
+}
+
 void check_closed_loop()
 {
   for (uint8_t i = 0; i < TOTAL_AXES; i++)
@@ -793,6 +813,11 @@ void check_closed_loop()
       }
       // Deviation watchdog: a fault drops the REQUEST as well, so a decoupled
       // or runaway axis stays open-loop until the host explicitly enables again.
+      // It also fails the move in flight on this axis - the counter will still
+      // reach the target, but the encoder says the stage did not, so reporting
+      // COMPLETED would hand the host a position it does not have. A fault with
+      // no move in flight reaches the host through the status packet's fault bits
+      // (BIT_POS_PID_FAULT_*), which are set in every packet.
       if (pid_max_dev_usteps[i] > 0)
       {
         int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
@@ -803,6 +828,7 @@ void check_closed_loop()
           pid_requested[i] = false;
           pid_zone_hold[i] = false;
           pid_fault[i] = true;
+          fail_commanded_move(i);
         }
       }
     }
@@ -846,9 +872,13 @@ void check_closed_loop()
         // At rest, outside the zone, frames aligned, and still beyond the watchdog limit: the
         // encoder stopped following during the open-loop move (lost encoder, stuck stage). Say
         // so, the same way the engaged watchdog does, instead of silently never re-engaging.
+        // The move in flight on this axis fails with it: the ramp finished on the counter but
+        // the encoder is beyond the limit, so COMPLETED would be a lie. A fault with no move
+        // in flight reaches the host through the status packet's fault bits, set in every packet.
         pid_requested[i] = false;
         pid_zone_hold[i] = false;
         pid_fault[i] = true;
+        fail_commanded_move(i);
       }
     }
   }
