@@ -653,6 +653,9 @@ class Microcontroller:
             0  # ENC_POS - XACTUAL of the reported axis (positive = encoder ahead of the counter), microsteps, int16
         )
         self.encoder_flags = 0  # raw status byte 19
+        # Latched closed-loop faults, byte 18 bits 4-6 as a 3-bit mask (bit 0 = X, 1 = Y, 2 = Z).
+        # Kept so each new fault is logged once instead of on every packet.
+        self.pid_fault_mask = 0
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -1399,6 +1402,15 @@ class Microcontroller:
         cmd[6] = t & 0xFF
         self.send_command(cmd)
 
+    def pid_fault_axes(self) -> set:
+        """Axes whose closed-loop deviation watchdog has latched a fault (firmware >= 1.6).
+
+        Read-only view of the last packet's byte 18 fault bits. A fault means the loop was
+        opened and the axis is running open loop; it stays latched until the host reconfigures
+        or re-enables the loop on that axis.
+        """
+        return {axis for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)) if self.pid_fault_mask & (1 << bit)}
+
     def get_encoder_state(self):
         """Decoded view of the last packet's encoder fields (firmware >= 1.6)."""
         f = self.encoder_flags
@@ -1791,6 +1803,21 @@ class Microcontroller:
                 )  # unit: microstep or encoder resolution
 
                 self.button_and_switch_state = msg[18]
+                # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte
+                # 19's flag these arrive in every packet, so a fault is reported even when no
+                # host command was in flight to fail. Log each NEW fault once - the packet
+                # stream repeats the latch until the host clears it.
+                fault_mask = (msg[18] >> BIT_POS_PID_FAULT_X) & 0x07
+                if fault_mask != self.pid_fault_mask:
+                    newly = fault_mask & ~self.pid_fault_mask
+                    for bit, name in ((0, "X"), (1, "Y"), (2, "Z")):
+                        if newly & (1 << bit):
+                            self.log.error(
+                                f"[MCU] closed-loop fault on {name}: the deviation watchdog opened the loop and the axis "
+                                f"now runs open-loop (position may be off by more than the watchdog limit). "
+                                f"Re-enable or disable the loop explicitly to clear the fault."
+                            )
+                    self.pid_fault_mask = fault_mask
                 # Encoder reporting (firmware >= 1.6): theta field doubles as ENC_POS, byte 19 flags,
                 # bytes 20-21 int16 loop error. All zero unless a host enabled it.
                 self.encoder_flags = msg[19]

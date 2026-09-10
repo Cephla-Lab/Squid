@@ -331,6 +331,64 @@ def test_encoder_reporting_and_pid_limits_commands():
     micro.close()
 
 
+def _feed_status_packet(micro, msg):
+    """Push one raw status packet into the simulated port and wait for the read thread to parse it.
+
+    The read loop notifies _received_packet_cv at the end of the parse, so waiting on it means
+    every field of `msg` - including the closed-loop fault bits - has been through the real
+    handler rather than a copy of its logic.
+    """
+    deadline = time.time() + 5.0
+    while micro._serial.bytes_available() and time.time() < deadline:
+        time.sleep(0.005)
+    with micro._received_packet_cv:
+        with micro._serial._update_lock:
+            micro._serial.response_buffer.extend(bytes(msg))
+        assert micro._received_packet_cv.wait(timeout=5.0), "read thread never parsed the injected packet"
+
+
+def test_pid_fault_bits_are_parsed_and_logged_once(caplog):
+    """Byte 18 bits 4-6 carry the latched closed-loop fault per axis, in every packet.
+
+    Firmware 1.6 sets them whether or not encoder reporting is on, so a fault with no command
+    in flight still reaches the host. Each NEW fault is logged once; a packet that repeats a
+    fault the host already knows about must stay quiet, or a 100 Hz packet stream would bury
+    the log.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    def packet(button_and_switch_state):
+        msg = bytearray(24)
+        msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        msg[18] = button_and_switch_state
+        msg[22] = (1 << 4) | 6
+        msg[23] = crc_calculator.calculate_checksum(msg[:23])
+        return msg
+
+    try:
+        assert micro.pid_fault_axes() == set()
+
+        with caplog.at_level(logging.ERROR, logger="squid.Microcontroller"):
+            caplog.clear()
+            _feed_status_packet(micro, packet(1 << control._def.BIT_POS_PID_FAULT_Z))
+
+            assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+            faults = [r for r in caplog.records if "closed-loop fault on Z" in r.message]
+            assert len(faults) == 1, f"expected one ERROR for the new Z fault, got {len(faults)}"
+
+            # The same latch reported again is not news.
+            caplog.clear()
+            _feed_status_packet(micro, packet(1 << control._def.BIT_POS_PID_FAULT_Z))
+
+            assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+            assert [r for r in caplog.records if "closed-loop fault" in r.message] == []
+    finally:
+        micro.close()
+
+
 def test_encoder_fields_decode_from_packet():
     """Theta field becomes encoder_pos and bytes 20-21 the signed deviation, only while flag bit 0 is set."""
     from crc import CrcCalculator, Crc8

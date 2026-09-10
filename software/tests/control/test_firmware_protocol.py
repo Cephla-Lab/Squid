@@ -18,6 +18,10 @@ import pytest
 from crc import CrcCalculator, Crc8
 
 from control._def import (
+    BIT_POS_JOYSTICK_BUTTON,
+    BIT_POS_PID_FAULT_X,
+    BIT_POS_PID_FAULT_Y,
+    BIT_POS_PID_FAULT_Z,
     CMD_SET,
     MicrocontrollerDef,
     AXIS,
@@ -250,6 +254,30 @@ class TestProtocolConsistency:
                 mismatches.append(f"{fw_name}: not found in firmware")
 
         assert len(mismatches) == 0, f"Limit switch polarity mismatches:\n" + "\n".join(mismatches)
+
+    def test_status_byte_bit_positions_match(self, firmware_constants):
+        """Verify the byte 18 bit positions match.
+
+        The host masks these bits individually, so a firmware/host disagreement silently
+        reads the wrong flag rather than failing loudly.
+        """
+        bit_mapping = {
+            "BIT_POS_JOYSTICK_BUTTON": BIT_POS_JOYSTICK_BUTTON,
+            "BIT_POS_PID_FAULT_X": BIT_POS_PID_FAULT_X,
+            "BIT_POS_PID_FAULT_Y": BIT_POS_PID_FAULT_Y,
+            "BIT_POS_PID_FAULT_Z": BIT_POS_PID_FAULT_Z,
+        }
+
+        mismatches = []
+        for fw_name, py_value in bit_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(f"{fw_name}: firmware={fw_value}, software={py_value}")
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"Status byte bit position mismatches:\n" + "\n".join(mismatches)
 
     def test_illumination_source_codes_match(self, firmware_constants):
         """Verify illumination source codes match."""

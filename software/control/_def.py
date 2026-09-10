@@ -226,6 +226,12 @@ class CMD_SET2:
 
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
+# Status byte 18, bits 4-6 (firmware >= 1.6): closed-loop fault latched on X / Y / Z, in protocol
+# axis order. Set in every packet, whether or not encoder reporting is on, so a fault that hit
+# with no command in flight still reaches the host.
+BIT_POS_PID_FAULT_X = 4
+BIT_POS_PID_FAULT_Y = 5
+BIT_POS_PID_FAULT_Z = 6
 
 
 class HOME_OR_ZERO:
