@@ -557,7 +557,19 @@ int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivi
       uint8_t dac_idx:               DAC associated with this stage. Set to NO_DAC if there isn't one
       uint32_t dac_fullscale_msteps: abs(mstep when voltage set to 0 - mstep when voltage set to 5V); used for setting the position using the piezo
 
-  RETURNS: None
+  RETURNS: bool - true when the whole configuration was applied.
+
+           false means ONLY that current_rms_ma/hold_ratio could not be encoded
+           for this axis's driver and R_sense, so the axis kept the current it
+           already had. Everything else - pitch, steps per rev, microstepping on
+           both the driver and the TMC4361A, and the DAC fields - was applied
+           either way, which is why this is a return value and not an abort.
+
+           Callers must not commit the requested current to their own state on
+           false, or the refused value comes back on the next re-apply
+           (INITIALIZE, INITFILTERWHEEL) as if the driver had accepted it. Host
+           command callbacks additionally report false to the host as
+           CMD_EXECUTION_ERROR.
 
   INPUTS / OUTPUTS: The CS pin and SPI MISO and MOSI pins output, input, and output data respectively
 
@@ -596,7 +608,6 @@ bool tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, floa
   tmc4361A_writeMicrosteps(tmc4361A);
   tmc4361A_writeSPR(tmc4361A);
 
-  return;
   // false: the current request could not be encoded and the axis kept its previous current
   // (everything else above was applied); the command callback reports it to the host.
   return current_ok;
