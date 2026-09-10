@@ -148,6 +148,11 @@ void tmc4361A_writeSPR(TMC4361ATypeDef *)        { record(OP_SPR,    0, 0); }
 #include "tmc/drivers/tmc2660.cpp"
 #include "tmc/drivers/tmc2240.cpp"
 #include "tmc/drivers/driver_probe.cpp"
+/* The dispatch layer over the two modules above. It lives in its own .cpp,
+   including nothing but the seam's three headers, precisely so it can be
+   compiled here; it used to be a block inside TMC4361A_Utils.cpp, which needs
+   <SPI.h> and can never be built by env:native. */
+#include "tmc/drivers/stepper_driver.cpp"
 
 /* ------------------------------------------------------------------------- */
 /* Assertion helpers                                                          */
@@ -1193,6 +1198,55 @@ void test_driver_ready_rejects_unknown_and_never_probed_axes(void)
        here — it would then be caught by the dispatch, which does whitelist. */
 }
 
+/*
+  The dispatch layer's contract for an axis whose driver the probe could not
+  identify.
+
+  Both value-returning dispatchers reach a DRIVER_UNKNOWN axis with nothing
+  written, and they must say so the same way. tmc_driver_config_stallguard has
+  always returned 0 (rejected) with the reasoning spelled out above it -
+  "nothing was configured, so reporting success would be a lie". Three functions
+  earlier, tmc_driver_set_current returned true for the same state, so a
+  DRIVER_UNKNOWN axis reported that a current it never wrote had been applied.
+  Its one caller, tmc4361A_motor_config(), passes that bool straight to cmd 21
+  CONFIGURE_STEPPER_DRIVER, and callers commit the requested current to the
+  *_MOTOR_RMS_CURRENT_mA globals on the strength of it.
+
+  The zero-ops half of this assertion is the part that pins the contract to the
+  code rather than to the constant: it fails if a future arm writes registers to
+  an axis it could not identify, whichever bool it hands back.
+*/
+void test_set_current_returns_false_and_writes_nothing_on_unknown_driver(void)
+{
+    g_axis.driver_type = DRIVER_UNKNOWN;
+
+    TEST_ASSERT_FALSE_MESSAGE(tmc_driver_set_current(&g_axis, 500.0f, 0.5f),
+        "tmc_driver_set_current on a DRIVER_UNKNOWN axis wrote no register, so it "
+        "must report a refusal - the same answer tmc_driver_config_stallguard "
+        "gives for that state. Returning true lets cmd 21 commit a current the "
+        "hardware never received, and INITIALIZE re-applies it every time.");
+
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, g_n,
+        "a DRIVER_UNKNOWN axis must see zero bus operations: the probe could not "
+        "confirm anything is answering on its SPI (design M4)");
+}
+
+/*
+  The same state through the other value-returning dispatcher, asserted next to
+  it so the two contracts cannot drift apart again unnoticed.
+*/
+void test_config_stallguard_returns_zero_and_writes_nothing_on_unknown_driver(void)
+{
+    g_axis.driver_type = DRIVER_UNKNOWN;
+
+    TEST_ASSERT_EQUAL_INT16_MESSAGE(0, tmc_driver_config_stallguard(&g_axis, 12, true, 1),
+        "tmc_driver_config_stallguard on a DRIVER_UNKNOWN axis configured nothing "
+        "and must report rejected");
+
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, g_n,
+        "a DRIVER_UNKNOWN axis must see zero bus operations");
+}
+
 /* ------------------------------------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -1230,6 +1284,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_probe_decision_table);
     RUN_TEST(test_probe_records_raw_word_on_every_exit_path);
     RUN_TEST(test_driver_ready_rejects_unknown_and_never_probed_axes);
+    RUN_TEST(test_set_current_returns_false_and_writes_nothing_on_unknown_driver);
+    RUN_TEST(test_config_stallguard_returns_zero_and_writes_nothing_on_unknown_driver);
 
     return UNITY_END();
 }
