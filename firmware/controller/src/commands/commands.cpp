@@ -447,6 +447,10 @@ void callback_disable_stage_pid()
     stage_PID_enabled[axis] = 0;
     pid_requested[axis] = false;
     pid_zone_hold[axis] = false;
+    // An explicit DISABLE acknowledges a latched watchdog fault: the host has chosen to run
+    // this axis open-loop knowingly, so the fault bit (status byte 18) is cleared here. ENABLE
+    // clears it too, but only after its own deviation check passes.
+    pid_fault[axis] = false;
 }
 
 // Helper function for filter wheel initialization (shared by W and W2)
