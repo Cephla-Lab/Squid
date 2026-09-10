@@ -35,16 +35,24 @@
   garbage: a wild position jump in the GUI and the logs, plus an ack for a
   command id nobody sent. Not a warning - a bad reading presented as good.
 
-  At boot none of that applies: loop() has not started, so no status packet has
-  been sent and there is no real packet for a misaligned window to straddle.
+  Boot is NOT exempt, which is why the whole function is bench-only now. The
+  text is queued in the Teensy's USB TX ring, and a host that reconnects during
+  boot (its reconnect loop reopens the port every ~2 s, and usb_serial_write()
+  gates only on the USB configuration, not on DTR) reads it ahead of the first
+  status packet - the first packet then follows the last report line by well
+  under a millisecond, and the misaligned window above is exactly what the host
+  accepts. A cold start with the GUI opened later usually wins the race by
+  flushing the port on open; a controller power-cycle or USB re-plug with the
+  GUI running does not.
 
-  The warm filter-wheel path (INITFILTERWHEEL at runtime) is therefore behind
-  -D TMC_PROBE_REPORT_RUNTIME and is NOT in the shipping default. The bench gate
-  does need that path - it re-probes an already-configured 2660 at RDSEL = 2,
-  where SG and SE are both zero at standstill, which is the case most likely to
-  read all-zeros - so capture it from a purpose-built image. See platformio.ini
-  and the call site in commands.cpp.
+  So: -D TMC_PROBE_REPORT compiles this function and both call sites (boot in
+  this file, INITFILTERWHEEL in commands.cpp). The shipping default prints
+  nothing on the link. The bench gate (design 10, step 0) needs the raw word
+  from BOTH paths - the warm one re-probes an already-configured 2660 at
+  RDSEL = 2, where SG and SE are both zero at standstill - so capture it from a
+  purpose-built image. See platformio.ini.
 */
+#ifdef TMC_PROBE_REPORT
 void report_driver_probe(uint8_t axis)
 {
   // Indexed by INTERNAL axis index (def_v1.h), which is not the protocol order.
@@ -75,6 +83,7 @@ void report_driver_probe(uint8_t axis)
   SerialUSB.print(" probe_raw=0x");
   SerialUSB.println(hex);
 }
+#endif /* TMC_PROBE_REPORT */
 
 void init_serial_communication()
 {
@@ -235,7 +244,9 @@ void init_stages()
   {
     tmc_driver_probe(&tmc4361[i]);
     tmc_driver_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
-    report_driver_probe(i);                       // after init, so the probe's SPIOUT_CONF window stays short
+#ifdef TMC_PROBE_REPORT
+    report_driver_probe(i);                       // BENCH BUILDS ONLY: ASCII on the host link (see the function's comment)
+#endif
   }
 
   // Motor configurations. Current is in mA and the driver seam converts it.

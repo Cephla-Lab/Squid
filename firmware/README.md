@@ -313,27 +313,27 @@ PLATFORMIO_BUILD_FLAGS="-DDISABLE_LASER_INTERLOCK" pio run -e teensy41 -t upload
 
 > **WARNING:** Only use this flag for systems without lasers installed. Disabling the interlock removes laser safety protection.
 
-**Log the runtime driver probe (bench builds only):**
+**Log the driver probe (bench builds only):**
 
-The stepper-driver probe result is reported at boot in every build. The *runtime*
-report — the one emitted when a filter wheel is initialised via `INITFILTERWHEEL`
-while the instrument is running — is compiled out by default and enabled with:
+The stepper-driver probe report — each probed slot's verdict and raw probe word
+as ASCII on the USB link, at boot and when a filter wheel is initialised via
+`INITFILTERWHEEL` — is compiled out by default and enabled with:
 
 ```bash
-PLATFORMIO_BUILD_FLAGS="-DTMC_PROBE_REPORT_RUNTIME" pio run -e teensy41 -t upload
+PLATFORMIO_BUILD_FLAGS="-DTMC_PROBE_REPORT" pio run -e teensy41 -t upload
 ```
 
 > **WARNING: never ship an image built with this flag.** The report is ASCII on
-> the same USB link that carries the 24-byte status packets. Mid-session the host
-> accepts any 24-byte window whose last byte is zero; the packets contain zero
-> bytes and this text contains none, so a misaligned window is reliably accepted
-> and the host reports a **garbage stage position as if it were real** — a wild
-> position jump in the GUI and the logs, plus an ack for a command nobody sent.
-> At boot none of that applies, because no status packet has been sent yet, which
-> is why the boot report needs no flag.
+> the same USB link that carries the 24-byte status packets. The host accepts
+> any 24-byte window whose last byte is zero; the packets contain zero bytes and
+> this text contains none, so a misaligned window is reliably accepted and the
+> host reports a **garbage stage position as if it were real** — a wild position
+> jump in the GUI and the logs, plus an ack for a command nobody sent. That
+> holds mid-session and at boot alike: a host reconnecting while the controller
+> starts reads the boot lines ahead of the first status packet.
 >
-> Build it only to capture the warm-path probe word for the bench gate above,
-> which cold boot cannot exercise.
+> Build it only to capture the probe words for the bench gate above; the warm
+> filter-wheel path is only reachable at runtime.
 
 ### Source Structure
 

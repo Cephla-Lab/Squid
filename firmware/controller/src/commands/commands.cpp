@@ -471,21 +471,23 @@ static void init_filterwheel_axis(uint8_t axis)
     // exercises.
     tmc_driver_probe(&tmc4361[axis]);
     tmc_driver_init(&tmc4361[axis], clk_Hz_TMC4361);
-#ifdef TMC_PROBE_REPORT_RUNTIME
-    // BENCH BUILDS ONLY. This runs mid-session, with the host already reading
-    // status packets, and the report is ASCII on that same link. The host
-    // accepts any 24-byte window ending in a zero byte, the packets carry
-    // buffer_tx[19..21] = 0 and this text carries no zero at all, so a
-    // MISALIGNED window is reliably accepted and the host reports a garbage
-    // stage position as if it were real. See report_driver_probe() in init.cpp.
-    //
-    // Enabled with -D TMC_PROBE_REPORT_RUNTIME (platformio.ini) for design
-    // section 10 step 0, which needs the raw word from THIS path too: it
-    // re-probes an already-configured TMC2660 at SDOFF = 1 / RDSEL = 2, where SG
-    // and SE are both zero at standstill, and cold boot never exercises it.
+#ifdef TMC_PROBE_REPORT
+    // BENCH BUILDS ONLY. ASCII on the status link: the host accepts any 24-byte
+    // window ending in a zero byte and reports a garbage stage position as real
+    // (see report_driver_probe() in init.cpp). Design section 10 step 0 needs the
+    // raw word from THIS path too: it re-probes an already-configured TMC2660 at
+    // SDOFF = 1 / RDSEL = 2, where SG and SE are both zero at standstill.
     report_driver_probe(axis);
 #endif
-    tmc4361A_motor_config(&tmc4361[axis], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+    // False means the driver refused the current: unencodable for this part and
+    // R_sense, or no identified driver on this axis at all. Either way the wheel
+    // is not at the current the globals claim, so the host has to hear about it.
+    // Only mcu_cmd_execution_status, never mcu_cmd_execution_in_progress -
+    // INITFILTERWHEEL never claims in_progress, and clearing it here would
+    // unwind an unrelated motion still running on another axis. Same contract as
+    // report_move_error() in stage_commands.cpp.
+    if (!tmc4361A_motor_config(&tmc4361[axis], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W))
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
     tmc4361A_enableLimitSwitch(&tmc4361[axis], lft_sw_pol[axis], LEFT_SW, false);
 
     // Calculate velocity and acceleration (ensures values are set for both W and W2)
@@ -596,9 +598,24 @@ void callback_initialize()
     //
     // On a TMC2660 axis this repeats the cScaleInit the init above just did,
     // from the same struct fields, so the registers land on the same values.
-    tmc_driver_set_current(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD);
-    tmc_driver_set_current(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD);
-    tmc_driver_set_current(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD);
+    //
+    // All three run before the verdict is read - one dead axis must not stop
+    // the other two being re-energised. False means the driver refused the
+    // current: unencodable for this part and R_sense, or no identified driver
+    // on this axis at all (that one is now reachable here, because the boot
+    // probe's failures are exactly what the re-probe above is for). The stage
+    // is then not at the current the globals claim, and INITIALIZE has one
+    // status for the whole command, so any refusal fails it.
+    //
+    // Only mcu_cmd_execution_status, never mcu_cmd_execution_in_progress -
+    // INITIALIZE never claims in_progress, and clearing it here would unwind an
+    // unrelated motion still running on another axis. Same contract as
+    // report_move_error() in stage_commands.cpp.
+    bool x_current_ok = tmc_driver_set_current(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD);
+    bool y_current_ok = tmc_driver_set_current(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD);
+    bool z_current_ok = tmc_driver_set_current(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD);
+    if (!(x_current_ok && y_current_ok && z_current_ok))
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 
     // enable limit switch reading
     tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);

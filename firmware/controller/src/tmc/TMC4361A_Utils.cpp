@@ -6,7 +6,7 @@
       tmc4361A_motor_config:            Configure one axis: current (mA), hold ratio, pitch, steps/rev, microsteps
           Arguments: TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx, uint32_t dac_fullscale_msteps
       tmc_driver_init / _set_current / _set_microsteps / _enable / _config_stallguard:
-                                        The five power-stage operations, dispatched on tmc4361A->driver_type (drivers/stepper_driver.h)
+                                        The five power-stage operations, declared in drivers/stepper_driver.h and dispatched on tmc4361A->driver_type in drivers/stepper_driver.cpp
       tmc4361A_setMaxSpeed:             Write the target velocity to the tmc4361A in units microsteps per second and recalculates bow values
           Arguments: TMC4361ATypeDef *tmc4361A, int32_t velocity
       tmc4361A_setSpeed:                Start moving at a constant speed in units microsteps per second
@@ -91,9 +91,13 @@
           Arguments: TMC4361ATypeDef *tmc4361A
 */
 #include "TMC4361A_Utils.h"
-#include "drivers/tmc2660.h"
+// tmc2660.h / tmc2240.h are deliberately absent: with the dispatch moved to
+// drivers/stepper_driver.cpp, nothing here calls a per-driver entry point.
+// What remains is the shared seam (stepper_driver.h, for tmc_driver_set_current
+// and tmc_driver_set_microsteps in tmc4361A_motor_config), the register
+// encoders (driver_math.h) and the TMC2660 register names that
+// tmc4361A_cScaleInit's master-exact datagram spells out (tmc2660_regs.h).
 #include "drivers/tmc2660_regs.h"
-#include "drivers/tmc2240.h"
 #include "drivers/driver_math.h"
 #include "drivers/stepper_driver.h"
 
@@ -428,57 +432,19 @@ void tmc4361A_writeSPR(TMC4361ATypeDef *tmc4361A) {
   return;
 }
 
-/* ---- Driver dispatch (design 6.2) ---------------------------------------
-   The five operations that differ between power stages. The rest of this file
-   is TMC4361A-only and driver-agnostic, with one deliberate exception:
-   tmc4361A_cScaleInit() also emits the TMC2660 SGCSCONF cover datagram, kept
-   here byte-for-byte as master wrote it (M5). It is called only from the
-   TMC2660 path in drivers/tmc2660.cpp.
+/* The five power-stage operations that differ between drivers -
+   tmc_driver_init / _set_current / _set_microsteps / _enable /
+   _config_stallguard - are declared in drivers/stepper_driver.h and dispatched
+   on tmc4361A->driver_type in drivers/stepper_driver.cpp. They used to be
+   defined here; they were moved out so that env:native can compile the
+   dispatch (this file cannot be host-compiled - it needs <SPI.h> and the real
+   TMC4361A primitives) and test_driver_sequence can pin what a DRIVER_UNKNOWN
+   axis gets from each of them.
 
-   DRIVER_UNKNOWN axes are never touched: the probe could not confirm anything is
-   answering, so writing driver registers would be writing into the dark. That
-   leaves the power stage unconfigured and therefore unenergised, which is
-   design M4's fail-safe half. The other half - rejecting that axis's moves so
-   the failure is loud rather than a stage that silently does not move - is now
-   in place, across three files: the axis_driver_ready() helper (defined in
-   stage_commands.cpp) gates the host move and home commands there and the
-   ENABLE_STAGE_PID command in commands.cpp, and operations.cpp gates the
-   joystick and focus-wheel paths directly. All three are pinned by
-   test_command_layout. */
-
-void tmc_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
-  if (tmc4361A->driver_type == DRIVER_TMC2240) tmc2240_driver_init(tmc4361A, clk_Hz_TMC4361);
-  else if (tmc4361A->driver_type == DRIVER_TMC2660) tmc2660_driver_init(tmc4361A, clk_Hz_TMC4361);
-}
-
-bool tmc_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio) {
-  if (tmc4361A->driver_type == DRIVER_TMC2240) return tmc2240_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
-  if (tmc4361A->driver_type == DRIVER_TMC2660) return tmc2660_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
-  return true;   // no identified driver: nothing to refuse, the probe gate keeps the axis from moving
-}
-
-void tmc_driver_set_microsteps(TMC4361ATypeDef *tmc4361A, uint16_t microsteps) {
-  if (tmc4361A->driver_type == DRIVER_TMC2240) tmc2240_driver_set_microsteps(tmc4361A, microsteps);
-  else if (tmc4361A->driver_type == DRIVER_TMC2660) tmc2660_driver_set_microsteps(tmc4361A, microsteps);
-}
-
-void tmc_driver_enable(TMC4361ATypeDef *tmc4361A, bool enable) {
-  if (tmc4361A->driver_type == DRIVER_TMC2240) tmc2240_driver_enable(tmc4361A, enable);
-  else if (tmc4361A->driver_type == DRIVER_TMC2660) tmc2660_driver_enable(tmc4361A, enable);
-}
-
-/* Returns the drivers' shared bool contract: 1 = accepted, 0 = clamped. That is
-   master's tmc4361A_config_init_stallGuard convention and NOT the
-   NO_ERR (0) / ERR_OUT_OF_RANGE (-1) convention used elsewhere in this file, so
-   do not "normalise" it here - both driver implementations return the same
-   sense, and inverting it in the dispatcher would silently flip the meaning for
-   every future caller. DRIVER_UNKNOWN returns 0, rejected: nothing was
-   configured, so reporting success would be a lie. */
-int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity, bool filter_en, uint32_t vstall_lim) {
-  if (tmc4361A->driver_type == DRIVER_TMC2240) return tmc2240_driver_config_stallguard(tmc4361A, sensitivity, filter_en, vstall_lim);
-  if (tmc4361A->driver_type == DRIVER_TMC2660) return tmc2660_driver_config_stallguard(tmc4361A, sensitivity, filter_en, vstall_lim);
-  return 0;
-}
+   The rest of this file is TMC4361A-only and driver-agnostic, with one
+   deliberate exception: tmc4361A_cScaleInit() above also emits the TMC2660
+   SGCSCONF cover datagram, kept here byte-for-byte as master wrote it (M5). It
+   is called only from the TMC2660 path in drivers/tmc2660.cpp. */
 
 /*
   -----------------------------------------------------------------------------
@@ -557,7 +523,19 @@ int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivi
       uint8_t dac_idx:               DAC associated with this stage. Set to NO_DAC if there isn't one
       uint32_t dac_fullscale_msteps: abs(mstep when voltage set to 0 - mstep when voltage set to 5V); used for setting the position using the piezo
 
-  RETURNS: None
+  RETURNS: bool - true when the whole configuration was applied.
+
+           false means ONLY that current_rms_ma/hold_ratio could not be encoded
+           for this axis's driver and R_sense, so the axis kept the current it
+           already had. Everything else - pitch, steps per rev, microstepping on
+           both the driver and the TMC4361A, and the DAC fields - was applied
+           either way, which is why this is a return value and not an abort.
+
+           Callers must not commit the requested current to their own state on
+           false, or the refused value comes back on the next re-apply
+           (INITIALIZE, INITFILTERWHEEL) as if the driver had accepted it. Host
+           command callbacks additionally report false to the host as
+           CMD_EXECUTION_ERROR.
 
   INPUTS / OUTPUTS: The CS pin and SPI MISO and MOSI pins output, input, and output data respectively
 
@@ -596,7 +574,6 @@ bool tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, floa
   tmc4361A_writeMicrosteps(tmc4361A);
   tmc4361A_writeSPR(tmc4361A);
 
-  return;
   // false: the current request could not be encoded and the axis kept its previous current
   // (everything else above was applied); the command callback reports it to the host.
   return current_ok;
