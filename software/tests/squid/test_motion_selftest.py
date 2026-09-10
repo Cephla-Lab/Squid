@@ -28,7 +28,7 @@ class FakeMcu:
     """Counter and encoder of a Z stage. gap_mm: the stage rests on its stop while the actuator is within
     gap_mm of home (encoder still); ratio: encoder counts per counter count (-1 = wrong sign)."""
 
-    def __init__(self, axis: AxisConfig, gap_mm=0.0, ratio=1.0):
+    def __init__(self, axis: AxisConfig, gap_mm=0.0, ratio=1.0, max_dev_um=200.0, fault_after=None):
         self.axis = axis
         self.gap_mm = gap_mm
         self.ratio = ratio
@@ -37,6 +37,14 @@ class FakeMcu:
         self.enc_zero_mm = 0.0
         self.reporting = False
         self.pid_enabled = False
+        self.pid_fault = False
+        # Firmware ENABLE_STAGE_PID refuses when |ENC_POS - XACTUAL| exceeds the watchdog limit
+        # (commands.cpp: "refuse up front instead of tripping a moment later").
+        self.max_dev_um = max_dev_um
+        # Inject a watchdog fault: after this many encoder reads with the loop engaged, the firmware
+        # opens the loop and latches PID_FAULT (None = never).
+        self.fault_after = fault_after
+        self._reads_engaged = 0
         self.pid_on_calls = 0  # how many times the loop was switched on, restore included
         self.calls = []
 
@@ -68,20 +76,40 @@ class FakeMcu:
     def set_encoder_reporting(self, axis, mode):
         self.reporting = mode != 0
 
+    def configure_stage_pid(self, axis, transitions_per_revolution, flip_direction=False):
+        # Firmware >= 1.6: CONFIGURE_STAGE_PID re-aligns ENC_POS to XACTUAL at the current position
+        # and clears a latched fault.
+        self.calls.append(("configure",))
+        mm = self.axis.convert_to_real_units(self.z_pos)
+        self.enc_zero_mm = self._stage_mm(mm) - mm
+        self.pid_fault = False
+
     def turn_on_stage_pid(self, axis):
-        self.pid_enabled = True
         self.pid_on_calls += 1
+        dev_um = abs(self.axis.convert_to_real_units(self._enc_pos() - self.z_pos)) * 1000.0
+        if dev_um > self.max_dev_um:
+            self.calls.append(("enable_refused", round(dev_um)))
+            return  # CMD_EXECUTION_ERROR on the real controller: the loop stays off
+        self.pid_enabled = True
+        self.pid_fault = False
+        self._reads_engaged = 0
 
     def turn_off_stage_pid(self, axis):
         self.pid_enabled = False
+        self.pid_fault = False  # DISABLE acknowledges a latched fault
 
     def get_encoder_state(self):
+        if self.pid_enabled and self.fault_after is not None:
+            self._reads_engaged += 1
+            if self._reads_engaged >= self.fault_after:
+                self.pid_enabled = False
+                self.pid_fault = True
         enc = self._enc_pos()
         dev = 0 if self.pid_enabled else enc - self.z_pos
         return {
             "reporting": self.reporting,
             "pid_enabled": self.pid_enabled,
-            "pid_fault": False,
+            "pid_fault": self.pid_fault,
             "pid_zone_hold": False,
             "axis": 2,
             "encoder_pos": enc,
@@ -157,9 +185,32 @@ def test_gap_stage_is_measured_and_the_floor_is_recommended():
 def test_gap_stage_with_a_consistent_floor_passes():
     pid = PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=700)
     axis = _axis(pid=pid, min_pos=0.75)
-    report, _ = _run(FakeMcu(axis, gap_mm=0.64), axis)
+    mcu = FakeMcu(axis, gap_mm=0.64)
+    report, log = _run(mcu, axis)
     gap = next(r for r in report.results if r.name == "gap above home")
     assert gap.passed is True, gap.summary
+    # The run homes with the loop OFF, so the firmware never arms its post-homing realignment and an
+    # explicit ENABLE would be refused on this stage (640 um frame offset > 200 um watchdog). The
+    # self-test must realign the frames itself before enabling, as the firmware does on the first
+    # engage after a homing with the loop requested.
+    closed = next(r for r in report.results if r.name == "closed loop")
+    assert closed.passed is True, closed.summary
+    assert ("enable_refused", 640) not in mcu.calls, mcu.calls
+    assert ("configure",) in mcu.calls
+    assert report.passed, report.text()
+
+
+def test_watchdog_fault_during_the_run_leaves_the_loop_off():
+    # The firmware opens the loop and latches PID_FAULT partway through the closed-loop stack. The
+    # report must say so, and the cleanup must NOT switch the loop back on: a fresh ENABLE would
+    # pass the firmware's deviation check once the stage settled and hide the fault.
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis, fault_after=3)
+    report, log = _run(mcu, axis)
+    assert not report.passed
+    assert mcu.pid_enabled is False
+    assert mcu.pid_on_calls == 1, mcu.calls  # the run's own enable; none from restore
+    assert any("left OFF" in line and "fault" in line.lower() for line in log), log
 
 
 def test_open_loop_instrument_skips_the_loop_check():

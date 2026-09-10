@@ -414,6 +414,7 @@ class ZMotionSelfTest:
         if not self.encoder_ok:
             self._add("closed loop", False, "encoder not usable, loop left off")
             return
+        self._realign_frames()
         self.mcu.turn_on_stage_pid(AXIS.Z)
         self._wait(5)
         self._settle(0.3)
@@ -482,6 +483,30 @@ class ZMotionSelfTest:
         if self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01 and not self.mcu.is_busy():
             self._move(self.depth, check_cancel=False)
 
+    def _realign_frames(self):
+        """Take the counter's frame as the encoder's at the current resting position before an explicit ENABLE.
+
+        The firmware does this itself on the first engage after a homing - but only for a loop that was
+        requested through the homing. This run homes with the loop OFF (the open-loop checks need it off),
+        so nothing is armed, and on a stage whose actuator homes below the stage stop the encoder lags the
+        counter by the gap: an explicit ENABLE is then refused by the firmware's deviation check (640 um gap
+        against a 200 um watchdog on the second bench Z). CONFIGURE_STAGE_PID (firmware >= 1.6) re-aligns
+        ENC_POS to XACTUAL with the ini's scale and direction, unchanged; the offset absorbed is logged so a
+        real frame problem stays visible (encoder_check reported it as measured).
+        """
+        offset_um = self._dev_um(self._enc()["deviation"])
+        a = self.axis
+        self.mcu.configure_stage_pid(
+            AXIS.Z,
+            transitions_per_revolution=int(round(a.SCREW_PITCH / a.ENCODER_STEP_SIZE)),
+            flip_direction=a.ENCODER_FLIP_DIR,
+        )
+        self._wait()
+        self.log(
+            f"encoder frame re-aligned to the counter at {self._pos_mm():.3f} mm before enabling "
+            f"(absorbed {offset_um:+.1f} um, as the firmware does on the first engage after a homing)"
+        )
+
     def _restore_loop(self):
         if not self.loop_configured:
             return
@@ -496,7 +521,18 @@ class ZMotionSelfTest:
                 "fix the ini and restart before enabling the loop"
             )
             return
-        if not self._enc()["pid_enabled"]:
+        st = self._enc()
+        if st["pid_fault"]:
+            # A watchdog fault during the run means the stage stopped following the actuator. A fresh
+            # ENABLE would pass the firmware's deviation check once the stage had settled and hide it,
+            # and the fault bit would be gone from the status packet. Leave the loop off and say so.
+            self.log(
+                "closed loop left OFF: the firmware latched a deviation fault (PID_FAULT) during the run; "
+                "find the cause (stuck stage, lost encoder) before enabling the loop again"
+            )
+            return
+        if not st["pid_enabled"]:
+            self._realign_frames()
             self.mcu.turn_on_stage_pid(AXIS.Z)
             self._wait(5)
 
