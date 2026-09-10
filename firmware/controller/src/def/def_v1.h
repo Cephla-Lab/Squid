@@ -20,9 +20,40 @@ static const uint8_t z = 2;
 static const uint8_t w = 3;   // First filter wheel
 static const uint8_t w2 = 4;  // Second filter wheel
 
+// TMC2660 — external sense resistor.
 static const float R_sense_xy = 0.22;
 static const float R_sense_z = 0.43;
 static const float R_sense_w = 0.105;  // Used by both W and W2 (identical hardware)
+
+// TMC2240 — integrated current sense, no external resistor. CURRENT_RANGE
+// selects the sine PEAK full-scale current: 0 = 0.98 A, 1 = 2.0 A, 2/3 = 3.0 A
+// (KIFS/R_ref with R_ref = 12 kOhm, confirmed on the Squid 2240 board).
+//
+// Ranges are chosen so IRUN lands in ADI's recommended 16..31 band, at
+// GLOBALSCALER = 256 and with the corrected (sqrt(2)-bearing) formula in
+// drivers/driver_math.h:
+//   X/Y 1000 mA rms -> range 1 -> IRUN 21 -> 972 mA delivered
+//   Z    500 mA rms -> range 0 -> IRUN 22 -> 498 mA delivered
+//   W   1900 mA rms -> range 2 -> IRUN 27 -> 1856 mA delivered, i.e. 87% of the
+//                                 part's 2121 mA rms ceiling — the axis with the
+//                                 least headroom, worth a thermal look on the bench.
+//
+// ONLY 0, 1 and 2 are legal, which is what the static_assert below enforces.
+// Both consumers mask this value with & 0x03 — tmc2240_ifs_peak_a() when it
+// picks I_FS (driver_math.h) and tmc2240_drv_conf_value() when it builds
+// DRV_CONF (tmc2240_regs.h) — so a 4 would not fail loudly, it would become
+// range 0 in both places and quietly deliver about a third of the intended
+// current on an axis that reports success. Nothing on the wire can reach these
+// (cmd 21 carries mA and microsteps, not the range), so a compile-time check is
+// the whole of the validation needed.
+static const uint8_t CURRENT_RANGE_XY = 1;
+static const uint8_t CURRENT_RANGE_Z  = 0;
+static const uint8_t CURRENT_RANGE_W  = 2;  // Used by both W and W2 (identical hardware)
+
+static_assert(CURRENT_RANGE_XY <= 2 && CURRENT_RANGE_Z <= 2 && CURRENT_RANGE_W <= 2,
+              "CURRENT_RANGE must be 0, 1 or 2: tmc2240_ifs_peak_a() and "
+              "tmc2240_drv_conf_value() both mask with & 0x03, so 4 silently "
+              "becomes range 0 (~1/3 of the intended current)");
 
 // limit switch
 static const bool flip_limit_switch_x = true;
