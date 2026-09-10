@@ -126,6 +126,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # re-anchors it. Set to False to keep every move on the flag-free arc as before.
     wrap: bool = True
 
+    # Ceiling on the net turn count before the wheel is re-homed. Shortest-path slot changes
+    # that net to a full turn (1 -> 4 -> 7 -> 1 on an 8-slot wheel) add one turn per cycle, and
+    # _plan_move's absolute target grows with it, so the driver coordinate would drift for as
+    # long as the machine runs. Four bytes of MOVETO payload hold roughly 168k turns, past
+    # which Microcontroller._move_axis_to_usteps raises ValueError - not a recoverable move
+    # error, so it would surface as a crash rather than a retry. 10000 turns is far below that
+    # and still hundreds of thousands of slot changes apart, so the ~4 s re-home is not a cost
+    # any real session notices.
+    REHOME_AFTER_TURNS: int = 10000
+
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
         motor_slot = config.motor_slot_index
@@ -272,6 +282,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         if target_pos == current_pos:
             return
+
+        # Keep the driver coordinate bounded (see REHOME_AFTER_TURNS). Homing re-anchors both
+        # the tracked position and the turn count, so the move is then planned from scratch.
+        turns = self._turns.get(wheel_id, 0)
+        if abs(turns) >= self.REHOME_AFTER_TURNS:
+            _log.info(
+                f"filter wheel {wheel_id}: re-homing after {turns} net turns to keep the driver coordinate bounded"
+            )
+            self._home_wheel(wheel_id)
+            current_pos = self._positions[wheel_id]
 
         target_usteps, target_turns = self._plan_move(wheel_id, target_pos)
         _log.info(

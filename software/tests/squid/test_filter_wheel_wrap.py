@@ -117,3 +117,40 @@ def test_homing_resets_the_turn_counter():
     assert w._turns[1] == 1
     w.home(1)
     assert w._turns[1] == 0 and w._positions[1] == 1
+
+
+def test_re_homes_once_the_net_turn_count_reaches_the_bound(caplog):
+    """Shortest-path cycles that net to a full turn grow the absolute target without bound.
+
+    1 -> 4 -> 7 -> 1 on an 8-slot wheel is three forward moves that come back to the same slot
+    one turn on, so a long acquisition adds a turn per cycle. The absolute MOVETO payload is
+    four bytes, and Microcontroller._move_axis_to_usteps raises ValueError once the target no
+    longer fits - not one of the recoverable move errors, so it would take the acquisition down.
+    Re-homing re-anchors the coordinate at zero.
+    """
+    w, mc, cfg = _wheel()
+    w._positions[1] = 1
+    w._turns[1] = SquidFilterWheel.REHOME_AFTER_TURNS
+
+    w.set_filter_wheel_position({1: 4})
+
+    mc.home_w.assert_called_once()
+    assert w._turns[1] == 0
+    target = mc.move_w_to_usteps.call_args_list[-1].args[0]
+    assert abs(target) < abs(TURN), f"target {target} is not within one turn ({TURN}) of zero"
+    assert target == SquidFilterWheel._target_pos_to_usteps(cfg, 4)
+    assert w._positions[1] == 4
+
+
+def test_no_re_home_just_below_the_bound():
+    """The bound is a ceiling, not a periodic re-home: one turn short of it nothing changes."""
+    w, mc, cfg = _wheel()
+    w._positions[1] = 1
+    w._turns[1] = SquidFilterWheel.REHOME_AFTER_TURNS - 1
+
+    w.set_filter_wheel_position({1: 4})
+
+    mc.home_w.assert_not_called()
+    assert w._turns[1] == SquidFilterWheel.REHOME_AFTER_TURNS - 1
+    expected = SquidFilterWheel._target_pos_to_usteps(cfg, 4) + (SquidFilterWheel.REHOME_AFTER_TURNS - 1) * TURN
+    mc.move_w_to_usteps.assert_called_once_with(expected)
