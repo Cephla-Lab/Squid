@@ -34,11 +34,17 @@ def connect():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--depth-mm", type=float, default=None, help="working depth (default 2.5 mm, clipped to the travel)")
+    ap.add_argument(
+        "--depth-mm", type=float, default=None, help="working depth (default 2.5 mm, clipped to the travel)"
+    )
     ap.add_argument("--stack-n", type=int, default=20)
     ap.add_argument("--hold-s", type=float, default=5.0)
     ap.add_argument("--gui", action="store_true", help="show the dialog instead of printing")
-    ap.add_argument("--autostart", action="store_true", help="with --gui: start without the confirmation and exit when done (bench check)")
+    ap.add_argument(
+        "--autostart",
+        action="store_true",
+        help="with --gui: start without the confirmation and exit when done (bench check)",
+    )
     a = ap.parse_args()
 
     mcu, stage, cfg = connect()
@@ -52,13 +58,21 @@ def main():
         dlg = MotionSelfTestDialog(mcu, cfg.Z_AXIS, stage=stage)
         dlg.show()
         if a.autostart:
-            dlg.signal_finished.connect(lambda ok: (print(dlg.log_view.toPlainText()), print('DIALOG DONE:', 'PASS' if ok else 'FAIL'), QTimer.singleShot(1500, app.quit)))
+            dlg.signal_finished.connect(
+                lambda ok: (
+                    print(dlg.log_view.toPlainText()),
+                    print("DIALOG DONE:", "PASS" if ok else "FAIL"),
+                    QTimer.singleShot(1500, app.quit),
+                )
+            )
             QTimer.singleShot(500, lambda: dlg.start(confirm=False))
         rc = app.exec_()
         mcu.close()
         sys.exit(rc)
 
-    test = ZMotionSelfTest(mcu, cfg.Z_AXIS, stage=stage, working_depth_mm=a.depth_mm, stack_n=a.stack_n, hold_s=a.hold_s)
+    test = ZMotionSelfTest(
+        mcu, cfg.Z_AXIS, stage=stage, working_depth_mm=a.depth_mm, stack_n=a.stack_n, hold_s=a.hold_s
+    )
     report = test.run()
     mcu.close()
     sys.exit(0 if report.passed else 1)

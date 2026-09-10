@@ -30,6 +30,7 @@ Usage (from software/, with the project venv):
 Common options: --depth-mm 2.5 (extension from home) --step-um 100 --vmax 1.0 --corr-vmax 0.3 --max-dev-um 200
                 --zone-um 0 (home exclusion zone sent to firmware) --out z_tune
 """
+
 import argparse
 import csv
 import json
@@ -58,9 +59,11 @@ def set_microsteps(n):
     global MICROSTEPS, USTEPS_PER_MM
     MICROSTEPS = int(n)
     USTEPS_PER_MM = MICROSTEPS * FULLSTEPS_PER_REV / PITCH_MM
+
+
 TRANSITIONS_PER_REV = int(round(PITCH_MM / ENC_STEP_MM))
-SIGN = _def.STAGE_MOVEMENT_SIGN_Z           # -1 on the Squid+: "down" (positive depth) is negative usteps
-HARD_CAP_DEPTH_MM = 5.5                     # never command below this, whatever the arguments say
+SIGN = _def.STAGE_MOVEMENT_SIGN_Z  # -1 on the Squid+: "down" (positive depth) is negative usteps
+HARD_CAP_DEPTH_MM = 5.5  # never command below this, whatever the arguments say
 FW_MIN = (1, 6)
 
 
@@ -122,8 +125,13 @@ class ZTuner:
         self.loop_on = False
         self.last_cmd_to_ack_s = float("nan")
         self.cmd_to_ack_log = []
-        self.summary = {"config": vars(args), "pitch_mm": PITCH_MM, "usteps_per_mm": USTEPS_PER_MM,
-                        "transitions_per_rev": TRANSITIONS_PER_REV, "results": []}
+        self.summary = {
+            "config": vars(args),
+            "pitch_mm": PITCH_MM,
+            "usteps_per_mm": USTEPS_PER_MM,
+            "transitions_per_rev": TRANSITIONS_PER_REV,
+            "results": [],
+        }
 
     # ---------------------------------------------------------------- plumbing
     def log(self, msg):
@@ -145,13 +153,19 @@ class ZTuner:
 
     def configure_z(self):
         m = self.mcu
-        m.configure_motor_driver(AXIS.Z, MICROSTEPS, _def.Z_MOTOR_RMS_CURRENT_mA, _def.Z_MOTOR_I_HOLD); self.wait()
-        m.set_leadscrew_pitch(AXIS.Z, PITCH_MM); self.wait()
-        m.set_max_velocity_acceleration(AXIS.Z, self.a.vmax, self.a.accel); self.wait()
+        m.configure_motor_driver(AXIS.Z, MICROSTEPS, _def.Z_MOTOR_RMS_CURRENT_mA, _def.Z_MOTOR_I_HOLD)
+        self.wait()
+        m.set_leadscrew_pitch(AXIS.Z, PITCH_MM)
+        self.wait()
+        m.set_max_velocity_acceleration(AXIS.Z, self.a.vmax, self.a.accel)
+        self.wait()
         prof = RAMP_PROFILE.TRAPEZOID if self.a.ramp == "trapezoid" else RAMP_PROFILE.SSHAPE
-        m.set_ramp_profile(AXIS.Z, prof); self.wait()
-        self.log(f"Z configured: {MICROSTEPS} usteps/FS, pitch {PITCH_MM} mm, {_def.Z_MOTOR_RMS_CURRENT_mA} mA, "
-                 f"vmax {self.a.vmax} mm/s, accel {self.a.accel} mm/s2, ramp {self.a.ramp} ({USTEPS_PER_MM:.0f} usteps/mm)")
+        m.set_ramp_profile(AXIS.Z, prof)
+        self.wait()
+        self.log(
+            f"Z configured: {MICROSTEPS} usteps/FS, pitch {PITCH_MM} mm, {_def.Z_MOTOR_RMS_CURRENT_mA} mA, "
+            f"vmax {self.a.vmax} mm/s, accel {self.a.accel} mm/s2, ramp {self.a.ramp} ({USTEPS_PER_MM:.0f} usteps/mm)"
+        )
 
     def restore_velocity(self):
         try:
@@ -198,7 +212,9 @@ class ZTuner:
     def check_depth(self, depth_mm):
         lo, hi = self.a.depth_min, min(self.a.depth_max, HARD_CAP_DEPTH_MM)
         if not (lo <= depth_mm <= hi):
-            raise RuntimeError(f"refusing Z target {depth_mm:.3f} mm extension: outside the allowed window {lo}..{hi} mm")
+            raise RuntimeError(
+                f"refusing Z target {depth_mm:.3f} mm extension: outside the allowed window {lo}..{hi} mm"
+            )
 
     def current_depth(self):
         return usteps_to_depth(self.mcu.z_pos)
@@ -253,25 +269,37 @@ class ZTuner:
 
     def configure_encoder(self, flip):
         m = self.mcu
-        m.set_pid_limits(AXIS.Z, self.a.corr_vmax, self.a.max_dev_um); self.wait()
-        m.set_pid_home_zone(AXIS.Z, self.a.zone_um); self.wait()
+        m.set_pid_limits(AXIS.Z, self.a.corr_vmax, self.a.max_dev_um)
+        self.wait()
+        m.set_pid_home_zone(AXIS.Z, self.a.zone_um)
+        self.wait()
         if self.a.tol_um > 0:
-            m.set_pid_tolerance(AXIS.Z, self.a.tol_um, self.a.tol_um); self.wait()
+            m.set_pid_tolerance(AXIS.Z, self.a.tol_um, self.a.tol_um)
+            self.wait()
         # Loop mode (SET_PID_OPEN_ABOVE: opened above this ramp velocity, re-engaged below; 0 = rest-only) and
         # completion window (0 = exact target) are states, not 'keep the current value': always send them. On
         # firmware before 2026-09-08 a threshold left by an earlier run survived the controller reset and a
         # 'rest-only' run of this tool ran engaged in flight.
-        m.set_pid_open_above(AXIS.Z, self.a.open_above); self.wait()
-        m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0); self.wait()
-        m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip); self.wait()
-        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
-        m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
+        m.set_pid_open_above(AXIS.Z, self.a.open_above)
+        self.wait()
+        m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0)
+        self.wait()
+        m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip)
+        self.wait()
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d)
+        self.wait()
+        m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA)
+        self.wait()
         time.sleep(0.2)
         st = m.get_encoder_state()
         if not st["reporting"]:
-            raise RuntimeError("firmware did not start encoder reporting - is it >= 1.6? (SET_ENCODER_REPORTING ignored)")
-        self.log(f"encoder configured: {TRANSITIONS_PER_REV} transitions/rev, flip={flip}, "
-                 f"correction vmax {self.a.corr_vmax} mm/s, watchdog {self.a.max_dev_um} um, home zone {self.a.zone_um} um")
+            raise RuntimeError(
+                "firmware did not start encoder reporting - is it >= 1.6? (SET_ENCODER_REPORTING ignored)"
+            )
+        self.log(
+            f"encoder configured: {TRANSITIONS_PER_REV} transitions/rev, flip={flip}, "
+            f"correction vmax {self.a.corr_vmax} mm/s, watchdog {self.a.max_dev_um} um, home zone {self.a.zone_um} um"
+        )
 
     def encoder_check(self):
         """Open loop: encoder must follow XACTUAL with ratio +1 (in usteps). Fix the sign if it reads -1.
@@ -293,13 +321,16 @@ class ZTuner:
             dz, de = z1 - z0, e1 - e0
             ratio = de / dz if dz else float("nan")
             self.log(f"encoder check: XACTUAL moved {dz} usteps, ENC_POS moved {de} usteps, ratio {ratio:+.4f}")
-            self.summary["results"].append({"phase": "encoder_check", "attempt": attempt, "flip": self.flip,
-                                            "dz": dz, "de": de, "ratio": ratio})
+            self.summary["results"].append(
+                {"phase": "encoder_check", "attempt": attempt, "flip": self.flip, "dz": dz, "de": de, "ratio": ratio}
+            )
             if abs(abs(ratio) - 1.0) > 0.05:
                 implied = ENC_STEP_MM * abs(ratio)
-                raise RuntimeError(f"encoder scale off by {abs(ratio) - 1:+.1%}: transitions/rev {TRANSITIONS_PER_REV} "
-                                   f"implies an encoder step of {implied * 1000:.4f} um instead of {ENC_STEP_MM * 1000:.4f}. "
-                                   "Fix ENCODER_STEP_SIZE_Z_MM / SCREW_PITCH_Z_MM before closing the loop.")
+                raise RuntimeError(
+                    f"encoder scale off by {abs(ratio) - 1:+.1%}: transitions/rev {TRANSITIONS_PER_REV} "
+                    f"implies an encoder step of {implied * 1000:.4f} um instead of {ENC_STEP_MM * 1000:.4f}. "
+                    "Fix ENCODER_STEP_SIZE_Z_MM / SCREW_PITCH_Z_MM before closing the loop."
+                )
             if ratio > 0:
                 self.log("encoder sign OK")
                 # The loop nulls XACTUAL - ENC_POS in absolute terms, so the two frames must agree
@@ -309,9 +340,12 @@ class ZTuner:
                     # (zonemap measures it: 0.64 mm on the second bench Z). Re-align the encoder frame to
                     # XACTUAL here, at a coupled position, so the loop only corrects deviations that arise
                     # while coupled. The home zone (--zone-um) must cover the gap.
-                    self.mcu.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=self.flip); self.wait()
+                    self.mcu.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=self.flip)
+                    self.wait()
                     self.settle(0.3)
-                    self.log(f"encoder frame re-aligned to XACTUAL at {self.a.depth_mm} mm extension (--align-after-home)")
+                    self.log(
+                        f"encoder frame re-aligned to XACTUAL at {self.a.depth_mm} mm extension (--align-after-home)"
+                    )
                 self.settle(0.3)
                 dev = self.mcu.get_encoder_state()["deviation"]
                 dev_um = dev / USTEPS_PER_MM * 1000
@@ -322,10 +356,12 @@ class ZTuner:
                         # offset (a stage that rests on its stop while the actuator homes below it)
                         self.log("frame offset exceeds the gate; continuing because zonemap is open-loop only")
                         return
-                    raise RuntimeError(f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um "
-                                       f"(int16 clip {32767 / USTEPS_PER_MM * 1000:.0f} um at this microstepping); "
-                                       "the loop would slew by that amount on enable. Refusing to continue. "
-                                       "Run `zonemap` to see where the encoder decouples from the counter.")
+                    raise RuntimeError(
+                        f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um "
+                        f"(int16 clip {32767 / USTEPS_PER_MM * 1000:.0f} um at this microstepping); "
+                        "the loop would slew by that amount on enable. Refusing to continue. "
+                        "Run `zonemap` to see where the encoder decouples from the counter."
+                    )
                 return
             if attempt == 0:
                 self.flip = not self.flip
@@ -356,14 +392,18 @@ class ZTuner:
         rest_mean = (sum(rest) / len(rest)) if rest else float("nan")
         rest_rms = math.sqrt(sum((d - rest_mean) ** 2 for d in rest) / len(rest)) if rest else float("nan")
         if peak >= 32767:
-            self.log("WARNING: loop error is pinned at the int16 clip (>=192 um at 256 usteps/FS): the encoder frame is "
-                     "offset from XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state.")
+            self.log(
+                "WARNING: loop error is pinned at the int16 clip (>=192 um at 256 usteps/FS): the encoder frame is "
+                "offset from XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state."
+            )
         # settling time: from the end of the last commanded move (last change of XACTUAL) until |dev|
         # stays within tol for 0.2 s
         tol = self.a.settle_tol_um * USTEPS_PER_MM / 1000.0
         settle_s = float("nan")
         if rows:
-            t_last_move = max((rows[k][0] for k in range(1, len(rows)) if rows[k][1] != rows[k - 1][1]), default=rows[0][0])
+            t_last_move = max(
+                (rows[k][0] for k in range(1, len(rows)) if rows[k][1] != rows[k - 1][1]), default=rows[0][0]
+            )
             inside_since = None
             for t, _, _, d, _ in rows:
                 if t < t_last_move:
@@ -378,17 +418,26 @@ class ZTuner:
         # oscillation: sign changes per second in the deviation while at rest at the end
         tail = [r[3] for r in rows if r[0] > rows[-1][0] - dwell] if rows else []
         crossings = sum(1 for a, b in zip(tail, tail[1:]) if (a < 0) != (b < 0))
-        metrics = {"label": label, "samples": len(rows), "peak_dev_um": peak / USTEPS_PER_MM * 1000,
-                   "rest_mean_um": rest_mean / USTEPS_PER_MM * 1000,
-                   "rest_rms_um": rest_rms / USTEPS_PER_MM * 1000, "tail_zero_crossings_per_s": crossings / dwell,
-                   "final_dev_um": (rows[-1][3] / USTEPS_PER_MM * 1000) if rows else float("nan"),
-                   "settle_after_last_move_s": settle_s,
-                   "cmd_to_ack_out_s": ack_out, "cmd_to_ack_back_s": ack_back,
-                   "wall_start": wall_start, "wall_end": time.time(),
-                   "csv": path}
-        self.log(f"{label}: cmd->ack {ack_out * 1000:.0f} / {ack_back * 1000:.0f} ms; peak |dev| {metrics['peak_dev_um']:.1f} um, "
-                 f"rest rms {metrics['rest_rms_um']:.2f} um, final {metrics['final_dev_um']:+.2f} um, "
-                 f"encoder settled {settle_s * 1000:.0f} ms after the ramp ended, tail crossings {metrics['tail_zero_crossings_per_s']:.1f}/s")
+        metrics = {
+            "label": label,
+            "samples": len(rows),
+            "peak_dev_um": peak / USTEPS_PER_MM * 1000,
+            "rest_mean_um": rest_mean / USTEPS_PER_MM * 1000,
+            "rest_rms_um": rest_rms / USTEPS_PER_MM * 1000,
+            "tail_zero_crossings_per_s": crossings / dwell,
+            "final_dev_um": (rows[-1][3] / USTEPS_PER_MM * 1000) if rows else float("nan"),
+            "settle_after_last_move_s": settle_s,
+            "cmd_to_ack_out_s": ack_out,
+            "cmd_to_ack_back_s": ack_back,
+            "wall_start": wall_start,
+            "wall_end": time.time(),
+            "csv": path,
+        }
+        self.log(
+            f"{label}: cmd->ack {ack_out * 1000:.0f} / {ack_back * 1000:.0f} ms; peak |dev| {metrics['peak_dev_um']:.1f} um, "
+            f"rest rms {metrics['rest_rms_um']:.2f} um, final {metrics['final_dev_um']:+.2f} um, "
+            f"encoder settled {settle_s * 1000:.0f} ms after the ramp ended, tail crossings {metrics['tail_zero_crossings_per_s']:.1f}/s"
+        )
         return metrics
 
     def baseline(self):
@@ -403,7 +452,8 @@ class ZTuner:
         dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
-        m.set_pid_arguments(AXIS.Z, p, i, d); self.wait()
+        m.set_pid_arguments(AXIS.Z, p, i, d)
+        self.wait()
         m.turn_on_stage_pid(AXIS.Z)
         self.wait(5)
         self.loop_on = True
@@ -429,18 +479,24 @@ class ZTuner:
                 table.append(r)
             except Exception as e:  # noqa: BLE001
                 self.log(f"P={p}: aborted: {e}")
-                self.summary["results"].append({"phase": "closed_loop", "p": p, "i": self.a.i, "d": self.a.d, "error": str(e)})
+                self.summary["results"].append(
+                    {"phase": "closed_loop", "p": p, "i": self.a.i, "d": self.a.d, "error": str(e)}
+                )
                 self.loop_off()
                 self.settle(0.5)
                 # re-centre before the next gain
                 self.move_to_depth(self.a.depth_mm)
         print("\nP        peak_dev_um  rest_rms_um  final_um  crossings/s")
         for r in table:
-            print(f"{r['p']:<8} {r['peak_dev_um']:11.1f}  {r['rest_rms_um']:11.2f}  {r['final_dev_um']:+8.2f}  {r['tail_zero_crossings_per_s']:10.1f}")
+            print(
+                f"{r['p']:<8} {r['peak_dev_um']:11.1f}  {r['rest_rms_um']:11.2f}  {r['final_dev_um']:+8.2f}  {r['tail_zero_crossings_per_s']:10.1f}"
+            )
         good = [r for r in table if r["tail_zero_crossings_per_s"] < self.a.max_crossings and not r.get("fault")]
         if good:
             best = min(good, key=lambda r: (r["peak_dev_um"], r["rest_rms_um"]))
-            self.log(f"recommendation: P={best['p']} (lowest peak error without oscillation); I={self.a.i}, D={self.a.d}")
+            self.log(
+                f"recommendation: P={best['p']} (lowest peak error without oscillation); I={self.a.i}, D={self.a.d}"
+            )
             self.summary["recommendation"] = {"p": best["p"], "i": self.a.i, "d": self.a.d}
         else:
             self.log("no gain in the list met the oscillation criterion; lower the list or raise --max-crossings")
@@ -473,7 +529,17 @@ class ZTuner:
         path = os.path.join(self.out, "zonemap.csv")
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
-            w.writerow(["direction", "xactual_usteps", "enc_pos_usteps", "deviation_usteps", "extension_mm", "enc_mm", "dev_um"])
+            w.writerow(
+                [
+                    "direction",
+                    "xactual_usteps",
+                    "enc_pos_usteps",
+                    "deviation_usteps",
+                    "extension_mm",
+                    "enc_mm",
+                    "dev_um",
+                ]
+            )
             for tag, x, e, d in pts:
                 w.writerow([tag, x, e, d, usteps_to_depth(x), usteps_to_depth(e), d / USTEPS_PER_MM * 1000])
         # where does the encoder stop following on the way down?
@@ -484,23 +550,33 @@ class ZTuner:
             print(f"{xm:11.3f} {em:8.3f} {d / USTEPS_PER_MM * 1000:8.1f}")
         decouple = None
         for k in range(1, len(down)):
-            dx = down[k][0] - down[k - 1][0]; de = down[k][1] - down[k - 1][1]
+            dx = down[k][0] - down[k - 1][0]
+            de = down[k][1] - down[k - 1][1]
             if abs(dx) > 1e-6 and abs(de / dx) < 0.5:
-                decouple = down[k - 1][0]; break
+                decouple = down[k - 1][0]
+                break
         recouple = None
         for k in range(1, len(up)):
-            dx = up[k][0] - up[k - 1][0]; de = up[k][1] - up[k - 1][1]
+            dx = up[k][0] - up[k - 1][0]
+            de = up[k][1] - up[k - 1][1]
             if abs(dx) > 1e-6 and abs(de / dx) > 0.5:
-                recouple = up[k][0]; break
-        self.log(f"zonemap: encoder stops following below {decouple} mm on the way down; follows again above {recouple} mm on the way up")
+                recouple = up[k][0]
+                break
+        self.log(
+            f"zonemap: encoder stops following below {decouple} mm on the way down; follows again above {recouple} mm on the way up"
+        )
         if decouple is not None and recouple is not None:
             gap = max(float(decouple), float(recouple))
-            floor = math.ceil((gap + 0.1) * 20) / 20.0        # gap + 0.1 mm margin, rounded up to 0.05 mm
-            self.log(f"zonemap: ini values for this stage -> z_home_gap_mm = {gap:.2f}; [SOFTWARE_POS_LIMIT] z_negative = {floor:.2f} "
-                     f"(floor for every move); z_park_at_min_after_homing = True; pid_home_zone_z_um <= {floor * 1000:.0f}")
+            floor = math.ceil((gap + 0.1) * 20) / 20.0  # gap + 0.1 mm margin, rounded up to 0.05 mm
+            self.log(
+                f"zonemap: ini values for this stage -> z_home_gap_mm = {gap:.2f}; [SOFTWARE_POS_LIMIT] z_negative = {floor:.2f} "
+                f"(floor for every move); z_park_at_min_after_homing = True; pid_home_zone_z_um <= {floor * 1000:.0f}"
+            )
         else:
             self.log("zonemap: no decoupled region above home on this stage (z_home_gap_mm = 0)")
-        self.summary["results"].append({"phase": "zonemap", "decouple_mm": decouple, "recouple_mm": recouple, "csv": path})
+        self.summary["results"].append(
+            {"phase": "zonemap", "decouple_mm": decouple, "recouple_mm": recouple, "csv": path}
+        )
 
     def zonetest(self):
         """Verify the firmware home zone: loop engaged at the working extension, a move into the zone must
@@ -513,16 +589,20 @@ class ZTuner:
         self.a.depth_min = 0.0  # this test deliberately visits the zone
 
         def flags(tag):
-            time.sleep(0.3)                      # plain sleep: a fault flag is a result here, not a reason to abort
+            time.sleep(0.3)  # plain sleep: a fault flag is a result here, not a reason to abort
             st = self.mcu.get_encoder_state()
-            self.log(f"{tag}: z={self.current_depth():.3f} mm  loop_engaged={st['pid_enabled']}  zone_hold={st['pid_zone_hold']}  "
-                     f"fault={st['pid_fault']}  err={st['deviation'] / USTEPS_PER_MM * 1000:+.1f} um")
+            self.log(
+                f"{tag}: z={self.current_depth():.3f} mm  loop_engaged={st['pid_enabled']}  zone_hold={st['pid_zone_hold']}  "
+                f"fault={st['pid_fault']}  err={st['deviation'] / USTEPS_PER_MM * 1000:+.1f} um"
+            )
             return st
 
         def transitions(rows):
-            out = []; last = None
+            out = []
+            last = None
             for t, x, e, d, f in rows:
-                eng = bool(f & (1 << _def.ENC_FLAG.PID_ENABLED)); hold = bool(f & (1 << _def.ENC_FLAG.PID_ZONE))
+                eng = bool(f & (1 << _def.ENC_FLAG.PID_ENABLED))
+                hold = bool(f & (1 << _def.ENC_FLAG.PID_ZONE))
                 key = (eng, hold)
                 if key != last:
                     out.append((round(usteps_to_depth(x), 3), "engaged" if eng else ("held" if hold else "off")))
@@ -536,28 +616,64 @@ class ZTuner:
                 w = csv.writer(f)
                 w.writerow(["t_s", "extension_mm", "enc_mm", "dev_um", "engaged", "zone_hold", "fault"])
                 for t, x, e, d, fl in rows:
-                    w.writerow([f"{t:.4f}", f"{usteps_to_depth(x):.5f}", f"{usteps_to_depth(e):.5f}",
-                                f"{d / USTEPS_PER_MM * 1000:.2f}", int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))),
-                                int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))), int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT)))])
+                    w.writerow(
+                        [
+                            f"{t:.4f}",
+                            f"{usteps_to_depth(x):.5f}",
+                            f"{usteps_to_depth(e):.5f}",
+                            f"{d / USTEPS_PER_MM * 1000:.2f}",
+                            int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))),
+                            int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))),
+                            int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT))),
+                        ]
+                    )
             return path
 
         m = self.mcu
-        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
-        m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d)
+        self.wait()
+        m.turn_on_stage_pid(AXIS.Z)
+        self.wait(5)
+        self.loop_on = True
         st = flags("A. enable at working extension")
         if not st["pid_enabled"]:
             raise RuntimeError("loop did not engage outside the zone")
 
-        verdict = {"B_drop_in_zone": False, "C_reengage_out": False, "D_open_during_homing": False, "E_reengage_after_homing": False}
+        verdict = {
+            "B_drop_in_zone": False,
+            "C_reengage_out": False,
+            "D_open_during_homing": False,
+            "E_reengage_after_homing": False,
+        }
         phases = [
-            ("B", "B_drop_in_zone", lambda: self.move_to_depth(inside), f"B. after move into the zone ({inside:.3f} mm)",
-             lambda st: (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]),
-            ("C", "C_reengage_out", lambda: self.move_to_depth(self.a.depth_mm), "C. after move back out",
-             lambda st: st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]),
-            ("D", "D_open_during_homing", lambda: (m.home_z(), self.wait(60)), "D. after homing",
-             lambda st: (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"]),
-            ("E", "E_reengage_after_homing", lambda: self.move_to_depth(self.a.depth_mm), "E. after moving out again",
-             lambda st: st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"]),
+            (
+                "B",
+                "B_drop_in_zone",
+                lambda: self.move_to_depth(inside),
+                f"B. after move into the zone ({inside:.3f} mm)",
+                lambda st: (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"],
+            ),
+            (
+                "C",
+                "C_reengage_out",
+                lambda: self.move_to_depth(self.a.depth_mm),
+                "C. after move back out",
+                lambda st: st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"],
+            ),
+            (
+                "D",
+                "D_open_during_homing",
+                lambda: (m.home_z(), self.wait(60)),
+                "D. after homing",
+                lambda st: (not st["pid_enabled"]) and st["pid_zone_hold"] and not st["pid_fault"],
+            ),
+            (
+                "E",
+                "E_reengage_after_homing",
+                lambda: self.move_to_depth(self.a.depth_mm),
+                "E. after moving out again",
+                lambda st: st["pid_enabled"] and not st["pid_zone_hold"] and not st["pid_fault"],
+            ),
         ]
         for tag, key, action, label, judge in phases:
             self.sampler.clear()
@@ -575,9 +691,11 @@ class ZTuner:
                 fault_rows = [r for r in rows if r[4] & (1 << _def.ENC_FLAG.PID_FAULT)]
                 if fault_rows:
                     k = rows.index(fault_rows[0])
-                    for t, x, e, d, fl in rows[max(0, k - 12):k + 2]:
-                        self.log(f"      t={t:7.3f}s  z={usteps_to_depth(x):.3f} mm  enc={usteps_to_depth(e):.3f} mm  "
-                                 f"dev={d / USTEPS_PER_MM * 1000:+.1f} um  engaged={int(bool(fl & 2))} hold={int(bool(fl & 8))} fault={int(bool(fl & 4))}")
+                    for t, x, e, d, fl in rows[max(0, k - 12) : k + 2]:
+                        self.log(
+                            f"      t={t:7.3f}s  z={usteps_to_depth(x):.3f} mm  enc={usteps_to_depth(e):.3f} mm  "
+                            f"dev={d / USTEPS_PER_MM * 1000:+.1f} um  engaged={int(bool(fl & 2))} hold={int(bool(fl & 8))} fault={int(bool(fl & 4))}"
+                        )
                 self.log(f"   phase {tag} ABORTED: {failed}")
                 verdict[key] = False
                 break
@@ -596,7 +714,7 @@ class ZTuner:
         Register ceiling: AMAX is a 22-bit value in usteps/s^2 on the TMC4361A. Above
         (2^22 - 1) / usteps_per_mm the firmware silently clamps, so levels beyond it are skipped.
         """
-        amax_cap = (2 ** 22 - 1) / USTEPS_PER_MM
+        amax_cap = (2**22 - 1) / USTEPS_PER_MM
         self.log(f"AMAX register ceiling at {MICROSTEPS} usteps/FS: {amax_cap:.0f} mm/s2")
         m = self.mcu
         levels = []
@@ -604,57 +722,86 @@ class ZTuner:
             if accel > amax_cap:
                 self.log(f"skipping {accel} mm/s2: above the register ceiling ({amax_cap:.0f})")
                 continue
-            m.set_max_velocity_acceleration(AXIS.Z, self.a.vmax, accel); self.wait()
+            m.set_max_velocity_acceleration(AXIS.Z, self.a.vmax, accel)
+            self.wait()
             self.settle(0.5)
-            st0 = m.get_encoder_state(); off0 = st0["deviation"]
+            st0 = m.get_encoder_state()
+            off0 = st0["deviation"]
             wall0 = time.time()
-            acks_100 = []; acks_1000 = []
+            acks_100 = []
+            acks_1000 = []
             try:
                 for _ in range(self.a.accel_reps):
-                    self.move_to_depth(self.a.depth_mm + 0.1); acks_100.append(self.last_cmd_to_ack_s)
+                    self.move_to_depth(self.a.depth_mm + 0.1)
+                    acks_100.append(self.last_cmd_to_ack_s)
                     self.settle(0.15)
-                    self.move_to_depth(self.a.depth_mm); acks_100.append(self.last_cmd_to_ack_s)
+                    self.move_to_depth(self.a.depth_mm)
+                    acks_100.append(self.last_cmd_to_ack_s)
                     self.settle(0.15)
                 for _ in range(2):
-                    self.move_to_depth(self.a.depth_mm + 1.0); acks_1000.append(self.last_cmd_to_ack_s)
+                    self.move_to_depth(self.a.depth_mm + 1.0)
+                    acks_1000.append(self.last_cmd_to_ack_s)
                     self.settle(0.2)
-                    self.move_to_depth(self.a.depth_mm); acks_1000.append(self.last_cmd_to_ack_s)
+                    self.move_to_depth(self.a.depth_mm)
+                    acks_1000.append(self.last_cmd_to_ack_s)
                     self.settle(0.2)
             except Exception as e:  # noqa: BLE001
                 self.log(f"accel {accel}: aborted: {e}")
                 levels.append({"accel": accel, "error": str(e)})
                 break
             self.settle(0.5)
-            st1 = m.get_encoder_state(); off1 = st1["deviation"]
+            st1 = m.get_encoder_state()
+            off1 = st1["deviation"]
             lost_um = (off1 - off0) / USTEPS_PER_MM * 1000.0
             t100 = sorted(acks_100)[len(acks_100) // 2] if acks_100 else float("nan")
             t1000 = sorted(acks_1000)[len(acks_1000) // 2] if acks_1000 else float("nan")
             # Trapezoid timing after subtracting the fixed command+report overhead (--ack-overhead-ms):
             # acceleration-limited (a*d <= v^2): t = 2*sqrt(d/a)  ->  a = 4d/t^2
             # velocity-limited  (a*d  > v^2): t = d/v + v/a     ->  a = v/(t - d/v)
-            d_mm = 0.1; v = self.a.vmax
+            d_mm = 0.1
+            v = self.a.vmax
             t_mv = t100 - self.a.ack_overhead_ms / 1000.0
             if t_mv <= 0:
                 a_eff = float("nan")
             elif accel * d_mm <= v * v:
-                a_eff = 4 * d_mm / (t_mv ** 2)
+                a_eff = 4 * d_mm / (t_mv**2)
             else:
                 a_eff = v / (t_mv - d_mm / v) if t_mv > d_mm / v else float("nan")
-            row = {"accel": accel, "ack_100um_median_s": t100, "ack_1mm_median_s": t1000,
-                   "implied_accel_mm_s2": a_eff, "lost_um": lost_um, "off_before": off0, "off_after": off1,
-                   "wall_start": wall0, "wall_end": time.time()}
+            row = {
+                "accel": accel,
+                "ack_100um_median_s": t100,
+                "ack_1mm_median_s": t1000,
+                "implied_accel_mm_s2": a_eff,
+                "lost_um": lost_um,
+                "off_before": off0,
+                "off_after": off1,
+                "wall_start": wall0,
+                "wall_end": time.time(),
+            }
             levels.append(row)
-            self.log(f"accel {accel:4.0f} mm/s2: 100 um ack {t100 * 1000:5.1f} ms (implied {a_eff:5.0f} mm/s2), "
-                     f"1 mm ack {t1000 * 1000:5.1f} ms, encoder offset change {lost_um:+.2f} um")
+            self.log(
+                f"accel {accel:4.0f} mm/s2: 100 um ack {t100 * 1000:5.1f} ms (implied {a_eff:5.0f} mm/s2), "
+                f"1 mm ack {t1000 * 1000:5.1f} ms, encoder offset change {lost_um:+.2f} um"
+            )
             if abs(lost_um) > self.a.lost_step_um:
                 self.log(f"STOP: {lost_um:+.2f} um of position lost at {accel} mm/s2 (limit {self.a.lost_step_um} um)")
                 break
-        self.summary["results"].append({"phase": "accelsweep", "vmax": self.a.vmax, "microsteps": MICROSTEPS,
-                                        "ramp": self.a.ramp, "amax_register_cap": amax_cap, "levels": levels})
+        self.summary["results"].append(
+            {
+                "phase": "accelsweep",
+                "vmax": self.a.vmax,
+                "microsteps": MICROSTEPS,
+                "ramp": self.a.ramp,
+                "amax_register_cap": amax_cap,
+                "levels": levels,
+            }
+        )
         good = [l for l in levels if "error" not in l and abs(l["lost_um"]) <= self.a.lost_step_um]
         if good:
-            self.log(f"highest acceleration with no lost steps: {good[-1]['accel']:.0f} mm/s2 "
-                     f"(100 um in {good[-1]['ack_100um_median_s'] * 1000:.0f} ms command-to-ack)")
+            self.log(
+                f"highest acceleration with no lost steps: {good[-1]['accel']:.0f} mm/s2 "
+                f"(100 um in {good[-1]['ack_100um_median_s'] * 1000:.0f} ms command-to-ack)"
+            )
         self.restore_velocity()
 
     def velsweep(self):
@@ -670,22 +817,29 @@ class ZTuner:
             self.engage_loop()
             self.log("velsweep with the loop ENGAGED during the moves (a fault at a level ends the sweep)")
         for v in self.a.vel_list:
-            m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel); self.wait()
+            m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel)
+            self.wait()
             self.settle(0.5)
             off0 = m.get_encoder_state()["deviation"]
             wall0 = time.time()
-            acks = []; lag_max = 0.0; ripple = []; stall_samples = 0; cruise_samples = 0; lag_cruise = []
+            acks = []
+            lag_max = 0.0
+            ripple = []
+            stall_samples = 0
+            cruise_samples = 0
+            lag_cruise = []
             all_rows = []
             try:
                 for _ in range(self.a.vel_reps):
                     for target in (self.a.depth_mm + d_mm, self.a.depth_mm):
                         self.sampler.clear()
                         try:
-                            self.move_to_depth(target); acks.append(self.last_cmd_to_ack_s)
+                            self.move_to_depth(target)
+                            acks.append(self.last_cmd_to_ack_s)
                         finally:
                             all_rows.extend(self.sampler.snapshot())
                             self._write_rows(f"velsweep_v{v:g}.csv", all_rows)
-                        rows = all_rows[-len(self.sampler.snapshot()):] if False else self.sampler.snapshot()
+                        rows = all_rows[-len(self.sampler.snapshot()) :] if False else self.sampler.snapshot()
                         # counter and encoder velocities between successive samples (>= 8 ms apart)
                         for (ta, xa, ea, da, _), (tb, xb, eb, db, _) in zip(rows, rows[1:]):
                             dt = tb - ta
@@ -694,7 +848,7 @@ class ZTuner:
                             vx = abs(xb - xa) / dt / USTEPS_PER_MM
                             ve = abs(eb - ea) / dt / USTEPS_PER_MM
                             lag_max = max(lag_max, abs(db) / USTEPS_PER_MM * 1000.0)
-                            if vx > 0.8 * v:                       # cruise
+                            if vx > 0.8 * v:  # cruise
                                 cruise_samples += 1
                                 ripple.append(ve - vx)
                                 lag_cruise.append(db / USTEPS_PER_MM * 1000.0)
@@ -709,23 +863,41 @@ class ZTuner:
             off1 = m.get_encoder_state()["deviation"]
             lost_um = (off1 - off0) / USTEPS_PER_MM * 1000.0
             import statistics
-            row = {"vmax": v, "accel": self.a.accel, "excursion_mm": d_mm, "reps": self.a.vel_reps,
-                   "ack_median_s": statistics.median(acks) if acks else float("nan"),
-                   "model_s": model_move_s(d_mm, v, self.a.accel) if "model_move_s" in globals() else float("nan"),
-                   "lost_um": lost_um, "lag_max_um": lag_max,
-                   "lag_cruise_mean_um": statistics.mean(lag_cruise) if lag_cruise else float("nan"),
-                   "cruise_ripple_std_mm_s": statistics.pstdev(ripple) if len(ripple) > 1 else float("nan"),
-                   "cruise_samples": cruise_samples, "stall_samples": stall_samples,
-                   "wall_start": wall0, "wall_end": time.time()}
+
+            row = {
+                "vmax": v,
+                "accel": self.a.accel,
+                "excursion_mm": d_mm,
+                "reps": self.a.vel_reps,
+                "ack_median_s": statistics.median(acks) if acks else float("nan"),
+                "model_s": model_move_s(d_mm, v, self.a.accel) if "model_move_s" in globals() else float("nan"),
+                "lost_um": lost_um,
+                "lag_max_um": lag_max,
+                "lag_cruise_mean_um": statistics.mean(lag_cruise) if lag_cruise else float("nan"),
+                "cruise_ripple_std_mm_s": statistics.pstdev(ripple) if len(ripple) > 1 else float("nan"),
+                "cruise_samples": cruise_samples,
+                "stall_samples": stall_samples,
+                "wall_start": wall0,
+                "wall_end": time.time(),
+            }
             levels.append(row)
-            self.log(f"vmax {v:4.1f} mm/s: {d_mm:g} mm ack {row['ack_median_s'] * 1000:5.0f} ms; lost {lost_um:+.2f} um; "
-                     f"in-motion lag mean {row['lag_cruise_mean_um']:+.1f} um (max |{lag_max:.1f}|); cruise ripple std {row['cruise_ripple_std_mm_s']:.2f} mm/s "
-                     f"over {cruise_samples} samples; stall samples {stall_samples}")
+            self.log(
+                f"vmax {v:4.1f} mm/s: {d_mm:g} mm ack {row['ack_median_s'] * 1000:5.0f} ms; lost {lost_um:+.2f} um; "
+                f"in-motion lag mean {row['lag_cruise_mean_um']:+.1f} um (max |{lag_max:.1f}|); cruise ripple std {row['cruise_ripple_std_mm_s']:.2f} mm/s "
+                f"over {cruise_samples} samples; stall samples {stall_samples}"
+            )
             if abs(lost_um) > self.a.lost_step_um:
                 self.log(f"STOP: {lost_um:+.2f} um lost at {v} mm/s (limit {self.a.lost_step_um} um)")
                 break
-        self.summary["results"].append({"phase": "velsweep", "accel": self.a.accel, "microsteps": MICROSTEPS,
-                                        "ramp": self.a.ramp, "levels": levels})
+        self.summary["results"].append(
+            {
+                "phase": "velsweep",
+                "accel": self.a.accel,
+                "microsteps": MICROSTEPS,
+                "ramp": self.a.ramp,
+                "levels": levels,
+            }
+        )
         good = [l for l in levels if "error" not in l and abs(l["lost_um"]) <= self.a.lost_step_um]
         if good:
             self.log(f"highest velocity with no lost steps: {good[-1]['vmax']:.1f} mm/s")
@@ -740,30 +912,44 @@ class ZTuner:
         self.engage_loop()
         try:
             for v in self.a.vel_list:
-                m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel); self.wait()
+                m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel)
+                self.wait()
                 self.settle(0.3)
-                moving_eng = moving_tot = 0; trans = []; last = None
+                moving_eng = moving_tot = 0
+                trans = []
+                last = None
                 for target in (self.a.depth_mm + self.a.excursion_mm, self.a.depth_mm):
                     self.sampler.clear()
                     self.move_to_depth(target)
                     rows = self.sampler.snapshot()
                     for (ta, xa, ea, da, fa), (tb, xb, eb, db, fb) in zip(rows, rows[1:]):
                         if xb == xa:
-                            continue                      # at rest: not counted
+                            continue  # at rest: not counted
                         moving_tot += 1
                         eng = bool(fb & (1 << _def.ENC_FLAG.PID_ENABLED))
                         moving_eng += eng
                         key = (eng, bool(fb & (1 << _def.ENC_FLAG.PID_ZONE)))
                         if key != last:
-                            trans.append((round(usteps_to_depth(xb), 3), "engaged" if eng else ("held" if key[1] else "off")))
+                            trans.append(
+                                (round(usteps_to_depth(xb), 3), "engaged" if eng else ("held" if key[1] else "off"))
+                            )
                             last = key
                     self.settle(0.3)
                 frac = moving_eng / moving_tot if moving_tot else float("nan")
                 verdict = "ENGAGED in flight" if frac > 0.9 else ("OPEN in flight" if frac < 0.1 else "mixed")
-                self.log(f"vmax {v:4.2f} mm/s: {moving_eng}/{moving_tot} in-motion samples with the loop engaged -> {verdict}; "
-                         f"transitions {trans[:8]}")
-                self.summary["results"].append({"phase": "engageprobe", "vmax": v, "moving_samples": moving_tot,
-                                                "engaged_samples": moving_eng, "transitions": trans[:20]})
+                self.log(
+                    f"vmax {v:4.2f} mm/s: {moving_eng}/{moving_tot} in-motion samples with the loop engaged -> {verdict}; "
+                    f"transitions {trans[:8]}"
+                )
+                self.summary["results"].append(
+                    {
+                        "phase": "engageprobe",
+                        "vmax": v,
+                        "moving_samples": moving_tot,
+                        "engaged_samples": moving_eng,
+                        "transitions": trans[:20],
+                    }
+                )
         finally:
             self.loop_off()
             self.restore_velocity()
@@ -771,58 +957,84 @@ class ZTuner:
     def _write_rows(self, name, rows):
         """Sampler rows (t, XACTUAL, ENC_POS, deviation, flags) as CSV in the output folder."""
         import csv
+
         with open(os.path.join(self.a.out, name), "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(["t_s", "extension_mm", "enc_mm", "dev_um", "engaged", "zone_hold", "fault"])
             for t, x, e, d, fl in rows:
-                w.writerow([f"{t:.3f}", f"{usteps_to_depth(x):.5f}", f"{usteps_to_depth(e):.5f}", f"{d / USTEPS_PER_MM * 1000:.2f}",
-                            int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))), int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))),
-                            int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT)))])
+                w.writerow(
+                    [
+                        f"{t:.3f}",
+                        f"{usteps_to_depth(x):.5f}",
+                        f"{usteps_to_depth(e):.5f}",
+                        f"{d / USTEPS_PER_MM * 1000:.2f}",
+                        int(bool(fl & (1 << _def.ENC_FLAG.PID_ENABLED))),
+                        int(bool(fl & (1 << _def.ENC_FLAG.PID_ZONE))),
+                        int(bool(fl & (1 << _def.ENC_FLAG.PID_FAULT))),
+                    ]
+                )
 
     def residual(self):
         """Open-loop residual per direction: ENC_POS - XACTUAL at rest after a move, in um, for each step size in
         --residual-steps-um, --residual-reps moves up (deeper) then the same number back down. Reports mean and std per
         direction and size, in the firmware's sign convention (positive direction = counter increasing). The loop
-        stays off. Measured 2026-09-08: the offset is a static frame offset, the per-move change is at the noise floor."""
+        stays off. Measured 2026-09-08: the offset is a static frame offset, the per-move change is at the noise floor.
+        """
         m = self.mcu
         out = []
         for step_um in self.a.residual_steps_um:
             d = step_um / 1000.0
             per_dir = {"+": [], "-": []}
-            delta = {"+": [], "-": []}          # change of the offset caused by the move itself
+            delta = {"+": [], "-": []}  # change of the offset caused by the move itself
             self.settle(0.3)
             prev = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000.0
             for k in range(self.a.residual_reps):
-                self.move_to_depth(self.a.depth_mm + (k + 1) * d); self.settle(0.15)
+                self.move_to_depth(self.a.depth_mm + (k + 1) * d)
+                self.settle(0.15)
                 st = m.get_encoder_state()
                 # deeper = counter decreasing on this Z (sign -1): direction "-" in counter terms
                 cur = st["deviation"] / USTEPS_PER_MM * 1000.0
-                per_dir["-"].append(cur); delta["-"].append(cur - prev); prev = cur
+                per_dir["-"].append(cur)
+                delta["-"].append(cur - prev)
+                prev = cur
             for k in range(self.a.residual_reps - 1, -1, -1):
-                self.move_to_depth(self.a.depth_mm + k * d); self.settle(0.15)
+                self.move_to_depth(self.a.depth_mm + k * d)
+                self.settle(0.15)
                 st = m.get_encoder_state()
                 cur = st["deviation"] / USTEPS_PER_MM * 1000.0
-                per_dir["+"].append(cur); delta["+"].append(cur - prev); prev = cur
+                per_dir["+"].append(cur)
+                delta["+"].append(cur - prev)
+                prev = cur
             import statistics
+
             row = {"phase": "residual", "step_um": step_um, "reps": self.a.residual_reps}
             for key, name in (("-", "neg"), ("+", "pos")):
                 v = per_dir[key]
-                row[f"{name}_mean_um"] = statistics.mean(v); row[f"{name}_std_um"] = statistics.pstdev(v) if len(v) > 1 else 0.0
-                row[f"{name}_min_um"] = min(v); row[f"{name}_max_um"] = max(v)
+                row[f"{name}_mean_um"] = statistics.mean(v)
+                row[f"{name}_std_um"] = statistics.pstdev(v) if len(v) > 1 else 0.0
+                row[f"{name}_min_um"] = min(v)
+                row[f"{name}_max_um"] = max(v)
                 dv = delta[key]
-                row[f"{name}_delta_mean_um"] = statistics.mean(dv); row[f"{name}_delta_std_um"] = statistics.pstdev(dv) if len(dv) > 1 else 0.0
+                row[f"{name}_delta_mean_um"] = statistics.mean(dv)
+                row[f"{name}_delta_std_um"] = statistics.pstdev(dv) if len(dv) > 1 else 0.0
                 row[f"{name}_values_um"] = [round(x, 3) for x in v]
             out.append(row)
-            self.log(f"  per-move change of the offset (what a pre-compensation could remove): deeper {row['neg_delta_mean_um']:+.2f} um std {row['neg_delta_std_um']:.2f}; "
-                     f"shallower {row['pos_delta_mean_um']:+.2f} um std {row['pos_delta_std_um']:.2f}; the rest of the offset is the static frame offset")
-            self.log(f"residual after {step_um:g} um moves (ENC - XACTUAL at rest, counter sign): "
-                     f"counter-decreasing (deeper) {row['neg_mean_um']:+.2f} um std {row['neg_std_um']:.2f} [{row['neg_min_um']:+.2f}, {row['neg_max_um']:+.2f}]; "
-                     f"counter-increasing (shallower) {row['pos_mean_um']:+.2f} um std {row['pos_std_um']:.2f} [{row['pos_min_um']:+.2f}, {row['pos_max_um']:+.2f}]")
+            self.log(
+                f"  per-move change of the offset (what a pre-compensation could remove): deeper {row['neg_delta_mean_um']:+.2f} um std {row['neg_delta_std_um']:.2f}; "
+                f"shallower {row['pos_delta_mean_um']:+.2f} um std {row['pos_delta_std_um']:.2f}; the rest of the offset is the static frame offset"
+            )
+            self.log(
+                f"residual after {step_um:g} um moves (ENC - XACTUAL at rest, counter sign): "
+                f"counter-decreasing (deeper) {row['neg_mean_um']:+.2f} um std {row['neg_std_um']:.2f} [{row['neg_min_um']:+.2f}, {row['neg_max_um']:+.2f}]; "
+                f"counter-increasing (shallower) {row['pos_mean_um']:+.2f} um std {row['pos_std_um']:.2f} [{row['pos_min_um']:+.2f}, {row['pos_max_um']:+.2f}]"
+            )
         self.summary["results"].extend(out)
         if out:
-            self.log("direction asymmetry of the offset (half the pos-neg difference, um): "
-                     f"{statistics.mean((r['pos_mean_um'] - r['neg_mean_um']) / 2 for r in out):+.2f}  "
-                     "(the common part is the static frame offset the loop nulls once at rest)")
+            self.log(
+                "direction asymmetry of the offset (half the pos-neg difference, um): "
+                f"{statistics.mean((r['pos_mean_um'] - r['neg_mean_um']) / 2 for r in out):+.2f}  "
+                "(the common part is the static frame offset the loop nulls once at rest)"
+            )
 
     def engage_loop(self):
         m = self.mcu
@@ -830,8 +1042,11 @@ class ZTuner:
         dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
-        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d); self.wait()
-        m.turn_on_stage_pid(AXIS.Z); self.wait(5); self.loop_on = True
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d)
+        self.wait()
+        m.turn_on_stage_pid(AXIS.Z)
+        self.wait(5)
+        self.loop_on = True
         self.settle(0.3)
         if not m.get_encoder_state()["pid_enabled"]:
             self.loop_on = False
@@ -846,7 +1061,9 @@ class ZTuner:
         if closed:
             self.engage_loop()
         wall0 = time.time()
-        acks = []; errs = []; encs = []
+        acks = []
+        errs = []
+        encs = []
         try:
             for k in range(1, n + 1):
                 self.move_to_depth(self.a.depth_mm + k * du)
@@ -863,16 +1080,28 @@ class ZTuner:
         # step-to-step encoder increments vs commanded
         inc = [(encs[i] - encs[i - 1]) * 1000 for i in range(1, len(encs))]
         acks_ms = sorted(a_ * 1000 for a_ in acks)
-        res = {"phase": "stack", "label": label, "closed": closed, "n": n, "step_um": self.a.stack_um,
-               "ack_ms_median": acks_ms[len(acks_ms) // 2], "ack_ms_max": acks_ms[-1],
-               "err_um_mean": sum(errs) / len(errs), "err_um_max_abs": max(abs(e) for e in errs),
-               "enc_increment_um_mean": (sum(inc) / len(inc)) if inc else float("nan"),
-               "enc_increment_um_min": min(inc) if inc else float("nan"), "enc_increment_um_max": max(inc) if inc else float("nan"),
-               "wall_start": wall0, "wall_end": time.time()}
+        res = {
+            "phase": "stack",
+            "label": label,
+            "closed": closed,
+            "n": n,
+            "step_um": self.a.stack_um,
+            "ack_ms_median": acks_ms[len(acks_ms) // 2],
+            "ack_ms_max": acks_ms[-1],
+            "err_um_mean": sum(errs) / len(errs),
+            "err_um_max_abs": max(abs(e) for e in errs),
+            "enc_increment_um_mean": (sum(inc) / len(inc)) if inc else float("nan"),
+            "enc_increment_um_min": min(inc) if inc else float("nan"),
+            "enc_increment_um_max": max(inc) if inc else float("nan"),
+            "wall_start": wall0,
+            "wall_end": time.time(),
+        }
         self.summary["results"].append(res)
-        self.log(f"{label}: ack median {res['ack_ms_median']:.0f} ms (max {res['ack_ms_max']:.0f}); encoder error mean {res['err_um_mean']:+.2f} um, "
-                 f"max |err| {res['err_um_max_abs']:.2f} um; encoder step increments mean {res['enc_increment_um_mean']:.3f} um "
-                 f"(min {res['enc_increment_um_min']:.3f}, max {res['enc_increment_um_max']:.3f}) for commanded {self.a.stack_um:g} um")
+        self.log(
+            f"{label}: ack median {res['ack_ms_median']:.0f} ms (max {res['ack_ms_max']:.0f}); encoder error mean {res['err_um_mean']:+.2f} um, "
+            f"max |err| {res['err_um_max_abs']:.2f} um; encoder step increments mean {res['enc_increment_um_mean']:.3f} um "
+            f"(min {res['enc_increment_um_min']:.3f}, max {res['enc_increment_um_max']:.3f}) for commanded {self.a.stack_um:g} um"
+        )
         return res
 
     def hold(self):
@@ -881,20 +1110,29 @@ class ZTuner:
         microphone has an ambient control window inside the same recording (the only thing that changes
         at the boundary is the loop engaging)."""
         if self.a.hold_open_s > 0:
-            wall_o = time.time(); devs_o = []
+            wall_o = time.time()
+            devs_o = []
             t0 = time.time()
             while time.time() - t0 < self.a.hold_open_s:
                 self.guard()
                 devs_o.append(self.mcu.get_encoder_state()["deviation"])
                 time.sleep(0.01)
             d_o = [d / USTEPS_PER_MM * 1000 for d in devs_o]
-            self.summary["results"].append({"phase": "hold_open", "label": f"hold_open_{self.a.hold_open_s:g}s",
-                                            "seconds": self.a.hold_open_s, "err_um_mean": sum(d_o) / len(d_o),
-                                            "err_um_max_abs": max(abs(v) for v in d_o),
-                                            "wall_start": wall_o, "wall_end": time.time()})
+            self.summary["results"].append(
+                {
+                    "phase": "hold_open",
+                    "label": f"hold_open_{self.a.hold_open_s:g}s",
+                    "seconds": self.a.hold_open_s,
+                    "err_um_mean": sum(d_o) / len(d_o),
+                    "err_um_max_abs": max(abs(v) for v in d_o),
+                    "wall_start": wall_o,
+                    "wall_end": time.time(),
+                }
+            )
             self.log(f"hold {self.a.hold_open_s:g} s OPEN loop (control): error mean {sum(d_o) / len(d_o):+.3f} um")
         self.engage_loop()
-        wall0 = time.time(); devs = []
+        wall0 = time.time()
+        devs = []
         try:
             t0 = time.time()
             while time.time() - t0 < self.a.hold_s:
@@ -904,21 +1142,34 @@ class ZTuner:
         finally:
             self.loop_off()
         import statistics
+
         d_um = [d / USTEPS_PER_MM * 1000 for d in devs]
         cross = sum(1 for a_, b_ in zip(d_um, d_um[1:]) if (a_ < 0) != (b_ < 0))
-        res = {"phase": "hold", "label": f"hold_closed_{self.a.hold_s:g}s", "seconds": self.a.hold_s,
-               "err_um_mean": statistics.mean(d_um), "err_um_std": statistics.pstdev(d_um), "err_um_max_abs": max(abs(v) for v in d_um),
-               "zero_crossings_per_s": cross / self.a.hold_s, "wall_start": wall0, "wall_end": time.time()}
+        res = {
+            "phase": "hold",
+            "label": f"hold_closed_{self.a.hold_s:g}s",
+            "seconds": self.a.hold_s,
+            "err_um_mean": statistics.mean(d_um),
+            "err_um_std": statistics.pstdev(d_um),
+            "err_um_max_abs": max(abs(v) for v in d_um),
+            "zero_crossings_per_s": cross / self.a.hold_s,
+            "wall_start": wall0,
+            "wall_end": time.time(),
+        }
         self.summary["results"].append(res)
-        self.log(f"hold {self.a.hold_s:g} s closed loop: error mean {res['err_um_mean']:+.3f} um, std {res['err_um_std']:.3f} um, "
-                 f"max |err| {res['err_um_max_abs']:.2f} um, zero crossings {res['zero_crossings_per_s']:.1f}/s")
+        self.log(
+            f"hold {self.a.hold_s:g} s closed loop: error mean {res['err_um_mean']:+.3f} um, std {res['err_um_std']:.3f} um, "
+            f"max |err| {res['err_um_max_abs']:.2f} um, zero crossings {res['zero_crossings_per_s']:.1f}/s"
+        )
 
     # ---------------------------------------------------------------- main
     def run(self):
         try:
             self.connect()
             self.configure_z()
-            self.configure_encoder(self.flip)   # before homing: the homing zero must be taken under the final encoder scale
+            self.configure_encoder(
+                self.flip
+            )  # before homing: the homing zero must be taken under the final encoder scale
             self.home()
             self.encoder_check()
             if self.a.action == "check":
@@ -960,7 +1211,23 @@ class ZTuner:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "baseline", "step", "sweep", "zonemap", "zonetest", "accelsweep", "velsweep", "engageprobe", "residual", "stack", "hold"])
+    ap.add_argument(
+        "action",
+        choices=[
+            "check",
+            "baseline",
+            "step",
+            "sweep",
+            "zonemap",
+            "zonetest",
+            "accelsweep",
+            "velsweep",
+            "engageprobe",
+            "residual",
+            "stack",
+            "hold",
+        ],
+    )
     ap.add_argument("--residual-steps-um", type=float, nargs="+", default=[1.0, 10.0, 100.0])
     ap.add_argument("--residual-reps", type=int, default=10)
     ap.add_argument("--vel-list", type=float, nargs="+", default=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
@@ -976,31 +1243,69 @@ def main():
     ap.add_argument("--corr-vmax", type=float, default=0.3, help="closed-loop correction velocity clamp, mm/s")
     ap.add_argument("--max-dev-um", type=float, default=200.0, help="watchdog / guard limit on loop error")
     ap.add_argument("--settle-tol-um", type=float, default=0.5)
-    ap.add_argument("--max-crossings", type=float, default=5.0, help="tail zero-crossings/s above which a gain counts as oscillating")
+    ap.add_argument(
+        "--max-crossings",
+        type=float,
+        default=5.0,
+        help="tail zero-crossings/s above which a gain counts as oscillating",
+    )
     ap.add_argument("--p", type=int, default=_def.PID_P_Z)
     ap.add_argument("--i", type=int, default=_def.PID_I_Z)
     ap.add_argument("--d", type=int, default=_def.PID_D_Z)
     ap.add_argument("--p-list", type=int, nargs="+", default=[1024, 2048, 4096, 8192, 16384])
     ap.add_argument("--zone-um", type=float, default=0.0, help="home exclusion zone sent to firmware (0 = none)")
-    ap.add_argument("--tol-um", type=float, default=0.0, help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)")
-    ap.add_argument("--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)")
-    ap.add_argument("--open-above", type=float, default=0.0,
-                    help="ramp velocity (mm/s) above which the loop is opened during moves; 0 = rest-only, >= vmax = in-flight")
-    ap.add_argument("--align-after-home", action="store_true",
-                    help="re-align the encoder frame to XACTUAL at --depth-mm after homing (stages with a decoupled gap above home)")
+    ap.add_argument(
+        "--tol-um",
+        type=float,
+        default=0.0,
+        help="closed-loop deadband and target-reached tolerance in um (0 = firmware default: 2 encoder counts)",
+    )
+    ap.add_argument(
+        "--window-um", type=float, default=0.0, help="completion window sent to firmware in um (0 = exact target)"
+    )
+    ap.add_argument(
+        "--open-above",
+        type=float,
+        default=0.0,
+        help="ramp velocity (mm/s) above which the loop is opened during moves; 0 = rest-only, >= vmax = in-flight",
+    )
+    ap.add_argument(
+        "--align-after-home",
+        action="store_true",
+        help="re-align the encoder frame to XACTUAL at --depth-mm after homing (stages with a decoupled gap above home)",
+    )
     ap.add_argument("--accel-list", type=float, nargs="+", default=[100, 150, 200, 250, 300, 350, 390])
     ap.add_argument("--stack-n", type=int, default=20)
     ap.add_argument("--stack-um", type=float, default=1.0)
     ap.add_argument("--hold-s", type=float, default=20.0)
-    ap.add_argument("--hold-open-s", type=float, default=0.0, help="open-loop control hold recorded before the closed-loop hold")
+    ap.add_argument(
+        "--hold-open-s", type=float, default=0.0, help="open-loop control hold recorded before the closed-loop hold"
+    )
     ap.add_argument("--accel-reps", type=int, default=5, help="100 um out-and-back repetitions per level")
-    ap.add_argument("--lost-step-um", type=float, default=1.0, help="encoder-vs-counter offset change that counts as lost steps")
-    ap.add_argument("--ack-overhead-ms", type=float, default=7.0, help="fixed command+report overhead subtracted when inferring acceleration")
+    ap.add_argument(
+        "--lost-step-um", type=float, default=1.0, help="encoder-vs-counter offset change that counts as lost steps"
+    )
+    ap.add_argument(
+        "--ack-overhead-ms",
+        type=float,
+        default=7.0,
+        help="fixed command+report overhead subtracted when inferring acceleration",
+    )
     ap.add_argument("--zonemap-from", type=float, default=2.0, help="zonemap start extension, mm")
     ap.add_argument("--zonemap-step-um", type=float, default=50.0)
-    ap.add_argument("--microsteps", type=int, default=int(_def.MICROSTEPPING_DEFAULT_Z),
-                    help="Z microsteps per full step to configure (ini default %d; 256 was used for the first sessions)" % int(_def.MICROSTEPPING_DEFAULT_Z))
-    ap.add_argument("--ramp", choices=["sshape", "trapezoid"], default="sshape", help="TMC4361A ramp profile for Z during the session")
+    ap.add_argument(
+        "--microsteps",
+        type=int,
+        default=int(_def.MICROSTEPPING_DEFAULT_Z),
+        help="Z microsteps per full step to configure (ini default %d; 256 was used for the first sessions)"
+        % int(_def.MICROSTEPPING_DEFAULT_Z),
+    )
+    ap.add_argument(
+        "--ramp",
+        choices=["sshape", "trapezoid"],
+        default="sshape",
+        help="TMC4361A ramp profile for Z during the session",
+    )
     ap.add_argument("--out", default="z_tune")
     args = ap.parse_args()
     set_microsteps(args.microsteps)

@@ -164,9 +164,13 @@ class ZMotionSelfTest:
             raise RuntimeError("the firmware watchdog opened the loop (PID_FAULT): the deviation exceeded the limit")
         if st["pid_enabled"] and abs(self._dev_um(st["deviation"])) > self.max_dev_um:
             self.mcu.turn_off_stage_pid(AXIS.Z)
-            raise RuntimeError(f"loop error {self._dev_um(st['deviation']):+.0f} um exceeded {self.max_dev_um:.0f} um; loop opened")
+            raise RuntimeError(
+                f"loop error {self._dev_um(st['deviation']):+.0f} um exceeded {self.max_dev_um:.0f} um; loop opened"
+            )
 
-    def _move(self, mm: float, timeout_s: float = 30.0, allow_below_floor: bool = False, check_cancel: bool = True) -> float:
+    def _move(
+        self, mm: float, timeout_s: float = 30.0, allow_below_floor: bool = False, check_cancel: bool = True
+    ) -> float:
         lo = 0.0 if allow_below_floor else float(self.axis.MIN_POSITION)
         if mm < lo - 1e-9 or mm > float(self.axis.MAX_POSITION) + 1e-9:
             raise RuntimeError(f"refusing Z target {mm:.3f} mm: outside {lo:.2f}..{self.axis.MAX_POSITION:.2f} mm")
@@ -209,8 +213,10 @@ class ZMotionSelfTest:
         loop = "off"
         if self.loop_configured:
             mode = "rest-only" if not pid.OPEN_ABOVE_MM_S else f"engaged below {pid.OPEN_ABOVE_MM_S} mm/s"
-            loop = (f"P {pid.P:.0f} I {pid.I:.0f} D {pid.D:.0f}, clamp {pid.CORRECTION_VMAX} mm/s, watchdog "
-                    f"{pid.MAX_DEVIATION_UM:.0f} um, zone {pid.HOME_ZONE_UM:.0f} um, {mode}")
+            loop = (
+                f"P {pid.P:.0f} I {pid.I:.0f} D {pid.D:.0f}, clamp {pid.CORRECTION_VMAX} mm/s, watchdog "
+                f"{pid.MAX_DEVIATION_UM:.0f} um, zone {pid.HOME_ZONE_UM:.0f} um, {mode}"
+            )
         self._add(
             "preflight",
             True if (has_encoder and new_fw) or not has_encoder else False,
@@ -261,7 +267,7 @@ class ZMotionSelfTest:
             self.report.recommendations["encoder_flip_dir_z"] = str(not self.axis.ENCODER_FLIP_DIR)
         summary = f"encoder/counter ratio {ratio:+.4f} over 0.5 mm; frame offset after homing {offset_um:+.1f} um"
         if not ok_scale:
-            summary += (f" - SCALE OFF by {abs(ratio) - 1:+.1%}: check encoder_step_size_z_mm / screw_pitch_z_mm")
+            summary += f" - SCALE OFF by {abs(ratio) - 1:+.1%}: check encoder_step_size_z_mm / screw_pitch_z_mm"
         elif not ok_sign:
             summary += " - encoder runs backwards: set encoder_flip_dir_z as recommended"
         self._add("encoder scale and sign", ok_scale and ok_sign, summary, ratio=ratio, frame_offset_um=offset_um)
@@ -332,12 +338,14 @@ class ZMotionSelfTest:
             problems.append(f"[SOFTWARE_POS_LIMIT] z_negative {floor_cfg} is inside the gap")
         if self.loop_configured and zone_um < gap * 1000:
             problems.append(f"pid_home_zone_z_um {zone_um:.0f} is smaller than the gap")
-        self.report.recommendations.update({
-            "z_home_gap_mm": f"{gap:.2f}",
-            "z_negative (SOFTWARE_POS_LIMIT)": f"{floor:.2f}",
-            "z_park_at_min_after_homing": "True",
-            "pid_home_zone_z_um": f"<= {floor * 1000:.0f}",
-        })
+        self.report.recommendations.update(
+            {
+                "z_home_gap_mm": f"{gap:.2f}",
+                "z_negative (SOFTWARE_POS_LIMIT)": f"{floor:.2f}",
+                "z_park_at_min_after_homing": "True",
+                "pid_home_zone_z_um": f"<= {floor * 1000:.0f}",
+            }
+        )
         self._add(
             "gap above home",
             not problems,
@@ -382,7 +390,9 @@ class ZMotionSelfTest:
             f"10 x 100 um: offset change {lost_short:+.2f} um, ack median {statistics.median(acks) * 1000:.0f} ms; "
             f"4 x {far - self.depth:.1f} mm at {self.axis.MAX_SPEED} mm/s: {lost_long:+.2f} um, ack median "
             f"{statistics.median(long_acks) * 1000:.0f} ms (limit one full step, {self.lost_step_limit_um:.1f} um)",
-            lost_short_um=lost_short, lost_long_um=lost_long, ack_100um_ms=statistics.median(acks) * 1000,
+            lost_short_um=lost_short,
+            lost_long_um=lost_long,
+            ack_100um_ms=statistics.median(acks) * 1000,
         )
 
     def closed_loop(self):
@@ -427,8 +437,12 @@ class ZMotionSelfTest:
         err_max = max(abs(e) for e in errs)
         hold_max = max(abs(e) for e in hold_errs) if hold_errs else 0.0
         fault = self._enc()["pid_fault"]
-        ok = (not fault and err_max <= self.CLOSED_ERROR_LIMIT_UM and hold_max <= self.CLOSED_ERROR_LIMIT_UM
-              and acks_ms[-1] <= self.CLOSED_ACK_LIMIT_MS)
+        ok = (
+            not fault
+            and err_max <= self.CLOSED_ERROR_LIMIT_UM
+            and hold_max <= self.CLOSED_ERROR_LIMIT_UM
+            and acks_ms[-1] <= self.CLOSED_ACK_LIMIT_MS
+        )
         self._add(
             "closed loop",
             ok,
@@ -436,7 +450,10 @@ class ZMotionSelfTest:
             f"error max {err_max:.2f} um; {self.stack_n * step * 1000:.0f} um return {ack_100 * 1000:.0f} ms; "
             f"{self.hold_s:.0f} s hold: max |error| {hold_max:.2f} um, {crossings / self.hold_s:.1f} crossings/s"
             + ("; WATCHDOG FAULT" if fault else ""),
-            ack_median_ms=acks_ms[len(acks_ms) // 2], ack_max_ms=acks_ms[-1], err_max_um=err_max, hold_max_um=hold_max,
+            ack_median_ms=acks_ms[len(acks_ms) // 2],
+            ack_max_ms=acks_ms[-1],
+            err_max_um=err_max,
+            hold_max_um=hold_max,
         )
 
     def restore(self):
@@ -467,7 +484,14 @@ class ZMotionSelfTest:
 
     # ------------------------------------------------------------------ driver
     def run(self) -> SelfTestReport:
-        steps = [self.preflight, self.home_and_park, self.encoder_check, self.gap_map, self.lost_steps, self.closed_loop]
+        steps = [
+            self.preflight,
+            self.home_and_park,
+            self.encoder_check,
+            self.gap_map,
+            self.lost_steps,
+            self.closed_loop,
+        ]
         try:
             for step in steps:
                 self._check_cancel()
@@ -483,6 +507,6 @@ class ZMotionSelfTest:
         # the per-check lines were logged as they happened; close with the recommendations and the verdict
         self.log("")
         tail = self.report.text().splitlines()
-        for line in tail[len(self.report.results):]:
+        for line in tail[len(self.report.results) :]:
             self.log(line)
         return self.report

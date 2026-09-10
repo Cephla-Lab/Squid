@@ -308,7 +308,7 @@ def test_encoder_reporting_and_pid_limits_commands():
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 15
     assert (micro.last_command[5] << 8) + micro.last_command[6] == 30
 
-    micro.set_completion_window(control._def.AXIS.W, 5.0 / 360.0)   # 5 deg of a wheel turn = 139 x 1e-4 rev
+    micro.set_completion_window(control._def.AXIS.W, 5.0 / 360.0)  # 5 deg of a wheel turn = 139 x 1e-4 rev
     assert micro.last_command[1] == control._def.CMD_SET.SET_COMPLETION_WINDOW
     assert micro.last_command[2] == control._def.AXIS.W
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 139
@@ -319,10 +319,11 @@ def test_encoder_reporting_and_pid_limits_commands():
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 500
 
     import pytest as _pytest
-    with _pytest.raises(ValueError):
-        micro.set_pid_arguments(control._def.AXIS.Z, 70000, 0, 0)   # P above 65535 is refused, not truncated
 
-    micro.set_pid_open_above(control._def.AXIS.Z, 1.0)   # loop open above 1 mm/s = 100 x 0.01 mm/s
+    with _pytest.raises(ValueError):
+        micro.set_pid_arguments(control._def.AXIS.Z, 70000, 0, 0)  # P above 65535 is refused, not truncated
+
+    micro.set_pid_open_above(control._def.AXIS.Z, 1.0)  # loop open above 1 mm/s = 100 x 0.01 mm/s
     assert micro.last_command[1] == control._def.CMD_SET.SET_PID_OPEN_ABOVE
     assert micro.last_command[2] == control._def.AXIS.Z
     assert (micro.last_command[3] << 8) + micro.last_command[4] == 100
@@ -349,8 +350,10 @@ def test_encoder_fields_decode_from_packet():
         return msg
 
     # Drive the parser directly on a crafted packet: same code path as the read thread.
-    flags = (1 << control._def.ENC_FLAG.REPORTING) | (1 << control._def.ENC_FLAG.PID_ENABLED) | (
-        control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT
+    flags = (
+        (1 << control._def.ENC_FLAG.REPORTING)
+        | (1 << control._def.ENC_FLAG.PID_ENABLED)
+        | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT)
     )
     msg = packet(-853333, flags, -1234)
     micro.theta_pos = micro._payload_to_int(msg[14:18], 4)

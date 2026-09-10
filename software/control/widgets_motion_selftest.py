@@ -36,7 +36,7 @@ class _SelfTestWorker(QObject):
 
 
 class MotionSelfTestDialog(QDialog):
-    signal_finished = Signal(bool)   # report.passed, once the run is over
+    signal_finished = Signal(bool)  # report.passed, once the run is over
 
     def __init__(self, microcontroller, axis_config, stage=None, parent=None):
         super().__init__(parent)
@@ -83,7 +83,9 @@ class MotionSelfTestDialog(QDialog):
         buttons.addWidget(self.btn_close)
         layout.addLayout(buttons)
 
-        self.btn_start.clicked.connect(lambda: self.start())   # not `self.start`: Qt would pass checked=False as `confirm`
+        self.btn_start.clicked.connect(
+            lambda: self.start()
+        )  # not `self.start`: Qt would pass checked=False as `confirm`
         self.btn_cancel.clicked.connect(self.cancel)
         self.btn_copy.clicked.connect(self.copy_report)
         self.btn_close.clicked.connect(self.close)
@@ -114,7 +116,10 @@ class MotionSelfTestDialog(QDialog):
             self.parent().setEnabled(False)
         self._worker = _SelfTestWorker(None)
         test = ZMotionSelfTest(
-            self.microcontroller, self.axis_config, log=self._worker.signal_log.emit, cancel=lambda: self._cancel,
+            self.microcontroller,
+            self.axis_config,
+            log=self._worker.signal_log.emit,
+            cancel=lambda: self._cancel,
             stage=self.stage,
         )
         self._worker.test = test
@@ -143,8 +148,11 @@ class MotionSelfTestDialog(QDialog):
         self.summary.setText(
             ("PASS" if report.passed else "FAIL")
             + (f" - {report.aborted}" if report.aborted else "")
-            + (f" - recommended: " + ", ".join(f"{k} = {v}" for k, v in report.recommendations.items())
-               if report.recommendations else "")
+            + (
+                f" - recommended: " + ", ".join(f"{k} = {v}" for k, v in report.recommendations.items())
+                if report.recommendations
+                else ""
+            )
         )
         _log.info("motion self-test finished: " + ("PASS" if report.passed else "FAIL"))
         self.btn_start.setEnabled(True)

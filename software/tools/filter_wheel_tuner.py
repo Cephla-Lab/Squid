@@ -21,6 +21,7 @@ Usage (from software/, with the project venv):
 Options: --vmax rev/s  --accel rev/s^2  --ramp trapezoid|sshape  --microsteps 64  --flip auto|0|1
          --lost-usteps 32 (stop a sweep when a level drifts by more than this)  --out wheel_tune
 """
+
 import argparse
 import csv
 import json
@@ -37,14 +38,14 @@ from control.microcontroller import Microcontroller, get_microcontroller_serial_
 
 FULLSTEPS = int(_def.FULLSTEPS_PER_REV_W)
 MICROSTEPS = int(_def.MICROSTEPPING_DEFAULT_W)
-USTEPS_PER_REV = MICROSTEPS * FULLSTEPS                 # pitch is 1 "mm" per rev
+USTEPS_PER_REV = MICROSTEPS * FULLSTEPS  # pitch is 1 "mm" per rev
 SLOTS = int(_def.SQUID_FILTERWHEEL_MAX_INDEX)
 MIN_INDEX = int(_def.SQUID_FILTERWHEEL_MIN_INDEX)
 OFFSET_REV = float(_def.SQUID_FILTERWHEEL_OFFSET)
 TRANSITIONS = int(_def.SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION)
 SIGN = int(_def.STAGE_MOVEMENT_SIGN_W)
 FW_MIN = (1, 6)
-DEFAULT_PATTERN = [2, 3, 4, 5, 6, 7, 8, 1, 5, 2, 8, 4, 7, 3, 6, 1]   # 7 adjacent, one 7-slot return, 8 jumps
+DEFAULT_PATTERN = [2, 3, 4, 5, 6, 7, 8, 1, 5, 2, 8, 4, 7, 3, 6, 1]  # 7 adjacent, one 7-slot return, 8 jumps
 
 
 def set_microsteps(n):
@@ -109,10 +110,16 @@ class WheelTuner:
         self.sampler = None
         self.flip = None
         self.transitions = TRANSITIONS if args.transitions == "auto" else int(args.transitions)
-        self.slot = None            # last commanded slot
+        self.slot = None  # last commanded slot
         self.last_cmd_to_ack_s = float("nan")
-        self.summary = {"config": vars(args), "usteps_per_rev": USTEPS_PER_REV, "slots": SLOTS,
-                        "offset_rev": OFFSET_REV, "transitions_per_rev": TRANSITIONS, "results": []}
+        self.summary = {
+            "config": vars(args),
+            "usteps_per_rev": USTEPS_PER_REV,
+            "slots": SLOTS,
+            "offset_rev": OFFSET_REV,
+            "transitions_per_rev": TRANSITIONS,
+            "results": [],
+        }
 
     def log(self, msg):
         print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
@@ -135,25 +142,34 @@ class WheelTuner:
         m.init_filter_wheel(AXIS.W)
         self.wait(10)
         time.sleep(0.3)
-        m.configure_squidfilter(AXIS.W)              # pitch 1, ini microstepping/current, ini v/a
+        m.configure_squidfilter(AXIS.W)  # pitch 1, ini microstepping/current, ini v/a
         if MICROSTEPS != int(_def.MICROSTEPPING_DEFAULT_W):
-            m.configure_motor_driver(AXIS.W, MICROSTEPS, _def.W_MOTOR_RMS_CURRENT_mA, _def.W_MOTOR_I_HOLD); self.wait()
+            m.configure_motor_driver(AXIS.W, MICROSTEPS, _def.W_MOTOR_RMS_CURRENT_mA, _def.W_MOTOR_I_HOLD)
+            self.wait()
         self.set_motion(self.a.vmax, self.a.accel, self.a.ramp)
         if self.a.window_deg > 0:
-            m.set_completion_window(AXIS.W, self.a.window_deg / 360.0); self.wait()
-            self.log(f"completion window {self.a.window_deg:g} deg ({self.a.window_deg / 360 * USTEPS_PER_REV:.1f} usteps): "
-                     f"COMPLETED is sent while the last degrees are travelled")
-        m.configure_stage_pid(AXIS.W, self.transitions, bool(flip)); self.wait()
-        m.set_encoder_reporting(AXIS.W, ENCODER_REPORTING.ENC_IN_THETA); self.wait()
+            m.set_completion_window(AXIS.W, self.a.window_deg / 360.0)
+            self.wait()
+            self.log(
+                f"completion window {self.a.window_deg:g} deg ({self.a.window_deg / 360 * USTEPS_PER_REV:.1f} usteps): "
+                f"COMPLETED is sent while the last degrees are travelled"
+            )
+        m.configure_stage_pid(AXIS.W, self.transitions, bool(flip))
+        self.wait()
+        m.set_encoder_reporting(AXIS.W, ENCODER_REPORTING.ENC_IN_THETA)
+        self.wait()
         self.flip = bool(flip)
         time.sleep(0.2)
         self.sampler = Sampler(m)
         self.sampler.start()
-        self.log(f"W configured: {MICROSTEPS} usteps/FS ({USTEPS_PER_REV} usteps/rev), {_def.W_MOTOR_RMS_CURRENT_mA} mA, "
-                 f"encoder {self.transitions} transitions/rev (flip={self.flip}), reporting on")
+        self.log(
+            f"W configured: {MICROSTEPS} usteps/FS ({USTEPS_PER_REV} usteps/rev), {_def.W_MOTOR_RMS_CURRENT_mA} mA, "
+            f"encoder {self.transitions} transitions/rev (flip={self.flip}), reporting on"
+        )
 
     def reconfigure_encoder(self, transitions, flip):
-        self.mcu.configure_stage_pid(AXIS.W, int(transitions), bool(flip)); self.wait()
+        self.mcu.configure_stage_pid(AXIS.W, int(transitions), bool(flip))
+        self.wait()
         self.transitions, self.flip = int(transitions), bool(flip)
         self.summary["transitions_per_rev"] = self.transitions
         self.summary["flip"] = self.flip
@@ -161,11 +177,17 @@ class WheelTuner:
 
     def set_motion(self, vmax, accel, ramp):
         m = self.mcu
-        m.set_max_velocity_acceleration(AXIS.W, vmax, accel); self.wait()
+        m.set_max_velocity_acceleration(AXIS.W, vmax, accel)
+        self.wait()
         prof = RAMP_PROFILE.TRAPEZOID if ramp == "trapezoid" else RAMP_PROFILE.SSHAPE
-        m.set_ramp_profile(AXIS.W, prof); self.wait()
-        amax_cap = (2 ** 22 - 1) / USTEPS_PER_REV
-        note = f"  (AMAX register ceiling {amax_cap:.0f} rev/s2 at {MICROSTEPS} usteps: CLAMPED)" if accel > amax_cap else ""
+        m.set_ramp_profile(AXIS.W, prof)
+        self.wait()
+        amax_cap = (2**22 - 1) / USTEPS_PER_REV
+        note = (
+            f"  (AMAX register ceiling {amax_cap:.0f} rev/s2 at {MICROSTEPS} usteps: CLAMPED)"
+            if accel > amax_cap
+            else ""
+        )
         self.log(f"W motion: vmax {vmax} rev/s, accel {accel} rev/s2, ramp {ramp}{note}")
 
     # ---------------------------------------------------------------- primitives
@@ -190,7 +212,7 @@ class WheelTuner:
             time.sleep(0.002)
         self.check_abort()
         self.last_cmd_to_ack_s = time.time() - t0
-        self.state_at_ack = self.state()          # where the wheel was when COMPLETED arrived
+        self.state_at_ack = self.state()  # where the wheel was when COMPLETED arrived
         self.state_at_ack["target"] = int(target)
 
     def move_to_slot(self, slot):
@@ -219,10 +241,19 @@ class WheelTuner:
         st = self.state()
         target = slot_usteps(2)
         ratio = st["enc"] / target if target else float("nan")
-        self.log(f"slot 2: commanded {target} usteps, XACTUAL {st['xactual']}, ENC_POS {st['enc']} -> ratio {ratio:+.4f}; "
-                 f"cmd->ack {self.last_cmd_to_ack_s * 1000:.0f} ms")
-        res = {"phase": "check", "target_usteps": target, "enc_pos": st["enc"], "xactual": st["xactual"], "ratio": ratio,
-               "flip": self.flip, "cmd_to_ack_s": self.last_cmd_to_ack_s}
+        self.log(
+            f"slot 2: commanded {target} usteps, XACTUAL {st['xactual']}, ENC_POS {st['enc']} -> ratio {ratio:+.4f}; "
+            f"cmd->ack {self.last_cmd_to_ack_s * 1000:.0f} ms"
+        )
+        res = {
+            "phase": "check",
+            "target_usteps": target,
+            "enc_pos": st["enc"],
+            "xactual": st["xactual"],
+            "ratio": ratio,
+            "flip": self.flip,
+            "cmd_to_ack_s": self.last_cmd_to_ack_s,
+        }
         self.summary["results"].append(res)
         return ratio
 
@@ -241,10 +272,20 @@ class WheelTuner:
         d_e = st1["enc"] - st0["enc"]
         ratio = d_e / d_x if d_x else float("nan")
         est = self.transitions * ratio
-        self.log(f"one revolution: XACTUAL +{d_x}, ENC_POS {d_e:+d} usteps -> ratio {ratio:+.4f}; "
-                 f"encoder = {est:.1f} transitions/rev (configured {self.transitions})")
-        self.summary["results"].append({"phase": "scale", "d_xactual": d_x, "d_enc": d_e, "ratio": ratio,
-                                        "transitions_configured": self.transitions, "transitions_measured": est})
+        self.log(
+            f"one revolution: XACTUAL +{d_x}, ENC_POS {d_e:+d} usteps -> ratio {ratio:+.4f}; "
+            f"encoder = {est:.1f} transitions/rev (configured {self.transitions})"
+        )
+        self.summary["results"].append(
+            {
+                "phase": "scale",
+                "d_xactual": d_x,
+                "d_enc": d_e,
+                "ratio": ratio,
+                "transitions_configured": self.transitions,
+                "transitions_measured": est,
+            }
+        )
         self.move_to_usteps(slot_usteps(1))
         time.sleep(0.3)
         return ratio, est
@@ -271,8 +312,10 @@ class WheelTuner:
             ratio = self.check()
             if not 0.98 <= ratio <= 1.02:
                 raise RuntimeError(f"encoder still off scale after reconfiguring (ratio {ratio:+.4f})")
-        self.log(f"encoder OK: ratio {ratio:+.4f}, {self.transitions} transitions/rev, flip={self.flip} "
-                 f"(host should use SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = {self.transitions}, ENCODER_FLIP_DIR_W = {self.flip})")
+        self.log(
+            f"encoder OK: ratio {ratio:+.4f}, {self.transitions} transitions/rev, flip={self.flip} "
+            f"(host should use SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = {self.transitions}, ENCODER_FLIP_DIR_W = {self.flip})"
+        )
 
     def pattern(self, label, slots=None, settle_s=0.12):
         """Run the move pattern once at the current motion settings. Per move: slot distance, cmd->ack,
@@ -301,11 +344,22 @@ class WheelTuner:
                 if tb - ta >= 0.008:
                     vpk = max(vpk, abs(eb - ea) / (tb - ta) / USTEPS_PER_REV)
             ack = self.state_at_ack
-            rows.append({"from": frm, "to": target, "slots": dist, "cmd_to_ack_ms": self.last_cmd_to_ack_s * 1000,
-                         "dev_usteps": st["dev"], "lost_this_move": st["dev"] - dev_before, "enc_peak_rev_s": vpk,
-                         "enc": st["enc"], "xactual": st["xactual"], "t": time.time() - wall0,
-                         "enc_err_at_ack_deg": (ack["enc"] - ack["target"]) / USTEPS_PER_REV * 360.0,
-                         "xactual_err_at_ack_deg": (ack["xactual"] - ack["target"]) / USTEPS_PER_REV * 360.0})
+            rows.append(
+                {
+                    "from": frm,
+                    "to": target,
+                    "slots": dist,
+                    "cmd_to_ack_ms": self.last_cmd_to_ack_s * 1000,
+                    "dev_usteps": st["dev"],
+                    "lost_this_move": st["dev"] - dev_before,
+                    "enc_peak_rev_s": vpk,
+                    "enc": st["enc"],
+                    "xactual": st["xactual"],
+                    "t": time.time() - wall0,
+                    "enc_err_at_ack_deg": (ack["enc"] - ack["target"]) / USTEPS_PER_REV * 360.0,
+                    "xactual_err_at_ack_deg": (ack["xactual"] - ack["target"]) / USTEPS_PER_REV * 360.0,
+                }
+            )
         time.sleep(0.3)
         st1 = self.state()
         drift = st1["dev"] - st0["dev"]
@@ -320,32 +374,50 @@ class WheelTuner:
         for r in rows:
             by_dist.setdefault(r["slots"], []).append(r["cmd_to_ack_ms"])
         adj = by_dist.get(1, [])
-        res = {"phase": "level", "label": label, "vmax": self.a.vmax, "accel": self.a.accel, "ramp": self.a.ramp,
-               "microsteps": MICROSTEPS, "n_moves": len(rows), "dev_start": st0["dev"], "dev_end": st1["dev"],
-               "drift_usteps": drift, "max_abs_dev_change": max(abs(r["dev_usteps"] - st0["dev"]) for r in rows),
-               "adjacent_ms_median": statistics.median(adj) if adj else float("nan"),
-               "adjacent_ms_max": max(adj) if adj else float("nan"),
-               "by_distance_ms_median": {str(k): statistics.median(v) for k, v in sorted(by_dist.items())},
-               "wall_start": wall0, "wall_end": time.time()}
+        res = {
+            "phase": "level",
+            "label": label,
+            "vmax": self.a.vmax,
+            "accel": self.a.accel,
+            "ramp": self.a.ramp,
+            "microsteps": MICROSTEPS,
+            "n_moves": len(rows),
+            "dev_start": st0["dev"],
+            "dev_end": st1["dev"],
+            "drift_usteps": drift,
+            "max_abs_dev_change": max(abs(r["dev_usteps"] - st0["dev"]) for r in rows),
+            "adjacent_ms_median": statistics.median(adj) if adj else float("nan"),
+            "adjacent_ms_max": max(adj) if adj else float("nan"),
+            "by_distance_ms_median": {str(k): statistics.median(v) for k, v in sorted(by_dist.items())},
+            "wall_start": wall0,
+            "wall_end": time.time(),
+        }
         path = os.path.join(self.out, f"moves_{label.replace(' ', '_').replace('/', '-')}.csv")
         with open(path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-            w.writeheader(); w.writerows(rows)
+            w.writeheader()
+            w.writerows(rows)
         res["csv"] = path
         self.summary["results"].append(res)
-        model = model_move_s(1.0 / SLOTS, self.a.vmax, self.a.accel) * 1000 if self.a.ramp == "trapezoid" else float("nan")
-        dist_txt = ", ".join(f"{k} slot{'s' if int(k) > 1 else ''} {v:.0f} ms" for k, v in res["by_distance_ms_median"].items())
+        model = (
+            model_move_s(1.0 / SLOTS, self.a.vmax, self.a.accel) * 1000 if self.a.ramp == "trapezoid" else float("nan")
+        )
+        dist_txt = ", ".join(
+            f"{k} slot{'s' if int(k) > 1 else ''} {v:.0f} ms" for k, v in res["by_distance_ms_median"].items()
+        )
         worst = max(rows, key=lambda r: abs(r["lost_this_move"]))
         res["worst_move"] = {k: worst[k] for k in ("from", "to", "slots", "lost_this_move", "enc_peak_rev_s")}
         res["enc_peak_rev_s_max"] = max(r["enc_peak_rev_s"] for r in rows)
         res["enc_err_at_ack_deg_median_abs"] = statistics.median(abs(r["enc_err_at_ack_deg"]) for r in rows)
         res["enc_err_at_ack_deg_max_abs"] = max(abs(r["enc_err_at_ack_deg"]) for r in rows)
-        self.log(f"{label}: {len(rows)} moves; adjacent cmd->ack median {res['adjacent_ms_median']:.0f} ms (max {res['adjacent_ms_max']:.0f}"
-                 f"{f', trapezoid model {model:.0f}' if model == model else ''}); {dist_txt}; "
-                 f"encoder drift {drift:+d} usteps ({drift / USTEPS_PER_REV * 360:+.2f} deg) over the level; "
-                 f"worst single move {worst['from']}->{worst['to']} lost {worst['lost_this_move']:+d} usteps; "
-                 f"peak encoder speed {res['enc_peak_rev_s_max']:.2f} rev/s; encoder still {res['enc_err_at_ack_deg_median_abs']:.2f} deg "
-                 f"(max {res['enc_err_at_ack_deg_max_abs']:.2f}) from the slot when COMPLETED arrived")
+        self.log(
+            f"{label}: {len(rows)} moves; adjacent cmd->ack median {res['adjacent_ms_median']:.0f} ms (max {res['adjacent_ms_max']:.0f}"
+            f"{f', trapezoid model {model:.0f}' if model == model else ''}); {dist_txt}; "
+            f"encoder drift {drift:+d} usteps ({drift / USTEPS_PER_REV * 360:+.2f} deg) over the level; "
+            f"worst single move {worst['from']}->{worst['to']} lost {worst['lost_this_move']:+d} usteps; "
+            f"peak encoder speed {res['enc_peak_rev_s_max']:.2f} rev/s; encoder still {res['enc_err_at_ack_deg_median_abs']:.2f} deg "
+            f"(max {res['enc_err_at_ack_deg_max_abs']:.2f}) from the slot when COMPLETED arrived"
+        )
         return res
 
     def wrap(self):
@@ -365,17 +437,37 @@ class WheelTuner:
                 self.move_to_usteps(target, timeout=self.a.wrap_timeout)
                 time.sleep(0.15)
                 st = self.state()
-                r = {"label": label, "target": target, "ok": True, "cmd_to_ack_ms": self.last_cmd_to_ack_s * 1000,
-                     "xactual": st["xactual"], "enc": st["enc"], "dev": st["dev"]}
-                self.log(f"{label}: OK, cmd->ack {r['cmd_to_ack_ms']:.0f} ms, XACTUAL {st['xactual']}, ENC {st['enc']}, dev {st['dev']}")
+                r = {
+                    "label": label,
+                    "target": target,
+                    "ok": True,
+                    "cmd_to_ack_ms": self.last_cmd_to_ack_s * 1000,
+                    "xactual": st["xactual"],
+                    "enc": st["enc"],
+                    "dev": st["dev"],
+                }
+                self.log(
+                    f"{label}: OK, cmd->ack {r['cmd_to_ack_ms']:.0f} ms, XACTUAL {st['xactual']}, ENC {st['enc']}, dev {st['dev']}"
+                )
             except TimeoutError:
                 st = self.state()
-                r = {"label": label, "target": target, "ok": False, "after_s": time.time() - t0,
-                     "xactual": st["xactual"], "enc": st["enc"], "dev": st["dev"]}
-                self.log(f"{label}: NOT COMPLETED after {r['after_s']:.1f} s (XACTUAL {st['xactual']}, target {target}): "
-                         f"the flag stopped the wheel. Resetting the controller.")
-                self.mcu.reset(); time.sleep(0.5)
-                self.mcu.initialize_drivers(); time.sleep(0.5)
+                r = {
+                    "label": label,
+                    "target": target,
+                    "ok": False,
+                    "after_s": time.time() - t0,
+                    "xactual": st["xactual"],
+                    "enc": st["enc"],
+                    "dev": st["dev"],
+                }
+                self.log(
+                    f"{label}: NOT COMPLETED after {r['after_s']:.1f} s (XACTUAL {st['xactual']}, target {target}): "
+                    f"the flag stopped the wheel. Resetting the controller."
+                )
+                self.mcu.reset()
+                time.sleep(0.5)
+                self.mcu.initialize_drivers()
+                time.sleep(0.5)
                 raise
             results.append(r)
             return r
@@ -390,10 +482,20 @@ class WheelTuner:
             attempt("back to slot 1", slot_usteps(1))
         finally:
             st1 = self.state()
-            res = {"phase": "wrap", "label": "wrap", "results": results, "dev_start": st0["dev"], "dev_end": st1["dev"],
-                   "drift_usteps": st1["dev"] - st0["dev"], "wall_start": wall0, "wall_end": time.time()}
+            res = {
+                "phase": "wrap",
+                "label": "wrap",
+                "results": results,
+                "dev_start": st0["dev"],
+                "dev_end": st1["dev"],
+                "drift_usteps": st1["dev"] - st0["dev"],
+                "wall_start": wall0,
+                "wall_end": time.time(),
+            }
             self.summary["results"].append(res)
-            self.log(f"wrap: {sum(1 for r in results if r['ok'])}/{len(results)} crossings completed; encoder drift {res['drift_usteps']:+d} usteps")
+            self.log(
+                f"wrap: {sum(1 for r in results if r['ok'])}/{len(results)} crossings completed; encoder drift {res['drift_usteps']:+d} usteps"
+            )
 
     def sweep(self, kind, values):
         for v in values:
@@ -410,13 +512,23 @@ class WheelTuner:
                 self.summary["results"].append({"phase": "level", "label": label, "error": str(e)})
                 break
             if abs(res["drift_usteps"]) > self.a.lost_usteps:
-                self.log(f"STOP: {res['drift_usteps']:+d} usteps of position lost at {label} (limit {self.a.lost_usteps})")
+                self.log(
+                    f"STOP: {res['drift_usteps']:+d} usteps of position lost at {label} (limit {self.a.lost_usteps})"
+                )
                 break
-        good = [r for r in self.summary["results"] if r.get("phase") == "level" and "error" not in r
-                and abs(r["drift_usteps"]) <= self.a.lost_usteps and r["label"].startswith(kind)]
+        good = [
+            r
+            for r in self.summary["results"]
+            if r.get("phase") == "level"
+            and "error" not in r
+            and abs(r["drift_usteps"]) <= self.a.lost_usteps
+            and r["label"].startswith(kind)
+        ]
         if good:
             best = good[-1]
-            self.log(f"highest {kind} with no lost steps: {best['label']} (adjacent slot {best['adjacent_ms_median']:.0f} ms)")
+            self.log(
+                f"highest {kind} with no lost steps: {best['label']} (adjacent slot {best['adjacent_ms_median']:.0f} ms)"
+            )
 
     # ---------------------------------------------------------------- main
     def run(self):
@@ -453,8 +565,17 @@ class WheelTuner:
             return
         steps = [
             ("reporting off", lambda: (self.mcu.set_encoder_reporting(AXIS.W, ENCODER_REPORTING.OFF), self.wait(5))),
-            ("ini velocity restored", lambda: (self.mcu.set_max_velocity_acceleration(AXIS.W, _def.MAX_VELOCITY_W_mm, _def.MAX_ACCELERATION_W_mm), self.wait(5))),
-            ("ramp restored to S-shape", lambda: (self.mcu.set_ramp_profile(AXIS.W, RAMP_PROFILE.SSHAPE), self.wait(5))),
+            (
+                "ini velocity restored",
+                lambda: (
+                    self.mcu.set_max_velocity_acceleration(AXIS.W, _def.MAX_VELOCITY_W_mm, _def.MAX_ACCELERATION_W_mm),
+                    self.wait(5),
+                ),
+            ),
+            (
+                "ramp restored to S-shape",
+                lambda: (self.mcu.set_ramp_profile(AXIS.W, RAMP_PROFILE.SSHAPE), self.wait(5)),
+            ),
         ]
         if not self.a.leave_enabled:
             steps.append(("W driver disabled", lambda: (self.mcu.set_axis_enable_disable(AXIS.W, 0), self.wait(5))))
@@ -462,7 +583,8 @@ class WheelTuner:
         done = []
         for name, fn in steps:
             try:
-                fn(); done.append(name)
+                fn()
+                done.append(name)
             except Exception as e:  # noqa: BLE001
                 self.log(f"shutdown step '{name}' failed: {e}")
         try:
@@ -477,18 +599,34 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["check", "pattern", "accelsweep", "velsweep", "wrap"])
     ap.add_argument("--wrap-n", type=int, default=5, help="wrap: number of 1<->8 short-way round trips across the flag")
-    ap.add_argument("--wrap-timeout", type=float, default=5.0, help="wrap: seconds before a crossing is declared stopped")
+    ap.add_argument(
+        "--wrap-timeout", type=float, default=5.0, help="wrap: seconds before a crossing is declared stopped"
+    )
     ap.add_argument("--vmax", type=float, default=float(_def.MAX_VELOCITY_W_mm), help="rev/s")
     ap.add_argument("--accel", type=float, default=float(_def.MAX_ACCELERATION_W_mm), help="rev/s^2")
     ap.add_argument("--ramp", choices=["trapezoid", "sshape"], default="trapezoid")
     ap.add_argument("--microsteps", type=int, default=int(_def.MICROSTEPPING_DEFAULT_W))
     ap.add_argument("--flip", choices=["auto", "0", "1"], default="auto")
-    ap.add_argument("--window-deg", type=float, default=0.0, help="SET_COMPLETION_WINDOW for W in degrees (0 = exact-target completion)")
-    ap.add_argument("--transitions", default="auto", help="encoder transitions per revolution, or auto = measure over one turn and use it")
+    ap.add_argument(
+        "--window-deg",
+        type=float,
+        default=0.0,
+        help="SET_COMPLETION_WINDOW for W in degrees (0 = exact-target completion)",
+    )
+    ap.add_argument(
+        "--transitions",
+        default="auto",
+        help="encoder transitions per revolution, or auto = measure over one turn and use it",
+    )
     ap.add_argument("--accel-list", type=float, nargs="+", default=[50, 100, 150, 200, 250, 300])
     ap.add_argument("--vel-list", type=float, nargs="+", default=[3.19, 4, 5, 6])
     ap.add_argument("--pattern", type=int, nargs="+", default=DEFAULT_PATTERN)
-    ap.add_argument("--lost-usteps", type=int, default=32, help="level drift that counts as lost steps (64 usteps = 1 full step at 64 usteps/FS)")
+    ap.add_argument(
+        "--lost-usteps",
+        type=int,
+        default=32,
+        help="level drift that counts as lost steps (64 usteps = 1 full step at 64 usteps/FS)",
+    )
     ap.add_argument("--leave-enabled", action="store_true", help="leave the W driver energised at exit")
     ap.add_argument("--out", default="wheel_tune")
     a = ap.parse_args()

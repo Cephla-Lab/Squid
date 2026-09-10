@@ -129,7 +129,9 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.set_pid_arguments.assert_called_once()
         mock_microcontroller.configure_stage_pid.assert_called_once()
         mock_microcontroller.turn_on_stage_pid.assert_called_once()
-        assert len(mock_microcontroller.turn_on_stage_pid.call_args.args) == 1   # (axis,) - the loop enable takes no flag
+        assert (
+            len(mock_microcontroller.turn_on_stage_pid.call_args.args) == 1
+        )  # (axis,) - the loop enable takes no flag
 
 
 class TestSquidFilterWheelAbsoluteMove:

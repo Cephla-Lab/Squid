@@ -178,7 +178,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
     def _shortest_slot_delta(delta: int, slots: int) -> int:
         """Signed slot delta with the smaller magnitude around the circle; a half-turn tie goes forward."""
         d = delta % slots
-        if 2 * d > slots:   # more than half a turn forward: go backward instead; an exact half turn goes forward
+        if 2 * d > slots:  # more than half a turn forward: go backward instead; an exact half turn goes forward
             d -= slots
         return d
 
@@ -274,7 +274,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
             return
 
         target_usteps, target_turns = self._plan_move(wheel_id, target_pos)
-        _log.info(f"Filter wheel {wheel_id}: {current_pos} -> {target_pos} (usteps={target_usteps}, turns={target_turns})")
+        _log.info(
+            f"Filter wheel {wheel_id}: {current_pos} -> {target_pos} (usteps={target_usteps}, turns={target_turns})"
+        )
 
         try:
             self._move_to_usteps_with_resend(wheel_id, target_usteps)

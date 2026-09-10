@@ -4,6 +4,7 @@ The wheel is rotary: 8 -> 1 is one slot forward across the index flag, not seven
 The controller keeps the driver coordinate continuous with a per-wheel turn counter, so the
 absolute MOVETO target for slot k on turn n is target(k) + n * usteps_per_turn.
 """
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,8 +14,9 @@ from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 
 def _config(motor_slot: int = 3, slots: int = 8) -> SquidFilterWheelConfig:
-    return SquidFilterWheelConfig(max_index=slots, min_index=1, offset=0.008, motor_slot_index=motor_slot,
-                                  transitions_per_revolution=4000)
+    return SquidFilterWheelConfig(
+        max_index=slots, min_index=1, offset=0.008, motor_slot_index=motor_slot, transitions_per_revolution=4000
+    )
 
 
 def _wheel(wrap=True, slots=8):
@@ -29,7 +31,9 @@ def _wheel(wrap=True, slots=8):
 TURN = SquidFilterWheel._usteps_per_turn()
 
 
-@pytest.mark.parametrize("delta,expected", [(1, 1), (3, 3), (4, 4), (5, -3), (7, -1), (-1, -1), (-4, 4), (-7, 1), (0, 0)])
+@pytest.mark.parametrize(
+    "delta,expected", [(1, 1), (3, 3), (4, 4), (5, -3), (7, -1), (-1, -1), (-4, 4), (-7, 1), (0, 0)]
+)
 def test_shortest_slot_delta_prefers_the_short_way_and_forward_on_ties(delta, expected):
     assert SquidFilterWheel._shortest_slot_delta(delta, 8) == expected
 
@@ -74,11 +78,11 @@ def test_half_turn_tie_goes_forward_and_matches_the_legacy_target():
 
 def test_turns_accumulate_and_the_coordinate_stays_continuous():
     w, mc, cfg = _wheel()
-    seq = [3, 6, 1, 4, 7, 2, 5, 8, 3]          # keeps going forward around the wheel
+    seq = [3, 6, 1, 4, 7, 2, 5, 8, 3]  # keeps going forward around the wheel
     for k in seq:
         w.set_filter_wheel_position({1: k})
     targets = [c.args[0] for c in mc.move_w_to_usteps.call_args_list]
-    assert all(b > a for a, b in zip(targets, targets[1:]))   # monotonic: never unwinds
+    assert all(b > a for a, b in zip(targets, targets[1:]))  # monotonic: never unwinds
     assert w._turns[1] == 3 and w._positions[1] == 3
     assert targets[-1] == SquidFilterWheel._target_pos_to_usteps(cfg, 3) + 3 * TURN
 

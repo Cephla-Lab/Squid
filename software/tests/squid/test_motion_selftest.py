@@ -76,8 +76,15 @@ class FakeMcu:
     def get_encoder_state(self):
         enc = self._enc_pos()
         dev = 0 if self.pid_enabled else enc - self.z_pos
-        return {"reporting": self.reporting, "pid_enabled": self.pid_enabled, "pid_fault": False,
-                "pid_zone_hold": False, "axis": 2, "encoder_pos": enc, "deviation": dev}
+        return {
+            "reporting": self.reporting,
+            "pid_enabled": self.pid_enabled,
+            "pid_fault": False,
+            "pid_zone_hold": False,
+            "axis": 2,
+            "encoder_pos": enc,
+            "deviation": dev,
+        }
 
 
 PID = PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=200)
@@ -93,7 +100,14 @@ def test_good_stage_passes_every_check():
     axis = _axis(pid=PID)
     report, log = _run(FakeMcu(axis), axis)
     names = [r.name for r in report.results]
-    assert names == ["preflight", "homing", "encoder scale and sign", "gap above home", "lost steps (open loop)", "closed loop"]
+    assert names == [
+        "preflight",
+        "homing",
+        "encoder scale and sign",
+        "gap above home",
+        "lost steps (open loop)",
+        "closed loop",
+    ]
     assert report.passed, report.text()
     assert report.recommendations == {}
     assert "OVERALL: PASS" in report.text()
@@ -153,9 +167,9 @@ def test_gap_map_opens_the_floor_and_restores_it():
     t = ZMotionSelfTest(mcu, axis, log=lambda s: None, hold_s=0.05, settle_scale=0.0, stage=stage)
     report = t.run()
     gap = next(r for r in report.results if r.name == "gap above home")
-    assert 0.6 <= gap.values["gap_mm"] <= 0.7          # the switch was reached, the gap measured
-    assert stage.limits[0] == {"z_neg_mm": 0.0}          # floor opened for the gap map
-    assert stage.limits[-1] == {"z_neg_mm": 0.75}        # and put back
+    assert 0.6 <= gap.values["gap_mm"] <= 0.7  # the switch was reached, the gap measured
+    assert stage.limits[0] == {"z_neg_mm": 0.0}  # floor opened for the gap map
+    assert stage.limits[-1] == {"z_neg_mm": 0.75}  # and put back
 
 
 def test_cancel_away_from_depth_still_restores_everything():
@@ -171,14 +185,17 @@ def test_cancel_away_from_depth_still_restores_everything():
 
     mcu.move_z_to_usteps = counting_move
     # cancel in the middle of the gap map, with Z near the switch and the floor opened
-    t = ZMotionSelfTest(mcu, axis, log=lambda s: None, cancel=lambda: state["moves"] >= 12, hold_s=0.05,
-                        settle_scale=0.0, stage=stage)
+    t = ZMotionSelfTest(
+        mcu, axis, log=lambda s: None, cancel=lambda: state["moves"] >= 12, hold_s=0.05, settle_scale=0.0, stage=stage
+    )
     report = t.run()
     assert report.aborted == "cancelled by the operator"
-    assert stage.limits[-1] == {"z_neg_mm": 0.75}                       # floor put back
-    assert abs(axis.convert_to_real_units(mcu.z_pos) - t.depth) < 1e-3    # Z back at the working depth (one microstep is 94 nm)
-    assert mcu.pid_enabled is True                                        # loop back on
-    assert mcu.reporting is False                                         # reporting off
+    assert stage.limits[-1] == {"z_neg_mm": 0.75}  # floor put back
+    assert (
+        abs(axis.convert_to_real_units(mcu.z_pos) - t.depth) < 1e-3
+    )  # Z back at the working depth (one microstep is 94 nm)
+    assert mcu.pid_enabled is True  # loop back on
+    assert mcu.reporting is False  # reporting off
 
 
 def test_aborted_move_is_reported_not_counted():
@@ -209,5 +226,5 @@ def test_cancel_stops_early_and_restores():
     report = t.run()
     assert report.aborted == "cancelled by the operator"
     assert not report.passed
-    assert mcu.reporting is False          # reporting switched back off
-    assert mcu.pid_enabled is True          # loop back to its configured state
+    assert mcu.reporting is False  # reporting switched back off
+    assert mcu.pid_enabled is True  # loop back to its configured state

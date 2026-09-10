@@ -103,7 +103,7 @@ class CephlaStage(AbstractStage):
             if pid.TOLERANCE_UM > 0:
                 mc.set_pid_tolerance(microcontroller_axis_number, pid.TOLERANCE_UM, pid.TOLERANCE_UM)
                 mc.wait_till_operation_is_completed()
-            mc.set_pid_open_above(microcontroller_axis_number, pid.OPEN_ABOVE_MM_S)   # 0 = rest-only
+            mc.set_pid_open_above(microcontroller_axis_number, pid.OPEN_ABOVE_MM_S)  # 0 = rest-only
             mc.wait_till_operation_is_completed()
         elif (
             pid.CORRECTION_VMAX > 0
@@ -120,7 +120,9 @@ class CephlaStage(AbstractStage):
             mc.turn_on_stage_pid(microcontroller_axis_number)
             mc.wait_till_operation_is_completed()
         except Exception as e:  # noqa: BLE001 - the firmware refuses the loop on a bad frame offset; run open-loop
-            _log.error(f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop")
+            _log.error(
+                f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop"
+            )
             return
         _log.info(
             f"axis {microcontroller_axis_number}: closed loop requested - P {pid.P} I {pid.I} D {pid.D}, "

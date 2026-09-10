@@ -646,7 +646,9 @@ class Microcontroller:
         # Encoder reporting (firmware >= 1.6, see set_encoder_reporting). Only meaningful while
         # encoder_flags has ENC_FLAG.REPORTING set; otherwise the packet carries zeros here.
         self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
-        self.encoder_deviation = 0  # ENC_POS - XACTUAL of the reported axis (positive = encoder ahead of the counter), microsteps, int16
+        self.encoder_deviation = (
+            0  # ENC_POS - XACTUAL of the reported axis (positive = encoder ahead of the counter), microsteps, int16
+        )
         self.encoder_flags = 0  # raw status byte 19
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
