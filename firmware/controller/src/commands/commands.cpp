@@ -218,7 +218,15 @@ static void init_filterwheel_axis(uint8_t axis)
     // and SE are both zero at standstill, and cold boot never exercises it.
     report_driver_probe(axis);
 #endif
-    tmc4361A_motor_config(&tmc4361[axis], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
+    // False means the driver refused the current: unencodable for this part and
+    // R_sense, or no identified driver on this axis at all. Either way the wheel
+    // is not at the current the globals claim, so the host has to hear about it.
+    // Only mcu_cmd_execution_status, never mcu_cmd_execution_in_progress -
+    // INITFILTERWHEEL never claims in_progress, and clearing it here would
+    // unwind an unrelated motion still running on another axis. Same contract as
+    // report_move_error() in stage_commands.cpp.
+    if (!tmc4361A_motor_config(&tmc4361[axis], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W))
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
     tmc4361A_enableLimitSwitch(&tmc4361[axis], lft_sw_pol[axis], LEFT_SW, false);
 
     // Calculate velocity and acceleration (ensures values are set for both W and W2)
@@ -313,9 +321,24 @@ void callback_initialize()
     //
     // On a TMC2660 axis this repeats the cScaleInit the init above just did,
     // from the same struct fields, so the registers land on the same values.
-    tmc_driver_set_current(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD);
-    tmc_driver_set_current(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD);
-    tmc_driver_set_current(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD);
+    //
+    // All three run before the verdict is read - one dead axis must not stop
+    // the other two being re-energised. False means the driver refused the
+    // current: unencodable for this part and R_sense, or no identified driver
+    // on this axis at all (that one is now reachable here, because the boot
+    // probe's failures are exactly what the re-probe above is for). The stage
+    // is then not at the current the globals claim, and INITIALIZE has one
+    // status for the whole command, so any refusal fails it.
+    //
+    // Only mcu_cmd_execution_status, never mcu_cmd_execution_in_progress -
+    // INITIALIZE never claims in_progress, and clearing it here would unwind an
+    // unrelated motion still running on another axis. Same contract as
+    // report_move_error() in stage_commands.cpp.
+    bool x_current_ok = tmc_driver_set_current(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD);
+    bool y_current_ok = tmc_driver_set_current(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD);
+    bool z_current_ok = tmc_driver_set_current(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD);
+    if (!(x_current_ok && y_current_ok && z_current_ok))
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 
     // enable limit switch reading
     tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);
