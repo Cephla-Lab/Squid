@@ -18,6 +18,7 @@ import traceback
 from typing import Any, Callable, Dict, List, Optional, TypedDict, get_type_hints
 
 import squid.logging
+from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
 
@@ -809,72 +810,8 @@ class MicroscopeControlServer:
             raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
     def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
-        """
-        Parse well string into stage coordinates.
-
-        Supports two formats:
-        - Range: 'A1:B3' expands to A1, A2, A3, B1, B2, B3
-        - List: 'A1,A2,B1' for specific wells
-
-        Args:
-            wells: Well selection string (e.g., 'A1:B3' or 'A1,A2,B1').
-            wellplate_settings: Dict with 'a1_x_mm', 'a1_y_mm', 'well_spacing_mm'.
-
-        Returns:
-            Dict mapping well IDs to (x_mm, y_mm) coordinates.
-        """
-        import re
-
-        def row_to_index(row: str) -> int:
-            index = 0
-            for char in row.upper():
-                index = index * 26 + (ord(char) - ord("A") + 1)
-            return index - 1
-
-        def index_to_row(index: int) -> str:
-            index += 1
-            row = ""
-            while index > 0:
-                index -= 1
-                row = chr(index % 26 + ord("A")) + row
-                index //= 26
-            return row
-
-        a1_x = wellplate_settings.get("a1_x_mm", 0)
-        a1_y = wellplate_settings.get("a1_y_mm", 0)
-        spacing = wellplate_settings.get("well_spacing_mm", 9)
-
-        well_coords = {}
-        pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
-
-        for desc in wells.split(","):
-            match = re.match(pattern, desc.strip())
-            if not match:
-                continue
-
-            start_row, start_col, end_row, end_col = match.groups()
-            start_row_idx = row_to_index(start_row)
-            start_col_idx = int(start_col) - 1
-
-            if end_row and end_col:
-                # Range like A1:B3
-                end_row_idx = row_to_index(end_row)
-                end_col_idx = int(end_col) - 1
-
-                for row_idx in range(start_row_idx, end_row_idx + 1):
-                    for col_idx in range(start_col_idx, end_col_idx + 1):
-                        well_id = index_to_row(row_idx) + str(col_idx + 1)
-                        x_mm = a1_x + col_idx * spacing
-                        y_mm = a1_y + row_idx * spacing
-                        well_coords[well_id] = (x_mm, y_mm)
-            else:
-                # Single well like A1
-                well_id = start_row.upper() + start_col
-                x_mm = a1_x + start_col_idx * spacing
-                y_mm = a1_y + start_row_idx * spacing
-                well_coords[well_id] = (x_mm, y_mm)
-
-        return well_coords
+        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module)."""
+        return parse_wells(wells, wellplate_settings)
 
     @schema_method
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
@@ -938,12 +875,12 @@ class MicroscopeControlServer:
         return None
 
     def _update_gui_from_yaml(self, yaml_data, yaml_path: str) -> None:
-        """Update GUI widgets from YAML settings in a thread-safe manner.
+        """Refresh the acquisition tab's controls from the YAML and wait for it.
 
-        Uses QTimer.singleShot + threading.Event pattern. This pattern is acceptable here
-        because _load_acquisition_yaml only updates widget state and doesn't need to complete
-        before run_acquisition() is called (unlike _set_gui_acquisition_state which must
-        complete to avoid race conditions with napari layer initialization).
+        Blocking on purpose: the tab's _apply_yaml_settings rebuilds the shared ScanCoordinates from its
+        controls, so it must finish before apply_acquisition_settings() rebuilds them from the file - a
+        queued call would race it (QTimer.singleShot from a non-Qt thread never fires at all). The slot's
+        dialogs are unreachable here: the file parsed and validate_hardware() passed before this call.
         """
         if not QT_AVAILABLE:
             return
@@ -952,24 +889,17 @@ class MicroscopeControlServer:
         if not widget:
             self._log.warning(f"Cannot update GUI: No widget found for type '{yaml_data.widget_type}'")
             return
-        if not hasattr(widget, "_load_acquisition_yaml"):
-            self._log.warning(f"Widget {type(widget).__name__} lacks _load_acquisition_yaml method")
+        if not hasattr(widget, "load_acquisition_yaml_slot"):
+            self._log.warning(f"Widget {type(widget).__name__} lacks load_acquisition_yaml_slot")
             return
 
-        gui_update_complete = threading.Event()
-
-        def update_gui():
-            try:
-                widget._load_acquisition_yaml(yaml_path)
-            except Exception as e:
-                self._log.error(f"Failed to update GUI from YAML: {e}")
-            finally:
-                gui_update_complete.set()
-
-        QTimer.singleShot(0, update_gui)
-
-        if not gui_update_complete.wait(timeout=5.0):
-            self._log.warning("GUI update from YAML timed out after 5 seconds")
+        try:
+            if not QMetaObject.invokeMethod(
+                widget, "load_acquisition_yaml_slot", Qt.BlockingQueuedConnection, Q_ARG(str, yaml_path)
+            ):
+                self._log.warning(f"Could not run the acquisition YAML load on {type(widget).__name__}")
+        except Exception as e:
+            self._log.error(f"Failed to update GUI from YAML: {e}")
 
     def _set_gui_acquisition_state(self, yaml_data, is_running: bool) -> None:
         """Update GUI widget state to reflect acquisition running/stopped.
@@ -1029,99 +959,6 @@ class MicroscopeControlServer:
 
         return available_channel_names
 
-    def _get_z_from_center(self, center: list, default_z: float) -> float:
-        """Extract Z coordinate from center array, using default if not present."""
-        return center[2] if len(center) > 2 else default_z
-
-    def _configure_regions_from_yaml(self, yaml_data, raw_yaml: dict, wells: Optional[str]) -> None:
-        """Configure scan regions from YAML data or wells override.
-
-        Clears existing regions and adds new ones based on wells override,
-        wellplate regions from YAML, or flexible positions from YAML.
-        """
-        import control._def
-
-        self.scan_coordinates.clear_regions()
-        current_z = self.microscope.stage.get_pos().z_mm
-        scan_size_mm = yaml_data.scan_size_mm or 2.0
-        scan_shape = yaml_data.scan_shape or "Square"
-
-        if wells:
-            wellplate_format = raw_yaml.get("sample", {}).get("wellplate_format", "96 well plate")
-            wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-            well_coords = self._parse_wells(wells, wellplate_settings)
-
-            if not well_coords:
-                raise ValueError(f"Could not parse wells: {wells}")
-
-            for well_id, (well_x, well_y) in well_coords.items():
-                self.scan_coordinates.add_region(
-                    well_id=well_id,
-                    center_x=well_x,
-                    center_y=well_y,
-                    scan_size_mm=scan_size_mm,
-                    overlap_percent=yaml_data.overlap_percent,
-                    shape=scan_shape,
-                )
-                if well_id in self.scan_coordinates.region_centers:
-                    self.scan_coordinates.region_centers[well_id][2] = current_z
-
-        elif yaml_data.wellplate_regions:
-            for region in yaml_data.wellplate_regions:
-                name = region.get("name", "region")
-                center = region.get("center_mm", [0, 0, 0])
-                region_z = self._get_z_from_center(center, current_z)
-
-                self.scan_coordinates.add_region(
-                    well_id=name,
-                    center_x=center[0],
-                    center_y=center[1],
-                    scan_size_mm=scan_size_mm,
-                    overlap_percent=yaml_data.overlap_percent,
-                    shape=region.get("shape", scan_shape),
-                )
-                if name in self.scan_coordinates.region_centers:
-                    self.scan_coordinates.region_centers[name][2] = region_z
-
-        elif yaml_data.flexible_positions:
-            for pos in yaml_data.flexible_positions:
-                name = pos.get("name", "position")
-                center = pos.get("center_mm", [0, 0, 0])
-                self.scan_coordinates.add_flexible_region(
-                    region_id=name,
-                    center_x=center[0],
-                    center_y=center[1],
-                    center_z=self._get_z_from_center(center, current_z),
-                    Nx=yaml_data.nx,
-                    Ny=yaml_data.ny,
-                    overlap_percent=yaml_data.overlap_percent,
-                )
-        else:
-            raise ValueError("No wells or regions specified in YAML and no wells override provided")
-
-        self.scan_coordinates.sort_coordinates()
-
-    def _configure_controller_from_yaml(self, yaml_data) -> None:
-        """Configure the MultiPointController with settings from YAML data."""
-        # Set acquisition parameters on the controller
-        self.multipoint_controller.set_NX(1)  # Already handled by flexible regions
-        self.multipoint_controller.set_NY(1)
-        self.multipoint_controller.set_NZ(yaml_data.nz)
-        self.multipoint_controller.set_deltaZ(yaml_data.delta_z_um)
-        self.multipoint_controller.set_Nt(yaml_data.nt)
-        self.multipoint_controller.set_deltat(yaml_data.delta_t_s)
-
-        # Set autofocus flags
-        self.multipoint_controller.do_autofocus = yaml_data.contrast_af
-        self.multipoint_controller.do_reflection_af = yaml_data.laser_af
-
-        # Set piezo usage
-        if hasattr(self.multipoint_controller, "use_piezo"):
-            self.multipoint_controller.use_piezo = yaml_data.use_piezo
-
-        # Set the selected channels
-        self.multipoint_controller.set_selected_configurations(yaml_data.channel_names)
-
     @schema_method
     def _cmd_run_acquisition_from_yaml(
         self,
@@ -1136,12 +973,11 @@ class MicroscopeControlServer:
 
         This command loads all acquisition parameters from a YAML file that was saved
         during a previous acquisition (including z-stack, timelapse, channels, autofocus,
-        and region coordinates), updates the GUI to reflect these settings, and starts
-        the acquisition.
+        and region coordinates - wellplate or flexible), updates the GUI to reflect these
+        settings, and starts the acquisition. Regions and every controller setting come from the
+        file through control.core.acquisition_settings (shared with the fluidics protocol runner).
         """
         import os
-
-        import yaml
 
         import control._def
         from control.acquisition_yaml_loader import parse_acquisition_yaml, validate_hardware
@@ -1177,18 +1013,6 @@ class MicroscopeControlServer:
             yaml_data = parse_acquisition_yaml(yaml_path)
         except Exception as e:
             raise ValueError(f"Failed to parse YAML file: {e}") from e
-
-        # FlexibleMultiPoint is not supported via TCP/MCP - only wellplate mode
-        if yaml_data.widget_type != "wellplate":
-            raise ValueError(
-                f"TCP command only supports wellplate mode acquisitions. "
-                f"Got widget_type='{yaml_data.widget_type}'. "
-                f"FlexibleMultiPoint acquisitions must be run from the GUI."
-            )
-
-        # Load raw YAML for fields that need direct access (wellplate_format)
-        with open(yaml_path, "r", encoding="utf-8") as f:
-            raw_yaml = yaml.safe_load(f)
 
         # Validate hardware configuration (objective, binning)
         current_binning = None
@@ -1229,11 +1053,10 @@ class MicroscopeControlServer:
 
         # Configure the MultiPointController
         try:
-            # Configure regions from YAML or wells override
-            self._configure_regions_from_yaml(yaml_data, raw_yaml, wells)
-
-            # Configure controller settings from YAML
-            self._configure_controller_from_yaml(yaml_data)
+            # Regions + every controller field, shared with the fluidics protocol runner
+            apply_acquisition_settings(
+                self.multipoint_controller, self.scan_coordinates, self.microscope, yaml_data, wells=wells
+            )
 
             # Set the base path and start new experiment
             self.multipoint_controller.set_base_path(base_path)

@@ -31,3 +31,11 @@ Contains CSV files with calibration test results (measured power at various set 
 Used to verify calibration accuracy.
 
 To generate test files, run: `tools/evaluate_intensity_calibration.py`
+
+### `fluidics_config.yaml` (Optional)
+Only for instruments with the fluidics system (`RUN_FLUIDICS = True`). This is the Squid-Fluidics
+library's own `FluidicsConfig` file — the standalone fluidics GUI opens the same file, so copy the
+instrument's existing config from its fluidics installation here (the file is gitignored). Squid loads
+it when the fluidics system is initialized from the Fluidics tab's Initialize button
+(`FluidicsService.initialize()`, default path from `FLUIDICS_CONFIG_PATH`; see
+`docs/fluidics-protocol.md`).

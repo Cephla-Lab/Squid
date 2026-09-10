@@ -2,7 +2,11 @@
 Utilities for parsing and validating acquisition YAML files.
 """
 
+import csv
+import os
 import yaml
+
+import squid.logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -41,38 +45,66 @@ class AcquisitionYAMLData:
     scan_size_mm: Optional[float] = None
     overlap_percent: float = 10.0
     scan_shape: Optional[str] = None
-    wellplate_regions: Optional[List[Dict]] = None  # [{name, center_mm, shape}, ...]
+    wellplate_regions: Optional[List[Dict]] = None  # [{name, center_mm, shape, fovs?}, ...]
 
     # Flexible-specific
     nx: int = 1
     ny: int = 1
     delta_x_mm: float = 0.9
     delta_y_mm: float = 0.9
-    flexible_positions: Optional[List[Dict]] = None  # [{name, center_mm}, ...]
+    flexible_positions: Optional[List[Dict]] = None  # [{name, center_mm, fovs?}, ...]
+
+    # Added for saved-acquisition reuse (fluidics protocol, TCP server)
+    experiment_id: Optional[str] = None
+    wellplate_format: Optional[str] = None
+    z_range_mm: Optional[Tuple[float, float]] = None
+    skip_saving: bool = False
 
 
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
-    """Parse acquisition YAML file and return structured data.
+    """Parse a saved acquisition.yaml - or a saved acquisition folder containing one.
 
-    Args:
-        file_path: Path to the acquisition.yaml file
+    For a folder, regions that carry no per-FOV list are completed from the sibling coordinates.csv
+    (older acquisition.yaml files only record region centers), so a saved acquisition folder is a
+    self-sufficient source of settings *and* coordinates.
 
-    Returns:
-        AcquisitionYAMLData with parsed values
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
-        yaml.YAMLError: If file is not valid YAML
-        ValueError: If file is empty or has invalid widget_type
+    Raises ValueError on an empty file or an unknown widget_type.
     """
+    folder = None
+    if os.path.isdir(file_path):
+        folder = file_path
+        file_path = os.path.join(folder, "acquisition.yaml")
     with open(file_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     if data is None:
         raise ValueError(f"YAML file is empty or invalid: {file_path}")
 
+    parsed = parse_acquisition_dict(data, source=file_path)
+
+    csv_path = os.path.join(folder or os.path.dirname(file_path), "coordinates.csv")
+    regions = parsed.wellplate_regions if parsed.widget_type == "wellplate" else parsed.flexible_positions
+    if regions and any(not r.get("fovs") for r in regions) and os.path.isfile(csv_path):
+        try:
+            by_name = {r["name"]: r["fovs"] for r in read_coordinates_csv(csv_path)}
+        except (ValueError, OSError) as e:
+            # An empty or malformed sibling CSV (an aborted run) must not fail an otherwise valid acquisition.yaml.
+            squid.logging.get_logger(__name__).warning(f"Ignoring {csv_path}: {e}")
+            by_name = {}
+        for region in regions:
+            if not region.get("fovs") and region.get("name") in by_name:
+                region["fovs"] = by_name[region["name"]]
+    return parsed
+
+
+def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAMLData:
+    """Parse an already-loaded acquisition.yaml mapping (the file body, or a protocol header block)."""
+    if not isinstance(data, dict):
+        raise ValueError(f"Acquisition data must be a mapping ({source})")
+
     # Extract sections
     acq = data.get("acquisition", {})
+    sample = data.get("sample", {}) or {}
     obj = data.get("objective", {})
     z_stack = data.get("z_stack", {})
     time_series = data.get("time_series", {})
@@ -108,6 +140,9 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     if wellplate_regions and len(wellplate_regions) > 0:
         scan_shape = wellplate_regions[0].get("shape")
 
+    z_range = z_stack.get("z_range_mm")
+    z_range_mm = tuple(float(v) for v in z_range) if z_range and len(z_range) == 2 else None
+
     return AcquisitionYAMLData(
         widget_type=widget_type,
         xy_mode=acq.get("xy_mode", "Select Wells"),
@@ -140,7 +175,34 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
         delta_x_mm=flexible_scan.get("delta_x_mm", 0.9),
         delta_y_mm=flexible_scan.get("delta_y_mm", 0.9),
         flexible_positions=flexible_scan.get("positions"),
+        # Saved-acquisition reuse
+        experiment_id=acq.get("experiment_id"),
+        wellplate_format=sample.get("wellplate_format"),
+        z_range_mm=z_range_mm,
+        skip_saving=bool(acq.get("skip_saving", False)),
     )
+
+
+def read_coordinates_csv(path: str) -> List[dict]:
+    """Read a Squid coordinates.csv into [{"name": region, "fovs": [[x, y(, z)], ...]}, ...] in file order.
+
+    The z column is used only when present and filled for every row (matching
+    control.widgets.load_coordinate_regions_from_dataframe). Raises ValueError on missing columns.
+    """
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    required = ("region", "x (mm)", "y (mm)")
+    fieldnames = rows[0].keys() if rows else ()
+    if not rows or not all(col in fieldnames for col in required):
+        raise ValueError("coordinates.csv must contain 'region', 'x (mm)' and 'y (mm)' columns")
+    has_z = "z (mm)" in fieldnames and all((row.get("z (mm)") or "").strip() for row in rows)
+    regions: Dict[str, dict] = {}
+    for row in rows:
+        fov = [float(row["x (mm)"]), float(row["y (mm)"])]
+        if has_z:
+            fov.append(float(row["z (mm)"]))
+        regions.setdefault(str(row["region"]), {"name": str(row["region"]), "fovs": []})["fovs"].append(fov)
+    return list(regions.values())
 
 
 @dataclass

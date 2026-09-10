@@ -106,14 +106,13 @@ class MultiPointWorker:
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
-        self.fluidics = scope.addons.fluidics
-        self.use_fluidics = acquisition_parameters.use_fluidics
 
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
         self.request_abort_fn: Callable[[], None] = request_abort_fn
         self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
+        self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -500,23 +499,8 @@ class MultiPointWorker:
                     if self.abort_requested_fn():
                         break
 
-                if self.fluidics and self.use_fluidics:
-                    self.fluidics.update_port(self.time_point)  # use the port in PORT_LIST
-                    # For MERFISH, before imaging, run the first 3 sequences (Add probe, wash buffer, imaging buffer)
-                    self.fluidics.run_before_imaging()
-                    self.fluidics.wait_for_completion()
-                    # Check for abort after fluidics completes (user may have stopped during fluidics)
-                    if self.abort_requested_fn():
-                        self._log.debug("Abort requested after fluidics, skipping imaging")
-                        break
-
                 with self._timing.get_timer("run_single_time_point"):
                     self.run_single_time_point()
-
-                if self.fluidics and self.use_fluidics:
-                    # For MERFISH, after imaging, run the following 2 sequences (Cleavage buffer, SSC rinse)
-                    self.fluidics.run_after_imaging()
-                    self.fluidics.wait_for_completion()
 
                 self.time_point = self.time_point + 1
                 if self.dt == 0:  # continous acquisition
@@ -565,7 +549,7 @@ class MultiPointWorker:
             self._finish_jobs()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
-            reason = self._compute_end_reason()
+            reason = self.end_reason = self._compute_end_reason()
             total_duration = time.time() - self.timestamp_acquisition_started
             self._run_state.end(
                 reason,
