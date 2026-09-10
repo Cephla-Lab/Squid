@@ -204,18 +204,12 @@ static void init_filterwheel_axis(uint8_t axis)
     // exercises.
     tmc_driver_probe(&tmc4361[axis]);
     tmc_driver_init(&tmc4361[axis], clk_Hz_TMC4361);
-#ifdef TMC_PROBE_REPORT_RUNTIME
-    // BENCH BUILDS ONLY. This runs mid-session, with the host already reading
-    // status packets, and the report is ASCII on that same link. The host
-    // accepts any 24-byte window ending in a zero byte, the packets carry
-    // buffer_tx[19..21] = 0 and this text carries no zero at all, so a
-    // MISALIGNED window is reliably accepted and the host reports a garbage
-    // stage position as if it were real. See report_driver_probe() in init.cpp.
-    //
-    // Enabled with -D TMC_PROBE_REPORT_RUNTIME (platformio.ini) for design
-    // section 10 step 0, which needs the raw word from THIS path too: it
-    // re-probes an already-configured TMC2660 at SDOFF = 1 / RDSEL = 2, where SG
-    // and SE are both zero at standstill, and cold boot never exercises it.
+#ifdef TMC_PROBE_REPORT
+    // BENCH BUILDS ONLY. ASCII on the status link: the host accepts any 24-byte
+    // window ending in a zero byte and reports a garbage stage position as real
+    // (see report_driver_probe() in init.cpp). Design section 10 step 0 needs the
+    // raw word from THIS path too: it re-probes an already-configured TMC2660 at
+    // SDOFF = 1 / RDSEL = 2, where SG and SE are both zero at standstill.
     report_driver_probe(axis);
 #endif
     // False means the driver refused the current: unencodable for this part and

@@ -90,10 +90,10 @@ typedef struct
      0x40 in byte [31:24] (it would then misdetect as a TMC2240, the one
      genuinely unsafe direction). Neither is visible in driver_type.
      report_driver_probe() (init.cpp) prints it per axis over the USB serial
-     link, for probed axes only, so the answer is a log read on any machine
-     rather than a special build. Not over the packet protocol: design M7 keeps
-     host visibility to a boot-time serial log precisely so that no protocol
-     change is needed. */
+     link, for probed axes only, in a -D TMC_PROBE_REPORT bench build (the
+     text can misalign the host's packet parser, so shipping builds print
+     nothing). Not over the packet protocol: design M7 keeps host visibility to
+     a serial log precisely so that no protocol change is needed. */
   uint32_t driver_probe_raw;
   /* Shadow copy of TMC2240 registers. Cover READS are unreliable, so every
      read-modify-write sources from here. See design §6.3. */
