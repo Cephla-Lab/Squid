@@ -1177,6 +1177,7 @@ SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
 # (filter clear aperture - image field diameter) / 2 / filter pitch radius, in degrees, minus margin.
 # 32 mm filters on a 22 mm field and a ~46 mm pitch radius allow about 6 deg; 25 mm filters about 1.9 deg.
 SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG = 0.0
+SQUID_FILTERWHEEL_WRAP = True  # shortest path between slots may cross the index flag (firmware >= 1.4); set False to always take the flag-free arc
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)

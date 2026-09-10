@@ -2,6 +2,7 @@ import time
 from typing import List, Dict, Optional, Union
 
 import squid.logging
+import control._def
 from control._def import *
 from control.microcontroller import CommandAborted, Microcontroller
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo
@@ -41,6 +42,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
             raise Exception("Error, microcontroller is needed by the SquidFilterWheel")
 
         self.microcontroller = microcontroller
+
+        # Read through the module rather than the `from control._def import *` binding above:
+        # that binding is taken at import time and would not see an ini override.
+        self.wrap = bool(control._def.SQUID_FILTERWHEEL_WRAP)
 
         # Fail loudly on a host/firmware version mismatch before any moves
         # are issued — runs unconditionally (including the skip_init restart
@@ -124,6 +129,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # shorter way round: 8 -> 1 is one slot (~80 ms), not seven (~300 ms). The driver
     # coordinate stays continuous across the flag via a per-wheel turn counter; homing
     # re-anchors it. Set to False to keep every move on the flag-free arc as before.
+    # This is the documented default; __init__ overrides it per instance from the
+    # squid_filterwheel_wrap ini key (control._def.SQUID_FILTERWHEEL_WRAP).
     wrap: bool = True
 
     # Ceiling on the net turn count before the wheel is re-homed. Shortest-path slot changes

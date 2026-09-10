@@ -154,3 +154,30 @@ def test_no_re_home_just_below_the_bound():
     assert w._turns[1] == SquidFilterWheel.REHOME_AFTER_TURNS - 1
     expected = SquidFilterWheel._target_pos_to_usteps(cfg, 4) + (SquidFilterWheel.REHOME_AFTER_TURNS - 1) * TURN
     mc.move_w_to_usteps.assert_called_once_with(expected)
+
+
+def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
+    """SQUID_FILTERWHEEL_WRAP is read at construction so an ini override is honoured.
+
+    With it False a 1 -> 8 move takes the long way round (+7 slots) rather than one slot
+    backward across the index flag, which is what a wheel whose flag does stop it needs.
+    """
+    import control._def
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", False)
+
+    mc = MagicMock()
+    mc.firmware_version = (1, 6)
+    cfg = _config()
+    w = SquidFilterWheel(mc, cfg, skip_init=True)
+
+    assert w.wrap is False
+    assert w._wrap_enabled() is False
+
+    w.set_filter_wheel_position({1: 8})
+
+    expected = SquidFilterWheel._target_pos_to_usteps(cfg, 8)
+    mc.move_w_to_usteps.assert_called_once_with(expected)
+    assert w._turns[1] == 0
+    # The long way round never goes past the home reference, so no negative target.
+    assert expected * TURN > 0, f"target {expected} must have the same sign as a forward turn ({TURN})"
