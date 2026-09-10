@@ -12,6 +12,7 @@ from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
+from control.lighting import ShutterControlMode
 from control.models import merge_channel_configs
 
 if TYPE_CHECKING:
@@ -63,6 +64,14 @@ class LiveController(QObject):
 
         self.enable_channel_auto_filter_switching: bool = True
 
+        # time.monotonic() at which the most recent hardware trigger's strobe window
+        # (strobe delay + exposure + margin) is over; see note_hardware_trigger_sent().
+        self._strobe_clear_at = 0.0
+        # Serializes trigger sends against _wait_for_strobe_clear(), so a timer-thread
+        # trigger in flight while set_microscope_mode() starts is flushed before the
+        # wait, and cannot start a new strobe during it.
+        self._hw_trigger_send_lock = threading.RLock()
+
         # Confocal mode state - when True, use confocal_override from acquisition configs
         self._confocal_mode: bool = False
 
@@ -95,6 +104,57 @@ class LiveController(QObject):
     def _is_led_matrix(self) -> bool:
         """Check if current configuration is LED matrix (source code 0-9)."""
         return 0 <= self._get_illumination_source() < 10
+
+    def note_hardware_trigger_sent(self):
+        """Record when this hardware trigger's strobe window ends, for
+        _wait_for_strobe_clear(). No-op outside HARDWARE trigger mode and on
+        firmware that tolerates mid-strobe SET_ILLUMINATION (see
+        STROBE_GUARD_MARGIN_MS in _def.py for the full firmware story)."""
+        if self.trigger_mode != TriggerMode.HARDWARE:
+            return
+        if self.microscope.low_level_drivers.microcontroller.illumination_change_safe_during_strobe():
+            return
+        self._strobe_clear_at = time.monotonic() + (self.camera.get_total_frame_time() + STROBE_GUARD_MARGIN_MS) / 1e3
+
+    def send_camera_trigger(self, illumination_time: Optional[float] = None):
+        """Send a camera trigger under _hw_trigger_send_lock, recording the strobe
+        window of hardware triggers. Camera triggers in live view and acquisitions
+        should go through here so _wait_for_strobe_clear() sees them."""
+        with self._hw_trigger_send_lock:
+            self.camera.send_trigger(illumination_time)
+            self.note_hardware_trigger_sent()
+
+    def _wait_for_strobe_clear(self):
+        """Sleep out whatever remains of the last hardware trigger's strobe window
+        (see STROBE_GUARD_MARGIN_MS). Gated on the firmware, not the current
+        trigger mode: a strobe can still be in flight right after leaving HARDWARE
+        mode. Call with the live timer already stopped; taking
+        _hw_trigger_send_lock flushes a trigger send already in flight on the
+        timer thread, and the loop re-checks in case one landed while we slept."""
+        if self.microscope.low_level_drivers.microcontroller.illumination_change_safe_during_strobe():
+            return
+        with self._hw_trigger_send_lock:
+            while True:
+                delay_s = self._strobe_clear_at - time.monotonic()
+                if delay_s <= 0:
+                    return
+                time.sleep(delay_s)
+
+    def _strobe_owns_light(self) -> bool:
+        """True when the hardware-trigger strobe gates the light for the current
+        configuration: an MCU-gated source (TTL laser shutter, or the MCU-driven
+        LED matrix) in HARDWARE trigger mode. The per-trigger strobe then turns
+        the light on and off; a software shutter (e.g. LDI PC mode) or an
+        external LED array still needs explicit turn_on/turn_off."""
+        if self.trigger_mode != TriggerMode.HARDWARE:
+            return False
+        # Pre-latch firmware: skipping the legacy TURN_OFF(old) would widen that
+        # firmware's stuck-port race, so keep today's toggle there.
+        if not self.microscope.low_level_drivers.microcontroller.strobe_isr_latches_source():
+            return False
+        if self._is_led_matrix():
+            return self.microscope.addons.sci_microscopy_led_array is None
+        return self.microscope.illumination_controller.shutter_control_mode == ShutterControlMode.TTL
 
     def get_intensity_cap_percent(self, channel_config: Optional["AcquisitionChannel"]) -> float:
         """Maximum allowed illumination intensity (percent) for a channel.
@@ -258,6 +318,9 @@ class LiveController(QObject):
         if self.currentConfiguration is None:
             self._log.warning("update_illumination() called with no currentConfiguration")
             return
+        # Intensity-only updates need no strobe-window guard: the source doesn't
+        # change, and a same-source re-light mid-strobe is harmless on every
+        # firmware version (see _wait_for_strobe_clear()).
         illumination_source = self._get_illumination_source()
         intensity = self.currentConfiguration.illumination_intensity
         intensity_cap = self.get_intensity_cap_percent(self.currentConfiguration)
@@ -454,7 +517,7 @@ class LiveController(QObject):
             # CONTINUOUS free-runs, so there is no trigger to send.
             if self.trigger_mode in (TriggerMode.HARDWARE, TriggerMode.SOFTWARE):
                 self.trigger_ID = self.trigger_ID + 1
-                self.camera.send_trigger(self.camera.get_exposure_time())
+                self.send_camera_trigger(self.camera.get_exposure_time())
 
             got_frame = self.camera.read_frame() is not None
             if not got_frame:
@@ -515,7 +578,7 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        self.camera.send_trigger(self.camera.get_exposure_time())
+        self.send_camera_trigger(self.camera.get_exposure_time())
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -597,15 +660,23 @@ class LiveController(QObject):
             return
         self._log.info("setting microscope mode to " + configuration.name)
 
-        # temporarily stop live while changing mode
+        # Temporarily stop live while changing mode; the timer stops BEFORE the
+        # strobe-window wait so no new trigger can start a strobe behind its back.
         if self.is_live is True:
             self._stop_existing_timer()
-            if self.control_illumination:
-                # Turn off illumination BEFORE switching self.currentConfiguration.
-                # turn_off_illumination() reads self.currentConfiguration to determine which
-                # laser wavelength to turn off. If we switch first, we'd turn off the NEW
-                # channel's laser instead of the OLD channel's laser (which is still on).
-                self.turn_off_illumination()
+        self._wait_for_strobe_clear()
+
+        # Captured before turn_off_illumination() below clears it. Skip the toggle
+        # when the strobe gates the light (see _strobe_owns_light(); firmware v1.5
+        # next-channel bleed fix) unless the host is deliberately holding it on.
+        host_holds_light = self.illumination_on
+
+        if self.is_live and self.control_illumination and (host_holds_light or not self._strobe_owns_light()):
+            # Turn off illumination BEFORE switching self.currentConfiguration.
+            # turn_off_illumination() reads self.currentConfiguration to determine which
+            # laser wavelength to turn off. If we switch first, we'd turn off the NEW
+            # channel's laser instead of the OLD channel's laser (which is still on).
+            self.turn_off_illumination()
 
         self.currentConfiguration = configuration
 
@@ -622,7 +693,8 @@ class LiveController(QObject):
 
         # restart live
         if self.is_live is True:
-            if self.control_illumination:
+            # Re-evaluated: _strobe_owns_light() depends on the (new) configuration.
+            if self.control_illumination and (host_holds_light or not self._strobe_owns_light()):
                 self.turn_on_illumination()
             self._start_new_timer()
         self._log.info("Done setting microscope mode.")

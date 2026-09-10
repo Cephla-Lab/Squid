@@ -735,6 +735,7 @@ class Microscope:
             self.low_level_drivers.microcontroller.send_hardware_trigger(
                 control_illumination=True, illumination_on_time_us=self.camera.get_exposure_time() * 1000
             )
+            self.live_controller.note_hardware_trigger_sent()
 
         try:
             # read a frame from camera

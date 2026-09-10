@@ -1702,6 +1702,18 @@ class Microcontroller:
         """
         return self.firmware_version >= (1, 0)
 
+    def strobe_isr_latches_source(self) -> bool:
+        """Firmware >= 1.3: the strobe ISR latches its source at strobe start and
+        always extinguishes the port it lit (#549), so a channel switch during a
+        strobe can no longer strand the old port."""
+        return self.firmware_version >= (1, 3)
+
+    def illumination_change_safe_during_strobe(self) -> bool:
+        """Firmware >= 1.5: the strobe ISR no longer sets illumination_is_on, so
+        SET_ILLUMINATION arriving mid-strobe cannot re-light a port and no
+        host-side spacing (STROBE_GUARD_MARGIN_MS) is needed."""
+        return self.firmware_version >= (1, 5)
+
     def get_button_and_switch_state(self):
         return self.button_and_switch_state
 
