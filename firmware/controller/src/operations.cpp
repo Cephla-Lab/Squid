@@ -604,8 +604,15 @@ static inline bool within_completion_window(uint8_t axis, int32_t target, int32_
   // A requested loop is opened for the move in rest-only mode and re-engages at rest, so the
   // encoder condition has to hold whenever the loop is REQUESTED, not only while it is engaged.
   if (!pid_requested[axis] && !stage_PID_enabled[axis]) return true;
-  int32_t e = tmc4361A_read_deviation(&tmc4361[axis]);
-  return (e < 0 ? -e : e) <= win;
+  // ENC_POS_DEV (register ENC_POS_DEV_RD 0x52) is ENC_POS - XACTUAL as the chip reports it,
+  // i.e. already (encoder - counter): positive means the encoder is AHEAD of the step counter.
+  // Bench-verified on this branch - see the same statement in serial_communication.cpp, and the
+  // self-test's "frame offset after homing", which is negative on the gap stage whose encoder
+  // lags the counter by the 0.64 mm gap. So `dev` is passed through unnegated.
+  // The bound is on the ENCODER's distance to the target, not on the counter's and the
+  // encoder's separately: the latter accepted anything up to 2*win of real error.
+  int32_t dev = tmc4361A_read_deviation(&tmc4361[axis]);
+  return encoder_within_window(d, dev, win);
 }
 
 void check_position()

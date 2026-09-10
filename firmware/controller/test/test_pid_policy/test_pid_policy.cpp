@@ -56,6 +56,35 @@ void test_zone_disabled_is_pending_even_at_zero(void) {
     TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 0, 0));
 }
 
+/*
+  encoder_within_window() replaces two separate legs with one. The old test accepted
+  |counter - target| <= win AND |dev| <= win, which lets the encoder sit 2*win from
+  the target: on a 0.3 um window that is 0.6 um of real error acknowledged as settled.
+*/
+
+void test_encoder_beyond_the_window_is_not_settled(void) {
+    // Counter 8 short of the target and the encoder 8 further out: 16 from the target,
+    // yet each leg is inside a window of 10. This is the case the old form accepted.
+    TEST_ASSERT_FALSE(encoder_within_window(8, 8, 10));
+}
+
+void test_encoder_at_the_target_is_settled(void) {
+    // Counter 8 past the target, encoder 8 behind the counter: the encoder IS the target.
+    TEST_ASSERT_TRUE(encoder_within_window(8, -8, 10));
+}
+
+void test_encoder_exactly_on_the_window_is_settled(void) {
+    // Counter on the target, encoder a full window away: inclusive, like the counter leg.
+    TEST_ASSERT_TRUE(encoder_within_window(0, 10, 10));
+}
+
+void test_encoder_one_past_the_window_is_not_settled(void) {
+    TEST_ASSERT_FALSE(encoder_within_window(0, 11, 10));
+    // Symmetric in sign.
+    TEST_ASSERT_FALSE(encoder_within_window(0, -11, 10));
+    TEST_ASSERT_TRUE(encoder_within_window(0, -10, 10));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_not_requested_is_not_pending);
@@ -64,5 +93,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_held_outside_the_home_zone_is_pending);
     RUN_TEST(test_held_inside_the_home_zone_is_not_pending);
     RUN_TEST(test_zone_disabled_is_pending_even_at_zero);
+    RUN_TEST(test_encoder_beyond_the_window_is_not_settled);
+    RUN_TEST(test_encoder_at_the_target_is_settled);
+    RUN_TEST(test_encoder_exactly_on_the_window_is_settled);
+    RUN_TEST(test_encoder_one_past_the_window_is_not_settled);
     return UNITY_END();
 }
