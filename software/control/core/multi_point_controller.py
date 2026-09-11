@@ -706,6 +706,28 @@ class MultiPointController:
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
+    _MCU_IDLE_WAIT_ATTEMPTS = 3
+    _MCU_IDLE_WAIT_TIMEOUT_S = 5
+
+    def _wait_for_microcontroller_idle(self) -> bool:
+        """Wait up to 15 s for the MCU to finish its current command; True on success.
+
+        One long wait would block identically - the loop exists only so a stalled
+        wait logs progress instead of freezing silently. See
+        LiveController.trigger_acquisition for how the MCU gets wedged and why it
+        clears once live triggers stop.
+        """
+        for attempt in range(self._MCU_IDLE_WAIT_ATTEMPTS):
+            try:
+                self.microcontroller.wait_till_operation_is_completed(timeout_limit_s=self._MCU_IDLE_WAIT_TIMEOUT_S)
+                return True
+            except TimeoutError:
+                self._log.warning(
+                    f"Microcontroller busy before acquisition "
+                    f"(attempt {attempt + 1}/{self._MCU_IDLE_WAIT_ATTEMPTS})..."
+                )
+        return False
+
     def run_acquisition(self, acquire_current_fov=False):
         # Consume the per-region laser-AF offsets for THIS run and clear the sticky controller
         # copy up-front. Any early return below — or a prior GUI abort that pushed offsets but
@@ -789,9 +811,27 @@ class MultiPointController:
             # stop live
             if self.liveController.is_live:
                 self.liveController_was_live_before_multipoint = True
-                self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                try:
+                    self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                except TimeoutError:
+                    # Live is already stopped and its trigger timer cancelled by this
+                    # point; the idle wait below is the recovery, so don't abort here.
+                    self._log.warning(
+                        "Stopping live timed out waiting for the microcontroller; "
+                        "waiting for it to go idle before starting the acquisition."
+                    )
             else:
                 self.liveController_was_live_before_multipoint = False
+
+            # A wedged MCU (see LiveController.trigger_acquisition) clears once live
+            # triggers stop; wait it out rather than timing out the first stage move.
+            if not self._wait_for_microcontroller_idle():
+                self._log.error(
+                    f"Microcontroller still busy after "
+                    f"{self._MCU_IDLE_WAIT_ATTEMPTS * self._MCU_IDLE_WAIT_TIMEOUT_S} s - home the stage or "
+                    f"power-cycle the controller. Aborting the acquisition start."
+                )
+                return
 
             self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
             # We need callbacks, because we trigger and then use callbacks for image processing.  This

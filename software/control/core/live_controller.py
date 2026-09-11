@@ -424,6 +424,14 @@ class LiveController(QObject):
             self._log.debug("snap() called while live is running, ignoring.")
             return False
 
+        # Same wedge-avoidance as trigger_acquisition(): never fire a trigger while
+        # the MCU is mid-command. A stage move finishes well within this wait.
+        try:
+            self.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.warning("Microcontroller still busy; not snapping.")
+            return False
+
         self._check_laser_engine_warn_only()
 
         was_streaming = self.camera.get_is_streaming()
@@ -492,10 +500,23 @@ class LiveController(QObject):
                 # It failed, try again real soon
                 # Use a short period so we get back here fast and check again.
                 re_check_period_ms = 10
+                if self.microscope.low_level_drivers.microcontroller.is_busy():
+                    # A trigger held for a busy MCU (usually a stage move) resolves on a
+                    # 100ms-to-seconds scale, and every re-check spins up a fresh Timer
+                    # thread - poll at the normal frame cadence instead of every 10ms.
+                    re_check_period_ms = self.timer_trigger_interval
                 self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
 
     # software trigger related
     def trigger_acquisition(self):
+        if self.microscope.low_level_drivers.microcontroller.is_busy():
+            # Don't trigger while the MCU executes a command (usually a stage move):
+            # triggering mid-command corrupts the firmware's single command-status
+            # slot and wedges it - the firmware keeps executing commands but reports
+            # IN_PROGRESS for everything until the trigger stream stops for a few
+            # seconds. Callers must treat False as "not triggered"; the live trigger
+            # timer re-checks on its own schedule, so live resumes after the move.
+            return False
         if not self.camera.get_ready_for_trigger():
             # TODO(imo): Before, send_trigger would pass silently for this case.  Now
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
