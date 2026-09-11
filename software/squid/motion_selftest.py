@@ -504,7 +504,13 @@ class ZMotionSelfTest:
 
     def _restore_position(self):
         if self._at_rest and self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01:
-            self._move(self.depth, check_cancel=False)
+            # The return move is a move like any other: until it completes, Z is not at rest. Clear the
+            # flag first so a return move that times out - possibly with the counter already within
+            # 0.01 mm of the target - cannot leave _at_rest standing from the earlier wait and let the
+            # loop restore re-align a moving axis. Same time budget as the idle wait.
+            self._at_rest = False
+            self._move(self.depth, check_cancel=False, timeout_s=self.idle_timeout_s)
+            self._at_rest = True
 
     def _realign_frames(self):
         """Take the counter's frame as the encoder's at the current resting position before an explicit ENABLE.

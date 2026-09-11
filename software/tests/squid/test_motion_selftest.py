@@ -387,3 +387,41 @@ def test_cancel_with_z_never_stopping_leaves_the_loop_off():
     assert ("configure",) not in mcu.calls
     assert mcu.pid_enabled is False
     assert any("left OFF" in line and "still moving" in line for line in log), log
+
+
+def test_return_move_timing_out_near_depth_leaves_the_loop_off():
+    # The cancelled move stops, but the cleanup's own return-to-depth move never completes while the
+    # counter already reads within 0.01 mm of the target (stopped at 2.495 for a 2.500 mm target, or
+    # a controller that stays busy). _at_rest must not survive from the earlier wait: no re-align,
+    # loop off.
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis)
+    state = {"moves": 0}
+    orig = mcu.move_z_to_usteps
+
+    def counting_move(u):
+        state["moves"] += 1
+        if state["moves"] == 5:
+            mcu.busy_polls = 6  # the cancelled move (into the gap map, away from depth): stops after a few polls
+        elif state["moves"] >= 6:
+            mcu.busy_polls = 10**9  # the restore's return move: never reports idle
+        orig(u)
+
+    mcu.move_z_to_usteps = counting_move
+    log = []
+    t = ZMotionSelfTest(
+        mcu,
+        axis,
+        log=log.append,
+        cancel=lambda: state["moves"] >= 5,
+        hold_s=0.05,
+        settle_scale=0.0,
+        idle_timeout_s=0.05,
+    )
+    report = t.run()
+    assert report.aborted == "cancelled by the operator"
+    assert state["moves"] >= 6, mcu.calls  # the return move was attempted
+    assert ("configure_while_moving",) not in mcu.calls, mcu.calls
+    assert ("configure",) not in mcu.calls, mcu.calls
+    assert mcu.pid_enabled is False
+    assert any("left OFF" in line for line in log), log
