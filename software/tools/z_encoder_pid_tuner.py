@@ -311,8 +311,22 @@ class ZTuner:
                 self.loop_off()
                 raise TimeoutError("Z move did not complete")
             time.sleep(0.002)
-        # host-visible latency: command sent -> COMPLETED ack seen (includes the 10 ms packet cadence)
+        # host-visible latency: command sent -> ack seen (includes the 10 ms packet cadence). Timed
+        # here, before the cause read below spends ~100 ms of it on the wire.
         self.last_cmd_to_ack_s = time.time() - t0
+        # The controller clears 'busy' on an abort as well as on a completed move, and the
+        # CMD_EXECUTION_ERROR that aborts one is carried by the same packet as the fault bit. Read as
+        # an ack, the faulted move was recorded as a clean one - and the abort was left uncleared for
+        # the next send_command to warn about.
+        err = self.mcu.last_command_aborted_error
+        if err is not None:
+            # before the abort is acknowledged: DISABLE / ENABLE / CONFIGURE_STAGE_PID clear the
+            # cause along with the fault, so this is the only moment the firmware will say why
+            cause = self._read_z_fault_cause()
+            self.mcu.acknowledge_aborted_command()
+            raise RuntimeError(
+                f"Z move aborted by the controller: {err}; fault cause: {self._cause_text(cause) or 'none'}"
+            )
         self.cmd_to_ack_log.append(self.last_cmd_to_ack_s)
 
     def settle(self, seconds):
@@ -1240,23 +1254,39 @@ class ZTuner:
         Returns (row, abort). A fault is the event this action exists to capture, so it ends the
         sampling but not the row: the caller gets the filled-in row first and raises `abort` after it
         has been written. Raising from in here would have dropped exactly the move that tripped, and
-        left pid_fault_at_ack and faults_in_window unable to be anything but 0 in the CSV.
+        left pid_fault_at_ack and faults_in_window unable to be anything but 0 in the CSV. A move the
+        controller aborted is the same event arriving as an exception instead of a flag, and is kept
+        the same way.
         """
         t_cmd = time.time()
-        ack_s, st = self._move_and_read(self.a.depth_mm + step_um / 1000.0)  # no settle: read follows the ack
+        abort = None
+        self.last_fault_cause = PID_FAULT_CAUSE.NONE
+        cause = PID_FAULT_CAUSE.NONE
+        try:
+            ack_s, st = self._move_and_read(self.a.depth_mm + step_um / 1000.0)  # no settle: read follows the ack
+        except RuntimeError as e:
+            # A CMD_EXECUTION_ERROR rides on the same packet as the fault bit, so a move the
+            # controller aborted IS a faulted move, not a lost sample. move_to_depth timed the error
+            # ack and read the cause before acknowledging the abort (which clears it); everything
+            # below then fills in the row exactly as a fault flagged at the ack does, and the window
+            # loop is skipped because `abort` is already set.
+            abort = e
+            ack_s = self.last_cmd_to_ack_s
+            cause = self.last_fault_cause
+            st = self.mcu.get_encoder_state()
         t_ack = time.time()
-        dev = self._dev32_usteps(st)
+        # Reading the cause drops encoder reporting for a few packets and restoring it is best
+        # effort, so an aborted move can come back with no reading at all. nan says "not measured"
+        # instead of carrying the previous move's error into this row.
+        dev = self._dev32_usteps(st) if st["dev32"] is not None else float("nan")
         enabled_at_ack = bool(st["pid_enabled"])
-        fault_at_ack = bool(st["pid_fault"])
+        fault_at_ack = bool(st["pid_fault"]) or cause != PID_FAULT_CAUSE.NONE
         engaged_throughout = enabled_at_ack
         faults = int(fault_at_ack)
         max_abs = abs(dev)
         t_tol = 0.0 if abs(dev) <= tol_usteps else float("nan")
         samples = 1
-        abort = None
-        self.last_fault_cause = PID_FAULT_CAUSE.NONE
-        cause = PID_FAULT_CAUSE.NONE
-        if fault_at_ack:
+        if abort is None and fault_at_ack:
             cause = self._read_z_fault_cause()
             self.loop_off()
             abort = RuntimeError(f"firmware opened the loop (PID_FAULT) at the acknowledgment of a {step_um:g} um move")
