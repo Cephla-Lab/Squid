@@ -155,10 +155,10 @@ void send_position_update()
       // constants_protocol.h), 0 = no fault latched. Old hosts ignored these zero bytes; the
       // fault bits in byte 18 say THAT a fault is latched in every packet either way.
       // Packed clear of byte 19 bit 0 (ENC_FLAG_REPORTING), so a host can always tell the two
-      // layouts apart: X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2.
-      buffer_tx[19] = byte(((pid_fault_cause[x] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_X_SHIFT)
-                         | ((pid_fault_cause[y] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Y_SHIFT));
-      buffer_tx[20] = byte((pid_fault_cause[z] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Z_SHIFT);
+      // layouts apart: X in byte 19 bits 1-4, Y in byte 20 bits 0-3, Z in byte 20 bits 4-7.
+      buffer_tx[19] = byte((pid_fault_cause[x] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_X_SHIFT);
+      buffer_tx[20] = byte(((pid_fault_cause[y] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Y_SHIFT)
+                         | ((pid_fault_cause[z] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Z_SHIFT));
       buffer_tx[21] = 0;
     }
 

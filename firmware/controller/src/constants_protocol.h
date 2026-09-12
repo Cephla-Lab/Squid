@@ -151,13 +151,14 @@ static const int BIT_POS_PID_FAULT_X = 4;
 static const int BIT_POS_PID_FAULT_Y = 5;
 static const int BIT_POS_PID_FAULT_Z = 6;
 // Why the loop faulted, per stage axis, whenever encoder reporting is OFF (bytes 19-21 carry the
-// reported axis's flags and clipped deviation while it is on). Packed so that byte 19 bit 0 -
-// ENC_FLAG_REPORTING - stays clear: X's cause in byte 19 bits 1-3, Y's in byte 19 bits 4-6, Z's in
-// byte 20 bits 0-2; byte 21 stays 0. 0 while no fault is latched; cleared with the fault bit.
+// reported axis's flags and clipped deviation while it is on). Four bits per axis, packed so that
+// byte 19 bit 0 - ENC_FLAG_REPORTING - stays clear: X's cause in byte 19 bits 1-4, Y's in byte 20
+// bits 0-3, Z's in byte 20 bits 4-7; byte 21 stays 0. 0 while no fault is latched; cleared with the
+// fault bit.
 static const int PID_FAULT_CAUSE_X_SHIFT = 1;   // byte 19
-static const int PID_FAULT_CAUSE_Y_SHIFT = 4;   // byte 19
-static const int PID_FAULT_CAUSE_Z_SHIFT = 0;   // byte 20
-static const int PID_FAULT_CAUSE_MASK = 7;      // three bits per cause (decimal: the host parity test reads decimal only)
+static const int PID_FAULT_CAUSE_Y_SHIFT = 0;   // byte 20
+static const int PID_FAULT_CAUSE_Z_SHIFT = 4;   // byte 20
+static const int PID_FAULT_CAUSE_MASK = 15;     // four bits per cause (decimal: the host parity test reads decimal only)
 static const int PID_FAULT_NONE = 0;
 static const int PID_FAULT_WATCHDOG = 1;          // engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
 static const int PID_FAULT_NO_PROGRESS = 2;       // engaged at rest: the error stopped shrinking (frozen encoder, stuck stage)
@@ -166,6 +167,7 @@ static const int PID_FAULT_REALIGN_REFUSED = 4;   // first engage after homing: 
 static const int PID_FAULT_REENGAGE_REFUSED = 5;  // at rest, frames aligned, still beyond the watchdog: encoder stopped following
 static const int PID_FAULT_TRAVEL = 6;            // engaged at rest: the correction travelled the watchdog distance without converging
 static const int PID_FAULT_NO_RESPONSE = 7;       // engaged at rest: the chip drove the motor and the encoder did not respond (frozen feedback / stage not following)
+static const int PID_FAULT_STOP_SWITCH = 8;       // engaged: a reference switch is active and the correction was driving toward it (the chip's stop gates the ramp, not the correction)
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;

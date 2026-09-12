@@ -368,6 +368,37 @@ void test_low_gain_converging_loop_does_not_false_trip(void) {
     TEST_ASSERT_EQUAL_UINT8_MESSAGE(PID_CORRECTION_OK, r, "a converging low-gain loop must not trip");
 }
 
+/* pid_stop_blocks_correction(): the chip's ramp rule (STOPL blocks VACTUAL < 0, STOPR blocks
+   VACTUAL > 0) applied to the correction velocity vPID, which the stop does not gate itself. */
+void test_stop_switch_blocks_a_correction_driving_toward_it(void) {
+    TEST_ASSERT_TRUE(pid_stop_blocks_correction(true, false, -13000, false));   /* STOPL, driving negative */
+    TEST_ASSERT_TRUE(pid_stop_blocks_correction(false, true, 13000, false));    /* STOPR, driving positive */
+}
+
+void test_stop_switch_does_not_block_a_correction_driving_away(void) {
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(true, false, 13000, false));   /* on STOPL, backing away */
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(false, true, -13000, false));  /* on STOPR, backing away */
+}
+
+void test_resting_on_a_switch_with_no_drive_is_not_a_fault(void) {
+    /* the home switch right after homing, zone 0: the loop engages at XACTUAL 0 with vPID 0 */
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(false, true, 0, false));
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(true, true, 0, false));
+}
+
+void test_no_active_switch_never_blocks(void) {
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(false, false, -50000, false));
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(false, false, 50000, true));
+}
+
+void test_inverted_stop_direction_swaps_the_switches(void) {
+    /* invert_stop_direction = 1: STOPL is the right switch and STOPR the left one */
+    TEST_ASSERT_TRUE(pid_stop_blocks_correction(true, false, 13000, true));
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(true, false, -13000, true));
+    TEST_ASSERT_TRUE(pid_stop_blocks_correction(false, true, -13000, true));
+    TEST_ASSERT_FALSE(pid_stop_blocks_correction(false, true, 13000, true));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_not_requested_is_not_pending);
@@ -398,6 +429,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_responding_encoder_never_trips_no_response);
     RUN_TEST(test_response_is_not_judged_below_the_drive_floor);
     RUN_TEST(test_travel_step_is_inert_until_the_watch_is_armed);
+    RUN_TEST(test_stop_switch_blocks_a_correction_driving_toward_it);
+    RUN_TEST(test_stop_switch_does_not_block_a_correction_driving_away);
+    RUN_TEST(test_resting_on_a_switch_with_no_drive_is_not_a_fault);
+    RUN_TEST(test_no_active_switch_never_blocks);
+    RUN_TEST(test_inverted_stop_direction_swaps_the_switches);
     RUN_TEST(test_realign_refused_when_nothing_is_configured);
     RUN_TEST(test_windows_at_the_qualified_gain_are_the_20ms_floor);
     RUN_TEST(test_windows_scale_with_a_low_gain);

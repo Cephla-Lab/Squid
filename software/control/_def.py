@@ -421,7 +421,7 @@ class PID_FAULT_CAUSE:
     """Why a stage axis's closed loop faulted (firmware >= 1.6).
 
     Byte 18 bits 4-6 say THAT X / Y / Z has a latched fault, in every packet. The WHY is packed into
-    bytes 19-20 - X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2, byte 21
+    bytes 19-20 - X in byte 19 bits 1-4, Y in byte 20 bits 0-3, Z in byte 20 bits 4-7, byte 21
     unused - three bits each rather than a byte each, so that byte 19 bit 0 (ENC_FLAG.REPORTING)
     stays clear and the host can tell the two layouts of those bytes apart. Only there while encoder
     reporting is OFF: with it on the same bytes carry the reported axis's ENC_FLAG bits and clipped
@@ -436,12 +436,13 @@ class PID_FAULT_CAUSE:
     REENGAGE_REFUSED = 5  # at rest, frames aligned, still beyond the watchdog
     TRAVEL = 6  # engaged at rest: the correction travelled the watchdog distance without converging
     NO_RESPONSE = 7  # engaged at rest: the loop drove the motor and the encoder did not respond
+    STOP_SWITCH = 8  # engaged: a reference switch is active and the correction was driving toward it
 
     # Where each axis's three bits sit while encoder reporting is off (see the class docstring).
-    X_SHIFT = 1  # byte 19, bits 1-3
-    Y_SHIFT = 4  # byte 19, bits 4-6
-    Z_SHIFT = 0  # byte 20, bits 0-2
-    MASK = 0x07
+    X_SHIFT = 1  # byte 19, bits 1-4
+    Y_SHIFT = 0  # byte 20, bits 0-3
+    Z_SHIFT = 4  # byte 20, bits 4-7
+    MASK = 0x0F
 
     # What an operator is told. Each says what to go and look at, not just what tripped.
     NAMES = {
@@ -460,6 +461,10 @@ class PID_FAULT_CAUSE:
         NO_RESPONSE: (
             "no response (the loop drove the motor and the encoder did not move for a whole response window: "
             "frozen feedback or a stage that does not follow the motor)"
+        ),
+        STOP_SWITCH: (
+            "stop switch (a reference switch is active and the correction was driving toward it; the chip's "
+            "hard stop gates the ramp, not the correction)"
         ),
     }
 

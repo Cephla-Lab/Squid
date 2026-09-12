@@ -865,6 +865,21 @@ void check_closed_loop()
 
     if (stage_PID_enabled[i])
     {
+      // Reference switches: the chip's hard stop gates the RAMP (VACTUAL), and the correction
+      // vPID is added after it - with the base pulse generator at 0, as engaged here, the
+      // ramp is not even part of the output. So an active switch does not stop a correction
+      // driving into it (datasheet §8.1 / §12.2.2). Apply the chip's own rule to vPID: active
+      // switch + drive toward it = fault, within one pass (~1-2 ms). Resting on the home
+      // switch with no drive is not a fault. Physical switches only: the virtual limits act
+      // on XACTUAL, which a correction does not move.
+      int32_t pv = tmc4361A_read_pid_vel(&tmc4361[i]);
+      uint8_t sw = tmc4361A_readLimitSwitches(&tmc4361[i]);   // bit 0 = STOPL active, bit 1 = STOPR active
+      bool inverted = (i == x) ? flip_limit_switch_x : (i == y) ? flip_limit_switch_y : false;
+      if (pid_stop_blocks_correction((sw & 1) != 0, (sw & 2) != 0, pv, inverted))
+      {
+        pid_trip_fault(i, PID_FAULT_STOP_SWITCH);
+        continue;
+      }
       // Home zone: the stage may be resting on its stop while the actuator
       // keeps moving, so the encoder error is meaningless there and the loop
       // would drive the actuator into its end. Drop to open loop; the ramp
@@ -920,14 +935,12 @@ void check_closed_loop()
           continue;
         }
         // Distance and response bounds (pid_policy.h): only while the chip is driving (the watch
-        // is armed, i.e. |dev| outside the deadband). Two more reads per engaged-at-rest axis:
-        // PID_VEL (what the correction asks of the motor) and V_ENC_MEAN (what the encoder does
-        // about it). The correction may never travel farther than the watchdog distance without
+        // is armed, i.e. |dev| outside the deadband). One more read per engaged-at-rest axis:
+        // V_ENC_MEAN (what the encoder does about the drive); PID_VEL was read above. The correction may never travel farther than the watchdog distance without
         // converging, and it may never drive for a whole response window with the encoder standing
         // still - that is a frozen encoder or a stage that does not follow, whatever the error size.
         if (pid_corr_watch[i].active)
         {
-          int32_t pv = tmc4361A_read_pid_vel(&tmc4361[i]);
           int32_t ev = tmc4361A_read_encoder_vel_filtered(&tmc4361[i]);
           uint32_t response_us = PID_CORRECTION_RESPONSE_WINDOWS * progress_us;
           if (response_us < PID_CORRECTION_RESPONSE_MIN_US) response_us = PID_CORRECTION_RESPONSE_MIN_US;

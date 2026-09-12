@@ -197,4 +197,23 @@ static inline bool pid_realign_allowed(int32_t frame_offset, int32_t zone_usteps
     if (bound <= 0) return false;       /* nothing configured: nothing declared, nothing absorbed */
     return frame_offset <= bound && frame_offset >= -bound;
 }
+
+/* ---- Stop switches under closed-loop correction ---------------------------------------
+   The chip's reference switches stop the RAMP: "the velocity ramp stops in case STOPL matches
+   pol_stop_left and VACTUAL < 0" (STOPR: VACTUAL > 0), and a hard stop sets VACTUAL = 0. The
+   closed loop's correction vPID is added AFTER the ramp (VEL_ACT_PID = VACTUAL + vPID, or = vPID
+   with the base pulse generator at 0, which is how this firmware engages the loop), and nothing
+   in the datasheet gates vPID on a stop (TMC4330A/4361A datasheet §8.1, §12.2.2, 2026-09-12
+   reading). So a correction can drive an axis through an active stop switch. This predicate
+   applies the chip's own ramp rule to vPID: a stop is blocking when it is active AND the
+   correction drives toward it. Resting on a switch with no drive (the home switch right after
+   homing, with no home zone configured) is not a fault. `inverted` mirrors REFERENCE_CONF's
+   invert_stop_direction (STOPL acts as the right switch and vice versa). */
+static inline bool pid_stop_blocks_correction(bool stopl_active, bool stopr_active, int32_t pid_vel, bool inverted)
+{
+    if (pid_vel == 0) return false;
+    bool left  = inverted ? stopr_active : stopl_active;   /* the switch that blocks negative motion */
+    bool right = inverted ? stopl_active : stopr_active;   /* the switch that blocks positive motion */
+    return (left && pid_vel < 0) || (right && pid_vel > 0);
+}
 #endif

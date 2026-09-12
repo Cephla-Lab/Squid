@@ -1847,7 +1847,7 @@ class Microcontroller:
                 # the fault log below, which reads the cause. Reporting ON: the theta field
                 # doubles as ENC_POS, byte 19 carries ENC_FLAG bits and bytes 20-21 the int16
                 # clipped loop error of the reported axis. Reporting OFF: the PID_FAULT_CAUSE of X / Y
-                # sit in byte 19 bits 1-3 / 4-6 and Z's in byte 20 bits 0-2, packed so byte 19 bit 0
+                # sit in byte 19 bits 1-4 / byte 20 bits 0-3 and Z's in byte 20 bits 4-7, packed so byte 19 bit 0
                 # (the reporting flag) stays clear. All zero unless a host enabled the loop.
                 reporting = bool(msg[19] & (1 << ENC_FLAG.REPORTING))
                 # Only keep byte 19 as flags in the layout where it IS flags. In the cause layout
@@ -1871,7 +1871,7 @@ class Microcontroller:
                 else:
                     self.pid_fault_causes = {
                         AXIS.X: (msg[19] >> PID_FAULT_CAUSE.X_SHIFT) & PID_FAULT_CAUSE.MASK,
-                        AXIS.Y: (msg[19] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Y: (msg[20] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
                         AXIS.Z: (msg[20] >> PID_FAULT_CAUSE.Z_SHIFT) & PID_FAULT_CAUSE.MASK,
                     }
                     # No encoder reading in this layout, and the last one is not a substitute: a
