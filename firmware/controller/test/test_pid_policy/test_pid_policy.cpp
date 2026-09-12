@@ -85,6 +85,96 @@ void test_encoder_one_past_the_window_is_not_settled(void) {
     TEST_ASSERT_TRUE(encoder_within_window(0, -10, 10));
 }
 
+/*
+  pid_correction_watch_step(): bounded correction. Units are usteps and microseconds; tol 25,
+  arm 100 (4 x tol), progress 50 ms, total 1 s - the constants the firmware uses.
+*/
+static PidCorrectionWatch W;
+#define TOL 25
+#define ARM 100
+#define PROG 50000u
+#define TOTAL 1000000u
+
+void test_correction_below_arming_is_never_watched(void) {
+    pid_correction_watch_reset(&W);
+    // A 3-count stiction residual just outside the deadband sits there for minutes: benign.
+    for (uint32_t t = 0; t < 120u * 1000000u; t += 1000u)
+        TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, 60, TOL, ARM, t, PROG, TOTAL));
+    TEST_ASSERT_FALSE(W.active);
+}
+
+void test_correction_that_converges_is_ok(void) {
+    pid_correction_watch_reset(&W);
+    // 200 um-ish error closing at the clamp: shrinks every millisecond, done in ~200 ms.
+    int32_t dev = 34000;
+    for (uint32_t t = 0; dev > 0; t += 1000u, dev -= 170)
+        TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, dev, TOL, ARM, t, PROG, TOTAL));
+    // converged below the arming threshold: watch disarms
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, 10, TOL, ARM, 300000u, PROG, TOTAL));
+    TEST_ASSERT_FALSE(W.active);
+}
+
+void test_frozen_encoder_trips_no_progress_within_the_window(void) {
+    pid_correction_watch_reset(&W);
+    // Encoder froze reporting 50 um (8500 usteps) below the 200 um watchdog: |dev| never changes.
+    uint8_t r = PID_CORRECTION_OK;
+    uint32_t t = 0;
+    for (; t <= PROG + 2000u && r == PID_CORRECTION_OK; t += 1000u)
+        r = pid_correction_watch_step(&W, 8500, TOL, ARM, t, PROG, TOTAL);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PID_CORRECTION_NO_PROGRESS, r, "a constant error beyond arming must trip within one progress window");
+    TEST_ASSERT_TRUE_MESSAGE(t <= PROG + 2000u, "tripped late");
+}
+
+void test_error_that_grows_trips_no_progress(void) {
+    pid_correction_watch_reset(&W);
+    // Wrong-sign or decoupled: the correction makes it worse. best_abs never improves.
+    uint8_t r = PID_CORRECTION_OK;
+    int32_t dev = 200;
+    for (uint32_t t = 0; t <= PROG + 2000u && r == PID_CORRECTION_OK; t += 1000u, dev += 50)
+        r = pid_correction_watch_step(&W, dev, TOL, ARM, t, PROG, TOTAL);
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_NO_PROGRESS, r);
+}
+
+void test_progress_restarts_the_window_but_not_the_total_budget(void) {
+    pid_correction_watch_reset(&W);
+    // Crawls: improves by exactly one tolerance every 40 ms (inside the 50 ms window) forever.
+    uint8_t r = PID_CORRECTION_OK;
+    int32_t dev = 30000;
+    uint32_t t = 0;
+    for (; r == PID_CORRECTION_OK && t < 5u * 1000000u; t += 40000u, dev -= TOL)
+        r = pid_correction_watch_step(&W, dev, TOL, ARM, t, PROG, TOTAL);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PID_CORRECTION_TIMEOUT, r, "steady tiny progress must still hit the total budget");
+    TEST_ASSERT_TRUE_MESSAGE(t >= TOTAL && t <= TOTAL + 80000u, "timeout must fire at the total budget, not before");
+}
+
+void test_watch_handles_micros_wraparound(void) {
+    pid_correction_watch_reset(&W);
+    uint32_t t = 0xFFFFFFFFu - 20000u;   // arm 20 ms before micros() wraps
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, 8500, TOL, ARM, t, PROG, TOTAL));
+    t += 25000u;                          // wrapped
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, 8500, TOL, ARM, t, PROG, TOTAL));
+    t += 30000u;                          // 55 ms after arming, still no progress
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_NO_PROGRESS, pid_correction_watch_step(&W, 8500, TOL, ARM, t, PROG, TOTAL));
+}
+
+/* pid_realign_allowed(): the absorbed post-homing offset is bounded by zone + watchdog. */
+void test_realign_within_gap_config_is_allowed(void) {
+    // Gap stage: zone 700 um, watchdog 200 um, offset 640 um (usteps at 170 per um)
+    TEST_ASSERT_TRUE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170));
+    TEST_ASSERT_TRUE(pid_realign_allowed(640 * 170, 700 * 170, 200 * 170));
+}
+
+void test_realign_beyond_gap_config_is_refused(void) {
+    // No-gap stage (zone 0), watchdog 200 um: a 640 um offset at the first engage is lost motion, not a gap.
+    TEST_ASSERT_FALSE(pid_realign_allowed(-640 * 170, 0, 200 * 170));
+    // Gap stage but the offset is beyond zone + watchdog
+    TEST_ASSERT_FALSE(pid_realign_allowed(950 * 170, 700 * 170, 200 * 170));
+}
+
+void test_realign_unbounded_when_nothing_is_configured(void) {
+    TEST_ASSERT_TRUE(pid_realign_allowed(5000 * 170, 0, 0));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_not_requested_is_not_pending);
@@ -97,5 +187,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_encoder_at_the_target_is_settled);
     RUN_TEST(test_encoder_exactly_on_the_window_is_settled);
     RUN_TEST(test_encoder_one_past_the_window_is_not_settled);
+    RUN_TEST(test_correction_below_arming_is_never_watched);
+    RUN_TEST(test_correction_that_converges_is_ok);
+    RUN_TEST(test_frozen_encoder_trips_no_progress_within_the_window);
+    RUN_TEST(test_error_that_grows_trips_no_progress);
+    RUN_TEST(test_progress_restarts_the_window_but_not_the_total_budget);
+    RUN_TEST(test_watch_handles_micros_wraparound);
+    RUN_TEST(test_realign_within_gap_config_is_allowed);
+    RUN_TEST(test_realign_beyond_gap_config_is_refused);
+    RUN_TEST(test_realign_unbounded_when_nothing_is_configured);
     return UNITY_END();
 }

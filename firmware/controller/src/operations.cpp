@@ -809,12 +809,40 @@ static void fail_commanded_move(uint8_t axis)
                                || W2_commanded_movement_in_progress;
 }
 
+// Bounded-correction watch state, one per axis (pid_policy.h). Reset whenever the loop is
+// not engaged at rest, so a correction is only ever judged against its own timeline.
+static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
+
+// The loop on `axis` has proven unsafe to leave engaged: open it, drop the REQUEST (so the
+// axis stays open-loop until the host explicitly enables again), latch the fault the status
+// packet carries, and fail the move in flight if there is one. Every fault path uses this.
+static void pid_trip_fault(uint8_t axis)
+{
+  tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+  stage_PID_enabled[axis] = 0;
+  pid_requested[axis] = false;
+  pid_zone_hold[axis] = false;
+  pid_fault[axis] = true;
+  pid_correction_watch_reset(&pid_corr_watch[axis]);
+  fail_commanded_move(axis);
+}
+
+// Deadband the chip is regulating to, in usteps: the configured/derived tolerance held in the
+// struct by CONFIGURE_STAGE_PID / SET_PID_TOLERANCE, else the legacy 25 usteps.
+static inline int32_t pid_tolerance_eff(uint8_t axis)
+{
+  return tmc4361[axis].pid_tolerance > 0 ? tmc4361[axis].pid_tolerance : 25;
+}
+
 void check_closed_loop()
 {
   for (uint8_t i = 0; i < TOTAL_AXES; i++)
   {
     // Nothing is read for axes the host never asked a loop for: the shipping
-    // path costs nothing here.
+    // path costs nothing here. A loop that is not engaged is not correcting:
+    // its watch starts fresh when it next engages.
+    if (!pid_requested[i] || !stage_PID_enabled[i])
+      pid_correction_watch_reset(&pid_corr_watch[i]);
     if (!pid_requested[i])
       continue;
 
@@ -862,19 +890,28 @@ void check_closed_loop()
       // COMPLETED would hand the host a position it does not have. A fault with
       // no move in flight reaches the host through the status packet's fault bits
       // (BIT_POS_PID_FAULT_*), which are set in every packet.
-      if (pid_max_dev_usteps[i] > 0)
+      int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
+      if (pid_max_dev_usteps[i] > 0 && (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i]))
       {
-        int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
-        if (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i])
-        {
-          tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
-          stage_PID_enabled[i] = 0;
-          pid_requested[i] = false;
-          pid_zone_hold[i] = false;
-          pid_fault[i] = true;
-          fail_commanded_move(i);
-        }
+        pid_trip_fault(i);
+        continue;
       }
+      // Bounded correction (pid_policy.h): the deviation watchdog cannot see a frozen encoder
+      // - the error it reports never grows - nor a stage resting on its stop while the actuator
+      // retracts, and the correction moves the motor without moving XACTUAL, so the travel
+      // limits see nothing either. Judged only with the ramp idle: while the ramp moves the
+      // target in threshold mode the deviation changes for legitimate reasons.
+      if (v_abs == 0)
+      {
+        int32_t tol = pid_tolerance_eff(i);
+        uint8_t verdict = pid_correction_watch_step(&pid_corr_watch[i], dev < 0 ? -dev : dev, tol,
+                                                    PID_CORRECTION_ARM_TOLERANCES * tol, micros(),
+                                                    PID_CORRECTION_PROGRESS_US, PID_CORRECTION_TIMEOUT_US);
+        if (verdict != PID_CORRECTION_OK)
+          pid_trip_fault(i);
+      }
+      else
+        pid_correction_watch_reset(&pid_corr_watch[i]);
     }
     else if (pid_zone_hold[i] && !in_zone && !homing && encoder_configured[i])
     {
@@ -900,8 +937,17 @@ void check_closed_loop()
         // Only at rest: the two frames must be compared with nothing in motion.
         if (running)
           continue;
-        tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
+        // The absorbed offset is bounded by what the configuration declares (home zone +
+        // watchdog): a larger one is lost motion during the first departure, or an encoder
+        // that never started following - a fault, not a gap (pid_policy.h).
+        int32_t frame_offset = tmc4361A_read_deviation(&tmc4361[i]);
         pid_realign_pending[i] = false;
+        if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i]))
+        {
+          pid_trip_fault(i);
+          continue;
+        }
+        tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
       }
       int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
       int32_t lim = pid_max_dev_usteps[i] > 0 ? pid_max_dev_usteps[i] : 0x7FFFFFFF;
@@ -919,10 +965,7 @@ void check_closed_loop()
         // The move in flight on this axis fails with it: the ramp finished on the counter but
         // the encoder is beyond the limit, so COMPLETED would be a lie. A fault with no move
         // in flight reaches the host through the status packet's fault bits, set in every packet.
-        pid_requested[i] = false;
-        pid_zone_hold[i] = false;
-        pid_fault[i] = true;
-        fail_commanded_move(i);
+        pid_trip_fault(i);
       }
     }
   }
