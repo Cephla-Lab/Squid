@@ -602,6 +602,79 @@ def test_enc_flag_fields_are_not_decoded_from_the_cause_layout():
         micro.close()
 
 
+def test_a_cleared_fault_bit_drops_the_cause_it_left_behind():
+    """The cause outlives the fault unless the byte that is valid in BOTH layouts retires it.
+
+    pid_fault_causes is only written by reporting-OFF packets, so once the controller clears the
+    fault (a validated re-enable, CONFIGURE, RESET) the host would go on answering with the old
+    cause for as long as reporting stays on - and reporting on is how the tuner runs. Byte 18's
+    fault bits arrive in every packet, so they are what expires a cause.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_Z,
+                z_cause=control._def.PID_FAULT_CAUSE.WATCHDOG,
+            ),
+        )
+        assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.WATCHDOG
+
+        # The controller cleared the latch, and this packet is in the layout that cannot restate a
+        # cause. The fault bit is still the authority, and it says there is nothing to explain.
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=0,
+                flags=(1 << control._def.ENC_FLAG.REPORTING)
+                | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT),
+            ),
+        )
+        assert micro.pid_fault_axes() == set()
+        assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.NONE
+    finally:
+        micro.close()
+
+
+def test_dev32_expires_when_the_packet_stops_carrying_an_encoder_reading():
+    """dev32 is only written by reporting-ON packets, so it has to be retired by the OFF ones.
+
+    A tuner that drops reporting for a few packets to read a fault cause would otherwise keep
+    sampling the last deviation it saw against a stage that has since moved, and record it as a
+    fresh measurement. None is the honest answer while the reading is not on the wire.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        z, enc = -853333, -853333 + 40000
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                z=z,
+                enc=enc,
+                flags=(1 << control._def.ENC_FLAG.REPORTING)
+                | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT),
+            ),
+        )
+        assert micro.get_encoder_state()["dev32"] == enc - z
+
+        _feed_status_packet(micro, _fault_cause_packet(crc_calculator, z=z, enc=enc))
+        assert micro.get_encoder_state()["dev32"] is None
+    finally:
+        micro.close()
+
+
 def test_mcu_state_names_a_command_the_firmware_reports_as_still_in_progress():
     """A firmware that never finishes a move keeps answering IN_PROGRESS for the current command id,
     which matches none of the read loop's recovery branches; the timeout text must say so."""

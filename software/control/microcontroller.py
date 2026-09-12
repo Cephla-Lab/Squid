@@ -1861,11 +1861,23 @@ class Microcontroller:
                         AXIS.Y: (msg[19] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
                         AXIS.Z: (msg[20] >> PID_FAULT_CAUSE.Z_SHIFT) & PID_FAULT_CAUSE.MASK,
                     }
+                    # No encoder reading in this layout, and the last one is not a substitute: a
+                    # caller sampling dev32 across a reporting drop would record a stale pair as a
+                    # fresh measurement. encoder_pos / encoder_deviation keep their last values,
+                    # which get_encoder_state() already marks as not reporting.
+                    self.encoder_dev32 = None
                 # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte
                 # 19's flag these arrive in every packet, so a fault is reported even when no
                 # host command was in flight to fail. Log each NEW fault once - the packet
                 # stream repeats the latch until the host clears it.
                 fault_mask = (msg[18] >> BIT_POS_PID_FAULT_X) & 0x07
+                # These bits are the only fault state valid in both layouts, so they are also what
+                # expires a cause: pid_fault_causes is written by reporting-OFF packets alone, so
+                # without this the host would go on naming a cause the controller has already
+                # cleared, for as long as reporting stayed on.
+                for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)):
+                    if not fault_mask & (1 << bit):
+                        self.pid_fault_causes[axis] = PID_FAULT_CAUSE.NONE
                 if fault_mask != self.pid_fault_mask:
                     newly = fault_mask & ~self.pid_fault_mask
                     for bit, name, axis in ((0, "X", AXIS.X), (1, "Y", AXIS.Y), (2, "Z", AXIS.Z)):

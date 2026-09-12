@@ -134,6 +134,13 @@ class Sampler(threading.Thread):
         while not self._stop_evt.is_set():
             st = self.mcu.get_encoder_state()
             z = self.mcu.z_pos
+            if st["dev32"] is None:
+                # No encoder reading in this packet: reporting is off, either before the tool turned it
+                # on, while _read_z_fault_cause() has it down for a few packets, or after shutdown
+                # dropped it. The last reading is not a measurement of now - the stage has moved since -
+                # so a row built from it would put a fabricated pair in the trace.
+                time.sleep(0.004)
+                continue
             # column 3 is ENC_POS - XACTUAL at full width, paired by the reader thread inside one packet,
             # not the firmware's int16 ENC_POS_DEV: that field clips at +-32767 usteps and hides exactly
             # the excursions a trace is recorded for
@@ -596,6 +603,11 @@ class ZTuner:
             self.settle(0.4)
             st = self.mcu.get_encoder_state()
             z = self.mcu.z_pos
+            if st["dev32"] is None:
+                # encoder reporting is not on this packet; the previous reading belongs to a previous
+                # position, and the map exists to say where the stage stopped following the actuator
+                self.log(f"zonemap: no encoder reading at {usteps_to_depth(z):.3f} mm - point skipped")
+                return
             pts.append((tag, z, st["encoder_pos"], st["dev32"]))
 
         # descend to home (allowed: zonemap deliberately visits the home region open-loop)
