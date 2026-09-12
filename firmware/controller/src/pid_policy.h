@@ -8,37 +8,56 @@
    the firmware runs with. The chip's loop is first-order with rate constant P/256 per
    second (time constant tau = 256/P s: 3.9 ms at P 65535, 62 ms at 4096, 250 ms at 1024)
    and its output is clamped at PID_DV_CLIP, so both budgets are derived per axis from the
-   configured P and clamp rather than fixed - a fixed 50 ms would fault a converging loop
-   at low P, a fixed 1 s a large correction at a small clamp. */
-#define PID_CORRECTION_TIME_CONSTANTS   5          /* progress window = 5 tau: a converging loop has closed 99 % */
-#define PID_CORRECTION_WINDOW_MIN_US    20000u     /* never tighter than 20 ms (two status-packet periods) */
+   configured P, clamp and deadband rather than fixed.
+
+   Two tiers, by error size:
+   - |e| > PID_CORRECTION_ARM_TOLERANCES x deadband: a real correction. It must show progress
+     (shrink by a deadband) every progress window AND finish within the total budget.
+   - deadband < |e| <= 4 x deadband: a small residual. Only the total budget applies: stiction
+     and reversal backlash hold a residual of a count or two for longer than one window on a
+     healthy stage, so a progress requirement here would false-trip - but a frozen encoder
+     two counts out is still driven for ever, so it is still bounded (at the qualified
+     configuration: ~0.8 s at ~0.08 mm/s, about 65 um).
+   The progress window is the larger of 5 tau (a converging loop has closed 99 %) and
+   3 x deadband / clamp (a clamp-limited correction needs that long to move one deadband),
+   never under 20 ms (two status-packet periods) nor over 2 s. The total is the larger of
+   window + 4 x watchdog / clamp and 8 tau (a very slow loop's tail), never over 10 s. */
+#define PID_CORRECTION_ARM_TOLERANCES   4          /* progress is required only above 4 x deadband */
+#define PID_CORRECTION_TIME_CONSTANTS   5          /* progress window >= 5 tau */
+#define PID_CORRECTION_CLAMP_MARGIN     3          /* progress window >= 3 x (deadband / clamp): quantisation + phase */
+#define PID_CORRECTION_WINDOW_MIN_US    20000u     /* never tighter than 20 ms */
 #define PID_CORRECTION_WINDOW_MAX_US    2000000u   /* never looser than 2 s */
-#define PID_CORRECTION_TIMEOUT_FACTOR   4          /* total = window + 4 x (max_dev / clamp) */
+#define PID_CORRECTION_TIMEOUT_FACTOR   4          /* total >= window + 4 x (max_dev / clamp) */
+#define PID_CORRECTION_TIMEOUT_TAUS     8          /* total >= 8 tau */
 #define PID_CORRECTION_TIMEOUT_UNKNOWN_US 1000000u /* clamp or watchdog unknown: window + 1 s */
 #define PID_CORRECTION_TIMEOUT_MAX_US   10000000u  /* never longer than 10 s */
 
 /* Progress and total budgets for one axis. p_gain is the TMC4361A P (0..65535, rate P/256
    per second); max_dev_usteps the deviation watchdog (0 = unset); dv_clip_pps the
-   correction velocity clamp (0 = unknown). */
+   correction velocity clamp (0 = unknown); tol_usteps the chip's deadband. */
 static inline void pid_correction_windows(int32_t p_gain, int32_t max_dev_usteps, uint32_t dv_clip_pps,
-                                          uint32_t *progress_us, uint32_t *total_us)
+                                          int32_t tol_usteps, uint32_t *progress_us, uint32_t *total_us)
 {
-    uint32_t win;
-    if (p_gain <= 0) win = PID_CORRECTION_WINDOW_MAX_US;
-    else {
-        /* 5 x tau = 5 x 256 / P seconds = 5 x 256e6 / P microseconds */
-        uint64_t w = (uint64_t)PID_CORRECTION_TIME_CONSTANTS * 256000000ull / (uint64_t)p_gain;
-        win = w > PID_CORRECTION_WINDOW_MAX_US ? PID_CORRECTION_WINDOW_MAX_US : (uint32_t)w;
+    uint64_t tau_us = p_gain > 0 ? 256000000ull / (uint64_t)p_gain : (uint64_t)PID_CORRECTION_WINDOW_MAX_US;
+
+    uint64_t win = (uint64_t)PID_CORRECTION_TIME_CONSTANTS * tau_us;
+    if (dv_clip_pps > 0 && tol_usteps > 0) {
+        uint64_t per_deadband = (uint64_t)PID_CORRECTION_CLAMP_MARGIN * (uint64_t)tol_usteps * 1000000ull / (uint64_t)dv_clip_pps;
+        if (per_deadband > win) win = per_deadband;
     }
     if (win < PID_CORRECTION_WINDOW_MIN_US) win = PID_CORRECTION_WINDOW_MIN_US;
-    *progress_us = win;
+    if (win > PID_CORRECTION_WINDOW_MAX_US) win = PID_CORRECTION_WINDOW_MAX_US;
+    *progress_us = (uint32_t)win;
 
     uint64_t total;
     if (max_dev_usteps > 0 && dv_clip_pps > 0)
-        total = (uint64_t)win + (uint64_t)PID_CORRECTION_TIMEOUT_FACTOR * (uint64_t)max_dev_usteps * 1000000ull / (uint64_t)dv_clip_pps;
+        total = win + (uint64_t)PID_CORRECTION_TIMEOUT_FACTOR * (uint64_t)max_dev_usteps * 1000000ull / (uint64_t)dv_clip_pps;
     else
-        total = (uint64_t)win + PID_CORRECTION_TIMEOUT_UNKNOWN_US;
-    *total_us = total > PID_CORRECTION_TIMEOUT_MAX_US ? PID_CORRECTION_TIMEOUT_MAX_US : (uint32_t)total;
+        total = win + PID_CORRECTION_TIMEOUT_UNKNOWN_US;
+    uint64_t taus = (uint64_t)PID_CORRECTION_TIMEOUT_TAUS * tau_us;
+    if (taus > total) total = taus;
+    if (total > PID_CORRECTION_TIMEOUT_MAX_US) total = PID_CORRECTION_TIMEOUT_MAX_US;
+    *total_us = (uint32_t)total;
 }
 
 /* True while a requested loop is still held open for a move outside the home zone: the loop
@@ -113,7 +132,10 @@ static inline uint8_t pid_correction_watch_step(PidCorrectionWatch *w, int32_t a
     }
     /* unsigned subtraction is wrap-safe for spans below 2^32 us (~71 min) */
     if ((uint32_t)(now_us - w->start_us) > total_us) return PID_CORRECTION_TIMEOUT;
-    if ((uint32_t)(now_us - w->mark_us) > progress_us) return PID_CORRECTION_NO_PROGRESS;
+    /* the progress requirement applies only to a real correction (above the arming band):
+       a small residual may sit on friction for a while and still be healthy */
+    if (abs_dev > PID_CORRECTION_ARM_TOLERANCES * tol && (uint32_t)(now_us - w->mark_us) > progress_us)
+        return PID_CORRECTION_NO_PROGRESS;
     return PID_CORRECTION_OK;
 }
 

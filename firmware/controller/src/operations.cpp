@@ -905,7 +905,7 @@ void check_closed_loop()
       if (v_abs == 0)
       {
         uint32_t progress_us, total_us;
-        pid_correction_windows((int32_t)axes_pid_arg[i].p, pid_max_dev_usteps[i], pid_dv_clip_eff[i], &progress_us, &total_us);
+        pid_correction_windows((int32_t)axes_pid_arg[i].p, pid_max_dev_usteps[i], pid_dv_clip_eff[i], pid_tolerance_eff(i), &progress_us, &total_us);
         uint8_t verdict = pid_correction_watch_step(&pid_corr_watch[i], dev < 0 ? -dev : dev, pid_tolerance_eff(i),
                                                     micros(), progress_us, total_us);
         if (verdict == PID_CORRECTION_NO_PROGRESS)

@@ -96,7 +96,7 @@ static PidCorrectionWatch W;
 #define TOL 34
 static uint32_t PROG, TOTAL;
 static void windows_at_qualified_config(void) {
-    pid_correction_windows(65535, 34133, 170667u, &PROG, &TOTAL);
+    pid_correction_windows(65535, 34133, 170667u, TOL, &PROG, &TOTAL);
 }
 
 void test_error_inside_the_deadband_is_never_watched(void) {
@@ -107,15 +107,64 @@ void test_error_inside_the_deadband_is_never_watched(void) {
     TEST_ASSERT_FALSE(W.active);
 }
 
-void test_frozen_encoder_just_outside_the_deadband_trips(void) {
+void test_frozen_encoder_just_outside_the_deadband_trips_on_the_total_budget(void) {
     pid_correction_watch_reset(&W); windows_at_qualified_config();
-    // R1: two counts outside the deadband, never changing. The chip drives at (P/256) x e for
-    // ever; below the watchdog nothing else notices. Must trip within one progress window.
+    // R1 / C2: two counts outside the deadband, never changing. Below the arming threshold
+    // (4 x deadband) the progress window does NOT apply - stiction and reversal backlash can
+    // hold a small residual for longer than one window on a healthy stage - but the total
+    // budget does: the chip drives at (P/256) x e for ever otherwise. At the qualified config
+    // that bounds the runaway to ~0.8 s x 0.08 mm/s = ~65 um.
     uint8_t r = PID_CORRECTION_OK;
     uint32_t t = 0;
-    for (; t <= PROG + 2000u && r == PID_CORRECTION_OK; t += 1000u)
+    for (; t <= TOTAL + 2000u && r == PID_CORRECTION_OK; t += 1000u)
         r = pid_correction_watch_step(&W, TOL + 2 * 17, TOL, t, PROG, TOTAL);
-    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_NO_PROGRESS, r);
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_TIMEOUT, r);
+    TEST_ASSERT_TRUE_MESSAGE(t > PROG + 2000u, "a small residual must NOT trip on the progress window");
+}
+
+void test_small_residual_held_by_stiction_for_half_a_second_is_ok(void) {
+    pid_correction_watch_reset(&W); windows_at_qualified_config();
+    // C2: one count outside the deadband, mechanically held for 500 ms, then closes: healthy.
+    uint32_t t = 0;
+    for (; t < 500000u; t += 1000u)
+        TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, TOL + 17, TOL, t, PROG, TOTAL));
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_watch_step(&W, 10, TOL, t, PROG, TOTAL));
+    TEST_ASSERT_FALSE(W.active);
+}
+
+void test_clamp_limited_correction_does_not_false_trip(void) {
+    // C1: clamp 0.05 mm/s (8,533 pps), deadband 2 um (341 usteps), P 65535. The chip can only
+    // shrink the error by 171 usteps per 20 ms - less than one deadband - so a window derived
+    // from P alone would fault a healthy correction. The window must cover tol / clamp.
+    pid_correction_watch_reset(&W);
+    uint32_t prog, total;
+    pid_correction_windows(65535, 34133, 8533u, 341, &prog, &total);
+    TEST_ASSERT_TRUE_MESSAGE(prog >= 3u * 341u * 1000000u / 8533u, "window must cover >= 3 x (tol / clamp)");
+    int32_t dev = 683;   /* 4 um off after a move */
+    uint8_t r = PID_CORRECTION_OK;
+    uint32_t t = 0;
+    for (; dev > 341 && r == PID_CORRECTION_OK; t += 1000u, dev -= 9)   /* 8.5 usteps per ms at the clamp */
+        r = pid_correction_watch_step(&W, dev, 341, t, prog, total);
+    TEST_ASSERT_EQUAL_UINT8_MESSAGE(PID_CORRECTION_OK, r, "a clamp-limited correction that is converging must not trip");
+}
+
+void test_very_low_gain_tail_is_covered_by_the_total_floor(void) {
+    // C7: P 64 (tau 4 s). The last deadband of shrink takes tau x ln2 = 2.8 s; the progress
+    // window is capped at 2 s but the tail is inside the small-error band where only the
+    // total budget applies, and the total has a floor of 8 tau (capped at 10 s).
+    pid_correction_watch_reset(&W);
+    uint32_t prog, total;
+    pid_correction_windows(64, 34133, 170667u, TOL, &prog, &total);
+    TEST_ASSERT_EQUAL_UINT32(PID_CORRECTION_TIMEOUT_MAX_US, total);
+    double e = 69.0;
+    uint8_t r = PID_CORRECTION_OK;
+    uint32_t t = 0;
+    for (; (int32_t)e > TOL && r == PID_CORRECTION_OK; t += 10000u) {
+        r = pid_correction_watch_step(&W, (int32_t)e, TOL, t, prog, total);
+        e *= 0.9975031;   /* exp(-10 ms / 4 s) per 10 ms step */
+    }
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, r);
+    TEST_ASSERT_TRUE_MESSAGE(t > 2500000u && t < 3200000u, "the tail should take ~2.8 s (tau x ln 2)");
 }
 
 void test_correction_that_converges_is_ok(void) {
@@ -201,7 +250,7 @@ void test_realign_refused_when_nothing_is_configured(void) {
 /* pid_correction_windows(): budgets derived from P and the clamp (R3). */
 void test_windows_at_the_qualified_gain_are_the_20ms_floor(void) {
     uint32_t prog, total;
-    pid_correction_windows(65535, 34133, 170667u, &prog, &total);
+    pid_correction_windows(65535, 34133, 170667u, TOL, &prog, &total);
     TEST_ASSERT_EQUAL_UINT32(PID_CORRECTION_WINDOW_MIN_US, prog);          // 5 x 3.9 ms = 19.5 ms -> floor 20 ms
     // total = 20 ms + 4 x (200 um / 1 mm/s = 200 ms) = 820 ms
     TEST_ASSERT_UINT32_WITHIN(1000u, 820000u, total);
@@ -209,24 +258,25 @@ void test_windows_at_the_qualified_gain_are_the_20ms_floor(void) {
 
 void test_windows_scale_with_a_low_gain(void) {
     uint32_t prog, total;
-    pid_correction_windows(1024, 34133, 170667u, &prog, &total);
+    pid_correction_windows(1024, 34133, 170667u, TOL, &prog, &total);
     TEST_ASSERT_UINT32_WITHIN(1000u, 1250000u, prog);                      // 5 x 250 ms
-    pid_correction_windows(4096, 34133, 170667u, &prog, &total);
+    TEST_ASSERT_UINT32_WITHIN(2000u, 2050000u, total);                     // window + 4 x 200 ms (> 8 tau = 2 s)
+    pid_correction_windows(4096, 34133, 170667u, TOL, &prog, &total);
     TEST_ASSERT_UINT32_WITHIN(1000u, 312500u, prog);                       // 5 x 62.5 ms
-    pid_correction_windows(0, 34133, 170667u, &prog, &total);
+    pid_correction_windows(0, 34133, 170667u, TOL, &prog, &total);
     TEST_ASSERT_EQUAL_UINT32(PID_CORRECTION_WINDOW_MAX_US, prog);          // no gain: widest window
 }
 
 void test_total_budget_scales_with_the_clamp_and_is_capped(void) {
     uint32_t prog, total;
     // clamp 0.1 mm/s (17,067 pps), watchdog 200 um: 4 x 2 s = 8 s + 20 ms window
-    pid_correction_windows(65535, 34133, 17067u, &prog, &total);
+    pid_correction_windows(65535, 34133, 17067u, TOL, &prog, &total);
     TEST_ASSERT_UINT32_WITHIN(5000u, 8020000u, total);
     // clamp 0.01 mm/s: would be 80 s -> capped at 10 s
-    pid_correction_windows(65535, 34133, 1707u, &prog, &total);
+    pid_correction_windows(65535, 34133, 1707u, TOL, &prog, &total);
     TEST_ASSERT_EQUAL_UINT32(PID_CORRECTION_TIMEOUT_MAX_US, total);
     // clamp unknown: window + 1 s
-    pid_correction_windows(65535, 34133, 0u, &prog, &total);
+    pid_correction_windows(65535, 34133, 0u, TOL, &prog, &total);
     TEST_ASSERT_EQUAL_UINT32(PID_CORRECTION_WINDOW_MIN_US + PID_CORRECTION_TIMEOUT_UNKNOWN_US, total);
 }
 
@@ -235,7 +285,7 @@ void test_low_gain_converging_loop_does_not_false_trip(void) {
     // every 5 ms the decrease per 1.25 s window is ~99 %, so progress is always seen in time.
     pid_correction_watch_reset(&W);
     uint32_t prog, total;
-    pid_correction_windows(1024, 34133, 51200u, &prog, &total);   // clamp 0.3 mm/s
+    pid_correction_windows(1024, 34133, 51200u, TOL, &prog, &total);   // clamp 0.3 mm/s
     int32_t dev = 8500;
     uint8_t r = PID_CORRECTION_OK;
     for (uint32_t t = 0; dev > TOL && r == PID_CORRECTION_OK; t += 5000u) {
@@ -258,7 +308,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_encoder_exactly_on_the_window_is_settled);
     RUN_TEST(test_encoder_one_past_the_window_is_not_settled);
     RUN_TEST(test_error_inside_the_deadband_is_never_watched);
-    RUN_TEST(test_frozen_encoder_just_outside_the_deadband_trips);
+    RUN_TEST(test_frozen_encoder_just_outside_the_deadband_trips_on_the_total_budget);
+    RUN_TEST(test_small_residual_held_by_stiction_for_half_a_second_is_ok);
+    RUN_TEST(test_clamp_limited_correction_does_not_false_trip);
+    RUN_TEST(test_very_low_gain_tail_is_covered_by_the_total_floor);
     RUN_TEST(test_correction_that_converges_is_ok);
     RUN_TEST(test_frozen_encoder_trips_no_progress_within_the_window);
     RUN_TEST(test_error_that_grows_trips_no_progress);
