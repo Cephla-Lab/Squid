@@ -360,31 +360,80 @@ def test_pid_fault_bits_are_parsed_and_logged_once(caplog):
     micro = get_test_micro()
     crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
 
-    def packet(button_and_switch_state):
+    def packet(button_and_switch_state, z_cause=0, flags=0):
         msg = bytearray(24)
         msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
         msg[18] = button_and_switch_state
+        # Reporting off: bytes 19 / 20 / 21 are the X / Y / Z fault causes. Reporting on: byte 19
+        # is the encoder flags and 20-21 the clipped deviation, so no cause is on the wire.
+        msg[19] = flags
+        msg[21] = z_cause
         msg[22] = (1 << 4) | 6
         msg[23] = crc_calculator.calculate_checksum(msg[:23])
         return msg
 
     try:
         assert micro.pid_fault_axes() == set()
+        assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.NONE
 
         with caplog.at_level(logging.ERROR, logger="squid.Microcontroller"):
             caplog.clear()
-            _feed_status_packet(micro, packet(1 << control._def.BIT_POS_PID_FAULT_Z))
+            _feed_status_packet(
+                micro,
+                packet(
+                    1 << control._def.BIT_POS_PID_FAULT_Z,
+                    z_cause=control._def.PID_FAULT_CAUSE.NO_PROGRESS,
+                ),
+            )
 
             assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+            assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.NO_PROGRESS
             faults = [r for r in caplog.records if "closed-loop fault on Z" in r.message]
             assert len(faults) == 1, f"expected one ERROR for the new Z fault, got {len(faults)}"
+            # "the loop faulted" is not actionable on its own; the cause byte is what tells the
+            # operator whether to look at the encoder, the stage or the budget.
+            assert "no progress" in faults[0].message, faults[0].message
 
             # The same latch reported again is not news.
             caplog.clear()
-            _feed_status_packet(micro, packet(1 << control._def.BIT_POS_PID_FAULT_Z))
+            _feed_status_packet(
+                micro,
+                packet(
+                    1 << control._def.BIT_POS_PID_FAULT_Z,
+                    z_cause=control._def.PID_FAULT_CAUSE.NO_PROGRESS,
+                ),
+            )
 
             assert micro.pid_fault_axes() == {control._def.AXIS.Z}
             assert [r for r in caplog.records if "closed-loop fault" in r.message] == []
+    finally:
+        micro.close()
+
+
+def test_pid_fault_log_does_not_invent_a_cause_while_encoder_reporting_is_on(caplog):
+    """Bytes 19-21 carry the reported axis's flags and deviation while reporting is on, so the cause
+    is simply not on the wire. Saying so beats naming whichever cause those bytes happen to alias."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    msg = bytearray(24)
+    msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+    msg[18] = 1 << control._def.BIT_POS_PID_FAULT_Z
+    msg[19] = (1 << control._def.ENC_FLAG.REPORTING) | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT)
+    msg[22] = (1 << 4) | 6
+    msg[23] = crc_calculator.calculate_checksum(msg[:23])
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="squid.Microcontroller"):
+            caplog.clear()
+            _feed_status_packet(micro, msg)
+
+        assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+        faults = [r for r in caplog.records if "closed-loop fault on Z" in r.message]
+        assert len(faults) == 1, f"expected one ERROR for the new Z fault, got {len(faults)}"
+        assert "cause not on the wire while encoder reporting is on" in faults[0].message, faults[0].message
     finally:
         micro.close()
 

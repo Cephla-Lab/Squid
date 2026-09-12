@@ -412,9 +412,38 @@ class ENC_FLAG:
 
     REPORTING = 0
     PID_ENABLED = 1
-    PID_FAULT = 2  # firmware deviation watchdog disabled the closed loop
+    PID_FAULT = 2  # firmware opened the closed loop and latched a fault (see PID_FAULT_CAUSE)
     PID_ZONE = 3  # loop requested but held open (home zone / homing); re-engages automatically outside
     AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
+
+
+class PID_FAULT_CAUSE:
+    """Why a stage axis's closed loop faulted (firmware >= 1.6).
+
+    Byte 18 bits 4-6 say THAT X / Y / Z has a latched fault, in every packet. Status bytes
+    19 / 20 / 21 say WHY, one byte per axis in that same order, but only while encoder reporting
+    is OFF - with it on those bytes carry the reported axis's ENC_FLAG bits and clipped deviation
+    instead, and no cause is on the wire. Cleared with the fault bit.
+    """
+
+    NONE = 0
+    WATCHDOG = 1  # engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
+    NO_PROGRESS = 2  # engaged at rest: the error stopped shrinking
+    TIMEOUT = 3  # engaged at rest: the correction did not finish in its budget
+    REALIGN_REFUSED = 4  # first engage after homing: frame offset beyond home zone + watchdog
+    REENGAGE_REFUSED = 5  # at rest, frames aligned, still beyond the watchdog
+
+    # What an operator is told. Each says what to go and look at, not just what tripped.
+    NAMES = {
+        WATCHDOG: "deviation watchdog (|encoder - counter| exceeded the limit)",
+        NO_PROGRESS: "no progress (the error stopped shrinking: frozen encoder or stuck stage)",
+        TIMEOUT: "timeout (the correction did not finish in its budget)",
+        REALIGN_REFUSED: (
+            "realignment refused (post-homing frame offset beyond home zone + watchdog: lost motion or an "
+            "encoder that never started following)"
+        ),
+        REENGAGE_REFUSED: "re-engage refused (at rest, still beyond the watchdog: the encoder stopped following)",
+    }
 
 
 class CMD_EXECUTION_STATUS:

@@ -24,6 +24,7 @@ from control._def import (
     BIT_POS_PID_FAULT_Z,
     CMD_SET,
     MicrocontrollerDef,
+    PID_FAULT_CAUSE,
     AXIS,
     HOME_OR_ZERO,
     LIMIT_CODE,
@@ -278,6 +279,48 @@ class TestProtocolConsistency:
                 mismatches.append(f"{fw_name}: not found in firmware")
 
         assert len(mismatches) == 0, f"Status byte bit position mismatches:\n" + "\n".join(mismatches)
+
+    def test_pid_fault_cause_values_match(self, firmware_constants):
+        """Verify the closed-loop fault causes in status bytes 19-21 match.
+
+        The host turns these bytes into the sentence an operator reads when the loop opens, so a
+        firmware/host disagreement names the wrong failure rather than failing loudly.
+        """
+        cause_mapping = {
+            "PID_FAULT_NONE": PID_FAULT_CAUSE.NONE,
+            "PID_FAULT_WATCHDOG": PID_FAULT_CAUSE.WATCHDOG,
+            "PID_FAULT_NO_PROGRESS": PID_FAULT_CAUSE.NO_PROGRESS,
+            "PID_FAULT_TIMEOUT": PID_FAULT_CAUSE.TIMEOUT,
+            "PID_FAULT_REALIGN_REFUSED": PID_FAULT_CAUSE.REALIGN_REFUSED,
+            "PID_FAULT_REENGAGE_REFUSED": PID_FAULT_CAUSE.REENGAGE_REFUSED,
+        }
+
+        mismatches = []
+        for fw_name, py_value in cause_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(f"{fw_name}: firmware={fw_value}, software={py_value}")
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"PID fault cause mismatches:\n" + "\n".join(mismatches)
+
+    def test_every_firmware_pid_fault_cause_has_a_host_name(self, firmware_constants):
+        """A cause the firmware can send but the host cannot name would reach the operator as a bare
+        number, which is the situation these constants exist to end."""
+        firmware_causes = {name: value for name, value in firmware_constants.items() if name.startswith("PID_FAULT_")}
+        assert firmware_causes, "no PID_FAULT_* constants found in the firmware header"
+
+        unnamed = [
+            f"{name} = {value}"
+            for name, value in firmware_causes.items()
+            if value != PID_FAULT_CAUSE.NONE and value not in PID_FAULT_CAUSE.NAMES
+        ]
+        assert not unnamed, "firmware fault causes with no host wording:\n" + "\n".join(unnamed)
+
+        unknown = [v for v in PID_FAULT_CAUSE.NAMES if v not in firmware_causes.values()]
+        assert not unknown, f"host names causes the firmware never sends: {unknown}"
 
     def test_illumination_source_codes_match(self, firmware_constants):
         """Verify illumination source codes match."""
