@@ -364,10 +364,11 @@ def test_pid_fault_bits_are_parsed_and_logged_once(caplog):
         msg = bytearray(24)
         msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
         msg[18] = button_and_switch_state
-        # Reporting off: bytes 19 / 20 / 21 are the X / Y / Z fault causes. Reporting on: byte 19
-        # is the encoder flags and 20-21 the clipped deviation, so no cause is on the wire.
+        # Reporting off: X / Y causes in byte 19 bits 1-3 / 4-6, Z's in byte 20 bits 0-2 (byte 19
+        # bit 0 stays clear). Reporting on: byte 19 is the encoder flags and 20-21 the clipped
+        # deviation, so no cause is on the wire.
         msg[19] = flags
-        msg[21] = z_cause
+        msg[20] = (z_cause & control._def.PID_FAULT_CAUSE.MASK) << control._def.PID_FAULT_CAUSE.Z_SHIFT
         msg[22] = (1 << 4) | 6
         msg[23] = crc_calculator.calculate_checksum(msg[:23])
         return msg

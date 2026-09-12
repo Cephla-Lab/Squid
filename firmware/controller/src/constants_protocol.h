@@ -150,9 +150,14 @@ static const int BIT_POS_JOYSTICK_BUTTON = 0;
 static const int BIT_POS_PID_FAULT_X = 4;
 static const int BIT_POS_PID_FAULT_Y = 5;
 static const int BIT_POS_PID_FAULT_Z = 6;
-// Why the loop faulted, per stage axis, in status bytes 19 / 20 / 21 (X / Y / Z) whenever encoder
-// reporting is OFF (those bytes carry the reported axis's flags and deviation while it is on).
-// 0 while no fault is latched; cleared with the fault bit.
+// Why the loop faulted, per stage axis, whenever encoder reporting is OFF (bytes 19-21 carry the
+// reported axis's flags and clipped deviation while it is on). Packed so that byte 19 bit 0 -
+// ENC_FLAG_REPORTING - stays clear: X's cause in byte 19 bits 1-3, Y's in byte 19 bits 4-6, Z's in
+// byte 20 bits 0-2; byte 21 stays 0. 0 while no fault is latched; cleared with the fault bit.
+static const int PID_FAULT_CAUSE_X_SHIFT = 1;   // byte 19
+static const int PID_FAULT_CAUSE_Y_SHIFT = 4;   // byte 19
+static const int PID_FAULT_CAUSE_Z_SHIFT = 0;   // byte 20
+static const int PID_FAULT_CAUSE_MASK = 7;      // three bits per cause (decimal: the host parity test reads decimal only)
 static const int PID_FAULT_NONE = 0;
 static const int PID_FAULT_WATCHDOG = 1;          // engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
 static const int PID_FAULT_NO_PROGRESS = 2;       // engaged at rest: the error stopped shrinking (frozen encoder, stuck stage)

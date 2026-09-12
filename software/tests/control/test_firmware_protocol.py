@@ -287,6 +287,10 @@ class TestProtocolConsistency:
         firmware/host disagreement names the wrong failure rather than failing loudly.
         """
         cause_mapping = {
+            "PID_FAULT_CAUSE_X_SHIFT": PID_FAULT_CAUSE.X_SHIFT,
+            "PID_FAULT_CAUSE_Y_SHIFT": PID_FAULT_CAUSE.Y_SHIFT,
+            "PID_FAULT_CAUSE_Z_SHIFT": PID_FAULT_CAUSE.Z_SHIFT,
+            "PID_FAULT_CAUSE_MASK": PID_FAULT_CAUSE.MASK,
             "PID_FAULT_NONE": PID_FAULT_CAUSE.NONE,
             "PID_FAULT_WATCHDOG": PID_FAULT_CAUSE.WATCHDOG,
             "PID_FAULT_NO_PROGRESS": PID_FAULT_CAUSE.NO_PROGRESS,
@@ -309,7 +313,12 @@ class TestProtocolConsistency:
     def test_every_firmware_pid_fault_cause_has_a_host_name(self, firmware_constants):
         """A cause the firmware can send but the host cannot name would reach the operator as a bare
         number, which is the situation these constants exist to end."""
-        firmware_causes = {name: value for name, value in firmware_constants.items() if name.startswith("PID_FAULT_")}
+        # PID_FAULT_CAUSE_* are the packing shifts/mask, not causes
+        firmware_causes = {
+            name: value
+            for name, value in firmware_constants.items()
+            if name.startswith("PID_FAULT_") and not name.startswith("PID_FAULT_CAUSE_")
+        }
         assert firmware_causes, "no PID_FAULT_* constants found in the firmware header"
 
         unnamed = [

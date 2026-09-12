@@ -1836,8 +1836,9 @@ class Microcontroller:
                 # Bytes 19-21 mean two different things (firmware >= 1.6), so decode them before
                 # the fault log below, which reads the cause. Reporting ON: the theta field
                 # doubles as ENC_POS, byte 19 carries ENC_FLAG bits and bytes 20-21 the int16
-                # clipped loop error of the reported axis. Reporting OFF: bytes 19 / 20 / 21 are
-                # the PID_FAULT_CAUSE of X / Y / Z. All zero unless a host enabled the loop.
+                # clipped loop error of the reported axis. Reporting OFF: the PID_FAULT_CAUSE of X / Y
+                # sit in byte 19 bits 1-3 / 4-6 and Z's in byte 20 bits 0-2, packed so byte 19 bit 0
+                # (the reporting flag) stays clear. All zero unless a host enabled the loop.
                 self.encoder_flags = msg[19]
                 reporting = bool(self.encoder_flags & (1 << ENC_FLAG.REPORTING))
                 if reporting:
@@ -1850,7 +1851,11 @@ class Microcontroller:
                     )
                     self.encoder_dev32 = None if counter is None else self.encoder_pos - counter
                 else:
-                    self.pid_fault_causes = {AXIS.X: msg[19], AXIS.Y: msg[20], AXIS.Z: msg[21]}
+                    self.pid_fault_causes = {
+                        AXIS.X: (msg[19] >> PID_FAULT_CAUSE.X_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Y: (msg[19] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Z: (msg[20] >> PID_FAULT_CAUSE.Z_SHIFT) & PID_FAULT_CAUSE.MASK,
+                    }
                 # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte
                 # 19's flag these arrive in every packet, so a fault is reported even when no
                 # host command was in flight to fail. Log each NEW fault once - the packet

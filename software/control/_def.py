@@ -434,6 +434,13 @@ class PID_FAULT_CAUSE:
     REENGAGE_REFUSED = 5  # at rest, frames aligned, still beyond the watchdog
 
     # What an operator is told. Each says what to go and look at, not just what tripped.
+    # Packing while encoder reporting is off, chosen so byte 19 bit 0 (ENC_FLAG.REPORTING) stays clear:
+    # X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2; byte 21 unused.
+    X_SHIFT = 1  # byte 19
+    Y_SHIFT = 4  # byte 19
+    Z_SHIFT = 0  # byte 20
+    MASK = 0x07
+
     NAMES = {
         WATCHDOG: "deviation watchdog (|encoder - counter| exceeded the limit)",
         NO_PROGRESS: "no progress (the error stopped shrinking: frozen encoder or stuck stage)",

@@ -151,12 +151,15 @@ void send_position_update()
       buffer_tx[15] = 0;
       buffer_tx[16] = 0;
       buffer_tx[17] = 0;
-      // Reporting off: bytes 19-21 carry WHY each stage axis's loop faulted (PID_FAULT_*,
+      // Reporting off: bytes 19-20 carry WHY each stage axis's loop faulted (PID_FAULT_*,
       // constants_protocol.h), 0 = no fault latched. Old hosts ignored these zero bytes; the
       // fault bits in byte 18 say THAT a fault is latched in every packet either way.
-      buffer_tx[19] = pid_fault_cause[x];
-      buffer_tx[20] = pid_fault_cause[y];
-      buffer_tx[21] = pid_fault_cause[z];
+      // Packed clear of byte 19 bit 0 (ENC_FLAG_REPORTING), so a host can always tell the two
+      // layouts apart: X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2.
+      buffer_tx[19] = byte(((pid_fault_cause[x] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_X_SHIFT)
+                         | ((pid_fault_cause[y] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Y_SHIFT));
+      buffer_tx[20] = byte((pid_fault_cause[z] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Z_SHIFT);
+      buffer_tx[21] = 0;
     }
 
     // Firmware version in byte 22: high nibble = major, low nibble = minor
