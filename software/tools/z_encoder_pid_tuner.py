@@ -9,6 +9,13 @@ mm in the software is the actuator extending and the stage moving up. Near home 
 stop while the actuator keeps retracting, so the encoder stops following: firmware >= 1.6 holds the loop
 open inside a configurable home zone (--zone-um) and `zonemap` measures where that happens.
 
+The encoder error everywhere in this tool - every log line, every CSV column still named deviation_usteps
+or dev_um, every summary field - is ENC_POS - XACTUAL computed from the 32-bit encoder position and step
+counter of one status read. The firmware also reports that difference itself, as ENC_POS_DEV, but clipped to
+an int16: +-32767 usteps is +-192 um on a 256 usteps/FS Z, below the 200 um --max-dev-um default, so a host
+guard reading that field could never trip at the default watchdog and any error past +-192 um was reported
+wrong. The clipped field is only used where the firmware's own behaviour is the subject.
+
 Safety model - Z must never be driven into a travel end:
   * All motion stays inside a window of extension from home, default 1.0 .. 4.5 mm,
     hard-capped at 5.5 mm; every target is checked before it is sent and every sample after.
@@ -123,7 +130,10 @@ class Sampler(threading.Thread):
         t0 = self.t0 = time.time()
         while not self._stop_evt.is_set():
             st = self.mcu.get_encoder_state()
-            row = (time.time() - t0, self.mcu.z_pos, st["encoder_pos"], st["deviation"], self.mcu.encoder_flags)
+            z = self.mcu.z_pos
+            # column 3 is ENC_POS - XACTUAL taken from this pair, not the firmware's int16 ENC_POS_DEV: that
+            # field clips at +-32767 usteps and hides exactly the excursions a trace is recorded for
+            row = (time.time() - t0, z, st["encoder_pos"], st["encoder_pos"] - z, self.mcu.encoder_flags)
             # record on change, and at least every 50 ms so rest periods are represented
             if last is None or row[1:] != last[1:] or row[0] - last[0] >= 0.05:
                 with self._lock:
@@ -256,12 +266,16 @@ class ZTuner:
         if st["pid_fault"]:
             self.loop_off()
             raise RuntimeError("firmware watchdog disabled the loop (PID_FAULT) - deviation exceeded the limit")
-        if st["pid_enabled"] and abs(st["deviation"]) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
+        dev = self._dev32_usteps(st)
+        if st["pid_enabled"] and abs(dev) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
             # only while the firmware reports the loop ENGAGED: while it is held open (home zone, homing,
             # or the gap above home on a stage whose actuator homes below its stop) the deviation is
             # expected to be large and means nothing
             self.loop_off()
-            raise RuntimeError(f"host guard: loop error {st['deviation']} usteps exceeded {self.a.max_dev_um} um")
+            raise RuntimeError(
+                f"host guard: loop error {dev} usteps ({dev / USTEPS_PER_MM * 1000:+.1f} um) exceeded "
+                f"{self.a.max_dev_um} um"
+            )
         # Anything between the top switch (depth 0, where homing leaves us) and a little past the
         # working window is legitimate transit; only going deeper than the window, or above home,
         # is an anomaly. The bottom of travel is the stall the operator called non-recoverable.
@@ -398,7 +412,7 @@ class ZTuner:
                         f"encoder frame re-aligned to XACTUAL at {self.a.depth_mm} mm extension (--align-after-home)"
                     )
                 self.settle(0.3)
-                dev = self.mcu.get_encoder_state()["deviation"]
+                dev = self._dev32_usteps(self.mcu.get_encoder_state())
                 dev_um = dev / USTEPS_PER_MM * 1000
                 self.log(f"encoder frame offset after homing: {dev_um:+.1f} um")
                 if abs(dev) >= 32767 or abs(dev_um) > self.a.max_dev_um / 4:
@@ -409,7 +423,8 @@ class ZTuner:
                         return
                     raise RuntimeError(
                         f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um "
-                        f"(int16 clip {32767 / USTEPS_PER_MM * 1000:.0f} um at this microstepping); "
+                        f"(past {32767 / USTEPS_PER_MM * 1000:.0f} um the firmware's own int16 ENC_POS_DEV "
+                        f"saturates, so its watchdog and its enable check stop seeing the error); "
                         "the loop would slew by that amount on enable. Refusing to continue. "
                         "Run `zonemap` to see where the encoder decouples from the counter."
                     )
@@ -444,8 +459,9 @@ class ZTuner:
         rest_rms = math.sqrt(sum((d - rest_mean) ** 2 for d in rest) / len(rest)) if rest else float("nan")
         if peak >= 32767:
             self.log(
-                "WARNING: loop error is pinned at the int16 clip (>=192 um at 256 usteps/FS): the encoder frame is "
-                "offset from XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state."
+                "WARNING: loop error ran past the range of the firmware's int16 ENC_POS_DEV (>=192 um at 256 "
+                "usteps/FS), where its watchdog and enable check saturate: the encoder frame is offset from "
+                "XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state."
             )
         # settling time: from the end of the last commanded move (last change of XACTUAL) until |dev|
         # stays within tol for 0.2 s
@@ -500,7 +516,7 @@ class ZTuner:
     def closed_loop_step(self, p, i, d):
         m = self.mcu
         self.settle(0.3)
-        dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
+        dev0 = self._dev32_usteps(m.get_encoder_state()) / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
         m.set_pid_arguments(AXIS.Z, p, i, d)
@@ -562,7 +578,8 @@ class ZTuner:
         def sample(tag):
             self.settle(0.4)
             st = self.mcu.get_encoder_state()
-            pts.append((tag, self.mcu.z_pos, st["encoder_pos"], st["deviation"]))
+            z = self.mcu.z_pos
+            pts.append((tag, z, st["encoder_pos"], st["encoder_pos"] - z))
 
         # descend to home (allowed: zonemap deliberately visits the home region open-loop)
         self.a.depth_min = 0.0
@@ -644,7 +661,7 @@ class ZTuner:
             st = self.mcu.get_encoder_state()
             self.log(
                 f"{tag}: z={self.current_depth():.3f} mm  loop_engaged={st['pid_enabled']}  zone_hold={st['pid_zone_hold']}  "
-                f"fault={st['pid_fault']}  err={st['deviation'] / USTEPS_PER_MM * 1000:+.1f} um"
+                f"fault={st['pid_fault']}  err={self._dev32_usteps(st) / USTEPS_PER_MM * 1000:+.1f} um"
             )
             return st
 
@@ -777,7 +794,7 @@ class ZTuner:
             self.wait()
             self.settle(0.5)
             st0 = m.get_encoder_state()
-            off0 = st0["deviation"]
+            off0 = self._dev32_usteps(st0)
             wall0 = time.time()
             acks_100 = []
             acks_1000 = []
@@ -802,7 +819,7 @@ class ZTuner:
                 break
             self.settle(0.5)
             st1 = m.get_encoder_state()
-            off1 = st1["deviation"]
+            off1 = self._dev32_usteps(st1)
             lost_um = (off1 - off0) / USTEPS_PER_MM * 1000.0
             t100 = sorted(acks_100)[len(acks_100) // 2] if acks_100 else float("nan")
             t1000 = sorted(acks_1000)[len(acks_1000) // 2] if acks_1000 else float("nan")
@@ -871,7 +888,7 @@ class ZTuner:
             m.set_max_velocity_acceleration(AXIS.Z, v, self.a.accel)
             self.wait()
             self.settle(0.5)
-            off0 = m.get_encoder_state()["deviation"]
+            off0 = self._dev32_usteps(m.get_encoder_state())
             wall0 = time.time()
             acks = []
             lag_max = 0.0
@@ -911,7 +928,7 @@ class ZTuner:
                 levels.append({"vmax": v, "error": str(e), "wall_start": wall0, "wall_end": time.time()})
                 break
             self.settle(0.5)
-            off1 = m.get_encoder_state()["deviation"]
+            off1 = self._dev32_usteps(m.get_encoder_state())
             lost_um = (off1 - off0) / USTEPS_PER_MM * 1000.0
             import statistics
 
@@ -1038,13 +1055,13 @@ class ZTuner:
             per_dir = {"+": [], "-": []}
             delta = {"+": [], "-": []}  # change of the offset caused by the move itself
             self.settle(0.3)
-            prev = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000.0
+            prev = self._dev32_usteps(m.get_encoder_state()) / USTEPS_PER_MM * 1000.0
             for k in range(self.a.residual_reps):
                 self.move_to_depth(self.a.depth_mm + (k + 1) * d)
                 self.settle(0.15)
                 st = m.get_encoder_state()
                 # deeper = counter decreasing on this Z (sign -1): direction "-" in counter terms
-                cur = st["deviation"] / USTEPS_PER_MM * 1000.0
+                cur = self._dev32_usteps(st) / USTEPS_PER_MM * 1000.0
                 per_dir["-"].append(cur)
                 delta["-"].append(cur - prev)
                 prev = cur
@@ -1052,7 +1069,7 @@ class ZTuner:
                 self.move_to_depth(self.a.depth_mm + k * d)
                 self.settle(0.15)
                 st = m.get_encoder_state()
-                cur = st["deviation"] / USTEPS_PER_MM * 1000.0
+                cur = self._dev32_usteps(st) / USTEPS_PER_MM * 1000.0
                 per_dir["+"].append(cur)
                 delta["+"].append(cur - prev)
                 prev = cur
@@ -1090,7 +1107,7 @@ class ZTuner:
     def engage_loop(self):
         m = self.mcu
         self.settle(0.3)
-        dev0 = m.get_encoder_state()["deviation"] / USTEPS_PER_MM * 1000
+        dev0 = self._dev32_usteps(m.get_encoder_state()) / USTEPS_PER_MM * 1000
         if abs(dev0) > self.a.max_dev_um / 4:
             raise RuntimeError(f"not closing the loop: error already {dev0:+.1f} um before enable")
         m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d)
@@ -1119,7 +1136,7 @@ class ZTuner:
             for k in range(1, n + 1):
                 ack_s, st = self._move_and_read(self.a.depth_mm + k * du, settle_s=0.15)
                 acks.append(ack_s)
-                errs.append(st["deviation"] / USTEPS_PER_MM * 1000)
+                errs.append(self._dev32_usteps(st) / USTEPS_PER_MM * 1000)
                 encs.append(usteps_to_depth(st["encoder_pos"]))
             self.move_to_depth(self.a.depth_mm)
             self.settle(0.3)
@@ -1382,7 +1399,7 @@ class ZTuner:
             t0 = time.time()
             while time.time() - t0 < self.a.hold_open_s:
                 self.guard()
-                devs_o.append(self.mcu.get_encoder_state()["deviation"])
+                devs_o.append(self._dev32_usteps(self.mcu.get_encoder_state()))
                 time.sleep(0.01)
             d_o = [d / USTEPS_PER_MM * 1000 for d in devs_o]
             self.summary["results"].append(
@@ -1404,7 +1421,7 @@ class ZTuner:
             t0 = time.time()
             while time.time() - t0 < self.a.hold_s:
                 self.guard()
-                devs.append(self.mcu.get_encoder_state()["deviation"])
+                devs.append(self._dev32_usteps(self.mcu.get_encoder_state()))
                 time.sleep(0.01)
         finally:
             self.loop_off()
