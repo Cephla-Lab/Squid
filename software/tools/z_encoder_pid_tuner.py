@@ -27,6 +27,17 @@ Usage (from software/, with the project venv):
   python tools/z_encoder_pid_tuner.py step --p 4096 --i 0 --d 1
   python tools/z_encoder_pid_tuner.py sweep --p-list 1024 2048 4096 8192 16384 --d 1
   python tools/z_encoder_pid_tuner.py zonemap                # open-loop ENC_POS vs XACTUAL from 2 mm down to home and back
+  python tools/z_encoder_pid_tuner.py ackprobe --ack-steps-um 1 10 100 --ack-reps 20 --exposure-ms 100
+
+ackprobe answers the question an acquisition asks - "may the camera start now?" - rather than the one an ack
+answers - "did the controller reply?". For every size in --ack-steps-um it reads the encoder error and the loop
+state at the acknowledgment itself, with no settle in between, and then every 5 ms through an --exposure-ms
+window: error at the ack, whether the loop was engaged there and throughout, how long until the error is inside
+the configured tolerance. The closed-loop and open-loop ladders alternate which one runs first (odd reps closed
+first) so a drift cannot favour either. The error is ENC_POS - XACTUAL computed from the 32-bit fields, not the
+int16 ENC_POS_DEV the firmware reports, which saturates at +-192 um on a 256 usteps/FS Z. The host sees the
+controller through the 10 ms status stream: behaviour faster than that is not resolvable from here.
+
 Common options: --depth-mm 2.5 (extension from home) --step-um 100 --vmax 1.0 --corr-vmax 0.3 --max-dev-um 200
                 --zone-um 0 (home exclusion zone sent to firmware) --out z_tune
 """
@@ -36,6 +47,7 @@ import csv
 import json
 import math
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -73,6 +85,24 @@ def depth_to_usteps(depth_mm):
 
 def usteps_to_depth(usteps):
     return SIGN * usteps / USTEPS_PER_MM
+
+
+def host_git_hash():
+    """Short hash of the checkout this tool ran from, so a result set can be tied to the host code. '' if unknown."""
+    try:
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=repo, capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:  # noqa: BLE001 - provenance is best effort, never a reason to fail a bench run
+        return ""
+
+
+def pct(values, q):
+    """q-th percentile (q in 0..1) by nearest rank; NaN for an empty list."""
+    if not values:
+        return float("nan")
+    v = sorted(values)
+    return v[max(0, min(len(v) - 1, int(math.ceil(q * len(v))) - 1))]
 
 
 class Sampler(threading.Thread):
@@ -258,6 +288,27 @@ class ZTuner:
         while time.time() - t0 < seconds:
             self.guard()
             time.sleep(0.01)
+
+    def _move_and_read(self, depth_mm, settle_s=0.0):
+        """Move to `depth_mm` and read the encoder state; returns (command-to-ack seconds, state).
+
+        settle_s = 0 reads at the acknowledgment with nothing in between, which is what ackprobe needs (the
+        error an exposure started on the ack would see); stack() passes its settle and gets the error at rest.
+        """
+        self.move_to_depth(depth_mm)
+        ack_s = self.last_cmd_to_ack_s
+        if settle_s > 0:
+            self.settle(settle_s)
+        return ack_s, self.mcu.get_encoder_state()
+
+    def _dev32_usteps(self, st):
+        """Encoder minus counter, full width, from one status packet.
+
+        st["deviation"] is the firmware's ENC_POS_DEV clipped to int16 (+-32767 usteps, +-192 um on a
+        256 usteps/FS Z), which saturates exactly where a lost-motion number matters; encoder_pos and the
+        counter are 32-bit and are refreshed from the same packet.
+        """
+        return int(st["encoder_pos"]) - int(self.mcu.z_pos)
 
     # ---------------------------------------------------------------- phases
     def home(self):
@@ -1066,10 +1117,8 @@ class ZTuner:
         encs = []
         try:
             for k in range(1, n + 1):
-                self.move_to_depth(self.a.depth_mm + k * du)
-                acks.append(self.last_cmd_to_ack_s)
-                self.settle(0.15)
-                st = self.mcu.get_encoder_state()
+                ack_s, st = self._move_and_read(self.a.depth_mm + k * du, settle_s=0.15)
+                acks.append(ack_s)
                 errs.append(st["deviation"] / USTEPS_PER_MM * 1000)
                 encs.append(usteps_to_depth(st["encoder_pos"]))
             self.move_to_depth(self.a.depth_mm)
@@ -1103,6 +1152,224 @@ class ZTuner:
             f"(min {res['enc_increment_um_min']:.3f}, max {res['enc_increment_um_max']:.3f}) for commanded {self.a.stack_um:g} um"
         )
         return res
+
+    # ---------------------------------------------------------------- ackprobe
+    def _ack_tolerance_um(self):
+        """The tolerance an 'is it there yet' question is asked against: --tol-um, or the firmware default
+        (two encoder counts) when the tool did not send one."""
+        return self.a.tol_um if self.a.tol_um > 0 else 2 * ENC_STEP_MM * 1000.0
+
+    def _ackprobe_step(self, rep, closed, step_um, tol_usteps):
+        """One measured move: error and loop state AT the acknowledgment, then every 5 ms through the
+        exposure window. The at-ack read is the window's first sample, at t = 0."""
+        t_cmd = time.time()
+        ack_s, st = self._move_and_read(self.a.depth_mm + step_um / 1000.0)  # no settle: read follows the ack
+        t_ack = time.time()
+        dev = self._dev32_usteps(st)
+        enabled_at_ack = bool(st["pid_enabled"])
+        fault_at_ack = bool(st["pid_fault"])
+        engaged_throughout = enabled_at_ack
+        faults = int(fault_at_ack)
+        max_abs = abs(dev)
+        t_tol = 0.0 if abs(dev) <= tol_usteps else float("nan")
+        samples = 1
+        while time.time() - t_ack < self.a.exposure_ms / 1000.0:
+            time.sleep(0.005)  # twice the status cadence; the stream itself is 10 ms
+            sn = self.mcu.get_encoder_state()
+            d = self._dev32_usteps(sn)
+            samples += 1
+            max_abs = max(max_abs, abs(d))
+            engaged_throughout = engaged_throughout and bool(sn["pid_enabled"])
+            faults += int(bool(sn["pid_fault"]))
+            if math.isnan(t_tol) and abs(d) <= tol_usteps:
+                t_tol = (time.time() - t_ack) * 1000.0
+            self.guard()  # same host-side abort the other actions use; the sample above is already recorded
+        return {
+            "rep": rep,
+            "mode": "closed" if closed else "open",
+            "step_um": step_um,
+            "t_cmd": t_cmd,
+            "ack_ms": ack_s * 1000.0,
+            "dev32_at_ack_usteps": dev,
+            "dev32_at_ack_um": dev / USTEPS_PER_MM * 1000.0,
+            "pid_enabled_at_ack": enabled_at_ack,
+            "pid_fault_at_ack": fault_at_ack,
+            "max_abs_dev_in_window_um": max_abs / USTEPS_PER_MM * 1000.0,
+            "time_to_within_tolerance_ms": t_tol,
+            "engaged_throughout": engaged_throughout,
+            "window_samples": samples,
+            "faults_in_window": faults,
+        }
+
+    def ackprobe(self):
+        """Readiness for an exposure at the acknowledgment, not just the acknowledgment.
+
+        For every size in --ack-steps-um, --ack-reps moves up from the working extension, closed loop and
+        open loop: the 32-bit encoder-minus-counter error and the loop state read at the ack itself, then
+        every 5 ms for --exposure-ms. The two ladders alternate which runs first (odd reps closed first).
+        The return to the working extension between sizes is not measured.
+
+        The host only sees the controller through the 10 ms status stream; sub-10 ms behaviour is not
+        resolvable from here, whatever the ack numbers look like.
+        """
+        tol_um = self._ack_tolerance_um()
+        tol_usteps = tol_um * USTEPS_PER_MM / 1000.0
+        self.log(
+            f"ackprobe: {', '.join(f'{v:g}' for v in self.a.ack_steps_um)} um x {self.a.ack_reps} reps, closed and "
+            f"open, {self.a.exposure_ms:g} ms window sampled every 5 ms, tolerance {tol_um:.2f} um"
+        )
+        rows = []
+        try:
+            for rep in range(1, self.a.ack_reps + 1):
+                for closed in (True, False) if rep % 2 else (False, True):
+                    if closed:
+                        self.engage_loop()
+                    try:
+                        for step_um in self.a.ack_steps_um:
+                            rows.append(self._ackprobe_step(rep, closed, step_um, tol_usteps))
+                            self.move_to_depth(self.a.depth_mm)
+                            self.settle(0.15)
+                    finally:
+                        if closed:
+                            self.loop_off()
+        finally:
+            # a guard abort mid-run still leaves the rows that were taken, and they are the interesting ones
+            if rows:
+                self._ackprobe_report(rows, tol_um)
+
+    def _ackprobe_preamble(self, tol_um):
+        """What a result set has to carry to be re-readable later: when, which host code, which firmware,
+        which loop settings were actually in force, and what the host can and cannot see."""
+        fw = tuple(self.mcu.firmware_version) if self.mcu is not None else (0, 0)
+        return {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "host_git": host_git_hash(),
+            "firmware": f"{fw[0]}.{fw[1]}",
+            "pid_p": self.a.p,
+            "pid_i": self.a.i,
+            "pid_d": self.a.d,
+            "correction_vmax_mm_s": self.a.corr_vmax,
+            "watchdog_um": self.a.max_dev_um,
+            "home_zone_um": self.a.zone_um,
+            "tolerance_um": tol_um,
+            "open_above_mm_s": self.a.open_above,
+            "completion_window_um": self.a.window_um,
+            "depth_mm": self.a.depth_mm,
+            "vmax_mm_s": self.a.vmax,
+            "accel_mm_s2": self.a.accel,
+            "ramp": self.a.ramp,
+            "microsteps_per_full_step": MICROSTEPS,
+            "usteps_per_mm": round(USTEPS_PER_MM, 3),
+            "steps_um": list(self.a.ack_steps_um),
+            "reps": self.a.ack_reps,
+            "exposure_ms": self.a.exposure_ms,
+            "window_sample_interval_ms": 5.0,
+            "error_field": "ENC_POS - XACTUAL from the 32-bit fields (not the int16 ENC_POS_DEV, which clips at +-192 um)",
+            "telemetry": "10 ms status stream; sub-10 ms behaviour is not resolvable from the host",
+        }
+
+    def _ackprobe_summary(self, rows):
+        out = []
+        for step_um in self.a.ack_steps_um:
+            for mode in ("closed", "open"):
+                sel = [r for r in rows if r["step_um"] == step_um and r["mode"] == mode]
+                if not sel:
+                    continue
+                acks = [r["ack_ms"] for r in sel]
+                at_ack = [abs(r["dev32_at_ack_um"]) for r in sel]
+                in_win = [r["max_abs_dev_in_window_um"] for r in sel]
+                reached = [
+                    r["time_to_within_tolerance_ms"] for r in sel if not math.isnan(r["time_to_within_tolerance_ms"])
+                ]
+                out.append(
+                    {
+                        "phase": "ackprobe",
+                        "step_um": step_um,
+                        "mode": mode,
+                        "n": len(sel),
+                        "acks_with_loop_open": sum(1 for r in sel if not r["pid_enabled_at_ack"]),
+                        "err_at_ack_um_median": pct(at_ack, 0.5),
+                        "err_at_ack_um_p95": pct(at_ack, 0.95),
+                        "err_at_ack_um_max": max(at_ack),
+                        "window_max_err_um_median": pct(in_win, 0.5),
+                        "window_max_err_um_p95": pct(in_win, 0.95),
+                        "window_max_err_um_max": max(in_win),
+                        "ack_ms_p50": pct(acks, 0.5),
+                        "ack_ms_p95": pct(acks, 0.95),
+                        "ack_ms_max": max(acks),
+                        "faults": sum(r["faults_in_window"] for r in sel),
+                        "time_to_tolerance_ms_median": pct(reached, 0.5),
+                        "never_within_tolerance": len(sel) - len(reached),
+                    }
+                )
+        return out
+
+    _ACKPROBE_COLUMNS = [
+        "rep",
+        "mode",
+        "step_um",
+        "t_cmd_epoch_s",
+        "ack_ms",
+        "dev32_at_ack_usteps",
+        "dev32_at_ack_um",
+        "pid_enabled_at_ack",
+        "pid_fault_at_ack",
+        "max_abs_dev_in_window_um",
+        "time_to_within_tolerance_ms",
+        "engaged_throughout",
+        "window_samples",
+        "faults_in_window",
+    ]
+
+    def _ackprobe_report(self, rows, tol_um):
+        pre = self._ackprobe_preamble(tol_um)
+        path = os.path.join(self.out, "ackprobe.csv")
+        with open(path, "w", newline="") as f:
+            for k, v in pre.items():
+                f.write(f"# {k}: {v}\n")
+            w = csv.writer(f)
+            w.writerow(self._ACKPROBE_COLUMNS)
+            for r in rows:
+                w.writerow(
+                    [
+                        r["rep"],
+                        r["mode"],
+                        f"{r['step_um']:g}",
+                        f"{r['t_cmd']:.6f}",
+                        f"{r['ack_ms']:.1f}",
+                        r["dev32_at_ack_usteps"],
+                        f"{r['dev32_at_ack_um']:.3f}",
+                        int(r["pid_enabled_at_ack"]),
+                        int(r["pid_fault_at_ack"]),
+                        f"{r['max_abs_dev_in_window_um']:.3f}",
+                        f"{r['time_to_within_tolerance_ms']:.1f}",
+                        int(r["engaged_throughout"]),
+                        r["window_samples"],
+                        r["faults_in_window"],
+                    ]
+                )
+        summary = self._ackprobe_summary(rows)
+        self.summary["results"].extend(summary)
+        json_path = os.path.join(self.out, "ackprobe_summary.json")
+        with open(json_path, "w") as f:
+            json.dump({"preamble": pre, "summary": summary}, f, indent=2, default=str)
+        self.log(f"ackprobe: {len(rows)} moves -> {path}, summary -> {json_path}")
+        self.log(
+            f"tolerance {tol_um:.2f} um; telemetry: 10 ms status stream; sub-10 ms behaviour is not resolvable from the host"
+        )
+        self.log(
+            f"{'step um':>8} {'mode':>6} {'n':>4} {'open@ack':>9} {'|err|@ack med/p95/max um':>26} "
+            f"{'in-window max med/p95/max um':>30} {'ack ms p50/p95/max':>20} {'faults':>7} {'to tol ms':>10}"
+        )
+        for r in summary:
+            self.log(
+                f"{r['step_um']:>8g} {r['mode']:>6} {r['n']:>4} {r['acks_with_loop_open']:>9} "
+                f"{r['err_at_ack_um_median']:>8.2f} {r['err_at_ack_um_p95']:>8.2f} {r['err_at_ack_um_max']:>8.2f} "
+                f"{r['window_max_err_um_median']:>9.2f} {r['window_max_err_um_p95']:>9.2f} {r['window_max_err_um_max']:>9.2f} "
+                f"{r['ack_ms_p50']:>6.0f} {r['ack_ms_p95']:>6.0f} {r['ack_ms_max']:>6.0f} {r['faults']:>7} "
+                f"{r['time_to_tolerance_ms_median']:>7.0f}"
+                + (f" ({r['never_within_tolerance']} never inside)" if r["never_within_tolerance"] else "")
+            )
 
     def hold(self):
         """Closed-loop hold at the working extension for --hold-s seconds (mic records hunting), then loop off.
@@ -1196,6 +1463,9 @@ class ZTuner:
                 self.stack(closed=False)
                 self.stack(closed=True)
                 return
+            if self.a.action == "ackprobe":
+                self.ackprobe()
+                return
             if self.a.action == "hold":
                 self.hold()
                 return
@@ -1225,6 +1495,7 @@ def main():
             "engageprobe",
             "residual",
             "stack",
+            "ackprobe",
             "hold",
         ],
     )
@@ -1275,6 +1546,20 @@ def main():
         help="re-align the encoder frame to XACTUAL at --depth-mm after homing (stages with a decoupled gap above home)",
     )
     ap.add_argument("--accel-list", type=float, nargs="+", default=[100, 150, 200, 250, 300, 350, 390])
+    ap.add_argument(
+        "--ack-steps-um",
+        type=float,
+        nargs="+",
+        default=[1.0, 10.0, 100.0],
+        help="ackprobe step sizes, um",
+    )
+    ap.add_argument("--ack-reps", type=int, default=20, help="ackprobe repetitions per step size and mode")
+    ap.add_argument(
+        "--exposure-ms",
+        type=float,
+        default=100.0,
+        help="ackprobe: window sampled after each ack, standing in for an exposure",
+    )
     ap.add_argument("--stack-n", type=int, default=20)
     ap.add_argument("--stack-um", type=float, default=1.0)
     ap.add_argument("--hold-s", type=float, default=20.0)
