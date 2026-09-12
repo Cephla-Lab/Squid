@@ -102,10 +102,14 @@ def test_use_encoder_alone_still_configures_the_encoder():
     assert mc.configure_stage_pid.call_args.kwargs["flip_direction"] is False
 
 
-def test_zero_limits_are_not_sent():
+def test_a_zero_zone_and_tolerance_are_not_sent_but_the_watchdog_still_is():
+    """Zone and deadband are genuine 'leave it alone' keys. The watchdog is not: the host checks the
+    home gap against it, so it sends the value it reasons with (250 um, the firmware default) rather
+    than letting SET_PID_LIMITS keep whatever was there. The clamp has no host calculation behind it
+    and is still passed as 0 = keep."""
     z = _axis(HAS_ENCODER=True, PID=PIDConfig(ENABLED=True, P=16384, I=0, D=0))
     _, mc = _stage(z)
-    mc.set_pid_limits.assert_not_called()
+    mc.set_pid_limits.assert_called_once_with(_def.AXIS.Z, 0.0, 250.0)
     mc.set_pid_home_zone.assert_not_called()
     mc.set_pid_tolerance.assert_not_called()
     # loop mode and completion window are states: 0 (rest-only / exact target) is sent explicitly
@@ -208,6 +212,26 @@ def test_rest_only_is_the_qualified_mode_and_warns_about_nothing(caplog):
     with caplog.at_level(logging.WARNING, logger="squid"):
         _stage(z)
     assert not [r for r in caplog.records if "UNQUALIFIED" in r.getMessage()], [r.getMessage() for r in caplog.records]
+
+
+def test_an_unset_watchdog_is_sent_as_the_number_the_host_reasons_with(caplog):
+    """pid_max_deviation_z_um = 0 is not 'no watchdog' and not 'the firmware default' either.
+
+    SET_PID_LIMITS reads a 0 deviation as 'keep the current value', so not sending it left whatever
+    the controller happened to be holding. A tuner run sets 200 um and does not RESET; the next
+    start with --skip-init then watches at 200 um while the host checks the home gap against 250
+    and prints "watchdog 0 um". The host has to send the number it reasons with, and name it.
+    """
+    z = _axis(
+        HAS_ENCODER=True,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=0),
+    )
+    with caplog.at_level(logging.INFO, logger="squid"):
+        _, mc = _stage(z)
+    mc.set_pid_limits.assert_called_once_with(_def.AXIS.Z, 1.0, 250.0)
+    info = [r.getMessage() for r in caplog.records if "closed loop requested" in r.getMessage()]
+    assert info, [r.getMessage() for r in caplog.records]
+    assert "watchdog 250 um" in info[0], info[0]
 
 
 def _gap_axis(zone_um, dev_um):

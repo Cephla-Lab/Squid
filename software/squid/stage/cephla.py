@@ -52,6 +52,18 @@ class CephlaStage(AbstractStage):
             return False
 
     @classmethod
+    def _effective_max_deviation_um(cls, pid) -> float:
+        """The deviation watchdog the controller will actually be holding, in um.
+
+        pid_max_deviation_*_um = 0 is neither 'no watchdog' nor 'whatever the firmware likes':
+        SET_PID_LIMITS reads a 0 deviation as 'keep the current value', and what CONFIGURE_STAGE_PID
+        leaves to be kept is 250 um. So 0 in the ini means 250 um on the controller, and 250 um is
+        the number every host-side calculation and message has to use.
+        """
+        dev_um = float(pid.MAX_DEVIATION_UM)
+        return dev_um if dev_um > 0 else float(cls._FIRMWARE_DEFAULT_MAX_DEVIATION_UM)
+
+    @classmethod
     def _check_z_home_gap_is_covered(cls, pid):
         """Refuse a Z whose declared home gap is larger than the post-homing realignment the firmware
         will allow (firmware >= 1.6).
@@ -70,7 +82,7 @@ class CephlaStage(AbstractStage):
         if gap_mm <= 0:
             return
         zone_um = float(pid.HOME_ZONE_UM)
-        dev_um = float(pid.MAX_DEVIATION_UM) or cls._FIRMWARE_DEFAULT_MAX_DEVIATION_UM
+        dev_um = cls._effective_max_deviation_um(pid)
         if zone_um + dev_um >= gap_mm * 1000.0:
             return
         raise ValueError(
@@ -133,10 +145,15 @@ class CephlaStage(AbstractStage):
 
         mc.set_pid_arguments(microcontroller_axis_number, pid.P, pid.I, pid.D)
         mc.wait_till_operation_is_completed()
+        effective_dev_um = self._effective_max_deviation_um(pid)
         if new_fw:
-            if pid.CORRECTION_VMAX > 0 or pid.MAX_DEVIATION_UM > 0:
-                mc.set_pid_limits(microcontroller_axis_number, pid.CORRECTION_VMAX, pid.MAX_DEVIATION_UM)
-                mc.wait_till_operation_is_completed()
+            # Sent unconditionally, and with the resolved watchdog: a 0 deviation means 'keep' to
+            # SET_PID_LIMITS, so skipping the command left the controller on whatever a previous run
+            # had set (a tuner leaves 200 um behind and does not RESET) while the host went on
+            # checking the home gap against 250. The clamp still passes 0 for 'keep the firmware
+            # default' - there is no host calculation that depends on its value.
+            mc.set_pid_limits(microcontroller_axis_number, pid.CORRECTION_VMAX, effective_dev_um)
+            mc.wait_till_operation_is_completed()
             if pid.HOME_ZONE_UM > 0:
                 mc.set_pid_home_zone(microcontroller_axis_number, pid.HOME_ZONE_UM)
                 mc.wait_till_operation_is_completed()
@@ -178,7 +195,7 @@ class CephlaStage(AbstractStage):
             return
         _log.info(
             f"axis {microcontroller_axis_number}: closed loop requested - P {pid.P} I {pid.I} D {pid.D}, "
-            f"clamp {pid.CORRECTION_VMAX} mm/s, watchdog {pid.MAX_DEVIATION_UM} um, home zone {pid.HOME_ZONE_UM} um, "
+            f"clamp {pid.CORRECTION_VMAX} mm/s, watchdog {effective_dev_um:g} um, home zone {pid.HOME_ZONE_UM} um, "
             f"tolerance {pid.TOLERANCE_UM or 'default (2 counts)'} um, loop open above {pid.OPEN_ABOVE_MM_S} mm/s "
             f"({'rest-only' if pid.OPEN_ABOVE_MM_S == 0 else 'engaged below that speed'}), "
             f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
