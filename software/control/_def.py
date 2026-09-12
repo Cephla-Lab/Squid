@@ -432,8 +432,10 @@ class PID_FAULT_CAUSE:
     WATCHDOG = 1  # engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
     NO_PROGRESS = 2  # engaged at rest: the error stopped shrinking
     TIMEOUT = 3  # engaged at rest: the correction did not finish in its budget
-    REALIGN_REFUSED = 4  # first engage after homing: frame offset beyond home zone + watchdog
+    REALIGN_REFUSED = 4  # first engage after homing: frame offset beyond the home zone (or the watchdog with no zone)
     REENGAGE_REFUSED = 5  # at rest, frames aligned, still beyond the watchdog
+    TRAVEL = 6  # engaged at rest: the correction travelled the watchdog distance without converging
+    NO_RESPONSE = 7  # engaged at rest: the loop drove the motor and the encoder did not respond
 
     # Where each axis's three bits sit while encoder reporting is off (see the class docstring).
     X_SHIFT = 1  # byte 19, bits 1-3
@@ -447,10 +449,18 @@ class PID_FAULT_CAUSE:
         NO_PROGRESS: "no progress (the error stopped shrinking: frozen encoder or stuck stage)",
         TIMEOUT: "timeout (the correction did not finish in its budget)",
         REALIGN_REFUSED: (
-            "realignment refused (post-homing frame offset beyond home zone + watchdog: lost motion or an "
-            "encoder that never started following)"
+            "realignment refused (post-homing frame offset beyond the home zone: lost motion during the first "
+            "departure, or an encoder that never started following)"
         ),
         REENGAGE_REFUSED: "re-engage refused (at rest, still beyond the watchdog: the encoder stopped following)",
+        TRAVEL: (
+            "travel bound (the correction travelled the watchdog distance without converging: frozen feedback or "
+            "a stage that does not follow the motor)"
+        ),
+        NO_RESPONSE: (
+            "no response (the loop drove the motor and the encoder did not move for a whole response window: "
+            "frozen feedback or a stage that does not follow the motor)"
+        ),
     }
 
 

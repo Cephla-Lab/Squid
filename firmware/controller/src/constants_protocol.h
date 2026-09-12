@@ -164,6 +164,8 @@ static const int PID_FAULT_NO_PROGRESS = 2;       // engaged at rest: the error 
 static const int PID_FAULT_TIMEOUT = 3;           // engaged at rest: the correction did not finish in its time budget
 static const int PID_FAULT_REALIGN_REFUSED = 4;   // first engage after homing: frame offset beyond home zone + watchdog
 static const int PID_FAULT_REENGAGE_REFUSED = 5;  // at rest, frames aligned, still beyond the watchdog: encoder stopped following
+static const int PID_FAULT_TRAVEL = 6;            // engaged at rest: the correction travelled the watchdog distance without converging
+static const int PID_FAULT_NO_RESPONSE = 7;       // engaged at rest: the chip drove the motor and the encoder did not respond (frozen feedback / stage not following)
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;

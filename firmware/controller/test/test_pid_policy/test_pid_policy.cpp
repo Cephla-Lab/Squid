@@ -226,18 +226,91 @@ void test_watch_handles_micros_wraparound(void) {
     TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_NO_PROGRESS, pid_correction_watch_step(&W, 8500, TOL, t, PROG, TOTAL));
 }
 
-/* pid_realign_allowed(): the absorbed post-homing offset is bounded by zone + watchdog. */
+/* pid_realign_allowed(): the absorbed post-homing offset is bounded by the home ZONE alone when
+   one is configured (the realignment only runs outside the zone, so a frozen encoder's offset is
+   the resting position itself, always > zone: the zone is the evidence the encoder moved), else by
+   the watchdog. */
 void test_realign_within_gap_config_is_allowed(void) {
     // Gap stage: zone 700 um, watchdog 200 um, offset 640 um (usteps at 170 per um)
     TEST_ASSERT_TRUE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170));
     TEST_ASSERT_TRUE(pid_realign_allowed(640 * 170, 700 * 170, 200 * 170));
+    // No-gap stage: a stiction offset inside the watchdog is fine
+    TEST_ASSERT_TRUE(pid_realign_allowed(150 * 170, 0, 200 * 170));
+}
+
+void test_realign_frozen_encoder_at_the_first_park_is_refused(void) {
+    // Codex counterexample (2026-09-12): zone 700, watchdog 200, first move to 750 um with the
+    // encoder frozen at home -> offset 750 um. zone + watchdog (900) would have absorbed it and
+    // erased the evidence; the zone alone (700) refuses it.
+    TEST_ASSERT_FALSE(pid_realign_allowed(750 * 170, 700 * 170, 200 * 170));
+    TEST_ASSERT_FALSE(pid_realign_allowed(-750 * 170, 700 * 170, 200 * 170));
 }
 
 void test_realign_beyond_gap_config_is_refused(void) {
     // No-gap stage (zone 0), watchdog 200 um: a 640 um offset at the first engage is lost motion, not a gap.
     TEST_ASSERT_FALSE(pid_realign_allowed(-640 * 170, 0, 200 * 170));
-    // Gap stage but the offset is beyond zone + watchdog
+    // Gap stage, offset beyond the zone
     TEST_ASSERT_FALSE(pid_realign_allowed(950 * 170, 700 * 170, 200 * 170));
+}
+
+/* pid_correction_travel_step(): distance and response bounds. Qualified config: watchdog
+   34,133 usteps (200 um); response window 100 ms. */
+void test_travel_bound_is_independent_of_the_time_budgets(void) {
+    pid_correction_watch_reset(&W); windows_at_qualified_config();
+    // arm at a large error, then integrate a 34 kpps drive: 34133 usteps takes ~1.0 s
+    pid_correction_watch_step(&W, 8500, TOL, 0, PROG, 100000000u);   /* huge total: not the limiter */
+    uint8_t r = PID_CORRECTION_OK;
+    uint32_t t = 0;
+    for (; t < 5000000u && r == PID_CORRECTION_OK; t += 1000u) {
+        /* keep the progress window quiet by reporting shrinking error */
+        pid_correction_watch_step(&W, 8500 - (int32_t)(t / 1000u), TOL, t, PROG, 100000000u);
+        r = pid_correction_travel_step(&W, 34000u, 34000u, t, 34133u, 100000u);
+    }
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_TRAVEL, r);
+    TEST_ASSERT_TRUE_MESSAGE(t > 950000u && t < 1100000u, "34133 usteps at 34 kpps is ~1.0 s");
+}
+
+void test_frozen_feedback_trips_no_response_within_the_response_window(void) {
+    // Encoder frozen: the chip drives at 13 kpps, V_ENC_MEAN stays 0. Must trip within ~100 ms,
+    // bounding the travel to ~1.3 kusteps (~8 um) - not 157 um.
+    pid_correction_watch_reset(&W); windows_at_qualified_config();
+    uint8_t r = PID_CORRECTION_OK;
+    uint32_t t = 0;
+    for (; t < 1000000u && r == PID_CORRECTION_OK; t += 1000u) {
+        pid_correction_watch_step(&W, TOL + 17, TOL, t, PROG, TOTAL);
+        r = pid_correction_travel_step(&W, 13000u, 0u, t, 34133u, 100000u);
+    }
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_NO_RESPONSE, r);
+    TEST_ASSERT_TRUE_MESSAGE(t <= 102000u, "must trip within one response window");
+    TEST_ASSERT_TRUE_MESSAGE(W.travel_pps_us / 1000000u < 2000u, "travel before the trip must be a few um, not 157");
+}
+
+void test_responding_encoder_never_trips_no_response(void) {
+    pid_correction_watch_reset(&W); windows_at_qualified_config();
+    uint8_t r = PID_CORRECTION_OK;
+    for (uint32_t t = 0; t < 500000u && r == PID_CORRECTION_OK; t += 1000u) {
+        pid_correction_watch_step(&W, 8500, TOL, t, PROG, 100000000u);
+        r = pid_correction_travel_step(&W, 13000u, 13000u / 4u, t, 100000000u, 100000u);   /* encoder at a quarter of the drive */
+    }
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, r);
+}
+
+void test_response_is_not_judged_below_the_drive_floor(void) {
+    // A 50 pps drive on a 1-count residual: too slow to judge, and too slow to matter.
+    pid_correction_watch_reset(&W); windows_at_qualified_config();
+    uint8_t r = PID_CORRECTION_OK;
+    for (uint32_t t = 0; t < 2000000u && r == PID_CORRECTION_OK; t += 1000u) {
+        pid_correction_watch_step(&W, TOL + 1, TOL, t, PROG, 100000000u);
+        r = pid_correction_travel_step(&W, 50u, 0u, t, 34133u, 100000u);
+    }
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, r);
+}
+
+void test_travel_step_is_inert_until_the_watch_is_armed(void) {
+    pid_correction_watch_reset(&W);
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_travel_step(&W, 50000u, 0u, 0, 1u, 1u));
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_travel_step(&W, 50000u, 0u, 1000000u, 1u, 1u));
+    TEST_ASSERT_EQUAL_UINT64(0u, W.travel_pps_us);
 }
 
 void test_realign_refused_when_nothing_is_configured(void) {
@@ -318,7 +391,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_progress_restarts_the_window_but_not_the_total_budget);
     RUN_TEST(test_watch_handles_micros_wraparound);
     RUN_TEST(test_realign_within_gap_config_is_allowed);
+    RUN_TEST(test_realign_frozen_encoder_at_the_first_park_is_refused);
     RUN_TEST(test_realign_beyond_gap_config_is_refused);
+    RUN_TEST(test_travel_bound_is_independent_of_the_time_budgets);
+    RUN_TEST(test_frozen_feedback_trips_no_response_within_the_response_window);
+    RUN_TEST(test_responding_encoder_never_trips_no_response);
+    RUN_TEST(test_response_is_not_judged_below_the_drive_floor);
+    RUN_TEST(test_travel_step_is_inert_until_the_watch_is_armed);
     RUN_TEST(test_realign_refused_when_nothing_is_configured);
     RUN_TEST(test_windows_at_the_qualified_gain_are_the_20ms_floor);
     RUN_TEST(test_windows_scale_with_a_low_gain);

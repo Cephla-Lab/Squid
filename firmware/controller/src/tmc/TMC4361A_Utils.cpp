@@ -1700,6 +1700,12 @@ int32_t tmc4361A_read_encoder_vel_filtered(TMC4361ATypeDef *tmc4361A) {
   return tmc4361A_readInt(tmc4361A, TMC4361A_V_ENC_MEAN_RD);
 }
 
+/* The closed loop's velocity output (PID_VEL_RD, pps, signed): what the correction is
+   asking of the motor right now. Zero when the loop is off or inside the deadband. */
+int32_t tmc4361A_read_pid_vel(TMC4361ATypeDef *tmc4361A) {
+  return tmc4361A_readInt(tmc4361A, TMC4361A_PID_VEL_RD);
+}
+
 /*
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_write_encoder()

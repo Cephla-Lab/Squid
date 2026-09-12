@@ -93,11 +93,17 @@ static inline bool encoder_within_window(int32_t counter_minus_target, int32_t e
    toward forever just like one 50 um out. */
 
 struct PidCorrectionWatch {
-    bool     active;     /* armed: |dev| went beyond `arm` while engaged at rest */
+    bool     active;     /* armed: |dev| outside the deadband while engaged at rest */
     uint32_t start_us;   /* when it armed (total budget) */
     uint32_t mark_us;    /* last time |dev| improved by >= tol (progress budget) */
     int32_t  best_abs;   /* smallest |dev| seen since arming */
+    /* travel and response (pid_correction_travel_step) */
+    bool     has_last;
+    uint32_t last_us;        /* previous sample time, for the velocity integral */
+    uint64_t travel_pps_us;  /* integral of |PID_VEL| dt, in pps x us (/1e6 = usteps) */
+    uint32_t resp_mark_us;   /* last time the encoder was seen responding to the drive */
 };
+
 
 #define PID_CORRECTION_OK          0
 #define PID_CORRECTION_NO_PROGRESS 1
@@ -106,6 +112,7 @@ struct PidCorrectionWatch {
 static inline void pid_correction_watch_reset(PidCorrectionWatch *w)
 {
     w->active = false; w->start_us = 0; w->mark_us = 0; w->best_abs = 0;
+    w->has_last = false; w->last_us = 0; w->travel_pps_us = 0; w->resp_mark_us = 0;
 }
 
 /* Feed one sample taken while the loop is engaged and the ramp idle. Returns one of the
@@ -139,17 +146,54 @@ static inline uint8_t pid_correction_watch_step(PidCorrectionWatch *w, int32_t a
     return PID_CORRECTION_OK;
 }
 
+#define PID_CORRECTION_TRAVEL      3
+#define PID_CORRECTION_NO_RESPONSE 4
+#define PID_CORRECTION_RESPONSE_RATIO_SHIFT 3   /* the encoder must move at >= |PID_VEL| / 8 */
+#define PID_CORRECTION_RESPONSE_MIN_PPS     100 /* below this drive, response is not judged */
+#define PID_CORRECTION_RESPONSE_WINDOWS     4   /* response window = 4 x progress window, >= 100 ms */
+#define PID_CORRECTION_RESPONSE_MIN_US      100000u
+
+/* Distance and response bounds on a correction, fed alongside pid_correction_watch_step()
+   from the same pass (call this AFTER it, only while it is armed). pid_vel_abs_pps is
+   |PID_VEL_RD| (the chip's correction output, pps); enc_vel_abs_pps is |V_ENC_MEAN_RD|.
+   Trips: TRAVEL when the integral of |PID_VEL| since arming exceeds travel_limit_usteps
+   (whatever the error, however slow: the correction may never travel farther than the
+   declared watchdog distance without converging), NO_RESPONSE when the chip has been
+   driving at >= RESPONSE_MIN_PPS and the encoder has not moved at >= 1/8 of that for a
+   whole response window (frozen feedback or a stage that does not follow the motor). */
+static inline uint8_t pid_correction_travel_step(PidCorrectionWatch *w, uint32_t pid_vel_abs_pps, uint32_t enc_vel_abs_pps,
+                                                 uint32_t now_us, uint32_t travel_limit_usteps, uint32_t response_us)
+{
+    if (!w->active) return PID_CORRECTION_OK;         /* inside the deadband: the chip is not driving */
+    if (!w->has_last) {
+        w->has_last = true; w->last_us = now_us; w->resp_mark_us = now_us;
+        return PID_CORRECTION_OK;
+    }
+    uint32_t dt = (uint32_t)(now_us - w->last_us);    /* wrap-safe */
+    w->last_us = now_us;
+    w->travel_pps_us += (uint64_t)pid_vel_abs_pps * (uint64_t)dt;
+    if (travel_limit_usteps > 0 && w->travel_pps_us / 1000000ull > (uint64_t)travel_limit_usteps)
+        return PID_CORRECTION_TRAVEL;
+    if (pid_vel_abs_pps < PID_CORRECTION_RESPONSE_MIN_PPS || enc_vel_abs_pps >= (pid_vel_abs_pps >> PID_CORRECTION_RESPONSE_RATIO_SHIFT))
+        w->resp_mark_us = now_us;                      /* not driving, or the encoder is following */
+    else if ((uint32_t)(now_us - w->resp_mark_us) > response_us)
+        return PID_CORRECTION_NO_RESPONSE;
+    return PID_CORRECTION_OK;
+}
+
 /* Post-homing realignment takes the counter's frame as the encoder's. That absorbs the
    mechanical gap of a stage whose actuator homes below its stop - and would equally absorb
    lost motion during the first departure, or an encoder that never started following. The
-   absorbed offset is therefore bounded by what the configuration declares: the home zone
-   (where the stage may be decoupled) plus the watchdog. CONFIGURE_STAGE_PID always leaves a
-   watchdog (0.25 mm default), so a zero bound means the axis was RESET and never
-   re-configured - refuse, do not absorb blindly. The host checks at startup that
-   zone + watchdog covers its declared z_home_gap_mm. */
+   realignment only ever runs OUTSIDE the home zone, so an encoder frozen at home shows an
+   offset equal to the resting position, which is always larger than the zone: the zone
+   alone is therefore the evidence that the encoder moved (offset <= zone means the encoder
+   covered at least position - zone). With no zone configured (a stage with no gap) the
+   encoder must have followed from the start: the offset is bounded by the watchdog. Nothing
+   configured at all (post-RESET, never re-configured) refuses. The host checks at startup
+   that the zone covers its declared z_home_gap_mm. */
 static inline bool pid_realign_allowed(int32_t frame_offset, int32_t zone_usteps, int32_t max_dev_usteps)
 {
-    int32_t bound = (zone_usteps > 0 ? zone_usteps : 0) + (max_dev_usteps > 0 ? max_dev_usteps : 0);
+    int32_t bound = zone_usteps > 0 ? zone_usteps : (max_dev_usteps > 0 ? max_dev_usteps : 0);
     if (bound <= 0) return false;       /* nothing configured: nothing declared, nothing absorbed */
     return frame_offset <= bound && frame_offset >= -bound;
 }

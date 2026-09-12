@@ -906,12 +906,38 @@ void check_closed_loop()
       {
         uint32_t progress_us, total_us;
         pid_correction_windows((int32_t)axes_pid_arg[i].p, pid_max_dev_usteps[i], pid_dv_clip_eff[i], pid_tolerance_eff(i), &progress_us, &total_us);
+        uint32_t now = micros();
         uint8_t verdict = pid_correction_watch_step(&pid_corr_watch[i], dev < 0 ? -dev : dev, pid_tolerance_eff(i),
-                                                    micros(), progress_us, total_us);
+                                                    now, progress_us, total_us);
         if (verdict == PID_CORRECTION_NO_PROGRESS)
+        {
           pid_trip_fault(i, PID_FAULT_NO_PROGRESS);
-        else if (verdict == PID_CORRECTION_TIMEOUT)
+          continue;
+        }
+        if (verdict == PID_CORRECTION_TIMEOUT)
+        {
           pid_trip_fault(i, PID_FAULT_TIMEOUT);
+          continue;
+        }
+        // Distance and response bounds (pid_policy.h): only while the chip is driving (the watch
+        // is armed, i.e. |dev| outside the deadband). Two more reads per engaged-at-rest axis:
+        // PID_VEL (what the correction asks of the motor) and V_ENC_MEAN (what the encoder does
+        // about it). The correction may never travel farther than the watchdog distance without
+        // converging, and it may never drive for a whole response window with the encoder standing
+        // still - that is a frozen encoder or a stage that does not follow, whatever the error size.
+        if (pid_corr_watch[i].active)
+        {
+          int32_t pv = tmc4361A_read_pid_vel(&tmc4361[i]);
+          int32_t ev = tmc4361A_read_encoder_vel_filtered(&tmc4361[i]);
+          uint32_t response_us = PID_CORRECTION_RESPONSE_WINDOWS * progress_us;
+          if (response_us < PID_CORRECTION_RESPONSE_MIN_US) response_us = PID_CORRECTION_RESPONSE_MIN_US;
+          uint8_t v2 = pid_correction_travel_step(&pid_corr_watch[i], (uint32_t)(pv < 0 ? -pv : pv), (uint32_t)(ev < 0 ? -ev : ev),
+                                                  now, pid_max_dev_usteps[i] > 0 ? (uint32_t)pid_max_dev_usteps[i] : 0u, response_us);
+          if (v2 == PID_CORRECTION_TRAVEL)
+            pid_trip_fault(i, PID_FAULT_TRAVEL);
+          else if (v2 == PID_CORRECTION_NO_RESPONSE)
+            pid_trip_fault(i, PID_FAULT_NO_RESPONSE);
+        }
       }
       else
         pid_correction_watch_reset(&pid_corr_watch[i]);
