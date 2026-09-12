@@ -165,6 +165,39 @@ def test_a_loop_kept_engaged_in_flight_is_flagged_as_unqualified(caplog):
     assert "pid_open_above_z_mm = 1.0" in warned[0].getMessage()
 
 
+def test_the_unqualified_warning_survives_a_refused_enable(caplog):
+    """The mode is latched by SET_PID_OPEN_ABOVE, which has already been sent and acknowledged by the
+    time ENABLE_STAGE_PID is refused. The controller is in the unqualified mode either way, so the
+    warning has to be keyed on the command going out, not on the loop coming up."""
+    z = _axis(
+        HAS_ENCODER=True,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, OPEN_ABOVE_MM_S=1.0),
+    )
+    mc = MagicMock()
+    mc.firmware_version = (1, 6)
+    mc.turn_on_stage_pid.side_effect = RuntimeError("firmware refused the loop: frame offset 640 um")
+    cfg = squid.config.get_stage_config().model_copy(update={"Z_AXIS": z})
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        CephlaStage(mc, cfg)
+    mc.set_pid_open_above.assert_called_once_with(_def.AXIS.Z, 1.0)
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and "UNQUALIFIED" in r.getMessage()]
+    assert warned, [r.getMessage() for r in caplog.records]
+    assert "pid_open_above_z_mm = 1.0" in warned[0].getMessage()
+
+
+def test_old_firmware_does_not_warn_about_a_mode_it_was_never_told_about(caplog):
+    """SET_PID_OPEN_ABOVE does not exist before 1.6, so the ini key changes nothing on the controller.
+    Warning about it there would send an operator looking for an in-flight loop that cannot be on."""
+    z = _axis(
+        HAS_ENCODER=True,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, OPEN_ABOVE_MM_S=1.0),
+    )
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        _, mc = _stage(z, firmware=(1, 5))
+    mc.set_pid_open_above.assert_not_called()
+    assert not [r for r in caplog.records if "UNQUALIFIED" in r.getMessage()], [r.getMessage() for r in caplog.records]
+
+
 def test_rest_only_is_the_qualified_mode_and_warns_about_nothing(caplog):
     z = _axis(
         HAS_ENCODER=True,

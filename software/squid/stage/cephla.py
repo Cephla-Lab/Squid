@@ -108,6 +108,18 @@ class CephlaStage(AbstractStage):
                 mc.wait_till_operation_is_completed()
             mc.set_pid_open_above(microcontroller_axis_number, pid.OPEN_ABOVE_MM_S)  # 0 = rest-only
             mc.wait_till_operation_is_completed()
+            # Warn here, where the mode is actually sent: SET_PID_OPEN_ABOVE latches on the controller
+            # whether or not the ENABLE below is accepted, and it does not exist before firmware 1.6,
+            # so keying this on the ini alone warned about old firmware that never heard of the mode
+            # and stayed silent about a refused ENABLE that left the mode set.
+            if pid.OPEN_ABOVE_MM_S > 0:
+                letter = _AXIS_LETTER.get(microcontroller_axis_number, "?")
+                _log.warning(
+                    f"axis {microcontroller_axis_number}: pid_open_above_{letter}_mm = {pid.OPEN_ABOVE_MM_S} keeps "
+                    f"the loop engaged during moves slower than that - UNQUALIFIED: the in-flight loop limit-cycled "
+                    f"and stalled the motor on both bench stages once a move cruised beyond ~0.1 s (2026-09-08); "
+                    f"rest-only (0) is the qualified mode"
+                )
         elif (
             pid.CORRECTION_VMAX > 0
             or pid.MAX_DEVIATION_UM > 0
@@ -135,14 +147,6 @@ class CephlaStage(AbstractStage):
             f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
             f"ramp {axis_config.RAMP_PROFILE}"
         )
-        if pid.OPEN_ABOVE_MM_S > 0:
-            letter = _AXIS_LETTER.get(microcontroller_axis_number, "?")
-            _log.warning(
-                f"axis {microcontroller_axis_number}: pid_open_above_{letter}_mm = {pid.OPEN_ABOVE_MM_S} keeps the "
-                f"loop engaged during moves slower than that - UNQUALIFIED: the in-flight loop limit-cycled and "
-                f"stalled the motor on both bench stages once a move cruised beyond ~0.1 s (2026-09-08); rest-only "
-                f"(0) is the qualified mode"
-            )
 
     def x_mm_to_usteps(self, mm: float):
         return self._config.X_AXIS.convert_real_units_to_ustep(mm)
