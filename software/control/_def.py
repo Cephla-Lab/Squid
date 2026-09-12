@@ -420,10 +420,12 @@ class ENC_FLAG:
 class PID_FAULT_CAUSE:
     """Why a stage axis's closed loop faulted (firmware >= 1.6).
 
-    Byte 18 bits 4-6 say THAT X / Y / Z has a latched fault, in every packet. Status bytes
-    19 / 20 / 21 say WHY, one byte per axis in that same order, but only while encoder reporting
-    is OFF - with it on those bytes carry the reported axis's ENC_FLAG bits and clipped deviation
-    instead, and no cause is on the wire. Cleared with the fault bit.
+    Byte 18 bits 4-6 say THAT X / Y / Z has a latched fault, in every packet. The WHY is packed into
+    bytes 19-20 - X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2, byte 21
+    unused - three bits each rather than a byte each, so that byte 19 bit 0 (ENC_FLAG.REPORTING)
+    stays clear and the host can tell the two layouts of those bytes apart. Only there while encoder
+    reporting is OFF: with it on the same bytes carry the reported axis's ENC_FLAG bits and clipped
+    deviation, and no cause is on the wire. Cleared with the fault bit.
     """
 
     NONE = 0
@@ -433,14 +435,13 @@ class PID_FAULT_CAUSE:
     REALIGN_REFUSED = 4  # first engage after homing: frame offset beyond home zone + watchdog
     REENGAGE_REFUSED = 5  # at rest, frames aligned, still beyond the watchdog
 
-    # What an operator is told. Each says what to go and look at, not just what tripped.
-    # Packing while encoder reporting is off, chosen so byte 19 bit 0 (ENC_FLAG.REPORTING) stays clear:
-    # X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2; byte 21 unused.
-    X_SHIFT = 1  # byte 19
-    Y_SHIFT = 4  # byte 19
-    Z_SHIFT = 0  # byte 20
+    # Where each axis's three bits sit while encoder reporting is off (see the class docstring).
+    X_SHIFT = 1  # byte 19, bits 1-3
+    Y_SHIFT = 4  # byte 19, bits 4-6
+    Z_SHIFT = 0  # byte 20, bits 0-2
     MASK = 0x07
 
+    # What an operator is told. Each says what to go and look at, not just what tripped.
     NAMES = {
         WATCHDOG: "deviation watchdog (|encoder - counter| exceeded the limit)",
         NO_PROGRESS: "no progress (the error stopped shrinking: frozen encoder or stuck stage)",

@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 import control._def
-from control._def import AXIS, ENCODER_REPORTING
+from control._def import AXIS, ENCODER_REPORTING, PID_FAULT_CAUSE
 from squid.config import AxisConfig
 
 
@@ -173,11 +173,25 @@ class ZMotionSelfTest:
             return
         st = self._enc()
         if st["pid_fault"]:
-            raise RuntimeError("the firmware watchdog opened the loop (PID_FAULT): the deviation exceeded the limit")
+            raise RuntimeError(f"the firmware opened the loop (PID_FAULT); {self._fault_cause_text()}")
         dev_um = self._dev_um(self._dev32_usteps(st))
         if st["pid_enabled"] and abs(dev_um) > self.max_dev_um:
             self.mcu.turn_off_stage_pid(AXIS.Z)
             raise RuntimeError(f"loop error {dev_um:+.0f} um exceeded {self.max_dev_um:.0f} um; loop opened")
+
+    def _fault_cause_text(self) -> str:
+        """Why the loop opened, in the firmware's own words - when it is willing to say.
+
+        The deviation watchdog is one of five causes, and the other four point somewhere else
+        entirely: a frozen encoder, a stuck stage, a correction that ran out of budget, a
+        post-homing realignment the firmware refused. Naming the watchdog regardless sent an
+        operator to the wrong place. The causes only ride in the status bytes while encoder
+        reporting is OFF - those bytes are the encoder reading otherwise - and this routine runs
+        with reporting on, so usually there is nothing to name and that is what it says.
+        """
+        return PID_FAULT_CAUSE.NAMES.get(
+            self.mcu.pid_fault_cause(AXIS.Z), "cause not on the wire while encoder reporting is on"
+        )
 
     def _move(
         self, mm: float, timeout_s: float = 30.0, allow_below_floor: bool = False, check_cancel: bool = True

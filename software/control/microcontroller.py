@@ -661,8 +661,10 @@ class Microcontroller:
         # Latched closed-loop faults, byte 18 bits 4-6 as a 3-bit mask (bit 0 = X, 1 = Y, 2 = Z).
         # Kept so each new fault is logged once instead of on every packet.
         self.pid_fault_mask = 0
-        # Why each stage axis's loop faulted (PID_FAULT_CAUSE), from status bytes 19 / 20 / 21.
-        # Those bytes only carry a cause while encoder reporting is off; see pid_fault_cause().
+        # Why each stage axis's loop faulted (PID_FAULT_CAUSE), from the three bits per axis packed
+        # into status bytes 19-20 (X: byte 19 bits 1-3, Y: byte 19 bits 4-6, Z: byte 20 bits 0-2;
+        # byte 21 unused). Those bits are only there while encoder reporting is off, so byte 18's
+        # fault bits - which arrive in both layouts - are what retires a cause. See pid_fault_cause().
         self.pid_fault_causes = {
             AXIS.X: PID_FAULT_CAUSE.NONE,
             AXIS.Y: PID_FAULT_CAUSE.NONE,
@@ -1303,8 +1305,10 @@ class Microcontroller:
     def set_encoder_reporting(self, axis, mode=ENCODER_REPORTING.ENC_IN_THETA):
         """Ask firmware >= 1.6 to stream `axis`'s encoder in the status packet (see ENCODER_REPORTING).
 
-        Afterwards encoder_pos / encoder_deviation / encoder_flags update every packet. Mode OFF restores
-        the shipping packet. Older firmware ignores the command (status stays COMPLETED, flags stay 0).
+        Afterwards encoder_pos / encoder_deviation / encoder_flags / encoder_dev32 update every packet.
+        Mode OFF restores the shipping packet, whose bytes 19-20 carry the packed PID_FAULT_CAUSEs
+        instead - encoder_flags reads 0 and encoder_dev32 None there, since neither is on the wire.
+        Older firmware ignores the command (status stays COMPLETED, flags stay 0).
         """
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_ENCODER_REPORTING
@@ -1427,10 +1431,13 @@ class Microcontroller:
     def pid_fault_cause(self, axis) -> int:
         """Why `axis`'s closed loop faulted, as a PID_FAULT_CAUSE (firmware >= 1.6).
 
-        The firmware only puts the causes on the wire while encoder reporting is OFF (bytes
-        19 / 20 / 21 = X / Y / Z); with reporting on those bytes carry the reported axis's flags
-        and clipped deviation instead, so this returns the last value seen with reporting off.
-        NONE (0) when no fault is latched, or when the fault arrived while reporting was on.
+        The firmware only puts the causes on the wire while encoder reporting is OFF, three bits per
+        axis packed into bytes 19-20 (X: byte 19 bits 1-3, Y: byte 19 bits 4-6, Z: byte 20 bits 0-2;
+        byte 21 unused, and byte 19 bit 0 left clear so the layout is distinguishable from the
+        ENC_FLAG one). With reporting on those bytes carry the reported axis's flags and clipped
+        deviation instead, so this returns the last value seen with reporting off - and NONE once
+        byte 18's fault bit for the axis clears, since that bit arrives in both layouts. NONE (0)
+        also when no fault is latched, or when the fault arrived while reporting was on.
         """
         return self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
 

@@ -3,6 +3,7 @@
 import pytest
 
 import squid.config
+from control._def import PID_FAULT_CAUSE
 from squid.config import AxisConfig, DirectionSign, PIDConfig
 from squid.motion_selftest import ZMotionSelfTest
 
@@ -40,6 +41,10 @@ class FakeMcu:
         self.reporting = False
         self.pid_enabled = False
         self.pid_fault = False
+        # PID_FAULT_CAUSE latched with the fault. The firmware only puts it in the status packet
+        # while encoder reporting is OFF (those bytes are the encoder reading otherwise), and
+        # pid_fault_cause() below reproduces that.
+        self.fault_cause = PID_FAULT_CAUSE.NONE
         # Firmware ENABLE_STAGE_PID refuses when |ENC_POS - XACTUAL| exceeds the watchdog limit
         # (commands.cpp: "refuse up front instead of tripping a moment later").
         self.max_dev_um = max_dev_um
@@ -93,6 +98,7 @@ class FakeMcu:
         mm = self.axis.convert_to_real_units(self.z_pos)
         self.enc_zero_mm = self._stage_mm(mm) - mm
         self.pid_fault = False
+        self.fault_cause = PID_FAULT_CAUSE.NONE
 
     def turn_on_stage_pid(self, axis):
         self.pid_on_calls += 1
@@ -102,11 +108,17 @@ class FakeMcu:
             return  # CMD_EXECUTION_ERROR on the real controller: the loop stays off
         self.pid_enabled = True
         self.pid_fault = False
+        self.fault_cause = PID_FAULT_CAUSE.NONE
         self._reads_engaged = 0
 
     def turn_off_stage_pid(self, axis):
         self.pid_enabled = False
         self.pid_fault = False  # DISABLE acknowledges a latched fault
+        self.fault_cause = PID_FAULT_CAUSE.NONE
+
+    def pid_fault_cause(self, axis):
+        # Only on the wire while reporting is off; NONE otherwise, as on the real host.
+        return PID_FAULT_CAUSE.NONE if self.reporting else self.fault_cause
 
     def get_encoder_state(self):
         if self.pid_enabled and self.fault_after is not None:
@@ -114,6 +126,7 @@ class FakeMcu:
             if self._reads_engaged >= self.fault_after:
                 self.pid_enabled = False
                 self.pid_fault = True
+                self.fault_cause = PID_FAULT_CAUSE.NO_PROGRESS
         enc = self._enc_pos()
         dev = 0 if self.pid_enabled else enc - self.z_pos
         dev = max(-32768, min(32767, dev))  # ENC_POS_DEV is an int16 in the status packet: it saturates
@@ -224,6 +237,31 @@ def test_watchdog_fault_during_the_run_leaves_the_loop_off():
     assert mcu.pid_enabled is False
     assert mcu.pid_on_calls == 1, mcu.calls  # the run's own enable; none from restore
     assert any("left OFF" in line and "fault" in line.lower() for line in log), log
+
+
+def test_a_fault_names_the_cause_instead_of_asserting_the_watchdog():
+    """ "the deviation exceeded the limit" named one of five causes. The other four send an operator
+    somewhere else entirely - a frozen encoder, a stuck stage, a correction budget, a refused
+    post-homing realignment - so the message has to carry what the firmware actually said. While
+    encoder reporting is on, which is how this routine runs, no cause is on the wire at all: say
+    that rather than name the wrong one."""
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis, fault_after=1)
+    t = ZMotionSelfTest(mcu, axis, log=lambda s: None, hold_s=0.05, settle_scale=0.0)
+    t.encoder_ok = True
+    mcu.pid_enabled = True
+    mcu.reporting = True
+
+    with pytest.raises(RuntimeError) as e:
+        t._guard()
+    assert "PID_FAULT" in str(e.value), str(e.value)
+    assert "cause not on the wire while encoder reporting is on" in str(e.value), str(e.value)
+
+    # Same latched fault, read where the firmware will explain it.
+    mcu.reporting = False
+    with pytest.raises(RuntimeError) as e:
+        t._guard()
+    assert "no progress" in str(e.value), str(e.value)
 
 
 def test_open_loop_instrument_skips_the_loop_check():
