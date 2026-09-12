@@ -10,6 +10,9 @@ from squid.config import StageConfig, AxisConfig
 
 _log = squid.logging.get_logger(__name__)
 
+# For naming the ini key a warning is about (pid_open_above_z_mm and friends).
+_AXIS_LETTER = {_def.AXIS.X: "x", _def.AXIS.Y: "y", _def.AXIS.Z: "z"}
+
 
 class CephlaStage(AbstractStage):
     _BACKLASH_COMPENSATION_DISTANCE_MM = 0.005
@@ -132,6 +135,14 @@ class CephlaStage(AbstractStage):
             f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
             f"ramp {axis_config.RAMP_PROFILE}"
         )
+        if pid.OPEN_ABOVE_MM_S > 0:
+            letter = _AXIS_LETTER.get(microcontroller_axis_number, "?")
+            _log.warning(
+                f"axis {microcontroller_axis_number}: pid_open_above_{letter}_mm = {pid.OPEN_ABOVE_MM_S} keeps the "
+                f"loop engaged during moves slower than that - UNQUALIFIED: the in-flight loop limit-cycled and "
+                f"stalled the motor on both bench stages once a move cruised beyond ~0.1 s (2026-09-08); rest-only "
+                f"(0) is the qualified mode"
+            )
 
     def x_mm_to_usteps(self, mm: float):
         return self._config.X_AXIS.convert_real_units_to_ustep(mm)

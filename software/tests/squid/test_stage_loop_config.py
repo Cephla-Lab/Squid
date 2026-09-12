@@ -5,6 +5,7 @@ correction clamp and deviation watchdog, home exclusion zone, deadband, ramp pro
 config carried PID=None and never passed the encoder flip, so none of it reached the firmware.
 """
 
+import logging
 from unittest.mock import MagicMock
 
 import control._def as _def
@@ -147,3 +148,28 @@ def test_process_config_carries_the_machine_constants():
     assert cfg.Z_AXIS.RAMP_PROFILE in ("sshape", "trapezoid")
     assert cfg.Z_AXIS.PID.OPEN_ABOVE_MM_S == float(getattr(_def, "PID_OPEN_ABOVE_Z_mm", 0.0))
     assert cfg.Z_AXIS.COMPLETION_WINDOW_UM == float(getattr(_def, "COMPLETION_WINDOW_Z_UM", 0.0))
+
+
+def test_a_loop_kept_engaged_in_flight_is_flagged_as_unqualified(caplog):
+    """pid_open_above > 0 leaves the loop closed for the whole of any move slower than the threshold. That
+    mode limit-cycled and stalled the motor on both bench stages once a move cruised beyond ~0.1 s
+    (2026-09-08), so an ini that asks for it has to say so at startup, not through a stalled Z."""
+    z = _axis(
+        HAS_ENCODER=True,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, OPEN_ABOVE_MM_S=1.0),
+    )
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        _stage(z)
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and "UNQUALIFIED" in r.getMessage()]
+    assert warned, [r.getMessage() for r in caplog.records]
+    assert "pid_open_above_z_mm = 1.0" in warned[0].getMessage()
+
+
+def test_rest_only_is_the_qualified_mode_and_warns_about_nothing(caplog):
+    z = _axis(
+        HAS_ENCODER=True,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, OPEN_ABOVE_MM_S=0.0),
+    )
+    with caplog.at_level(logging.WARNING, logger="squid"):
+        _stage(z)
+    assert not [r for r in caplog.records if "UNQUALIFIED" in r.getMessage()], [r.getMessage() for r in caplog.records]
