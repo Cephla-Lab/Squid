@@ -36,6 +36,8 @@ extern uint8_t encoder_report_axis;             // INTERNAL axis index being rep
 extern uint8_t encoder_report_mode;             // ENCODER_REPORT_*
 extern bool encoder_configured[TOTAL_AXES];     // CONFIGURE_STAGE_PID has initialised the encoder since the last chip reset
 extern bool pid_fault[TOTAL_AXES];              // deviation watchdog disabled the loop; cleared by ENABLE_STAGE_PID / RESET
+extern uint8_t pid_fault_cause[TOTAL_AXES];      // PID_FAULT_* (constants_protocol.h): why; status bytes 19-21 while reporting is off
+extern uint32_t pid_dv_clip_eff[TOTAL_AXES];     // PID_DV_CLIP actually written to the chip (pps); 0 = not configured yet
 extern int32_t pid_max_dev_usteps[TOTAL_AXES];  // watchdog limit in usteps; 0 = unset (default applied at configure)
 extern uint32_t pid_dv_clip_usteps[TOTAL_AXES]; // PID_DV_CLIP override in usteps/s; 0 = firmware default
 extern bool pid_requested[TOTAL_AXES];          // host asked for the loop (ENABLE_STAGE_PID); cleared by DISABLE, fault, RESET, INITIALIZE

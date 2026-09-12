@@ -151,10 +151,12 @@ void send_position_update()
       buffer_tx[15] = 0;
       buffer_tx[16] = 0;
       buffer_tx[17] = 0;
-      // Clear reserved bytes to avoid stale data affecting the checksum
-      buffer_tx[19] = 0;
-      buffer_tx[20] = 0;
-      buffer_tx[21] = 0;
+      // Reporting off: bytes 19-21 carry WHY each stage axis's loop faulted (PID_FAULT_*,
+      // constants_protocol.h), 0 = no fault latched. Old hosts ignored these zero bytes; the
+      // fault bits in byte 18 say THAT a fault is latched in every packet either way.
+      buffer_tx[19] = pid_fault_cause[x];
+      buffer_tx[20] = pid_fault_cause[y];
+      buffer_tx[21] = pid_fault_cause[z];
     }
 
     // Firmware version in byte 22: high nibble = major, low nibble = minor

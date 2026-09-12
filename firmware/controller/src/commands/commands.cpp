@@ -156,6 +156,7 @@ void callback_configure_stage_pid()
         dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm);
     else
         dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
+    pid_dv_clip_eff[axis] = dv_clip;   // what the bounded-correction watch budgets against
 
     // Loop deadband (PID_TOLERANCE: below this error the chip stops correcting) and
     // target-reached tolerance (CL_TR_TOLERANCE: what tmc4361A_isRunning() accepts as
@@ -205,6 +206,7 @@ void callback_configure_stage_pid()
     // above any sane following error, far below a travel end.
     encoder_configured[axis] = configured;
     pid_fault[axis] = false;
+    pid_fault_cause[axis] = PID_FAULT_NONE;
     if (configured && pid_max_dev_usteps[axis] == 0)
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], 0.25f);
 }
@@ -260,6 +262,8 @@ void callback_enable_stage_pid()
     }
 
     pid_fault[axis] = false;
+
+    pid_fault_cause[axis] = PID_FAULT_NONE;
     pid_requested[axis] = true;
     pid_realign_pending[axis] = false;   // an explicit enable takes the frames as they are (gate below)
 
@@ -432,7 +436,10 @@ void callback_set_pid_limits()
     {
         pid_dv_clip_usteps[axis] = (uint32_t)tmc4361A_vmmToMicrosteps(&tmc4361[axis], float(v_x100) / 100.0f);
         if (encoder_configured[axis])
+        {
             tmc4361A_set_PID_dv_clip(&tmc4361[axis], pid_dv_clip_usteps[axis]);
+            pid_dv_clip_eff[axis] = pid_dv_clip_usteps[axis];
+        }
     }
     if (dev_um != 0)
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dev_um) / 1000.0f);
@@ -451,6 +458,7 @@ void callback_disable_stage_pid()
     // this axis open-loop knowingly, so the fault bit (status byte 18) is cleared here. ENABLE
     // clears it too, but only after its own deviation check passes.
     pid_fault[axis] = false;
+    pid_fault_cause[axis] = PID_FAULT_NONE;
 }
 
 // Helper function for filter wheel initialization (shared by W and W2)
@@ -508,6 +516,7 @@ static void init_filterwheel_axis(uint8_t axis)
     stage_PID_enabled[axis] = 0;
     encoder_configured[axis] = false;   // tmc4361A_init() above reset the chip
     pid_fault[axis] = false;
+    pid_fault_cause[axis] = PID_FAULT_NONE;
     pid_requested[axis] = false;
     pid_zone_hold[axis] = false;
 
@@ -655,6 +664,7 @@ void callback_initialize()
         stage_PID_enabled[i] = 0;
         encoder_configured[i] = false;
         pid_fault[i] = false;
+        pid_fault_cause[i] = PID_FAULT_NONE;
         pid_requested[i] = false;
         pid_zone_hold[i] = false;
     }
@@ -717,6 +727,7 @@ void callback_reset()
         if (stage_PID_enabled[i]) tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
         stage_PID_enabled[i] = 0;
         pid_fault[i] = false;
+        pid_fault_cause[i] = PID_FAULT_NONE;
         pid_requested[i] = false;
         pid_zone_hold[i] = false;
         pid_realign_pending[i] = false;
@@ -726,6 +737,7 @@ void callback_reset()
         // loop-mode threshold outlived a RESET and a "rest-only" test ran engaged in flight.
         pid_max_dev_usteps[i] = 0;
         pid_dv_clip_usteps[i] = 0;
+        pid_dv_clip_eff[i] = 0;
         pid_home_zone_usteps[i] = 0;
         pid_tolerance_usteps[i] = 0;
         pid_tr_tolerance_usteps[i] = 0;

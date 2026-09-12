@@ -157,16 +157,7 @@ static const int interval_send_pos_update = 10000; // in us
 static const int interval_check_position = 1000;  // in us (was 10000: completion was detected up to 10 ms late)
 static const int interval_send_joystick_update = 30000; // in us
 static const int interval_check_limit = 20000; // in us
-// Bounded closed-loop correction (pid_policy.h, check_closed_loop): while the loop is engaged
-// at rest with an error beyond PID_CORRECTION_ARM_TOLERANCES x the deadband, the error must
-// shrink by a deadband every PID_CORRECTION_PROGRESS_US and the correction must finish within
-// PID_CORRECTION_TIMEOUT_US, else the loop faults. A frozen encoder or a stage on its stop
-// would otherwise be corrected toward forever at PID_DV_CLIP with nothing in the counter frame
-// to notice. At the qualified P (65535, 4 ms time constant) real corrections make visible
-// progress every few ms; a 200 um error at the 1 mm/s clamp finishes in ~200 ms.
-static const uint32_t PID_CORRECTION_PROGRESS_US = 50000;     // 50 ms without progress -> fault
-static const uint32_t PID_CORRECTION_TIMEOUT_US  = 1000000;   // 1 s total per correction -> fault
-static const int32_t  PID_CORRECTION_ARM_TOLERANCES = 4;      // errors below 4 x deadband are never watched
+// Bounded closed-loop correction: tunables live in pid_policy.h (header-only, shared with the native tests).
 
 /***************************************************************************************************/
 /******************************************* joystick **********************************************/

@@ -150,6 +150,15 @@ static const int BIT_POS_JOYSTICK_BUTTON = 0;
 static const int BIT_POS_PID_FAULT_X = 4;
 static const int BIT_POS_PID_FAULT_Y = 5;
 static const int BIT_POS_PID_FAULT_Z = 6;
+// Why the loop faulted, per stage axis, in status bytes 19 / 20 / 21 (X / Y / Z) whenever encoder
+// reporting is OFF (those bytes carry the reported axis's flags and deviation while it is on).
+// 0 while no fault is latched; cleared with the fault bit.
+static const int PID_FAULT_NONE = 0;
+static const int PID_FAULT_WATCHDOG = 1;          // engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
+static const int PID_FAULT_NO_PROGRESS = 2;       // engaged at rest: the error stopped shrinking (frozen encoder, stuck stage)
+static const int PID_FAULT_TIMEOUT = 3;           // engaged at rest: the correction did not finish in its time budget
+static const int PID_FAULT_REALIGN_REFUSED = 4;   // first engage after homing: frame offset beyond home zone + watchdog
+static const int PID_FAULT_REENGAGE_REFUSED = 5;  // at rest, frames aligned, still beyond the watchdog: encoder stopped following
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;

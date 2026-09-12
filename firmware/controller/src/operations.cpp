@@ -816,13 +816,14 @@ static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
 // The loop on `axis` has proven unsafe to leave engaged: open it, drop the REQUEST (so the
 // axis stays open-loop until the host explicitly enables again), latch the fault the status
 // packet carries, and fail the move in flight if there is one. Every fault path uses this.
-static void pid_trip_fault(uint8_t axis)
+static void pid_trip_fault(uint8_t axis, uint8_t cause)
 {
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
   stage_PID_enabled[axis] = 0;
   pid_requested[axis] = false;
   pid_zone_hold[axis] = false;
   pid_fault[axis] = true;
+  pid_fault_cause[axis] = cause;   // status bytes 19-21 while reporting is off
   pid_correction_watch_reset(&pid_corr_watch[axis]);
   fail_commanded_move(axis);
 }
@@ -893,7 +894,7 @@ void check_closed_loop()
       int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
       if (pid_max_dev_usteps[i] > 0 && (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i]))
       {
-        pid_trip_fault(i);
+        pid_trip_fault(i, PID_FAULT_WATCHDOG);
         continue;
       }
       // Bounded correction (pid_policy.h): the deviation watchdog cannot see a frozen encoder
@@ -903,12 +904,14 @@ void check_closed_loop()
       // target in threshold mode the deviation changes for legitimate reasons.
       if (v_abs == 0)
       {
-        int32_t tol = pid_tolerance_eff(i);
-        uint8_t verdict = pid_correction_watch_step(&pid_corr_watch[i], dev < 0 ? -dev : dev, tol,
-                                                    PID_CORRECTION_ARM_TOLERANCES * tol, micros(),
-                                                    PID_CORRECTION_PROGRESS_US, PID_CORRECTION_TIMEOUT_US);
-        if (verdict != PID_CORRECTION_OK)
-          pid_trip_fault(i);
+        uint32_t progress_us, total_us;
+        pid_correction_windows((int32_t)axes_pid_arg[i].p, pid_max_dev_usteps[i], pid_dv_clip_eff[i], &progress_us, &total_us);
+        uint8_t verdict = pid_correction_watch_step(&pid_corr_watch[i], dev < 0 ? -dev : dev, pid_tolerance_eff(i),
+                                                    micros(), progress_us, total_us);
+        if (verdict == PID_CORRECTION_NO_PROGRESS)
+          pid_trip_fault(i, PID_FAULT_NO_PROGRESS);
+        else if (verdict == PID_CORRECTION_TIMEOUT)
+          pid_trip_fault(i, PID_FAULT_TIMEOUT);
       }
       else
         pid_correction_watch_reset(&pid_corr_watch[i]);
@@ -944,7 +947,7 @@ void check_closed_loop()
         pid_realign_pending[i] = false;
         if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i]))
         {
-          pid_trip_fault(i);
+          pid_trip_fault(i, PID_FAULT_REALIGN_REFUSED);
           continue;
         }
         tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
@@ -965,7 +968,7 @@ void check_closed_loop()
         // The move in flight on this axis fails with it: the ramp finished on the counter but
         // the encoder is beyond the limit, so COMPLETED would be a lie. A fault with no move
         // in flight reaches the host through the status packet's fault bits, set in every packet.
-        pid_trip_fault(i);
+        pid_trip_fault(i, PID_FAULT_REENGAGE_REFUSED);
       }
     }
   }
