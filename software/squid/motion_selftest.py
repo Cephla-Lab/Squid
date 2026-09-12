@@ -16,7 +16,9 @@ runs, in order, on the controller connection it is given:
 Every check yields a CheckResult; the report carries pass/fail per check and the ini values the measurements
 recommend. All motion is open-loop except step 6, and the deviation watchdog the host configured stays armed.
 Distances are in the stage's own frame (mm from home, positive away from the switch); the encoder error is
-ENC_POS - XACTUAL in microsteps as the firmware reports it, converted to um with the axis scale.
+ENC_POS - XACTUAL in microsteps, computed from the 32-bit encoder position and step counter of one status
+packet and converted to um with the axis scale. The firmware also reports that difference as ENC_POS_DEV,
+but clipped to an int16 (+-192 um on a 256 usteps/FS Z) - too narrow for a frame offset or a lost step.
 """
 
 from __future__ import annotations
@@ -145,6 +147,12 @@ class ZMotionSelfTest:
     def _dev_um(self, dev_usteps: float) -> float:
         return dev_usteps / self.usteps_per_mm * 1000.0
 
+    def _dev32_usteps(self, st: dict) -> int:
+        """Encoder minus counter, full width. st['deviation'] is the firmware's ENC_POS_DEV clipped to int16
+        (+-192 um on a 256 usteps/FS Z), which saturates exactly where it matters; encoder_pos and z_pos are
+        32-bit and come from the same status packet."""
+        return int(st["encoder_pos"]) - int(self.mcu.z_pos)
+
     def _pos_mm(self) -> float:
         return self._mm(self.mcu.z_pos)
 
@@ -166,11 +174,10 @@ class ZMotionSelfTest:
         st = self._enc()
         if st["pid_fault"]:
             raise RuntimeError("the firmware watchdog opened the loop (PID_FAULT): the deviation exceeded the limit")
-        if st["pid_enabled"] and abs(self._dev_um(st["deviation"])) > self.max_dev_um:
+        dev_um = self._dev_um(self._dev32_usteps(st))
+        if st["pid_enabled"] and abs(dev_um) > self.max_dev_um:
             self.mcu.turn_off_stage_pid(AXIS.Z)
-            raise RuntimeError(
-                f"loop error {self._dev_um(st['deviation']):+.0f} um exceeded {self.max_dev_um:.0f} um; loop opened"
-            )
+            raise RuntimeError(f"loop error {dev_um:+.0f} um exceeded {self.max_dev_um:.0f} um; loop opened")
 
     def _move(
         self, mm: float, timeout_s: float = 30.0, allow_below_floor: bool = False, check_cancel: bool = True
@@ -275,7 +282,7 @@ class ZMotionSelfTest:
         self._settle(0.5)
         dz, de = z1 - z0, e1 - e0
         ratio = de / dz if dz else float("nan")
-        offset_um = self._dev_um(self._enc()["deviation"])
+        offset_um = self._dev_um(self._dev32_usteps(self._enc()))
         ok_scale = abs(abs(ratio) - 1.0) <= self.SCALE_TOLERANCE
         ok_sign = ratio > 0
         if not ok_sign and ok_scale:
@@ -379,7 +386,7 @@ class ZMotionSelfTest:
         self._settle(0.15)
         self._move(self.depth)
         self._settle(0.5)
-        dev0 = self._enc()["deviation"]
+        dev0 = self._dev32_usteps(self._enc())
         acks = []
         for _ in range(5):
             acks.append(self._move(self.depth + 0.1))
@@ -387,9 +394,9 @@ class ZMotionSelfTest:
             acks.append(self._move(self.depth))
             self._settle(0.15)
         self._settle(0.5)
-        lost_short = self._dev_um(self._enc()["deviation"] - dev0)
+        lost_short = self._dev_um(self._dev32_usteps(self._enc()) - dev0)
         far = min(self.depth + 2.0, float(self.axis.MAX_POSITION) - 0.1)
-        dev1 = self._enc()["deviation"]
+        dev1 = self._dev32_usteps(self._enc())
         long_acks = []
         for _ in range(2):
             long_acks.append(self._move(far))
@@ -397,7 +404,7 @@ class ZMotionSelfTest:
             long_acks.append(self._move(self.depth))
             self._settle(0.2)
         self._settle(0.5)
-        lost_long = self._dev_um(self._enc()["deviation"] - dev1)
+        lost_long = self._dev_um(self._dev32_usteps(self._enc()) - dev1)
         ok = abs(lost_short) <= self.lost_step_limit_um and abs(lost_long) <= self.lost_step_limit_um
         self._add(
             "lost steps (open loop)",
@@ -431,7 +438,7 @@ class ZMotionSelfTest:
         for k in range(1, self.stack_n + 1):
             acks.append(self._move(self.depth + k * step))
             self._settle(0.15)
-            errs.append(self._dev_um(self._enc()["deviation"]))
+            errs.append(self._dev_um(self._dev32_usteps(self._enc())))
         ack_100 = self._move(self.depth)
         self._settle(0.3)
         # hold
@@ -441,7 +448,7 @@ class ZMotionSelfTest:
         crossings = 0
         while time.time() - t0 < self.hold_s:
             self._guard()
-            e = self._dev_um(self._enc()["deviation"])
+            e = self._dev_um(self._dev32_usteps(self._enc()))
             hold_errs.append(e)
             s = (e > 0) - (e < 0)
             if s and last_sign and s != last_sign:
@@ -523,7 +530,7 @@ class ZMotionSelfTest:
         ENC_POS to XACTUAL with the ini's scale and direction, unchanged; the offset absorbed is logged so a
         real frame problem stays visible (encoder_check reported it as measured).
         """
-        offset_um = self._dev_um(self._enc()["deviation"])
+        offset_um = self._dev_um(self._dev32_usteps(self._enc()))
         a = self.axis
         self.mcu.configure_stage_pid(
             AXIS.Z,

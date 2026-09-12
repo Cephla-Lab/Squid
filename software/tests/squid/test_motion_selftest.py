@@ -1,11 +1,13 @@
 """The motion self-test decides pass/fail and recommends ini values from a simulated Z stage."""
 
+import pytest
+
 import squid.config
 from squid.config import AxisConfig, DirectionSign, PIDConfig
 from squid.motion_selftest import ZMotionSelfTest
 
 
-def _axis(pid=None, min_pos=0.05, flip=True) -> AxisConfig:
+def _axis(pid=None, min_pos=0.05, flip=True, microsteps=16) -> AxisConfig:
     return AxisConfig(
         MOVEMENT_SIGN=DirectionSign.DIRECTION_SIGN_NEGATIVE,
         USE_ENCODER=False,
@@ -13,7 +15,7 @@ def _axis(pid=None, min_pos=0.05, flip=True) -> AxisConfig:
         ENCODER_STEP_SIZE=100e-6,
         FULL_STEPS_PER_REV=200,
         SCREW_PITCH=0.3,
-        MICROSTEPS_PER_STEP=16,
+        MICROSTEPS_PER_STEP=microsteps,
         MAX_SPEED=3.0,
         MAX_ACCELERATION=300,
         MIN_POSITION=min_pos,
@@ -114,6 +116,7 @@ class FakeMcu:
                 self.pid_fault = True
         enc = self._enc_pos()
         dev = 0 if self.pid_enabled else enc - self.z_pos
+        dev = max(-32768, min(32767, dev))  # ENC_POS_DEV is an int16 in the status packet: it saturates
         return {
             "reporting": self.reporting,
             "pid_enabled": self.pid_enabled,
@@ -425,3 +428,40 @@ def test_return_move_timing_out_near_depth_leaves_the_loop_off():
     assert ("configure",) not in mcu.calls, mcu.calls
     assert mcu.pid_enabled is False
     assert any("left OFF" in line for line in log), log
+
+
+def test_an_offset_past_the_int16_clip_is_measured_and_lost_steps_still_fail():
+    """ENC_POS_DEV is an int16: on a 256 usteps/FS Z it saturates at +-192 um, which is smaller than the
+    things the checks have to see. This stage has a 640 um frame offset after homing (its actuator homes
+    below the stage's stop) and loses half a millimetre partway through the lost-step check; both are past
+    the clip, so both are invisible unless the checks work from encoder_pos - z_pos (32-bit, same packet).
+    """
+    pid = PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=700)
+    axis = _axis(pid=pid, min_pos=0.75, microsteps=256)
+    assert abs(axis.convert_real_units_to_ustep(0.64)) > 32767  # the clip sits inside the offset being measured
+    mcu = FakeMcu(axis, gap_mm=0.64)
+
+    log = []
+    t = ZMotionSelfTest(mcu, axis, log=log.append, hold_s=0.05, settle_scale=0.0)
+    # lost steps: the axis slips 0.5 mm on the third of the six 100 um moves the check makes, after it has
+    # taken its reference. The counter keeps counting; the encoder does not follow.
+    trigger = axis.convert_real_units_to_ustep(t.depth + 0.1)
+    moves = {"n": 0}
+    orig = mcu.move_z_to_usteps
+
+    def slipping_move(u):
+        orig(u)
+        if u == trigger:
+            moves["n"] += 1
+            if moves["n"] == 3:
+                mcu.enc_zero_mm += 0.5
+
+    mcu.move_z_to_usteps = slipping_move
+    report = t.run()
+
+    enc = next(r for r in report.results if r.name == "encoder scale and sign")
+    assert enc.values["frame_offset_um"] == pytest.approx(640, abs=5)  # the true offset, not the ~192 um clip
+    lost = next(r for r in report.results if r.name == "lost steps (open loop)")
+    assert lost.passed is False, lost.summary  # a saturated field would have reported no change at all
+    assert abs(lost.values["lost_short_um"]) == pytest.approx(500, abs=5)
+    assert not report.passed
