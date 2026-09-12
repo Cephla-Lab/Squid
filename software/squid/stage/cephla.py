@@ -31,6 +31,13 @@ class CephlaStage(AbstractStage):
         self._homing_done = False
         self._scanning_position_z_mm = None
 
+        # Before any axis is touched: this refuses a configuration outright, and it used to do so
+        # from inside _configure_axis(Z) - the last of the three calls - leaving X and Y configured
+        # and their loops enabled behind a failed construction. The bound it checks arrived with
+        # firmware 1.6; on anything older there is no realignment to refuse the startup for.
+        if self._fw_has_loop_settings():
+            self._check_z_home_gap_is_covered(stage_config.Z_AXIS)
+
         # TODO(imo): configure theta here?  Do we ever have theta?
         self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)
         self._configure_axis(_def.AXIS.Y, stage_config.Y_AXIS)
@@ -64,7 +71,7 @@ class CephlaStage(AbstractStage):
         return dev_um if dev_um > 0 else float(cls._FIRMWARE_DEFAULT_MAX_DEVIATION_UM)
 
     @classmethod
-    def _check_z_home_gap_is_covered(cls, pid):
+    def _check_z_home_gap_is_covered(cls, z_axis: AxisConfig):
         """Refuse a Z whose declared home gap is larger than the post-homing realignment the firmware
         will allow (firmware >= 1.6).
 
@@ -75,7 +82,12 @@ class CephlaStage(AbstractStage):
         names neither of the two keys that are too small. This is configuration the host can check up
         front, so it does, by name and with the numbers.
         """
+        pid = z_axis.PID
         if pid is None or not pid.ENABLED:
+            return
+        if not (z_axis.HAS_ENCODER or z_axis.USE_ENCODER):
+            # _configure_axis sends no CONFIGURE_STAGE_PID and no ENABLE for an encoderless axis, so
+            # there is no encoder frame to realign and nothing here to refuse the startup for
             return
         # module attribute, not a from-import: the value is settable at runtime
         gap_mm = float(_def.Z_HOME_GAP_MM)
@@ -94,10 +106,6 @@ class CephlaStage(AbstractStage):
     def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
         mc = self._microcontroller
         new_fw = self._fw_has_loop_settings()
-
-        if microcontroller_axis_number == _def.AXIS.Z and new_fw:
-            # before anything is sent: a configuration that cannot work should not half-configure a stage
-            self._check_z_home_gap_is_covered(axis_config.PID)
 
         if axis_config.RAMP_PROFILE != "sshape":
             if new_fw:

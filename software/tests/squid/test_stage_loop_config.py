@@ -281,6 +281,35 @@ def test_an_unset_watchdog_is_checked_at_the_firmware_default(monkeypatch):
     mc.turn_on_stage_pid.assert_called_once()
 
 
+def test_an_encoderless_z_is_not_refused_for_a_gap_no_loop_can_cross(monkeypatch):
+    """The check bounds the post-homing realignment of a loop the host is about to send. An axis with
+    neither HAS_ENCODER nor USE_ENCODER gets no CONFIGURE_STAGE_PID and no ENABLE at all, so there is
+    no realignment to bound - and an ini that left pid_enabled_z on without an encoder aborted the
+    whole startup for a loop that was never going to exist."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    z = _axis(
+        HAS_ENCODER=False,
+        USE_ENCODER=False,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=200),
+    )
+    _, mc = _stage(z)
+    mc.configure_stage_pid.assert_not_called()
+    mc.turn_on_stage_pid.assert_not_called()
+
+
+def test_the_gap_check_runs_before_any_axis_is_configured(monkeypatch):
+    """It used to run inside _configure_axis(Z) - the third of the three calls - so X and Y had
+    already been configured and had their loops enabled by the time the startup aborted. A
+    configuration the host has decided cannot work must not leave a half-configured controller."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    mc = MagicMock()
+    mc.firmware_version = (1, 6)
+    cfg = squid.config.get_stage_config().model_copy(update={"Z_AXIS": _gap_axis(zone_um=200, dev_um=200)})
+    with pytest.raises(ValueError, match="does not cover"):
+        CephlaStage(mc, cfg)
+    assert mc.method_calls == [], [c[0] for c in mc.method_calls]
+
+
 def test_old_firmware_does_not_apply_the_gap_check(monkeypatch):
     """The realignment bound arrived with 1.6; before it there is nothing to refuse the startup for."""
     monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
