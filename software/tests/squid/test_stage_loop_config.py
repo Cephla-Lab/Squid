@@ -8,6 +8,8 @@ config carried PID=None and never passed the encoder flip, so none of it reached
 import logging
 from unittest.mock import MagicMock
 
+import pytest
+
 import control._def as _def
 import squid.config
 from squid.config import AxisConfig, PIDConfig, DirectionSign
@@ -206,3 +208,57 @@ def test_rest_only_is_the_qualified_mode_and_warns_about_nothing(caplog):
     with caplog.at_level(logging.WARNING, logger="squid"):
         _stage(z)
     assert not [r for r in caplog.records if "UNQUALIFIED" in r.getMessage()], [r.getMessage() for r in caplog.records]
+
+
+def _gap_axis(zone_um, dev_um):
+    return _axis(
+        HAS_ENCODER=True,
+        PID=PIDConfig(
+            ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=dev_um, HOME_ZONE_UM=zone_um
+        ),
+    )
+
+
+def test_a_home_gap_the_zone_and_watchdog_cannot_cover_is_refused_at_construction(monkeypatch):
+    """Firmware 1.6 refuses the post-homing frame realignment when the offset exceeds home zone +
+    watchdog. On a stage that declares a gap larger than that sum, every startup park would fault
+    and say nothing about which two ini keys are too small. Say it here, before any of it runs."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    with pytest.raises(ValueError) as e:
+        _stage(_gap_axis(zone_um=200, dev_um=200))
+    msg = str(e.value)
+    assert "does not cover" in msg
+    # the operator needs the numbers and the keys, not just the verdict
+    assert "z_home_gap_mm = 0.64" in msg
+    assert "pid_home_zone_z_um" in msg and "pid_max_deviation_z_um" in msg
+
+
+def test_a_home_zone_that_covers_the_gap_is_accepted(monkeypatch):
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    _, mc = _stage(_gap_axis(zone_um=700, dev_um=200))
+    mc.turn_on_stage_pid.assert_called_once()
+
+
+def test_no_declared_gap_is_not_checked(monkeypatch):
+    """A stage with no gap has nothing to realign across, whatever the zone is set to."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.0)
+    _, mc = _stage(_gap_axis(zone_um=0, dev_um=0))
+    mc.turn_on_stage_pid.assert_called_once()
+
+
+def test_an_unset_watchdog_is_checked_at_the_firmware_default(monkeypatch):
+    """pid_max_deviation_z_um = 0 does not mean 'no watchdog': the firmware uses its own 250 um, and
+    that is what it will measure the realignment against."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    with pytest.raises(ValueError, match="does not cover"):
+        _stage(_gap_axis(zone_um=200, dev_um=0))  # 200 + 250 = 450 um < 640 um
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.4)
+    _, mc = _stage(_gap_axis(zone_um=200, dev_um=0))  # 450 um >= 400 um
+    mc.turn_on_stage_pid.assert_called_once()
+
+
+def test_old_firmware_does_not_apply_the_gap_check(monkeypatch):
+    """The realignment bound arrived with 1.6; before it there is nothing to refuse the startup for."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    _, mc = _stage(_gap_axis(zone_um=200, dev_um=200), firmware=(1, 5))
+    mc.turn_on_stage_pid.assert_called_once()
