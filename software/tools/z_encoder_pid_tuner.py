@@ -44,6 +44,9 @@ the configured tolerance. The closed-loop and open-loop ladders alternate which 
 first) so a drift cannot favour either. The error is ENC_POS - XACTUAL computed from the 32-bit fields, not the
 int16 ENC_POS_DEV the firmware reports, which saturates at +-192 um on a 256 usteps/FS Z. The host sees the
 controller through the 10 ms status stream: behaviour faster than that is not resolvable from here.
+If the firmware opens the loop during a ladder, that move is the result: it is written to the CSV with its
+fault cause before the ladder stops. The cause is only on the wire while encoder reporting is off, so it is
+read by dropping reporting for ~30 ms - and before any DISABLE, which clears it along with the fault.
 
 Common options: --depth-mm 2.5 (extension from home) --step-um 100 --vmax 1.0 --corr-vmax 0.3 --max-dev-um 200
                 --zone-um 0 (home exclusion zone sent to firmware) --out z_tune
@@ -62,7 +65,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import control._def as _def  # noqa: E402  (loads the machine configuration)
-from control._def import AXIS, ENCODER_REPORTING, RAMP_PROFILE  # noqa: E402
+from control._def import AXIS, ENCODER_REPORTING, PID_FAULT_CAUSE, RAMP_PROFILE  # noqa: E402
 from control.microcontroller import Microcontroller, get_microcontroller_serial_device  # noqa: E402
 
 FULLSTEPS_PER_REV = 200
@@ -164,6 +167,9 @@ class ZTuner:
         self.sampler = None
         self.flip = bool(_def.ENCODER_FLIP_DIR_Z)
         self.loop_on = False
+        # PID_FAULT_CAUSE read at the last fault, so an abort raised deep in a polling loop still
+        # carries the reason back out to whatever is recording the run.
+        self.last_fault_cause = PID_FAULT_CAUSE.NONE
         self.last_cmd_to_ack_s = float("nan")
         self.cmd_to_ack_log = []
         self.summary = {
@@ -265,8 +271,12 @@ class ZTuner:
         st = self.mcu.get_encoder_state()
         d = self.current_depth()
         if st["pid_fault"]:
+            # before loop_off(): DISABLE acknowledges the fault, and the cause goes with it
+            cause = self._read_z_fault_cause()
             self.loop_off()
-            raise RuntimeError("firmware watchdog disabled the loop (PID_FAULT) - deviation exceeded the limit")
+            raise RuntimeError(
+                f"firmware opened the loop (PID_FAULT): {self._cause_text(cause) or 'cause not reported'}"
+            )
         dev = self._dev32_usteps(st)
         if st["pid_enabled"] and abs(dev) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
             # only while the firmware reports the loop ENGAGED: while it is held open (home zone, homing,
@@ -1183,9 +1193,43 @@ class ZTuner:
         (two encoder counts) when the tool did not send one."""
         return self.a.tol_um if self.a.tol_um > 0 else 2 * ENC_STEP_MM * 1000.0
 
+    def _read_z_fault_cause(self, restore_reporting=True):
+        """Why the firmware opened the Z loop, as a PID_FAULT_CAUSE, or NONE if it will not say.
+
+        The causes ride in status bytes 19-21 only while encoder reporting is OFF; with it on (which is
+        how this tool runs) those bytes carry the reported axis's flags and clipped deviation instead.
+        So drop reporting for a few status packets, read, and put it back.
+
+        Must be called before anything acknowledges the fault: DISABLE_STAGE_PID, ENABLE_STAGE_PID and
+        CONFIGURE_STAGE_PID all clear the cause together with the fault bit, so loop_off() erases the
+        answer. Best effort - a failure here must not replace the fault as the reported problem.
+        """
+        try:
+            self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF)
+            self.wait(5)
+            time.sleep(0.03)  # ~3 packets at the 10 ms status cadence
+            self.last_fault_cause = self.mcu.pid_fault_cause(AXIS.Z)
+            return self.last_fault_cause
+        except Exception as e:  # noqa: BLE001
+            self.log(f"could not read the fault cause: {e}")
+            return PID_FAULT_CAUSE.NONE
+        finally:
+            if restore_reporting:
+                try:
+                    self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA)
+                    self.wait(5)
+                except Exception as e:  # noqa: BLE001
+                    self.log(f"could not restore encoder reporting: {e}")
+
     def _ackprobe_step(self, rep, closed, step_um, tol_usteps):
         """One measured move: error and loop state AT the acknowledgment, then every 5 ms through the
-        exposure window. The at-ack read is the window's first sample, at t = 0."""
+        exposure window. The at-ack read is the window's first sample, at t = 0.
+
+        Returns (row, abort). A fault is the event this action exists to capture, so it ends the
+        sampling but not the row: the caller gets the filled-in row first and raises `abort` after it
+        has been written. Raising from in here would have dropped exactly the move that tripped, and
+        left pid_fault_at_ack and faults_in_window unable to be anything but 0 in the CSV.
+        """
         t_cmd = time.time()
         ack_s, st = self._move_and_read(self.a.depth_mm + step_um / 1000.0)  # no settle: read follows the ack
         t_ack = time.time()
@@ -1197,7 +1241,14 @@ class ZTuner:
         max_abs = abs(dev)
         t_tol = 0.0 if abs(dev) <= tol_usteps else float("nan")
         samples = 1
-        while time.time() - t_ack < self.a.exposure_ms / 1000.0:
+        abort = None
+        self.last_fault_cause = PID_FAULT_CAUSE.NONE
+        cause = PID_FAULT_CAUSE.NONE
+        if fault_at_ack:
+            cause = self._read_z_fault_cause()
+            self.loop_off()
+            abort = RuntimeError(f"firmware opened the loop (PID_FAULT) at the acknowledgment of a {step_um:g} um move")
+        while abort is None and time.time() - t_ack < self.a.exposure_ms / 1000.0:
             time.sleep(0.005)  # twice the status cadence; the stream itself is 10 ms
             sn = self.mcu.get_encoder_state()
             d = self._dev32_usteps(sn)
@@ -1207,8 +1258,25 @@ class ZTuner:
             faults += int(bool(sn["pid_fault"]))
             if math.isnan(t_tol) and abs(d) <= tol_usteps:
                 t_tol = (time.time() - t_ack) * 1000.0
-            self.guard()  # same host-side abort the other actions use; the sample above is already recorded
-        return {
+            if sn["pid_fault"]:
+                # read the cause before loop_off(): DISABLE acknowledges the fault and clears it
+                cause = self._read_z_fault_cause()
+                self.loop_off()
+                abort = RuntimeError(
+                    f"firmware opened the loop (PID_FAULT) {(time.time() - t_ack) * 1000.0:.0f} ms into the "
+                    f"exposure window of a {step_um:g} um move"
+                )
+                break
+            try:
+                self.guard()  # same host-side abort the other actions use; the sample above is recorded
+            except RuntimeError as e:
+                abort = e
+                # guard reads the state again, so it can be the one that catches a fault; it stashes
+                # the cause on the way past because its own loop_off() erases it
+                cause = self.last_fault_cause
+        if abort is not None:
+            self.log(f"ackprobe: {abort} - keeping the row; cause: {self._cause_text(cause)}")
+        row = {
             "rep": rep,
             "mode": "closed" if closed else "open",
             "step_um": step_um,
@@ -1223,7 +1291,16 @@ class ZTuner:
             "engaged_throughout": engaged_throughout,
             "window_samples": samples,
             "faults_in_window": faults,
+            "fault_cause": cause,
+            "fault_cause_name": self._cause_text(cause),
         }
+        return row, abort
+
+    @staticmethod
+    def _cause_text(cause):
+        if cause == PID_FAULT_CAUSE.NONE:
+            return ""
+        return PID_FAULT_CAUSE.NAMES.get(cause, f"unknown cause {cause}")
 
     def ackprobe(self):
         """Readiness for an exposure at the acknowledgment, not just the acknowledgment.
@@ -1235,6 +1312,9 @@ class ZTuner:
 
         The host only sees the controller through the 10 ms status stream; sub-10 ms behaviour is not
         resolvable from here, whatever the ack numbers look like.
+
+        A fault ends the run, but the move it happened on is kept: it is appended with its cause and the
+        CSV and summary are written before the exception leaves.
         """
         tol_um = self._ack_tolerance_um()
         tol_usteps = tol_um * USTEPS_PER_MM / 1000.0
@@ -1250,7 +1330,10 @@ class ZTuner:
                         self.engage_loop()
                     try:
                         for step_um in self.a.ack_steps_um:
-                            rows.append(self._ackprobe_step(rep, closed, step_um, tol_usteps))
+                            row, abort = self._ackprobe_step(rep, closed, step_um, tol_usteps)
+                            rows.append(row)  # the faulted move is a result, not a lost sample
+                            if abort is not None:
+                                raise abort
                             self.move_to_depth(self.a.depth_mm)
                             self.settle(0.15)
                     finally:
@@ -1290,6 +1373,10 @@ class ZTuner:
             "window_sample_interval_ms": 5.0,
             "error_field": "ENC_POS - XACTUAL from the 32-bit fields (not the int16 ENC_POS_DEV, which clips at +-192 um)",
             "telemetry": "10 ms status stream; sub-10 ms behaviour is not resolvable from the host",
+            "fault_cause_field": (
+                "PID_FAULT_* from status bytes 19-21, read by dropping encoder reporting for ~30 ms at the "
+                "fault and before any DISABLE, which would clear it"
+            ),
         }
 
     def _ackprobe_summary(self, rows):
@@ -1322,6 +1409,7 @@ class ZTuner:
                         "ack_ms_p95": pct(acks, 0.95),
                         "ack_ms_max": max(acks),
                         "faults": sum(r["faults_in_window"] for r in sel),
+                        "fault_causes": sorted({r["fault_cause_name"] for r in sel if r["fault_cause"]}),
                         "time_to_tolerance_ms_median": pct(reached, 0.5),
                         "never_within_tolerance": len(sel) - len(reached),
                     }
@@ -1343,6 +1431,8 @@ class ZTuner:
         "engaged_throughout",
         "window_samples",
         "faults_in_window",
+        "fault_cause",
+        "fault_cause_name",
     ]
 
     def _ackprobe_report(self, rows, tol_um):
@@ -1370,6 +1460,8 @@ class ZTuner:
                         int(r["engaged_throughout"]),
                         r["window_samples"],
                         r["faults_in_window"],
+                        r["fault_cause"],
+                        r["fault_cause_name"],
                     ]
                 )
         summary = self._ackprobe_summary(rows)
