@@ -726,3 +726,107 @@ def test_wait_timeout_error_includes_mcu_state():
             micro.wait_till_operation_is_completed(0.05)
     finally:
         micro.close()
+
+
+def _completion_packet(crc_calculator, cmd_id, status, z, enc):
+    """A status packet in the reporting-ON layout, addressed to `cmd_id`."""
+    msg = bytearray(24)
+    msg[0] = cmd_id
+    msg[1] = status
+    msg[10:14] = int(z).to_bytes(4, "big", signed=True)
+    msg[14:18] = int(enc).to_bytes(4, "big", signed=True)
+    msg[19] = (
+        (1 << control._def.ENC_FLAG.REPORTING)
+        | (1 << control._def.ENC_FLAG.PID_ENABLED)
+        | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT)
+    )
+    msg[22] = (1 << 4) | 6
+    msg[23] = crc_calculator.calculate_checksum(msg[:23])
+    return msg
+
+
+def test_completion_snapshot_holds_the_packet_that_completed_the_command():
+    """A waiter that polls is_busy() must be able to read the completing packet, not "whatever is
+    current when it looks".
+
+    The read loop clears mcu_cmd_execution_in_progress in the same pass that decodes the packet's
+    positions and encoder fields. A poller (the tuner's ackprobe) sees the flag drop and then reads
+    z_pos / get_encoder_state() one thread switch later - which is the previous packet's fields if it
+    got there first, or a later packet's if it was slow. Neither is "at the acknowledgment". The
+    reader publishes an immutable snapshot of THIS packet before it releases the waiter.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        micro.move_z_to_usteps(100)
+        micro.wait_till_operation_is_completed()
+        assert micro.completion_snapshot() is not None  # the simulator's own ack published one
+
+        cmd_id = micro._cmd_id
+        # The simulator acks every write itself, so the in-flight state a bench controller is in when
+        # the completing packet lands has to be staged by hand.
+        micro.mcu_cmd_execution_in_progress = True
+        _feed_status_packet(
+            micro,
+            _completion_packet(
+                crc_calculator, cmd_id, control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS, z=12345, enc=12000
+            ),
+        )
+
+        assert not micro.is_busy()
+        snap = micro.completion_snapshot()
+        assert snap.cmd_id == cmd_id
+        assert snap.status == control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        assert snap.z == 12345
+        assert snap.encoder_pos == 12000
+        assert snap.dev32 == -345  # ENC_POS - XACTUAL, both from this packet
+
+        # The next packet moves the live fields. The snapshot is tied to the packet that completed
+        # the command, so it does not move with them.
+        _feed_status_packet(
+            micro,
+            _completion_packet(
+                crc_calculator, cmd_id, control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS, z=99999, enc=99000
+            ),
+        )
+        assert micro.z_pos == 99999
+        assert micro.completion_snapshot().z == 12345
+        assert micro.completion_snapshot().encoder_pos == 12000
+    finally:
+        micro.close()
+
+
+def test_completion_snapshot_is_published_on_an_aborted_command_too():
+    """CMD_EXECUTION_ERROR releases the waiter the same way a completion does, and the packet that
+    carries it is the only report of where the axis was when the controller gave up."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        micro.move_z_to_usteps(100)
+        micro.wait_till_operation_is_completed()
+        cmd_id = micro._cmd_id
+        micro.mcu_cmd_execution_in_progress = True
+        _feed_status_packet(
+            micro,
+            _completion_packet(
+                crc_calculator, cmd_id, control._def.CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR, z=777, enc=700
+            ),
+        )
+
+        assert not micro.is_busy()
+        assert micro.last_command_aborted_error is not None
+        snap = micro.completion_snapshot()
+        assert snap.cmd_id == cmd_id
+        assert snap.status == control._def.CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+        assert snap.z == 777
+        assert snap.encoder_pos == 700
+        assert snap.dev32 == -77
+        micro.acknowledge_aborted_command()
+    finally:
+        micro.close()

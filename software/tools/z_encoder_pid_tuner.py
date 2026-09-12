@@ -178,6 +178,12 @@ class ZTuner:
         # carries the reason back out to whatever is recording the run.
         self.last_fault_cause = PID_FAULT_CAUSE.NONE
         self.last_cmd_to_ack_s = float("nan")
+        # Everything about the last move that is only true AT its acknowledgment: the packet the
+        # controller completed it with, the usteps that move commanded, and whether the packet could
+        # be tied to it. The live mcu attributes have moved on by the time anything reads them.
+        self.last_ack_snapshot = None
+        self.last_ack_snapshot_stale = True
+        self.last_move_target_usteps = None
         self.cmd_to_ack_log = []
         self.summary = {
             "config": vars(args),
@@ -304,7 +310,12 @@ class ZTuner:
     def move_to_depth(self, depth_mm, timeout=30.0):
         self.check_depth(depth_mm)
         t0 = time.time()
-        self.mcu.move_z_to_usteps(depth_to_usteps(depth_mm))
+        target = depth_to_usteps(depth_mm)
+        self.last_ack_snapshot = None
+        self.last_ack_snapshot_stale = True
+        self.last_move_target_usteps = target
+        self.mcu.move_z_to_usteps(target)
+        cmd_id = self.mcu._cmd_id  # the id send_command just took, under its own lock
         while self.mcu.is_busy():
             self.guard()
             if time.time() - t0 > timeout:
@@ -314,6 +325,20 @@ class ZTuner:
         # host-visible latency: command sent -> ack seen (includes the 10 ms packet cadence). Timed
         # here, before the cause read below spends ~100 ms of it on the wire.
         self.last_cmd_to_ack_s = time.time() - t0
+        # The packet that ended THIS move, taken before the fault read below (which sends commands of
+        # its own, and so publishes snapshots of its own). Polling is_busy() and then reading z_pos /
+        # get_encoder_state() would sample whichever packet the reader thread had stored by the time
+        # this thread got scheduled - the one before the ack if it was quick, a later one if it was
+        # slow. That is the error this action measures, so it must not be the error it introduces.
+        snap = self.mcu.completion_snapshot()
+        self.last_ack_snapshot = snap
+        self.last_ack_snapshot_stale = snap is None or snap.cmd_id != cmd_id
+        if self.last_ack_snapshot_stale:
+            self.log(
+                f"WARNING: no completion snapshot for command {cmd_id} "
+                f"(got {None if snap is None else snap.cmd_id}); the at-ack fields of this move fall "
+                f"back to the live state and are flagged stale"
+            )
         # The controller clears 'busy' on an abort as well as on a completed move, and the
         # CMD_EXECUTION_ERROR that aborts one is carried by the same packet as the fault bit. Read as
         # an ack, the faulted move was recorded as a clean one - and the abort was left uncleared for
@@ -339,13 +364,43 @@ class ZTuner:
         """Move to `depth_mm` and read the encoder state; returns (command-to-ack seconds, state).
 
         settle_s = 0 reads at the acknowledgment with nothing in between, which is what ackprobe needs (the
-        error an exposure started on the ack would see); stack() passes its settle and gets the error at rest.
+        error an exposure started on the ack would see) - and that read comes from the completing packet
+        itself, not from the live fields, which the status stream has already moved on by then. stack()
+        passes its settle and gets the error at rest, where the live fields ARE the answer.
         """
         self.move_to_depth(depth_mm)
         ack_s = self.last_cmd_to_ack_s
         if settle_s > 0:
             self.settle(settle_s)
-        return ack_s, self.mcu.get_encoder_state()
+            return ack_s, self.mcu.get_encoder_state()
+        return ack_s, self._ack_state()
+
+    def _ack_state(self):
+        """Loop state and encoder error AT the acknowledgment of the last move.
+
+        Read out of the completion snapshot, which the reader thread publishes before it releases the
+        waiter, so it is the completing packet's - not whatever the 10 ms status stream has left in
+        the live attributes by now. Falls back to the live fields only when the snapshot could not be
+        tied to the move (last_ack_snapshot_stale, which is also recorded in the row).
+        """
+        if self.last_ack_snapshot is None or self.last_ack_snapshot_stale:
+            return self.mcu.get_encoder_state()
+        return self.last_ack_snapshot.encoder_state()
+
+    def _enc_minus_target_usteps(self):
+        """Encoder position at the ack minus the usteps the move commanded.
+
+        This, not the loop error, is what a nonzero completion window is supposed to bound: the
+        controller may call a move complete while ENC_POS is still up to the window short of the
+        target, and an exposure started on that ack is out of focus by exactly this. NaN when the
+        packet carried no encoder reading or could not be tied to the move.
+        """
+        snap = self.last_ack_snapshot
+        if snap is None or self.last_ack_snapshot_stale or snap.encoder_pos is None:
+            return float("nan")
+        if self.last_move_target_usteps is None:
+            return float("nan")
+        return snap.encoder_pos - self.last_move_target_usteps
 
     def _dev32_usteps(self, st):
         """Encoder minus counter, full width, from one status packet.
@@ -1273,12 +1328,20 @@ class ZTuner:
             abort = e
             ack_s = self.last_cmd_to_ack_s
             cause = self.last_fault_cause
-            st = self.mcu.get_encoder_state()
+            # The abort branch of the read loop publishes a snapshot exactly as the completion branch
+            # does, and move_to_depth took it before the cause read dropped encoder reporting - so the
+            # aborted move still reports where the axis was, instead of the state reporting came back in.
+            st = self._ack_state()
         t_ack = time.time()
         # Reading the cause drops encoder reporting for a few packets and restoring it is best
         # effort, so an aborted move can come back with no reading at all. nan says "not measured"
         # instead of carrying the previous move's error into this row.
         dev = self._dev32_usteps(st) if st["dev32"] is not None else float("nan")
+        # What the completion window bounds: how far the encoder still was from the commanded target
+        # when the controller said "done". The loop error above is a different question (encoder vs
+        # step counter); a window can be wide open with the two in perfect agreement.
+        enc_err = self._enc_minus_target_usteps()
+        stale = bool(self.last_ack_snapshot_stale)
         enabled_at_ack = bool(st["pid_enabled"])
         fault_at_ack = bool(st["pid_fault"]) or cause != PID_FAULT_CAUSE.NONE
         engaged_throughout = enabled_at_ack
@@ -1326,6 +1389,9 @@ class ZTuner:
             "ack_ms": ack_s * 1000.0,
             "dev32_at_ack_usteps": dev,
             "dev32_at_ack_um": dev / USTEPS_PER_MM * 1000.0,
+            "enc_minus_target_usteps": enc_err,
+            "enc_minus_target_um": enc_err / USTEPS_PER_MM * 1000.0,
+            "snapshot_stale": stale,
             "pid_enabled_at_ack": enabled_at_ack,
             "pid_fault_at_ack": fault_at_ack,
             "max_abs_dev_in_window_um": max_abs / USTEPS_PER_MM * 1000.0,
@@ -1414,6 +1480,15 @@ class ZTuner:
             "exposure_ms": self.a.exposure_ms,
             "window_sample_interval_ms": 5.0,
             "error_field": "ENC_POS - XACTUAL from the 32-bit fields (not the int16 ENC_POS_DEV, which clips at +-192 um)",
+            "target_error_field": (
+                "enc_minus_target = ENC_POS at the acknowledgment minus the usteps the move commanded - "
+                "what a nonzero completion window allows, and what an exposure started on the ack pays for"
+            ),
+            "at_ack_source": (
+                "the status packet the controller completed the move with, published by the reader thread "
+                "before it released the waiter (snapshot_stale = 1 if it could not be tied to the command "
+                "and the row fell back to the live fields)"
+            ),
             "telemetry": "10 ms status stream; sub-10 ms behaviour is not resolvable from the host",
             "fault_cause_field": (
                 "PID_FAULT_* from status bytes 19-21, read by dropping encoder reporting for ~30 ms at the "
@@ -1430,6 +1505,7 @@ class ZTuner:
                     continue
                 acks = [r["ack_ms"] for r in sel]
                 at_ack = [abs(r["dev32_at_ack_um"]) for r in sel]
+                to_target = [abs(r["enc_minus_target_um"]) for r in sel if not math.isnan(r["enc_minus_target_um"])]
                 in_win = [r["max_abs_dev_in_window_um"] for r in sel]
                 reached = [
                     r["time_to_within_tolerance_ms"] for r in sel if not math.isnan(r["time_to_within_tolerance_ms"])
@@ -1444,6 +1520,12 @@ class ZTuner:
                         "err_at_ack_um_median": pct(at_ack, 0.5),
                         "err_at_ack_um_p95": pct(at_ack, 0.95),
                         "err_at_ack_um_max": max(at_ack),
+                        # |ENC_POS - commanded target| at the ack: the distance a nonzero completion
+                        # window is what allows, and what an exposure started on the ack pays for.
+                        "enc_to_target_um_p50": pct(to_target, 0.5),
+                        "enc_to_target_um_p95": pct(to_target, 0.95),
+                        "enc_to_target_um_max": max(to_target) if to_target else float("nan"),
+                        "enc_to_target_unmeasured": len(sel) - len(to_target),
                         "window_max_err_um_median": pct(in_win, 0.5),
                         "window_max_err_um_p95": pct(in_win, 0.95),
                         "window_max_err_um_max": max(in_win),
@@ -1466,6 +1548,9 @@ class ZTuner:
         "ack_ms",
         "dev32_at_ack_usteps",
         "dev32_at_ack_um",
+        "enc_minus_target_usteps",
+        "enc_minus_target_um",
+        "snapshot_stale",
         "pid_enabled_at_ack",
         "pid_fault_at_ack",
         "max_abs_dev_in_window_um",
@@ -1495,6 +1580,9 @@ class ZTuner:
                         f"{r['ack_ms']:.1f}",
                         r["dev32_at_ack_usteps"],
                         f"{r['dev32_at_ack_um']:.3f}",
+                        f"{r['enc_minus_target_usteps']:.0f}",
+                        f"{r['enc_minus_target_um']:.3f}",
+                        int(r["snapshot_stale"]),
                         int(r["pid_enabled_at_ack"]),
                         int(r["pid_fault_at_ack"]),
                         f"{r['max_abs_dev_in_window_um']:.3f}",
@@ -1517,12 +1605,14 @@ class ZTuner:
         )
         self.log(
             f"{'step um':>8} {'mode':>6} {'n':>4} {'open@ack':>9} {'|err|@ack med/p95/max um':>26} "
+            f"{'|enc-target| med/p95/max um':>28} "
             f"{'in-window max med/p95/max um':>30} {'ack ms p50/p95/max':>20} {'faults':>7} {'to tol ms':>10}"
         )
         for r in summary:
             self.log(
                 f"{r['step_um']:>8g} {r['mode']:>6} {r['n']:>4} {r['acks_with_loop_open']:>9} "
                 f"{r['err_at_ack_um_median']:>8.2f} {r['err_at_ack_um_p95']:>8.2f} {r['err_at_ack_um_max']:>8.2f} "
+                f"{r['enc_to_target_um_p50']:>9.2f} {r['enc_to_target_um_p95']:>9.2f} {r['enc_to_target_um_max']:>9.2f} "
                 f"{r['window_max_err_um_median']:>9.2f} {r['window_max_err_um_p95']:>9.2f} {r['window_max_err_um_max']:>9.2f} "
                 f"{r['ack_ms_p50']:>6.0f} {r['ack_ms_p95']:>6.0f} {r['ack_ms_max']:>6.0f} {r['faults']:>7} "
                 f"{r['time_to_tolerance_ms_median']:>7.0f}"

@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 import serial
@@ -127,6 +127,59 @@ class CommandAborted(RuntimeError):
         super().__init__(reason)
         self.command_id = command_id
         self.recoverable = recoverable
+
+
+def decode_encoder_flags(flags: int) -> dict:
+    """Status byte 19's ENC_FLAG bits, named. Only meaningful in the reporting-ON layout; the read
+    loop holds encoder_flags at 0 in the other one, where those bits belong to the fault causes."""
+    return {
+        "reporting": bool(flags & (1 << ENC_FLAG.REPORTING)),
+        "pid_enabled": bool(flags & (1 << ENC_FLAG.PID_ENABLED)),
+        "pid_fault": bool(flags & (1 << ENC_FLAG.PID_FAULT)),
+        "pid_zone_hold": bool(flags & (1 << ENC_FLAG.PID_ZONE)),
+        "axis": (flags >> ENC_FLAG.AXIS_SHIFT) & 0x07,
+    }
+
+
+class CompletionSnapshot(NamedTuple):
+    """Everything the packet that ended a command said, frozen at the moment the waiter was released.
+
+    The read loop clears mcu_cmd_execution_in_progress and then goes on writing the live attributes
+    (x_pos ... encoder_flags) from the packets after it. A caller that polls is_busy() and then reads
+    those attributes therefore does not read "the state at the acknowledgment": it reads whatever the
+    reader thread happened to have stored by the time it got there - the previous packet's fields if
+    it was quick, a later packet's if it was slow. That is exactly the measurement the tuner's
+    ackprobe exists to make, so the reader publishes this instead, in one atomic assignment, before
+    it clears the busy flag. Seeing is_busy() False therefore means this snapshot is already the
+    completing packet's.
+
+    encoder_pos and dev32 are None when the packet carried no encoder reading (reporting off): the
+    previous reading is not a substitute for one.
+    """
+
+    cmd_id: int
+    t_recv: float
+    status: int
+    x: int
+    y: int
+    z: int
+    theta: int
+    encoder_pos: Optional[int]
+    dev32: Optional[int]
+    encoder_flags: int
+    pid_fault_mask: int
+
+    def encoder_state(self) -> dict:
+        """What get_encoder_state() would have returned for THIS packet.
+
+        Same keys, so a caller can swap one for the other. "deviation" - the firmware's own
+        ENC_POS_DEV, clipped to int16 - is not carried here: dev32 is the same difference at full
+        width and is the one any measurement should use, so None says "not in the snapshot" rather
+        than handing back some other packet's clipped number.
+        """
+        state = decode_encoder_flags(self.encoder_flags)
+        state.update({"encoder_pos": self.encoder_pos, "deviation": None, "dev32": self.dev32})
+        return state
 
 
 # NOTE(imo): We'll want to pull this out into a common serial impl shared with serial_peripheral.py at some point, but
@@ -635,6 +688,9 @@ class Microcontroller:
         self._cmd_id_mcu = None  # command id of mcu's last received command
         self._cmd_execution_status = None
         self.mcu_cmd_execution_in_progress = False
+        # The packet that ended the last command, published by the read loop before it releases the
+        # waiter. See CompletionSnapshot and completion_snapshot().
+        self.last_completion: Optional[CompletionSnapshot] = None
 
         # This is a sentinel/watchdog of sorts.  Every time we receive a valid packet from the micro, we update this.
         # The micro should be sending packets once very ~10 ms, so if we go much longer than that without something
@@ -1449,17 +1505,15 @@ class Microcontroller:
         from by the reader thread - use it for any measurement; it is None when the reported axis
         has no counter in the status packet.
         """
-        f = self.encoder_flags
-        return {
-            "reporting": bool(f & (1 << ENC_FLAG.REPORTING)),
-            "pid_enabled": bool(f & (1 << ENC_FLAG.PID_ENABLED)),
-            "pid_fault": bool(f & (1 << ENC_FLAG.PID_FAULT)),
-            "pid_zone_hold": bool(f & (1 << ENC_FLAG.PID_ZONE)),
-            "axis": (f >> ENC_FLAG.AXIS_SHIFT) & 0x07,
-            "encoder_pos": self.encoder_pos,
-            "deviation": self.encoder_deviation,
-            "dev32": self.encoder_dev32,
-        }
+        state = decode_encoder_flags(self.encoder_flags)
+        state.update(
+            {
+                "encoder_pos": self.encoder_pos,
+                "deviation": self.encoder_deviation,
+                "dev32": self.encoder_dev32,
+            }
+        )
+        return state
 
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
         """Closed-loop gains. P is carried in 16 bits; the bench found P 65535 to be the usable maximum
@@ -1771,10 +1825,122 @@ class Microcontroller:
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]
                 self._cmd_execution_status = msg[1]
+                # The whole packet is decoded and stored before any of the completion bookkeeping
+                # below runs. Two reasons, and the second is why the order is load-bearing: the
+                # encoder difference has to be built from this packet's own counter (a reader that
+                # took it from self.z_pos instead could land between two of these assignments and mix
+                # packets), and clearing the busy flag while these fields still held the PREVIOUS
+                # packet's values handed every waiter a state that was never "at the acknowledgment".
+                x_pos = self._payload_to_int(
+                    msg[2:6], MicrocontrollerDef.N_BYTES_POS
+                )  # microstep or encoder resolution
+                y_pos = self._payload_to_int(msg[6:10], MicrocontrollerDef.N_BYTES_POS)
+                z_pos = self._payload_to_int(msg[10:14], MicrocontrollerDef.N_BYTES_POS)
+                theta_pos = self._payload_to_int(msg[14:18], MicrocontrollerDef.N_BYTES_POS)
+                self.x_pos = x_pos
+                self.y_pos = y_pos
+                self.z_pos = z_pos
+                self.theta_pos = theta_pos
+
+                self.button_and_switch_state = msg[18]
+                # Bytes 19-21 mean two different things (firmware >= 1.6), so decode them before
+                # the fault log below, which reads the cause. Reporting ON: the theta field
+                # doubles as ENC_POS, byte 19 carries ENC_FLAG bits and bytes 20-21 the int16
+                # clipped loop error of the reported axis. Reporting OFF: the PID_FAULT_CAUSE of X / Y
+                # sit in byte 19 bits 1-3 / 4-6 and Z's in byte 20 bits 0-2, packed so byte 19 bit 0
+                # (the reporting flag) stays clear. All zero unless a host enabled the loop.
+                reporting = bool(msg[19] & (1 << ENC_FLAG.REPORTING))
+                # Only keep byte 19 as flags in the layout where it IS flags. In the cause layout
+                # its bits belong to X (1-3) and Y (4-6), so an X cause of 1 / 2 / 4 would read
+                # back as pid_enabled / pid_fault / pid_zone_hold and any Y cause as a reported
+                # axis. Zero says what is true there: no loop state is on the wire.
+                self.encoder_flags = msg[19] if reporting else 0
+                encoder_pos = None
+                dev32 = None
+                if reporting:
+                    encoder_pos = theta_pos
+                    self.encoder_pos = encoder_pos
+                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                    # ENC_POS minus the reported axis's step counter, both from this packet, at full
+                    # width: the firmware's own field clips to int16 (+-192 um on a 256 usteps/FS Z).
+                    counter = {AXIS.X: x_pos, AXIS.Y: y_pos, AXIS.Z: z_pos}.get(
+                        (self.encoder_flags >> ENC_FLAG.AXIS_SHIFT) & 0x07
+                    )
+                    dev32 = None if counter is None else encoder_pos - counter
+                    self.encoder_dev32 = dev32
+                else:
+                    self.pid_fault_causes = {
+                        AXIS.X: (msg[19] >> PID_FAULT_CAUSE.X_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Y: (msg[19] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Z: (msg[20] >> PID_FAULT_CAUSE.Z_SHIFT) & PID_FAULT_CAUSE.MASK,
+                    }
+                    # No encoder reading in this layout, and the last one is not a substitute: a
+                    # caller sampling dev32 across a reporting drop would record a stale pair as a
+                    # fresh measurement. encoder_pos / encoder_deviation keep their last values,
+                    # which get_encoder_state() already marks as not reporting.
+                    self.encoder_dev32 = dev32
+                # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte
+                # 19's flag these arrive in every packet, so a fault is reported even when no
+                # host command was in flight to fail. Log each NEW fault once - the packet
+                # stream repeats the latch until the host clears it.
+                fault_mask = (msg[18] >> BIT_POS_PID_FAULT_X) & 0x07
+                # These bits are the only fault state valid in both layouts, so they are also what
+                # expires a cause: pid_fault_causes is written by reporting-OFF packets alone, so
+                # without this the host would go on naming a cause the controller has already
+                # cleared, for as long as reporting stayed on.
+                for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)):
+                    if not fault_mask & (1 << bit):
+                        self.pid_fault_causes[axis] = PID_FAULT_CAUSE.NONE
+                if fault_mask != self.pid_fault_mask:
+                    newly = fault_mask & ~self.pid_fault_mask
+                    for bit, name, axis in ((0, "X", AXIS.X), (1, "Y", AXIS.Y), (2, "Z", AXIS.Z)):
+                        if newly & (1 << bit):
+                            cause = self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
+                            if reporting:
+                                # The bytes that would have carried it are the reported axis's
+                                # flags and deviation; naming a cause from them would be a guess.
+                                why = "cause not on the wire while encoder reporting is on"
+                            elif cause in PID_FAULT_CAUSE.NAMES:
+                                why = PID_FAULT_CAUSE.NAMES[cause]
+                            else:
+                                why = f"cause not reported ({cause})"
+                            self.log.error(
+                                f"[MCU] closed-loop fault on {name} \u2014 {why}; the loop is open and the axis runs "
+                                f"open-loop. Re-enable (validated) or disable the loop explicitly to clear it."
+                            )
+                    self.pid_fault_mask = fault_mask
+                # switch
+                self.switch_state = (self.button_and_switch_state & (1 << BIT_POS_SWITCH)) > 0
+
+                # Firmware version from byte 22: high nibble = major, low nibble = minor
+                # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
+                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
+                self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
+
+                # Everything this packet says, frozen. Built here - from the locals above, never from
+                # the attributes - so that the branches below can hand it to a waiter unchanged.
+                snapshot = CompletionSnapshot(
+                    cmd_id=self._cmd_id_mcu,
+                    t_recv=self._last_successful_read_time,
+                    status=self._cmd_execution_status,
+                    x=x_pos,
+                    y=y_pos,
+                    z=z_pos,
+                    theta=theta_pos,
+                    encoder_pos=encoder_pos,
+                    dev32=dev32,
+                    encoder_flags=self.encoder_flags,
+                    pid_fault_mask=fault_mask,
+                )
+
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
                     if self.mcu_cmd_execution_in_progress:
+                        # Published before the flag drops, so a caller that polls is_busy() and then
+                        # reads the state "at the acknowledgment" gets this packet rather than
+                        # whichever one the reader thread has stored by the time it looks.
+                        self.last_completion = snapshot
                         self.mcu_cmd_execution_in_progress = False
                         elapsed_ms = (time.time() - self.last_command_send_timestamp) * 1000
                         self.log.debug(
@@ -1811,7 +1977,10 @@ class Microcontroller:
                     and self._cmd_execution_status == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
                 ):
                     # Fail fast so callers don't wait the full ack timeout
-                    # for a completion the firmware says will never arrive.
+                    # for a completion the firmware says will never arrive. An abort releases the
+                    # waiter exactly as a completion does, so it publishes the same snapshot first -
+                    # this packet is the only report of where the axis was when the controller gave up.
+                    self.last_completion = snapshot
                     self.abort_current_command(
                         reason="firmware reported CMD_EXECUTION_ERROR",
                         recoverable=True,
@@ -1826,83 +1995,9 @@ class Microcontroller:
                         f"[MCU] !!! received ack for command {self._cmd_id_mcu}, but waiting for command {self._cmd_id}"
                     )
 
-                # Locals first: the encoder difference below has to be built from this packet's own
-                # counter. A reader that took it from self.z_pos instead could land between two of
-                # these assignments and mix packets.
-                x_pos = self._payload_to_int(
-                    msg[2:6], MicrocontrollerDef.N_BYTES_POS
-                )  # microstep or encoder resolution
-                y_pos = self._payload_to_int(msg[6:10], MicrocontrollerDef.N_BYTES_POS)
-                z_pos = self._payload_to_int(msg[10:14], MicrocontrollerDef.N_BYTES_POS)
-                theta_pos = self._payload_to_int(msg[14:18], MicrocontrollerDef.N_BYTES_POS)
-                self.x_pos = x_pos
-                self.y_pos = y_pos
-                self.z_pos = z_pos
-                self.theta_pos = theta_pos
-
-                self.button_and_switch_state = msg[18]
-                # Bytes 19-21 mean two different things (firmware >= 1.6), so decode them before
-                # the fault log below, which reads the cause. Reporting ON: the theta field
-                # doubles as ENC_POS, byte 19 carries ENC_FLAG bits and bytes 20-21 the int16
-                # clipped loop error of the reported axis. Reporting OFF: the PID_FAULT_CAUSE of X / Y
-                # sit in byte 19 bits 1-3 / 4-6 and Z's in byte 20 bits 0-2, packed so byte 19 bit 0
-                # (the reporting flag) stays clear. All zero unless a host enabled the loop.
-                reporting = bool(msg[19] & (1 << ENC_FLAG.REPORTING))
-                # Only keep byte 19 as flags in the layout where it IS flags. In the cause layout
-                # its bits belong to X (1-3) and Y (4-6), so an X cause of 1 / 2 / 4 would read
-                # back as pid_enabled / pid_fault / pid_zone_hold and any Y cause as a reported
-                # axis. Zero says what is true there: no loop state is on the wire.
-                self.encoder_flags = msg[19] if reporting else 0
-                if reporting:
-                    self.encoder_pos = theta_pos
-                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
-                    # ENC_POS minus the reported axis's step counter, both from this packet, at full
-                    # width: the firmware's own field clips to int16 (+-192 um on a 256 usteps/FS Z).
-                    counter = {AXIS.X: x_pos, AXIS.Y: y_pos, AXIS.Z: z_pos}.get(
-                        (self.encoder_flags >> ENC_FLAG.AXIS_SHIFT) & 0x07
-                    )
-                    self.encoder_dev32 = None if counter is None else self.encoder_pos - counter
-                else:
-                    self.pid_fault_causes = {
-                        AXIS.X: (msg[19] >> PID_FAULT_CAUSE.X_SHIFT) & PID_FAULT_CAUSE.MASK,
-                        AXIS.Y: (msg[19] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
-                        AXIS.Z: (msg[20] >> PID_FAULT_CAUSE.Z_SHIFT) & PID_FAULT_CAUSE.MASK,
-                    }
-                    # No encoder reading in this layout, and the last one is not a substitute: a
-                    # caller sampling dev32 across a reporting drop would record a stale pair as a
-                    # fresh measurement. encoder_pos / encoder_deviation keep their last values,
-                    # which get_encoder_state() already marks as not reporting.
-                    self.encoder_dev32 = None
-                # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte
-                # 19's flag these arrive in every packet, so a fault is reported even when no
-                # host command was in flight to fail. Log each NEW fault once - the packet
-                # stream repeats the latch until the host clears it.
-                fault_mask = (msg[18] >> BIT_POS_PID_FAULT_X) & 0x07
-                # These bits are the only fault state valid in both layouts, so they are also what
-                # expires a cause: pid_fault_causes is written by reporting-OFF packets alone, so
-                # without this the host would go on naming a cause the controller has already
-                # cleared, for as long as reporting stayed on.
-                for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)):
-                    if not fault_mask & (1 << bit):
-                        self.pid_fault_causes[axis] = PID_FAULT_CAUSE.NONE
-                if fault_mask != self.pid_fault_mask:
-                    newly = fault_mask & ~self.pid_fault_mask
-                    for bit, name, axis in ((0, "X", AXIS.X), (1, "Y", AXIS.Y), (2, "Z", AXIS.Z)):
-                        if newly & (1 << bit):
-                            cause = self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
-                            if reporting:
-                                # The bytes that would have carried it are the reported axis's
-                                # flags and deviation; naming a cause from them would be a guess.
-                                why = "cause not on the wire while encoder reporting is on"
-                            elif cause in PID_FAULT_CAUSE.NAMES:
-                                why = PID_FAULT_CAUSE.NAMES[cause]
-                            else:
-                                why = f"cause not reported ({cause})"
-                            self.log.error(
-                                f"[MCU] closed-loop fault on {name} \u2014 {why}; the loop is open and the axis runs "
-                                f"open-loop. Re-enable (validated) or disable the loop explicitly to clear it."
-                            )
-                    self.pid_fault_mask = fault_mask
+                # The joystick ack below sends a command of its own, which takes the next command
+                # id and sets the busy flag - so it has to stay after the bookkeeping above, which
+                # reasons about the id of the command that is in flight now.
                 # joystick button
                 tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
                 joystick_button_pressed = tmp > 0
@@ -1916,15 +2011,6 @@ class Microcontroller:
                     if joystick_button_pressed:
                         self.ack_joystick_button_pressed()
                 self.joystick_button_pressed = joystick_button_pressed
-
-                # switch
-                tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
-                self.switch_state = tmp > 0
-
-                # Firmware version from byte 22: high nibble = major, low nibble = minor
-                # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
-                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
-                self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()
@@ -1965,6 +2051,20 @@ class Microcontroller:
 
     def is_busy(self):
         return self.mcu_cmd_execution_in_progress
+
+    def completion_snapshot(self) -> Optional[CompletionSnapshot]:
+        """The packet that ended the last command, as it was when the waiter was released.
+
+        This is the only honest answer to "where was the axis at the acknowledgment?". The live
+        attributes (z_pos, get_encoder_state(), ...) keep moving with the 10 ms status stream, so a
+        caller that polls is_busy() and then reads them is timing its own scheduling, not the move.
+        The read loop publishes this in one assignment before it clears the busy flag, so a caller
+        that has seen is_busy() go False is guaranteed to find its command's packet here.
+
+        None before any command has completed. Check .cmd_id against the id of the command you sent
+        (Microcontroller._cmd_id at send time) if you need to be sure the snapshot is yours.
+        """
+        return self.last_completion
 
     def set_callback(self, function):
         self.new_packet_callback_external = function
