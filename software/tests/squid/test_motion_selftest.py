@@ -125,6 +125,8 @@ class FakeMcu:
             "axis": 2,
             "encoder_pos": enc,
             "deviation": dev,
+            # full width, paired with the counter by the parser so a caller cannot straddle packets
+            "dev32": enc - self.z_pos,
         }
 
 

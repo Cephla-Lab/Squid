@@ -653,6 +653,9 @@ class Microcontroller:
         self.encoder_deviation = (
             0  # ENC_POS - XACTUAL of the reported axis (positive = encoder ahead of the counter), microsteps, int16
         )
+        # The same difference at full width, paired with the step counter of the packet it came from.
+        # None when the reported axis's counter is not in the status packet (theta / the filter wheels).
+        self.encoder_dev32 = None
         self.encoder_flags = 0  # raw status byte 19
         # Latched closed-loop faults, byte 18 bits 4-6 as a 3-bit mask (bit 0 = X, 1 = Y, 2 = Z).
         # Kept so each new fault is logged once instead of on every packet.
@@ -1431,7 +1434,13 @@ class Microcontroller:
         return self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
 
     def get_encoder_state(self):
-        """Decoded view of the last packet's encoder fields (firmware >= 1.6)."""
+        """Decoded view of the last packet's encoder fields (firmware >= 1.6).
+
+        "deviation" is the firmware's ENC_POS_DEV as it sent it, clipped to int16. "dev32" is the
+        same ENC_POS - XACTUAL at full width, paired with the step counter of the packet it came
+        from by the reader thread - use it for any measurement; it is None when the reported axis
+        has no counter in the status packet.
+        """
         f = self.encoder_flags
         return {
             "reporting": bool(f & (1 << ENC_FLAG.REPORTING)),
@@ -1441,6 +1450,7 @@ class Microcontroller:
             "axis": (f >> ENC_FLAG.AXIS_SHIFT) & 0x07,
             "encoder_pos": self.encoder_pos,
             "deviation": self.encoder_deviation,
+            "dev32": self.encoder_dev32,
         }
 
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
@@ -1808,18 +1818,19 @@ class Microcontroller:
                         f"[MCU] !!! received ack for command {self._cmd_id_mcu}, but waiting for command {self._cmd_id}"
                     )
 
-                self.x_pos = self._payload_to_int(
+                # Locals first: the encoder difference below has to be built from this packet's own
+                # counter. A reader that took it from self.z_pos instead could land between two of
+                # these assignments and mix packets.
+                x_pos = self._payload_to_int(
                     msg[2:6], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
-                self.y_pos = self._payload_to_int(
-                    msg[6:10], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
-                self.z_pos = self._payload_to_int(
-                    msg[10:14], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
-                self.theta_pos = self._payload_to_int(
-                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
+                )  # microstep or encoder resolution
+                y_pos = self._payload_to_int(msg[6:10], MicrocontrollerDef.N_BYTES_POS)
+                z_pos = self._payload_to_int(msg[10:14], MicrocontrollerDef.N_BYTES_POS)
+                theta_pos = self._payload_to_int(msg[14:18], MicrocontrollerDef.N_BYTES_POS)
+                self.x_pos = x_pos
+                self.y_pos = y_pos
+                self.z_pos = z_pos
+                self.theta_pos = theta_pos
 
                 self.button_and_switch_state = msg[18]
                 # Bytes 19-21 mean two different things (firmware >= 1.6), so decode them before
@@ -1830,8 +1841,14 @@ class Microcontroller:
                 self.encoder_flags = msg[19]
                 reporting = bool(self.encoder_flags & (1 << ENC_FLAG.REPORTING))
                 if reporting:
-                    self.encoder_pos = self.theta_pos
+                    self.encoder_pos = theta_pos
                     self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                    # ENC_POS minus the reported axis's step counter, both from this packet, at full
+                    # width: the firmware's own field clips to int16 (+-192 um on a 256 usteps/FS Z).
+                    counter = {AXIS.X: x_pos, AXIS.Y: y_pos, AXIS.Z: z_pos}.get(
+                        (self.encoder_flags >> ENC_FLAG.AXIS_SHIFT) & 0x07
+                    )
+                    self.encoder_dev32 = None if counter is None else self.encoder_pos - counter
                 else:
                     self.pid_fault_causes = {AXIS.X: msg[19], AXIS.Y: msg[20], AXIS.Z: msg[21]}
                 # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte

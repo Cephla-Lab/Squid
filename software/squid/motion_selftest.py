@@ -149,9 +149,9 @@ class ZMotionSelfTest:
 
     def _dev32_usteps(self, st: dict) -> int:
         """Encoder minus counter, full width. st['deviation'] is the firmware's ENC_POS_DEV clipped to int16
-        (+-192 um on a 256 usteps/FS Z), which saturates exactly where it matters; encoder_pos and z_pos are
-        32-bit and come from the same status packet."""
-        return int(st["encoder_pos"]) - int(self.mcu.z_pos)
+        (+-192 um on a 256 usteps/FS Z), which saturates exactly where it matters; st['dev32'] is the same
+        difference paired with the step counter of the packet it came from, by the reader thread."""
+        return int(st["dev32"])
 
     def _pos_mm(self) -> float:
         return self._mm(self.mcu.z_pos)

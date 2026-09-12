@@ -483,6 +483,53 @@ def test_encoder_fields_decode_from_packet():
     micro.close()
 
 
+def test_dev32_is_encoder_minus_counter_from_one_packet():
+    """The 32-bit loop error has to come out of the reader thread, not out of two reads.
+
+    Every caller wants ENC_POS - XACTUAL at full width (the packet's own deviation field clips at
+    int16), and every caller used to build it by pairing st["encoder_pos"] from one packet with a
+    later bare mcu.z_pos. The reader thread writes those two attributes at different lines with no
+    lock, so a read landing in between mixes packets - at 1 mm/s a 10 ms straddle is ~10 um of
+    phantom error. The parser pairs them from the same packet instead.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    def packet(z, enc, axis):
+        msg = bytearray(24)
+        msg[0] = 7
+        msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        msg[10:14] = int(z).to_bytes(4, "big", signed=True)
+        msg[14:18] = int(enc).to_bytes(4, "big", signed=True)
+        msg[19] = (
+            (1 << control._def.ENC_FLAG.REPORTING)
+            | (1 << control._def.ENC_FLAG.PID_ENABLED)
+            | (axis << control._def.ENC_FLAG.AXIS_SHIFT)
+        )
+        msg[20:22] = (0).to_bytes(2, "big", signed=True)
+        msg[22] = (1 << 4) | 6
+        msg[23] = crc_calculator.calculate_checksum(msg[:23])
+        return msg
+
+    try:
+        z, enc = -853333, -853333 + 40000  # 40000 usteps is far outside the int16 deviation field
+        _feed_status_packet(micro, packet(z, enc, control._def.AXIS.Z))
+        state = micro.get_encoder_state()
+        assert state["encoder_pos"] == enc
+        assert state["dev32"] == enc - z
+        # the clipped field is still reported as the firmware sent it
+        assert state["deviation"] == 0
+
+        # An axis whose step counter is not in the status packet (the filter wheel) has no host-side
+        # difference to report: None fails loudly rather than silently subtracting the Z counter.
+        _feed_status_packet(micro, packet(z, enc, control._def.AXIS.W))
+        assert micro.get_encoder_state()["dev32"] is None
+    finally:
+        micro.close()
+
+
 def test_mcu_state_names_a_command_the_firmware_reports_as_still_in_progress():
     """A firmware that never finishes a move keeps answering IN_PROGRESS for the current command id,
     which matches none of the read loop's recovery branches; the timeout text must say so."""

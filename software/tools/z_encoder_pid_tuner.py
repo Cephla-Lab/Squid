@@ -10,8 +10,8 @@ stop while the actuator keeps retracting, so the encoder stops following: firmwa
 open inside a configurable home zone (--zone-um) and `zonemap` measures where that happens.
 
 The encoder error everywhere in this tool - every log line, every CSV column still named deviation_usteps
-or dev_um, every summary field - is ENC_POS - XACTUAL computed from the 32-bit encoder position and step
-counter of one status read. The firmware also reports that difference itself, as ENC_POS_DEV, but clipped to
+or dev_um, every summary field - is ENC_POS - XACTUAL at full width, as the reader thread computed it from
+the encoder position and the step counter of a single status packet. The firmware also reports that difference itself, as ENC_POS_DEV, but clipped to
 an int16: +-32767 usteps is +-192 um on a 256 usteps/FS Z, below the 200 um --max-dev-um default, so a host
 guard reading that field could never trip at the default watchdog and any error past +-192 um was reported
 wrong. The clipped field is only used where the firmware's own behaviour is the subject.
@@ -131,9 +131,10 @@ class Sampler(threading.Thread):
         while not self._stop_evt.is_set():
             st = self.mcu.get_encoder_state()
             z = self.mcu.z_pos
-            # column 3 is ENC_POS - XACTUAL taken from this pair, not the firmware's int16 ENC_POS_DEV: that
-            # field clips at +-32767 usteps and hides exactly the excursions a trace is recorded for
-            row = (time.time() - t0, z, st["encoder_pos"], st["encoder_pos"] - z, self.mcu.encoder_flags)
+            # column 3 is ENC_POS - XACTUAL at full width, paired by the reader thread inside one packet,
+            # not the firmware's int16 ENC_POS_DEV: that field clips at +-32767 usteps and hides exactly
+            # the excursions a trace is recorded for
+            row = (time.time() - t0, z, st["encoder_pos"], st["dev32"], self.mcu.encoder_flags)
             # record on change, and at least every 50 ms so rest periods are represented
             if last is None or row[1:] != last[1:] or row[0] - last[0] >= 0.05:
                 with self._lock:
@@ -319,10 +320,11 @@ class ZTuner:
         """Encoder minus counter, full width, from one status packet.
 
         st["deviation"] is the firmware's ENC_POS_DEV clipped to int16 (+-32767 usteps, +-192 um on a
-        256 usteps/FS Z), which saturates exactly where a lost-motion number matters; encoder_pos and the
-        counter are 32-bit and are refreshed from the same packet.
+        256 usteps/FS Z), which saturates exactly where a lost-motion number matters. st["dev32"] is the
+        same difference at full width, and the reader thread pairs ENC_POS with the step counter of the
+        packet it arrived in - pairing them here instead would straddle packets (~10 um at 1 mm/s).
         """
-        return int(st["encoder_pos"]) - int(self.mcu.z_pos)
+        return int(st["dev32"])
 
     # ---------------------------------------------------------------- phases
     def home(self):
@@ -579,7 +581,7 @@ class ZTuner:
             self.settle(0.4)
             st = self.mcu.get_encoder_state()
             z = self.mcu.z_pos
-            pts.append((tag, z, st["encoder_pos"], st["encoder_pos"] - z))
+            pts.append((tag, z, st["encoder_pos"], st["dev32"]))
 
         # descend to home (allowed: zonemap deliberately visits the home region open-loop)
         self.a.depth_min = 0.0
