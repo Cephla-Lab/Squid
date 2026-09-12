@@ -243,18 +243,19 @@ def _gap_axis(zone_um, dev_um):
     )
 
 
-def test_a_home_gap_the_zone_and_watchdog_cannot_cover_is_refused_at_construction(monkeypatch):
-    """Firmware 1.6 refuses the post-homing frame realignment when the offset exceeds home zone +
-    watchdog. On a stage that declares a gap larger than that sum, every startup park would fault
-    and say nothing about which two ini keys are too small. Say it here, before any of it runs."""
+def test_a_home_gap_the_home_zone_cannot_cover_is_refused_at_construction(monkeypatch):
+    """Firmware 1.6 realigns the encoder frame after homing only INSIDE the home zone, and refuses
+    beyond it (PID_FAULT_REALIGN_REFUSED). On a stage that declares a gap larger than the zone, every
+    startup park would fault and say nothing about which ini key is too small. Say it here, before
+    any of it runs."""
     monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
     with pytest.raises(ValueError) as e:
         _stage(_gap_axis(zone_um=200, dev_um=200))
     msg = str(e.value)
     assert "does not cover" in msg
-    # the operator needs the numbers and the keys, not just the verdict
+    # the operator needs the numbers and the key, not just the verdict
     assert "z_home_gap_mm = 0.64" in msg
-    assert "pid_home_zone_z_um" in msg and "pid_max_deviation_z_um" in msg
+    assert "pid_home_zone_z_um = 200 um" in msg
 
 
 def test_a_home_zone_that_covers_the_gap_is_accepted(monkeypatch):
@@ -270,14 +271,19 @@ def test_no_declared_gap_is_not_checked(monkeypatch):
     mc.turn_on_stage_pid.assert_called_once()
 
 
-def test_an_unset_watchdog_is_checked_at_the_firmware_default(monkeypatch):
-    """pid_max_deviation_z_um = 0 does not mean 'no watchdog': the firmware uses its own 250 um, and
-    that is what it will measure the realignment against."""
+def test_the_watchdog_does_not_help_the_home_zone_cover_the_gap(monkeypatch):
+    """The zone alone has to cover the gap; zone + watchdog is not the bound.
+
+    The realignment only ever runs OUTSIDE the zone, and a frozen encoder's offset there IS the
+    resting position - always larger than the zone. So the zone is the whole of the evidence that
+    the encoder moved, and the watchdog (a following-error limit for a loop that is running) has no
+    part in it. 600 + 200 >= 640 and it is still refused.
+    """
     monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
     with pytest.raises(ValueError, match="does not cover"):
-        _stage(_gap_axis(zone_um=200, dev_um=0))  # 200 + 250 = 450 um < 640 um
-    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.4)
-    _, mc = _stage(_gap_axis(zone_um=200, dev_um=0))  # 450 um >= 400 um
+        _stage(_gap_axis(zone_um=600, dev_um=200))
+    # and a zone that covers it is accepted however small the watchdog is
+    _, mc = _stage(_gap_axis(zone_um=700, dev_um=0))
     mc.turn_on_stage_pid.assert_called_once()
 
 

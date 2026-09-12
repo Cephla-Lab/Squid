@@ -48,7 +48,8 @@ class CephlaStage(AbstractStage):
 
     # CONFIGURE_STAGE_PID leaves a 0.25 mm watchdog when the host never sets one (commands.cpp:
     # "pid_max_dev_usteps[axis] = xmmToMicrosteps(0.25f)"), so pid_max_deviation_*_um = 0 does not
-    # mean "no watchdog" - this is the limit the firmware bounds the realignment with.
+    # mean "no watchdog" - this is the following-error limit the loop will actually be holding, and
+    # so the number every host-side message has to quote.
     _FIRMWARE_DEFAULT_MAX_DEVIATION_UM = 250
 
     def _fw_has_loop_settings(self) -> bool:
@@ -77,10 +78,16 @@ class CephlaStage(AbstractStage):
 
         A stage whose actuator homes below the stage's stop leaves the encoder frame offset from the
         counter by the gap. The firmware realigns the two on the first engage after homing, but only
-        within pid_home_zone + pid_max_deviation - beyond that it refuses and latches
-        PID_FAULT_REALIGN_REFUSED. With the ini in that state every startup park faults, and the fault
-        names neither of the two keys that are too small. This is configuration the host can check up
-        front, so it does, by name and with the numbers.
+        within pid_home_zone - beyond that it refuses and latches PID_FAULT_REALIGN_REFUSED.
+
+        The zone alone, not zone + watchdog: the realignment only ever runs OUTSIDE the zone, where a
+        frozen encoder's offset is the resting position itself, which is always larger than the zone.
+        So the zone IS the whole of the evidence that the encoder moved at all, and the watchdog - a
+        following-error limit for a loop that is already running - has no part in the decision.
+
+        With the ini in that state every startup park faults, and the fault names neither the key that
+        is too small nor the one that may be wrong. This is configuration the host can check up front,
+        so it does, by name and with the numbers.
         """
         pid = z_axis.PID
         if pid is None or not pid.ENABLED:
@@ -94,13 +101,13 @@ class CephlaStage(AbstractStage):
         if gap_mm <= 0:
             return
         zone_um = float(pid.HOME_ZONE_UM)
-        dev_um = cls._effective_max_deviation_um(pid)
-        if zone_um + dev_um >= gap_mm * 1000.0:
+        if zone_um >= gap_mm * 1000.0:
             return
         raise ValueError(
-            f"z_home_gap_mm = {gap_mm:g} but pid_home_zone_z_um + pid_max_deviation_z_um = {zone_um:g} + "
-            f"{dev_um:g} um does not cover it: the firmware refuses the post-homing encoder realignment "
-            f"beyond that sum. Set pid_home_zone_z_um >= the gap (and <= the Z floor) or correct z_home_gap_mm."
+            f"z_home_gap_mm = {gap_mm:g} but pid_home_zone_z_um = {zone_um:g} um does not cover it: the "
+            f"firmware realigns the encoder after homing only within the home zone (and refuses beyond it, "
+            f"PID_FAULT_REALIGN_REFUSED). Set pid_home_zone_z_um >= the gap in um (and <= the Z floor) or "
+            f"correct z_home_gap_mm."
         )
 
     def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
