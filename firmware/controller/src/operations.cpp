@@ -849,7 +849,7 @@ void check_closed_loop()
 
     int32_t zone = pid_home_zone_usteps[i];
     int32_t pos = tmc4361A_currentPosition(&tmc4361[i]);
-    bool in_zone = (zone > 0) && (pos > -zone) && (pos < zone);
+    bool in_zone = (zone > 0) && (pos >= -zone) && (pos <= zone);   // the edge is inside (pid_policy.h)
     bool homing = axis_is_homing(i);
     // Homing re-zeroes both frames at the switch. On a stage whose actuator homes
     // below the stage's stop (0.64 mm gap on the second bench Z) the encoder then
@@ -935,17 +935,22 @@ void check_closed_loop()
           continue;
         }
         // Distance and response bounds (pid_policy.h): only while the chip is driving (the watch
-        // is armed, i.e. |dev| outside the deadband). One more read per engaged-at-rest axis:
-        // V_ENC_MEAN (what the encoder does about the drive); PID_VEL was read above. The correction may never travel farther than the watchdog distance without
+        // is armed, i.e. |dev| outside the deadband). No extra read: PID_VEL and the deviation
+        // were read above. The correction may never travel farther than the watchdog distance without
         // converging, and it may never drive for a whole response window with the encoder standing
         // still - that is a frozen encoder or a stage that does not follow, whatever the error size.
         if (pid_corr_watch[i].active)
         {
-          int32_t ev = tmc4361A_read_encoder_vel_filtered(&tmc4361[i]);
           uint32_t response_us = PID_CORRECTION_RESPONSE_WINDOWS * progress_us;
           if (response_us < PID_CORRECTION_RESPONSE_MIN_US) response_us = PID_CORRECTION_RESPONSE_MIN_US;
-          uint8_t v2 = pid_correction_travel_step(&pid_corr_watch[i], (uint32_t)(pv < 0 ? -pv : pv), (uint32_t)(ev < 0 ? -ev : ev),
-                                                  now, pid_max_dev_usteps[i] > 0 ? (uint32_t)pid_max_dev_usteps[i] : 0u, response_us);
+          // Response is judged on the encoder's displacement (dev, read above; XACTUAL is idle),
+          // not on V_ENC_MEAN, which holds its last value for ~1 s after the edges stop.
+          uint32_t min_drive = (uint32_t)PID_CORRECTION_RESPONSE_MIN_DRIVE_FULLSTEPS * (uint32_t)tmc4361[i].microsteps;
+          uint32_t min_tol = 8u * (uint32_t)pid_tolerance_eff(i);
+          if (min_drive < min_tol) min_drive = min_tol;
+          uint8_t v2 = pid_correction_travel_step(&pid_corr_watch[i], (uint32_t)(pv < 0 ? -pv : pv), dev,
+                                                  now, pid_max_dev_usteps[i] > 0 ? (uint32_t)pid_max_dev_usteps[i] : 0u, response_us,
+                                                  min_drive);
           if (v2 == PID_CORRECTION_TRAVEL)
             pid_trip_fault(i, PID_FAULT_TRAVEL);
           else if (v2 == PID_CORRECTION_NO_RESPONSE)
@@ -983,8 +988,11 @@ void check_closed_loop()
         // watchdog): a larger one is lost motion during the first departure, or an encoder
         // that never started following - a fault, not a gap (pid_policy.h).
         int32_t frame_offset = tmc4361A_read_deviation(&tmc4361[i]);
+        // ENC_POS was zeroed at the switch by the homing: it is the encoder's travel since then.
+        int32_t enc_travel = tmc4361A_read_encoder(&tmc4361[i], 0);
         pid_realign_pending[i] = false;
-        if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i]))
+        if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i],
+                                 enc_travel, PID_REALIGN_MIN_ENC_TRAVEL_TOLERANCES * pid_tolerance_eff(i)))
         {
           pid_trip_fault(i, PID_FAULT_REALIGN_REFUSED);
           continue;

@@ -51,6 +51,9 @@ class CephlaStage(AbstractStage):
     # mean "no watchdog" - this is the following-error limit the loop will actually be holding, and
     # so the number every host-side message has to quote.
     _FIRMWARE_DEFAULT_MAX_DEVIATION_UM = 250
+    # The first park after homing must land past the home zone by at least this much (see
+    # _check_z_home_gap_is_covered): the firmware wants visible encoder travel before it realigns.
+    _Z_FLOOR_ABOVE_ZONE_MARGIN_UM = 50
 
     def _fw_has_loop_settings(self) -> bool:
         fw = self._microcontroller.firmware_version
@@ -101,14 +104,27 @@ class CephlaStage(AbstractStage):
         if gap_mm <= 0:
             return
         zone_um = float(pid.HOME_ZONE_UM)
-        if zone_um >= gap_mm * 1000.0:
-            return
-        raise ValueError(
-            f"z_home_gap_mm = {gap_mm:g} but pid_home_zone_z_um = {zone_um:g} um does not cover it: the "
-            f"firmware realigns the encoder after homing only within the home zone (and refuses beyond it, "
-            f"PID_FAULT_REALIGN_REFUSED). Set pid_home_zone_z_um >= the gap in um (and <= the Z floor) or "
-            f"correct z_home_gap_mm."
-        )
+        if zone_um < gap_mm * 1000.0:
+            raise ValueError(
+                f"z_home_gap_mm = {gap_mm:g} but pid_home_zone_z_um = {zone_um:g} um does not cover it: the firmware "
+                f"realigns the encoder after homing only within the home zone (and refuses beyond it, "
+                f"PID_FAULT_REALIGN_REFUSED). Set pid_home_zone_z_um >= the gap in um (and below the Z floor) or "
+                f"correct z_home_gap_mm."
+            )
+        # The realignment also needs positive evidence that the encoder moved since homing zeroed it,
+        # and the firmware engages the loop only strictly outside the zone. A floor at the zone edge
+        # parks Z exactly where neither holds. Keep the floor above the zone by a margin so the
+        # first park always departs past it.
+        floor_um = float(z_axis.MIN_POSITION) * 1000.0
+        if floor_um < zone_um + cls._Z_FLOOR_ABOVE_ZONE_MARGIN_UM:
+            raise ValueError(
+                f"z_home_gap_mm = {gap_mm:g} with pid_home_zone_z_um = {zone_um:g} um, but the Z floor "
+                f"([SOFTWARE_POS_LIMIT] z_negative = {z_axis.MIN_POSITION:g} mm) is not at least "
+                f"{cls._Z_FLOOR_ABOVE_ZONE_MARGIN_UM:g} um above the zone: the firmware realigns the encoder only "
+                f"outside the zone and only after the encoder has visibly moved, so the park after homing must "
+                f"depart past the zone with margin. Raise z_negative or lower pid_home_zone_z_um."
+            )
+        return
 
     def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
         mc = self._microcontroller

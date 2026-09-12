@@ -36,10 +36,12 @@ void test_held_outside_the_home_zone_is_pending(void) {
     TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 1000, 5000));
     // Symmetric on the negative side of the zone.
     TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 1000, -5000));
-    // Exactly on the zone boundary counts as outside: check_closed_loop's own
-    // in_zone test is strict on both ends, and the two must not disagree.
-    TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 1000, 1000));
-    TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 1000, -1000));
+    // Exactly on the zone boundary counts as INSIDE (inclusive on both ends, matching
+    // check_closed_loop's in_zone): nothing engages at the edge, so nothing is pending there.
+    TEST_ASSERT_FALSE(pid_engage_pending(true, true, false, 1000, 1000));
+    TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 1000, 1001));
+    TEST_ASSERT_FALSE(pid_engage_pending(true, true, false, 1000, -1000));   /* negative edge: inside too */
+    TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 1000, -1001));
 }
 
 void test_held_inside_the_home_zone_is_not_pending(void) {
@@ -232,25 +234,25 @@ void test_watch_handles_micros_wraparound(void) {
    the watchdog. */
 void test_realign_within_gap_config_is_allowed(void) {
     // Gap stage: zone 700 um, watchdog 200 um, offset 640 um (usteps at 170 per um)
-    TEST_ASSERT_TRUE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170));
-    TEST_ASSERT_TRUE(pid_realign_allowed(640 * 170, 700 * 170, 200 * 170));
+    TEST_ASSERT_TRUE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170, 110 * 170, 8 * TOL));
+    TEST_ASSERT_TRUE(pid_realign_allowed(640 * 170, 700 * 170, 200 * 170, 110 * 170, 8 * TOL));
     // No-gap stage: a stiction offset inside the watchdog is fine
-    TEST_ASSERT_TRUE(pid_realign_allowed(150 * 170, 0, 200 * 170));
+    TEST_ASSERT_TRUE(pid_realign_allowed(150 * 170, 0, 200 * 170, 600 * 170, 8 * TOL));
 }
 
 void test_realign_frozen_encoder_at_the_first_park_is_refused(void) {
     // Codex counterexample (2026-09-12): zone 700, watchdog 200, first move to 750 um with the
     // encoder frozen at home -> offset 750 um. zone + watchdog (900) would have absorbed it and
     // erased the evidence; the zone alone (700) refuses it.
-    TEST_ASSERT_FALSE(pid_realign_allowed(750 * 170, 700 * 170, 200 * 170));
-    TEST_ASSERT_FALSE(pid_realign_allowed(-750 * 170, 700 * 170, 200 * 170));
+    TEST_ASSERT_FALSE(pid_realign_allowed(750 * 170, 700 * 170, 200 * 170, 0, 8 * TOL));
+    TEST_ASSERT_FALSE(pid_realign_allowed(-750 * 170, 700 * 170, 200 * 170, 0, 8 * TOL));
 }
 
 void test_realign_beyond_gap_config_is_refused(void) {
     // No-gap stage (zone 0), watchdog 200 um: a 640 um offset at the first engage is lost motion, not a gap.
-    TEST_ASSERT_FALSE(pid_realign_allowed(-640 * 170, 0, 200 * 170));
+    TEST_ASSERT_FALSE(pid_realign_allowed(-640 * 170, 0, 200 * 170, 110 * 170, 8 * TOL));
     // Gap stage, offset beyond the zone
-    TEST_ASSERT_FALSE(pid_realign_allowed(950 * 170, 700 * 170, 200 * 170));
+    TEST_ASSERT_FALSE(pid_realign_allowed(950 * 170, 700 * 170, 200 * 170, 110 * 170, 8 * TOL));
 }
 
 /* pid_correction_travel_step(): distance and response bounds. Qualified config: watchdog
@@ -264,21 +266,24 @@ void test_travel_bound_is_independent_of_the_time_budgets(void) {
     for (; t < 5000000u && r == PID_CORRECTION_OK; t += 1000u) {
         /* keep the progress window quiet by reporting shrinking error */
         pid_correction_watch_step(&W, 8500 - (int32_t)(t / 1000u), TOL, t, PROG, 100000000u);
-        r = pid_correction_travel_step(&W, 34000u, 34000u, t, 34133u, 100000u);
+        r = pid_correction_travel_step(&W, 34000u, 8500 - (int32_t)(t / 1000u) * 34, t, 34133u, 100000u, 512u);   /* encoder follows the drive */
     }
     TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_TRAVEL, r);
     TEST_ASSERT_TRUE_MESSAGE(t > 950000u && t < 1100000u, "34133 usteps at 34 kpps is ~1.0 s");
 }
 
 void test_frozen_feedback_trips_no_response_within_the_response_window(void) {
-    // Encoder frozen: the chip drives at 13 kpps, V_ENC_MEAN stays 0. Must trip within ~100 ms,
-    // bounding the travel to ~1.3 kusteps (~8 um) - not 157 um.
+    // Encoder frozen: the chip drives at 13 kpps and the encoder POSITION never changes. The
+    // check must not lean on the velocity registers - V_ENC / V_ENC_MEAN retain their last value
+    // until ENC_VEL_ZERO (left at 0xFFFFFF, ~1.05 s at 16 MHz) expires, so a frozen encoder
+    // reads as "still moving" for a second (Codex 2026-09-12). Must trip within ~100 ms on the
+    // position, bounding the travel to ~1.3 kusteps (~8 um) - not 157 um.
     pid_correction_watch_reset(&W); windows_at_qualified_config();
     uint8_t r = PID_CORRECTION_OK;
     uint32_t t = 0;
     for (; t < 1000000u && r == PID_CORRECTION_OK; t += 1000u) {
         pid_correction_watch_step(&W, TOL + 17, TOL, t, PROG, TOTAL);
-        r = pid_correction_travel_step(&W, 13000u, 0u, t, 34133u, 100000u);
+        r = pid_correction_travel_step(&W, 13000u, TOL + 17, t, 34133u, 100000u, 512u);   /* encoder position never changes */
     }
     TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_NO_RESPONSE, r);
     TEST_ASSERT_TRUE_MESSAGE(t <= 102000u, "must trip within one response window");
@@ -290,7 +295,7 @@ void test_responding_encoder_never_trips_no_response(void) {
     uint8_t r = PID_CORRECTION_OK;
     for (uint32_t t = 0; t < 500000u && r == PID_CORRECTION_OK; t += 1000u) {
         pid_correction_watch_step(&W, 8500, TOL, t, PROG, 100000000u);
-        r = pid_correction_travel_step(&W, 13000u, 13000u / 4u, t, 100000000u, 100000u);   /* encoder at a quarter of the drive */
+        r = pid_correction_travel_step(&W, 13000u, 8500 - (int32_t)(t / 1000u) * 3, t, 100000000u, 100000u, 512u);   /* encoder moves ~1/4 of the drive */
     }
     TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, r);
 }
@@ -301,23 +306,23 @@ void test_response_is_not_judged_below_the_drive_floor(void) {
     uint8_t r = PID_CORRECTION_OK;
     for (uint32_t t = 0; t < 2000000u && r == PID_CORRECTION_OK; t += 1000u) {
         pid_correction_watch_step(&W, TOL + 1, TOL, t, PROG, 100000000u);
-        r = pid_correction_travel_step(&W, 50u, 0u, t, 34133u, 100000u);
+        r = pid_correction_travel_step(&W, 50u, TOL + 1, t, 34133u, 100000u, 512u);
     }
     TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, r);
 }
 
 void test_travel_step_is_inert_until_the_watch_is_armed(void) {
     pid_correction_watch_reset(&W);
-    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_travel_step(&W, 50000u, 0u, 0, 1u, 1u));
-    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_travel_step(&W, 50000u, 0u, 1000000u, 1u, 1u));
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_travel_step(&W, 50000u, 0, 0, 1u, 1u, 512u));
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, pid_correction_travel_step(&W, 50000u, 0, 1000000u, 1u, 1u, 512u));
     TEST_ASSERT_EQUAL_UINT64(0u, W.travel_pps_us);
 }
 
 void test_realign_refused_when_nothing_is_configured(void) {
     // R9: RESET zeroes zone and watchdog but leaves the encoder configured; an ENABLE + homing
     // without a fresh CONFIGURE would otherwise absorb any offset with no watchdog at all.
-    TEST_ASSERT_FALSE(pid_realign_allowed(5000 * 170, 0, 0));
-    TEST_ASSERT_FALSE(pid_realign_allowed(1, 0, 0));
+    TEST_ASSERT_FALSE(pid_realign_allowed(5000 * 170, 0, 0, 5000 * 170, 8 * TOL));
+    TEST_ASSERT_FALSE(pid_realign_allowed(1, 0, 0, 1, 8 * TOL));
 }
 
 /* pid_correction_windows(): budgets derived from P and the clamp (R3). */
@@ -399,6 +404,44 @@ void test_inverted_stop_direction_swaps_the_switches(void) {
     TEST_ASSERT_FALSE(pid_stop_blocks_correction(false, true, 13000, true));
 }
 
+void test_response_is_not_judged_until_the_drive_has_moved_a_minimum(void) {
+    // A 1-count residual driven at 4.3 kpps advances 430 usteps per 100 ms window - under the
+    // 512-ustep minimum (two full steps): a stepper can wind up that far against friction
+    // before the stage moves. Not judged by response; the total budget still bounds it.
+    pid_correction_watch_reset(&W); windows_at_qualified_config();
+    uint8_t r = PID_CORRECTION_OK;
+    for (uint32_t t = 0; t < 600000u && r == PID_CORRECTION_OK; t += 1000u) {
+        pid_correction_watch_step(&W, TOL + 1, TOL, t, PROG, 100000000u);
+        r = pid_correction_travel_step(&W, 4300u, TOL + 1, t, 100000000u, 100000u, 512u);
+    }
+    TEST_ASSERT_EQUAL_UINT8(PID_CORRECTION_OK, r);
+}
+
+/* Home-zone boundary (Codex 2026-09-12): a position exactly at the zone edge must count as
+   inside (no engage there), and the realignment needs positive evidence that the encoder has
+   moved since homing zeroed it - an offset equal to the zone is not evidence. */
+void test_zone_boundary_counts_as_inside(void) {
+    TEST_ASSERT_FALSE(pid_engage_pending(true, true, false, 700 * 170, 700 * 170));   /* at the edge: in zone, no engage */
+    TEST_ASSERT_TRUE(pid_engage_pending(true, true, false, 700 * 170, 700 * 170 + 1));
+    TEST_ASSERT_FALSE(pid_engage_pending(true, true, false, 700 * 170, -700 * 170));
+}
+
+void test_realign_frozen_encoder_parked_exactly_at_the_zone_is_refused(void) {
+    // zone 700, parked at 700 (if it ever engaged there), encoder frozen at home: offset -700
+    // == zone, encoder travel since homing 0. No evidence of coupling -> refuse.
+    TEST_ASSERT_FALSE(pid_realign_allowed(-700 * 170, 700 * 170, 200 * 170, 0, 8 * TOL));
+    TEST_ASSERT_FALSE(pid_realign_allowed(700 * 170, 700 * 170, 200 * 170, 0, 8 * TOL));
+}
+
+void test_realign_requires_the_encoder_to_have_moved_since_homing(void) {
+    // Gap stage, parked at 750 with gap 640: the encoder moved 110 um since homing zeroed it.
+    TEST_ASSERT_TRUE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170, 110 * 170, 8 * TOL));
+    // Same offset but the encoder reports only 3 counts of travel: below the 8-count minimum.
+    TEST_ASSERT_FALSE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170, 3 * 17, 8 * TOL));
+    // Encoder travel counts whichever way it went (negative on an inverted encoder is still travel)
+    TEST_ASSERT_TRUE(pid_realign_allowed(-640 * 170, 700 * 170, 200 * 170, -110 * 170, 8 * TOL));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_not_requested_is_not_pending);
@@ -429,6 +472,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_responding_encoder_never_trips_no_response);
     RUN_TEST(test_response_is_not_judged_below_the_drive_floor);
     RUN_TEST(test_travel_step_is_inert_until_the_watch_is_armed);
+    RUN_TEST(test_response_is_not_judged_until_the_drive_has_moved_a_minimum);
+    RUN_TEST(test_zone_boundary_counts_as_inside);
+    RUN_TEST(test_realign_frozen_encoder_parked_exactly_at_the_zone_is_refused);
+    RUN_TEST(test_realign_requires_the_encoder_to_have_moved_since_homing);
     RUN_TEST(test_stop_switch_blocks_a_correction_driving_toward_it);
     RUN_TEST(test_stop_switch_does_not_block_a_correction_driving_away);
     RUN_TEST(test_resting_on_a_switch_with_no_drive_is_not_a_fault);

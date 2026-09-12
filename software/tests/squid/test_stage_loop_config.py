@@ -235,8 +235,10 @@ def test_an_unset_watchdog_is_sent_as_the_number_the_host_reasons_with(caplog):
 
 
 def _gap_axis(zone_um, dev_um):
+    # floor 100 um above the zone: the separate floor rule is tested on its own
     return _axis(
         HAS_ENCODER=True,
+        MIN_POSITION=(zone_um + 100) / 1000.0,
         PID=PIDConfig(
             ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=dev_um, HOME_ZONE_UM=zone_um
         ),
@@ -321,3 +323,25 @@ def test_old_firmware_does_not_apply_the_gap_check(monkeypatch):
     monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
     _, mc = _stage(_gap_axis(zone_um=200, dev_um=200), firmware=(1, 5))
     mc.turn_on_stage_pid.assert_called_once()
+
+
+def test_the_z_floor_must_sit_above_the_home_zone_when_a_gap_is_declared(monkeypatch):
+    """The firmware realigns the encoder only OUTSIDE the home zone and only with positive evidence
+    that the encoder moved since homing. A floor at the zone edge parks Z where there is no such
+    evidence (Codex 2026-09-12: a frozen encoder parked exactly at the zone passed). The host keeps
+    the floor above the zone by a margin so the first park always departs past it."""
+    monkeypatch.setattr(_def, "Z_HOME_GAP_MM", 0.64)
+    at_the_edge = _axis(
+        HAS_ENCODER=True,
+        MIN_POSITION=0.70,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=700),
+    )
+    with pytest.raises(ValueError) as e:
+        _stage(at_the_edge)
+    assert "floor" in str(e.value) and "z_negative" in str(e.value)
+    above = _axis(
+        HAS_ENCODER=True,
+        MIN_POSITION=0.75,
+        PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200, HOME_ZONE_UM=700),
+    )
+    _stage(above)  # 50 um above the zone: fine

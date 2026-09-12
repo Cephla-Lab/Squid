@@ -68,7 +68,7 @@ static inline bool pid_engage_pending(bool requested, bool zone_hold, bool homin
                                       int32_t zone_usteps, int32_t pos_usteps)
 {
     if (!requested || !zone_hold || homing) return false;
-    bool in_zone = (zone_usteps > 0) && (pos_usteps > -zone_usteps) && (pos_usteps < zone_usteps);
+    bool in_zone = (zone_usteps > 0) && (pos_usteps >= -zone_usteps) && (pos_usteps <= zone_usteps);   /* the edge is inside */
     return !in_zone;
 }
 
@@ -101,7 +101,9 @@ struct PidCorrectionWatch {
     bool     has_last;
     uint32_t last_us;        /* previous sample time, for the velocity integral */
     uint64_t travel_pps_us;  /* integral of |PID_VEL| dt, in pps x us (/1e6 = usteps) */
-    uint32_t resp_mark_us;   /* last time the encoder was seen responding to the drive */
+    uint32_t resp_mark_us;   /* start of the current response window */
+    int32_t  resp_dev_ref;   /* deviation at the start of the response window */
+    uint64_t resp_travel_ref;/* travel integral at the start of the response window */
 };
 
 
@@ -113,6 +115,7 @@ static inline void pid_correction_watch_reset(PidCorrectionWatch *w)
 {
     w->active = false; w->start_us = 0; w->mark_us = 0; w->best_abs = 0;
     w->has_last = false; w->last_us = 0; w->travel_pps_us = 0; w->resp_mark_us = 0;
+    w->resp_dev_ref = 0; w->resp_travel_ref = 0;
 }
 
 /* Feed one sample taken while the loop is engaged and the ramp idle. Returns one of the
@@ -148,25 +151,35 @@ static inline uint8_t pid_correction_watch_step(PidCorrectionWatch *w, int32_t a
 
 #define PID_CORRECTION_TRAVEL      3
 #define PID_CORRECTION_NO_RESPONSE 4
-#define PID_CORRECTION_RESPONSE_RATIO_SHIFT 3   /* the encoder must move at >= |PID_VEL| / 8 */
-#define PID_CORRECTION_RESPONSE_MIN_PPS     100 /* below this drive, response is not judged */
+#define PID_CORRECTION_RESPONSE_RATIO_SHIFT 3   /* the encoder must move >= 1/8 of the drive's advance */
+#define PID_REALIGN_MIN_ENC_TRAVEL_TOLERANCES 8 /* realign needs >= 8 x deadband of encoder travel since homing */
+#define PID_CORRECTION_RESPONSE_MIN_DRIVE_FULLSTEPS 2 /* judge response only once the drive advanced >= 2 full steps in the window */
 #define PID_CORRECTION_RESPONSE_WINDOWS     4   /* response window = 4 x progress window, >= 100 ms */
 #define PID_CORRECTION_RESPONSE_MIN_US      100000u
 
 /* Distance and response bounds on a correction, fed alongside pid_correction_watch_step()
    from the same pass (call this AFTER it, only while it is armed). pid_vel_abs_pps is
-   |PID_VEL_RD| (the chip's correction output, pps); enc_vel_abs_pps is |V_ENC_MEAN_RD|.
+   |PID_VEL_RD| (the chip's correction output, pps); dev_now is ENC_POS - XACTUAL as read this
+   pass. With the ramp idle XACTUAL does not move, so a change in dev IS the encoder's
+   displacement.
    Trips: TRAVEL when the integral of |PID_VEL| since arming exceeds travel_limit_usteps
    (whatever the error, however slow: the correction may never travel farther than the
-   declared watchdog distance without converging), NO_RESPONSE when the chip has been
-   driving at >= RESPONSE_MIN_PPS and the encoder has not moved at >= 1/8 of that for a
-   whole response window (frozen feedback or a stage that does not follow the motor). */
-static inline uint8_t pid_correction_travel_step(PidCorrectionWatch *w, uint32_t pid_vel_abs_pps, uint32_t enc_vel_abs_pps,
-                                                 uint32_t now_us, uint32_t travel_limit_usteps, uint32_t response_us)
+   declared watchdog distance without converging); NO_RESPONSE when, over a whole response
+   window in which the drive advanced at least min_drive_usteps, the encoder moved less than
+   1/8 of that advance (frozen feedback or a stage that does not follow the motor).
+   The response is judged on encoder DISPLACEMENT, not on the chip's encoder-velocity
+   registers: V_ENC / V_ENC_MEAN hold their last value until ENC_VEL_ZERO clocks pass with
+   no edge (0xFFFFFF at reset, ~1 s at 16 MHz), so a frozen encoder reads as "still moving"
+   for a second. min_drive_usteps (a couple of full steps) keeps a stepper's wind-up against
+   friction from counting as no response. */
+static inline uint8_t pid_correction_travel_step(PidCorrectionWatch *w, uint32_t pid_vel_abs_pps, int32_t dev_now,
+                                                 uint32_t now_us, uint32_t travel_limit_usteps, uint32_t response_us,
+                                                 uint32_t min_drive_usteps)
 {
     if (!w->active) return PID_CORRECTION_OK;         /* inside the deadband: the chip is not driving */
     if (!w->has_last) {
-        w->has_last = true; w->last_us = now_us; w->resp_mark_us = now_us;
+        w->has_last = true; w->last_us = now_us;
+        w->resp_mark_us = now_us; w->resp_dev_ref = dev_now; w->resp_travel_ref = 0;
         return PID_CORRECTION_OK;
     }
     uint32_t dt = (uint32_t)(now_us - w->last_us);    /* wrap-safe */
@@ -174,28 +187,44 @@ static inline uint8_t pid_correction_travel_step(PidCorrectionWatch *w, uint32_t
     w->travel_pps_us += (uint64_t)pid_vel_abs_pps * (uint64_t)dt;
     if (travel_limit_usteps > 0 && w->travel_pps_us / 1000000ull > (uint64_t)travel_limit_usteps)
         return PID_CORRECTION_TRAVEL;
-    if (pid_vel_abs_pps < PID_CORRECTION_RESPONSE_MIN_PPS || enc_vel_abs_pps >= (pid_vel_abs_pps >> PID_CORRECTION_RESPONSE_RATIO_SHIFT))
-        w->resp_mark_us = now_us;                      /* not driving, or the encoder is following */
-    else if ((uint32_t)(now_us - w->resp_mark_us) > response_us)
-        return PID_CORRECTION_NO_RESPONSE;
+
+    uint64_t drive = (w->travel_pps_us - w->resp_travel_ref) / 1000000ull;   /* usteps the drive advanced this window */
+    int32_t moved = dev_now - w->resp_dev_ref;
+    if (moved < 0) moved = -moved;
+    if (drive >= (uint64_t)min_drive_usteps) {
+        if ((uint64_t)moved >= (drive >> PID_CORRECTION_RESPONSE_RATIO_SHIFT)) {
+            /* the encoder followed: start a new window from here */
+            w->resp_mark_us = now_us; w->resp_dev_ref = dev_now; w->resp_travel_ref = w->travel_pps_us;
+        } else if ((uint32_t)(now_us - w->resp_mark_us) > response_us) {
+            return PID_CORRECTION_NO_RESPONSE;
+        }
+    } else if ((uint32_t)(now_us - w->resp_mark_us) > response_us) {
+        /* too little drive to judge in this window: slide the window, keep watching */
+        w->resp_mark_us = now_us; w->resp_dev_ref = dev_now; w->resp_travel_ref = w->travel_pps_us;
+    }
     return PID_CORRECTION_OK;
 }
 
 /* Post-homing realignment takes the counter's frame as the encoder's. That absorbs the
    mechanical gap of a stage whose actuator homes below its stop - and would equally absorb
-   lost motion during the first departure, or an encoder that never started following. The
-   realignment only ever runs OUTSIDE the home zone, so an encoder frozen at home shows an
-   offset equal to the resting position, which is always larger than the zone: the zone
-   alone is therefore the evidence that the encoder moved (offset <= zone means the encoder
-   covered at least position - zone). With no zone configured (a stage with no gap) the
-   encoder must have followed from the start: the offset is bounded by the watchdog. Nothing
-   configured at all (post-RESET, never re-configured) refuses. The host checks at startup
-   that the zone covers its declared z_home_gap_mm. */
-static inline bool pid_realign_allowed(int32_t frame_offset, int32_t zone_usteps, int32_t max_dev_usteps)
+   lost motion during the first departure, or an encoder that never started following. Two
+   conditions, both required:
+   - the offset is within what the configuration declares: the home ZONE when one is
+     configured (the realignment only runs outside the zone), else the watchdog; nothing
+     configured (post-RESET, never re-configured) refuses;
+   - the encoder has actually MOVED since homing zeroed it, by at least min_enc_travel: an
+     encoder frozen at home shows zero travel whatever the offset, and an offset that merely
+     equals the zone is not evidence either (a park exactly at the zone edge, Codex
+     2026-09-12). The host keeps the Z floor above the zone so a real gap stage always
+     departs past the zone with margin. */
+static inline bool pid_realign_allowed(int32_t frame_offset, int32_t zone_usteps, int32_t max_dev_usteps,
+                                       int32_t enc_travel_since_home, int32_t min_enc_travel)
 {
     int32_t bound = zone_usteps > 0 ? zone_usteps : (max_dev_usteps > 0 ? max_dev_usteps : 0);
     if (bound <= 0) return false;       /* nothing configured: nothing declared, nothing absorbed */
-    return frame_offset <= bound && frame_offset >= -bound;
+    if (frame_offset > bound || frame_offset < -bound) return false;
+    int32_t moved = enc_travel_since_home < 0 ? -enc_travel_since_home : enc_travel_since_home;
+    return moved >= min_enc_travel;     /* positive evidence that the feedback is alive */
 }
 
 /* ---- Stop switches under closed-loop correction ---------------------------------------
