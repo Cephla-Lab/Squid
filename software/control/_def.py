@@ -204,6 +204,13 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    SET_ENCODER_REPORTING = 44  # Stream an axis's encoder position / loop error in the status packet (fw >= 1.6)
+    SET_PID_LIMITS = 45  # Closed-loop correction velocity clamp + deviation watchdog limit (fw >= 1.6)
+    SET_PID_HOME_ZONE = 46  # Home exclusion zone (um) inside which the closed loop is held open (fw >= 1.6)
+    SET_RAMP_PROFILE = 47  # Per-axis ramp profile: trapezoidal or S-shaped (fw >= 1.6)
+    SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
+    SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
+    SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -219,6 +226,12 @@ class CMD_SET2:
 
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
+# Status byte 18, bits 4-6 (firmware >= 1.6): closed-loop fault latched on X / Y / Z, in protocol
+# axis order. Set in every packet, whether or not encoder reporting is on, so a fault that hit
+# with no command in flight still reaches the host.
+BIT_POS_PID_FAULT_X = 4
+BIT_POS_PID_FAULT_Y = 5
+BIT_POS_PID_FAULT_Z = 6
 
 
 class HOME_OR_ZERO:
@@ -371,6 +384,74 @@ WATCHDOG_TIMEOUT_S = DEFAULT_WATCHDOG_TIMEOUT_MS / 1000.0
 
 class VOLUMETRIC_IMAGING:
     NUM_PLANES_PER_VOLUME = 20
+
+
+class ENCODER_REPORTING:
+    """Modes for CMD_SET.SET_ENCODER_REPORTING (firmware >= 1.6).
+
+    OFF: shipping packet. ENC_IN_THETA: the status packet's theta field (bytes 14-17) carries the
+    selected axis's ENC_POS in microsteps, byte 19 carries ENC_FLAG bits and bytes 20-21 the clipped
+    int16 loop error ENC_POS - XACTUAL (positive = encoder ahead of the counter). ENC_AS_POSITION: as ENC_IN_THETA, and the axis's own position
+    field carries ENC_POS instead of XACTUAL.
+    """
+
+    OFF = 0
+    ENC_IN_THETA = 1
+    ENC_AS_POSITION = 2
+
+
+class RAMP_PROFILE:
+    """CMD_SET.SET_RAMP_PROFILE values (firmware >= 1.6)."""
+
+    TRAPEZOID = 1  # acceleration-limited; fast small moves
+    SSHAPE = 2  # bow (jerk) limited; the firmware default and master behaviour
+
+
+class ENC_FLAG:
+    """Bit positions in status byte 19 while encoder reporting is active."""
+
+    REPORTING = 0
+    PID_ENABLED = 1
+    PID_FAULT = 2  # firmware opened the closed loop and latched a fault (see PID_FAULT_CAUSE)
+    PID_ZONE = 3  # loop requested but held open (home zone / homing); re-engages automatically outside
+    AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
+
+
+class PID_FAULT_CAUSE:
+    """Why a stage axis's closed loop faulted (firmware >= 1.6).
+
+    Byte 18 bits 4-6 say THAT X / Y / Z has a latched fault, in every packet. The WHY is packed into
+    bytes 19-20 - X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2, byte 21
+    unused - three bits each rather than a byte each, so that byte 19 bit 0 (ENC_FLAG.REPORTING)
+    stays clear and the host can tell the two layouts of those bytes apart. Only there while encoder
+    reporting is OFF: with it on the same bytes carry the reported axis's ENC_FLAG bits and clipped
+    deviation, and no cause is on the wire. Cleared with the fault bit.
+    """
+
+    NONE = 0
+    WATCHDOG = 1  # engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
+    NO_PROGRESS = 2  # engaged at rest: the error stopped shrinking
+    TIMEOUT = 3  # engaged at rest: the correction did not finish in its budget
+    REALIGN_REFUSED = 4  # first engage after homing: frame offset beyond home zone + watchdog
+    REENGAGE_REFUSED = 5  # at rest, frames aligned, still beyond the watchdog
+
+    # Where each axis's three bits sit while encoder reporting is off (see the class docstring).
+    X_SHIFT = 1  # byte 19, bits 1-3
+    Y_SHIFT = 4  # byte 19, bits 4-6
+    Z_SHIFT = 0  # byte 20, bits 0-2
+    MASK = 0x07
+
+    # What an operator is told. Each says what to go and look at, not just what tripped.
+    NAMES = {
+        WATCHDOG: "deviation watchdog (|encoder - counter| exceeded the limit)",
+        NO_PROGRESS: "no progress (the error stopped shrinking: frozen encoder or stuck stage)",
+        TIMEOUT: "timeout (the correction did not finish in its budget)",
+        REALIGN_REFUSED: (
+            "realignment refused (post-homing frame offset beyond home zone + watchdog: lost motion or an "
+            "encoder that never started following)"
+        ),
+        REENGAGE_REFUSED: "re-engage refused (at rest, still beyond the watchdog: the encoder stopped following)",
+    }
 
 
 class CMD_EXECUTION_STATUS:
@@ -683,17 +764,64 @@ PID_D_Y = int(0)
 
 PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
-PID_D_Z = int(1)
+PID_D_Z = int(0)  # D on a quantised encoder error dithers at kHz (bench 2026-09-07: audible whine at D 1); keep 0
 
 PID_P_W = int(1 << 12)
 PID_I_W = int(1)
 PID_D_W = int(1)
 
 # flip direction True or False
-ENCODER_FLIP_DIR_X = True
-ENCODER_FLIP_DIR_Y = True
-ENCODER_FLIP_DIR_Z = True
+# Encoder counting direction relative to the motor (CONFIGURE_STAGE_PID flip bit). False is what master
+# always sent; the Squid+ Z needs True and its template says so. A wrong sign runs the closed loop away
+# until the watchdog opens it, so set it per instrument.
+ENCODER_FLIP_DIR_X = False
+ENCODER_FLIP_DIR_Y = False
+ENCODER_FLIP_DIR_Z = False
 ENCODER_FLIP_DIR_W = False
+
+# Ramp profile per stage axis (firmware >= 1.6, SET_RAMP_PROFILE): "sshape" (firmware default) or
+# "trapezoid". Bench 2026-09-07: at 16 usteps/FS the trapezoid takes Z from 89 ms to 11 ms for a
+# 1 um move; at 256 usteps/FS the S-shape is jerk-limited by the BOW register anyway.
+RAMP_PROFILE_X = "sshape"
+RAMP_PROFILE_Y = "sshape"
+RAMP_PROFILE_Z = "sshape"
+
+# Closed-loop safety limits per stage axis (firmware >= 1.6, SET_PID_LIMITS). Correction velocity
+# clamp in mm/s and deviation watchdog in um; 0 keeps the firmware defaults (axis max velocity,
+# 250 um). Home exclusion zone in um (SET_PID_HOME_ZONE): the loop is held open within this
+# distance of home and homing runs open-loop; 0 = none. Deadband / target-reached tolerance in um
+# (SET_PID_TOLERANCE); 0 = firmware default of two encoder counts. Bench Z values: clamp 1 mm/s,
+# watchdog 200 um, zone 200 um, tolerance 0 (default).
+PID_CORRECTION_VMAX_X_mm = 0.0
+PID_CORRECTION_VMAX_Y_mm = 0.0
+PID_CORRECTION_VMAX_Z_mm = 0.0
+PID_MAX_DEVIATION_X_UM = 0
+PID_MAX_DEVIATION_Y_UM = 0
+PID_MAX_DEVIATION_Z_UM = 0
+PID_HOME_ZONE_X_UM = 0
+PID_HOME_ZONE_Y_UM = 0
+PID_HOME_ZONE_Z_UM = 0
+PID_TOLERANCE_X_UM = 0.0
+PID_TOLERANCE_Y_UM = 0.0
+PID_TOLERANCE_Z_UM = 0.0
+
+# When the closed loop is engaged during a move (firmware >= 1.6, SET_PID_OPEN_ABOVE). The loop is opened
+# while the ramp runs faster than this (mm/s) and re-engages as it slows; 0 = rest-only (opened for every
+# move, engaged at rest: +11 ms on a 1 um step, measured 2026-09-08 on a TMC2660 stage); a value at or
+# above the axis max velocity keeps the loop engaged throughout (the Squid+ bench qualification, +2-3 ms).
+# About 1 mm/s keeps focus steps of a few um fully closed-loop and opens only repositioning moves; use it
+# on a stage whose motor does not hold VMAX plus the correction (the second bench Z stalled at 2.5 mm/s).
+PID_OPEN_ABOVE_X_mm = 0.0
+PID_OPEN_ABOVE_Y_mm = 0.0
+PID_OPEN_ABOVE_Z_mm = 0.0
+
+# Completion window per stage axis in um (firmware >= 1.6, SET_COMPLETION_WINDOW): a move is acknowledged
+# once the step counter - and, with the loop engaged, the encoder - is within this distance of the target
+# while the ramp finishes. 0 = acknowledge at the exact target (closed loop: encoder inside the two-count
+# target tolerance, i.e. 0.1 um on a 0.1 um encoder).
+COMPLETION_WINDOW_X_UM = 0.0
+COMPLETION_WINDOW_Y_UM = 0.0
+COMPLETION_WINDOW_Z_UM = 0.0
 
 # distance for each count (um)
 ENCODER_RESOLUTION_UM_X = 0.05
@@ -708,6 +836,16 @@ SCAN_STABILIZATION_TIME_MS_Z = 20
 HOMING_ENABLED_X = True
 HOMING_ENABLED_Y = True
 HOMING_ENABLED_Z = False
+
+# Z stages where the actuator homes below the stage's stop have a gap above home in which the actuator
+# moves and the stage does not (encoder still). Measure it with tools/z_encoder_pid_tuner.py zonemap and
+# save it here per instrument (0.64 mm on the second bench controller, 2026-09-07; 0 on the Squid+ bench).
+# Policy: the stage never works inside the gap. SOFTWARE_POS_LIMIT.Z_NEGATIVE is the floor for every move
+# (set it >= gap + 0.1 mm, e.g. 0.75); homing is the only motion allowed below it (open loop), and after a
+# homing the stage is brought to the floor when Z_PARK_AT_MIN_AFTER_HOMING is set. PID_HOME_ZONE_Z_UM must
+# not exceed the floor, so the closed loop engages at the parked position.
+Z_HOME_GAP_MM = 0.0
+Z_PARK_AT_MIN_AFTER_HOMING = False
 
 SLEEP_TIME_S = 0.005
 
@@ -1071,6 +1209,12 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
+# > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the
+# last degrees are still travelled (firmware >= 1.6, SET_COMPLETION_WINDOW). Size it from the optics:
+# (filter clear aperture - image field diameter) / 2 / filter pitch radius, in degrees, minus margin.
+# 32 mm filters on a 22 mm field and a ~46 mm pitch radius allow about 6 deg; 25 mm filters about 1.9 deg.
+SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG = 0.0
+SQUID_FILTERWHEEL_WRAP = True  # shortest path between slots may cross the index flag (firmware >= 1.4); set False to always take the flag-free arc
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)

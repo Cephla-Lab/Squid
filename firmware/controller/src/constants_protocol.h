@@ -75,6 +75,39 @@ static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and
 static const int SET_PIN_LEVEL = 41;
 static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
 static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter wheel
+// Encoder / closed-loop diagnostics (firmware 1.6). Both are OFF by default and are
+// turned off again by RESET and INITIALIZE, so the shipping packet is unchanged
+// unless a host asks. Packet use is in serial_communication.cpp.
+static const int SET_ENCODER_REPORTING = 44;  // [2]=axis, [3]=ENCODER_REPORT_* mode
+static const int SET_PID_LIMITS = 45;         // [2]=axis, [3..4]=max closed-loop correction velocity (mm/s x100),
+                                              // [5..6]=deviation watchdog limit (um); 0 keeps the current value
+static const int SET_RAMP_PROFILE = 47;       // [2]=axis, [3]=RAMP_PROFILE_* : S-shaped (bow-limited) or trapezoidal ramp
+static const int RAMP_PROFILE_TRAPEZOID = 1;
+static const int RAMP_PROFILE_SSHAPE = 2;
+static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 um of travel (for the wheels, whose
+                                              // "mm" is one revolution, 1e-4 rev = 0.036 deg): a move reports COMPLETED as
+                                              // soon as |XACTUAL - target| <= window while the ramp finishes. 0 = at the
+                                              // exact target (default, unchanged behaviour). Not applied to homing.
+static const int SET_PID_TOLERANCE = 48;      // [2]=axis, [3..4]=loop deadband (PID_TOLERANCE) in 0.01 um, [5..6]=target-reached
+                                              // tolerance (CL_TR_TOLERANCE) in 0.01 um; 0 keeps the current value
+static const int SET_PID_HOME_ZONE = 46;      // [2]=axis, [3..4]=home exclusion zone (um): within this distance of
+                                              // the home position the loop is held open (see check_closed_loop);
+                                              // 0 disables the zone
+static const int SET_PID_OPEN_ABOVE = 50;     // [2]=axis, [3..4]=ramp velocity (mm/s x100) above which a requested
+                                              // closed loop is opened while the axis moves; it re-engages as the ramp
+                                              // slows below it (see check_closed_loop). 0 (default) = rest-only: open
+                                              // for every move, engaged only at rest. >= VMAX = engaged throughout.
+// SET_ENCODER_REPORTING modes
+static const int ENCODER_REPORT_OFF = 0;
+static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,
+                                                     // bytes 20-21 = int16 ENC_POS_DEV (ENC_POS - XACTUAL as the chip reports it, clipped)
+static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own position field carries ENC_POS
+// byte 19 flag bits, valid only while reporting is active
+static const int ENC_FLAG_REPORTING = 0;     // reporting active
+static const int ENC_FLAG_PID_ENABLED = 1;   // closed loop enabled on the reported axis
+static const int ENC_FLAG_PID_FAULT = 2;     // deviation watchdog disabled the closed loop (sticky until DISABLE_STAGE_PID acknowledges, ENABLE_STAGE_PID validates, or CONFIGURE/INITIALIZE/RESET)
+static const int ENC_FLAG_PID_ZONE = 3;      // loop requested but held open (home zone, or homing); re-engages automatically outside the zone
+static const int ENC_FLAG_AXIS_SHIFT = 4;    // bits 4-6: protocol axis id being reported
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
@@ -108,6 +141,29 @@ static const int AXIS_W2 = 6;
 
 // Button/switch bit positions in response packet
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
+
+// Status byte 18, bits 4-6: closed-loop fault latched on X / Y / Z (protocol order). Set in
+// every packet, whether or not encoder reporting is on, so a fault with no command in flight
+// still reaches the host. Sticky until the host acknowledges it: DISABLE_STAGE_PID (run open-loop
+// knowingly) or ENABLE_STAGE_PID (after its deviation check passes); CONFIGURE_STAGE_PID,
+// INITIALIZE and RESET clear it as part of re-initialising the axis.
+static const int BIT_POS_PID_FAULT_X = 4;
+static const int BIT_POS_PID_FAULT_Y = 5;
+static const int BIT_POS_PID_FAULT_Z = 6;
+// Why the loop faulted, per stage axis, whenever encoder reporting is OFF (bytes 19-21 carry the
+// reported axis's flags and clipped deviation while it is on). Packed so that byte 19 bit 0 -
+// ENC_FLAG_REPORTING - stays clear: X's cause in byte 19 bits 1-3, Y's in byte 19 bits 4-6, Z's in
+// byte 20 bits 0-2; byte 21 stays 0. 0 while no fault is latched; cleared with the fault bit.
+static const int PID_FAULT_CAUSE_X_SHIFT = 1;   // byte 19
+static const int PID_FAULT_CAUSE_Y_SHIFT = 4;   // byte 19
+static const int PID_FAULT_CAUSE_Z_SHIFT = 0;   // byte 20
+static const int PID_FAULT_CAUSE_MASK = 7;      // three bits per cause (decimal: the host parity test reads decimal only)
+static const int PID_FAULT_NONE = 0;
+static const int PID_FAULT_WATCHDOG = 1;          // engaged: |ENC_POS - XACTUAL| exceeded SET_PID_LIMITS
+static const int PID_FAULT_NO_PROGRESS = 2;       // engaged at rest: the error stopped shrinking (frozen encoder, stuck stage)
+static const int PID_FAULT_TIMEOUT = 3;           // engaged at rest: the correction did not finish in its time budget
+static const int PID_FAULT_REALIGN_REFUSED = 4;   // first engage after homing: frame offset beyond home zone + watchdog
+static const int PID_FAULT_REENGAGE_REFUSED = 5;  // at rest, frames aligned, still beyond the watchdog: encoder stopped following
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;

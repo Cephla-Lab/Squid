@@ -4,8 +4,14 @@ from typing import Optional, Callable
 import control.microcontroller
 import control._def as _def
 import control.utils as utils
+import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig, AxisConfig
+
+_log = squid.logging.get_logger(__name__)
+
+# For naming the ini key a warning is about (pid_open_above_z_mm and friends).
+_AXIS_LETTER = {_def.AXIS.X: "x", _def.AXIS.Y: "y", _def.AXIS.Z: "z"}
 
 
 class CephlaStage(AbstractStage):
@@ -25,23 +31,184 @@ class CephlaStage(AbstractStage):
         self._homing_done = False
         self._scanning_position_z_mm = None
 
+        # Before any axis is touched: this refuses a configuration outright, and it used to do so
+        # from inside _configure_axis(Z) - the last of the three calls - leaving X and Y configured
+        # and their loops enabled behind a failed construction. The bound it checks arrived with
+        # firmware 1.6; on anything older there is no realignment to refuse the startup for.
+        if self._fw_has_loop_settings():
+            self._check_z_home_gap_is_covered(stage_config.Z_AXIS)
+
         # TODO(imo): configure theta here?  Do we ever have theta?
         self._configure_axis(_def.AXIS.X, stage_config.X_AXIS)
         self._configure_axis(_def.AXIS.Y, stage_config.Y_AXIS)
         self._configure_axis(_def.AXIS.Z, stage_config.Z_AXIS)
 
+    # Firmware from which the ramp profile, closed-loop limits, home zone and tolerance commands exist.
+    _MIN_FIRMWARE_FOR_LOOP_SETTINGS = (1, 6)
+
+    # CONFIGURE_STAGE_PID leaves a 0.25 mm watchdog when the host never sets one (commands.cpp:
+    # "pid_max_dev_usteps[axis] = xmmToMicrosteps(0.25f)"), so pid_max_deviation_*_um = 0 does not
+    # mean "no watchdog" - this is the limit the firmware bounds the realignment with.
+    _FIRMWARE_DEFAULT_MAX_DEVIATION_UM = 250
+
+    def _fw_has_loop_settings(self) -> bool:
+        fw = self._microcontroller.firmware_version
+        try:
+            return tuple(fw) >= self._MIN_FIRMWARE_FOR_LOOP_SETTINGS
+        except TypeError:
+            return False
+
+    @classmethod
+    def _effective_max_deviation_um(cls, pid) -> float:
+        """The deviation watchdog the controller will actually be holding, in um.
+
+        pid_max_deviation_*_um = 0 is neither 'no watchdog' nor 'whatever the firmware likes':
+        SET_PID_LIMITS reads a 0 deviation as 'keep the current value', and what CONFIGURE_STAGE_PID
+        leaves to be kept is 250 um. So 0 in the ini means 250 um on the controller, and 250 um is
+        the number every host-side calculation and message has to use.
+        """
+        dev_um = float(pid.MAX_DEVIATION_UM)
+        return dev_um if dev_um > 0 else float(cls._FIRMWARE_DEFAULT_MAX_DEVIATION_UM)
+
+    @classmethod
+    def _check_z_home_gap_is_covered(cls, z_axis: AxisConfig):
+        """Refuse a Z whose declared home gap is larger than the post-homing realignment the firmware
+        will allow (firmware >= 1.6).
+
+        A stage whose actuator homes below the stage's stop leaves the encoder frame offset from the
+        counter by the gap. The firmware realigns the two on the first engage after homing, but only
+        within pid_home_zone + pid_max_deviation - beyond that it refuses and latches
+        PID_FAULT_REALIGN_REFUSED. With the ini in that state every startup park faults, and the fault
+        names neither of the two keys that are too small. This is configuration the host can check up
+        front, so it does, by name and with the numbers.
+        """
+        pid = z_axis.PID
+        if pid is None or not pid.ENABLED:
+            return
+        if not (z_axis.HAS_ENCODER or z_axis.USE_ENCODER):
+            # _configure_axis sends no CONFIGURE_STAGE_PID and no ENABLE for an encoderless axis, so
+            # there is no encoder frame to realign and nothing here to refuse the startup for
+            return
+        # module attribute, not a from-import: the value is settable at runtime
+        gap_mm = float(_def.Z_HOME_GAP_MM)
+        if gap_mm <= 0:
+            return
+        zone_um = float(pid.HOME_ZONE_UM)
+        dev_um = cls._effective_max_deviation_um(pid)
+        if zone_um + dev_um >= gap_mm * 1000.0:
+            return
+        raise ValueError(
+            f"z_home_gap_mm = {gap_mm:g} but pid_home_zone_z_um + pid_max_deviation_z_um = {zone_um:g} + "
+            f"{dev_um:g} um does not cover it: the firmware refuses the post-homing encoder realignment "
+            f"beyond that sum. Set pid_home_zone_z_um >= the gap (and <= the Z floor) or correct z_home_gap_mm."
+        )
+
     def _configure_axis(self, microcontroller_axis_number: int, axis_config: AxisConfig):
-        if axis_config.USE_ENCODER:
-            # TODO(imo): The original navigationController had a "flip_direction" on configure_encoder, but it was unused in the implementation?
-            self._microcontroller.configure_stage_pid(
-                axis=microcontroller_axis_number,
-                transitions_per_revolution=axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE,
-            )
-            if axis_config.PID and axis_config.PID.ENABLED:
-                self._microcontroller.set_pid_arguments(
-                    microcontroller_axis_number, axis_config.PID.P, axis_config.PID.I, axis_config.PID.D
+        mc = self._microcontroller
+        new_fw = self._fw_has_loop_settings()
+
+        if axis_config.RAMP_PROFILE != "sshape":
+            if new_fw:
+                profile = {"trapezoid": _def.RAMP_PROFILE.TRAPEZOID, "sshape": _def.RAMP_PROFILE.SSHAPE}[
+                    axis_config.RAMP_PROFILE
+                ]
+                mc.set_ramp_profile(microcontroller_axis_number, profile)
+                mc.wait_till_operation_is_completed()
+            else:
+                _log.warning(
+                    f"axis {microcontroller_axis_number}: ramp profile {axis_config.RAMP_PROFILE!r} needs firmware "
+                    f">= 1.6 (have {mc.firmware_version}); keeping the firmware default"
                 )
-                self._microcontroller.turn_on_stage_pid(microcontroller_axis_number)
+
+        # The completion window (and the loop mode below) are states, not overrides of a firmware default:
+        # 0 means 'exact target' / 'rest-only'. They are sent even when 0, so a value left on the controller
+        # by a tool run cannot survive into this session (firmware before 2026-09-08 kept them across RESET).
+        if new_fw:
+            mc.set_completion_window(microcontroller_axis_number, axis_config.COMPLETION_WINDOW_UM / 1000.0)
+            mc.wait_till_operation_is_completed()
+        elif axis_config.COMPLETION_WINDOW_UM > 0:
+            _log.warning(
+                f"axis {microcontroller_axis_number}: completion window needs firmware >= 1.6 "
+                f"(have {mc.firmware_version}); moves complete at the exact target"
+            )
+
+        if not (axis_config.HAS_ENCODER or axis_config.USE_ENCODER):
+            return
+
+        # The encoder must be configured before the axis is homed: homing zeroes ENC_POS together with
+        # XACTUAL under the scale and direction written here (firmware >= 1.6 also re-aligns ENC_POS to
+        # XACTUAL inside CONFIGURE_STAGE_PID). The stage is constructed before the startup homing.
+        mc.configure_stage_pid(
+            axis=microcontroller_axis_number,
+            # 0.3 mm / 100 nm is 2999.9999999999995 in floating point; the firmware takes an integer count, and
+            # truncating to 2999 would scale the encoder by 0.033 % (0.8 um over 2.5 mm of travel). Round.
+            transitions_per_revolution=int(round(axis_config.SCREW_PITCH / axis_config.ENCODER_STEP_SIZE)),
+            flip_direction=axis_config.ENCODER_FLIP_DIR,
+        )
+        mc.wait_till_operation_is_completed()
+
+        pid = axis_config.PID
+        if not (pid and pid.ENABLED):
+            return
+
+        mc.set_pid_arguments(microcontroller_axis_number, pid.P, pid.I, pid.D)
+        mc.wait_till_operation_is_completed()
+        effective_dev_um = self._effective_max_deviation_um(pid)
+        if new_fw:
+            # Sent unconditionally, and with the resolved watchdog: a 0 deviation means 'keep' to
+            # SET_PID_LIMITS, so skipping the command left the controller on whatever a previous run
+            # had set (a tuner leaves 200 um behind and does not RESET) while the host went on
+            # checking the home gap against 250. The clamp still passes 0 for 'keep the firmware
+            # default' - there is no host calculation that depends on its value.
+            mc.set_pid_limits(microcontroller_axis_number, pid.CORRECTION_VMAX, effective_dev_um)
+            mc.wait_till_operation_is_completed()
+            if pid.HOME_ZONE_UM > 0:
+                mc.set_pid_home_zone(microcontroller_axis_number, pid.HOME_ZONE_UM)
+                mc.wait_till_operation_is_completed()
+            if pid.TOLERANCE_UM > 0:
+                mc.set_pid_tolerance(microcontroller_axis_number, pid.TOLERANCE_UM, pid.TOLERANCE_UM)
+                mc.wait_till_operation_is_completed()
+            mc.set_pid_open_above(microcontroller_axis_number, pid.OPEN_ABOVE_MM_S)  # 0 = rest-only
+            mc.wait_till_operation_is_completed()
+            # Warn here, where the mode is actually sent: SET_PID_OPEN_ABOVE latches on the controller
+            # whether or not the ENABLE below is accepted, and it does not exist before firmware 1.6,
+            # so keying this on the ini alone warned about old firmware that never heard of the mode
+            # and stayed silent about a refused ENABLE that left the mode set.
+            if pid.OPEN_ABOVE_MM_S > 0:
+                letter = _AXIS_LETTER.get(microcontroller_axis_number, "?")
+                _log.warning(
+                    f"axis {microcontroller_axis_number}: pid_open_above_{letter}_mm = {pid.OPEN_ABOVE_MM_S} keeps "
+                    f"the loop engaged during moves slower than that - UNQUALIFIED: the in-flight loop limit-cycled "
+                    f"and stalled the motor on both bench stages once a move cruised beyond ~0.1 s (2026-09-08); "
+                    f"rest-only (0) is the qualified mode"
+                )
+        elif (
+            pid.CORRECTION_VMAX > 0
+            or pid.MAX_DEVIATION_UM > 0
+            or pid.HOME_ZONE_UM > 0
+            or pid.TOLERANCE_UM > 0
+            or pid.OPEN_ABOVE_MM_S > 0
+        ):
+            _log.warning(
+                f"axis {microcontroller_axis_number}: closed-loop limits / home zone / tolerance need firmware >= 1.6 "
+                f"(have {mc.firmware_version}); enabling the loop without them"
+            )
+        try:
+            mc.turn_on_stage_pid(microcontroller_axis_number)
+            mc.wait_till_operation_is_completed()
+        except Exception as e:  # noqa: BLE001 - the firmware refuses the loop on a bad frame offset; run open-loop
+            _log.error(
+                f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop"
+            )
+            return
+        _log.info(
+            f"axis {microcontroller_axis_number}: closed loop requested - P {pid.P} I {pid.I} D {pid.D}, "
+            f"clamp {pid.CORRECTION_VMAX} mm/s, watchdog {effective_dev_um:g} um, home zone {pid.HOME_ZONE_UM} um, "
+            f"tolerance {pid.TOLERANCE_UM or 'default (2 counts)'} um, loop open above {pid.OPEN_ABOVE_MM_S} mm/s "
+            f"({'rest-only' if pid.OPEN_ABOVE_MM_S == 0 else 'engaged below that speed'}), "
+            f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
+            f"ramp {axis_config.RAMP_PROFILE}"
+        )
 
     def x_mm_to_usteps(self, mm: float):
         return self._config.X_AXIS.convert_real_units_to_ustep(mm)
@@ -196,6 +363,16 @@ class CephlaStage(AbstractStage):
             self._microcontroller.home_z(homing_direction=z_dir)
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(z_timeout)
+        if z and getattr(_def, "Z_PARK_AT_MIN_AFTER_HOMING", False):
+            # Homing is the only motion allowed below the Z soft floor: on a stage whose actuator homes
+            # below the stage's stop, the region above home is a gap where the stage does not follow.
+            # Park at the floor so every later move (and the closed loop, which engages at rest outside
+            # its home zone) starts from a coupled position.
+            floor_mm = self._config.Z_AXIS.MIN_POSITION
+            if blocking:
+                self.move_z_to(floor_mm, blocking=True)
+            else:
+                _log.warning(f"Z homed non-blocking: not parking at the {floor_mm} mm floor; caller must move Z")
 
         if theta:
             self._microcontroller.home_theta(homing_direction=theta_dir)

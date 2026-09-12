@@ -60,6 +60,13 @@ _CMD_NAMES = {
     CMD_SET.DISABLE_STAGE_PID: "DISABLE_STAGE_PID",
     CMD_SET.SET_HOME_SAFETY_MERGIN: "SET_HOME_SAFETY_MERGIN",
     CMD_SET.SET_PID_ARGUMENTS: "SET_PID_ARGUMENTS",
+    CMD_SET.SET_ENCODER_REPORTING: "SET_ENCODER_REPORTING",
+    CMD_SET.SET_PID_LIMITS: "SET_PID_LIMITS",
+    CMD_SET.SET_PID_HOME_ZONE: "SET_PID_HOME_ZONE",
+    CMD_SET.SET_RAMP_PROFILE: "SET_RAMP_PROFILE",
+    CMD_SET.SET_PID_TOLERANCE: "SET_PID_TOLERANCE",
+    CMD_SET.SET_COMPLETION_WINDOW: "SET_COMPLETION_WINDOW",
+    CMD_SET.SET_PID_OPEN_ABOVE: "SET_PID_OPEN_ABOVE",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -639,6 +646,30 @@ class Microcontroller:
         self.z_pos = 0  # unit: microstep or encoder resolution
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
+        # Encoder reporting (firmware >= 1.6, see set_encoder_reporting). Only meaningful while
+        # encoder_flags has ENC_FLAG.REPORTING set; with reporting off bytes 19-21 carry the packed
+        # fault causes instead of an encoder reading, and encoder_flags is held at 0 rather than
+        # decoded as flags it does not contain.
+        self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
+        self.encoder_deviation = (
+            0  # ENC_POS - XACTUAL of the reported axis (positive = encoder ahead of the counter), microsteps, int16
+        )
+        # The same difference at full width, paired with the step counter of the packet it came from.
+        # None when the reported axis's counter is not in the status packet (theta / the filter wheels).
+        self.encoder_dev32 = None
+        self.encoder_flags = 0  # raw status byte 19
+        # Latched closed-loop faults, byte 18 bits 4-6 as a 3-bit mask (bit 0 = X, 1 = Y, 2 = Z).
+        # Kept so each new fault is logged once instead of on every packet.
+        self.pid_fault_mask = 0
+        # Why each stage axis's loop faulted (PID_FAULT_CAUSE), from the three bits per axis packed
+        # into status bytes 19-20 (X: byte 19 bits 1-3, Y: byte 19 bits 4-6, Z: byte 20 bits 0-2;
+        # byte 21 unused). Those bits are only there while encoder reporting is off, so byte 18's
+        # fault bits - which arrive in both layouts - are what retires a cause. See pid_fault_cause().
+        self.pid_fault_causes = {
+            AXIS.X: PID_FAULT_CAUSE.NONE,
+            AXIS.Y: PID_FAULT_CAUSE.NONE,
+            AXIS.Z: PID_FAULT_CAUSE.NONE,
+        }
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -1271,7 +1302,171 @@ class Microcontroller:
             self.turn_off_stage_pid(primary_axis_id)
             self.wait_till_operation_is_completed()
 
+    def set_encoder_reporting(self, axis, mode=ENCODER_REPORTING.ENC_IN_THETA):
+        """Ask firmware >= 1.6 to stream `axis`'s encoder in the status packet (see ENCODER_REPORTING).
+
+        Afterwards encoder_pos / encoder_deviation / encoder_flags / encoder_dev32 update every packet.
+        Mode OFF restores the shipping packet, whose bytes 19-20 carry the packed PID_FAULT_CAUSEs
+        instead - encoder_flags reads 0 and encoder_dev32 None there, since neither is on the wire.
+        Older firmware ignores the command (status stays COMPLETED, flags stay 0).
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ENCODER_REPORTING
+        cmd[2] = int(axis)
+        cmd[3] = int(mode)
+        self.send_command(cmd)
+
+    def set_pid_limits(self, axis, max_correction_velocity_mm_s, max_deviation_um):
+        """Clamp the closed loop on `axis` (firmware >= 1.6).
+
+        max_correction_velocity_mm_s caps the velocity the TMC4361A may add to null the encoder error
+        (PID_DV_CLIP); max_deviation_um arms the firmware watchdog that disables the loop when the
+        error exceeds it. Pass 0 for either to leave it unchanged. Send before turn_on_stage_pid.
+        """
+        v = int(round(max_correction_velocity_mm_s * 100))
+        d = int(round(max_deviation_um))
+        if not (0 <= v <= 0xFFFF) or not (0 <= d <= 0xFFFF):
+            raise ValueError("velocity (mm/s*100) and deviation (um) must fit in 16 bits")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_LIMITS
+        cmd[2] = int(axis)
+        cmd[3] = (v >> 8) & 0xFF
+        cmd[4] = v & 0xFF
+        cmd[5] = (d >> 8) & 0xFF
+        cmd[6] = d & 0xFF
+        self.send_command(cmd)
+
+    def set_pid_home_zone(self, axis, zone_um):
+        """Home exclusion zone for the closed loop on `axis` (firmware >= 1.6).
+
+        Within zone_um of the home position the firmware holds the loop open (the stage may rest on its
+        stop while the actuator moves, so the encoder error is meaningless there) and re-engages it
+        automatically once outside with a small error. Homing always runs open-loop. 0 disables the zone.
+        """
+        z = int(round(zone_um))
+        if not (0 <= z <= 0xFFFF):
+            raise ValueError("zone (um) must fit in 16 bits")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_HOME_ZONE
+        cmd[2] = int(axis)
+        cmd[3] = (z >> 8) & 0xFF
+        cmd[4] = z & 0xFF
+        self.send_command(cmd)
+
+    def set_ramp_profile(self, axis, profile):
+        """Select the TMC4361A ramp profile for `axis` (firmware >= 1.6): RAMP_PROFILE.TRAPEZOID or SSHAPE.
+
+        The S-shaped ramp is bow-limited and its 24-bit bow registers clamp the jerk on fine-pitch,
+        high-microstep axes (Z: a 1 um move takes ~50 ms); the trapezoid is acceleration-limited.
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_RAMP_PROFILE
+        cmd[2] = int(axis)
+        cmd[3] = int(profile)
+        self.send_command(cmd)
+
+    def set_completion_window(self, axis, window_mm):
+        """Report a move on `axis` complete once |position - target| <= window_mm, while the ramp is still
+        finishing (firmware >= 1.6). 0 restores completion at the exact target with the ramp stopped. Encoded
+        in 0.1 um, range 0 .. 6.5535 mm. For the filter wheels one "mm" is one revolution: pass degrees / 360.
+        """
+        u = int(round(window_mm * 10000))
+        if not (0 <= u <= 0xFFFF):
+            raise ValueError("completion window must be 0 .. 6.5535 mm (or rev)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_COMPLETION_WINDOW
+        cmd[2] = int(axis)
+        cmd[3] = (u >> 8) & 0xFF
+        cmd[4] = u & 0xFF
+        self.send_command(cmd)
+
+    def set_pid_open_above(self, axis, velocity_mm_s):
+        """Ramp velocity (mm/s) above which a requested closed loop on `axis` is opened while the axis
+        moves; it re-engages as the ramp slows below it (firmware >= 1.6). 0 = rest-only (open for every
+        move, engaged at rest); a value at or above the axis max velocity keeps the loop engaged
+        throughout. Encoded in 0.01 mm/s, range 0 .. 655.35 mm/s.
+        """
+        v = int(round(velocity_mm_s * 100))
+        if not (0 <= v <= 0xFFFF):
+            raise ValueError("velocity must be 0 .. 655.35 mm/s")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_OPEN_ABOVE
+        cmd[2] = int(axis)
+        cmd[3] = (v >> 8) & 0xFF
+        cmd[4] = v & 0xFF
+        self.send_command(cmd)
+
+    def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):
+        """Closed-loop deadband and target-reached tolerance for `axis`, in um (firmware >= 1.6).
+
+        Below the deadband the TMC4361A stops correcting; the target-reached tolerance is what the
+        firmware accepts as 'arrived' when acknowledging a closed-loop move. Master hard-codes both
+        to 25 microsteps, which is 0.15 um at 256 usteps/FS on Z but 2.3 um at 16; firmware 1.6
+        defaults both to two encoder counts and this command overrides that. Encoded in 0.01 um,
+        so the range is 0.01 .. 655 um; None keeps the current target-reached value.
+        """
+        d = int(round(deadband_um * 100))
+        t = 0 if target_reached_um is None else int(round(target_reached_um * 100))
+        if not (1 <= d <= 0xFFFF) or not (0 <= t <= 0xFFFF):
+            raise ValueError("tolerances must be 0.01 .. 655.35 um")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PID_TOLERANCE
+        cmd[2] = int(axis)
+        cmd[3] = (d >> 8) & 0xFF
+        cmd[4] = d & 0xFF
+        cmd[5] = (t >> 8) & 0xFF
+        cmd[6] = t & 0xFF
+        self.send_command(cmd)
+
+    def pid_fault_axes(self) -> set:
+        """Axes whose closed loop has latched a fault (firmware >= 1.6).
+
+        Read-only view of the last packet's byte 18 fault bits, which say THAT the loop opened;
+        pid_fault_cause() says why. The watchdog is one of several causes (see PID_FAULT_CAUSE).
+        A fault means the loop was opened and the axis is running open loop; it stays latched
+        until the host reconfigures or re-enables the loop on that axis.
+        """
+        return {axis for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)) if self.pid_fault_mask & (1 << bit)}
+
+    def pid_fault_cause(self, axis) -> int:
+        """Why `axis`'s closed loop faulted, as a PID_FAULT_CAUSE (firmware >= 1.6).
+
+        The firmware only puts the causes on the wire while encoder reporting is OFF, three bits per
+        axis packed into bytes 19-20 (X: byte 19 bits 1-3, Y: byte 19 bits 4-6, Z: byte 20 bits 0-2;
+        byte 21 unused, and byte 19 bit 0 left clear so the layout is distinguishable from the
+        ENC_FLAG one). With reporting on those bytes carry the reported axis's flags and clipped
+        deviation instead, so this returns the last value seen with reporting off - and NONE once
+        byte 18's fault bit for the axis clears, since that bit arrives in both layouts. NONE (0)
+        also when no fault is latched, or when the fault arrived while reporting was on.
+        """
+        return self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
+
+    def get_encoder_state(self):
+        """Decoded view of the last packet's encoder fields (firmware >= 1.6).
+
+        "deviation" is the firmware's ENC_POS_DEV as it sent it, clipped to int16. "dev32" is the
+        same ENC_POS - XACTUAL at full width, paired with the step counter of the packet it came
+        from by the reader thread - use it for any measurement; it is None when the reported axis
+        has no counter in the status packet.
+        """
+        f = self.encoder_flags
+        return {
+            "reporting": bool(f & (1 << ENC_FLAG.REPORTING)),
+            "pid_enabled": bool(f & (1 << ENC_FLAG.PID_ENABLED)),
+            "pid_fault": bool(f & (1 << ENC_FLAG.PID_FAULT)),
+            "pid_zone_hold": bool(f & (1 << ENC_FLAG.PID_ZONE)),
+            "axis": (f >> ENC_FLAG.AXIS_SHIFT) & 0x07,
+            "encoder_pos": self.encoder_pos,
+            "deviation": self.encoder_deviation,
+            "dev32": self.encoder_dev32,
+        }
+
     def set_pid_arguments(self, axis, pid_p, pid_i, pid_d):
+        """Closed-loop gains. P is carried in 16 bits; the bench found P 65535 to be the usable maximum
+        (above it the loop saturates at rest), so a larger value is refused rather than truncated.
+        """
+        if not (0 <= int(pid_p) <= 0xFFFF):
+            raise ValueError("P must be 0 .. 65535")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_PID_ARGUMENTS
         cmd[2] = int(axis)
@@ -1631,20 +1826,83 @@ class Microcontroller:
                         f"[MCU] !!! received ack for command {self._cmd_id_mcu}, but waiting for command {self._cmd_id}"
                     )
 
-                self.x_pos = self._payload_to_int(
+                # Locals first: the encoder difference below has to be built from this packet's own
+                # counter. A reader that took it from self.z_pos instead could land between two of
+                # these assignments and mix packets.
+                x_pos = self._payload_to_int(
                     msg[2:6], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
-                self.y_pos = self._payload_to_int(
-                    msg[6:10], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
-                self.z_pos = self._payload_to_int(
-                    msg[10:14], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
-                self.theta_pos = self._payload_to_int(
-                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
+                )  # microstep or encoder resolution
+                y_pos = self._payload_to_int(msg[6:10], MicrocontrollerDef.N_BYTES_POS)
+                z_pos = self._payload_to_int(msg[10:14], MicrocontrollerDef.N_BYTES_POS)
+                theta_pos = self._payload_to_int(msg[14:18], MicrocontrollerDef.N_BYTES_POS)
+                self.x_pos = x_pos
+                self.y_pos = y_pos
+                self.z_pos = z_pos
+                self.theta_pos = theta_pos
 
                 self.button_and_switch_state = msg[18]
+                # Bytes 19-21 mean two different things (firmware >= 1.6), so decode them before
+                # the fault log below, which reads the cause. Reporting ON: the theta field
+                # doubles as ENC_POS, byte 19 carries ENC_FLAG bits and bytes 20-21 the int16
+                # clipped loop error of the reported axis. Reporting OFF: the PID_FAULT_CAUSE of X / Y
+                # sit in byte 19 bits 1-3 / 4-6 and Z's in byte 20 bits 0-2, packed so byte 19 bit 0
+                # (the reporting flag) stays clear. All zero unless a host enabled the loop.
+                reporting = bool(msg[19] & (1 << ENC_FLAG.REPORTING))
+                # Only keep byte 19 as flags in the layout where it IS flags. In the cause layout
+                # its bits belong to X (1-3) and Y (4-6), so an X cause of 1 / 2 / 4 would read
+                # back as pid_enabled / pid_fault / pid_zone_hold and any Y cause as a reported
+                # axis. Zero says what is true there: no loop state is on the wire.
+                self.encoder_flags = msg[19] if reporting else 0
+                if reporting:
+                    self.encoder_pos = theta_pos
+                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                    # ENC_POS minus the reported axis's step counter, both from this packet, at full
+                    # width: the firmware's own field clips to int16 (+-192 um on a 256 usteps/FS Z).
+                    counter = {AXIS.X: x_pos, AXIS.Y: y_pos, AXIS.Z: z_pos}.get(
+                        (self.encoder_flags >> ENC_FLAG.AXIS_SHIFT) & 0x07
+                    )
+                    self.encoder_dev32 = None if counter is None else self.encoder_pos - counter
+                else:
+                    self.pid_fault_causes = {
+                        AXIS.X: (msg[19] >> PID_FAULT_CAUSE.X_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Y: (msg[19] >> PID_FAULT_CAUSE.Y_SHIFT) & PID_FAULT_CAUSE.MASK,
+                        AXIS.Z: (msg[20] >> PID_FAULT_CAUSE.Z_SHIFT) & PID_FAULT_CAUSE.MASK,
+                    }
+                    # No encoder reading in this layout, and the last one is not a substitute: a
+                    # caller sampling dev32 across a reporting drop would record a stale pair as a
+                    # fresh measurement. encoder_pos / encoder_deviation keep their last values,
+                    # which get_encoder_state() already marks as not reporting.
+                    self.encoder_dev32 = None
+                # Closed-loop faults (firmware >= 1.6): byte 18 bits 4-6, X / Y / Z. Unlike byte
+                # 19's flag these arrive in every packet, so a fault is reported even when no
+                # host command was in flight to fail. Log each NEW fault once - the packet
+                # stream repeats the latch until the host clears it.
+                fault_mask = (msg[18] >> BIT_POS_PID_FAULT_X) & 0x07
+                # These bits are the only fault state valid in both layouts, so they are also what
+                # expires a cause: pid_fault_causes is written by reporting-OFF packets alone, so
+                # without this the host would go on naming a cause the controller has already
+                # cleared, for as long as reporting stayed on.
+                for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)):
+                    if not fault_mask & (1 << bit):
+                        self.pid_fault_causes[axis] = PID_FAULT_CAUSE.NONE
+                if fault_mask != self.pid_fault_mask:
+                    newly = fault_mask & ~self.pid_fault_mask
+                    for bit, name, axis in ((0, "X", AXIS.X), (1, "Y", AXIS.Y), (2, "Z", AXIS.Z)):
+                        if newly & (1 << bit):
+                            cause = self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
+                            if reporting:
+                                # The bytes that would have carried it are the reported axis's
+                                # flags and deviation; naming a cause from them would be a guess.
+                                why = "cause not on the wire while encoder reporting is on"
+                            elif cause in PID_FAULT_CAUSE.NAMES:
+                                why = PID_FAULT_CAUSE.NAMES[cause]
+                            else:
+                                why = f"cause not reported ({cause})"
+                            self.log.error(
+                                f"[MCU] closed-loop fault on {name} \u2014 {why}; the loop is open and the axis runs "
+                                f"open-loop. Re-enable (validated) or disable the loop explicitly to clear it."
+                            )
+                    self.pid_fault_mask = fault_mask
                 # joystick button
                 tmp = self.button_and_switch_state & (1 << BIT_POS_JOYSTICK_BUTTON)
                 joystick_button_pressed = tmp > 0

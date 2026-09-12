@@ -150,6 +150,14 @@ class PIDConfig(pydantic.BaseModel):
     P: float
     I: float
     D: float
+    # Closed-loop safety limits (firmware >= 1.6). 0 keeps the firmware default for each.
+    CORRECTION_VMAX: float = 0.0  # correction velocity clamp, native units/s (mm/s)
+    MAX_DEVIATION_UM: float = 0.0  # deviation watchdog: the firmware opens the loop above this error
+    HOME_ZONE_UM: float = 0.0  # loop held open within this distance of home; homing runs open-loop
+    TOLERANCE_UM: float = 0.0  # deadband and target-reached tolerance; 0 = two encoder counts
+    # Ramp velocity (native units/s) above which the loop is opened while the axis moves, re-engaging as it
+    # slows. 0 = rest-only; >= MAX_SPEED = engaged throughout; ~1 mm/s keeps focus steps closed-loop only.
+    OPEN_ABOVE_MM_S: float = 0.0
 
 
 class AxisConfig(pydantic.BaseModel):
@@ -184,6 +192,18 @@ class AxisConfig(pydantic.BaseModel):
     # gains to use.
     PID: Optional[PIDConfig]
 
+    # Whether an encoder is physically present and should be configured on the controller (independent of
+    # USE_ENCODER, which changes how reported positions are interpreted). The loop needs it.
+    HAS_ENCODER: bool = False
+    # Encoder counting direction relative to the motor (CONFIGURE_STAGE_PID flip bit). On the Squid+ Z the
+    # encoder needs flip = True; a wrong sign runs the closed loop away until the watchdog opens it.
+    ENCODER_FLIP_DIR: bool = False
+    # Ramp profile: "sshape" (firmware default) or "trapezoid" (firmware >= 1.6).
+    RAMP_PROFILE: str = "sshape"
+    # Completion window in um (firmware >= 1.6): a move is acknowledged once the counter (and, closed-loop, the
+    # encoder) is within this of the target while the ramp finishes. 0 = exact target.
+    COMPLETION_WINDOW_UM: float = 0.0
+
     def convert_to_real_units(self, usteps: float):
         if self.USE_ENCODER:
             return usteps * self.MOVEMENT_SIGN.value * self.ENCODER_STEP_SIZE * self.ENCODER_SIGN.value
@@ -213,6 +233,21 @@ class StageConfig(pydantic.BaseModel):
     THETA_AXIS: AxisConfig
 
 
+def _pid_config_from_def(axis: str) -> PIDConfig:
+    """PID/closed-loop settings for stage axis 'X', 'Y' or 'Z' from the machine constants."""
+    return PIDConfig(
+        ENABLED=bool(getattr(_def, f"ENABLE_PID_{axis}")),
+        P=getattr(_def, f"PID_P_{axis}"),
+        I=getattr(_def, f"PID_I_{axis}"),
+        D=getattr(_def, f"PID_D_{axis}"),
+        CORRECTION_VMAX=float(getattr(_def, f"PID_CORRECTION_VMAX_{axis}_mm", 0.0)),
+        MAX_DEVIATION_UM=float(getattr(_def, f"PID_MAX_DEVIATION_{axis}_UM", 0)),
+        HOME_ZONE_UM=float(getattr(_def, f"PID_HOME_ZONE_{axis}_UM", 0)),
+        TOLERANCE_UM=float(getattr(_def, f"PID_TOLERANCE_{axis}_UM", 0.0)),
+        OPEN_ABOVE_MM_S=float(getattr(_def, f"PID_OPEN_ABOVE_{axis}_mm", 0.0)),
+    )
+
+
 # NOTE(imo): This is temporary until we can just pass in instances of AxisConfig wherever we need it.  Having
 # this getter for the temporary singleton will help with the refactor once we can get rid of it.
 _stage_config = StageConfig(
@@ -228,7 +263,11 @@ _stage_config = StageConfig(
         MAX_ACCELERATION=_def.MAX_ACCELERATION_X_mm,
         MIN_POSITION=_def.SOFTWARE_POS_LIMIT.X_NEGATIVE,
         MAX_POSITION=_def.SOFTWARE_POS_LIMIT.X_POSITIVE,
-        PID=None,
+        PID=_pid_config_from_def("X"),
+        HAS_ENCODER=bool(_def.HAS_ENCODER_X),
+        ENCODER_FLIP_DIR=bool(_def.ENCODER_FLIP_DIR_X),
+        RAMP_PROFILE=str(getattr(_def, "RAMP_PROFILE_X", "sshape")),
+        COMPLETION_WINDOW_UM=float(getattr(_def, "COMPLETION_WINDOW_X_UM", 0.0)),
     ),
     Y_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Y,
@@ -242,7 +281,11 @@ _stage_config = StageConfig(
         MAX_ACCELERATION=_def.MAX_ACCELERATION_Y_mm,
         MIN_POSITION=_def.SOFTWARE_POS_LIMIT.Y_NEGATIVE,
         MAX_POSITION=_def.SOFTWARE_POS_LIMIT.Y_POSITIVE,
-        PID=None,
+        PID=_pid_config_from_def("Y"),
+        HAS_ENCODER=bool(_def.HAS_ENCODER_Y),
+        ENCODER_FLIP_DIR=bool(_def.ENCODER_FLIP_DIR_Y),
+        RAMP_PROFILE=str(getattr(_def, "RAMP_PROFILE_Y", "sshape")),
+        COMPLETION_WINDOW_UM=float(getattr(_def, "COMPLETION_WINDOW_Y_UM", 0.0)),
     ),
     Z_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_Z,
@@ -256,7 +299,11 @@ _stage_config = StageConfig(
         MAX_ACCELERATION=_def.MAX_ACCELERATION_Z_mm,
         MIN_POSITION=_def.SOFTWARE_POS_LIMIT.Z_NEGATIVE,
         MAX_POSITION=_def.SOFTWARE_POS_LIMIT.Z_POSITIVE,
-        PID=None,
+        PID=_pid_config_from_def("Z"),
+        HAS_ENCODER=bool(_def.HAS_ENCODER_Z),
+        ENCODER_FLIP_DIR=bool(_def.ENCODER_FLIP_DIR_Z),
+        RAMP_PROFILE=str(getattr(_def, "RAMP_PROFILE_Z", "sshape")),
+        COMPLETION_WINDOW_UM=float(getattr(_def, "COMPLETION_WINDOW_Z_UM", 0.0)),
     ),
     THETA_AXIS=AxisConfig(
         MOVEMENT_SIGN=_def.STAGE_MOVEMENT_SIGN_THETA,

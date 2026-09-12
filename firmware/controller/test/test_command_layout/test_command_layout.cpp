@@ -436,12 +436,26 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
         "it looks");
 
     /* Silent by design — these are not host commands and must not attribute a
-       hardware fault to whatever the host last sent. */
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(src, "mcu_cmd_execution_status ="),
+       hardware fault to whatever the host last sent. The one exception in this
+       file is fail_commanded_move(), which the closed-loop deviation watchdog
+       calls to fail the host move it just invalidated; that one IS a host
+       command's result, so it must set the status. Pinning the count at 1 and
+       the position after that helper's signature keeps the operator-driven
+       gates above it silent. */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "mcu_cmd_execution_status ="),
         "the operations.cpp gates must reject silently: assigning "
         "mcu_cmd_execution_status here mislabels an unrelated command as failed. "
-        "(The needle carries the ` =` so the prose above the gates, which names "
-        "the variable, does not trip this.)");
+        "Only fail_commanded_move() may write it. (The needle carries the ` =` so "
+        "the prose above the gates, which names the variable, does not trip this.)");
+
+    const char *fail_helper = strstr(src, "static void fail_commanded_move(");
+    TEST_ASSERT_NOT_NULL_MESSAGE(fail_helper,
+        "operations.cpp must define fail_commanded_move(): the closed-loop watchdog "
+        "needs it to fail the move whose completion the encoder has invalidated");
+    TEST_ASSERT_TRUE_MESSAGE(strstr(src, "mcu_cmd_execution_status =") > fail_helper,
+        "the only mcu_cmd_execution_status assignment in operations.cpp must be inside "
+        "fail_commanded_move(); one above it would be an operator-driven gate reporting "
+        "a hardware fault as some unrelated command's failure");
 
     assert_guard_precedes_motion(src, "operations.cpp", "void check_joystick()",
                                  "tmc_driver_ready(", "tmc4361A_setSpeed(");

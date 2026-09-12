@@ -271,6 +271,410 @@ def test_abort_current_command_recoverable_logs_at_warning(caplog):
         micro.close()
 
 
+def test_encoder_reporting_and_pid_limits_commands():
+    """set_encoder_reporting / set_pid_limits encode as firmware 1.6 expects."""
+    micro = get_test_micro()
+
+    micro.set_encoder_reporting(control._def.AXIS.Z, control._def.ENCODER_REPORTING.ENC_IN_THETA)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_ENCODER_REPORTING
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert micro.last_command[3] == control._def.ENCODER_REPORTING.ENC_IN_THETA
+
+    micro.set_encoder_reporting(control._def.AXIS.Z, control._def.ENCODER_REPORTING.OFF)
+    assert micro.last_command[3] == control._def.ENCODER_REPORTING.OFF
+
+    # 0.35 mm/s -> 35 (x100); 250 um -> 250
+    micro.set_pid_limits(control._def.AXIS.Z, 0.35, 250)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_LIMITS
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 35
+    assert (micro.last_command[5] << 8) + micro.last_command[6] == 250
+
+    # 655.35 mm/s is the 16-bit ceiling; anything above must be refused, not truncated
+    import pytest
+
+    with pytest.raises(ValueError):
+        micro.set_pid_limits(control._def.AXIS.Z, 700.0, 0)
+    with pytest.raises(ValueError):
+        micro.set_pid_limits(control._def.AXIS.Z, 0, 70000)
+
+    micro.set_ramp_profile(control._def.AXIS.Z, control._def.RAMP_PROFILE.TRAPEZOID)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_RAMP_PROFILE
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert micro.last_command[3] == 1
+
+    micro.set_pid_tolerance(control._def.AXIS.Z, 0.15, 0.3)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_TOLERANCE
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 15
+    assert (micro.last_command[5] << 8) + micro.last_command[6] == 30
+
+    micro.set_completion_window(control._def.AXIS.W, 5.0 / 360.0)  # 5 deg of a wheel turn = 139 x 1e-4 rev
+    assert micro.last_command[1] == control._def.CMD_SET.SET_COMPLETION_WINDOW
+    assert micro.last_command[2] == control._def.AXIS.W
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 139
+
+    micro.set_pid_home_zone(control._def.AXIS.Z, 500)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_HOME_ZONE
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 500
+
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        micro.set_pid_arguments(control._def.AXIS.Z, 70000, 0, 0)  # P above 65535 is refused, not truncated
+
+    micro.set_pid_open_above(control._def.AXIS.Z, 1.0)  # loop open above 1 mm/s = 100 x 0.01 mm/s
+    assert micro.last_command[1] == control._def.CMD_SET.SET_PID_OPEN_ABOVE
+    assert micro.last_command[2] == control._def.AXIS.Z
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 100
+
+    micro.close()
+
+
+def _feed_status_packet(micro, msg):
+    """Push one raw status packet into the simulated port and wait for the read thread to parse it.
+
+    The read loop notifies _received_packet_cv at the end of the parse, so waiting on it means
+    every field of `msg` - including the closed-loop fault bits - has been through the real
+    handler rather than a copy of its logic.
+    """
+    deadline = time.time() + 5.0
+    while micro._serial.bytes_available() and time.time() < deadline:
+        time.sleep(0.005)
+    with micro._received_packet_cv:
+        with micro._serial._update_lock:
+            micro._serial.response_buffer.extend(bytes(msg))
+        assert micro._received_packet_cv.wait(timeout=5.0), "read thread never parsed the injected packet"
+
+
+def test_pid_fault_bits_are_parsed_and_logged_once(caplog):
+    """Byte 18 bits 4-6 carry the latched closed-loop fault per axis, in every packet.
+
+    Firmware 1.6 sets them whether or not encoder reporting is on, so a fault with no command
+    in flight still reaches the host. Each NEW fault is logged once; a packet that repeats a
+    fault the host already knows about must stay quiet, or a 100 Hz packet stream would bury
+    the log.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    def packet(button_and_switch_state, z_cause=0, flags=0):
+        msg = bytearray(24)
+        msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        msg[18] = button_and_switch_state
+        # Reporting off: X / Y causes in byte 19 bits 1-3 / 4-6, Z's in byte 20 bits 0-2 (byte 19
+        # bit 0 stays clear). Reporting on: byte 19 is the encoder flags and 20-21 the clipped
+        # deviation, so no cause is on the wire.
+        msg[19] = flags
+        msg[20] = (z_cause & control._def.PID_FAULT_CAUSE.MASK) << control._def.PID_FAULT_CAUSE.Z_SHIFT
+        msg[22] = (1 << 4) | 6
+        msg[23] = crc_calculator.calculate_checksum(msg[:23])
+        return msg
+
+    try:
+        assert micro.pid_fault_axes() == set()
+        assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.NONE
+
+        with caplog.at_level(logging.ERROR, logger="squid.Microcontroller"):
+            caplog.clear()
+            _feed_status_packet(
+                micro,
+                packet(
+                    1 << control._def.BIT_POS_PID_FAULT_Z,
+                    z_cause=control._def.PID_FAULT_CAUSE.NO_PROGRESS,
+                ),
+            )
+
+            assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+            assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.NO_PROGRESS
+            faults = [r for r in caplog.records if "closed-loop fault on Z" in r.message]
+            assert len(faults) == 1, f"expected one ERROR for the new Z fault, got {len(faults)}"
+            # "the loop faulted" is not actionable on its own; the cause byte is what tells the
+            # operator whether to look at the encoder, the stage or the budget.
+            assert "no progress" in faults[0].message, faults[0].message
+
+            # The same latch reported again is not news.
+            caplog.clear()
+            _feed_status_packet(
+                micro,
+                packet(
+                    1 << control._def.BIT_POS_PID_FAULT_Z,
+                    z_cause=control._def.PID_FAULT_CAUSE.NO_PROGRESS,
+                ),
+            )
+
+            assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+            assert [r for r in caplog.records if "closed-loop fault" in r.message] == []
+    finally:
+        micro.close()
+
+
+def test_pid_fault_log_does_not_invent_a_cause_while_encoder_reporting_is_on(caplog):
+    """Bytes 19-21 carry the reported axis's flags and deviation while reporting is on, so the cause
+    is simply not on the wire. Saying so beats naming whichever cause those bytes happen to alias."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    msg = bytearray(24)
+    msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+    msg[18] = 1 << control._def.BIT_POS_PID_FAULT_Z
+    msg[19] = (1 << control._def.ENC_FLAG.REPORTING) | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT)
+    msg[22] = (1 << 4) | 6
+    msg[23] = crc_calculator.calculate_checksum(msg[:23])
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="squid.Microcontroller"):
+            caplog.clear()
+            _feed_status_packet(micro, msg)
+
+        assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+        faults = [r for r in caplog.records if "closed-loop fault on Z" in r.message]
+        assert len(faults) == 1, f"expected one ERROR for the new Z fault, got {len(faults)}"
+        assert "cause not on the wire while encoder reporting is on" in faults[0].message, faults[0].message
+    finally:
+        micro.close()
+
+
+def test_encoder_fields_decode_from_packet():
+    """Theta field becomes encoder_pos and bytes 20-21 the signed deviation, only while flag bit 0 is set."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    def packet(theta, flags, dev):
+        msg = bytearray(24)
+        msg[0] = 7
+        msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        msg[14:18] = int(theta).to_bytes(4, "big", signed=True)
+        msg[19] = flags
+        msg[20:22] = int(dev).to_bytes(2, "big", signed=True)
+        msg[22] = (1 << 4) | 6
+        msg[23] = crc_calculator.calculate_checksum(msg[:23])
+        return msg
+
+    # Drive the parser directly on a crafted packet: same code path as the read thread.
+    flags = (
+        (1 << control._def.ENC_FLAG.REPORTING)
+        | (1 << control._def.ENC_FLAG.PID_ENABLED)
+        | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT)
+    )
+    msg = packet(-853333, flags, -1234)
+    micro.theta_pos = micro._payload_to_int(msg[14:18], 4)
+    micro.encoder_flags = msg[19]
+    if micro.encoder_flags & (1 << control._def.ENC_FLAG.REPORTING):
+        micro.encoder_pos = micro.theta_pos
+        micro.encoder_deviation = micro._payload_to_int(msg[20:22], 2)
+    state = micro.get_encoder_state()
+    assert state["reporting"] is True
+    assert state["pid_enabled"] is True
+    assert state["pid_fault"] is False
+    assert state["axis"] == control._def.AXIS.Z
+    assert state["encoder_pos"] == -853333
+    assert state["deviation"] == -1234
+
+    # Fault bit
+    micro.encoder_flags = flags | (1 << control._def.ENC_FLAG.PID_FAULT)
+    assert micro.get_encoder_state()["pid_fault"] is True
+
+    micro.close()
+
+
+def test_dev32_is_encoder_minus_counter_from_one_packet():
+    """The 32-bit loop error has to come out of the reader thread, not out of two reads.
+
+    Every caller wants ENC_POS - XACTUAL at full width (the packet's own deviation field clips at
+    int16), and every caller used to build it by pairing st["encoder_pos"] from one packet with a
+    later bare mcu.z_pos. The reader thread writes those two attributes at different lines with no
+    lock, so a read landing in between mixes packets - at 1 mm/s a 10 ms straddle is ~10 um of
+    phantom error. The parser pairs them from the same packet instead.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    def packet(z, enc, axis):
+        msg = bytearray(24)
+        msg[0] = 7
+        msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        msg[10:14] = int(z).to_bytes(4, "big", signed=True)
+        msg[14:18] = int(enc).to_bytes(4, "big", signed=True)
+        msg[19] = (
+            (1 << control._def.ENC_FLAG.REPORTING)
+            | (1 << control._def.ENC_FLAG.PID_ENABLED)
+            | (axis << control._def.ENC_FLAG.AXIS_SHIFT)
+        )
+        msg[20:22] = (0).to_bytes(2, "big", signed=True)
+        msg[22] = (1 << 4) | 6
+        msg[23] = crc_calculator.calculate_checksum(msg[:23])
+        return msg
+
+    try:
+        z, enc = -853333, -853333 + 40000  # 40000 usteps is far outside the int16 deviation field
+        _feed_status_packet(micro, packet(z, enc, control._def.AXIS.Z))
+        state = micro.get_encoder_state()
+        assert state["encoder_pos"] == enc
+        assert state["dev32"] == enc - z
+        # the clipped field is still reported as the firmware sent it
+        assert state["deviation"] == 0
+
+        # An axis whose step counter is not in the status packet (the filter wheel) has no host-side
+        # difference to report: None fails loudly rather than silently subtracting the Z counter.
+        _feed_status_packet(micro, packet(z, enc, control._def.AXIS.W))
+        assert micro.get_encoder_state()["dev32"] is None
+    finally:
+        micro.close()
+
+
+def _fault_cause_packet(crc_calculator, fault_bits=0, x_cause=0, y_cause=0, z_cause=0, flags=None, dev=0, enc=0, z=0):
+    """A status packet in either byte 19-21 layout.
+
+    flags=None builds the reporting-OFF layout: byte 18 carries the latched fault bits and bytes
+    19-20 the packed causes. Passing flags builds the reporting-ON layout instead, where byte 19
+    is the ENC_FLAG bits and bytes 20-21 the clipped deviation.
+    """
+    msg = bytearray(24)
+    msg[0] = 7
+    msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+    msg[10:14] = int(z).to_bytes(4, "big", signed=True)
+    msg[14:18] = int(enc).to_bytes(4, "big", signed=True)
+    msg[18] = fault_bits
+    if flags is None:
+        cause = control._def.PID_FAULT_CAUSE
+        msg[19] = ((x_cause & cause.MASK) << cause.X_SHIFT) | ((y_cause & cause.MASK) << cause.Y_SHIFT)
+        msg[20] = (z_cause & cause.MASK) << cause.Z_SHIFT
+    else:
+        msg[19] = flags
+        msg[20:22] = int(dev).to_bytes(2, "big", signed=True)
+    msg[22] = (1 << 4) | 6
+    msg[23] = crc_calculator.calculate_checksum(msg[:23])
+    return msg
+
+
+def test_enc_flag_fields_are_not_decoded_from_the_cause_layout():
+    """Byte 19 is only ENC_FLAG bits while bit 0 (REPORTING) is set.
+
+    With reporting off the firmware packs X's fault cause into bits 1-3 and Y's into bits 4-6 of
+    that same byte, so decoding it as flags regardless makes an X cause of 2 (NO_PROGRESS) read
+    back as pid_fault, a cause of 1 as pid_enabled, 4 as pid_zone_hold, and any Y cause as a
+    reported axis. get_encoder_state() has to report no loop state at all in that layout.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_X,
+                x_cause=control._def.PID_FAULT_CAUSE.NO_PROGRESS,  # 2 << 1 = ENC_FLAG.PID_FAULT's bit
+            ),
+        )
+        state = micro.get_encoder_state()
+        assert state["reporting"] is False
+        assert state["pid_fault"] is False
+        assert state["pid_enabled"] is False
+        assert state["pid_zone_hold"] is False
+        assert state["axis"] == 0
+        # the cause itself is read from the same byte, in the layout it is actually in
+        assert micro.pid_fault_cause(control._def.AXIS.X) == control._def.PID_FAULT_CAUSE.NO_PROGRESS
+
+        # A Y cause occupies exactly the ENC_FLAG axis field.
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_Y,
+                y_cause=control._def.PID_FAULT_CAUSE.REENGAGE_REFUSED,  # 5 << 4 = axis 5 (AXIS.W)
+            ),
+        )
+        assert micro.get_encoder_state()["axis"] == 0
+        assert micro.pid_fault_cause(control._def.AXIS.Y) == control._def.PID_FAULT_CAUSE.REENGAGE_REFUSED
+    finally:
+        micro.close()
+
+
+def test_a_cleared_fault_bit_drops_the_cause_it_left_behind():
+    """The cause outlives the fault unless the byte that is valid in BOTH layouts retires it.
+
+    pid_fault_causes is only written by reporting-OFF packets, so once the controller clears the
+    fault (a validated re-enable, CONFIGURE, RESET) the host would go on answering with the old
+    cause for as long as reporting stays on - and reporting on is how the tuner runs. Byte 18's
+    fault bits arrive in every packet, so they are what expires a cause.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_Z,
+                z_cause=control._def.PID_FAULT_CAUSE.WATCHDOG,
+            ),
+        )
+        assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.WATCHDOG
+
+        # The controller cleared the latch, and this packet is in the layout that cannot restate a
+        # cause. The fault bit is still the authority, and it says there is nothing to explain.
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=0,
+                flags=(1 << control._def.ENC_FLAG.REPORTING)
+                | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT),
+            ),
+        )
+        assert micro.pid_fault_axes() == set()
+        assert micro.pid_fault_cause(control._def.AXIS.Z) == control._def.PID_FAULT_CAUSE.NONE
+    finally:
+        micro.close()
+
+
+def test_dev32_expires_when_the_packet_stops_carrying_an_encoder_reading():
+    """dev32 is only written by reporting-ON packets, so it has to be retired by the OFF ones.
+
+    A tuner that drops reporting for a few packets to read a fault cause would otherwise keep
+    sampling the last deviation it saw against a stage that has since moved, and record it as a
+    fresh measurement. None is the honest answer while the reading is not on the wire.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        z, enc = -853333, -853333 + 40000
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                z=z,
+                enc=enc,
+                flags=(1 << control._def.ENC_FLAG.REPORTING)
+                | (control._def.AXIS.Z << control._def.ENC_FLAG.AXIS_SHIFT),
+            ),
+        )
+        assert micro.get_encoder_state()["dev32"] == enc - z
+
+        _feed_status_packet(micro, _fault_cause_packet(crc_calculator, z=z, enc=enc))
+        assert micro.get_encoder_state()["dev32"] is None
+    finally:
+        micro.close()
+
+
 def test_mcu_state_names_a_command_the_firmware_reports_as_still_in_progress():
     """A firmware that never finishes a move keeps answering IN_PROGRESS for the current command id,
     which matches none of the read loop's recovery branches; the timeout text must say so."""

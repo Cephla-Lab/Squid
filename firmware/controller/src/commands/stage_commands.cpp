@@ -1,6 +1,7 @@
 #include "stage_commands.h"
 
 #include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "../operations.h"                   // pid_before_move
 
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
@@ -11,14 +12,8 @@ static inline void mark_move_failed()
     mcu_cmd_execution_in_progress = false;
 }
 
-// Surface a failed move from an early-return path that never claimed
-// mcu_cmd_execution_in_progress for this command. Leaves in_progress
-// untouched so an unrelated motion already in flight on another axis
-// keeps its "still working" state.
-static inline void report_move_error()
-{
-    mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
-}
+// report_move_error() lives in stage_commands.h (static inline) so that
+// callback_enable_stage_pid in commands.cpp shares the one definition.
 
 /*
   An axis whose driver could not be identified is never commanded. The probe
@@ -97,6 +92,7 @@ void callback_move_z()
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
     Z_direction = sgn(relative_position);
     Z_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, Z_POS_LIMIT) : max(current_position + relative_position, Z_NEG_LIMIT) );
+    pid_before_move(z);
     focusPosition = Z_commanded_target_position;
     mcu_cmd_execution_in_progress = true;
     if ( tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
@@ -160,7 +156,9 @@ void callback_move_to_x()
     if (!axis_driver_ready(x)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     X_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[x]));
-    X_commanded_target_position = absolute_position;
+    // Clamp to the travel limits like the relative move does: beyond them the TMC4361A's virtual limit
+    // hard-stops the ramp short of the target and the command would stay IN_PROGRESS for ever.
+    X_commanded_target_position = min(max(absolute_position, X_NEG_LIMIT), X_POS_LIMIT);
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[x], X_commanded_target_position) == 0)
     {
@@ -177,7 +175,7 @@ void callback_move_to_y()
     if (!axis_driver_ready(y)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Y_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[y]));
-    Y_commanded_target_position = absolute_position;
+    Y_commanded_target_position = min(max(absolute_position, Y_NEG_LIMIT), Y_POS_LIMIT);
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[y], Y_commanded_target_position) == 0)
     {
@@ -194,11 +192,12 @@ void callback_move_to_z()
     if (!axis_driver_ready(z)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
-    Z_commanded_target_position = absolute_position;
+    Z_commanded_target_position = min(max(absolute_position, Z_NEG_LIMIT), Z_POS_LIMIT);
+    pid_before_move(z);
     mcu_cmd_execution_in_progress = true;
     if (tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
     {
-        focusPosition = absolute_position;
+        focusPosition = Z_commanded_target_position;
         Z_commanded_movement_in_progress = true;
     }
     else
@@ -356,6 +355,14 @@ void callback_set_pid_arguments()
     axes_pid_arg[axis].p = p;
     axes_pid_arg[axis].i = i;
     axes_pid_arg[axis].d = d;
+
+    // Apply immediately if the loop registers exist for this axis. Before 1.6
+    // the values only reached the TMC4361A through a LATER CONFIGURE_STAGE_PID,
+    // and the host sends CONFIGURE first, so its gains never arrived: the chip
+    // ran on the firmware defaults. Writing the gains here fixes that and is
+    // what lets a tuning tool sweep P/I/D on a live loop.
+    if (encoder_configured[axis])
+        tmc4361A_set_PID_gains(&tmc4361[axis], p, i, d);
 }
 
 /*
@@ -570,26 +577,31 @@ void callback_home_or_zero()
         {
         case AXIS_X:
             tmc4361A_setCurrentPosition(&tmc4361[x], 0);
+            tmc4361A_write_encoder(&tmc4361[x], 0);   // keep ENC_POS aligned with XACTUAL
             X_pos = 0;
             break;
         case AXIS_Y:
             tmc4361A_setCurrentPosition(&tmc4361[y], 0);
+            tmc4361A_write_encoder(&tmc4361[y], 0);   // keep ENC_POS aligned with XACTUAL
             Y_pos = 0;
             break;
         case AXIS_Z:
             tmc4361A_setCurrentPosition(&tmc4361[z], 0);
+            tmc4361A_write_encoder(&tmc4361[z], 0);   // keep ENC_POS aligned with XACTUAL
             Z_pos = 0;
             focusPosition = 0;
             break;
         case AXIS_W:
             if (enable_filterwheel == true) {
             tmc4361A_setCurrentPosition(&tmc4361[w], 0);
+            tmc4361A_write_encoder(&tmc4361[w], 0);   // keep ENC_POS aligned with XACTUAL
             W_pos = 0;
             }
             break;
         case AXIS_W2:
             if (enable_filterwheel_w2 == true) {
             tmc4361A_setCurrentPosition(&tmc4361[w2], 0);
+            tmc4361A_write_encoder(&tmc4361[w2], 0);   // keep ENC_POS aligned with XACTUAL
             W2_pos = 0;
             }
             break;
@@ -625,8 +637,14 @@ void callback_home_or_zero()
         switch (buffer_rx[2])
         {
         case AXIS_X:
-            if (stage_PID_enabled[AXIS_X] == 1)
-            tmc4361A_set_PID(&tmc4361[AXIS_X], PID_DISABLE);
+            if (stage_PID_enabled[x])
+            {
+                // Homing runs open-loop; keep the request so check_closed_loop() re-engages
+                // outside the home zone. Internal index x, not the protocol id AXIS_X.
+                tmc4361A_set_PID(&tmc4361[x], PID_DISABLE);
+                stage_PID_enabled[x] = 0;
+                pid_zone_hold[x] = true;
+            }
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[x], -1);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[x], 1);
             homing_direction_X = buffer_rx[3];
@@ -684,8 +702,14 @@ void callback_home_or_zero()
             */
             break;
         case AXIS_Y:
-            if (stage_PID_enabled[AXIS_Y] == 1)
-            tmc4361A_set_PID(&tmc4361[AXIS_Y], PID_DISABLE);
+            if (stage_PID_enabled[y])
+            {
+                // Homing runs open-loop; keep the request so check_closed_loop() re-engages
+                // outside the home zone. Internal index y, not the protocol id AXIS_Y.
+                tmc4361A_set_PID(&tmc4361[y], PID_DISABLE);
+                stage_PID_enabled[y] = 0;
+                pid_zone_hold[y] = true;
+            }
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[y], -1);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[y], 1);
             homing_direction_Y = buffer_rx[3];
@@ -724,8 +748,14 @@ void callback_home_or_zero()
             }
             break;
         case AXIS_Z:
-            if (stage_PID_enabled[AXIS_Z] == 1)
-            tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_DISABLE);
+            if (stage_PID_enabled[z])
+            {
+                // Homing runs open-loop; keep the request so check_closed_loop() re-engages
+                // outside the home zone. Internal index z, not the protocol id AXIS_Z.
+                tmc4361A_set_PID(&tmc4361[z], PID_DISABLE);
+                stage_PID_enabled[z] = 0;
+                pid_zone_hold[z] = true;
+            }
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[z], -1);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[z], 1);
             homing_direction_Z = buffer_rx[3];

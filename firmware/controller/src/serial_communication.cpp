@@ -50,7 +50,15 @@ void process_serial_message()
 
 void send_position_update()
 {
-  if (us_since_last_pos_update > interval_send_pos_update)
+  // Besides the regular cadence, send a packet the moment a command stops being
+  // in progress, so the host learns of completion within one loop iteration
+  // instead of up to one interval later. The status byte is the same one the
+  // periodic packet would carry.
+  static bool last_in_progress = false;
+  bool completed_now = last_in_progress && !mcu_cmd_execution_in_progress;
+  last_in_progress = mcu_cmd_execution_in_progress;
+
+  if (us_since_last_pos_update > interval_send_pos_update || completed_now || flag_send_pos_update)
   {
     us_since_last_pos_update = 0;
 
@@ -61,6 +69,24 @@ void send_position_update()
       buffer_tx[1] = IN_PROGRESS;
     else
       buffer_tx[1] = mcu_cmd_execution_status; // COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
+
+    // Encoder reporting (firmware 1.6, SET_ENCODER_REPORTING). Two extra TMC4361A
+    // reads per packet, only while a host has asked for them. ENC_POS is in
+    // microsteps (the chip scales the encoder by ENC_IN_RES), so it is directly
+    // comparable with XACTUAL; ENC_POS_DEV is ENC_POS - XACTUAL as the chip reports it
+    // (bench-verified: positive = encoder ahead of the step counter).
+    int32_t enc_pos = 0;
+    int32_t enc_dev = 0;
+    if (encoder_report_axis != 0xFF)
+    {
+      enc_pos = tmc4361A_readInt(&tmc4361[encoder_report_axis], TMC4361A_ENC_POS);
+      enc_dev = tmc4361A_read_deviation(&tmc4361[encoder_report_axis]);
+      // Mode 2: the axis's own position field carries the encoder. The
+      // *_use_encoder flags were set by the command; keep *_pos current.
+      if (encoder_report_axis == x)      X_pos = enc_pos;
+      else if (encoder_report_axis == y) Y_pos = enc_pos;
+      else if (encoder_report_axis == z) Z_pos = enc_pos;
+    }
 
     uint32_t X_pos_int32t = uint32_t( X_use_encoder ? X_pos : int32_t(tmc4361A_currentPosition(&tmc4361[x])) );
     buffer_tx[2] = byte(X_pos_int32t >> 24);
@@ -87,10 +113,54 @@ void send_position_update()
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
 
-    // Clear reserved bytes to avoid stale data affecting the checksum
-    buffer_tx[19] = 0;
-    buffer_tx[20] = 0;
-    buffer_tx[21] = 0;
+    // Closed-loop fault bits (firmware 1.6). Unconditional: byte 19's fault flag only exists
+    // while encoder reporting is on, and the acquisition path never asks for it, so a latched
+    // watchdog fault would otherwise never reach the host once the failed move had been
+    // reported. Protocol axis order X / Y / Z from the internal indices x / y / z.
+    buffer_tx[18] &= ~ ((1 << BIT_POS_PID_FAULT_X) | (1 << BIT_POS_PID_FAULT_Y) | (1 << BIT_POS_PID_FAULT_Z));
+    if (pid_fault[x]) buffer_tx[18] |= (1 << BIT_POS_PID_FAULT_X);
+    if (pid_fault[y]) buffer_tx[18] |= (1 << BIT_POS_PID_FAULT_Y);
+    if (pid_fault[z]) buffer_tx[18] |= (1 << BIT_POS_PID_FAULT_Z);
+
+    // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved)
+    // are zero unless encoder reporting is on. The host ignores all of them
+    // unless it asked, so the shipping packet is byte-identical to 1.5.
+    if (encoder_report_axis != 0xFF)
+    {
+      uint32_t enc_u = uint32_t(enc_pos);
+      buffer_tx[14] = byte(enc_u >> 24);
+      buffer_tx[15] = byte((enc_u >> 16) % 256);
+      buffer_tx[16] = byte((enc_u >> 8) % 256);
+      buffer_tx[17] = byte((enc_u) % 256);
+
+      byte flags = (1 << ENC_FLAG_REPORTING);
+      if (stage_PID_enabled[encoder_report_axis]) flags |= (1 << ENC_FLAG_PID_ENABLED);
+      if (pid_fault[encoder_report_axis])         flags |= (1 << ENC_FLAG_PID_FAULT);
+      if (pid_zone_hold[encoder_report_axis])     flags |= (1 << ENC_FLAG_PID_ZONE);
+      flags |= byte((internal_axis_to_protocol(encoder_report_axis) & 0x07) << ENC_FLAG_AXIS_SHIFT);
+      buffer_tx[19] = flags;
+
+      int32_t dev_clip = enc_dev > 32767 ? 32767 : (enc_dev < -32768 ? -32768 : enc_dev);
+      uint16_t dev_u = uint16_t(int16_t(dev_clip));
+      buffer_tx[20] = byte(dev_u >> 8);
+      buffer_tx[21] = byte(dev_u & 0xFF);
+    }
+    else
+    {
+      buffer_tx[14] = 0;
+      buffer_tx[15] = 0;
+      buffer_tx[16] = 0;
+      buffer_tx[17] = 0;
+      // Reporting off: bytes 19-20 carry WHY each stage axis's loop faulted (PID_FAULT_*,
+      // constants_protocol.h), 0 = no fault latched. Old hosts ignored these zero bytes; the
+      // fault bits in byte 18 say THAT a fault is latched in every packet either way.
+      // Packed clear of byte 19 bit 0 (ENC_FLAG_REPORTING), so a host can always tell the two
+      // layouts apart: X in byte 19 bits 1-3, Y in byte 19 bits 4-6, Z in byte 20 bits 0-2.
+      buffer_tx[19] = byte(((pid_fault_cause[x] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_X_SHIFT)
+                         | ((pid_fault_cause[y] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Y_SHIFT));
+      buffer_tx[20] = byte((pid_fault_cause[z] & PID_FAULT_CAUSE_MASK) << PID_FAULT_CAUSE_Z_SHIFT);
+      buffer_tx[21] = 0;
+    }
 
     // Firmware version in byte 22: high nibble = major, low nibble = minor
     buffer_tx[22] = (FIRMWARE_VERSION_MAJOR << 4) | (FIRMWARE_VERSION_MINOR & 0x0F);

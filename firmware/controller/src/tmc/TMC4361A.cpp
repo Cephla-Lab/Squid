@@ -165,6 +165,7 @@ void tmc4361A_init(TMC4361ATypeDef *tmc4361A, uint8_t channel, ConfigurationType
   /* Zeroed alongside driver_type. A stale word from a previous probe read as
      though it were this one's evidence would be worse than no word at all. */
   tmc4361A->driver_probe_raw = 0;
+  tmc4361A->ramp_profile = 2;   /* TMC4361A_RAMP_SSHAPE: master behaviour */
 
   tmc4361A->config->callback     = NULL;
   tmc4361A->config->channel      = channel;

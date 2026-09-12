@@ -967,7 +967,10 @@ void tmc4361A_moveToExtreme(TMC4361ATypeDef *tmc4361A, int32_t vel, int8_t dir) 
   -----------------------------------------------------------------------------
 */
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | TMC4361A_RAMP_SSHAPE); // positioning mode, s-shaped ramp
+  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request).
+  // Clear the two profile bits first: a plain setBits cannot change SSHAPE (2) into TRAPEZ (1).
+  tmc4361A_rstBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
+  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE));
   tmc4361A_rstBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_USE_ASTART_AND_VSTART_MASK); // keep astart, vstart = 0
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW1, tmc4361A->rampParam[BOW1_IDX]); // determines the value which increases the absolute acceleration value.
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW2, tmc4361A->rampParam[BOW2_IDX]); // determines the value which decreases the absolute acceleration value.
@@ -1645,9 +1648,13 @@ void tmc4361A_init_ABN_encoder(TMC4361ATypeDef *tmc4361A, uint32_t enc_res, uint
   datagram = uint32_t(filter_wait_time) + ((uint32_t(filter_exponent) << TMC4361A_ENC_VMEAN_FILTER_SHIFT)&TMC4361A_ENC_VMEAN_FILTER_MASK) + ((uint32_t(filter_vmean) << TMC4361A_ENC_VMEAN_INT_SHIFT)&TMC4361A_ENC_VMEAN_INT_MASK);
   tmc4361A_writeInt(tmc4361A, TMC4361A_ENC_VMEAN_FILTER_WR, datagram);
 
-  // set whether or not to invert
+  // set whether or not to invert. Clear the bit explicitly when not inverting:
+  // a re-configuration with invert = false after one with invert = true must
+  // actually un-invert, and a chip reset is the only other thing that clears it.
   if (invert) {
     tmc4361A_setBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_INVERT_ENC_DIR_MASK);
+  } else {
+    tmc4361A_rstBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_INVERT_ENC_DIR_MASK);
   }
 
   return;
@@ -1809,6 +1816,33 @@ bool tmc4361A_read_deviation_flag(TMC4361ATypeDef *tmc4361A) {
 void tmc4361A_set_PID(TMC4361ATypeDef *tmc4361A, uint8_t pid_mode) {
   tmc4361A_rstBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_REGULATION_MODUS_MASK);
   tmc4361A_setBits(tmc4361A, TMC4361A_ENC_IN_CONF, pid_mode << TMC4361A_REGULATION_MODUS_SHIFT);
+  return;
+}
+/*
+  -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_set_PID_gains() rewrites only PID_P / PID_I / PID_D, so a
+               host can retune a running loop without re-initialising the encoder
+               (tmc4361A_init_PID writes tolerances and clips as well). Same
+               masking as tmc4361A_init_PID; takes effect on the next PID cycle.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_set_PID_gains(TMC4361ATypeDef *tmc4361A, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_P_WR, pid_p & TMC4361A_PID_P_MASK);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_I_WR, pid_i & TMC4361A_PID_I_MASK);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_D_WR, pid_d & TMC4361A_PID_D_MASK);
+  return;
+}
+/*
+  -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_set_PID_dv_clip() sets PID_DV_CLIP, the ceiling on the
+               velocity the closed loop may add to null the encoder error. This is
+               the closed loop's speed limit: with a wrong encoder sign or a bad
+               gain the correction runs the axis away at exactly this speed, so
+               a bench keeps it low (well under 1 mm/s on Z) while tuning.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_set_PID_dv_clip(TMC4361ATypeDef *tmc4361A, uint32_t pid_dclip) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_DV_CLIP_WR, pid_dclip & TMC4361A_PID_DV_CLIP_MASK);
   return;
 }
 
