@@ -417,17 +417,19 @@ class ZTuner:
                 dev = self._dev32_usteps(self.mcu.get_encoder_state())
                 dev_um = dev / USTEPS_PER_MM * 1000
                 self.log(f"encoder frame offset after homing: {dev_um:+.1f} um")
-                if abs(dev) >= 32767 or abs(dev_um) > self.a.max_dev_um / 4:
+                if abs(dev_um) > self.a.max_dev_um / 4:
                     if self.a.action == "zonemap":
                         # the zone map never closes the loop: it is the tool that measures exactly this
                         # offset (a stage that rests on its stop while the actuator homes below it)
                         self.log("frame offset exceeds the gate; continuing because zonemap is open-loop only")
                         return
                     raise RuntimeError(
-                        f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um "
-                        f"(past {32767 / USTEPS_PER_MM * 1000:.0f} um the firmware's own int16 ENC_POS_DEV "
-                        f"saturates, so its watchdog and its enable check stop seeing the error); "
+                        f"encoder frame is offset from XACTUAL by {dev_um:+.1f} um; "
                         "the loop would slew by that amount on enable. Refusing to continue. "
+                        f"(Past {32767 / USTEPS_PER_MM * 1000:.0f} um the status packet's ENC_POS_DEV field, "
+                        "an int16, can no longer carry the number, so host readings taken from it - including "
+                        "older readings from this tool - were wrong. The firmware is not affected: its ENABLE "
+                        "gate and its watchdog read the full 32-bit deviation register.) "
                         "Run `zonemap` to see where the encoder decouples from the counter."
                     )
                 return
@@ -461,9 +463,12 @@ class ZTuner:
         rest_rms = math.sqrt(sum((d - rest_mean) ** 2 for d in rest) / len(rest)) if rest else float("nan")
         if peak >= 32767:
             self.log(
-                "WARNING: loop error ran past the range of the firmware's int16 ENC_POS_DEV (>=192 um at 256 "
-                "usteps/FS), where its watchdog and enable check saturate: the encoder frame is offset from "
-                "XACTUAL. Firmware must zero ENC_POS at homing; do not close the loop in this state."
+                "WARNING: loop error ran past the range of the status packet's int16 ENC_POS_DEV field (>=192 um "
+                "at 256 usteps/FS), so any reading taken from that field past this point is wrong - this trace "
+                "uses the 32-bit difference instead. The firmware still sees the whole error: its watchdog and "
+                "its enable check read the full 32-bit deviation register. What the size itself means is that "
+                "the encoder frame is offset from XACTUAL; firmware must zero ENC_POS at homing; do not close "
+                "the loop in this state."
             )
         # settling time: from the end of the last commanded move (last change of XACTUAL) until |dev|
         # stays within tol for 0.2 s
