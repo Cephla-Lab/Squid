@@ -647,8 +647,9 @@ class Microcontroller:
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
         # Encoder reporting (firmware >= 1.6, see set_encoder_reporting). Only meaningful while
-        # encoder_flags has ENC_FLAG.REPORTING set; with reporting off byte 19 (encoder_flags) is
-        # the X fault cause and bytes 20-21 the Y / Z causes, not an encoder reading.
+        # encoder_flags has ENC_FLAG.REPORTING set; with reporting off bytes 19-21 carry the packed
+        # fault causes instead of an encoder reading, and encoder_flags is held at 0 rather than
+        # decoded as flags it does not contain.
         self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
         self.encoder_deviation = (
             0  # ENC_POS - XACTUAL of the reported axis (positive = encoder ahead of the counter), microsteps, int16
@@ -1839,8 +1840,12 @@ class Microcontroller:
                 # clipped loop error of the reported axis. Reporting OFF: the PID_FAULT_CAUSE of X / Y
                 # sit in byte 19 bits 1-3 / 4-6 and Z's in byte 20 bits 0-2, packed so byte 19 bit 0
                 # (the reporting flag) stays clear. All zero unless a host enabled the loop.
-                self.encoder_flags = msg[19]
-                reporting = bool(self.encoder_flags & (1 << ENC_FLAG.REPORTING))
+                reporting = bool(msg[19] & (1 << ENC_FLAG.REPORTING))
+                # Only keep byte 19 as flags in the layout where it IS flags. In the cause layout
+                # its bits belong to X (1-3) and Y (4-6), so an X cause of 1 / 2 / 4 would read
+                # back as pid_enabled / pid_fault / pid_zone_hold and any Y cause as a reported
+                # axis. Zero says what is true there: no loop state is on the wire.
+                self.encoder_flags = msg[19] if reporting else 0
                 if reporting:
                     self.encoder_pos = theta_pos
                     self.encoder_deviation = self._payload_to_int(msg[20:22], 2)

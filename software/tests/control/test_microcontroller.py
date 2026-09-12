@@ -531,6 +531,77 @@ def test_dev32_is_encoder_minus_counter_from_one_packet():
         micro.close()
 
 
+def _fault_cause_packet(crc_calculator, fault_bits=0, x_cause=0, y_cause=0, z_cause=0, flags=None, dev=0, enc=0, z=0):
+    """A status packet in either byte 19-21 layout.
+
+    flags=None builds the reporting-OFF layout: byte 18 carries the latched fault bits and bytes
+    19-20 the packed causes. Passing flags builds the reporting-ON layout instead, where byte 19
+    is the ENC_FLAG bits and bytes 20-21 the clipped deviation.
+    """
+    msg = bytearray(24)
+    msg[0] = 7
+    msg[1] = control._def.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+    msg[10:14] = int(z).to_bytes(4, "big", signed=True)
+    msg[14:18] = int(enc).to_bytes(4, "big", signed=True)
+    msg[18] = fault_bits
+    if flags is None:
+        cause = control._def.PID_FAULT_CAUSE
+        msg[19] = ((x_cause & cause.MASK) << cause.X_SHIFT) | ((y_cause & cause.MASK) << cause.Y_SHIFT)
+        msg[20] = (z_cause & cause.MASK) << cause.Z_SHIFT
+    else:
+        msg[19] = flags
+        msg[20:22] = int(dev).to_bytes(2, "big", signed=True)
+    msg[22] = (1 << 4) | 6
+    msg[23] = crc_calculator.calculate_checksum(msg[:23])
+    return msg
+
+
+def test_enc_flag_fields_are_not_decoded_from_the_cause_layout():
+    """Byte 19 is only ENC_FLAG bits while bit 0 (REPORTING) is set.
+
+    With reporting off the firmware packs X's fault cause into bits 1-3 and Y's into bits 4-6 of
+    that same byte, so decoding it as flags regardless makes an X cause of 2 (NO_PROGRESS) read
+    back as pid_fault, a cause of 1 as pid_enabled, 4 as pid_zone_hold, and any Y cause as a
+    reported axis. get_encoder_state() has to report no loop state at all in that layout.
+    """
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+
+    try:
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_X,
+                x_cause=control._def.PID_FAULT_CAUSE.NO_PROGRESS,  # 2 << 1 = ENC_FLAG.PID_FAULT's bit
+            ),
+        )
+        state = micro.get_encoder_state()
+        assert state["reporting"] is False
+        assert state["pid_fault"] is False
+        assert state["pid_enabled"] is False
+        assert state["pid_zone_hold"] is False
+        assert state["axis"] == 0
+        # the cause itself is read from the same byte, in the layout it is actually in
+        assert micro.pid_fault_cause(control._def.AXIS.X) == control._def.PID_FAULT_CAUSE.NO_PROGRESS
+
+        # A Y cause occupies exactly the ENC_FLAG axis field.
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_Y,
+                y_cause=control._def.PID_FAULT_CAUSE.REENGAGE_REFUSED,  # 5 << 4 = axis 5 (AXIS.W)
+            ),
+        )
+        assert micro.get_encoder_state()["axis"] == 0
+        assert micro.pid_fault_cause(control._def.AXIS.Y) == control._def.PID_FAULT_CAUSE.REENGAGE_REFUSED
+    finally:
+        micro.close()
+
+
 def test_mcu_state_names_a_command_the_firmware_reports_as_still_in_progress():
     """A firmware that never finishes a move keeps answering IN_PROGRESS for the current command id,
     which matches none of the read loop's recovery branches; the timeout text must say so."""
