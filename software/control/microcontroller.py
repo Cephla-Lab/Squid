@@ -1455,11 +1455,13 @@ class Microcontroller:
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):
         """Closed-loop deadband and target-reached tolerance for `axis`, in um (firmware >= 1.6).
 
-        Below the deadband the TMC4361A stops correcting; the target-reached tolerance is what the
-        firmware accepts as 'arrived' when acknowledging a closed-loop move. Master hard-codes both
-        to 25 microsteps, which is 0.15 um at 256 usteps/FS on Z but 2.3 um at 16; firmware 1.6
-        defaults both to two encoder counts and this command overrides that. Encoded in 0.01 um,
-        so the range is 0.01 .. 655 um; None keeps the current target-reached value.
+        Inside the deadband the TMC4361A stops correcting; the target-reached tolerance is what the
+        firmware accepts as 'arrived' when acknowledging a closed-loop move (the encoder within it
+        of the target, inclusive) - never tighter than the deadband, since the chip does not correct
+        inside the deadband: a target tolerance below it is acknowledged at the deadband. Master
+        hard-codes both to 25 microsteps, which is 0.15 um at 256 usteps/FS on Z but 2.3 um at 16;
+        firmware 1.6 defaults both to two encoder counts and this command overrides that. Encoded
+        in 0.01 um, so the range is 0.01 .. 655 um; None keeps the current target-reached value.
         """
         d = int(round(deadband_um * 100))
         t = 0 if target_reached_um is None else int(round(target_reached_um * 100))

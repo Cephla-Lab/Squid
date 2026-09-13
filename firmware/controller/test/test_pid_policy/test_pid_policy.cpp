@@ -129,6 +129,16 @@ void test_window_replaces_the_tolerance_as_the_bound(void) {
     // A 10-ustep window accepts what a 2-ustep tolerance would not, and nothing beyond it.
     TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 7, 10, 2, 2));
     TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2, 2));
+    // And a window NARROWER than the target tolerance replaces it too (it is not a max of the
+    // three): window 3, target 5, deadband 2 - 4 out is not complete.
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 4, 3, 5, 2));
+}
+
+void test_target_tolerance_above_the_deadband_is_the_bound(void) {
+    // Target 5, deadband 2, no window: the bound is the target tolerance, not the deadband.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 4, 0, 5, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 5, 0, 5, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 6, 0, 5, 2));
 }
 
 void test_bound_is_never_tighter_than_the_deadband(void) {
@@ -518,6 +528,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_no_window_bound_is_inclusive);
     RUN_TEST(test_no_window_bound_is_on_the_encoder_not_the_counter);
     RUN_TEST(test_window_replaces_the_tolerance_as_the_bound);
+    RUN_TEST(test_target_tolerance_above_the_deadband_is_the_bound);
     RUN_TEST(test_bound_is_never_tighter_than_the_deadband);
     RUN_TEST(test_error_inside_the_deadband_is_never_watched);
     RUN_TEST(test_frozen_encoder_just_outside_the_deadband_trips_on_the_total_budget);

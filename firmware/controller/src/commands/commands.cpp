@@ -158,9 +158,10 @@ void callback_configure_stage_pid()
         dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
     pid_dv_clip_eff[axis] = dv_clip;   // what the bounded-correction watch budgets against
 
-    // Loop deadband (PID_TOLERANCE: below this error the chip stops correcting) and
-    // target-reached tolerance (CL_TR_TOLERANCE: what tmc4361A_isRunning() accepts as
-    // arrived). Both are in microsteps, so a fixed number is a physical size that
+    // Loop deadband (PID_TOLERANCE: inside this error the chip stops correcting) and
+    // target-reached tolerance (CL_TR_TOLERANCE: what check_position's completion rule
+    // accepts as arrived, never tighter than the deadband - see pid_completion_encoder_ok).
+    // Both are in microsteps, so a fixed number is a physical size that
     // scales with microstepping: master's 25 usteps is 0.15 um at 256 usteps/FS on Z
     // but 2.3 um at 16, where a 20 x 1 um closed-loop stack landed up to 2.2 um off.
     // Default: TWO ENCODER COUNTS, computed from the encoder resolution just written.
