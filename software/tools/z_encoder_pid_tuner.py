@@ -295,14 +295,15 @@ class ZTuner:
         if st["dev32"] is None:
             # No encoder reading in this packet: reporting is off (a script moving before it turned
             # reporting on - the 2026-09-12 bench run died here with int(None) instead of guarding).
-            # The loop-error leg is blind. Open loop there is no loop error to watch and the depth
-            # check below still applies; with the loop engaged this guard IS the envelope the tool
-            # runs under, so it refuses to run blind rather than pretend.
+            # The loop-error leg is blind. With no loop requested there is no loop error to watch and
+            # the depth check below still applies; with a loop requested (loop_on: ENABLE acknowledged,
+            # no DISABLE since - the firmware may still be holding it open in the zone) this guard IS
+            # the envelope the tool runs under, so it refuses to run blind rather than pretend.
             if self.loop_on:
                 self.loop_off()
                 raise RuntimeError(
-                    "host guard: encoder reporting is off while the loop is engaged, so the loop error "
-                    "cannot be watched; turn reporting on (configure_encoder) before engaging"
+                    "host guard: encoder reporting is off while a loop is requested, so the loop error "
+                    "cannot be watched; turn reporting on (configure_encoder) before enabling the loop"
                 )
         else:
             dev = self._dev32_usteps(st)

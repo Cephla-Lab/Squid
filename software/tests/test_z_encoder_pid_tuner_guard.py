@@ -2,8 +2,10 @@
 
 On the 2240 bench (2026-09-12) a script moved before reporting was on and the guard died with a
 TypeError from int(None) instead of guarding. Without an encoder reading the loop-error leg is
-blind: open loop it has nothing to watch, engaged it must refuse to run blind. Byte 18's fault
-bits arrive in every packet, so a latched fault is still seen either way.
+blind: with no loop requested it has nothing to watch; with one requested (the tool's loop_on:
+ENABLE acknowledged and no DISABLE since, whether or not the firmware has it engaged) it must
+refuse to run blind. Byte 18's fault bits arrive in every packet, so a latched fault is still
+seen either way.
 """
 
 import importlib.util
@@ -71,12 +73,12 @@ def make_tuner(tuner_mod, tmp_path, mcu, loop_on):
 
 
 def test_reporting_off_and_open_loop_is_not_an_error(tuner_mod, tmp_path):
-    # Nothing engaged and no reading: the only leg that can be judged is the depth, and 0 is fine.
+    # No loop requested and no reading: the only leg that can be judged is the depth, and 0 is fine.
     t = make_tuner(tuner_mod, tmp_path, FakeMcu(BLIND), loop_on=False)
     t.guard()
 
 
-def test_reporting_off_with_the_loop_engaged_refuses_to_run_blind(tuner_mod, tmp_path):
+def test_reporting_off_with_a_loop_requested_refuses_to_run_blind(tuner_mod, tmp_path):
     mcu = FakeMcu(BLIND)
     t = make_tuner(tuner_mod, tmp_path, mcu, loop_on=True)
     with pytest.raises(RuntimeError, match="reporting"):
