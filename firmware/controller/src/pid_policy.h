@@ -75,17 +75,24 @@ static inline bool pid_engage_pending(bool requested, bool zone_hold, bool homin
 /* Encoder leg of a commanded move's completion while the loop is engaged. `counter_minus_target`
    is XACTUAL - target and `enc_minus_counter` ENC_POS_DEV as the chip reports it (ENC_POS -
    XACTUAL), so their sum is the ENCODER's distance to the target: the bound is on that, not on
-   the two legs separately (which allows 2*win). With a completion window the bound is the window,
-   inclusive like the counter leg; without one it is the target-reached tolerance, strictly - the
-   chip corrects while |e| >= PID_TOLERANCE and the host sets the two tolerances equal, so the ack
-   means the correction has stopped. Fed from ENC_POS_DEV, which the chip keeps from the encoder
-   edges whatever the PID state, not from PID_E (see commanded_move_complete in operations.cpp). */
+   the two legs separately (which allows 2*win). The bound is the completion window when one is
+   set, else the target-reached tolerance - and never tighter than the chip's deadband
+   (PID_TOLERANCE): inside it the chip does not correct, so a tighter bound is a move that never
+   completes and, since the correction watch is idle inside the deadband too, is never faulted
+   either (SET_PID_TOLERANCE takes the two tolerances independently). Inclusive throughout: the
+   datasheet documents the deadband both ways ("moves with vPID until |PID_E| - PID_TOLERANCE <= 0";
+   "PID_E = 0 in case |PID_E| < PID_TOLERANCE") and calls it a hysteresis, so the chip may rest at
+   |e| == deadband; an inclusive bound completes under either reading. Fed from ENC_POS_DEV, which
+   the chip keeps from the encoder edges whatever the PID state, not from PID_E (see
+   commanded_move_complete in operations.cpp). */
 static inline bool pid_completion_encoder_ok(int32_t counter_minus_target, int32_t enc_minus_counter,
-                                             int32_t win, int32_t target_tol)
+                                             int32_t win, int32_t target_tol, int32_t deadband)
 {
     int32_t e = counter_minus_target + enc_minus_counter;
     if (e < 0) e = -e;
-    return win > 0 ? e <= win : e < target_tol;
+    int32_t bound = win > 0 ? win : target_tol;
+    if (bound < deadband) bound = deadband;
+    return e <= bound;
 }
 /* ---- Bounded correction (frozen feedback / stage on its stop) -------------------------
    The chip nulls XACTUAL - ENC_POS. Motion the correction generates does not move XACTUAL,

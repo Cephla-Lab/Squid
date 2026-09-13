@@ -63,65 +63,87 @@ void test_zone_disabled_is_pending_even_at_zero(void) {
   is engaged. The bound is on the ENCODER's distance to the target (counter - target, plus the
   chip's ENC_POS_DEV = encoder - counter), not on the two legs separately: that let the encoder
   sit 2*win from the target (0.6 um of real error acknowledged as settled on a 0.3 um window).
-  With a completion window the bound is the window, inclusive; without one it is the
-  target-reached tolerance, strictly - the chip corrects while |e| >= PID_TOLERANCE and the
-  host sets the two tolerances equal, so the ack means the correction has stopped.
+  The bound is the completion window when one is set, else the target-reached tolerance, and
+  never tighter than the chip's deadband: inside the deadband the chip does not correct, so a
+  tighter bound is a move that never completes. Inclusive throughout: the datasheet documents the
+  deadband both ways (drives "until |PID_E| - PID_TOLERANCE <= 0"; "PID_E = 0 in case |PID_E| <
+  PID_TOLERANCE"), the correction watch already treats |e| == deadband as idle, and an inclusive
+  bound completes under either reading where a strict one could wait for ever at |e| == deadband
+  with nothing watching.
+  Arguments: (counter - target, ENC_POS_DEV, window, target tolerance, deadband).
 */
 
 void test_encoder_beyond_the_window_is_not_settled(void) {
     // Counter 8 short of the target and the encoder 8 further out: 16 from the target,
     // yet each leg is inside a window of 10. This is the case the old form accepted.
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(8, 8, 10, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(8, 8, 10, 2, 2));
 }
 
 void test_encoder_at_the_target_is_settled(void) {
     // Counter 8 past the target, encoder 8 behind the counter: the encoder IS the target.
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(8, -8, 10, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(8, -8, 10, 2, 2));
 }
 
 void test_encoder_exactly_on_the_window_is_settled(void) {
     // Counter on the target, encoder a full window away: inclusive, like the counter leg.
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 10, 10, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 10, 10, 2, 2));
 }
 
 void test_encoder_one_past_the_window_is_not_settled(void) {
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2, 2));
     // Symmetric in sign.
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -11, 10, 2));
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -10, 10, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -11, 10, 2, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -10, 10, 2, 2));
 }
 
 void test_no_window_ack_before_convergence_is_not_settled(void) {
     // The bench row (2026-09-12, f1116052, 10 um steps at 10,667 usteps/mm): counter at the
     // target, ENC_POS_DEV 3..7 usteps (0.3-0.7 um) on the pass that re-engaged the rest-only
     // loop, tolerance two encoder counts = 2 usteps. Acknowledged then; must not be.
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 7, 0, 2));
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -3, 0, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 7, 0, 2, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -3, 0, 2, 2));
 }
 
 void test_no_window_inside_the_tolerance_is_settled(void) {
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 0, 0, 2));
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 1, 0, 2));
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -1, 0, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 0, 0, 2, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 1, 0, 2, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -1, 0, 2, 2));
 }
 
-void test_no_window_bound_is_strict_like_the_deadband(void) {
-    // |e| == tolerance: the chip is still correcting (it stops only below PID_TOLERANCE).
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 2, 0, 2));
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -2, 0, 2));
+void test_no_window_bound_is_inclusive(void) {
+    // |e| == tolerance completes: under the datasheet's inclusive reading the chip rests here,
+    // and the correction watch treats it as idle - a strict bound would wait here for ever.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 2, 0, 2, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -2, 0, 2, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 3, 0, 2, 2));
 }
 
 void test_no_window_bound_is_on_the_encoder_not_the_counter(void) {
     // Counter 5 past the target, encoder 5 behind the counter: the encoder is on the target.
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(5, -5, 0, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(5, -5, 0, 2, 2));
     // The counter on the target is not enough on its own.
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 5, 0, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 5, 0, 2, 2));
 }
 
 void test_window_replaces_the_tolerance_as_the_bound(void) {
     // A 10-ustep window accepts what a 2-ustep tolerance would not, and nothing beyond it.
-    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 7, 10, 2));
-    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 7, 10, 2, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2, 2));
+}
+
+void test_bound_is_never_tighter_than_the_deadband(void) {
+    // SET_PID_TOLERANCE takes the two tolerances independently: target 2, deadband 5. The chip
+    // parks anywhere inside 5, so a completion bound of 2 is a move that never completes and is
+    // never watched (the watch is idle inside the deadband). The deadband is the floor.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 4, 0, 2, 5));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 5, 0, 2, 5));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 6, 0, 2, 5));
+    // Same with a completion window narrower than the deadband.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 4, 3, 2, 5));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 6, 3, 2, 5));
+    // A window wider than the deadband is still the bound.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 7, 10, 2, 5));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2, 5));
 }
 
 /*
@@ -493,9 +515,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_encoder_one_past_the_window_is_not_settled);
     RUN_TEST(test_no_window_ack_before_convergence_is_not_settled);
     RUN_TEST(test_no_window_inside_the_tolerance_is_settled);
-    RUN_TEST(test_no_window_bound_is_strict_like_the_deadband);
+    RUN_TEST(test_no_window_bound_is_inclusive);
     RUN_TEST(test_no_window_bound_is_on_the_encoder_not_the_counter);
     RUN_TEST(test_window_replaces_the_tolerance_as_the_bound);
+    RUN_TEST(test_bound_is_never_tighter_than_the_deadband);
     RUN_TEST(test_error_inside_the_deadband_is_never_watched);
     RUN_TEST(test_frozen_encoder_just_outside_the_deadband_trips_on_the_total_budget);
     RUN_TEST(test_small_residual_held_by_stiction_for_half_a_second_is_ok);

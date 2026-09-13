@@ -587,17 +587,20 @@ void do_focus_control()
 // Defined with check_closed_loop() below, next to the rest of the closed-loop policy;
 // check_position() needs it to tell a held-open loop apart from a homing move.
 static bool axis_is_homing(uint8_t i);
+static inline int32_t pid_tolerance_eff(uint8_t axis);
 
 // One completion rule for every commanded move (check_position below), three legs:
 //  1. the counter: XACTUAL at the target with the ramp idle, or - SET_COMPLETION_WINDOW, off (0)
-//     unless the host sets it; the filter wheels use it so an exposure can start while the last
-//     degrees are travelled - within the axis's window of the target while the ramp finishes;
+//     unless the host sets it; the filter wheels use it, with no wheel loop requested, so an
+//     exposure can start while the last degrees are travelled - within the axis's window of the
+//     target while the ramp finishes;
 //  2. a requested loop must not be waiting to re-engage (pid_engage_pending): a rest-only loop is
 //     opened for the move and re-engaged by check_closed_loop(), which runs just before this but
 //     reads STATUS separately, so if the ramp stops between the two reads the axis looks finished
 //     here while the loop is still held open;
 //  3. with the loop ENGAGED, the encoder must be inside the bound (pid_completion_encoder_ok):
-//     the window when one is set, else strictly inside the target-reached tolerance.
+//     the window when one is set, else the target-reached tolerance, never tighter than the
+//     deadband the chip stops correcting inside of.
 // The encoder leg reads ENC_POS_DEV (register 0x52), the chip's live ENC_POS - XACTUAL: positive
 // means the encoder is AHEAD of the counter (bench-verified on this branch - see the same statement
 // in serial_communication.cpp, and the self-test's "frame offset after homing", negative on the gap
@@ -621,7 +624,7 @@ static bool commanded_move_complete(uint8_t axis, int32_t target)
     return false;
   if (!stage_PID_enabled[axis]) return true;
   int32_t dev = tmc4361A_read_deviation(&tmc4361[axis]);
-  return pid_completion_encoder_ok(d, dev, win, tmc4361[axis].target_tolerance);
+  return pid_completion_encoder_ok(d, dev, win, tmc4361[axis].target_tolerance, pid_tolerance_eff(axis));
 }
 
 void check_position()
