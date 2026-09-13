@@ -374,6 +374,22 @@ static void assert_guard_precedes_motion(const char *source, const char *file_la
     TEST_ASSERT_TRUE_MESSAGE(g < m, msg);
 }
 
+void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
+{
+    /* Post-fault contract: the joystick (X, Y) and the focus wheel (Z) in operations.cpp
+       must test pid_fault before issuing motion, once each. */
+    const char *src = load_source("src/operations.cpp");
+    TEST_ASSERT_NOT_NULL(src);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "!pid_fault[x] &&"), "joystick X not gated on pid_fault");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "!pid_fault[y] &&"), "joystick Y not gated on pid_fault");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "!pid_fault[z] &&"), "focus wheel not gated on pid_fault");
+    /* and the fault path itself stops the ramp and retargets the focus wheel */
+    const char *fn = strstr(src, "static void pid_trip_fault(uint8_t axis, uint8_t cause)");
+    TEST_ASSERT_NOT_NULL(fn);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(fn, "tmc4361A_stop_here(&tmc4361[axis]);"), "pid_trip_fault must stop the ramp");
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(fn, "focusPosition = tmc4361A_currentPosition(&tmc4361[z]);"), "pid_trip_fault must retarget the focus wheel");
+}
+
 void test_stage_commands_guards_every_move_entry_point(void)
 {
     const char *src = load_source("src/commands/stage_commands.cpp");
@@ -396,15 +412,26 @@ void test_stage_commands_guards_every_move_entry_point(void)
     /* The guard must not clear mcu_cmd_execution_in_progress: it rejects before
        the callback claims that flag, and clearing it reports an unrelated axis
        still in motion as finished. */
-    /* Two rejections, both through report_move_error(): the driver is not ready, or a
-       closed-loop fault is latched on the axis (post-fault contract, 2026-09-14: motion
-       on that axis is refused until DISABLE_STAGE_PID or a validated ENABLE_STAGE_PID). */
+    /* Two rejections, both through report_move_error(): the driver is not ready
+       (axis_driver_present) and a closed-loop fault latched on a stage axis
+       (axis_driver_ready; post-fault contract, 2026-09-14: motion on that axis is
+       refused until DISABLE_STAGE_PID or a validated ENABLE_STAGE_PID). */
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(2, count_occurrences(src, "report_move_error();\n        return false;"),
-        "axis_driver_ready() must reject with report_move_error(), never "
-        "mark_move_failed() — see the task 8 report section 3 - once for the driver "
-        "and once for a latched loop fault");
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "if (pid_fault[axis]) {"),
-        "axis_driver_ready() must refuse motion on an axis with a latched closed-loop fault");
+        "axis_driver_present()/axis_driver_ready() must reject with report_move_error(), "
+        "never mark_move_failed() — see the task 8 report section 3");
+    {
+        /* The fault gate must sit INSIDE axis_driver_ready()'s body. */
+        const char *body = strstr(src, "bool axis_driver_ready(uint8_t axis)");
+        TEST_ASSERT_NOT_NULL_MESSAGE(body, "axis_driver_ready() definition missing");
+        const char *body_end = strstr(body, "\n}\n");
+        TEST_ASSERT_NOT_NULL(body_end);
+        const char *gate = strstr(body, "if (pid_fault[axis] && axis != w && axis != w2) {");
+        TEST_ASSERT_TRUE_MESSAGE(gate != NULL && gate < body_end,
+            "axis_driver_ready() must refuse motion on a STAGE axis with a latched closed-loop fault");
+        const char *present = strstr(body, "axis_driver_present(axis)");
+        TEST_ASSERT_TRUE_MESSAGE(present != NULL && present < gate,
+            "axis_driver_ready() must check the driver before the fault");
+    }
 
     assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_x()",
                                  "axis_driver_ready(", "tmc4361A_moveTo(");
@@ -490,13 +517,27 @@ void test_commands_guards_the_pid_actuator_path(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(src, "could not open src/commands/commands.cpp from any "
                                       "candidate working directory");
 
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "axis_driver_ready("),
-        "commands.cpp must hold exactly one axis_driver_ready call site: "
+    /* ENABLE_STAGE_PID is the recovery path of the post-fault contract: it checks the driver
+       through axis_driver_present() (once) and must not use the fault-gated axis_driver_ready(). */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "axis_driver_present("),
+        "commands.cpp must hold exactly one axis_driver_present call site: "
         "callback_enable_stage_pid. Losing it lets ENABLE_STAGE_PID drive a "
         "DRIVER_UNKNOWN axis continuously at unknown current");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(src, "axis_driver_ready("),
+        "commands.cpp must not call the fault-gated axis_driver_ready(): a latched "
+        "fault would make the validated-ENABLE recovery unreachable");
 
     assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
-                                 "axis_driver_ready(", "tmc4361A_set_PID(");
+                                 "axis_driver_present(", "tmc4361A_set_PID(");
+    /* ENABLE is the recovery path: it must NOT go through the fault gate. */
+    {
+        const char *fn = strstr(src, "void callback_enable_stage_pid()");
+        TEST_ASSERT_NOT_NULL(fn);
+        const char *fn_end = strstr(fn, "\n}\n");
+        const char *ready = strstr(fn, "axis_driver_ready(");
+        TEST_ASSERT_TRUE_MESSAGE(ready == NULL || ready > fn_end,
+            "callback_enable_stage_pid() must use axis_driver_present(), not the fault-gated axis_driver_ready()");
+    }
 }
 
 int main(int argc, char **argv) {
@@ -535,6 +576,7 @@ int main(int argc, char **argv) {
 
     // Driver fail-safe guards (source scan)
     RUN_TEST(test_stage_commands_guards_every_move_entry_point);
+    RUN_TEST(test_operator_motion_paths_are_gated_on_a_latched_fault);
     RUN_TEST(test_operations_guards_the_operator_driven_motion_paths);
     RUN_TEST(test_commands_guards_the_pid_actuator_path);
 

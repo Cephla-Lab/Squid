@@ -170,6 +170,22 @@ class CephlaStage(AbstractStage):
         )
         mc.wait_till_operation_is_completed()
 
+        # Post-fault contract (firmware >= 1.6): the controller refuses every move on an axis with a
+        # latched closed-loop fault until DISABLE_STAGE_PID or a validated ENABLE, and CONFIGURE above
+        # does not clear it. A software restart skips RESET/INITIALIZE, so a fault from the previous
+        # session may still be latched here; acknowledge it now, deliberately and audibly, or the axis
+        # refuses moves for the whole session (the ENABLE below would be refused on a large error).
+        if new_fw and microcontroller_axis_number in mc.pid_fault_axes():
+            cause = mc.pid_fault_cause(microcontroller_axis_number)
+            _log.warning(
+                f"axis {microcontroller_axis_number}: a closed-loop fault is latched from before this "
+                f"configuration ({_def.PID_FAULT_CAUSE.NAMES.get(cause, 'cause not on the wire')}); the "
+                f"controller refuses moves on it until acknowledged - sending DISABLE_STAGE_PID (open-loop "
+                f"recovery; position unverified until the axis is homed)"
+            )
+            mc.turn_off_stage_pid(microcontroller_axis_number)
+            mc.wait_till_operation_is_completed()
+
         pid = axis_config.PID
         if not (pid and pid.ENABLED):
             return

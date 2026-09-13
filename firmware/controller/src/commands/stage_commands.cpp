@@ -37,17 +37,27 @@ static inline void mark_move_failed()
   contract — report, do not silently drop, do not touch in_progress — has exactly
   one definition.
 */
-bool axis_driver_ready(uint8_t axis)
+bool axis_driver_present(uint8_t axis)
 {
     if (!tmc_driver_ready(&tmc4361[axis])) {
         report_move_error();
         return false;
     }
+    return true;
+}
+
+bool axis_driver_ready(uint8_t axis)
+{
+    if (!axis_driver_present(axis)) return false;
     // Post-fault contract (pid_trip_fault): a latched closed-loop fault refuses every commanded
-    // move and home on this axis - the position or the feedback is suspect - until the host sends
-    // DISABLE_STAGE_PID (deliberate open-loop recovery) or a validated ENABLE_STAGE_PID. The
-    // rejection is the same CMD_EXECUTION_ERROR the host already handles; other axes are untouched.
-    if (pid_fault[axis]) {
+    // move and home on a STAGE axis - the position or the feedback is suspect - until the host
+    // sends DISABLE_STAGE_PID (deliberate open-loop recovery) or a validated ENABLE_STAGE_PID
+    // (which goes through axis_driver_present, not this gate). The rejection is the same
+    // CMD_EXECUTION_ERROR the host already handles; other axes are untouched. The filter wheels
+    // are outside the gate: rotary, no hard limit to run into, and their fault is not on the
+    // wire (status byte 18 carries X/Y/Z), so a refusal there could never be diagnosed or
+    // acknowledged by the host; their loop is off and unqualified.
+    if (pid_fault[axis] && axis != w && axis != w2) {
         report_move_error();
         return false;
     }

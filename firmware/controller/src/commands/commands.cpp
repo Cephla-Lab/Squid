@@ -208,8 +208,9 @@ void callback_configure_stage_pid()
     // above any sane following error, far below a travel end.
     encoder_configured[axis] = configured;
     // A latched fault survives CONFIGURE_STAGE_PID: only DISABLE (acknowledge, open-loop recovery),
-    // a validated ENABLE, RESET or INITIALIZE clear it (post-fault contract, pid_trip_fault). The
-    // write_encoder() above aligns the frames; it does not restore confidence in the position.
+    // a validated ENABLE, RESET, INITIALIZE or INITFILTERWHEEL clear it (post-fault contract,
+    // pid_trip_fault). The write_encoder() above aligns the frames; it does not restore confidence
+    // in the position.
     if (configured && pid_max_dev_usteps[axis] == 0)
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], 0.25f);
 }
@@ -237,7 +238,9 @@ void callback_enable_stage_pid()
       fire only when stage_PID_enabled[axis] is set, and this is the only writer
       that sets it.
     */
-    if (!axis_driver_ready(axis)) return;
+    // Driver presence only: ENABLE is the recovery path and must reach its own validation while a
+    // fault is latched (the fault-gated helper the move commands use would refuse it like a move).
+    if (!axis_driver_present(axis)) return;
 
     // The loop nulls XACTUAL - ENC_POS using ENC_IN_RES to scale the encoder.
     // With no CONFIGURE_STAGE_PID since the last chip reset that scale is the

@@ -502,6 +502,7 @@ class ZMotionSelfTest:
         # encoder reporting off.
         for step in (
             self._wait_for_rest,
+            self._acknowledge_fault,
             self._close_floor,
             self._restore_position,
             self._restore_loop,
@@ -526,20 +527,24 @@ class ZMotionSelfTest:
             time.sleep(0.002)
         self._at_rest = True
 
+    def _acknowledge_fault(self):
+        # Post-fault contract: while a closed-loop fault is latched the firmware refuses every Z move
+        # (GUI, joystick, focus wheel included), and CONFIGURE does not clear it. Whether or not a
+        # return move is needed, the run must not hand the operator a Z that refuses to move: the
+        # fault is acknowledged with a deliberate, logged DISABLE (open-loop recovery, position
+        # unverified until homed), and the loop stays off (_restore_loop).
+        if not self.loop_configured or not self._enc()["pid_fault"]:
+            return
+        self._loop_faulted = True
+        self.log(
+            "closed-loop fault latched: Z refuses moves until it is acknowledged - sending DISABLE so Z can "
+            "move open-loop; position unverified until homed; loop left OFF"
+        )
+        self.mcu.turn_off_stage_pid(AXIS.Z)
+        self.mcu.wait_till_operation_is_completed()
+
     def _restore_position(self):
         if self._at_rest and self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01:
-            if self._enc()["pid_fault"]:
-                # Post-fault contract: the firmware refuses moves on Z while the fault is latched. The
-                # return to the working depth is a deliberate open-loop recovery, acknowledged with
-                # DISABLE and said so; the position stays unverified until the axis is homed, and the
-                # loop stays off (see _restore_loop).
-                self.log(
-                    "closed-loop fault latched: acknowledging it with DISABLE to move Z back open-loop; "
-                    "position unverified until homed"
-                )
-                self._loop_faulted = True
-                self.mcu.turn_off_stage_pid(AXIS.Z)
-                self.mcu.wait_till_operation_is_completed()
             # The return move is a move like any other: until it completes, Z is not at rest. Clear the
             # flag first so a return move that times out - possibly with the counter already within
             # 0.01 mm of the target - cannot leave _at_rest standing from the earlier wait and let the

@@ -92,13 +92,11 @@ class FakeMcu:
         self.reporting = mode != 0
 
     def configure_stage_pid(self, axis, transitions_per_revolution, flip_direction=False):
-        # Firmware >= 1.6: CONFIGURE_STAGE_PID re-aligns ENC_POS to XACTUAL at the current position
-        # and clears a latched fault.
+        # Firmware >= 1.6: CONFIGURE_STAGE_PID re-aligns ENC_POS to XACTUAL at the current position.
+        # Since the post-fault contract (2026-09-14) it does NOT clear a latched fault.
         self.calls.append(("configure_while_moving",) if self._busy_left > 0 else ("configure",))
         mm = self.axis.convert_to_real_units(self.z_pos)
         self.enc_zero_mm = self._stage_mm(mm) - mm
-        self.pid_fault = False
-        self.fault_cause = PID_FAULT_CAUSE.NONE
 
     def turn_on_stage_pid(self, axis):
         self.pid_on_calls += 1
@@ -238,6 +236,12 @@ def test_watchdog_fault_during_the_run_leaves_the_loop_off():
     assert mcu.pid_enabled is False
     assert mcu.pid_on_calls == 1, mcu.calls  # the run's own enable; none from restore
     assert any("left OFF" in line and "fault" in line.lower() for line in log), log
+    # The fault landed within the restore's no-move band, so no return move - but the run must still
+    # acknowledge the fault with DISABLE (Z refuses every move while it is latched), and say so.
+    assert mcu.pid_fault is False, "the latched fault was not acknowledged; Z would refuse every move"
+    moves = [i for i, c in enumerate(mcu.calls) if c[0] == "move"]
+    assert any(i > moves[-1] for i, c in enumerate(mcu.calls) if c == ("pid_off",)), mcu.calls[-6:]
+    assert any("DISABLE" in line and "refuses" in line for line in log), log
 
 
 def test_a_fault_away_from_depth_is_acknowledged_before_the_return_move():
@@ -251,9 +255,6 @@ def test_a_fault_away_from_depth_is_acknowledged_before_the_return_move():
     report, log = _run(mcu, axis)
     assert not report.passed
     moves = [i for i, c in enumerate(mcu.calls) if c[0] == "move"]
-    assert (
-        len(moves) >= 2 and mcu.calls[moves[-1]][1] == mcu.calls[moves[0]][1] or True
-    )  # the last move returns to depth
     depth_usteps = mcu.calls[moves[-1]][1]
     assert mcu.calls[moves[-2]][1] != depth_usteps, mcu.calls[-6:]  # the fault left Z away from depth
     offs_after_last_engaged_move = [i for i, c in enumerate(mcu.calls) if c == ("pid_off",) and i > moves[-2]]

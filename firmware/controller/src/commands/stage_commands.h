@@ -26,6 +26,10 @@ static inline void report_move_error()
 }
 
 bool axis_driver_ready(uint8_t axis);
+// The driver-presence half of axis_driver_ready(): reports and refuses when the axis's driver was
+// not identified, but NOT when a closed-loop fault is latched - ENABLE_STAGE_PID is the recovery
+// path and must reach its own validation while the fault is latched.
+bool axis_driver_present(uint8_t axis);
 
 void callback_move_x();
 void callback_move_y();

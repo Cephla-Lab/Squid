@@ -815,12 +815,17 @@ static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
 //
 // Stopping the ramp matters: failing the command's bookkeeping does not stop a ramp that is
 // already running (a watchdog or switch fault with the loop engaged in flight, threshold mode),
-// and the joystick's velocity mode keeps its last VMAX. tmc4361A_stop() writes XTARGET =
-// XACTUAL and leaves velocity mode, so the axis decelerates where it is; at rest it is a no-op.
+// and the joystick's velocity mode keeps its last VMAX. tmc4361A_stop_here() writes XTARGET =
+// XACTUAL and leaves velocity mode without the travel-range check of tmc4361A_moveTo() (which
+// would silently do nothing with XACTUAL outside [xmin, xmax], e.g. after a homing that timed
+// out): the axis is brought to rest about where the fault was seen - an S-ramp at speed
+// overshoots and returns - and at rest it is a no-op. The focus wheel's target follows: it is
+// re-issued every pass once the fault clears, and would otherwise resume the interrupted move.
 static void pid_trip_fault(uint8_t axis, uint8_t cause)
 {
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
-  tmc4361A_stop(&tmc4361[axis]);
+  tmc4361A_stop_here(&tmc4361[axis]);
+  if (axis == z) focusPosition = tmc4361A_currentPosition(&tmc4361[z]);
   stage_PID_enabled[axis] = 0;
   pid_requested[axis] = false;
   pid_zone_hold[axis] = false;

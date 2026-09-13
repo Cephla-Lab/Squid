@@ -122,7 +122,12 @@ class CommandAborted(RuntimeError):
     as failed before acting on it (CMD_EXECUTION_ERROR) — the motor never
     moved, so a plain resend is safe. It is False for aborts where the motor
     state is uncertain (ack timeout / checksum failure after retries), which
-    should be recovered by re-homing rather than blindly resending.
+    should be recovered by re-homing rather than blindly resending — and False
+    when the command's axis carries a latched closed-loop fault (firmware >= 1.6
+    post-fault contract): the firmware refuses every move on that axis until
+    DISABLE_STAGE_PID or a validated ENABLE_STAGE_PID, so a resend is refused
+    the same way and the position is unverified; the reason names the cause
+    and the recovery.
     """
 
     def __init__(self, command_id, reason, recoverable: bool = False):
@@ -1488,10 +1493,36 @@ class Microcontroller:
         """
         return {axis for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)) if self.pid_fault_mask & (1 << bit)}
 
+    def _last_command_axes(self) -> set:
+        """The stage axes the last command sent addressed (empty for commands that name none)."""
+        if self.last_command is None:
+            return set()
+        opcode = self.last_command[1]
+        by_opcode = {
+            CMD_SET.MOVE_X: {AXIS.X},
+            CMD_SET.MOVETO_X: {AXIS.X},
+            CMD_SET.MOVE_Y: {AXIS.Y},
+            CMD_SET.MOVETO_Y: {AXIS.Y},
+            CMD_SET.MOVE_Z: {AXIS.Z},
+            CMD_SET.MOVETO_Z: {AXIS.Z},
+            CMD_SET.MOVE_W: {AXIS.W},
+            CMD_SET.MOVETO_W: {AXIS.W},
+            CMD_SET.MOVE_W2: {AXIS.W2},
+            CMD_SET.MOVETO_W2: {AXIS.W2},
+        }
+        if opcode in by_opcode:
+            return by_opcode[opcode]
+        if opcode in (CMD_SET.HOME_OR_ZERO, CMD_SET.ENABLE_STAGE_PID, CMD_SET.DISABLE_STAGE_PID):
+            axis = self.last_command[2]
+            return {AXIS.X, AXIS.Y} if axis == AXIS.XY else {axis}
+        return set()
+
     def _describe_pid_faults(self) -> str:
-        """One sentence per axis with a latched closed-loop fault: cause and recovery; '' if none."""
+        """One sentence per axis the LAST COMMAND addressed that has a latched closed-loop fault:
+        cause and recovery; '' when the command's axes are clean (a rejection on another axis is
+        not the fault's doing and must stay recoverable)."""
         parts = []
-        for axis in sorted(self.pid_fault_axes()):
+        for axis in sorted(self.pid_fault_axes() & self._last_command_axes()):
             cause = self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
             name = PID_FAULT_CAUSE.NAMES.get(cause, str(cause)) if cause else "cause not reported"
             recovery = PID_FAULT_CAUSE.RECOVERY.get(cause, PID_FAULT_CAUSE.RECOVERY_UNKNOWN)

@@ -1484,6 +1484,23 @@ void tmc4361A_stop(TMC4361ATypeDef *tmc4361A) {
 }
 
 /*
+  tmc4361A_stop_here(): bring the axis to rest where it is - XTARGET = XACTUAL in positioning
+  mode - WITHOUT tmc4361A_moveTo()'s travel-range check, which returns ERR_OUT_OF_RANGE and writes
+  nothing when XACTUAL sits outside [xmin, xmax] (a homing finalize that timed out, a joystick
+  move past the latch). Used by the closed-loop fault path, where doing nothing is not an option.
+*/
+void tmc4361A_stop_here(TMC4361ATypeDef *tmc4361A) {
+  if (tmc4361A->velocity_mode) {
+    tmc4361A_sRampInit(tmc4361A);
+    tmc4361A->velocity_mode = false;
+  }
+  tmc4361A_readInt(tmc4361A, TMC4361A_EVENTS);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_X_TARGET, tmc4361A_currentPosition(tmc4361A));
+  tmc4361A_readInt(tmc4361A, TMC4361A_EVENTS);
+  return;
+}
+
+/*
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_isRunning() checks whether the motor is moving and returns either true or false
 

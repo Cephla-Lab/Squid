@@ -884,3 +884,38 @@ def test_an_aborted_move_names_the_latched_loop_fault_and_its_recovery():
         micro.acknowledge_aborted_command()
     finally:
         micro.close()
+
+
+def test_a_rejection_on_another_axis_is_not_blamed_on_the_latched_fault():
+    """Only a command on the FAULTED axis is described (and made non-recoverable). With Z faulted, a
+    MOVE_X the firmware refuses for its own reason keeps the plain reason and stays recoverable, so
+    the filter-wheel style resend logic on other axes is not derailed."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+    try:
+        # latch a Z fault in the host's view first (reporting-off packet with the bit and cause)
+        _feed_status_packet(
+            micro,
+            _fault_cause_packet(
+                crc_calculator,
+                fault_bits=1 << control._def.BIT_POS_PID_FAULT_Z,
+                z_cause=control._def.PID_FAULT_CAUSE.WATCHDOG,
+            ),
+        )
+        assert micro.pid_fault_axes() == {control._def.AXIS.Z}
+        micro.move_x_usteps(10)
+        micro.wait_till_operation_is_completed()
+        cmd_id = micro._cmd_id
+        micro.mcu_cmd_execution_in_progress = True
+        _feed_status_packet(
+            micro, _error_packet_with_fault(crc_calculator, cmd_id, control._def.PID_FAULT_CAUSE.WATCHDOG)
+        )
+        err = micro.last_command_aborted_error
+        assert err is not None
+        assert "closed-loop fault" not in str(err), str(err)
+        assert err.recoverable is True
+        micro.acknowledge_aborted_command()
+    finally:
+        micro.close()
