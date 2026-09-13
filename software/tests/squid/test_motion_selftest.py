@@ -57,6 +57,8 @@ class FakeMcu:
         self.busy_polls = 0
         self._busy_left = 0
         self.pid_on_calls = 0  # how many times the loop was switched on, restore included
+        self.fault_index = None  # index into calls when the fault fired
+        self.last_command_aborted_error = None
         self.calls = []
 
     # -- model
@@ -70,6 +72,13 @@ class FakeMcu:
 
     # -- protocol
     def move_z_to_usteps(self, u):
+        if self.pid_fault:
+            # post-fault contract: the firmware refuses the move (CMD_EXECUTION_ERROR); Z does not move
+            self.calls.append(("move_refused", u))
+            self.last_command_aborted_error = "firmware reported CMD_EXECUTION_ERROR; closed-loop fault latched on Z"
+            self._busy_left = 0
+            return
+        self.last_command_aborted_error = None
         self.calls.append(("move", u))
         self.z_pos = int(u)
         self._busy_left = self.busy_polls
@@ -130,6 +139,8 @@ class FakeMcu:
                 self.pid_enabled = False
                 self.pid_fault = True
                 self.fault_cause = PID_FAULT_CAUSE.NO_PROGRESS
+                if self.fault_index is None:
+                    self.fault_index = len(self.calls)  # everything recorded after this is post-fault
         enc = self._enc_pos()
         dev = 0 if self.pid_enabled else enc - self.z_pos
         dev = max(-32768, min(32767, dev))  # ENC_POS_DEV is an int16 in the status packet: it saturates
@@ -240,33 +251,54 @@ def test_watchdog_fault_during_the_run_leaves_the_loop_off():
     assert mcu.pid_enabled is False
     assert mcu.pid_on_calls == 1, mcu.calls  # the run's own enable; none from restore
     assert any("left OFF" in line and "fault" in line.lower() for line in log), log
-    # The fault landed within the restore's no-move band, so no return move - but the run must still
-    # acknowledge the fault with DISABLE (Z refuses every move while it is latched), and say so.
-    assert mcu.pid_fault is False, "the latched fault was not acknowledged; Z would refuse every move"
-    moves = [i for i, c in enumerate(mcu.calls) if c[0] == "move"]
-    assert any(i > moves[-1] for i, c in enumerate(mcu.calls) if c == ("pid_off",)), mcu.calls[-6:]
-    assert any("DISABLE" in line and "refuses" in line for line in log), log
 
 
-def test_a_fault_away_from_depth_is_acknowledged_before_the_return_move():
-    # Post-fault contract (firmware, 2026-09-14): moves on the faulted axis are refused until DISABLE
-    # acknowledges the fault. The closed-loop stack walks 1 um steps away from the working depth; a
-    # fault on the 28th engaged read lands ~13 um out, beyond the restore's 0.01 mm no-move band, so
-    # a return move is needed - and it must come AFTER a deliberate, logged DISABLE (the run's own
-    # initial DISABLE sits at index 0 and does not count). The loop must still stay off afterwards.
+def _faulted_cleanup_is_explicit(fault_after):
+    # Post-fault contract (explicit recovery, 2026-09-14): a latched fault is the operator's to
+    # acknowledge. The run's cleanup must emit neither DISABLE nor ENABLE nor a return move after the
+    # fault, must leave the latch in place, and must say that explicit recovery is required.
     axis = _axis(pid=PID)
-    mcu = FakeMcu(axis, fault_after=28)
+    mcu = FakeMcu(axis, fault_after=fault_after)
     report, log = _run(mcu, axis)
     assert not report.passed
-    moves = [i for i, c in enumerate(mcu.calls) if c[0] == "move"]
-    depth_usteps = mcu.calls[moves[-1]][1]
-    assert mcu.calls[moves[-2]][1] != depth_usteps, mcu.calls[-6:]  # the fault left Z away from depth
-    offs_after_last_engaged_move = [i for i, c in enumerate(mcu.calls) if c == ("pid_off",) and i > moves[-2]]
-    assert offs_after_last_engaged_move and offs_after_last_engaged_move[0] < moves[-1], mcu.calls[-6:]
-    assert any("open-loop" in line and "DISABLE" in line for line in log), log
-    assert mcu.pid_enabled is False
+    assert mcu.pid_fault is True, "the latch was cleared by the cleanup"
+    last_on = (
+        max(i for i, c in enumerate(mcu.calls) if c[0] == "enable" or c == ("pid_on",))
+        if any(c[0] == "enable" or c == ("pid_on",) for c in mcu.calls)
+        else -1
+    )
+    fault_idx = mcu.fault_index
+    assert fault_idx is not None
+    after = mcu.calls[fault_idx:]
+    assert ("pid_off",) not in after, after
+    assert not any(c[0] in ("move", "move_refused") for c in after), after  # nothing sent, not even a refused attempt
     assert mcu.pid_on_calls == 1, mcu.calls
-    assert any("left OFF" in line and "fault" in line.lower() for line in log), log
+    assert any("explicit recovery" in line for line in log), log
+    return mcu, log
+
+
+def test_a_fault_within_the_no_move_band_is_left_for_explicit_recovery():
+    _faulted_cleanup_is_explicit(fault_after=3)
+
+
+def test_a_fault_away_from_depth_is_left_for_explicit_recovery_with_no_return_move():
+    _faulted_cleanup_is_explicit(fault_after=28)
+
+
+def test_a_fault_latched_before_the_run_refuses_to_start():
+    # Running the self-test must not become an implicit acknowledgement: its preflight used to DISABLE
+    # the loop before the open-loop checks. With a fault latched it refuses to run, moves nothing, and
+    # says what explicit recovery is.
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis)
+    mcu.pid_fault = True
+    report, log = _run(mcu, axis)
+    assert not report.passed
+    assert ("pid_off",) not in mcu.calls, mcu.calls
+    assert not any(c[0] in ("move", "move_refused", "home") for c in mcu.calls), mcu.calls
+    assert mcu.pid_on_calls == 0
+    assert mcu.pid_fault is True
+    assert any("explicit recovery" in line for line in log), log
 
 
 def test_a_fault_names_the_cause_instead_of_asserting_the_watchdog():

@@ -347,12 +347,12 @@ def test_the_z_floor_must_sit_above_the_home_zone_when_a_gap_is_declared(monkeyp
     _stage(above)  # 50 um above the zone: fine
 
 
-def test_a_fault_latched_from_before_startup_is_acknowledged_before_the_loop_is_enabled(caplog):
-    """Post-fault contract (firmware >= 1.6, 2026-09-14): the controller refuses every move on an axis
-    with a latched closed-loop fault until DISABLE_STAGE_PID or a validated ENABLE, and CONFIGURE does
-    not clear it. A software restart skips RESET/INITIALIZE, so a fault from the previous session can
-    still be latched when the stage is built: the host must acknowledge it - a logged DISABLE, position
-    unverified until homed - before it asks for the loop again, or Z stays refused for the session."""
+def test_a_fault_latched_from_before_startup_is_preserved_and_surfaced(caplog):
+    """Post-fault contract (explicit recovery, 2026-09-14): a fault latched from a previous session (a
+    software restart skips RESET/INITIALIZE, and CONFIGURE does not clear it) is NOT acknowledged by
+    the host on its own: no DISABLE, no ENABLE, an ERROR that says the axis refuses moves and how to
+    recover explicitly (a full relaunch resets and re-homes the controller; a deliberate DISABLE from
+    the tuner moves open-loop at the operator's risk)."""
     z = _axis(
         HAS_ENCODER=True, PID=PIDConfig(ENABLED=True, P=65535, I=0, D=0, CORRECTION_VMAX=1.0, MAX_DEVIATION_UM=200)
     )
@@ -361,10 +361,12 @@ def test_a_fault_latched_from_before_startup_is_acknowledged_before_the_loop_is_
     mc.pid_fault_axes.return_value = {_def.AXIS.Z}
     mc.pid_fault_cause.return_value = _def.PID_FAULT_CAUSE.WATCHDOG
     cfg = squid.config.get_stage_config().model_copy(update={"Z_AXIS": z})
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         CephlaStage(mc, cfg)
     names = [c[0] for c in mc.method_calls]
-    assert "turn_off_stage_pid" in names, names
-    assert names.index("turn_off_stage_pid") < names.index("turn_on_stage_pid"), names
-    mc.turn_off_stage_pid.assert_called_once_with(_def.AXIS.Z)
-    assert any("latched" in r.getMessage() and "DISABLE" in r.getMessage() for r in caplog.records), caplog.text
+    assert "turn_off_stage_pid" not in names, names
+    assert "turn_on_stage_pid" not in names, names
+    assert any(
+        r.levelno >= logging.ERROR and "latched" in r.getMessage() and "relaunch" in r.getMessage()
+        for r in caplog.records
+    ), caplog.text

@@ -170,23 +170,23 @@ class CephlaStage(AbstractStage):
         )
         mc.wait_till_operation_is_completed()
 
-        # Post-fault contract (firmware >= 1.6): the controller refuses every move on an axis with a
-        # latched closed-loop fault until DISABLE_STAGE_PID or a validated ENABLE, and CONFIGURE above
-        # does not clear it. A software restart skips RESET/INITIALIZE, so a fault from the previous
-        # session may still be latched here; acknowledge it now, deliberately and audibly, or the axis
-        # refuses moves for the whole session. (The ENABLE below is checked against the real frames - CONFIGURE
-        # does not realign them while a fault is latched - and is refused on a large error.)
+        # Post-fault contract (explicit recovery): the controller refuses every move on an axis with a
+        # latched closed-loop fault until the operator acknowledges it (DISABLE_STAGE_PID) or a validated
+        # ENABLE re-engages; CONFIGURE above does not clear it. A software restart skips RESET/INITIALIZE,
+        # so a fault from the previous session may still be latched here. The host does NOT clear it to
+        # make the session usable, and does not ask for the loop either: it says what is wrong and how
+        # to recover, and leaves the axis refusing moves.
         if new_fw and microcontroller_axis_number in mc.pid_fault_axes():
             cause = mc.pid_fault_cause(microcontroller_axis_number)
-            _log.warning(
+            _log.error(
                 f"axis {microcontroller_axis_number}: a closed-loop fault is latched from before this "
                 f"configuration ({_def.PID_FAULT_CAUSE.NAMES.get(cause, 'cause not on the wire')}); the "
-                f"controller refuses moves on it until acknowledged - sending DISABLE_STAGE_PID (open-loop "
-                f"recovery; position unverified until the axis is homed; the loop stays off for this session unless "
-                f"the ENABLE that follows validates on agreeing frames)"
+                f"controller refuses moves on this axis until the fault is acknowledged - explicit recovery "
+                f"required: close the application fully and relaunch (the controller is reset and re-homed), or "
+                f"send a deliberate DISABLE_STAGE_PID (tools/z_encoder_pid_tuner.py) to move open-loop at your "
+                f"own risk. The closed loop is not requested for this axis."
             )
-            mc.turn_off_stage_pid(microcontroller_axis_number)
-            mc.wait_till_operation_is_completed()
+            return
 
         pid = axis_config.PID
         if not (pid and pid.ENABLED):

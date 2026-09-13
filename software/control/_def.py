@@ -453,7 +453,11 @@ class PID_FAULT_CAUSE:
         NO_RESPONSE: "encoder did not respond to the correction: inspect the encoder and its cable before homing; DISABLE_STAGE_PID permits open-loop motion at your own risk",
         STOP_SWITCH: "correction was driving into a reference switch: inspect the switch and the stage ends before homing; DISABLE_STAGE_PID permits open-loop motion at your own risk",
     }
-    RECOVERY_UNKNOWN = "cause not on the wire while encoder reporting is on: send DISABLE_STAGE_PID, home the axis, then ENABLE_STAGE_PID"
+    RECOVERY_UNKNOWN = (
+        "cause not on the wire while encoder reporting is on: read it with reporting off (tools/z_encoder_pid_tuner.py) "
+        "or inspect the encoder, its cable and the reference switches before homing; DISABLE_STAGE_PID permits open-loop "
+        "motion at your own risk"
+    )
 
     # Where each axis's four bits sit while encoder reporting is off (see the class docstring).
     X_SHIFT = 1  # byte 19, bits 1-4

@@ -46,6 +46,15 @@ class CheckResult:
         return "PASS" if self.passed else ("FAIL" if self.passed is False else "n/a ")
 
 
+# What explicit recovery from a latched closed-loop fault is, in one sentence (post-fault contract,
+# 2026-09-14): the host never acknowledges on its own.
+EXPLICIT_RECOVERY = (
+    "close the application fully and relaunch (the controller is reset and re-homed), or send a deliberate "
+    "DISABLE_STAGE_PID from tools/z_encoder_pid_tuner.py to move Z open-loop at your own risk (position "
+    "unverified until homed); read the cause first if it is not shown"
+)
+
+
 @dataclass
 class SelfTestReport:
     results: List[CheckResult] = field(default_factory=list)
@@ -204,6 +213,9 @@ class ZMotionSelfTest:
             raise RuntimeError(f"refusing Z target {mm:.3f} mm: outside {lo:.2f}..{self.axis.MAX_POSITION:.2f} mm")
         if check_cancel:
             self._check_cancel()
+        # Before sending: a fault latched since the last check means the firmware would refuse this
+        # move (post-fault contract); raise with the cause instead of sending a move that is refused.
+        self._guard(check_cancel)
         t0 = time.time()
         self.mcu.move_z_to_usteps(self._usteps(mm))
         while self.mcu.is_busy():
@@ -265,6 +277,17 @@ class ZMotionSelfTest:
             firmware=fw[0] + fw[1] / 10.0,
         )
         if has_encoder and new_fw:
+            # A latched closed-loop fault is the operator's to acknowledge (post-fault contract): the
+            # DISABLE below would acknowledge it as a side effect, and the run's homing and moves would
+            # be refused anyway. Refuse to run, move nothing, say what explicit recovery is.
+            if AXIS.Z in self.mcu.pid_fault_axes():
+                self._loop_faulted = True
+                msg = (
+                    "a closed-loop fault is latched on Z: the controller refuses every Z move until it is "
+                    "acknowledged; explicit recovery required - " + EXPLICIT_RECOVERY
+                )
+                self._add("closed-loop fault latched", False, msg)
+                raise RuntimeError(msg)
             # open-loop checks first: the loop must be off, reporting on
             if self.loop_configured:
                 self.mcu.turn_off_stage_pid(AXIS.Z)
@@ -502,7 +525,7 @@ class ZMotionSelfTest:
         # encoder reporting off.
         for step in (
             self._wait_for_rest,
-            self._acknowledge_fault,
+            self._note_latched_fault,
             self._close_floor,
             self._restore_position,
             self._restore_loop,
@@ -527,24 +550,21 @@ class ZMotionSelfTest:
             time.sleep(0.002)
         self._at_rest = True
 
-    def _acknowledge_fault(self):
-        # Post-fault contract: while a closed-loop fault is latched the firmware refuses every Z move
-        # (GUI, joystick, focus wheel included), and CONFIGURE does not clear it. Whether or not a
-        # return move is needed, the run must not hand the operator a Z that refuses to move: the
-        # fault is acknowledged with a deliberate, logged DISABLE (open-loop recovery, position
-        # unverified until homed), and the loop stays off (_restore_loop).
-        # byte 18's fault bit is in every packet; the ENC_FLAG copy exists only while reporting is on
+    def _note_latched_fault(self):
+        # Post-fault contract (explicit recovery): a latched fault is NOT acknowledged by this tool.
+        # No DISABLE, no ENABLE, no return move - the firmware refuses Z moves until the operator
+        # acknowledges, and this run says so. byte 18's fault bit is in every packet.
         if not self.loop_configured or AXIS.Z not in self.mcu.pid_fault_axes():
             return
         self._loop_faulted = True
         self.log(
-            "closed-loop fault latched: Z refuses moves until it is acknowledged - sending DISABLE so Z can "
-            "move open-loop; position unverified until homed; loop left OFF"
+            "closed-loop fault latched: Z refuses moves until it is acknowledged - nothing restored (no DISABLE, "
+            "no ENABLE, no return move); explicit recovery required - " + EXPLICIT_RECOVERY
         )
-        self.mcu.turn_off_stage_pid(AXIS.Z)
-        self.mcu.wait_till_operation_is_completed()
 
     def _restore_position(self):
+        if self._loop_faulted:
+            return  # a refused (or, worse, open-loop) return move is not this tool's decision to make
         if self._at_rest and self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01:
             # The return move is a move like any other: until it completes, Z is not at rest. Clear the
             # flag first so a return move that times out - possibly with the counter already within
