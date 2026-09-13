@@ -99,9 +99,9 @@ static inline bool pid_completion_encoder_ok(int32_t counter_minus_target, int32
    (datasheet: VMAX "24 digits and 8 decimal places", PID_VEL / PID_DV_CLIP no such note; the bench
    trace's PID_VEL is exactly 65535/256 x the error in usteps). The firmware wrote the 24.8 value into
    PID_DV_CLIP from the first closed-loop firmware through 6a8b12cd, so a "1 mm/s" clamp was
-   2,730,667 pps = 256 mm/s, i.e. no clamp at all, while the correction watch budgeted against the
-   shifted number. One conversion, used by both writers and the budgets. Rounded to the nearest pps;
-   0 for no velocity or no pitch. */
+   2,730,666 pps = 256 mm/s, i.e. no clamp at all; 6a8b12cd shifted only the budget's cached copy.
+   One conversion, used by both writers and the budgets. Rounded to the nearest pps; 0 for no
+   velocity or no pitch. */
 static inline uint32_t pid_clamp_pps(float mm_per_s, uint32_t microsteps, uint32_t steps_per_rev, float pitch_mm)
 {
     if (mm_per_s <= 0.0f || pitch_mm <= 0.0f) return 0u;

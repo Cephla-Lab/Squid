@@ -200,8 +200,9 @@ void test_dwell_restarts_when_the_encoder_leaves_the_bound(void) {
   pid_clamp_pps(): the correction clamp in the unit PID_DV_CLIP (0x5E) and PID_VEL (0x5A) use -
   integer pulses per second, like VACTUAL, NOT the 24.8 fixed point of VMAX that
   tmc4361A_vmmToMicrosteps() produces. The firmware wrote the 24.8 value into PID_DV_CLIP from the
-  first closed-loop firmware through 6a8b12cd: a "1 mm/s" clamp was 2,730,667 pps = 256 mm/s, i.e.
-  no clamp (Codex review of 6a8b12cd, 2026-09-14; datasheet: PID_VEL and PID_DV_CLIP carry no
+  first closed-loop firmware through 6a8b12cd (which shifted only the budget's cached copy): a
+  "1 mm/s" clamp was 2,730,666 pps = 256 mm/s, i.e. no clamp (Codex review of 6a8b12cd,
+  2026-09-14; datasheet: PID_VEL and PID_DV_CLIP carry no
   decimal-places note where VMAX says "24 digits and 8 decimal places"; the bench trace's PID_VEL
   is exactly 65535/256 x the error in usteps, so PID_VEL is integer pps). Both writers and the
   watch budgets must use this one number.
@@ -209,7 +210,11 @@ void test_dwell_restarts_when_the_encoder_leaves_the_bound(void) {
 void test_clamp_pps_at_the_2240_bench_configuration(void) {
     // 1 mm/s at 16 usteps/FS, 200 steps/rev, 0.3 mm pitch = 10,666.7 pps
     TEST_ASSERT_EQUAL_UINT32(10667u, pid_clamp_pps(1.0f, 16u, 200u, 0.3f));
-    TEST_ASSERT_NOT_EQUAL(10667u << 8, pid_clamp_pps(1.0f, 16u, 200u, 0.3f));
+    // ... and not what tmc4361A_vmmToMicrosteps() writes for VMAX: (1 << 8) * mm * usteps_per_rev / pitch,
+    // truncated - 2,730,666 at this configuration (10667 << 8 would be 2,730,752: not the old value).
+    uint32_t vmax_format = (uint32_t)((1 << 8) * 1.0f * (float)(16u * 200u) / 0.3f);
+    TEST_ASSERT_EQUAL_UINT32(2730666u, vmax_format);
+    TEST_ASSERT_NOT_EQUAL(vmax_format, pid_clamp_pps(1.0f, 16u, 200u, 0.3f));
     // 256 usteps/FS (the shipped Z before the 2240 bench): 170,667 pps
     TEST_ASSERT_EQUAL_UINT32(170667u, pid_clamp_pps(1.0f, 256u, 200u, 0.3f));
     // a wheel's MAX_VELOCITY (rev/s on a 1 mm "pitch" per the firmware's wheel convention): plain scaling

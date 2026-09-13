@@ -152,8 +152,8 @@ void callback_configure_stage_pid()
     // In integer pulses per second - the unit PID_DV_CLIP and PID_VEL use (pid_policy.h,
     // pid_clamp_pps). NOT tmc4361A_vmmToMicrosteps(): that is VMAX's 24.8 format, and writing it
     // here set the clamp 256 times too high (a "1 mm/s" clamp was 256 mm/s, no clamp at all)
-    // from the first closed-loop firmware through 6a8b12cd, while the correction watch budgeted
-    // against the shifted number. The register and the budgets now get the same value.
+    // from the first closed-loop firmware through 6a8b12cd, which shifted only the budget's cached
+    // copy. The register and the budgets now get the same value.
     float clamp_mm_s = (axis == x) ? MAX_VELOCITY_X_mm : (axis == y) ? MAX_VELOCITY_Y_mm
                      : (axis == z) ? MAX_VELOCITY_Z_mm : MAX_VELOCITY_W_mm;
     uint32_t dv_clip = pid_dv_clip_usteps[axis] != 0
