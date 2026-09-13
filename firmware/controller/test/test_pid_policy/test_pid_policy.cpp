@@ -197,9 +197,33 @@ void test_dwell_restarts_when_the_encoder_leaves_the_bound(void) {
 }
 
 /*
-  pid_correction_windows() takes the clamp in pulses per second. The firmware stores the clamp
-  as the chip's 24.8 velocity (tmc4361A_vmmToMicrosteps: pps x 256) and, until 2026-09-14, fed
-  that unshifted: at the 2240 bench configuration (P 65535, watchdog 200 um = 2133 usteps at 16
+  pid_clamp_pps(): the correction clamp in the unit PID_DV_CLIP (0x5E) and PID_VEL (0x5A) use -
+  integer pulses per second, like VACTUAL, NOT the 24.8 fixed point of VMAX that
+  tmc4361A_vmmToMicrosteps() produces. The firmware wrote the 24.8 value into PID_DV_CLIP from the
+  first closed-loop firmware through 6a8b12cd: a "1 mm/s" clamp was 2,730,667 pps = 256 mm/s, i.e.
+  no clamp (Codex review of 6a8b12cd, 2026-09-14; datasheet: PID_VEL and PID_DV_CLIP carry no
+  decimal-places note where VMAX says "24 digits and 8 decimal places"; the bench trace's PID_VEL
+  is exactly 65535/256 x the error in usteps, so PID_VEL is integer pps). Both writers and the
+  watch budgets must use this one number.
+*/
+void test_clamp_pps_at_the_2240_bench_configuration(void) {
+    // 1 mm/s at 16 usteps/FS, 200 steps/rev, 0.3 mm pitch = 10,666.7 pps
+    TEST_ASSERT_EQUAL_UINT32(10667u, pid_clamp_pps(1.0f, 16u, 200u, 0.3f));
+    TEST_ASSERT_NOT_EQUAL(10667u << 8, pid_clamp_pps(1.0f, 16u, 200u, 0.3f));
+    // 256 usteps/FS (the shipped Z before the 2240 bench): 170,667 pps
+    TEST_ASSERT_EQUAL_UINT32(170667u, pid_clamp_pps(1.0f, 256u, 200u, 0.3f));
+    // a wheel's MAX_VELOCITY (rev/s on a 1 mm "pitch" per the firmware's wheel convention): plain scaling
+    TEST_ASSERT_EQUAL_UINT32(9600u, pid_clamp_pps(6.0f, 8u, 200u, 1.0f));
+}
+
+void test_clamp_pps_is_zero_for_no_velocity_or_no_pitch(void) {
+    TEST_ASSERT_EQUAL_UINT32(0u, pid_clamp_pps(0.0f, 16u, 200u, 0.3f));
+    TEST_ASSERT_EQUAL_UINT32(0u, pid_clamp_pps(1.0f, 16u, 200u, 0.0f));
+}
+
+/*
+  pid_correction_windows() takes the clamp in pulses per second. Until 6a8b12cd the firmware
+  fed it the chip's 24.8 velocity (tmc4361A_vmmToMicrosteps: pps x 256) unshifted: at the 2240 bench configuration (P 65535, watchdog 200 um = 2133 usteps at 16
   usteps/FS, clamp 1 mm/s = 10667 pps, deadband 2 usteps) the total collapsed to the 8-tau floor
   and the bench traced TIMEOUT 33.8 ms after arming (total_budget 31248 us in the trace). This
   pins both: the intended budget with pps, and the collapsed one that the 24.8 value produces.
@@ -622,5 +646,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_dwell_rejects_a_ring_down_zero_crossing);
     RUN_TEST(test_dwell_restarts_when_the_encoder_leaves_the_bound);
     RUN_TEST(test_total_budget_at_the_2240_bench_configuration_is_hundreds_of_ms);
+    RUN_TEST(test_clamp_pps_at_the_2240_bench_configuration);
+    RUN_TEST(test_clamp_pps_is_zero_for_no_velocity_or_no_pitch);
     return UNITY_END();
 }

@@ -94,6 +94,20 @@ static inline bool pid_completion_encoder_ok(int32_t counter_minus_target, int32
     if (bound < deadband) bound = deadband;
     return e <= bound;
 }
+/* The correction clamp in the unit PID_DV_CLIP (0x5E) and PID_VEL (0x5A) use: integer pulses per
+   second, like VACTUAL - not the 24.8 fixed point of VMAX that tmc4361A_vmmToMicrosteps() produces
+   (datasheet: VMAX "24 digits and 8 decimal places", PID_VEL / PID_DV_CLIP no such note; the bench
+   trace's PID_VEL is exactly 65535/256 x the error in usteps). The firmware wrote the 24.8 value into
+   PID_DV_CLIP from the first closed-loop firmware through 6a8b12cd, so a "1 mm/s" clamp was
+   2,730,667 pps = 256 mm/s, i.e. no clamp at all, while the correction watch budgeted against the
+   shifted number. One conversion, used by both writers and the budgets. Rounded to the nearest pps;
+   0 for no velocity or no pitch. */
+static inline uint32_t pid_clamp_pps(float mm_per_s, uint32_t microsteps, uint32_t steps_per_rev, float pitch_mm)
+{
+    if (mm_per_s <= 0.0f || pitch_mm <= 0.0f) return 0u;
+    float pps = mm_per_s * (float)(microsteps * steps_per_rev) / pitch_mm;
+    return (uint32_t)(pps + 0.5f);
+}
 /* Completion dwell (closed loop). A rest-only loop re-engages with the open-loop residual as its
    error and rings about the target before it settles - on the 2240 bench (P 65535, 2-count
    deadband) 25-40 ms with a 5-9 ustep amplitude, PID_VEL changing sign every few ms. One pass with

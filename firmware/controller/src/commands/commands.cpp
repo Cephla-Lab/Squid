@@ -3,6 +3,7 @@
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
+#include "../pid_policy.h"              // pid_clamp_pps
 
 CommandCallback cmd_map[256] = {0};
 
@@ -148,24 +149,17 @@ void callback_configure_stage_pid()
     // SET_PID_LIMITS value if it has sent one, else the axis's max velocity as
     // before 1.6. A bench tuning session sets this low first, so that a wrong
     // encoder sign cannot run the axis away faster than the watchdog reacts.
-    uint32_t dv_clip;
-    if (pid_dv_clip_usteps[axis] != 0)
-        dv_clip = pid_dv_clip_usteps[axis];
-    else if (axis == x)
-        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_X_mm);
-    else if (axis == y)
-        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Y_mm);
-    else if (axis == z)
-        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm);
-    else
-        dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
-    // What the bounded-correction watch budgets against, in pulses per second. dv_clip is the
-    // chip's 24.8 fixed-point velocity (tmc4361A_vmmToMicrosteps multiplies by 256): fed to
-    // pid_correction_windows() unshifted it made the "4 x watchdog / clamp" term 256 times too
-    // small, so the total budget collapsed to the 8-tau floor (31 ms at P 65535 instead of
-    // ~820 ms) and a ring-down longer than that tripped TIMEOUT (bench, 2026-09-14,
-    // AI-docs bench-data/2026-09-13-completion-trace).
-    pid_dv_clip_eff[axis] = dv_clip >> 8;
+    // In integer pulses per second - the unit PID_DV_CLIP and PID_VEL use (pid_policy.h,
+    // pid_clamp_pps). NOT tmc4361A_vmmToMicrosteps(): that is VMAX's 24.8 format, and writing it
+    // here set the clamp 256 times too high (a "1 mm/s" clamp was 256 mm/s, no clamp at all)
+    // from the first closed-loop firmware through 6a8b12cd, while the correction watch budgeted
+    // against the shifted number. The register and the budgets now get the same value.
+    float clamp_mm_s = (axis == x) ? MAX_VELOCITY_X_mm : (axis == y) ? MAX_VELOCITY_Y_mm
+                     : (axis == z) ? MAX_VELOCITY_Z_mm : MAX_VELOCITY_W_mm;
+    uint32_t dv_clip = pid_dv_clip_usteps[axis] != 0
+        ? pid_dv_clip_usteps[axis]
+        : pid_clamp_pps(clamp_mm_s, tmc4361[axis].microsteps, tmc4361[axis].stepsPerRev, tmc4361[axis].threadPitch);
+    pid_dv_clip_eff[axis] = dv_clip;   // what the bounded-correction watch budgets against
 
     // Loop deadband (PID_TOLERANCE: inside this error the chip stops correcting) and
     // target-reached tolerance (CL_TR_TOLERANCE: what check_position's completion rule
@@ -444,11 +438,13 @@ void callback_set_pid_limits()
 
     if (v_x100 != 0)
     {
-        pid_dv_clip_usteps[axis] = (uint32_t)tmc4361A_vmmToMicrosteps(&tmc4361[axis], float(v_x100) / 100.0f);
+        // pps, the register's unit (see callback_configure_stage_pid) - not vmmToMicrosteps' 24.8
+        pid_dv_clip_usteps[axis] = pid_clamp_pps(float(v_x100) / 100.0f, tmc4361[axis].microsteps,
+                                                 tmc4361[axis].stepsPerRev, tmc4361[axis].threadPitch);
         if (encoder_configured[axis])
         {
             tmc4361A_set_PID_dv_clip(&tmc4361[axis], pid_dv_clip_usteps[axis]);
-            pid_dv_clip_eff[axis] = pid_dv_clip_usteps[axis] >> 8;   // pps for the watch budgets (see callback_configure_stage_pid)
+            pid_dv_clip_eff[axis] = pid_dv_clip_usteps[axis];   // the watch budgets against the value the chip has
         }
     }
     if (dev_um != 0)
