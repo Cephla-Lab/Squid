@@ -52,6 +52,26 @@ void test_held_inside_the_home_zone_is_not_pending(void) {
     TEST_ASSERT_FALSE(pid_engage_pending(true, true, false, 1000, -999));
 }
 
+/*
+  pid_in_home_zone(): the ONE definition of "inside the home zone", the edge included. Until
+  2026-09-14 the ENABLE callback had its own strict test (pos > -zone && pos < zone) while
+  check_closed_loop() and pid_engage_pending() included the edge, so at exactly +-zone an
+  explicit ENABLE could write PID_BPG0 and the next policy pass would open it again.
+*/
+void test_in_home_zone_includes_both_edges(void) {
+    TEST_ASSERT_TRUE(pid_in_home_zone(1000, 1000));
+    TEST_ASSERT_TRUE(pid_in_home_zone(1000, -1000));
+    TEST_ASSERT_TRUE(pid_in_home_zone(1000, 999));
+    TEST_ASSERT_TRUE(pid_in_home_zone(1000, 0));
+    TEST_ASSERT_FALSE(pid_in_home_zone(1000, 1001));
+    TEST_ASSERT_FALSE(pid_in_home_zone(1000, -1001));
+}
+
+void test_zone_zero_is_no_zone(void) {
+    TEST_ASSERT_FALSE(pid_in_home_zone(0, 0));
+    TEST_ASSERT_FALSE(pid_in_home_zone(0, 1));
+}
+
 void test_zone_disabled_is_pending_even_at_zero(void) {
     // Zone 0 means no exclusion zone at all, so there is no position at which the
     // loop stays open by design: a held loop always re-engages.
@@ -605,6 +625,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_held_outside_the_home_zone_is_pending);
     RUN_TEST(test_held_inside_the_home_zone_is_not_pending);
     RUN_TEST(test_zone_disabled_is_pending_even_at_zero);
+    RUN_TEST(test_in_home_zone_includes_both_edges);
+    RUN_TEST(test_zone_zero_is_no_zone);
     RUN_TEST(test_encoder_beyond_the_window_is_not_settled);
     RUN_TEST(test_encoder_at_the_target_is_settled);
     RUN_TEST(test_encoder_exactly_on_the_window_is_settled);

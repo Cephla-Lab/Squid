@@ -4,6 +4,7 @@
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
 #include "../pid_clamp.h"               // the correction clamp's one path to PID_DV_CLIP and the watch
+#include "../pid_policy.h"              // pid_in_home_zone
 
 CommandCallback cmd_map[256] = {0};
 
@@ -275,7 +276,7 @@ void callback_enable_stage_pid()
     // (ENC_FLAG_PID_ENABLED / ENC_FLAG_PID_ZONE) tell the host which it got.
     int32_t zone = pid_home_zone_usteps[axis];
     int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
-    if (zone > 0 && pos > -zone && pos < zone)
+    if (pid_in_home_zone(zone, pos))   // the edge is inside, as check_closed_loop() sees it
     {
         if (stage_PID_enabled[axis]) tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);   // bookkeeping and chip agree
         pid_zone_hold[axis] = true;

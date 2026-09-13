@@ -64,12 +64,20 @@ static inline void pid_correction_windows(int32_t p_gain, int32_t max_dev_usteps
    re-engages (or faults) on the next check_closed_loop() pass, so a move on this axis must
    not be reported complete yet - the encoder correction has not run. Inside the zone the loop
    is held open by design and completion is on the counter; while homing likewise. */
+/* The ONE definition of "inside the home zone": the edge is inside, on both sides; zone 0 is no
+   zone. Used by check_closed_loop() (hold / release), by the ENABLE callback (hold rather than
+   engage) and by pid_engage_pending() - until 2026-09-14 the ENABLE callback had its own strict
+   test, so at exactly +-zone it engaged the loop that the next policy pass opened again. */
+static inline bool pid_in_home_zone(int32_t zone_usteps, int32_t pos_usteps)
+{
+    return (zone_usteps > 0) && (pos_usteps >= -zone_usteps) && (pos_usteps <= zone_usteps);
+}
+
 static inline bool pid_engage_pending(bool requested, bool zone_hold, bool homing,
                                       int32_t zone_usteps, int32_t pos_usteps)
 {
     if (!requested || !zone_hold || homing) return false;
-    bool in_zone = (zone_usteps > 0) && (pos_usteps >= -zone_usteps) && (pos_usteps <= zone_usteps);   /* the edge is inside */
-    return !in_zone;
+    return !pid_in_home_zone(zone_usteps, pos_usteps);
 }
 
 /* Encoder leg of a commanded move's completion while the loop is engaged. `counter_minus_target`

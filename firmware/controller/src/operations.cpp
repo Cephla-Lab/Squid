@@ -840,7 +840,7 @@ void check_closed_loop()
 
     int32_t zone = pid_home_zone_usteps[i];
     int32_t pos = tmc4361A_currentPosition(&tmc4361[i]);
-    bool in_zone = (zone > 0) && (pos >= -zone) && (pos <= zone);   // the edge is inside (pid_policy.h)
+    bool in_zone = pid_in_home_zone(zone, pos);   // the edge is inside (pid_policy.h)
     bool homing = axis_is_homing(i);
     // Homing re-zeroes both frames at the switch. On a stage whose actuator homes
     // below the stage's stop (0.64 mm gap on the second bench Z) the encoder then
