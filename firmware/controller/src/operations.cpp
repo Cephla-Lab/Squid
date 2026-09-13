@@ -425,6 +425,10 @@ void finalize_homing_z()
     // where the encoder may not be following the actuator.
     Z_pos = 0;
     focusPosition = 0;
+    // The post-homing lift to the software floor, as shipped instruments have always had it: the
+    // next do_focus_control() pass clamps 0 to Z_NEG_LIMIT and issues that ramp (a no-op with no
+    // floor). Explicit now that the focus path issues ramps only when something is pending.
+    focus_wheel_pending = true;
     is_homing_Z = false;
     Z_commanded_movement_in_progress = false;
     Z_commanded_target_position = 0;
@@ -576,7 +580,7 @@ void do_focus_control()
   // frozen at the position the fault stopped at (its deltas are dropped in onJoystickPacketReceived)
   // and nothing is issued - the position is suspect until the host DISABLEs (open-loop recovery)
   // or a validated ENABLE re-engages.
-  if (pid_fault[z]) return;
+  if (pid_fault[z]) { focus_wheel_pending = false; return; }   // anything queued while faulted is dropped
   if (focusPosition > Z_POS_LIMIT)
     focusPosition = Z_POS_LIMIT;
   if (focusPosition < Z_NEG_LIMIT)
@@ -829,8 +833,9 @@ static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
 // XACTUAL and leaves velocity mode without the travel-range check of tmc4361A_moveTo() (which
 // would silently do nothing with XACTUAL outside [xmin, xmax], e.g. after a homing that timed
 // out): the axis is brought to rest about where the fault was seen - an S-ramp at speed
-// overshoots and returns - and at rest it is a no-op. The focus wheel's target follows: it is
-// re-issued every pass once the fault clears, and would otherwise resume the interrupted move.
+// overshoots and returns - and at rest it is a no-op. The focus wheel's target follows and
+// nothing is left pending for it: do_focus_control() issues a ramp only for a wheel input, so the
+// fault clearing cannot resume the interrupted move.
 static void pid_trip_fault(uint8_t axis, uint8_t cause)
 {
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);

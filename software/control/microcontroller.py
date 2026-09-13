@@ -1488,8 +1488,10 @@ class Microcontroller:
 
         Read-only view of the last packet's byte 18 fault bits, which say THAT the loop opened;
         pid_fault_cause() says why. The watchdog is one of several causes (see PID_FAULT_CAUSE).
-        A fault means the loop was opened and the axis is running open loop; it stays latched
-        until the host reconfigures or re-enables the loop on that axis.
+        A fault means the loop was opened; while it is latched the firmware refuses moves on that
+        stage axis (post-fault contract). It stays latched until the host sends DISABLE_STAGE_PID
+        (acknowledge, open-loop recovery), a validated ENABLE_STAGE_PID, RESET or INITIALIZE;
+        CONFIGURE_STAGE_PID does not clear it.
         """
         return {axis for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)) if self.pid_fault_mask & (1 << bit)}
 

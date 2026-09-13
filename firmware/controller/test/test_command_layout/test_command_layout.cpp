@@ -397,6 +397,12 @@ static void assert_in_body_before(const char *src, const char *file, const char 
     const char *m = strstr(fn, motion);
     snprintf(msg, sizeof msg, "%s: %s must contain %s before %s", file, sig, guard, motion);
     TEST_ASSERT_TRUE_MESSAGE(g != NULL && g < end && m != NULL && m < end && g < m, msg);
+    /* A commented-out guard must not satisfy the pin: nothing on the guard's own line before it
+       may be a line comment. */
+    const char *line = g;
+    while (line > fn && line[-1] != '\n') line--;
+    snprintf(msg, sizeof msg, "%s: %s: the guard %s is commented out", file, sig, guard);
+    TEST_ASSERT_TRUE_MESSAGE(strstr(line, "//") == NULL || strstr(line, "//") > g, msg);
 }
 
 void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
@@ -411,11 +417,13 @@ void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
     TEST_ASSERT_NOT_NULL(src);
     assert_in_body_before(src, "operations.cpp", "void check_joystick()", "!pid_fault[x] &&", "tmc4361A_setSpeed( &tmc4361[x]");
     assert_in_body_before(src, "operations.cpp", "void check_joystick()", "!pid_fault[y] &&", "tmc4361A_setSpeed( &tmc4361[y]");
-    assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "if (pid_fault[z]) return;", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
+    assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "if (pid_fault[z]) { focus_wheel_pending = false; return; }", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
     assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "focus_wheel_pending &&", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
     assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "tmc4361A_stop_here(&tmc4361[axis])", "fail_commanded_move(axis);");
     assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "focusPosition = here;", "fail_commanded_move(axis);");
     assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "focus_wheel_pending = false;", "fail_commanded_move(axis);");
+    /* the post-homing lift to the software floor stays: finalize_homing_z queues it */
+    assert_in_body_before(src, "operations.cpp", "void finalize_homing_z()", "focus_wheel_pending = true;", "is_homing_Z = false;");
 
     const char *fsrc = load_source("src/functions.cpp");
     TEST_ASSERT_NOT_NULL(fsrc);

@@ -182,7 +182,8 @@ class CephlaStage(AbstractStage):
                 f"axis {microcontroller_axis_number}: a closed-loop fault is latched from before this "
                 f"configuration ({_def.PID_FAULT_CAUSE.NAMES.get(cause, 'cause not on the wire')}); the "
                 f"controller refuses moves on it until acknowledged - sending DISABLE_STAGE_PID (open-loop "
-                f"recovery; position unverified until the axis is homed)"
+                f"recovery; position unverified until the axis is homed; the loop stays off for this session unless "
+                f"the ENABLE that follows validates on agreeing frames)"
             )
             mc.turn_off_stage_pid(microcontroller_axis_number)
             mc.wait_till_operation_is_completed()
@@ -238,7 +239,8 @@ class CephlaStage(AbstractStage):
             mc.wait_till_operation_is_completed()
         except Exception as e:  # noqa: BLE001 - the firmware refuses the loop on a bad frame offset; run open-loop
             _log.error(
-                f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop"
+                f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop for "
+                f"this session (a full restart re-homes and re-enables)"
             )
             return
         _log.info(

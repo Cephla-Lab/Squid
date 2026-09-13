@@ -214,8 +214,8 @@ void callback_configure_stage_pid()
     encoder_configured[axis] = configured;
     // A latched fault survives CONFIGURE_STAGE_PID: only DISABLE (acknowledge, open-loop recovery),
     // a validated ENABLE, RESET, INITIALIZE or INITFILTERWHEEL clear it (post-fault contract,
-    // pid_trip_fault). The write_encoder() above aligns the frames; it does not restore confidence
-    // in the position.
+    // pid_trip_fault). The write_encoder() above aligns the frames when no fault is latched; it does
+    // not restore confidence in the position.
     if (configured && pid_max_dev_usteps[axis] == 0)
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], 0.25f);
 }
@@ -584,6 +584,7 @@ void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
+    focus_wheel_pending = false;
     first_packet_from_joystick_panel = true;
     // Re-initialise the TMC4361A and its power stage on each stage axis.
     //
@@ -709,6 +710,7 @@ void callback_reset()
     W_commanded_movement_in_progress = false;
     W2_commanded_movement_in_progress = false;
     is_homing_X = false;
+    focus_wheel_pending = false;   // nothing the wheel queued survives a RESET
     is_homing_Y = false;
     is_homing_Z = false;
     is_homing_W = false;

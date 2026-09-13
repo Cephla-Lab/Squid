@@ -102,9 +102,9 @@ void callback_move_y()
 
 void callback_move_z()
 {
-    // Before focusPosition is touched: do_focus_control() re-issues
-    // moveTo(z, focusPosition) every loop, so a rejected move that had already
-    // written focusPosition would be carried out anyway on the next pass.
+    // Before focusPosition is touched: the next focus-wheel detent issues
+    // moveTo(z, focusPosition + delta), so a rejected move that had already
+    // written focusPosition would be carried out by that detent.
     if (!axis_driver_ready(z)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
@@ -269,6 +269,7 @@ void callback_set_lim()
         case LIM_CODE_Z_POSITIVE:
         {
             Z_POS_LIMIT = int32_t(uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]));
+            focus_wheel_pending = true;   // a Z outside the new z_pos_limit is brought to it by do_focus_control()'s clamp, as before
             tmc4361A_setVirtualLimit(&tmc4361[z], 1, Z_POS_LIMIT);
             tmc4361A_enableVirtualLimitSwitch(&tmc4361[z], 1);
             break;
@@ -276,6 +277,7 @@ void callback_set_lim()
         case LIM_CODE_Z_NEGATIVE:
         {
             Z_NEG_LIMIT = int32_t(uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]));
+            focus_wheel_pending = true;   // a Z outside the new z_neg_limit is brought to it by do_focus_control()'s clamp, as before
             tmc4361A_setVirtualLimit(&tmc4361[z], -1, Z_NEG_LIMIT);
             tmc4361A_enableVirtualLimitSwitch(&tmc4361[z], -1);
             break;
@@ -608,6 +610,7 @@ void callback_home_or_zero()
             tmc4361A_write_encoder(&tmc4361[z], 0);   // keep ENC_POS aligned with XACTUAL
             Z_pos = 0;
             focusPosition = 0;
+            focus_wheel_pending = false;
             break;
         case AXIS_W:
             if (enable_filterwheel == true) {
