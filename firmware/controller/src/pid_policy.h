@@ -72,14 +72,20 @@ static inline bool pid_engage_pending(bool requested, bool zone_hold, bool homin
     return !in_zone;
 }
 
-/* Completion window with a closed loop: the ENCODER must be within `win` of the target, not
-   merely the counter within `win` and the encoder within `win` of the counter (which allows
-   2*win). `dev` is ENC_POS_DEV as read from the chip; `enc_minus_counter` converts it to
-   (encoder - counter) under the chip's sign convention (see operations.cpp). */
-static inline bool encoder_within_window(int32_t counter_minus_target, int32_t enc_minus_counter, int32_t win)
+/* Encoder leg of a commanded move's completion while the loop is engaged. `counter_minus_target`
+   is XACTUAL - target and `enc_minus_counter` ENC_POS_DEV as the chip reports it (ENC_POS -
+   XACTUAL), so their sum is the ENCODER's distance to the target: the bound is on that, not on
+   the two legs separately (which allows 2*win). With a completion window the bound is the window,
+   inclusive like the counter leg; without one it is the target-reached tolerance, strictly - the
+   chip corrects while |e| >= PID_TOLERANCE and the host sets the two tolerances equal, so the ack
+   means the correction has stopped. Fed from ENC_POS_DEV, which the chip keeps from the encoder
+   edges whatever the PID state, not from PID_E (see commanded_move_complete in operations.cpp). */
+static inline bool pid_completion_encoder_ok(int32_t counter_minus_target, int32_t enc_minus_counter,
+                                             int32_t win, int32_t target_tol)
 {
-    int32_t enc_minus_target = counter_minus_target + enc_minus_counter;
-    return (enc_minus_target < 0 ? -enc_minus_target : enc_minus_target) <= win;
+    int32_t e = counter_minus_target + enc_minus_counter;
+    if (e < 0) e = -e;
+    return win > 0 ? e <= win : e < target_tol;
 }
 /* ---- Bounded correction (frozen feedback / stage on its stop) -------------------------
    The chip nulls XACTUAL - ENC_POS. Motion the correction generates does not move XACTUAL,

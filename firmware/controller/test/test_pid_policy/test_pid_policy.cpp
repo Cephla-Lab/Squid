@@ -59,32 +59,69 @@ void test_zone_disabled_is_pending_even_at_zero(void) {
 }
 
 /*
-  encoder_within_window() replaces two separate legs with one. The old test accepted
-  |counter - target| <= win AND |dev| <= win, which lets the encoder sit 2*win from
-  the target: on a 0.3 um window that is 0.6 um of real error acknowledged as settled.
+  pid_completion_encoder_ok(): the encoder leg of a commanded move's completion while the loop
+  is engaged. The bound is on the ENCODER's distance to the target (counter - target, plus the
+  chip's ENC_POS_DEV = encoder - counter), not on the two legs separately: that let the encoder
+  sit 2*win from the target (0.6 um of real error acknowledged as settled on a 0.3 um window).
+  With a completion window the bound is the window, inclusive; without one it is the
+  target-reached tolerance, strictly - the chip corrects while |e| >= PID_TOLERANCE and the
+  host sets the two tolerances equal, so the ack means the correction has stopped.
 */
 
 void test_encoder_beyond_the_window_is_not_settled(void) {
     // Counter 8 short of the target and the encoder 8 further out: 16 from the target,
     // yet each leg is inside a window of 10. This is the case the old form accepted.
-    TEST_ASSERT_FALSE(encoder_within_window(8, 8, 10));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(8, 8, 10, 2));
 }
 
 void test_encoder_at_the_target_is_settled(void) {
     // Counter 8 past the target, encoder 8 behind the counter: the encoder IS the target.
-    TEST_ASSERT_TRUE(encoder_within_window(8, -8, 10));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(8, -8, 10, 2));
 }
 
 void test_encoder_exactly_on_the_window_is_settled(void) {
     // Counter on the target, encoder a full window away: inclusive, like the counter leg.
-    TEST_ASSERT_TRUE(encoder_within_window(0, 10, 10));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 10, 10, 2));
 }
 
 void test_encoder_one_past_the_window_is_not_settled(void) {
-    TEST_ASSERT_FALSE(encoder_within_window(0, 11, 10));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2));
     // Symmetric in sign.
-    TEST_ASSERT_FALSE(encoder_within_window(0, -11, 10));
-    TEST_ASSERT_TRUE(encoder_within_window(0, -10, 10));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -11, 10, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -10, 10, 2));
+}
+
+void test_no_window_ack_before_convergence_is_not_settled(void) {
+    // The bench row (2026-09-12, f1116052, 10 um steps at 10,667 usteps/mm): counter at the
+    // target, ENC_POS_DEV 3..7 usteps (0.3-0.7 um) on the pass that re-engaged the rest-only
+    // loop, tolerance two encoder counts = 2 usteps. Acknowledged then; must not be.
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 7, 0, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -3, 0, 2));
+}
+
+void test_no_window_inside_the_tolerance_is_settled(void) {
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 0, 0, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 1, 0, 2));
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, -1, 0, 2));
+}
+
+void test_no_window_bound_is_strict_like_the_deadband(void) {
+    // |e| == tolerance: the chip is still correcting (it stops only below PID_TOLERANCE).
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 2, 0, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, -2, 0, 2));
+}
+
+void test_no_window_bound_is_on_the_encoder_not_the_counter(void) {
+    // Counter 5 past the target, encoder 5 behind the counter: the encoder is on the target.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(5, -5, 0, 2));
+    // The counter on the target is not enough on its own.
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 5, 0, 2));
+}
+
+void test_window_replaces_the_tolerance_as_the_bound(void) {
+    // A 10-ustep window accepts what a 2-ustep tolerance would not, and nothing beyond it.
+    TEST_ASSERT_TRUE(pid_completion_encoder_ok(0, 7, 10, 2));
+    TEST_ASSERT_FALSE(pid_completion_encoder_ok(0, 11, 10, 2));
 }
 
 /*
@@ -454,6 +491,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_encoder_at_the_target_is_settled);
     RUN_TEST(test_encoder_exactly_on_the_window_is_settled);
     RUN_TEST(test_encoder_one_past_the_window_is_not_settled);
+    RUN_TEST(test_no_window_ack_before_convergence_is_not_settled);
+    RUN_TEST(test_no_window_inside_the_tolerance_is_settled);
+    RUN_TEST(test_no_window_bound_is_strict_like_the_deadband);
+    RUN_TEST(test_no_window_bound_is_on_the_encoder_not_the_counter);
+    RUN_TEST(test_window_replaces_the_tolerance_as_the_bound);
     RUN_TEST(test_error_inside_the_deadband_is_never_watched);
     RUN_TEST(test_frozen_encoder_just_outside_the_deadband_trips_on_the_total_budget);
     RUN_TEST(test_small_residual_held_by_stiction_for_half_a_second_is_ok);
