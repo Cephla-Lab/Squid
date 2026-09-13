@@ -1,5 +1,6 @@
 import builtins
 import logging
+import os
 import pytest
 import tempfile
 
@@ -27,7 +28,11 @@ def test_simulated_cephla_stage_ops():
 
 
 def test_position_caching():
-    (unused_temp_fd, temp_cache_path) = tempfile.mkstemp(".cache", "squid_testing_")
+    (temp_fd, temp_cache_path) = tempfile.mkstemp(".cache", "squid_testing_")
+    # mkstemp hands back an *open* descriptor. cache_position() writes a temp file and
+    # os.replace()s it over this path, which Windows refuses with PermissionError while
+    # another handle to the destination is open, so close it before the call.
+    os.close(temp_fd)
 
     # Use 6 figures after the decimal so we test that we can capture nanometers
     p = squid.abc.Pos(x_mm=11.111111, y_mm=22.222222, z_mm=1.333333, theta_rad=None)

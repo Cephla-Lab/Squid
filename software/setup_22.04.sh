@@ -37,8 +37,11 @@ sudo apt update
 
 # install packages
 sudo apt install python3-pip -y
-sudo apt install python3-pyqtgraph python3-pyqt5 -y
-sudo apt install python3-pyqt5.qtsvg
+# NOTE: do NOT install apt's python3-pyqtgraph / python3-pyqt5 here. python3-pyqtgraph
+# pulls in python3-pyqt5 as a dependency, and having BOTH PyQt5 and PyQt6 present in the
+# same environment causes conflicting Qt libraries that break napari's OpenGL rendering
+# (blank/failed canvases, "Cannot SIZE object N because it does not exist"). We install
+# pyqtgraph and PyQt6 via pip below so exactly one Qt binding is present.
 
 sudo apt-get install git -y
 ## clone the repo if we don't already have it.
@@ -54,15 +57,38 @@ fi
 cd "$SQUID_SOFTWARE_ROOT"
 mkdir -p "$SQUID_SOFTWARE_ROOT/cache"
 
-# Ubuntu 22.04 ships pip 22.0.2, whose resolver can't handle the
-# napari==0.5.4 dependency graph on current PyPI (hits ResolutionTooDeep
-# after hours of backtracking). Upgrade pip before installing libraries.
+# Ubuntu 22.04 ships an old pip; upgrade it before resolving the dependency graph.
 python3 -m pip install --upgrade pip
 
-# install libraries
-pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile scipy pyreadline3
+# Qt binding: the app targets PyQt6 (QT_API=pyqt6; napari itself supports either binding).
+# Exactly ONE Qt binding may be installed — PyQt5 and PyQt6 in the same environment
+# conflict and break napari/vispy OpenGL rendering. Remove any pre-existing PyQt5
+# (e.g. pulled in by an apt package) first.
+# Pinned to the tested combination. napari 0.7.1 blocks PyQt6-Qt6 6.11.0 and 6.11.1
+# (dock-widget and resizing bugs, napari/napari#9052); the napari[pyqt6] extra installed
+# below makes pip re-check these pins against napari's own Qt constraints, so bump them
+# together.
+sudo apt remove -y python3-pyqt5 python3-pyqt5.qtsvg 2>/dev/null || true
+pip3 uninstall -y PyQt5 PyQt5-Qt5 PyQt5-sip 2>/dev/null || true
+pip3 install "PyQt6==6.11.0" "PyQt6-Qt6==6.11.2" "PyQt6-sip==13.12.0"
+
+# install libraries. No "numpy<2" pin: napari 0.7 only needs numpy>=1.24, and the rest of
+# the current stack (opencv-python 5.x, pyqtgraph 0.14, ...) targets NumPy 2.
+#
+# aicsimageio and basicpy are deliberately NOT installed. basicpy pins scipy<1.13
+# (peng-lab/BaSiCPy#173) and scipy 1.12 ships no NumPy-2 wheel, so pip resolves the whole
+# environment back to numpy 1.26 -- which then violates napari's scipy>=1.14 and
+# opencv 5.x's numpy>=2, leaving `pip check` failing and napari unimportable. Their only
+# consumer is control/stitcher.py, which nothing in the application imports; stitching
+# lives in the separate Cephla-Lab/image-stitcher repo. If you need that module, install
+# these two into a dedicated venv rather than this one.
+pip3 install pyqtgraph qtpy pyserial pandas imageio crc==1.3.0 lxml numpy tifffile scipy pyreadline3
 pip3 install opencv-python-headless opencv-contrib-python-headless
-pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
+# napari pinned to a tested release (patch releases change its vispy/Qt constraints). The
+# [pyqt6] extra is what makes pip enforce napari's Qt blocklist against the PyQt6 above.
+# tensorstore is required by control/ndviewer_light and by tests/control/core/test_zarr_writer.py,
+# which begins with pytest.importorskip("tensorstore") -- without it ~79 zarr tests silently skip.
+pip3 install "napari[pyqt6]==0.7.1" scikit-image dask_image ome_zarr tensorstore pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
 
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
