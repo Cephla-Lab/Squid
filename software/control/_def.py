@@ -760,7 +760,6 @@ MAX_ACCELERATION_W_mm = 300
 HAS_ENCODER_X = False
 HAS_ENCODER_Y = False
 HAS_ENCODER_Z = False
-HAS_ENCODER_W = False
 
 # enable PID control
 ENABLE_PID_X = False

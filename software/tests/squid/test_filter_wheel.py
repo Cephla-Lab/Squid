@@ -104,9 +104,8 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.init_filter_wheel.assert_not_called()
         mock_microcontroller.configure_squidfilter.assert_not_called()
 
-    @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
     def test_skip_init_skips_encoder_pid_config(self, mock_microcontroller, squid_config):
-        """skip_init=True should skip encoder PID configuration when HAS_ENCODER_W=True."""
+        """skip_init=True should skip the wheel encoder configuration (the controller keeps its state)."""
         SquidFilterWheel(mock_microcontroller, squid_config, skip_init=True)
 
         mock_microcontroller.set_pid_arguments.assert_not_called()
@@ -120,13 +119,21 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.init_filter_wheel.assert_called_once()
         mock_microcontroller.configure_squidfilter.assert_called_once()
 
-    @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
-    @patch("squid.filter_wheel_controller.cephla.ENABLE_PID_W", True)
-    def test_normal_init_configures_encoder_pid(self, mock_microcontroller, squid_config):
-        """skip_init=False with HAS_ENCODER_W=True should configure encoder PID."""
+    def test_normal_init_configures_the_wheel_encoder_without_enabling_the_loop(
+        self, mock_microcontroller, squid_config
+    ):
+        """Every Squid wheel has an encoder: it is configured at init unconditionally (scale, direction, gains),
+        which engages nothing - the loop is a separate opt-in (enable_pid_w, default off)."""
         SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
 
         mock_microcontroller.set_pid_arguments.assert_called_once()
+        mock_microcontroller.configure_stage_pid.assert_called_once()
+        mock_microcontroller.turn_on_stage_pid.assert_not_called()
+
+    @patch("squid.filter_wheel_controller.cephla.ENABLE_PID_W", True)
+    def test_enable_pid_w_enables_the_loop_after_configuring(self, mock_microcontroller, squid_config):
+        SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
+
         mock_microcontroller.configure_stage_pid.assert_called_once()
         mock_microcontroller.turn_on_stage_pid.assert_called_once()
         assert (

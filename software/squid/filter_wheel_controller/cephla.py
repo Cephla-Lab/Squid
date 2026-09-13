@@ -162,14 +162,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.set_completion_window(axis, SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG / 360.0)
             self.microcontroller.wait_till_operation_is_completed()
 
-        # Common PID setup for both wheels (they share identical encoder settings)
-        # Use protocol axis (AXIS.W / AXIS.W2), not motor_slot index (3 / 4),
-        # because the firmware's protocol_axis_to_internal() handles mapping.
-        if HAS_ENCODER_W:
-            self.microcontroller.set_pid_arguments(axis, PID_P_W, PID_I_W, PID_D_W)
-            self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
-            if ENABLE_PID_W:
-                self.microcontroller.turn_on_stage_pid(axis)
+        # Every Squid wheel has an encoder, so it is configured unconditionally: scale, direction and
+        # the loop gains. Configuring engages nothing on the controller (the regulation mode is left
+        # alone); it makes the encoder readable for the tuner and the self-test and lets a requested
+        # loop use it. The loop itself is a separate opt-in (enable_pid_w, default off, unqualified -
+        # see AI-docs 2026-09-12-closed-loop-supervised-qualification.md). Use the protocol axis
+        # (AXIS.W / AXIS.W2), not the motor slot index (3 / 4): the firmware maps it.
+        self.microcontroller.set_pid_arguments(axis, PID_P_W, PID_I_W, PID_D_W)
+        self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
+        if ENABLE_PID_W:
+            self.microcontroller.turn_on_stage_pid(axis)
 
     @staticmethod
     def _delta_to_usteps(delta_mm: float) -> int:
