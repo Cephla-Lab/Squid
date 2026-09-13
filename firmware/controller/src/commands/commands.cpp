@@ -3,7 +3,7 @@
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
-#include "../pid_policy.h"              // pid_clamp_pps
+#include "../pid_clamp.h"               // the correction clamp's one path to PID_DV_CLIP and the watch
 
 CommandCallback cmd_map[256] = {0};
 
@@ -126,6 +126,17 @@ void callback_set_pin_level()
     digitalWrite(pin, level);
 }
 
+// pid_clamp.h's register write and geometry for one axis (the test supplies a recorder instead).
+static void write_pid_dv_clip(void *chip, uint32_t pps)
+{
+    tmc4361A_set_PID_dv_clip((TMC4361ATypeDef *)chip, pps);
+}
+static PidClampGeometry clamp_geometry(uint8_t axis)
+{
+    PidClampGeometry g = {tmc4361[axis].microsteps, tmc4361[axis].stepsPerRev, tmc4361[axis].threadPitch};
+    return g;
+}
+
 void callback_configure_stage_pid()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
@@ -149,17 +160,14 @@ void callback_configure_stage_pid()
     // SET_PID_LIMITS value if it has sent one, else the axis's max velocity as
     // before 1.6. A bench tuning session sets this low first, so that a wrong
     // encoder sign cannot run the axis away faster than the watchdog reacts.
-    // In integer pulses per second - the unit PID_DV_CLIP and PID_VEL use (pid_policy.h,
-    // pid_clamp_pps). NOT tmc4361A_vmmToMicrosteps(): that is VMAX's 24.8 format, and writing it
-    // here set the clamp 256 times too high (a "1 mm/s" clamp was 256 mm/s, no clamp at all)
-    // from the first closed-loop firmware through 6a8b12cd, which shifted only the budget's cached
-    // copy. The register and the budgets now get the same value.
+    // Written and cached through pid_clamp.h, in integer pulses per second - the unit
+    // PID_DV_CLIP and PID_VEL use. NOT tmc4361A_vmmToMicrosteps(): that is VMAX's 24.8 format,
+    // and writing it here set the clamp 256 times too high (a "1 mm/s" clamp was 256 mm/s, no
+    // clamp at all) from the first closed-loop firmware through 6a8b12cd, which shifted only the
+    // budget's cached copy. test_pid_clamp asserts the value the register receives.
     float clamp_mm_s = (axis == x) ? MAX_VELOCITY_X_mm : (axis == y) ? MAX_VELOCITY_Y_mm
                      : (axis == z) ? MAX_VELOCITY_Z_mm : MAX_VELOCITY_W_mm;
-    uint32_t dv_clip = pid_dv_clip_usteps[axis] != 0
-        ? pid_dv_clip_usteps[axis]
-        : pid_clamp_pps(clamp_mm_s, tmc4361[axis].microsteps, tmc4361[axis].stepsPerRev, tmc4361[axis].threadPitch);
-    pid_dv_clip_eff[axis] = dv_clip;   // what the bounded-correction watch budgets against
+    pid_clamp_configure(&pid_clamp[axis], clamp_mm_s, clamp_geometry(axis), write_pid_dv_clip, &tmc4361[axis]);
 
     // Loop deadband (PID_TOLERANCE: inside this error the chip stops correcting) and
     // target-reached tolerance (CL_TR_TOLERANCE: what check_position's completion rule
@@ -185,22 +193,22 @@ void callback_configure_stage_pid()
     // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
     bool configured = false;
     if (axis == x || axis == y) {
-        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 32767, 2);
+        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 32767, 2);
         configured = true;
     }
     else if (axis == z) {
-        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 4096, 2);
         configured = true;
     }
     else if (axis == w) {
         if (enable_filterwheel == true) {
-            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 4096, 2);
             configured = true;
         }
     }
     else if (axis == w2) {
         if (enable_filterwheel_w2 == true) {
-            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, dv_clip, 4096, 2);
+            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 4096, 2);
             configured = true;
         }
     }
@@ -438,14 +446,9 @@ void callback_set_pid_limits()
 
     if (v_x100 != 0)
     {
-        // pps, the register's unit (see callback_configure_stage_pid) - not vmmToMicrosteps' 24.8
-        pid_dv_clip_usteps[axis] = pid_clamp_pps(float(v_x100) / 100.0f, tmc4361[axis].microsteps,
-                                                 tmc4361[axis].stepsPerRev, tmc4361[axis].threadPitch);
-        if (encoder_configured[axis])
-        {
-            tmc4361A_set_PID_dv_clip(&tmc4361[axis], pid_dv_clip_usteps[axis]);
-            pid_dv_clip_eff[axis] = pid_dv_clip_usteps[axis];   // the watch budgets against the value the chip has
-        }
+        // pid_clamp.h: pps to the register and to the watch's copy (see callback_configure_stage_pid)
+        pid_clamp_set_limit(&pid_clamp[axis], float(v_x100) / 100.0f, clamp_geometry(axis), encoder_configured[axis],
+                            write_pid_dv_clip, &tmc4361[axis]);
     }
     if (dev_um != 0)
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dev_um) / 1000.0f);
@@ -742,8 +745,7 @@ void callback_reset()
         // earlier session left here would otherwise survive the reset: on 2026-09-08 a 3.5 mm/s
         // loop-mode threshold outlived a RESET and a "rest-only" test ran engaged in flight.
         pid_max_dev_usteps[i] = 0;
-        pid_dv_clip_usteps[i] = 0;
-        pid_dv_clip_eff[i] = 0;
+        pid_clamp_reset(&pid_clamp[i]);
         pid_home_zone_usteps[i] = 0;
         pid_tolerance_usteps[i] = 0;
         pid_tr_tolerance_usteps[i] = 0;

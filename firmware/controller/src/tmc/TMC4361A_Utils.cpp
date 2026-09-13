@@ -1828,7 +1828,7 @@ void tmc4361A_set_PID(TMC4361ATypeDef *tmc4361A, uint8_t pid_mode) {
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_set_PID_gains() rewrites only PID_P / PID_I / PID_D, so a
                host can retune a running loop without re-initialising the encoder
-               (tmc4361A_init_PID writes tolerances and clips as well). Same
+               (tmc4361A_init_PID writes tolerances and the I clip as well). Same
                masking as tmc4361A_init_PID; takes effect on the next PID cycle.
   -----------------------------------------------------------------------------
 */
@@ -1865,7 +1865,6 @@ void tmc4361A_set_PID_dv_clip(TMC4361ATypeDef *tmc4361A, uint32_t pid_dclip) {
       uint32_t pid_p:            24-bit proportional term. (PID_P/256) * error * 1/seconds
       uint32_t pid_i:            24-bit integral term. (PID_I/256) * (PID_ISUM / 256) * 1/seconds
       uint32_t pid_d:            24-bit differential term. (PID_D) * error * d/dt
-      uint32_t pid_dclip:        Limits the speed to be at most pid_dclip
       uint32_t pid_iclip:        15-bit integral winding limit, limit = pid_iclip * 2^16
       uint8_t pid_d_clkdiv:      For the derivate term of the PID control, PID_E will be compared to its former value every PID_D_CLK_DIV*128 / fCLK seconds
 
@@ -1884,7 +1883,7 @@ void tmc4361A_set_PID_dv_clip(TMC4361ATypeDef *tmc4361A, uint32_t pid_dclip) {
   DEPENDENCIES: tmc4316A.h
   -----------------------------------------------------------------------------
 */
-void tmc4361A_init_PID(TMC4361ATypeDef *tmc4361A, uint32_t target_tolerance, uint32_t pid_tolerance, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d, uint32_t pid_dclip, uint32_t pid_iclip, uint8_t pid_d_clkdiv) {
+void tmc4361A_init_PID(TMC4361ATypeDef *tmc4361A, uint32_t target_tolerance, uint32_t pid_tolerance, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d, uint32_t pid_iclip, uint8_t pid_d_clkdiv) {
   uint32_t datagram;
 
   tmc4361A_writeInt(tmc4361A, TMC4361A_CL_TR_TOLERANCE_WR, target_tolerance);   // Set the TARGET_REACHED tolerance
@@ -1896,7 +1895,7 @@ void tmc4361A_init_PID(TMC4361ATypeDef *tmc4361A, uint32_t target_tolerance, uin
   tmc4361A_writeInt(tmc4361A, TMC4361A_PID_I_WR, pid_i & TMC4361A_PID_I_MASK);
   tmc4361A_writeInt(tmc4361A, TMC4361A_PID_D_WR, pid_d & TMC4361A_PID_D_MASK);
 
-  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_DV_CLIP_WR, pid_dclip & TMC4361A_PID_DV_CLIP_MASK);
+  // PID_DV_CLIP is written by pid_clamp.h (commands.cpp), the one path the native test covers.
 
   // Set up the datagram
   datagram = ((pid_iclip << TMC4361A_PID_I_CLIP_SHIFT) & TMC4361A_PID_I_CLIP_MASK) + ((pid_d_clkdiv << TMC4361A_PID_D_CLKDIV_SHIFT) & TMC4361A_PID_D_CLKDIV_MASK);
