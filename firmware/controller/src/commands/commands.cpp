@@ -128,7 +128,10 @@ void callback_set_pin_level()
 void callback_configure_stage_pid()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
-    if (axis == 0xFF) return;  // Invalid axis
+    // 0xFF is the invalid-axis sentinel; the >= form is the same test for every value the mapping
+    // returns and lets the compiler see the array bound (it warned "subscript 5" on the per-axis
+    // bookkeeping below for a path the mapping cannot take).
+    if (axis >= TOTAL_AXES) return;
 
     int flip_direction = buffer_rx[3];
     int transitions_per_revolution = (buffer_rx[4] << 8) + buffer_rx[5];
@@ -156,7 +159,13 @@ void callback_configure_stage_pid()
         dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm);
     else
         dv_clip = tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm);
-    pid_dv_clip_eff[axis] = dv_clip;   // what the bounded-correction watch budgets against
+    // What the bounded-correction watch budgets against, in pulses per second. dv_clip is the
+    // chip's 24.8 fixed-point velocity (tmc4361A_vmmToMicrosteps multiplies by 256): fed to
+    // pid_correction_windows() unshifted it made the "4 x watchdog / clamp" term 256 times too
+    // small, so the total budget collapsed to the 8-tau floor (31 ms at P 65535 instead of
+    // ~820 ms) and a ring-down longer than that tripped TIMEOUT (bench, 2026-09-14,
+    // AI-docs bench-data/2026-09-13-completion-trace).
+    pid_dv_clip_eff[axis] = dv_clip >> 8;
 
     // Loop deadband (PID_TOLERANCE: inside this error the chip stops correcting) and
     // target-reached tolerance (CL_TR_TOLERANCE: what check_position's completion rule
@@ -439,7 +448,7 @@ void callback_set_pid_limits()
         if (encoder_configured[axis])
         {
             tmc4361A_set_PID_dv_clip(&tmc4361[axis], pid_dv_clip_usteps[axis]);
-            pid_dv_clip_eff[axis] = pid_dv_clip_usteps[axis];
+            pid_dv_clip_eff[axis] = pid_dv_clip_usteps[axis] >> 8;   // pps for the watch budgets (see callback_configure_stage_pid)
         }
     }
     if (dev_um != 0)

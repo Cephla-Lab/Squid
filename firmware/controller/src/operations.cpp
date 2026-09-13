@@ -612,6 +612,15 @@ static inline int32_t pid_tolerance_eff(uint8_t axis);
 // to that test rather than a bound on it, so a 0.3 um window did not cap the error either (0.75 um
 // acknowledged). Inside the home zone and while homing the loop is held open by design and
 // completion is on the counter: the stage may be resting on its stop there.
+//  4. with the loop ENGAGED, leg 3 must hold for PID_COMPLETION_DWELL_US without a break
+//     (pid_completion_dwell_step): after a rest-only re-engage the loop rings about the target for
+//     25-40 ms with a 5-9 ustep amplitude, and a single pass inside the bound is one of its zero
+//     crossings, not the settled position - traced 2026-09-13/14 on e26c4800 (the decision read
+//     ENC_POS_DEV -1, the completion packet 5 ms later +6, then -5, -7, +1, -4 ...; 33 of 60 closed
+//     acknowledgments outside the 0.2 um bound). A ring of that amplitude spends well under the dwell
+//     inside a +-2 ustep band, so the dwell only passes once the correction has actually settled.
+static uint32_t completion_inside_since_us[TOTAL_AXES];   // pid_completion_dwell_step state, per axis
+
 static bool commanded_move_complete(uint8_t axis, int32_t target)
 {
   int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
@@ -619,12 +628,13 @@ static bool commanded_move_complete(uint8_t axis, int32_t target)
   int32_t win = completion_window_usteps[axis];
   bool counter_ok = (d == 0 && !tmc4361A_isRunning(&tmc4361[axis], 0))
                  || (win > 0 && (d < 0 ? -d : d) <= win);
-  if (!counter_ok) return false;
+  if (!counter_ok) { completion_inside_since_us[axis] = 0; return false; }
   if (pid_engage_pending(pid_requested[axis], pid_zone_hold[axis], axis_is_homing(axis), pid_home_zone_usteps[axis], pos))
-    return false;
-  if (!stage_PID_enabled[axis]) return true;
+  { completion_inside_since_us[axis] = 0; return false; }
+  if (!stage_PID_enabled[axis]) { completion_inside_since_us[axis] = 0; return true; }
   int32_t dev = tmc4361A_read_deviation(&tmc4361[axis]);
-  return pid_completion_encoder_ok(d, dev, win, tmc4361[axis].target_tolerance, pid_tolerance_eff(axis));
+  bool inside = pid_completion_encoder_ok(d, dev, win, tmc4361[axis].target_tolerance, pid_tolerance_eff(axis));
+  return pid_completion_dwell_step(&completion_inside_since_us[axis], inside, micros(), PID_COMPLETION_DWELL_US);
 }
 
 void check_position()

@@ -94,6 +94,34 @@ static inline bool pid_completion_encoder_ok(int32_t counter_minus_target, int32
     if (bound < deadband) bound = deadband;
     return e <= bound;
 }
+/* Completion dwell (closed loop). A rest-only loop re-engages with the open-loop residual as its
+   error and rings about the target before it settles - on the 2240 bench (P 65535, 2-count
+   deadband) 25-40 ms with a 5-9 ustep amplitude, PID_VEL changing sign every few ms. One pass with
+   the encoder inside the bound is therefore a zero crossing as often as the settled position
+   (traced 2026-09-13/14: ENC_POS_DEV -1 at the accepted pass, +6 in the packet 5 ms later, then
+   -5, -7, +1, -4 ...). So the encoder must stay inside the bound for PID_COMPLETION_DWELL_US
+   without a break. A ring of amplitude A >= 2.5 x the band crosses the +-band in a small fraction
+   of its period (well under 5 ms of a 10-14 ms period here), so it cannot satisfy the dwell; a
+   settled loop satisfies it once. Cost: +dwell on every closed-loop acknowledgment, plus whatever
+   settling the loop actually needed - which is the point: the ack now means "inside the bound and
+   staying there", the contract SET_COMPLETION_WINDOW and the target tolerance describe.
+   `*inside_since_us` is per-axis state: 0 = not inside (or consumed by a completion); the caller
+   passes the same slot every pass and clears it whenever an earlier leg of the rule fails. */
+#define PID_COMPLETION_DWELL_US 5000u
+static inline bool pid_completion_dwell_step(uint32_t *inside_since_us, bool inside, uint32_t now_us,
+                                             uint32_t dwell_us)
+{
+    if (!inside) { *inside_since_us = 0; return false; }
+    if (*inside_since_us == 0) {
+        if (dwell_us == 0) return true;   /* no dwell configured: the old single-pass rule */
+        /* micros() can be 0 at the first pass after boot: keep 0 as the "not started" value */
+        *inside_since_us = now_us ? now_us : 1u;
+        return false;
+    }
+    if ((uint32_t)(now_us - *inside_since_us) < dwell_us) return false;   /* wrap-safe */
+    *inside_since_us = 0;   /* consumed: the next move starts its own dwell */
+    return true;
+}
 /* ---- Bounded correction (frozen feedback / stage on its stop) -------------------------
    The chip nulls XACTUAL - ENC_POS. Motion the correction generates does not move XACTUAL,
    so the travel limits see nothing; and if the encoder stops counting the deviation never

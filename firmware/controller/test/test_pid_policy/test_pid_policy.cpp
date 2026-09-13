@@ -157,6 +157,63 @@ void test_bound_is_never_tighter_than_the_deadband(void) {
 }
 
 /*
+  pid_completion_dwell_step(): the encoder must stay inside the bound for the dwell. The ring
+  below is the 2026-09-13 bench trace (closed 10 um, ENC_POS_DEV per ~2.8 ms pass after the loop
+  re-engaged): 19, 14, 9, 0, -1, 6, -5, -7, 1, -4, -6, 3, 3 - two consecutive passes inside a
+  +-2 band at most, then settled. The single-pass rule completed on the "-1"; the dwell must not.
+*/
+void test_dwell_rejects_a_ring_down_zero_crossing(void) {
+    static const int32_t ring[] = {19, 14, 9, 0, -1, 6, -5, -7, 1, -4, -6, 3, 3};
+    uint32_t since = 0, t = 1000000u;
+    for (unsigned i = 0; i < sizeof ring / sizeof ring[0]; i++, t += 2800u) {
+        bool inside = pid_completion_encoder_ok(0, ring[i], 0, 2, 2);
+        TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, inside, t, PID_COMPLETION_DWELL_US));
+    }
+    // Settled at +1 from here on: completes once the dwell has elapsed, and only once.
+    uint32_t t0 = t;
+    bool done = false;
+    for (; t < t0 + 20000u; t += 1000u) {
+        bool r = pid_completion_dwell_step(&since, pid_completion_encoder_ok(0, 1, 0, 2, 2), t, PID_COMPLETION_DWELL_US);
+        if (r) { TEST_ASSERT_UINT32_WITHIN(1000u, t0 + PID_COMPLETION_DWELL_US, t); done = true; break; }
+    }
+    TEST_ASSERT_TRUE(done);
+    TEST_ASSERT_EQUAL_UINT32(0, since);   // consumed: the next move starts its own dwell
+}
+
+void test_dwell_restarts_when_the_encoder_leaves_the_bound(void) {
+    uint32_t since = 0;
+    TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, true, 10000u, 5000u));   // inside from 10 ms
+    TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, true, 13000u, 5000u));
+    TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, false, 14000u, 5000u));  // out at 14 ms: restart
+    TEST_ASSERT_EQUAL_UINT32(0, since);
+    TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, true, 15000u, 5000u));   // inside again from 15 ms
+    TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, true, 19000u, 5000u));
+    TEST_ASSERT_TRUE(pid_completion_dwell_step(&since, true, 20000u, 5000u));    // 5 ms later
+    // dwell 0 keeps the old single-pass rule; the clock wrapping across 2^32 is handled
+    TEST_ASSERT_TRUE(pid_completion_dwell_step(&since, true, 21000u, 0u));
+    since = 0;
+    TEST_ASSERT_FALSE(pid_completion_dwell_step(&since, true, 0xFFFFF000u, 5000u));
+    TEST_ASSERT_TRUE(pid_completion_dwell_step(&since, true, 0x00000400u, 5000u));   // 5120 us across the wrap
+}
+
+/*
+  pid_correction_windows() takes the clamp in pulses per second. The firmware stores the clamp
+  as the chip's 24.8 velocity (tmc4361A_vmmToMicrosteps: pps x 256) and, until 2026-09-14, fed
+  that unshifted: at the 2240 bench configuration (P 65535, watchdog 200 um = 2133 usteps at 16
+  usteps/FS, clamp 1 mm/s = 10667 pps, deadband 2 usteps) the total collapsed to the 8-tau floor
+  and the bench traced TIMEOUT 33.8 ms after arming (total_budget 31248 us in the trace). This
+  pins both: the intended budget with pps, and the collapsed one that the 24.8 value produces.
+*/
+void test_total_budget_at_the_2240_bench_configuration_is_hundreds_of_ms(void) {
+    uint32_t prog, total;
+    pid_correction_windows(65535, 2133, 10667u, 2, &prog, &total);
+    TEST_ASSERT_EQUAL_UINT32(20000u, prog);
+    TEST_ASSERT_UINT32_WITHIN(2000u, 820000u, total);      // 20 ms + 4 x 2133 / 10667 s
+    pid_correction_windows(65535, 2133, 10667u << 8, 2, &prog, &total);
+    TEST_ASSERT_EQUAL_UINT32(31248u, total);               // what the unshifted 24.8 value gave
+}
+
+/*
   pid_correction_watch_step(): bounded correction. Units are usteps and microseconds. TOL is the
   shipped Z deadband (2 encoder counts of 0.1 um at 170,667 usteps/mm = 34 usteps); PROG and
   TOTAL come from pid_correction_windows() at the qualified configuration (P 65535, watchdog
@@ -562,5 +619,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_windows_scale_with_a_low_gain);
     RUN_TEST(test_total_budget_scales_with_the_clamp_and_is_capped);
     RUN_TEST(test_low_gain_converging_loop_does_not_false_trip);
+    RUN_TEST(test_dwell_rejects_a_ring_down_zero_crossing);
+    RUN_TEST(test_dwell_restarts_when_the_encoder_leaves_the_bound);
+    RUN_TEST(test_total_budget_at_the_2240_bench_configuration_is_hundreds_of_ms);
     return UNITY_END();
 }
