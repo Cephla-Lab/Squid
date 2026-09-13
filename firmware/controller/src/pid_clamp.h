@@ -13,7 +13,8 @@
 
 typedef struct {
     uint32_t override_pps;    /* SET_PID_LIMITS value; 0 = none, the axis default applies at CONFIGURE */
-    uint32_t effective_pps;   /* what PID_DV_CLIP holds and the watch budgets against; 0 = not configured */
+    uint32_t effective_pps;   /* what the last CONFIGURE / SET_PID_LIMITS wrote to PID_DV_CLIP, and what the watch
+                                 budgets against; 0 = nothing written since the chip was last reset */
 } PidClamp;
 
 typedef struct {
@@ -25,9 +26,18 @@ typedef struct {
 /* Writes `pps` to PID_DV_CLIP. `ctx` is whatever the caller passed (production: the axis's chip). */
 typedef void (*pid_clamp_write_fn)(void *ctx, uint32_t pps);
 
+/* RESET: back to the firmware default, the host's override included. */
 static inline void pid_clamp_reset(PidClamp *c)
 {
     c->override_pps = 0u;
+    c->effective_pps = 0u;
+}
+
+/* INITIALIZE / INITFILTERWHEEL reset the chip (PID_DV_CLIP back to 0) and clear encoder_configured:
+   nothing is in effect until the next CONFIGURE writes it again. The host's override survives -
+   SET_PID_LIMITS is documented as re-applied by every later CONFIGURE_STAGE_PID. */
+static inline void pid_clamp_chip_reset(PidClamp *c)
+{
     c->effective_pps = 0u;
 }
 
@@ -45,8 +55,8 @@ static inline uint32_t pid_clamp_configure(PidClamp *c, float default_mm_s, PidC
 }
 
 /* SET_PID_LIMITS: record the override. With the encoder configured it goes to the chip now and
-   takes effect; before that it waits for the next CONFIGURE (which resets the chip's loop
-   registers anyway), and nothing is in effect. */
+   takes effect; before that it waits for the next CONFIGURE, which writes it (the chip's loop
+   registers are only ever written by CONFIGURE, after a reset or otherwise). */
 static inline void pid_clamp_set_limit(PidClamp *c, float mm_s, PidClampGeometry g, bool encoder_configured,
                                        pid_clamp_write_fn write, void *ctx)
 {

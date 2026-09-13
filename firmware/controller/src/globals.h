@@ -38,7 +38,7 @@ extern uint8_t encoder_report_mode;             // ENCODER_REPORT_*
 extern bool encoder_configured[TOTAL_AXES];     // CONFIGURE_STAGE_PID has initialised the encoder since the last chip reset
 extern bool pid_fault[TOTAL_AXES];              // deviation watchdog disabled the loop; cleared by ENABLE_STAGE_PID / RESET
 extern uint8_t pid_fault_cause[TOTAL_AXES];      // PID_FAULT_* (constants_protocol.h): why; status bytes 19-21 while reporting is off
-extern PidClamp pid_clamp[TOTAL_AXES];           // correction clamp: host override + what PID_DV_CLIP holds, in pulses per second (pid_clamp.h)
+extern PidClamp pid_clamp[TOTAL_AXES];           // correction clamp: host override + the last value written to PID_DV_CLIP, in pps (pid_clamp.h)
 extern int32_t pid_max_dev_usteps[TOTAL_AXES];  // watchdog limit in usteps; 0 = unset (default applied at configure)
 extern bool pid_requested[TOTAL_AXES];          // host asked for the loop (ENABLE_STAGE_PID); cleared by DISABLE, fault, RESET, INITIALIZE
 extern bool pid_zone_hold[TOTAL_AXES];          // loop requested but held open by the home zone / homing; re-engages outside

@@ -167,7 +167,6 @@ void callback_configure_stage_pid()
     // budget's cached copy. test_pid_clamp asserts the value the register receives.
     float clamp_mm_s = (axis == x) ? MAX_VELOCITY_X_mm : (axis == y) ? MAX_VELOCITY_Y_mm
                      : (axis == z) ? MAX_VELOCITY_Z_mm : MAX_VELOCITY_W_mm;
-    pid_clamp_configure(&pid_clamp[axis], clamp_mm_s, clamp_geometry(axis), write_pid_dv_clip, &tmc4361[axis]);
 
     // Loop deadband (PID_TOLERANCE: inside this error the chip stops correcting) and
     // target-reached tolerance (CL_TR_TOLERANCE: what check_position's completion rule
@@ -190,27 +189,17 @@ void callback_configure_stage_pid()
     uint32_t pid_tol = pid_tolerance_usteps[axis] ? pid_tolerance_usteps[axis] : default_tol;
     uint32_t tr_tol  = pid_tr_tolerance_usteps[axis] ? pid_tr_tolerance_usteps[axis] : default_tol;
 
-    // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
-    bool configured = false;
-    if (axis == x || axis == y) {
-        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 32767, 2);
-        configured = true;
-    }
-    else if (axis == z) {
-        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 4096, 2);
-        configured = true;
-    }
-    else if (axis == w) {
-        if (enable_filterwheel == true) {
-            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 4096, 2);
-            configured = true;
-        }
-    }
-    else if (axis == w2) {
-        if (enable_filterwheel_w2 == true) {
-            tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, 4096, 2);
-            configured = true;
-        }
+    // Write the clamp and the PID registers only to a chip that has been initialised: the stage
+    // axes at boot, a wheel by INITFILTERWHEEL (before that its tmc4361 struct has no bus config).
+    // Clamp first, then target-reached tolerance, deadband, P, I, D, winding limit and derivative
+    // update rate; no ordering dependency between them on the chip.
+    bool configured = (axis == x || axis == y || axis == z)
+                   || (axis == w && enable_filterwheel == true)
+                   || (axis == w2 && enable_filterwheel_w2 == true);
+    if (configured) {
+        pid_clamp_configure(&pid_clamp[axis], clamp_mm_s, clamp_geometry(axis), write_pid_dv_clip, &tmc4361[axis]);
+        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d,
+                          (axis == x || axis == y) ? 32767 : 4096, 2);
     }
 
     // Bookkeeping for ENABLE_STAGE_PID's gate and for the deviation watchdog.
@@ -524,6 +513,7 @@ static void init_filterwheel_axis(uint8_t axis)
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
     stage_PID_enabled[axis] = 0;
     encoder_configured[axis] = false;   // tmc4361A_init() above reset the chip
+    pid_clamp_chip_reset(&pid_clamp[axis]);   // ... PID_DV_CLIP included; the host's override survives
     pid_fault[axis] = false;
     pid_fault_cause[axis] = PID_FAULT_NONE;
     pid_requested[axis] = false;
@@ -672,6 +662,7 @@ void callback_initialize()
         // Keep the bookkeeping honest about that.
         stage_PID_enabled[i] = 0;
         encoder_configured[i] = false;
+        pid_clamp_chip_reset(&pid_clamp[i]);   // the driver init reset the chip: PID_DV_CLIP is 0 until the next CONFIGURE
         pid_fault[i] = false;
         pid_fault_cause[i] = PID_FAULT_NONE;
         pid_requested[i] = false;

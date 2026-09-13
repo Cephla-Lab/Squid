@@ -18,6 +18,7 @@ static const PidClampGeometry BENCH = {16u, 200u, 0.3f};
 
 typedef struct {
     uint32_t writes[8];
+    uint32_t last;     /* the most recent write, whatever n is (writes[] keeps the first eight) */
     int n;
 } Recorder;
 
@@ -25,12 +26,13 @@ static void record(void *ctx, uint32_t pps)
 {
     Recorder *r = (Recorder *)ctx;
     if (r->n < 8) r->writes[r->n] = pps;
+    r->last = pps;
     r->n++;
 }
 
 void test_configure_writes_the_axis_default_in_pps(void) {
     PidClamp c = {0u, 0u};
-    Recorder r = {{0}, 0};
+    Recorder r = {{0}, 0u, 0};
     uint32_t written = pid_clamp_configure(&c, 1.0f, BENCH, record, &r);
     TEST_ASSERT_EQUAL_INT(1, r.n);
     TEST_ASSERT_EQUAL_UINT32(10667u, r.writes[0]);          // not 2,730,666 (the 24.8 value)
@@ -41,7 +43,7 @@ void test_configure_writes_the_axis_default_in_pps(void) {
 
 void test_a_limit_sent_before_the_encoder_is_configured_waits_for_configure(void) {
     PidClamp c = {0u, 0u};
-    Recorder r = {{0}, 0};
+    Recorder r = {{0}, 0u, 0};
     pid_clamp_set_limit(&c, 0.5f, BENCH, false, record, &r);
     TEST_ASSERT_EQUAL_INT(0, r.n);                           // the chip's registers are reset by CONFIGURE anyway
     TEST_ASSERT_EQUAL_UINT32(5333u, c.override_pps);
@@ -54,7 +56,7 @@ void test_a_limit_sent_before_the_encoder_is_configured_waits_for_configure(void
 
 void test_a_limit_with_the_encoder_configured_writes_and_takes_effect(void) {
     PidClamp c = {0u, 0u};
-    Recorder r = {{0}, 0};
+    Recorder r = {{0}, 0u, 0};
     pid_clamp_configure(&c, 1.0f, BENCH, record, &r);
     pid_clamp_set_limit(&c, 0.02f, BENCH, true, record, &r);   // the F7 bench setting: 213 pps
     TEST_ASSERT_EQUAL_INT(2, r.n);
@@ -65,15 +67,28 @@ void test_a_limit_with_the_encoder_configured_writes_and_takes_effect(void) {
 
 void test_register_and_watch_agree_after_every_step(void) {
     PidClamp c = {0u, 0u};
-    Recorder r = {{0}, 0};
+    Recorder r = {{0}, 0u, 0};
     pid_clamp_configure(&c, 3.0f, BENCH, record, &r);
-    TEST_ASSERT_EQUAL_UINT32(r.writes[r.n - 1], c.effective_pps);
+    TEST_ASSERT_EQUAL_UINT32(r.last, c.effective_pps);
     pid_clamp_set_limit(&c, 1.0f, BENCH, true, record, &r);
-    TEST_ASSERT_EQUAL_UINT32(r.writes[r.n - 1], c.effective_pps);
+    TEST_ASSERT_EQUAL_UINT32(r.last, c.effective_pps);
     pid_clamp_configure(&c, 3.0f, BENCH, record, &r);          // a later CONFIGURE re-applies the override
-    TEST_ASSERT_EQUAL_UINT32(10667u, r.writes[r.n - 1]);
-    TEST_ASSERT_EQUAL_UINT32(r.writes[r.n - 1], c.effective_pps);
+    TEST_ASSERT_EQUAL_UINT32(10667u, r.last);
+    TEST_ASSERT_EQUAL_UINT32(r.last, c.effective_pps);
     TEST_ASSERT_EQUAL_INT(3, r.n);
+}
+
+void test_a_chip_reset_forgets_the_effective_value_but_keeps_the_override(void) {
+    // INITIALIZE and INITFILTERWHEEL reset the chip (PID_DV_CLIP back to 0) and clear
+    // encoder_configured; the host's SET_PID_LIMITS value must survive to the next CONFIGURE.
+    PidClamp c = {5333u, 5333u};
+    pid_clamp_chip_reset(&c);
+    TEST_ASSERT_EQUAL_UINT32(5333u, c.override_pps);
+    TEST_ASSERT_EQUAL_UINT32(0u, c.effective_pps);
+    Recorder r = {{0}, 0u, 0};
+    pid_clamp_configure(&c, 1.0f, BENCH, record, &r);
+    TEST_ASSERT_EQUAL_UINT32(5333u, r.last);                // the override is re-applied
+    TEST_ASSERT_EQUAL_UINT32(5333u, c.effective_pps);
 }
 
 void test_reset_returns_to_the_firmware_default(void) {
@@ -90,6 +105,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_a_limit_sent_before_the_encoder_is_configured_waits_for_configure);
     RUN_TEST(test_a_limit_with_the_encoder_configured_writes_and_takes_effect);
     RUN_TEST(test_register_and_watch_agree_after_every_step);
+    RUN_TEST(test_a_chip_reset_forgets_the_effective_value_but_keeps_the_override);
     RUN_TEST(test_reset_returns_to_the_firmware_default);
     return UNITY_END();
 }
