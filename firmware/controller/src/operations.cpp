@@ -533,7 +533,7 @@ void check_joystick()
 	  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
 	  // an axis that is never commanded to move has nothing for the else-branch
 	  // stop to halt, and a stop is itself a write to an unconfigured driver.
-	  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
+	  if (tmc_driver_ready(&tmc4361[x]) && !pid_fault[x] && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X)   // a latched loop fault refuses the joystick too (pid_trip_fault) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
 	  {
 	    // joystick at motion position
 	    if (abs(joystick_delta_x) > 0)
@@ -549,7 +549,7 @@ void check_joystick()
 	  }
 
 	  // read y joystick
-	  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
+	  if (tmc_driver_ready(&tmc4361[y]) && !pid_fault[y] && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
 	  {
 	    // joystick at motion position
 	    if (abs(joystick_delta_y) > 0)
@@ -580,7 +580,9 @@ void do_focus_control()
   // the focus wheel (functions.cpp, onJoystickPacketReceived) whether or not Z
   // can be driven, and letting it drift outside the limits would hand Z a wild
   // target the moment the axis is recovered. Only the move is gated.
-  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  // A latched loop fault refuses the focus wheel as well (pid_trip_fault): the position is suspect
+  // until the host DISABLEs (open-loop recovery) or a validated ENABLE re-engages.
+  if (tmc_driver_ready(&tmc4361[z]) && !pid_fault[z] && is_homing_Z == false && is_preparing_for_homing_Z == false)
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
 }
 
@@ -804,12 +806,21 @@ static void fail_commanded_move(uint8_t axis)
 // not engaged at rest, so a correction is only ever judged against its own timeline.
 static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
 
-// The loop on `axis` has proven unsafe to leave engaged: open it, drop the REQUEST (so the
-// axis stays open-loop until the host explicitly enables again), latch the fault the status
-// packet carries, and fail the move in flight if there is one. Every fault path uses this.
+// The loop on `axis` has proven unsafe to leave engaged. The post-fault contract (finish plan,
+// 2026-09-14): open the loop, stop the ramp, drop the REQUEST, latch the cause the status packet
+// carries, fail the move in flight if there is one - and refuse ordinary motion on this axis
+// (commands, joystick, focus wheel: axis_driver_ready() and the two operator paths test
+// pid_fault) until the host explicitly DISABLEs (deliberate open-loop recovery) or a validated
+// ENABLE re-engages. Other axes are unaffected. Every fault path uses this.
+//
+// Stopping the ramp matters: failing the command's bookkeeping does not stop a ramp that is
+// already running (a watchdog or switch fault with the loop engaged in flight, threshold mode),
+// and the joystick's velocity mode keeps its last VMAX. tmc4361A_stop() writes XTARGET =
+// XACTUAL and leaves velocity mode, so the axis decelerates where it is; at rest it is a no-op.
 static void pid_trip_fault(uint8_t axis, uint8_t cause)
 {
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+  tmc4361A_stop(&tmc4361[axis]);
   stage_PID_enabled[axis] = 0;
   pid_requested[axis] = false;
   pid_zone_hold[axis] = false;

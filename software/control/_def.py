@@ -438,6 +438,23 @@ class PID_FAULT_CAUSE:
     NO_RESPONSE = 7  # engaged at rest: the loop drove the motor and the encoder did not respond
     STOP_SWITCH = 8  # engaged: a reference switch is active and the correction was driving toward it
 
+    # What to do about each cause (post-fault contract, firmware >= 1.6, 2026-09-14): the firmware
+    # refuses motion on the axis until DISABLE_STAGE_PID (deliberate open-loop recovery, position
+    # unverified) or a validated ENABLE_STAGE_PID. Whether homing is the right next step depends on
+    # the cause: a lost position can be re-established by homing; suspect feedback or a switch
+    # driving fault wants inspection first.
+    RECOVERY = {
+        WATCHDOG: "position suspect: send DISABLE_STAGE_PID, home the axis, then ENABLE_STAGE_PID",
+        NO_PROGRESS: "stage may be stuck: send DISABLE_STAGE_PID, check the stage moves freely, home, then ENABLE_STAGE_PID",
+        TIMEOUT: "correction did not finish: send DISABLE_STAGE_PID, home the axis, then ENABLE_STAGE_PID",
+        REALIGN_REFUSED: "lost motion after homing: send DISABLE_STAGE_PID, home the axis, then ENABLE_STAGE_PID",
+        REENGAGE_REFUSED: "lost steps during the move: send DISABLE_STAGE_PID, home the axis, then ENABLE_STAGE_PID",
+        TRAVEL: "correction travelled the watchdog distance: send DISABLE_STAGE_PID, check for an obstruction, home, then ENABLE_STAGE_PID",
+        NO_RESPONSE: "encoder did not respond to the correction: inspect the encoder and its cable before homing; DISABLE_STAGE_PID permits open-loop motion at your own risk",
+        STOP_SWITCH: "correction was driving into a reference switch: inspect the switch and the stage ends before homing; DISABLE_STAGE_PID permits open-loop motion at your own risk",
+    }
+    RECOVERY_UNKNOWN = "cause not on the wire while encoder reporting is on: send DISABLE_STAGE_PID, home the axis, then ENABLE_STAGE_PID"
+
     # Where each axis's four bits sit while encoder reporting is off (see the class docstring).
     X_SHIFT = 1  # byte 19, bits 1-4
     Y_SHIFT = 0  # byte 20, bits 0-3

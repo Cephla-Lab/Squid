@@ -129,6 +129,9 @@ class ZMotionSelfTest:
         self.settle_scale = settle_scale  # tests run the sequence without the physical settling waits
         self.idle_timeout_s = idle_timeout_s  # how long restore() waits for a cancelled move to finish
         self._at_rest = False  # set by restore(): the controller reported idle after the run ended
+        self._loop_faulted = (
+            False  # set by restore(): a latched fault was acknowledged for the return move; the loop stays off
+        )
         self.pid = axis.PID
         self.loop_configured = bool(self.pid and self.pid.ENABLED)
         self.max_dev_um = float(self.pid.MAX_DEVIATION_UM) if self.pid and self.pid.MAX_DEVIATION_UM else 250.0
@@ -525,6 +528,18 @@ class ZMotionSelfTest:
 
     def _restore_position(self):
         if self._at_rest and self.encoder_ok and abs(self._pos_mm() - self.depth) > 0.01:
+            if self._enc()["pid_fault"]:
+                # Post-fault contract: the firmware refuses moves on Z while the fault is latched. The
+                # return to the working depth is a deliberate open-loop recovery, acknowledged with
+                # DISABLE and said so; the position stays unverified until the axis is homed, and the
+                # loop stays off (see _restore_loop).
+                self.log(
+                    "closed-loop fault latched: acknowledging it with DISABLE to move Z back open-loop; "
+                    "position unverified until homed"
+                )
+                self._loop_faulted = True
+                self.mcu.turn_off_stage_pid(AXIS.Z)
+                self.mcu.wait_till_operation_is_completed()
             # The return move is a move like any other: until it completes, Z is not at rest. Clear the
             # flag first so a return move that times out - possibly with the counter already within
             # 0.01 mm of the target - cannot leave _at_rest standing from the earlier wait and let the
@@ -572,7 +587,7 @@ class ZMotionSelfTest:
             )
             return
         st = self._enc()
-        if st["pid_fault"]:
+        if st["pid_fault"] or self._loop_faulted:
             # A watchdog fault during the run means the stage stopped following the actuator. A fresh
             # ENABLE would pass the firmware's deviation check once the stage had settled and hide it,
             # and the fault bit would be gone from the status packet. Leave the loop off and say so.

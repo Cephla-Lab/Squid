@@ -396,9 +396,15 @@ void test_stage_commands_guards_every_move_entry_point(void)
     /* The guard must not clear mcu_cmd_execution_in_progress: it rejects before
        the callback claims that flag, and clearing it reports an unrelated axis
        still in motion as finished. */
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "report_move_error();\n        return false;"),
+    /* Two rejections, both through report_move_error(): the driver is not ready, or a
+       closed-loop fault is latched on the axis (post-fault contract, 2026-09-14: motion
+       on that axis is refused until DISABLE_STAGE_PID or a validated ENABLE_STAGE_PID). */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(2, count_occurrences(src, "report_move_error();\n        return false;"),
         "axis_driver_ready() must reject with report_move_error(), never "
-        "mark_move_failed() — see the task 8 report section 3");
+        "mark_move_failed() — see the task 8 report section 3 - once for the driver "
+        "and once for a latched loop fault");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "if (pid_fault[axis]) {"),
+        "axis_driver_ready() must refuse motion on an axis with a latched closed-loop fault");
 
     assert_guard_precedes_motion(src, "stage_commands.cpp", "void callback_move_x()",
                                  "axis_driver_ready(", "tmc4361A_moveTo(");

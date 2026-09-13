@@ -830,3 +830,57 @@ def test_completion_snapshot_is_published_on_an_aborted_command_too():
         micro.acknowledge_aborted_command()
     finally:
         micro.close()
+
+
+def _error_packet_with_fault(crc_calculator, cmd_id, z_cause):
+    """CMD_EXECUTION_ERROR for `cmd_id` in the reporting-OFF layout, with Z's fault bit and cause."""
+    cause = control._def.PID_FAULT_CAUSE
+    msg = bytearray(24)
+    msg[0] = cmd_id
+    msg[1] = control._def.CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+    msg[18] = 1 << control._def.BIT_POS_PID_FAULT_Z
+    msg[20] = (z_cause & cause.MASK) << cause.Z_SHIFT
+    msg[22] = (1 << 4) | 6
+    msg[23] = crc_calculator.calculate_checksum(msg[:23])
+    return msg
+
+
+def test_an_aborted_move_names_the_latched_loop_fault_and_its_recovery():
+    """Post-fault contract (2026-09-14): the firmware refuses motion on an axis with a latched
+    closed-loop fault until DISABLE_STAGE_PID or a validated ENABLE_STAGE_PID. The CommandAborted
+    the host raises must say so - cause and recovery - and must not be marked recoverable, since a
+    plain resend is refused the same way and the position is unverified."""
+    from crc import CrcCalculator, Crc8
+
+    micro = get_test_micro()
+    crc_calculator = CrcCalculator(Crc8.CCITT, table_based=True)
+    try:
+        micro.move_z_to_usteps(100)
+        micro.wait_till_operation_is_completed()
+        cmd_id = micro._cmd_id
+        micro.mcu_cmd_execution_in_progress = True
+        _feed_status_packet(
+            micro, _error_packet_with_fault(crc_calculator, cmd_id, control._def.PID_FAULT_CAUSE.WATCHDOG)
+        )
+        err = micro.last_command_aborted_error
+        assert err is not None
+        text = str(err)
+        assert "watchdog" in text.lower(), text  # the cause, in the host's own words (PID_FAULT_CAUSE.NAMES)
+        assert "on Z" in text and "DISABLE_STAGE_PID" in text and "ENABLE_STAGE_PID" in text, text
+        assert "home" in text.lower(), text  # position suspect: the recovery homes
+        assert err.recoverable is False
+        micro.acknowledge_aborted_command()
+
+        # feedback / switch faults recommend inspection before homing
+        micro.move_z_to_usteps(200)
+        micro.wait_till_operation_is_completed()
+        cmd_id = micro._cmd_id
+        micro.mcu_cmd_execution_in_progress = True
+        _feed_status_packet(
+            micro, _error_packet_with_fault(crc_calculator, cmd_id, control._def.PID_FAULT_CAUSE.NO_RESPONSE)
+        )
+        text = str(micro.last_command_aborted_error)
+        assert "respond" in text.lower() and "inspect" in text.lower(), text
+        micro.acknowledge_aborted_command()
+    finally:
+        micro.close()

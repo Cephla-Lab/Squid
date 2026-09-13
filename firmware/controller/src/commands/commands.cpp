@@ -207,8 +207,9 @@ void callback_configure_stage_pid()
     // Default watchdog limit: 0.25 mm of loop error (0.25 rev on a wheel) - far
     // above any sane following error, far below a travel end.
     encoder_configured[axis] = configured;
-    pid_fault[axis] = false;
-    pid_fault_cause[axis] = PID_FAULT_NONE;
+    // A latched fault survives CONFIGURE_STAGE_PID: only DISABLE (acknowledge, open-loop recovery),
+    // a validated ENABLE, RESET or INITIALIZE clear it (post-fault contract, pid_trip_fault). The
+    // write_encoder() above aligns the frames; it does not restore confidence in the position.
     if (configured && pid_max_dev_usteps[axis] == 0)
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], 0.25f);
 }

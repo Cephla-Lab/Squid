@@ -28,6 +28,8 @@ _log = squid.logging.get_logger("microcontroller")
 _CMD_EXECUTION_STATUS_NAMES = {value: name for name, value in vars(CMD_EXECUTION_STATUS).items() if name.isupper()}
 
 # Mapping of command type bytes to human-readable names for logging
+_AXIS_NAMES = {AXIS.X: "X", AXIS.Y: "Y", AXIS.Z: "Z", AXIS.W: "W", AXIS.W2: "W2"}
+
 _CMD_NAMES = {
     CMD_SET.MOVE_X: "MOVE_X",
     CMD_SET.MOVE_Y: "MOVE_Y",
@@ -1486,6 +1488,20 @@ class Microcontroller:
         """
         return {axis for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)) if self.pid_fault_mask & (1 << bit)}
 
+    def _describe_pid_faults(self) -> str:
+        """One sentence per axis with a latched closed-loop fault: cause and recovery; '' if none."""
+        parts = []
+        for axis in sorted(self.pid_fault_axes()):
+            cause = self.pid_fault_causes.get(axis, PID_FAULT_CAUSE.NONE)
+            name = PID_FAULT_CAUSE.NAMES.get(cause, str(cause)) if cause else "cause not reported"
+            recovery = PID_FAULT_CAUSE.RECOVERY.get(cause, PID_FAULT_CAUSE.RECOVERY_UNKNOWN)
+            parts.append(
+                f"closed-loop fault latched on {_AXIS_NAMES.get(axis, axis)} ({name}): motion on that axis is "
+                f"refused until DISABLE_STAGE_PID (deliberate open-loop recovery) or a validated "
+                f"ENABLE_STAGE_PID - {recovery}"
+            )
+        return "; ".join(parts)
+
     def pid_fault_cause(self, axis) -> int:
         """Why `axis`'s closed loop faulted, as a PID_FAULT_CAUSE (firmware >= 1.6).
 
@@ -1983,9 +1999,14 @@ class Microcontroller:
                     # waiter exactly as a completion does, so it publishes the same snapshot first -
                     # this packet is the only report of where the axis was when the controller gave up.
                     self.last_completion = snapshot
+                    # With a closed-loop fault latched (byte 18) the firmware refuses motion on that axis
+                    # until DISABLE_STAGE_PID or a validated ENABLE_STAGE_PID (post-fault contract): say
+                    # so, with the cause and the recovery, and do not call it recoverable - a plain resend
+                    # is refused the same way and the position is unverified.
+                    fault_text = self._describe_pid_faults()
                     self.abort_current_command(
-                        reason="firmware reported CMD_EXECUTION_ERROR",
-                        recoverable=True,
+                        reason="firmware reported CMD_EXECUTION_ERROR" + (f"; {fault_text}" if fault_text else ""),
+                        recoverable=not fault_text,
                     )
                 elif (
                     self.mcu_cmd_execution_in_progress

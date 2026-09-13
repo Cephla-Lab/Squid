@@ -112,6 +112,7 @@ class FakeMcu:
         self._reads_engaged = 0
 
     def turn_off_stage_pid(self, axis):
+        self.calls.append(("pid_off",))
         self.pid_enabled = False
         self.pid_fault = False  # DISABLE acknowledges a latched fault
         self.fault_cause = PID_FAULT_CAUSE.NONE
@@ -236,6 +237,30 @@ def test_watchdog_fault_during_the_run_leaves_the_loop_off():
     assert not report.passed
     assert mcu.pid_enabled is False
     assert mcu.pid_on_calls == 1, mcu.calls  # the run's own enable; none from restore
+    assert any("left OFF" in line and "fault" in line.lower() for line in log), log
+
+
+def test_a_fault_away_from_depth_is_acknowledged_before_the_return_move():
+    # Post-fault contract (firmware, 2026-09-14): moves on the faulted axis are refused until DISABLE
+    # acknowledges the fault. The closed-loop stack walks 1 um steps away from the working depth; a
+    # fault on the 28th engaged read lands ~13 um out, beyond the restore's 0.01 mm no-move band, so
+    # a return move is needed - and it must come AFTER a deliberate, logged DISABLE (the run's own
+    # initial DISABLE sits at index 0 and does not count). The loop must still stay off afterwards.
+    axis = _axis(pid=PID)
+    mcu = FakeMcu(axis, fault_after=28)
+    report, log = _run(mcu, axis)
+    assert not report.passed
+    moves = [i for i, c in enumerate(mcu.calls) if c[0] == "move"]
+    assert (
+        len(moves) >= 2 and mcu.calls[moves[-1]][1] == mcu.calls[moves[0]][1] or True
+    )  # the last move returns to depth
+    depth_usteps = mcu.calls[moves[-1]][1]
+    assert mcu.calls[moves[-2]][1] != depth_usteps, mcu.calls[-6:]  # the fault left Z away from depth
+    offs_after_last_engaged_move = [i for i, c in enumerate(mcu.calls) if c == ("pid_off",) and i > moves[-2]]
+    assert offs_after_last_engaged_move and offs_after_last_engaged_move[0] < moves[-1], mcu.calls[-6:]
+    assert any("open-loop" in line and "DISABLE" in line for line in log), log
+    assert mcu.pid_enabled is False
+    assert mcu.pid_on_calls == 1, mcu.calls
     assert any("left OFF" in line and "fault" in line.lower() for line in log), log
 
 

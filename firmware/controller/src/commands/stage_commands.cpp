@@ -43,6 +43,14 @@ bool axis_driver_ready(uint8_t axis)
         report_move_error();
         return false;
     }
+    // Post-fault contract (pid_trip_fault): a latched closed-loop fault refuses every commanded
+    // move and home on this axis - the position or the feedback is suspect - until the host sends
+    // DISABLE_STAGE_PID (deliberate open-loop recovery) or a validated ENABLE_STAGE_PID. The
+    // rejection is the same CMD_EXECUTION_ERROR the host already handles; other axes are untouched.
+    if (pid_fault[axis]) {
+        report_move_error();
+        return false;
+    }
     return true;
 }
 

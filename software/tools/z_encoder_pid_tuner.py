@@ -371,8 +371,8 @@ class ZTuner:
         # the next send_command to warn about.
         err = self.mcu.last_command_aborted_error
         if err is not None:
-            # before the abort is acknowledged: DISABLE / ENABLE / CONFIGURE_STAGE_PID clear the
-            # cause along with the fault, so this is the only moment the firmware will say why
+            # before the abort is acknowledged: DISABLE (and a validated ENABLE, RESET, INITIALIZE) clear
+            # the cause along with the fault, so this is the only moment the firmware will say why
             cause = self._read_z_fault_cause()
             self.mcu.acknowledge_aborted_command()
             raise RuntimeError(
@@ -1307,9 +1307,9 @@ class ZTuner:
         how this tool runs) those bytes carry the reported axis's flags and clipped deviation instead.
         So drop reporting for a few status packets, read, and put it back.
 
-        Must be called before anything acknowledges the fault: DISABLE_STAGE_PID, ENABLE_STAGE_PID and
-        CONFIGURE_STAGE_PID all clear the cause together with the fault bit, so loop_off() erases the
-        answer. Best effort - a failure here must not replace the fault as the reported problem.
+        Must be called before anything acknowledges the fault: DISABLE_STAGE_PID and a validated
+        ENABLE_STAGE_PID clear the cause together with the fault bit (CONFIGURE_STAGE_PID no longer does),
+        so loop_off() erases the answer. While the fault is latched the firmware refuses moves on Z. Best effort - a failure here must not replace the fault as the reported problem.
         """
         try:
             self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF)
