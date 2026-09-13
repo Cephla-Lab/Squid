@@ -97,6 +97,16 @@ def usteps_to_depth(usteps):
     return SIGN * usteps / USTEPS_PER_MM
 
 
+def completion_bound_um(window_um, target_tol_um, deadband_um):
+    """What the firmware acknowledges a closed-loop move against (pid_completion_encoder_ok): the
+    completion window when one is set, else the target-reached tolerance, and never below the
+    deadband - inside the deadband the chip does not correct, so a tighter bound could never be
+    met. A record that quotes the requested numbers instead of this one overstates a window or a
+    target tolerance below the deadband."""
+    bound = window_um if window_um > 0 else target_tol_um
+    return max(bound, deadband_um)
+
+
 def host_git_hash():
     """Short hash of the checkout this tool ran from, so a result set can be tied to the host code. '' if unknown."""
     try:
@@ -1483,8 +1493,13 @@ class ZTuner:
             "watchdog_um": self.a.max_dev_um,
             "home_zone_um": self.a.zone_um,
             "tolerance_um": tol_um,
+            # the tool sends the deadband and the target-reached tolerance equal (configure_encoder)
+            "deadband_um": tol_um,
             "open_above_mm_s": self.a.open_above,
             "completion_window_um": self.a.window_um,
+            # the bound the firmware actually acknowledged against: window if set, else target
+            # tolerance, never below the deadband - quote THIS in a record, not the requested numbers
+            "effective_completion_bound_um": completion_bound_um(self.a.window_um, tol_um, tol_um),
             "depth_mm": self.a.depth_mm,
             "vmax_mm_s": self.a.vmax,
             "accel_mm_s2": self.a.accel,
@@ -1514,6 +1529,8 @@ class ZTuner:
 
     def _ackprobe_summary(self, rows):
         out = []
+        tol_um = self._ack_tolerance_um()
+        bound_um = completion_bound_um(self.a.window_um, tol_um, tol_um)
         for step_um in self.a.ack_steps_um:
             for mode in ("closed", "open"):
                 sel = [r for r in rows if r["step_um"] == step_um and r["mode"] == mode]
@@ -1542,6 +1559,16 @@ class ZTuner:
                         "enc_to_target_um_p95": pct(to_target, 0.95),
                         "enc_to_target_um_max": max(to_target) if to_target else float("nan"),
                         "enc_to_target_unmeasured": len(sel) - len(to_target),
+                        # the completion contract, checked per row: with the loop engaged at the ack the
+                        # encoder must be inside the effective bound (open-loop rows have no such bound)
+                        "effective_completion_bound_um": bound_um,
+                        "closed_acks_outside_bound": sum(
+                            1
+                            for r in sel
+                            if r["pid_enabled_at_ack"]
+                            and not math.isnan(r["enc_minus_target_um"])
+                            and abs(r["enc_minus_target_um"]) > bound_um + 1e-9
+                        ),
                         "window_max_err_um_median": pct(in_win, 0.5),
                         "window_max_err_um_p95": pct(in_win, 0.95),
                         "window_max_err_um_max": max(in_win),
@@ -1617,7 +1644,10 @@ class ZTuner:
             json.dump({"preamble": pre, "summary": summary}, f, indent=2, default=str)
         self.log(f"ackprobe: {len(rows)} moves -> {path}, summary -> {json_path}")
         self.log(
-            f"tolerance {tol_um:.2f} um; telemetry: 10 ms status stream; sub-10 ms behaviour is not resolvable from the host"
+            f"tolerance {tol_um:.2f} um (deadband = target); window {self.a.window_um:g} um; effective completion "
+            f"bound {pre['effective_completion_bound_um']:.2f} um; closed acks outside it: "
+            f"{sum(r['closed_acks_outside_bound'] for r in summary)}; telemetry: 10 ms status stream; sub-10 ms "
+            f"behaviour is not resolvable from the host"
         )
         self.log(
             f"{'step um':>8} {'mode':>6} {'n':>4} {'open@ack':>9} {'|err|@ack med/p95/max um':>26} "

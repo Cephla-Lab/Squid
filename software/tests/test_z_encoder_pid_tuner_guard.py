@@ -93,3 +93,24 @@ def test_reporting_off_still_sees_a_latched_fault(tuner_mod, tmp_path):
     with pytest.raises(RuntimeError, match="PID_FAULT"):
         t.guard()
     assert mcu.pid_off_calls == 1
+
+
+# ---------------------------------------------------------------- effective completion bound
+# The firmware acknowledges a closed-loop move against max(window if set else target tolerance,
+# deadband) (pid_completion_encoder_ok in pid_policy.h). The ack ladder's record has to state that
+# effective bound, not the requested numbers, or a window below the deadband reads as tighter than
+# what was actually enforced.
+
+
+def test_completion_bound_is_the_target_tolerance_without_a_window(tuner_mod):
+    assert tuner_mod.completion_bound_um(0.0, 0.2, 0.2) == 0.2
+    assert tuner_mod.completion_bound_um(0.0, 0.5, 0.2) == 0.5
+
+
+def test_completion_bound_is_the_window_when_set_even_below_the_target(tuner_mod):
+    assert tuner_mod.completion_bound_um(0.3, 0.5, 0.2) == 0.3
+
+
+def test_completion_bound_is_never_below_the_deadband(tuner_mod):
+    assert tuner_mod.completion_bound_um(0.1, 0.2, 0.2) == 0.2
+    assert tuner_mod.completion_bound_um(0.0, 0.1, 0.2) == 0.2
