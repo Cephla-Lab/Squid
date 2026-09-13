@@ -1494,7 +1494,12 @@ class Microcontroller:
         return {axis for bit, axis in ((0, AXIS.X), (1, AXIS.Y), (2, AXIS.Z)) if self.pid_fault_mask & (1 << bit)}
 
     def _last_command_axes(self) -> set:
-        """The stage axes the last command sent addressed (empty for commands that name none)."""
+        """The stage axes the last command sent addressed (empty for commands that name none).
+
+        Read from the reader thread without the command lock, like _cmd_id and _last_command_name():
+        a heartbeat sent between a rejection's arrival and this read would describe the heartbeat
+        (no axes, plain reason). Pre-existing window, microseconds per rejection.
+        """
         if self.last_command is None:
             return set()
         opcode = self.last_command[1]

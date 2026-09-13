@@ -23,10 +23,10 @@
    design M4's fail-safe half. The other half - rejecting that axis's moves so
    the failure is loud rather than a stage that silently does not move - is now
    in place, across three files: the axis_driver_ready() helper (defined in
-   stage_commands.cpp) gates the host move and home commands there and the
-   ENABLE_STAGE_PID command in commands.cpp, and operations.cpp gates the
-   joystick and focus-wheel paths directly. All three are pinned by
-   test_command_layout.
+   stage_commands.cpp) gates the host move and home commands there, its
+   driver-presence half axis_driver_present() gates the ENABLE_STAGE_PID command
+   in commands.cpp, and operations.cpp gates the joystick and focus-wheel paths
+   directly. All three are pinned by test_command_layout.
 
    The two dispatchers that return a value agree on what DRIVER_UNKNOWN means:
    nothing was written, so it is reported as a refusal, not as success. */

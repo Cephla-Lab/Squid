@@ -174,7 +174,8 @@ class CephlaStage(AbstractStage):
         # latched closed-loop fault until DISABLE_STAGE_PID or a validated ENABLE, and CONFIGURE above
         # does not clear it. A software restart skips RESET/INITIALIZE, so a fault from the previous
         # session may still be latched here; acknowledge it now, deliberately and audibly, or the axis
-        # refuses moves for the whole session (the ENABLE below would be refused on a large error).
+        # refuses moves for the whole session. (The ENABLE below is checked against the real frames - CONFIGURE
+        # does not realign them while a fault is latched - and is refused on a large error.)
         if new_fw and microcontroller_axis_number in mc.pid_fault_axes():
             cause = mc.pid_fault_cause(microcontroller_axis_number)
             _log.warning(

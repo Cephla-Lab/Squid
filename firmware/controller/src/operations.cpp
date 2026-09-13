@@ -572,6 +572,11 @@ void check_joystick()
 
 void do_focus_control()
 {
+  // Post-fault contract (pid_trip_fault): while a Z loop fault is latched the wheel's target stays
+  // frozen at the position the fault stopped at (its deltas are dropped in onJoystickPacketReceived)
+  // and nothing is issued - the position is suspect until the host DISABLEs (open-loop recovery)
+  // or a validated ENABLE re-engages.
+  if (pid_fault[z]) return;
   if (focusPosition > Z_POS_LIMIT)
     focusPosition = Z_POS_LIMIT;
   if (focusPosition < Z_NEG_LIMIT)
@@ -580,10 +585,14 @@ void do_focus_control()
   // the focus wheel (functions.cpp, onJoystickPacketReceived) whether or not Z
   // can be driven, and letting it drift outside the limits would hand Z a wild
   // target the moment the axis is recovered. Only the move is gated.
-  // A latched loop fault refuses the focus wheel as well (pid_trip_fault): the position is suspect
-  // until the host DISABLEs (open-loop recovery) or a validated ENABLE re-engages.
-  if (tmc_driver_ready(&tmc4361[z]) && !pid_fault[z] && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  // Z moves here only for a wheel input (focus_wheel_pending), never because a pass found the
+  // target different from the axis: a commanded move issues its own ramp, and a target changed by
+  // a limit, a fault stop or a recovery must not move an axis on its own.
+  if (tmc_driver_ready(&tmc4361[z]) && focus_wheel_pending && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  {
+    focus_wheel_pending = false;
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
+  }
 }
 
 // Defined with check_closed_loop() below, next to the rest of the closed-loop policy;
@@ -808,10 +817,11 @@ static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
 
 // The loop on `axis` has proven unsafe to leave engaged. The post-fault contract (finish plan,
 // 2026-09-14): open the loop, stop the ramp, drop the REQUEST, latch the cause the status packet
-// carries, fail the move in flight if there is one - and refuse ordinary motion on this axis
+// carries, fail the move in flight if there is one - and, on a STAGE axis, refuse ordinary motion
 // (commands, joystick, focus wheel: axis_driver_ready() and the two operator paths test
 // pid_fault) until the host explicitly DISABLEs (deliberate open-loop recovery) or a validated
-// ENABLE re-engages. Other axes are unaffected. Every fault path uses this.
+// ENABLE re-engages. The filter wheels are exempt from the refusal (rotary, no hard limit; their
+// fault is not on the wire). Other axes are unaffected. Every fault path uses this.
 //
 // Stopping the ramp matters: failing the command's bookkeeping does not stop a ramp that is
 // already running (a watchdog or switch fault with the loop engaged in flight, threshold mode),
@@ -824,8 +834,12 @@ static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
 static void pid_trip_fault(uint8_t axis, uint8_t cause)
 {
   tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
-  tmc4361A_stop_here(&tmc4361[axis]);
-  if (axis == z) focusPosition = tmc4361A_currentPosition(&tmc4361[z]);
+  int32_t here = tmc4361A_stop_here(&tmc4361[axis]);   // the target it wrote: one read, one number
+  if (axis == z)
+  {
+    focusPosition = here;          // the wheel's target follows the stop ...
+    focus_wheel_pending = false;   // ... and nothing is issued for it until a wheel input arrives
+  }
   stage_PID_enabled[axis] = 0;
   pid_requested[axis] = false;
   pid_zone_hold[axis] = false;

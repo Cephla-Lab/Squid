@@ -155,7 +155,12 @@ void callback_configure_stage_pid()
     // (homing, or the chip reset) under a different ENC_IN_RES / invert setting
     // does not survive this write - the first bench run found the loop error
     // pinned at the int16 clip for exactly that reason.
-    tmc4361A_write_encoder(&tmc4361[axis], tmc4361A_currentPosition(&tmc4361[axis]));
+    // ... except while a closed-loop fault is latched: the frames as they are ARE the evidence a
+    // validated ENABLE_STAGE_PID is checked against (deviation within the watchdog). Realigning here
+    // would make that check pass with nothing verified. DISABLE + homing, or a validated ENABLE on
+    // agreeing frames, are the ways out (post-fault contract).
+    if (!pid_fault[axis])
+        tmc4361A_write_encoder(&tmc4361[axis], tmc4361A_currentPosition(&tmc4361[axis]));
 
     // Closed-loop correction velocity ceiling (PID_DV_CLIP): the host's
     // SET_PID_LIMITS value if it has sent one, else the axis's max velocity as
@@ -226,13 +231,16 @@ void callback_enable_stage_pid()
       closed loop: from that write on the controller drives the motor
       continuously to null the encoder error, with no further command from the
       host. On an axis the probe could not identify, the current scaling — and
-      therefore the torque — is unknown, so this is gated exactly like a move.
+      therefore the torque — is unknown, so this is gated on driver presence like
+      a move (axis_driver_present) - but NOT on a latched closed-loop fault: ENABLE
+      is the recovery path and validates the frames itself below.
 
       It reports the rejection rather than dropping it silently: ENABLE_STAGE_PID
       is a host command, so the host is owed an answer. That is the same split
       the rest of the branch makes — host commands report through
-      axis_driver_ready, the joystick and focus-wheel paths in operations.cpp
-      reject silently because there is no command to attribute a failure to.
+      axis_driver_present / axis_driver_ready, the joystick and focus-wheel paths
+      in operations.cpp reject silently because there is no command to attribute
+      a failure to.
 
       Note this also gates the PID_BPG0 re-enables in finalize_homing_* : they
       fire only when stage_PID_enabled[axis] is set, and this is the only writer

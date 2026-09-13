@@ -533,7 +533,8 @@ class ZMotionSelfTest:
         # return move is needed, the run must not hand the operator a Z that refuses to move: the
         # fault is acknowledged with a deliberate, logged DISABLE (open-loop recovery, position
         # unverified until homed), and the loop stays off (_restore_loop).
-        if not self.loop_configured or not self._enc()["pid_fault"]:
+        # byte 18's fault bit is in every packet; the ENC_FLAG copy exists only while reporting is on
+        if not self.loop_configured or AXIS.Z not in self.mcu.pid_fault_axes():
             return
         self._loop_faulted = True
         self.log(

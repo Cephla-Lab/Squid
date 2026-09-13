@@ -3,7 +3,7 @@
 import pytest
 
 import squid.config
-from control._def import PID_FAULT_CAUSE
+from control._def import AXIS, PID_FAULT_CAUSE
 from squid.config import AxisConfig, DirectionSign, PIDConfig
 from squid.motion_selftest import ZMotionSelfTest
 
@@ -114,6 +114,10 @@ class FakeMcu:
         self.pid_enabled = False
         self.pid_fault = False  # DISABLE acknowledges a latched fault
         self.fault_cause = PID_FAULT_CAUSE.NONE
+
+    def pid_fault_axes(self):
+        # byte 18 of every packet, in both layouts
+        return {AXIS.Z} if self.pid_fault else set()
 
     def pid_fault_cause(self, axis):
         # Only on the wire while reporting is off; NONE otherwise, as on the real host.

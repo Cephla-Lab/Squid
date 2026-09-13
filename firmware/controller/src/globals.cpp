@@ -95,6 +95,7 @@ int W_direction;
 int W2_direction;
 
 int32_t focusPosition = 0;
+bool focus_wheel_pending = false;
 
 long target_position;
 

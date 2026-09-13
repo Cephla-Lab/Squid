@@ -50,7 +50,7 @@ int32_t tmc4361A_currentPosition(TMC4361ATypeDef *tmc4361A);
 int32_t tmc4361A_targetPosition(TMC4361ATypeDef *tmc4361A);
 int8_t tmc4361A_setCurrentPosition(TMC4361ATypeDef *tmc4361A, int32_t position);
 void tmc4361A_stop(TMC4361ATypeDef *tmc4361A);
-void tmc4361A_stop_here(TMC4361ATypeDef *tmc4361A);   // XTARGET = XACTUAL, out of velocity mode, no range check
+int32_t tmc4361A_stop_here(TMC4361ATypeDef *tmc4361A);   // XTARGET = XACTUAL, out of velocity mode, no range check; returns the target written
 bool tmc4361A_isRunning(TMC4361ATypeDef *tmc4361A, bool pid_enable);
 int32_t tmc4361A_xmmToMicrosteps(TMC4361ATypeDef *tmc4361A, float mm);
 float   tmc4361A_xmicrostepsTomm(TMC4361ATypeDef *tmc4361A, int32_t microsteps);

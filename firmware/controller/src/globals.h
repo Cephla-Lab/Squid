@@ -36,7 +36,8 @@ extern PID_ARGUMENTS axes_pid_arg[TOTAL_AXES];
 extern uint8_t encoder_report_axis;             // INTERNAL axis index being reported, 0xFF = off
 extern uint8_t encoder_report_mode;             // ENCODER_REPORT_*
 extern bool encoder_configured[TOTAL_AXES];     // CONFIGURE_STAGE_PID has initialised the encoder since the last chip reset
-extern bool pid_fault[TOTAL_AXES];              // deviation watchdog disabled the loop; cleared by ENABLE_STAGE_PID / RESET
+extern bool pid_fault[TOTAL_AXES];              // a closed-loop fault is latched (pid_trip_fault): stage-axis motion refused; cleared by DISABLE_STAGE_PID, a validated ENABLE_STAGE_PID, RESET, INITIALIZE, INITFILTERWHEEL
+extern bool focus_wheel_pending;                // a focus-wheel input changed focusPosition and no ramp has been issued for it yet (do_focus_control)
 extern uint8_t pid_fault_cause[TOTAL_AXES];      // PID_FAULT_* (constants_protocol.h): why; status bytes 19-21 while reporting is off
 extern PidClamp pid_clamp[TOTAL_AXES];           // correction clamp: host override + the last value written to PID_DV_CLIP, in pps (pid_clamp.h)
 extern int32_t pid_max_dev_usteps[TOTAL_AXES];  // watchdog limit in usteps; 0 = unset (default applied at configure)

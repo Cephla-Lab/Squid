@@ -374,20 +374,56 @@ static void assert_guard_precedes_motion(const char *source, const char *file_la
     TEST_ASSERT_TRUE_MESSAGE(g < m, msg);
 }
 
+/* Body of the function that starts at `sig` in `src`, or NULL. Bounded by the first "\n}\n". */
+static const char *function_body(const char *src, const char *sig, const char **end_out)
+{
+    const char *fn = strstr(src, sig);
+    if (fn == NULL) return NULL;
+    const char *end = strstr(fn, "\n}\n");
+    if (end == NULL) return NULL;
+    *end_out = end;
+    return fn;
+}
+
+/* `guard` must appear inside the body starting at `sig` and before `motion` inside the same body. */
+static void assert_in_body_before(const char *src, const char *file, const char *sig, const char *guard, const char *motion)
+{
+    const char *end = NULL;
+    const char *fn = function_body(src, sig, &end);
+    char msg[256];
+    snprintf(msg, sizeof msg, "%s: %s not found or unbounded", file, sig);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fn, msg);
+    const char *g = strstr(fn, guard);
+    const char *m = strstr(fn, motion);
+    snprintf(msg, sizeof msg, "%s: %s must contain %s before %s", file, sig, guard, motion);
+    TEST_ASSERT_TRUE_MESSAGE(g != NULL && g < end && m != NULL && m < end && g < m, msg);
+}
+
 void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
 {
-    /* Post-fault contract: the joystick (X, Y) and the focus wheel (Z) in operations.cpp
-       must test pid_fault before issuing motion, once each. */
+    /* Post-fault contract: inside check_joystick() the X and Y velocity writes are gated on
+       pid_fault; inside do_focus_control() a latched Z fault returns before anything, and a
+       ramp is issued only for a wheel input (focus_wheel_pending); inside pid_trip_fault() the
+       ramp is stopped and the wheel's target follows, with nothing pending; inside
+       onJoystickPacketReceived() wheel travel is dropped while Z is faulted; and inside
+       callback_configure_stage_pid() the frames are realigned only with no fault latched. */
     const char *src = load_source("src/operations.cpp");
     TEST_ASSERT_NOT_NULL(src);
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "!pid_fault[x] &&"), "joystick X not gated on pid_fault");
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "!pid_fault[y] &&"), "joystick Y not gated on pid_fault");
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "!pid_fault[z] &&"), "focus wheel not gated on pid_fault");
-    /* and the fault path itself stops the ramp and retargets the focus wheel */
-    const char *fn = strstr(src, "static void pid_trip_fault(uint8_t axis, uint8_t cause)");
-    TEST_ASSERT_NOT_NULL(fn);
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(fn, "tmc4361A_stop_here(&tmc4361[axis]);"), "pid_trip_fault must stop the ramp");
-    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(fn, "focusPosition = tmc4361A_currentPosition(&tmc4361[z]);"), "pid_trip_fault must retarget the focus wheel");
+    assert_in_body_before(src, "operations.cpp", "void check_joystick()", "!pid_fault[x] &&", "tmc4361A_setSpeed( &tmc4361[x]");
+    assert_in_body_before(src, "operations.cpp", "void check_joystick()", "!pid_fault[y] &&", "tmc4361A_setSpeed( &tmc4361[y]");
+    assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "if (pid_fault[z]) return;", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
+    assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "focus_wheel_pending &&", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
+    assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "tmc4361A_stop_here(&tmc4361[axis])", "fail_commanded_move(axis);");
+    assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "focusPosition = here;", "fail_commanded_move(axis);");
+    assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "focus_wheel_pending = false;", "fail_commanded_move(axis);");
+
+    const char *fsrc = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL(fsrc);
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!pid_fault[z] &&", "focusPosition = focusPosition +");
+
+    const char *csrc = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(csrc);
+    assert_in_body_before(csrc, "commands.cpp", "void callback_configure_stage_pid()", "if (!pid_fault[axis])", "tmc4361A_write_encoder(&tmc4361[axis], tmc4361A_currentPosition(&tmc4361[axis]));");
 }
 
 void test_stage_commands_guards_every_move_entry_point(void)
