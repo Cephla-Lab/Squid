@@ -283,23 +283,38 @@ class ZTuner:
         """Called during waits: aborts (loop off) on fault flag, excess error, or leaving the window."""
         st = self.mcu.get_encoder_state()
         d = self.current_depth()
-        if st["pid_fault"]:
+        # ENC_FLAG.PID_FAULT is only in the reporting-on layout of the packet; byte 18's fault bits
+        # arrive in every packet, so a fault latched while reporting is off is still seen here.
+        if st["pid_fault"] or AXIS.Z in self.mcu.pid_fault_axes():
             # before loop_off(): DISABLE acknowledges the fault, and the cause goes with it
             cause = self._read_z_fault_cause()
             self.loop_off()
             raise RuntimeError(
                 f"firmware opened the loop (PID_FAULT): {self._cause_text(cause) or 'cause not reported'}"
             )
-        dev = self._dev32_usteps(st)
-        if st["pid_enabled"] and abs(dev) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
-            # only while the firmware reports the loop ENGAGED: while it is held open (home zone, homing,
-            # or the gap above home on a stage whose actuator homes below its stop) the deviation is
-            # expected to be large and means nothing
-            self.loop_off()
-            raise RuntimeError(
-                f"host guard: loop error {dev} usteps ({dev / USTEPS_PER_MM * 1000:+.1f} um) exceeded "
-                f"{self.a.max_dev_um} um"
-            )
+        if st["dev32"] is None:
+            # No encoder reading in this packet: reporting is off (a script moving before it turned
+            # reporting on - the 2026-09-12 bench run died here with int(None) instead of guarding).
+            # The loop-error leg is blind. Open loop there is no loop error to watch and the depth
+            # check below still applies; with the loop engaged this guard IS the envelope the tool
+            # runs under, so it refuses to run blind rather than pretend.
+            if self.loop_on:
+                self.loop_off()
+                raise RuntimeError(
+                    "host guard: encoder reporting is off while the loop is engaged, so the loop error "
+                    "cannot be watched; turn reporting on (configure_encoder) before engaging"
+                )
+        else:
+            dev = self._dev32_usteps(st)
+            if st["pid_enabled"] and abs(dev) > self.a.max_dev_um * USTEPS_PER_MM / 1000.0:
+                # only while the firmware reports the loop ENGAGED: while it is held open (home zone,
+                # homing, or the gap above home on a stage whose actuator homes below its stop) the
+                # deviation is expected to be large and means nothing
+                self.loop_off()
+                raise RuntimeError(
+                    f"host guard: loop error {dev} usteps ({dev / USTEPS_PER_MM * 1000:+.1f} um) exceeded "
+                    f"{self.a.max_dev_um} um"
+                )
         # Anything between the top switch (depth 0, where homing leaves us) and a little past the
         # working window is legitimate transit; only going deeper than the window, or above home,
         # is an anomaly. The bottom of travel is the stall the operator called non-recoverable.
