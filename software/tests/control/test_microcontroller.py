@@ -559,9 +559,9 @@ def _fault_cause_packet(crc_calculator, fault_bits=0, x_cause=0, y_cause=0, z_ca
 def test_enc_flag_fields_are_not_decoded_from_the_cause_layout():
     """Byte 19 is only ENC_FLAG bits while bit 0 (REPORTING) is set.
 
-    With reporting off the firmware packs X's fault cause into bits 1-3 and Y's into bits 4-6 of
-    that same byte, so decoding it as flags regardless makes an X cause of 2 (NO_PROGRESS) read
-    back as pid_fault, a cause of 1 as pid_enabled, 4 as pid_zone_hold, and any Y cause as a
+    With reporting off the firmware packs X's fault cause into bits 1-4 of that same byte (Y and
+    Z into byte 20), so decoding it as flags regardless makes an X cause of 2 (NO_PROGRESS) read
+    back as pid_fault, a cause of 1 as pid_enabled, 4 as pid_zone_hold, and 8 (STOP_SWITCH) as a
     reported axis. get_encoder_state() has to report no loop state at all in that layout.
     """
     from crc import CrcCalculator, Crc8
@@ -593,7 +593,7 @@ def test_enc_flag_fields_are_not_decoded_from_the_cause_layout():
             _fault_cause_packet(
                 crc_calculator,
                 fault_bits=1 << control._def.BIT_POS_PID_FAULT_Y,
-                y_cause=control._def.PID_FAULT_CAUSE.REENGAGE_REFUSED,  # 5 << 4 = axis 5 (AXIS.W)
+                y_cause=control._def.PID_FAULT_CAUSE.REENGAGE_REFUSED,  # byte 20 bits 0-3: not byte 19 at all
             ),
         )
         assert micro.get_encoder_state()["axis"] == 0

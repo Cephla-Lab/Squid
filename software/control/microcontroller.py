@@ -717,8 +717,8 @@ class Microcontroller:
         # Latched closed-loop faults, byte 18 bits 4-6 as a 3-bit mask (bit 0 = X, 1 = Y, 2 = Z).
         # Kept so each new fault is logged once instead of on every packet.
         self.pid_fault_mask = 0
-        # Why each stage axis's loop faulted (PID_FAULT_CAUSE), from the three bits per axis packed
-        # into status bytes 19-20 (X: byte 19 bits 1-3, Y: byte 19 bits 4-6, Z: byte 20 bits 0-2;
+        # Why each stage axis's loop faulted (PID_FAULT_CAUSE), from the four bits per axis packed
+        # into status bytes 19-20 (X: byte 19 bits 1-4, Y: byte 20 bits 0-3, Z: byte 20 bits 4-7;
         # byte 21 unused). Those bits are only there while encoder reporting is off, so byte 18's
         # fault bits - which arrive in both layouts - are what retires a cause. See pid_fault_cause().
         self.pid_fault_causes = {
@@ -1487,8 +1487,8 @@ class Microcontroller:
     def pid_fault_cause(self, axis) -> int:
         """Why `axis`'s closed loop faulted, as a PID_FAULT_CAUSE (firmware >= 1.6).
 
-        The firmware only puts the causes on the wire while encoder reporting is OFF, three bits per
-        axis packed into bytes 19-20 (X: byte 19 bits 1-3, Y: byte 19 bits 4-6, Z: byte 20 bits 0-2;
+        The firmware only puts the causes on the wire while encoder reporting is OFF, four bits per
+        axis packed into bytes 19-20 (X: byte 19 bits 1-4, Y: byte 20 bits 0-3, Z: byte 20 bits 4-7;
         byte 21 unused, and byte 19 bit 0 left clear so the layout is distinguishable from the
         ENC_FLAG one). With reporting on those bytes carry the reported axis's flags and clipped
         deviation instead, so this returns the last value seen with reporting off - and NONE once
