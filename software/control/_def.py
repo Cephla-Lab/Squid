@@ -204,6 +204,8 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    SET_ILLUMINATION_LED_MATRIX_PIXEL = 45  # Set one LED in the user framebuffer [index,g,r,b]
+    CLEAR_ILLUMINATION_LED_MATRIX = 46  # Zero the user framebuffer (no show)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -278,6 +280,7 @@ class ILLUMINATION_CODE:
     ILLUMINATION_SOURCE_LED_ARRAY_RIGHT_DOT = 6
     ILLUMINATION_SOURCE_LED_ARRAY_TOP_HALF = 7
     ILLUMINATION_SOURCE_LED_ARRAY_BOTTOM_HALF = 8
+    ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE = 10  # host-painted per-pixel framebuffer
     ILLUMINATION_SOURCE_LED_EXTERNAL_FET = 20
 
     # Illumination Control TTL Ports - port-based names (preferred)

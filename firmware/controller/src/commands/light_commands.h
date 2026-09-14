@@ -7,6 +7,8 @@ void callback_turn_on_illumination();
 void callback_turn_off_illumination();
 void callback_set_illumination();
 void callback_set_illumination_led_matrix();
+void callback_set_illumination_led_matrix_pixel();
+void callback_clear_illumination_led_matrix();
 void callback_set_illumination_intensity_factor();
 
 // Multi-port illumination commands (firmware v1.0+)
