@@ -32,22 +32,21 @@ def cleanup_stub_acquisition_dirs() -> None:
     """Delete every registered acquisition output dir.
 
     A dir that cannot be deleted (e.g. a writer still holds a file open) stays
-    registered so the next teardown and the session-finish sweep retry it, and the
-    failure surfaces as a pytest warning instead of being swallowed - each leaked
-    tree is ~180 MB.
+    registered so the next teardown retries it, and the failure surfaces as a
+    pytest warning instead of being swallowed.
     """
-    for base_path in list(_acquisition_output_dirs):
+    kept: list[str] = []
+    for base_path in _acquisition_output_dirs:
         try:
             shutil.rmtree(base_path)
         except OSError as e:
-            if os.path.exists(base_path):
+            if os.path.exists(base_path):  # not merely already gone: keep it for a later retry
                 warnings.warn(
-                    f"Could not delete simulated-acquisition output {base_path} ({e}); kept registered for a later retry",
+                    f"Could not delete simulated-acquisition output {base_path} ({e}); kept registered for retry",
                     RuntimeWarning,
                 )
-                continue
-            # Already gone (e.g. the test removed it itself): nothing left to retry.
-        _acquisition_output_dirs.remove(base_path)
+                kept.append(base_path)
+    _acquisition_output_dirs[:] = kept
 
 
 def get_test_live_controller(microscope: Microscope, starting_objective) -> LiveController:

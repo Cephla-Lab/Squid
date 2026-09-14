@@ -23,7 +23,7 @@ import control.microcontroller
 import control.microscope
 from control.core.multi_point_controller import MultiPointController
 
-import tests.control.test_stubs
+from tests.control.test_stubs import cleanup_stub_acquisition_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,6 @@ def pytest_sessionfinish(session, exitstatus):
     session.config._squid_exitstatus = int(exitstatus)
     # Nothing reads the watchdog cleanup breadcrumbs after the session.
     shutil.rmtree(_CLEANUP_STATE_DIR, ignore_errors=True)
-    # Retry any simulated-acquisition output the last test's teardown could not delete.
-    tests.control.test_stubs.cleanup_stub_acquisition_dirs()
 
 
 def pytest_unconfigure(config):
@@ -128,7 +126,5 @@ def cleanup_leaked_hardware(monkeypatch):
         if not micro.terminate_reading_received_packet_thread:
             _close_quietly(micro, "Microcontroller")
 
-    # Last, after every writer above is closed: delete the simulated-acquisition
-    # output this test produced (~180 MB per acquisition; it used to accumulate
-    # in /tmp across runs until the disk filled).
-    tests.control.test_stubs.cleanup_stub_acquisition_dirs()
+    # Last, after every writer above is closed: delete this test's simulated-acquisition output.
+    cleanup_stub_acquisition_dirs()
