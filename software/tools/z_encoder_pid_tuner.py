@@ -193,6 +193,10 @@ class ZTuner:
         # PID_FAULT_CAUSE read at the last fault, so an abort raised deep in a polling loop still
         # carries the reason back out to whatever is recording the run.
         self.last_fault_cause = PID_FAULT_CAUSE.NONE
+        # Sticky: set the first time this tool sees a Z fault OR a command the controller aborted
+        # (every sighting reads the cause, so _read_z_fault_cause sets it; an abort whose cause reads
+        # NONE counts too - conservative). loop_off() then never DISABLEs, whatever a later packet shows.
+        self.fault_observed = False
         self.last_cmd_to_ack_s = float("nan")
         # Everything about the last move that is only true AT its acknowledgment: the packet the
         # controller completed it with, the usteps that move commanded, and whether the packet could
@@ -265,17 +269,32 @@ class ZTuner:
         if self.mcu is None:
             return
         self.loop_on = False
-        # The fault bits come from the last status packet, and the packet a host-side abort acted on was
-        # emitted before the firmware's own check in that pass (send_position_update runs ahead of
-        # check_closed_loop): a watchdog trip on the deviation the host just saw is up to one packet
-        # behind it. Two packet periods, so the bits below are from a packet emitted after the decision.
-        time.sleep(0.025)
+        if self.fault_observed:
+            self.log(f"Z fault seen earlier in this run: not sending DISABLE_STAGE_PID - {self.EXPLICIT_RECOVERY}")
+            return
+        # The fault bits come from the last status packet, and the packet a host-side abort acted on
+        # was emitted before the firmware's own check in that pass (send_position_update runs ahead
+        # of check_closed_loop): a watchdog trip on the deviation the host just saw is up to one packet
+        # behind it. So wait for a packet that arrived after this decision - two of the 10 ms periods
+        # after entry (a margin: the reader stamps the arrival before it decodes the fault bits, so
+        # the stamp and the bits are not atomic; 20 ms covers a late USB delivery plus that decode
+        # window, it does not make them one) - and treat anything short of that (no packet,
+        # unreadable bits) as UNKNOWN, which keeps the latch: a DISABLE sent on an unknown state
+        # could be the acknowledgment of a real fault, and a missed DISABLE costs nothing (a
+        # relaunch's RESET opens the loop anyway).
         try:
+            t_entry = time.time()
+            deadline = t_entry + 0.3
+            while self.mcu._last_successful_read_time < t_entry + 0.02:
+                if time.time() > deadline:
+                    raise RuntimeError("no status packet newer than the decision within 300 ms")
+                time.sleep(0.005)
             latched = AXIS.Z in self.mcu.pid_fault_axes()
         except Exception as e:  # noqa: BLE001
-            self.log(f"could not read the fault bits before DISABLE: {e}")
-            latched = False
+            self.log(f"fault status unknown ({e}): not sending DISABLE_STAGE_PID - {self.EXPLICIT_RECOVERY}")
+            return
         if latched:
+            self.fault_observed = True
             self.log(f"Z fault latched: not sending DISABLE_STAGE_PID - {self.EXPLICIT_RECOVERY}")
             return
         try:
@@ -289,7 +308,7 @@ class ZTuner:
         if self.mcu is None:
             return
         steps = [
-            ("loop off", self.loop_off),
+            ("loop off (or latch kept: see the log)", self.loop_off),
             ("reporting off", lambda: (self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF), self.wait(5))),
             ("velocity restored", self.restore_velocity),
             ("sampler stopped", lambda: self.sampler.stop() if self.sampler else None),
@@ -1346,6 +1365,7 @@ class ZTuner:
         fault is latched the firmware refuses moves on Z. Best effort - a failure here must not replace
         the fault as the reported problem.
         """
+        self.fault_observed = True  # every caller is here because it saw a fault or an aborted command; sticky
         try:
             self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF)
             self.wait(5)

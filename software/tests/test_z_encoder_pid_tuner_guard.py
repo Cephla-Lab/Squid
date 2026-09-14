@@ -43,9 +43,17 @@ class FakeMcu:
         self.state = dict(state)
         self.fault_axes = set(fault_axes)
         self.z_pos = 0
+        self.packets_stopped_at = None  # when set, no status packet is newer than this
         self._cmd_id = 0  # the id send_command took last; the tool matches captures/snapshots against it
         self.pid_off_calls = 0
         self.calls = []
+
+    @property
+    def _last_successful_read_time(self):
+        # like Microcontroller: the arrival time of the last status packet; the stream runs every 10 ms
+        import time as _time
+
+        return _time.time() if self.packets_stopped_at is None else self.packets_stopped_at
 
     def get_encoder_state(self):
         return dict(self.state)
@@ -141,6 +149,46 @@ def test_loop_off_waits_for_a_fresh_packet_before_trusting_the_fault_bits(tuner_
     t = make_tuner(tuner_mod, tmp_path, mcu, loop_on=True)
     t.loop_off()
     assert mcu.pid_off_calls == 0, "the DISABLE would have arrived after the trip and erased the fault"
+
+
+class StatusUnavailableMcu(FakeMcu):
+    def pid_fault_axes(self):
+        raise RuntimeError("serial read failed")
+
+
+def test_loop_off_with_unreadable_fault_status_keeps_the_latch(tuner_mod, tmp_path):
+    # unknown is not "no fault": a DISABLE on an unknown state could be the acknowledgment of a real one
+    mcu = StatusUnavailableMcu(BLIND)
+    t = make_tuner(tuner_mod, tmp_path, mcu, loop_on=True)
+    t.loop_off()
+    assert mcu.pid_off_calls == 0
+    assert t.loop_on is False
+
+
+def test_loop_off_without_a_fresh_packet_keeps_the_latch(tuner_mod, tmp_path):
+    # the stream stopped (USB stalled, reader thread down): the cached bits prove nothing about now
+    import time as _time
+
+    mcu = FakeMcu(BLIND)
+    mcu.packets_stopped_at = _time.time() - 1.0
+    t = make_tuner(tuner_mod, tmp_path, mcu, loop_on=True)
+    t.loop_off()
+    assert mcu.pid_off_calls == 0
+
+
+def test_a_fault_once_observed_is_never_disabled_even_if_a_later_packet_shows_it_clear(tuner_mod, tmp_path):
+    # the tool saw the fault (and read its cause); a later packet without the bit - stale, or another
+    # client's acknowledgment - must not turn the cleanup into a DISABLE
+    mcu = FakeMcu(BLIND, fault_axes={tuner_mod.AXIS.Z})
+    t = make_tuner(tuner_mod, tmp_path, mcu, loop_on=True)
+    with pytest.raises(RuntimeError, match="PID_FAULT"):
+        t.guard()
+    assert t.fault_observed is True
+    mcu.fault_axes.clear()
+    t.loop_on = True
+    t.loop_off()
+    t.shutdown()
+    assert mcu.pid_off_calls == 0
 
 
 def test_loop_off_disables_when_no_fault_is_latched(tuner_mod, tmp_path):
