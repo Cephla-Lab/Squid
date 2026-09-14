@@ -12,6 +12,7 @@ finalization).
 
 import logging
 import os
+import shutil
 import sys
 import tempfile
 from unittest.mock import patch
@@ -21,6 +22,8 @@ import pytest
 import control.microcontroller
 import control.microscope
 from control.core.multi_point_controller import MultiPointController
+
+from tests.control.test_stubs import cleanup_stub_acquisition_dirs
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,8 @@ _CLEANUP_STATE_DIR = os.path.join(tempfile.gettempdir(), f"squid-test-watchdog-c
 
 def pytest_sessionfinish(session, exitstatus):
     session.config._squid_exitstatus = int(exitstatus)
+    # Nothing reads the watchdog cleanup breadcrumbs after the session.
+    shutil.rmtree(_CLEANUP_STATE_DIR, ignore_errors=True)
 
 
 def pytest_unconfigure(config):
@@ -120,3 +125,6 @@ def cleanup_leaked_hardware(monkeypatch):
     for micro in reversed(microcontrollers):
         if not micro.terminate_reading_received_packet_thread:
             _close_quietly(micro, "Microcontroller")
+
+    # Last, after every writer above is closed: delete this test's simulated-acquisition output.
+    cleanup_stub_acquisition_dirs()
