@@ -308,7 +308,10 @@ class LiveController(QObject):
             else:
                 micro: Microcontroller = self.microscope.low_level_drivers.microcontroller
                 name = self.currentConfiguration.name
-                if illumination_source == ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE and self.led_matrix_ring_widget is not None:
+                if (
+                    illumination_source == ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE
+                    and self.led_matrix_ring_widget is not None
+                ):
                     # Programmable channel: the pattern (which LEDs, what color) is computed
                     # on the host by the LED Matrix panel and painted per-pixel into the
                     # controller's framebuffer; intensity comes from this channel's own

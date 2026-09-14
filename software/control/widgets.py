@@ -5489,11 +5489,17 @@ class LedMatrixRingWidget(QFrame):
     is in [inner, outer], as a full ring or a 180-deg half-ring.
     """
 
-    _COLORS = {"Green": (0.0, 1.0, 0.0), "Red": (1.0, 0.0, 0.0), "Blue": (0.0, 0.0, 1.0), "White": (1.0, 1.0, 1.0)}  # (r,g,b)
+    _COLORS = {
+        "Green": (0.0, 1.0, 0.0),
+        "Red": (1.0, 0.0, 0.0),
+        "Blue": (0.0, 0.0, 1.0),
+        "White": (1.0, 1.0, 1.0),
+    }  # (r,g,b)
 
     # Physical (x,y) grid position of each of the 128 LEDs (12-column serpentine circular
     # array), mirroring led_x/led_y in the firmware. Used to compute which LEDs fall in a
     # ring. Kept here (host) so the geometry is fully programmable without reflashing.
+    # fmt: off
     _LED_X = (
         -11, -11, -11, -11, -11, -11, -11, -11, -9, -9, -9, -9, -9, -9, -9, -9,
         -7, -7, -7, -7, -7, -7, -7, -7, -7, -7, -7, -7, -5, -5, -5, -5,
@@ -5514,6 +5520,7 @@ class LedMatrixRingWidget(QFrame):
         -5, -7, -9, -11, -11, -9, -7, -5, -3, -1, 1, 3, 5, 7, 9, 11,
         7, 5, 3, 1, -1, -3, -5, -7, -7, -5, -3, -1, 1, 3, 5, 7,
     )
+    # fmt: on
     _NUM_LEDS = 128
     # Spacing between adjacent LEDs in the coordinate grid above (one "pixel"). Adjacent
     # columns differ by 2 (e.g. x = -11, -9), so pitch = 2 coordinate units per pixel.
@@ -5533,8 +5540,8 @@ class LedMatrixRingWidget(QFrame):
         # Per-configuration ring settings, keyed by channel name. Each annulus-based imaging
         # configuration keeps its own ring; persisted to a sidecar file across restarts.
         self._settings = {}
-        self._current_name = None   # channel currently loaded into the editor controls
-        self._loading = False       # guard: suppress saves while we populate controls
+        self._current_name = None  # channel currently loaded into the editor controls
+        self._loading = False  # guard: suppress saves while we populate controls
         self._load_settings_file()
 
         grid = QGridLayout()
@@ -5547,29 +5554,39 @@ class LedMatrixRingWidget(QFrame):
 
         grid.addWidget(QLabel("Inner diameter"), 1, 0)
         self.spin_inner = QDoubleSpinBox()
-        self.spin_inner.setRange(0.0, 20.0); self.spin_inner.setSingleStep(1.0); self.spin_inner.setValue(self._DEFAULTS["inner"])
+        self.spin_inner.setRange(0.0, 20.0)
+        self.spin_inner.setSingleStep(1.0)
+        self.spin_inner.setValue(self._DEFAULTS["inner"])
         grid.addWidget(self.spin_inner, 1, 1)
 
         grid.addWidget(QLabel("Outer diameter"), 1, 2)
         self.spin_outer = QDoubleSpinBox()
-        self.spin_outer.setRange(0.0, 22.0); self.spin_outer.setSingleStep(1.0); self.spin_outer.setValue(self._DEFAULTS["outer"])
+        self.spin_outer.setRange(0.0, 22.0)
+        self.spin_outer.setSingleStep(1.0)
+        self.spin_outer.setValue(self._DEFAULTS["outer"])
         grid.addWidget(self.spin_outer, 1, 3)
 
         grid.addWidget(QLabel("Ring type"), 2, 0)
-        self.combo_type = QComboBox(); self.combo_type.addItems(["Full ring", "Half ring"])
+        self.combo_type = QComboBox()
+        self.combo_type.addItems(["Full ring", "Half ring"])
         grid.addWidget(self.combo_type, 2, 1)
         grid.addWidget(QLabel("Direction (0–7)"), 2, 2)
-        self.spin_dir = QSpinBox(); self.spin_dir.setRange(0, 7); self.spin_dir.setValue(0)
+        self.spin_dir = QSpinBox()
+        self.spin_dir.setRange(0, 7)
+        self.spin_dir.setValue(0)
         self.spin_dir.setEnabled(False)
         grid.addWidget(self.spin_dir, 2, 3)
 
         grid.addWidget(QLabel("Color"), 3, 0)
-        self.combo_color = QComboBox(); self.combo_color.addItems(list(self._COLORS.keys()))
+        self.combo_color = QComboBox()
+        self.combo_color.addItems(list(self._COLORS.keys()))
         grid.addWidget(self.combo_color, 3, 1)
 
         self.setLayout(grid)
 
-        self.combo_type.currentIndexChanged.connect(lambda _: self.spin_dir.setEnabled(self.combo_type.currentText() == "Half ring"))
+        self.combo_type.currentIndexChanged.connect(
+            lambda _: self.spin_dir.setEnabled(self.combo_type.currentText() == "Half ring")
+        )
         # Keep inner <= outer: cap inner at the outer value and floor outer at the inner value.
         self.spin_inner.valueChanged.connect(self._apply_diameter_coupling)
         self.spin_outer.valueChanged.connect(self._apply_diameter_coupling)
@@ -5610,8 +5627,8 @@ class LedMatrixRingWidget(QFrame):
         r = r_w * intensity_frac * LED_MATRIX_R_FACTOR
         g = g_w * intensity_frac * LED_MATRIX_G_FACTOR
         b = b_w * intensity_frac * LED_MATRIX_B_FACTOR
-        inner_d = float(s["inner"])   # inner ring diameter, in pixels
-        outer_d = float(s["outer"])   # outer ring diameter, in pixels
+        inner_d = float(s["inner"])  # inner ring diameter, in pixels
+        outer_d = float(s["outer"])  # outer ring diameter, in pixels
         full = s["type"] == "Full ring"
         th = 0.0 if full else int(s["dir"]) * (math.pi / 4.0)
         c, s_ = math.cos(th), math.sin(th)
@@ -5636,7 +5653,9 @@ class LedMatrixRingWidget(QFrame):
             ill = lc._get_illumination_config()
             objective = lc.microscope.objective_store.current_objective
             programmable = ILLUMINATION_CODE.ILLUMINATION_SOURCE_LED_ARRAY_PROGRAMMABLE
-            return [ch.name for ch in lc.get_channels(objective) if ch.get_illumination_source_code(ill) == programmable]
+            return [
+                ch.name for ch in lc.get_channels(objective) if ch.get_illumination_source_code(ill) == programmable
+            ]
         except Exception:
             return []
 
@@ -5731,9 +5750,7 @@ class LedMatrixRingWidget(QFrame):
             with open(self._SETTINGS_PATH, "r") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                self._settings = {
-                    k: {**self._DEFAULTS, **v} for k, v in data.items() if isinstance(v, dict)
-                }
+                self._settings = {k: {**self._DEFAULTS, **v} for k, v in data.items() if isinstance(v, dict)}
         except Exception:
             self._settings = {}
 
