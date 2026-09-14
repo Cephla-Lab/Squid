@@ -35,6 +35,7 @@ Usage (from software/, with the project venv):
   python tools/z_encoder_pid_tuner.py sweep --p-list 1024 2048 4096 8192 16384 --d 1
   python tools/z_encoder_pid_tuner.py zonemap                # open-loop ENC_POS vs XACTUAL from 2 mm down to home and back
   python tools/z_encoder_pid_tuner.py ackprobe --ack-steps-um 1 10 100 --ack-reps 20 --exposure-ms 100
+  python tools/z_encoder_pid_tuner.py enableprobe --enable-reps 3 --rest-s 1 --enable-watch-ms 1000
 
 ackprobe answers the question an acquisition asks - "may the camera start now?" - rather than the one an ack
 answers - "did the controller reply?". For every size in --ack-steps-um it reads the encoder error and the loop
@@ -46,7 +47,12 @@ int16 ENC_POS_DEV the firmware reports, which saturates at +-192 um on a 256 ust
 controller through the 10 ms status stream: behaviour faster than that is not resolvable from here.
 If the firmware opens the loop during a ladder, that move is the result: it is written to the CSV with its
 fault cause before the ladder stops. The cause is only on the wire while encoder reporting is off, so it is
-read by dropping reporting for ~30 ms - and before any DISABLE, which clears it along with the fault.
+read by dropping reporting for ~30 ms. The latch itself is left in place: the tool never DISABLEs a latched
+fault (not in an abort, not in its cleanup) - recovery is a relaunch or the operator's deliberate DISABLE.
+
+enableprobe is the explicit ENABLE from rest the same question applies to: after --rest-s with the loop off
+it enables, watches the error for --enable-watch-ms from the host, then measures one closed-loop step the way
+ackprobe does (whose re-engage after the ramp is the automatic counterpart) and DISABLEs before the next rest.
 
 Common options: --depth-mm 2.5 (extension from home) --step-um 100 --vmax 1.0 --corr-vmax 0.3 --max-dev-um 200
                 --zone-um 0 (home exclusion zone sent to firmware) --out z_tune
@@ -244,15 +250,39 @@ class ZTuner:
         except Exception as e:  # noqa: BLE001
             self.log(f"could not restore Z velocity: {e}")
 
+    # What an operator does after a latched fault; nothing in this tool does it for them.
+    EXPLICIT_RECOVERY = "explicit recovery: relaunch (RESET + INITIALIZE + homing) or a deliberate DISABLE_STAGE_PID"
+
     def loop_off(self):
+        """The tool's own loop-off: every abort and the cleanup go through here.
+
+        DISABLE_STAGE_PID acknowledges a latched fault - it clears the fault bit and the cause with
+        it - so while one is latched nothing is sent: the firmware has already opened the loop, the
+        latch is the evidence a failed run leaves behind, and clearing it is the operator's call
+        (EXPLICIT_RECOVERY). Byte 18's fault bits arrive in every packet, so this is seen whether or
+        not encoder reporting is on.
+        """
         if self.mcu is None:
+            return
+        self.loop_on = False
+        # The fault bits come from the last status packet, and the packet a host-side abort acted on was
+        # emitted before the firmware's own check in that pass (send_position_update runs ahead of
+        # check_closed_loop): a watchdog trip on the deviation the host just saw is up to one packet
+        # behind it. Two packet periods, so the bits below are from a packet emitted after the decision.
+        time.sleep(0.025)
+        try:
+            latched = AXIS.Z in self.mcu.pid_fault_axes()
+        except Exception as e:  # noqa: BLE001
+            self.log(f"could not read the fault bits before DISABLE: {e}")
+            latched = False
+        if latched:
+            self.log(f"Z fault latched: not sending DISABLE_STAGE_PID - {self.EXPLICIT_RECOVERY}")
             return
         try:
             self.mcu.turn_off_stage_pid(AXIS.Z)
             self.wait(5)
         except Exception as e:  # noqa: BLE001
             self.log(f"turn_off_stage_pid failed: {e}")
-        self.loop_on = False
 
     def shutdown(self):
         """Every step is independent: a failure in one must not skip the ones that make the board safe."""
@@ -296,11 +326,13 @@ class ZTuner:
         # ENC_FLAG.PID_FAULT is only in the reporting-on layout of the packet; byte 18's fault bits
         # arrive in every packet, so a fault latched while reporting is off is still seen here.
         if st["pid_fault"] or AXIS.Z in self.mcu.pid_fault_axes():
-            # before loop_off(): DISABLE acknowledges the fault, and the cause goes with it
+            # the cause first: it is only on the wire until something clears the latch (loop_off()
+            # leaves it alone; a relaunch's RESET/INITIALIZE does not)
             cause = self._read_z_fault_cause()
             self.loop_off()
             raise RuntimeError(
-                f"firmware opened the loop (PID_FAULT): {self._cause_text(cause) or 'cause not reported'}"
+                f"firmware opened the loop (PID_FAULT): {self._cause_text(cause) or 'cause not reported'}; "
+                f"latch kept - {self.EXPLICIT_RECOVERY}"
             )
         if st["dev32"] is None:
             # No encoder reading in this packet: reporting is off (a script moving before it turned
@@ -1308,8 +1340,11 @@ class ZTuner:
         So drop reporting for a few status packets, read, and put it back.
 
         Must be called before anything acknowledges the fault: DISABLE_STAGE_PID and a validated
-        ENABLE_STAGE_PID clear the cause together with the fault bit (CONFIGURE_STAGE_PID no longer does),
-        so loop_off() erases the answer. While the fault is latched the firmware refuses moves on Z. Best effort - a failure here must not replace the fault as the reported problem.
+        ENABLE_STAGE_PID clear the cause together with the fault bit (CONFIGURE_STAGE_PID no longer does).
+        The tool's own loop_off() leaves a latched fault alone, so the only things that erase the answer
+        are the operator's recovery (a relaunch's RESET/INITIALIZE, a deliberate DISABLE). While the
+        fault is latched the firmware refuses moves on Z. Best effort - a failure here must not replace
+        the fault as the reported problem.
         """
         try:
             self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.OFF)
@@ -1390,7 +1425,8 @@ class ZTuner:
             if math.isnan(t_tol) and abs(d) <= tol_usteps:
                 t_tol = (time.time() - t_ack) * 1000.0
             if sn["pid_fault"]:
-                # read the cause before loop_off(): DISABLE acknowledges the fault and clears it
+                # the cause first (it is only on the wire while the latch stands); loop_off() then
+                # only records that the firmware opened the loop - it does not DISABLE a latched fault
                 cause = self._read_z_fault_cause()
                 self.loop_off()
                 abort = RuntimeError(
@@ -1403,7 +1439,7 @@ class ZTuner:
             except RuntimeError as e:
                 abort = e
                 # guard reads the state again, so it can be the one that catches a fault; it stashes
-                # the cause on the way past because its own loop_off() erases it
+                # the cause on the way past (last_fault_cause) for the row
                 cause = self.last_fault_cause
         if abort is not None:
             self.log(f"ackprobe: {abort} - keeping the row; cause: {self._cause_text(cause)}")
@@ -1429,6 +1465,187 @@ class ZTuner:
             "fault_cause_name": self._cause_text(cause),
         }
         return row, abort
+
+    # ---------------------------------------------------------------- enableprobe
+    _ENABLEPROBE_COLUMNS = [
+        "rep",
+        "rest_s",
+        "t_cmd_epoch_s",
+        "ack_ms",
+        "dev32_before_enable_usteps",
+        "dev32_before_enable_um",
+        "pid_enabled_after_ack",
+        "max_abs_dev_in_window_um",
+        "time_to_within_tolerance_ms",
+        "engaged_throughout",
+        "window_samples",
+        "faults_in_window",
+        "fault_cause",
+        "fault_cause_name",
+    ]
+
+    def _enableprobe_rep(self, rep, tol_usteps):
+        """One explicit ENABLE_STAGE_PID from rest, watched from the host: (row, abort).
+
+        The error before the enable, the ENABLE's own acknowledgment time, whether the loop shows
+        engaged after it, then every 5 ms for --enable-watch-ms: the error, when it first comes inside
+        the tolerance, and any fault. A fault is the event this action exists to record: its cause is
+        read first (only on the wire until something clears the latch), the row is filled in, and
+        `abort` carries the event out once the caller has written the row. Nothing here DISABLEs:
+        the latch stays for explicit recovery (loop_off).
+        """
+        m = self.mcu
+        st0 = m.get_encoder_state()
+        dev0 = self._dev32_usteps(st0) if st0["dev32"] is not None else float("nan")
+        self.last_fault_cause = PID_FAULT_CAUSE.NONE
+        cause = PID_FAULT_CAUSE.NONE
+        abort = None
+        t_cmd = time.time()
+        try:
+            m.turn_on_stage_pid(AXIS.Z)
+            self.wait(5)
+            ack_s = time.time() - t_cmd
+            self.loop_on = True
+        except RuntimeError as e:
+            # CMD_EXECUTION_ERROR: the firmware refused the enable (its own deviation check, or a driver
+            # it could not identify). Acknowledging the abort is host bookkeeping only - nothing is sent -
+            # so it goes first and the cause read's own commands do not trip over a pending abort. The
+            # cause stays on the wire until the latch is cleared, which nothing here does.
+            ack_s = time.time() - t_cmd
+            m.acknowledge_aborted_command()
+            cause = self._read_z_fault_cause()
+            abort = RuntimeError(f"ENABLE_STAGE_PID was not accepted: {e}; cause: {self._cause_text(cause) or 'none'}")
+        t_ack = time.time()
+        st = m.get_encoder_state()
+        d = self._dev32_usteps(st) if st["dev32"] is not None else float("nan")
+        enabled = bool(st["pid_enabled"])
+        engaged_throughout = enabled
+        faults = int(bool(st["pid_fault"]))
+        max_abs = abs(d)
+        t_tol = 0.0 if abs(d) <= tol_usteps else float("nan")
+        samples = 1
+        if abort is None and st["pid_fault"]:
+            cause = self._read_z_fault_cause()
+            abort = RuntimeError("firmware opened the loop (PID_FAULT) at the acknowledgment of ENABLE_STAGE_PID")
+        while abort is None and time.time() - t_ack < self.a.enable_watch_ms / 1000.0:
+            time.sleep(0.005)  # twice the status cadence; the stream itself is 10 ms
+            sn = m.get_encoder_state()
+            d = self._dev32_usteps(sn) if sn["dev32"] is not None else float("nan")
+            samples += 1
+            if not math.isnan(d):
+                max_abs = max(max_abs, abs(d))
+            engaged_throughout = engaged_throughout and bool(sn["pid_enabled"])
+            faults += int(bool(sn["pid_fault"]))
+            if math.isnan(t_tol) and abs(d) <= tol_usteps:
+                t_tol = (time.time() - t_ack) * 1000.0
+            if sn["pid_fault"]:
+                cause = self._read_z_fault_cause()
+                abort = RuntimeError(
+                    f"firmware opened the loop (PID_FAULT) {(time.time() - t_ack) * 1000.0:.0f} ms after "
+                    "ENABLE_STAGE_PID"
+                )
+                break
+            try:
+                self.guard()  # the same host-side abort the other actions use; the sample is recorded
+            except RuntimeError as e:
+                abort = e
+                cause = self.last_fault_cause
+        if abort is not None:
+            self.loop_on = False  # refused, or opened by the firmware; either way not closed by this tool
+            self.log(f"enableprobe: {abort} - keeping the row; cause: {self._cause_text(cause)}")
+        row = {
+            "rep": rep,
+            "rest_s": self.a.rest_s,
+            "t_cmd": t_cmd,
+            "ack_ms": ack_s * 1000.0,
+            "dev32_before_enable_usteps": dev0,
+            "dev32_before_enable_um": dev0 / USTEPS_PER_MM * 1000.0,
+            "pid_enabled_after_ack": enabled,
+            "max_abs_dev_in_window_um": max_abs / USTEPS_PER_MM * 1000.0,
+            "time_to_within_tolerance_ms": t_tol,
+            "engaged_throughout": engaged_throughout,
+            "window_samples": samples,
+            "faults_in_window": faults,
+            "fault_cause": cause,
+            "fault_cause_name": self._cause_text(cause),
+        }
+        return row, abort
+
+    def _enableprobe_report(self, rows, tol_um):
+        pre = self._ackprobe_preamble(tol_um)
+        pre.update({"rest_s": self.a.rest_s, "enable_watch_ms": self.a.enable_watch_ms})
+        path = os.path.join(self.out, "enableprobe.csv")
+        with open(path, "w", newline="") as f:
+            for k, v in pre.items():
+                f.write(f"# {k}: {v}\n")
+            w = csv.writer(f)
+            w.writerow(self._ENABLEPROBE_COLUMNS)
+            for r in rows:
+                w.writerow(
+                    [
+                        r["rep"],
+                        f"{r['rest_s']:g}",
+                        f"{r['t_cmd']:.6f}",
+                        f"{r['ack_ms']:.1f}",
+                        r["dev32_before_enable_usteps"],
+                        f"{r['dev32_before_enable_um']:.3f}",
+                        int(r["pid_enabled_after_ack"]),
+                        f"{r['max_abs_dev_in_window_um']:.3f}",
+                        f"{r['time_to_within_tolerance_ms']:.1f}",
+                        int(r["engaged_throughout"]),
+                        r["window_samples"],
+                        r["faults_in_window"],
+                        r["fault_cause"],
+                        r["fault_cause_name"],
+                    ]
+                )
+        self.summary["results"].append({"phase": "enableprobe", "preamble": pre, "rows": rows})
+        faulted = [r for r in rows if r["faults_in_window"] or r["fault_cause"]]
+        self.log(
+            f"enableprobe: {len(rows)} enables after {self.a.rest_s:g} s of rest -> {path}; "
+            f"{len(faulted)} faulted ({', '.join(r['fault_cause_name'] for r in faulted) or 'none'})"
+        )
+
+    def enableprobe(self):
+        """An explicit ENABLE_STAGE_PID from rest, --enable-reps times, against the automatic re-engage
+        after a move with the same settings.
+
+        Each rep: --rest-s at the working extension with the loop off, ENABLE (watched for
+        --enable-watch-ms, see _enableprobe_rep), then one closed-loop step of --enable-step-um measured
+        exactly as ackprobe measures it (the firmware re-engages the loop itself when that ramp stops)
+        and the return, then a deliberate DISABLE before the next rest. The enables go to
+        enableprobe.csv, the steps to ackprobe.csv. A fault ends the run with its row written and the
+        latch left in place; the bench's 2026-09-14 NO_PROGRESS at the engage is what this is for.
+        """
+        m = self.mcu
+        tol_um = self._ack_tolerance_um()
+        tol_usteps = tol_um * USTEPS_PER_MM / 1000.0
+        self.log(
+            f"enableprobe: {self.a.enable_reps} x (rest {self.a.rest_s:g} s, ENABLE watched "
+            f"{self.a.enable_watch_ms:g} ms, closed {self.a.enable_step_um:g} um step), tolerance {tol_um:.2f} um"
+        )
+        m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d)
+        self.wait()
+        rows, steps = [], []
+        try:
+            for rep in range(1, self.a.enable_reps + 1):
+                self.settle(self.a.rest_s)
+                row, abort = self._enableprobe_rep(rep, tol_usteps)
+                rows.append(row)
+                if abort is not None:
+                    raise abort
+                step, abort = self._ackprobe_step(rep, True, self.a.enable_step_um, tol_usteps)
+                steps.append(step)
+                if abort is not None:
+                    raise abort
+                self.move_to_depth(self.a.depth_mm)
+                self.settle(0.15)
+                self.loop_off()  # deliberate: no fault is latched on this path
+        finally:
+            if rows:
+                self._enableprobe_report(rows, tol_um)
+            if steps:
+                self._ackprobe_report(steps, tol_um)
 
     @staticmethod
     def _cause_text(cause):
@@ -1760,6 +1977,9 @@ class ZTuner:
             if self.a.action == "ackprobe":
                 self.ackprobe()
                 return
+            if self.a.action == "enableprobe":
+                self.enableprobe()
+                return
             if self.a.action == "hold":
                 self.hold()
                 return
@@ -1790,6 +2010,7 @@ def main():
             "residual",
             "stack",
             "ackprobe",
+            "enableprobe",
             "hold",
         ],
     )
@@ -1853,6 +2074,14 @@ def main():
         type=float,
         default=100.0,
         help="ackprobe: window sampled after each ack, standing in for an exposure",
+    )
+    ap.add_argument("--enable-reps", type=int, default=3, help="enableprobe: explicit enables from rest")
+    ap.add_argument("--rest-s", type=float, default=1.0, help="enableprobe: rest with the loop off before each enable")
+    ap.add_argument(
+        "--enable-watch-ms", type=float, default=1000.0, help="enableprobe: window sampled after the ENABLE's ack"
+    )
+    ap.add_argument(
+        "--enable-step-um", type=float, default=10.0, help="enableprobe: the closed-loop step after each enable"
     )
     ap.add_argument("--stack-n", type=int, default=20)
     ap.add_argument("--stack-um", type=float, default=1.0)
