@@ -1,5 +1,7 @@
+import os
 import shutil
 import tempfile
+import warnings
 
 from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
 from control.core.auto_focus_controller import AutoFocusController
@@ -17,7 +19,7 @@ from squid.abc import AbstractStage, AbstractCamera
 # stub controller writes into is registered here so the autouse fixture in
 # tests/conftest.py can delete it at test teardown - pointing them at a literal
 # "/tmp/" used to accumulate output across runs until the disk filled.
-_acquisition_output_dirs: list = []
+_acquisition_output_dirs: list[str] = []
 
 
 def new_acquisition_base_path() -> str:
@@ -26,9 +28,26 @@ def new_acquisition_base_path() -> str:
     return base_path
 
 
-def cleanup_stub_acquisition_dirs():
-    while _acquisition_output_dirs:
-        shutil.rmtree(_acquisition_output_dirs.pop(), ignore_errors=True)
+def cleanup_stub_acquisition_dirs() -> None:
+    """Delete every registered acquisition output dir.
+
+    A dir that cannot be deleted (e.g. a writer still holds a file open) stays
+    registered so the next teardown and the session-finish sweep retry it, and the
+    failure surfaces as a pytest warning instead of being swallowed - each leaked
+    tree is ~180 MB.
+    """
+    for base_path in list(_acquisition_output_dirs):
+        try:
+            shutil.rmtree(base_path)
+        except OSError as e:
+            if os.path.exists(base_path):
+                warnings.warn(
+                    f"Could not delete simulated-acquisition output {base_path} ({e}); kept registered for a later retry",
+                    RuntimeWarning,
+                )
+                continue
+            # Already gone (e.g. the test removed it itself): nothing left to retry.
+        _acquisition_output_dirs.remove(base_path)
 
 
 def get_test_live_controller(microscope: Microscope, starting_objective) -> LiveController:

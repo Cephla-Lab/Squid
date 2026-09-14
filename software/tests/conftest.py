@@ -38,6 +38,8 @@ def pytest_sessionfinish(session, exitstatus):
     session.config._squid_exitstatus = int(exitstatus)
     # Nothing reads the watchdog cleanup breadcrumbs after the session.
     shutil.rmtree(_CLEANUP_STATE_DIR, ignore_errors=True)
+    # Retry any simulated-acquisition output the last test's teardown could not delete.
+    tests.control.test_stubs.cleanup_stub_acquisition_dirs()
 
 
 def pytest_unconfigure(config):
