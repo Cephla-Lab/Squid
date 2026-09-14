@@ -586,8 +586,15 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
   }
   else
   {
-    focusPosition = focusPosition + (int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3])) - focuswheel_pos);
-    focuswheel_pos = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
+    int32_t wheel = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
+    // Post-fault contract: while a Z loop fault is latched the wheel's travel is dropped, not
+    // accumulated - otherwise acknowledging the fault would release it as one motion (do_focus_control).
+    if (!pid_fault[z] && wheel != focuswheel_pos)
+    {
+      focusPosition = focusPosition + (wheel - focuswheel_pos);
+      focus_wheel_pending = true;
+    }
+    focuswheel_pos = wheel;
   }
 
   joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );

@@ -21,8 +21,42 @@
 //               An axis whose driver could not be identified is left
 //               unconfigured and rejects moves. No protocol change: command
 //               codes, packet layout and the host contract are untouched
+// Version 1.6 = encoder / closed-loop interface: SET_ENCODER_REPORTING (44) streams
+//               an axis's ENC_POS and loop deviation in the otherwise unused theta
+//               and reserved bytes; SET_PID_LIMITS (45) clamps the closed-loop
+//               correction velocity and arms a deviation watchdog that disables
+//               the loop before it can run an axis away; SET_PID_ARGUMENTS now
+//               reaches the TMC4361A immediately (it used to be applied only by a
+//               later CONFIGURE_STAGE_PID); ENABLE_STAGE_PID is refused until the
+//               encoder has been configured. Off by default: packet unchanged.
+//               Also: SET_PID_HOME_ZONE (46) holds the loop open near home and
+//               makes homing open-loop; SET_RAMP_PROFILE (47) selects a
+//               trapezoidal or S-shaped ramp per axis; a status packet is sent
+//               the moment a command completes and completion is checked every
+//               1 ms (was 10 ms).
+//               SET_PID_TOLERANCE (48) sets the closed-loop deadband and the
+//               target-reached tolerance in physical units (master hard-codes
+//               25 usteps, which is 0.15 um at 256 usteps/FS but 2.3 um at 16);
+//               without it CONFIGURE_STAGE_PID now defaults both to two encoder
+//               counts at the configured resolution instead of 25 usteps.
+//               SET_COMPLETION_WINDOW (49) lets an axis report a move complete
+//               once within a set distance of the target while the ramp finishes
+//               (filter wheels: start exposing while the last degrees travel).
+//               The closed loop re-engages after a home-zone hold or a homing
+//               only once the axis is at rest, never while the ramp runs; the
+//               first engage after a homing aligns ENC_POS to XACTUAL (stages
+//               whose actuator homes below the stage's stop). The loop is
+//               rest-only: opened for every move, re-engaged when the ramp
+//               stops, COMPLETED reported after that correction settles.
+//               SET_PID_OPEN_ABOVE (50) makes that a velocity threshold: the
+//               loop stays engaged while the ramp is slower than it (focus
+//               steps), opens above it and re-engages as the ramp slows; 0 is
+//               rest-only, >= VMAX is the in-flight loop. A completion window on
+//               a closed-loop axis now also requires the encoder error inside it.
+//               RESET returns every loop setting (clamp, watchdog, zone, tolerances,
+//               completion window, loop-mode threshold) to the firmware default.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 6
 
 #include "def/def_v1.h"
 
@@ -120,9 +154,10 @@ const uint8_t DAC8050x_CONFIG_ADDR = 0x03;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 static const int TIMER_PERIOD = 500; // in us
 static const int interval_send_pos_update = 10000; // in us
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 1000;  // in us (was 10000: completion was detected up to 10 ms late)
 static const int interval_send_joystick_update = 30000; // in us
 static const int interval_check_limit = 20000; // in us
+// Bounded closed-loop correction: tunables live in pid_policy.h (header-only, shared with the native tests).
 
 /***************************************************************************************************/
 /******************************************* joystick **********************************************/
@@ -171,6 +206,22 @@ typedef void (*CommandCallback)();
 //
 // Always use this function when buffer_rx[2] (axis from command) is used for array access.
 // Returns 0xFF for invalid/unsupported axis values.
+// Inverse of protocol_axis_to_internal(): internal array index -> protocol axis id.
+// Used by the status packet's encoder-reporting flags. Returns 0xFF for an
+// index that is not a controlled axis.
+inline uint8_t internal_axis_to_protocol(uint8_t internal_axis)
+{
+    switch (internal_axis)
+    {
+        case x:  return AXIS_X;
+        case y:  return AXIS_Y;
+        case z:  return AXIS_Z;
+        case w:  return AXIS_W;
+        case w2: return AXIS_W2;
+        default: return 0xFF;
+    }
+}
+
 inline uint8_t protocol_axis_to_internal(int protocol_axis)
 {
     switch (protocol_axis)

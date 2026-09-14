@@ -72,6 +72,28 @@ class TestFirmwareConstants:
         assert cmd_ids["MOVE_X"] == 0
         assert cmd_ids["RESET"] == 255
 
+    def test_command_ids_include_the_1_6_closed_loop_commands(self):
+        """The strict simulator rejects any command not in this whitelist.
+
+        Commands 44-50 are the firmware 1.6 closed-loop setup: a missing name here makes the
+        strict simulator refuse a command the real firmware accepts, so every test that
+        configures the loop fails for the wrong reason.
+        """
+        cmd_ids = FirmwareConstants().command_ids
+
+        expected = {
+            "SET_ENCODER_REPORTING": 44,
+            "SET_PID_LIMITS": 45,
+            "SET_PID_HOME_ZONE": 46,
+            "SET_RAMP_PROFILE": 47,
+            "SET_PID_TOLERANCE": 48,
+            "SET_COMPLETION_WINDOW": 49,
+            "SET_PID_OPEN_ABOVE": 50,
+        }
+        missing = [name for name in expected if name not in cmd_ids]
+        assert not missing, f"strict simulator whitelist is missing: {missing}"
+        assert {name: cmd_ids[name] for name in expected} == expected
+
     def test_firmware_constants_match_python_def(self):
         """Verify firmware constants match Python _def.py."""
         fw = FirmwareConstants()

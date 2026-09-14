@@ -30,5 +30,10 @@ void do_focus_control();
 
 void check_position();
 void check_limits();
+void check_closed_loop();
+// Open a requested closed loop for the duration of a move (it re-engages at rest); see check_closed_loop().
+void pid_open_for_move(uint8_t axis);
+// Called by the stage move commands before the ramp starts: opens a rest-only loop (SET_PID_OPEN_ABOVE 0).
+void pid_before_move(uint8_t axis);
 
 #endif // OPERATIONS_H

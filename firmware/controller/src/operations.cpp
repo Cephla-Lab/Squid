@@ -1,6 +1,7 @@
 #include "operations.h"
 
 #include "tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "pid_policy.h"                  // pid_engage_pending, pid_completion_encoder_ok
 
 /*
   THE OPERATOR-DRIVEN MOTION PATHS ARE PART OF THE FAIL-SAFE.
@@ -99,6 +100,16 @@ void prepare_homing_z()
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
+        // Homing runs open-loop: it ends at the home stop, where the stage may
+        // stop following the actuator and the encoder error can only grow. The
+        // request survives (pid_requested) and check_closed_loop() re-engages the
+        // loop once the axis is back outside the home zone.
+        if (stage_PID_enabled[z])
+        {
+          tmc4361A_set_PID(&tmc4361[z], PID_DISABLE);
+          stage_PID_enabled[z] = 0;
+          pid_zone_hold[z] = true;
+        }
         tmc4361A_readInt(&tmc4361[z], TMC4361A_EVENTS);
         tmc4361A_setSpeed(&tmc4361[z], tmc4361A_vmmToMicrosteps( &tmc4361[z], LEFT_DIR * HOMING_VELOCITY_Z * MAX_VELOCITY_Z_mm ));
       }
@@ -109,6 +120,16 @@ void prepare_homing_z()
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
+        // Homing runs open-loop: it ends at the home stop, where the stage may
+        // stop following the actuator and the encoder error can only grow. The
+        // request survives (pid_requested) and check_closed_loop() re-engages the
+        // loop once the axis is back outside the home zone.
+        if (stage_PID_enabled[z])
+        {
+          tmc4361A_set_PID(&tmc4361[z], PID_DISABLE);
+          stage_PID_enabled[z] = 0;
+          pid_zone_hold[z] = true;
+        }
         tmc4361A_readInt(&tmc4361[z], TMC4361A_EVENTS);
         tmc4361A_setSpeed(&tmc4361[z], tmc4361A_vmmToMicrosteps( &tmc4361[z], RGHT_DIR * HOMING_VELOCITY_Z * MAX_VELOCITY_Z_mm ));
       }
@@ -350,8 +371,14 @@ void finalize_homing_x()
   if (is_homing_X && home_X_found && ( tmc4361A_currentPosition(&tmc4361[x]) == tmc4361A_targetPosition(&tmc4361[x]) || us_since_x_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[x], 0);
-    if (stage_PID_enabled[AXIS_X])
-      tmc4361A_set_PID(&tmc4361[AXIS_X], PID_BPG0);
+    // Keep the encoder frame aligned with XACTUAL: the closed loop nulls
+    // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
+    // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
+    tmc4361A_write_encoder(&tmc4361[x], 0);
+    // Internal index x, not the protocol id AXIS_X: the two orders differ
+    // (internal y=0, x=1), so the old AXIS_X subscript re-armed the wrong axis.
+    if (stage_PID_enabled[x])
+      tmc4361A_set_PID(&tmc4361[x], PID_BPG0);
     X_pos = 0;
     is_homing_X = false;
     X_commanded_movement_in_progress = false;
@@ -366,8 +393,14 @@ void finalize_homing_y()
   if (is_homing_Y && home_Y_found && ( tmc4361A_currentPosition(&tmc4361[y]) == tmc4361A_targetPosition(&tmc4361[y]) || us_since_y_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[y], 0);
-    if (stage_PID_enabled[AXIS_Y])
-      tmc4361A_set_PID(&tmc4361[AXIS_Y], PID_BPG0);
+    // Keep the encoder frame aligned with XACTUAL: the closed loop nulls
+    // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
+    // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
+    tmc4361A_write_encoder(&tmc4361[y], 0);
+    // Internal index y, not the protocol id AXIS_Y: the two orders differ
+    // (internal y=0, x=1), so the old AXIS_Y subscript re-armed the wrong axis.
+    if (stage_PID_enabled[y])
+      tmc4361A_set_PID(&tmc4361[y], PID_BPG0);
     Y_pos = 0;
     is_homing_Y = false;
     Y_commanded_movement_in_progress = false;
@@ -382,10 +415,20 @@ void finalize_homing_z()
   if (is_homing_Z && home_Z_found && ( tmc4361A_currentPosition(&tmc4361[z]) == tmc4361A_targetPosition(&tmc4361[z]) || us_since_z_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[z], 0);
-    if (stage_PID_enabled[AXIS_Z])
-      tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_BPG0);
+    // Keep the encoder frame aligned with XACTUAL: the closed loop nulls
+    // XACTUAL - ENC_POS in absolute terms, and a TMC4361A reset (INITIALIZE)
+    // zeroes ENC_POS wherever the axis happened to be. Same as the W homing path.
+    tmc4361A_write_encoder(&tmc4361[z], 0);
+    // No re-arm here (master re-armed with the wrong index anyway): the loop was
+    // opened by prepare_homing_z and check_closed_loop() re-engages it once the
+    // axis leaves the home zone with a small error - and never at the stop itself,
+    // where the encoder may not be following the actuator.
     Z_pos = 0;
     focusPosition = 0;
+    // The post-homing lift to the software floor, as shipped instruments have always had it: the
+    // next do_focus_control() pass clamps 0 to Z_NEG_LIMIT and issues that ramp (a no-op with no
+    // floor). Explicit now that the focus path issues ramps only when something is pending.
+    focus_wheel_pending = true;
     is_homing_Z = false;
     Z_commanded_movement_in_progress = false;
     Z_commanded_target_position = 0;
@@ -494,7 +537,7 @@ void check_joystick()
 	  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
 	  // an axis that is never commanded to move has nothing for the else-branch
 	  // stop to halt, and a stop is itself a write to an unconfigured driver.
-	  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
+	  if (tmc_driver_ready(&tmc4361[x]) && !pid_fault[x] && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X)   // a latched loop fault refuses the joystick too (pid_trip_fault) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
 	  {
 	    // joystick at motion position
 	    if (abs(joystick_delta_x) > 0)
@@ -510,7 +553,7 @@ void check_joystick()
 	  }
 
 	  // read y joystick
-	  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
+	  if (tmc_driver_ready(&tmc4361[y]) && !pid_fault[y] && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
 	  {
 	    // joystick at motion position
 	    if (abs(joystick_delta_y) > 0)
@@ -533,6 +576,11 @@ void check_joystick()
 
 void do_focus_control()
 {
+  // Post-fault contract (pid_trip_fault): while a Z loop fault is latched the wheel's target stays
+  // frozen at the position the fault stopped at (its deltas are dropped in onJoystickPacketReceived)
+  // and nothing is issued - the position is suspect until the host DISABLEs (open-loop recovery)
+  // or a validated ENABLE re-engages.
+  if (pid_fault[z]) { focus_wheel_pending = false; return; }   // anything queued while faulted is dropped
   if (focusPosition > Z_POS_LIMIT)
     focusPosition = Z_POS_LIMIT;
   if (focusPosition < Z_NEG_LIMIT)
@@ -541,39 +589,99 @@ void do_focus_control()
   // the focus wheel (functions.cpp, onJoystickPacketReceived) whether or not Z
   // can be driven, and letting it drift outside the limits would hand Z a wild
   // target the moment the axis is recovered. Only the move is gated.
-  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  // Z moves here only for a wheel input (focus_wheel_pending), never because a pass found the
+  // target different from the axis: a commanded move issues its own ramp, and a target changed by
+  // a limit, a fault stop or a recovery must not move an axis on its own.
+  if (tmc_driver_ready(&tmc4361[z]) && focus_wheel_pending && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  {
+    focus_wheel_pending = false;
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
+  }
+}
+
+// Defined with check_closed_loop() below, next to the rest of the closed-loop policy;
+// check_position() needs it to tell a held-open loop apart from a homing move.
+static bool axis_is_homing(uint8_t i);
+static inline int32_t pid_tolerance_eff(uint8_t axis);
+
+// One completion rule for every commanded move (check_position below), three legs:
+//  1. the counter: XACTUAL at the target with the ramp idle, or - SET_COMPLETION_WINDOW, off (0)
+//     unless the host sets it; the filter wheels use it, with no wheel loop requested, so an
+//     exposure can start while the last degrees are travelled - within the axis's window of the
+//     target while the ramp finishes;
+//  2. a requested loop must not be waiting to re-engage (pid_engage_pending): a rest-only loop is
+//     opened for the move and re-engaged by check_closed_loop(), which runs just before this but
+//     reads STATUS separately, so if the ramp stops between the two reads the axis looks finished
+//     here while the loop is still held open;
+//  3. with the loop ENGAGED, the encoder must be inside the bound (pid_completion_encoder_ok):
+//     the window when one is set, else the target-reached tolerance, never tighter than the
+//     deadband the chip stops correcting inside of.
+// The encoder leg reads ENC_POS_DEV (register 0x52), the chip's live ENC_POS - XACTUAL: positive
+// means the encoder is AHEAD of the counter (bench-verified on this branch - see the same statement
+// in serial_communication.cpp, and the self-test's "frame offset after homing", negative on the gap
+// stage whose encoder lags the counter by the 0.64 mm gap), so `dev` is passed through unnegated.
+// It deliberately does not use tmc4361A_isRunning()'s PID_E test: measured 2026-09-12 (f1116052,
+// ackprobe on the 2240 bench), that test passed on the very pass that re-engaged the loop, with
+// ENC_POS_DEV still 3-7 usteps against a 2-ustep tolerance, and the ack went out ~16 ms before the
+// correction had converged (0.3-0.7 um at the ack on 10 um steps). The window leg was an alternative
+// to that test rather than a bound on it, so a 0.3 um window did not cap the error either (0.75 um
+// acknowledged). Inside the home zone and while homing the loop is held open by design and
+// completion is on the counter: the stage may be resting on its stop there.
+//  4. with the loop ENGAGED, leg 3 must hold for PID_COMPLETION_DWELL_US without a break
+//     (pid_completion_dwell_step): after a rest-only re-engage the loop rings about the target for
+//     25-40 ms with a 5-9 ustep amplitude, and a single pass inside the bound is one of its zero
+//     crossings, not the settled position - traced 2026-09-13/14 on e26c4800 (the decision read
+//     ENC_POS_DEV -1, the completion packet 5 ms later +6, then -5, -7, +1, -4 ...; 33 of 60 closed
+//     acknowledgments outside the 0.2 um bound). A ring of that amplitude spends well under the dwell
+//     inside a +-2 ustep band, so the dwell only passes once the correction has actually settled.
+static uint32_t completion_inside_since_us[TOTAL_AXES];   // pid_completion_dwell_step state, per axis
+
+static bool commanded_move_complete(uint8_t axis, int32_t target)
+{
+  int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
+  int32_t d = pos - target;
+  int32_t win = completion_window_usteps[axis];
+  bool counter_ok = (d == 0 && !tmc4361A_isRunning(&tmc4361[axis], 0))
+                 || (win > 0 && (d < 0 ? -d : d) <= win);
+  if (!counter_ok) { completion_inside_since_us[axis] = 0; return false; }
+  if (pid_engage_pending(pid_requested[axis], pid_zone_hold[axis], axis_is_homing(axis), pid_home_zone_usteps[axis], pos))
+  { completion_inside_since_us[axis] = 0; return false; }
+  if (!stage_PID_enabled[axis]) { completion_inside_since_us[axis] = 0; return true; }
+  int32_t dev = tmc4361A_read_deviation(&tmc4361[axis]);
+  bool inside = pid_completion_encoder_ok(d, dev, win, tmc4361[axis].target_tolerance, pid_tolerance_eff(axis));
+  return pid_completion_dwell_step(&completion_inside_since_us[axis], inside, micros(), PID_COMPLETION_DWELL_US);
 }
 
 void check_position()
 {
   if(us_since_last_check_position > interval_check_position) {
     us_since_last_check_position = 0;
-    // check if commanded position has been reached
-    if (X_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[x]) == X_commanded_target_position && !is_homing_X && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) // homing is handled separately
+    // check if commanded position has been reached (commanded_move_complete, above); homing is
+    // handled separately
+    if (X_commanded_movement_in_progress && !is_homing_X && commanded_move_complete(x, X_commanded_target_position))
     {
       X_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
-    if (Y_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !is_homing_Y && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y]))
+    if (Y_commanded_movement_in_progress && !is_homing_Y && commanded_move_complete(y, Y_commanded_target_position))
     {
       Y_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
-    if (Z_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !is_homing_Z && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z]))
+    if (Z_commanded_movement_in_progress && !is_homing_Z && commanded_move_complete(z, Z_commanded_target_position))
     {
       Z_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
     if (enable_filterwheel == true) {
-      if (W_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !is_homing_W && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w]))
+      if (W_commanded_movement_in_progress && !is_homing_W && commanded_move_complete(w, W_commanded_target_position))
       {
         W_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W2_commanded_movement_in_progress;
       }
     }
     if (enable_filterwheel_w2 == true) {
-      if (W2_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w2]) == W2_commanded_target_position && !is_homing_W2 && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2]))
+      if (W2_commanded_movement_in_progress && !is_homing_W2 && commanded_move_complete(w2, W2_commanded_target_position))
       {
         W2_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
@@ -616,6 +724,324 @@ void check_limits()
       {
         Z_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
+      }
+    }
+  }
+}
+
+/*
+  Closed-loop deviation watchdog (firmware 1.6).
+
+  When ENABLE_STAGE_PID hands an axis to the TMC4361A's encoder loop, the chip
+  drives the motor on its own to null XACTUAL - ENC_POS, limited only by
+  PID_DV_CLIP. A wrong encoder sign, a bad gain, or a dropped encoder signal
+  turns that into a run-away that no host command interrupts fast enough over
+  a 10 ms packet link - and on Z a run-away ends in a stall the operator has
+  called non-recoverable. So the firmware watches the loop error itself: if
+  |ENC_POS_DEV| exceeds pid_max_dev_usteps for the axis, the loop is switched
+  off (the ramp generator keeps the axis at its open-loop target), the fault is
+  latched for the status packet, and the axis stays open-loop until the host
+  enables the loop again. The limit is per axis, set by SET_PID_LIMITS and
+  defaulted at CONFIGURE_STAGE_PID; 0 disables the watchdog for that axis.
+
+  One TMC4361A register read per enabled axis per loop iteration; nothing is
+  read for axes whose loop is off, so the shipping path is unaffected.
+*/
+// True while a homing sequence owns the axis. Homing must run open-loop from
+// its first move to its last, so check_closed_loop() neither re-engages a held
+// loop during it nor leaves an engaged one running.
+static bool axis_is_homing(uint8_t i)
+{
+  switch (i)
+  {
+    case x:  return is_homing_X || is_preparing_for_homing_X;
+    case y:  return is_homing_Y || is_preparing_for_homing_Y;
+    case z:  return is_homing_Z || is_preparing_for_homing_Z;
+    case w:  return is_homing_W || is_preparing_for_homing_W;
+    case w2: return is_homing_W2 || is_preparing_for_homing_W2;
+    default: return false;
+  }
+}
+
+// Closed loop open above a ramp velocity (SET_PID_OPEN_ABOVE). The TMC4361A loop adds
+// a correction velocity while the ramp runs; at the gains that give a fast, tight
+// settle (P 65535 at 16 usteps/FS) the in-flight error at cruise speed saturates the
+// correction, which then switches at the loop rate and shakes the motor at a few
+// hundred hertz. On the second bench Z (2026-09-07) that limit cycle was present at
+// every cruise speed (velocity ripple 0.5 mm/s vs 0.05 open loop, +/-16 um error
+// swings, 12 dB louder) and stalled the motor at 2.5 mm/s and above, while open loop
+// ran clean to 4 mm/s. Focus steps never reach such speeds (1 um at 300 mm/s2 peaks
+// at 0.55 mm/s), and they are the moves where every millisecond of settling counts,
+// so the loop is kept while the ramp is slow and opened above pid_open_above_pps:
+// 0 (default) = rest-only, opened for every move and re-engaged when the ramp stops
+// (+11 ms on a 1 um step, measured 2026-09-08; the recommended mode - the in-flight
+// loop limit-cycled and stalled the motor on both bench stages); a threshold between
+// keeps the loop while the ramp is slower than it; >= VMAX = engaged throughout.
+// check_position reports COMPLETED once the encoder error is inside the tolerance.
+void pid_open_for_move(uint8_t axis)
+{
+  if (!pid_requested[axis] || !stage_PID_enabled[axis])
+    return;
+  tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+  stage_PID_enabled[axis] = 0;
+  pid_zone_hold[axis] = true;
+}
+
+void pid_before_move(uint8_t axis)
+{
+  // Rest-only: open before the ramp starts rather than 1 ms into it. With a velocity
+  // threshold the loop stays on until the ramp actually exceeds it (small steps never do).
+  if (pid_open_above_pps[axis] == 0)
+    pid_open_for_move(axis);
+}
+
+// A closed-loop fault on `axis` (internal index) fails the command that is moving that
+// axis, if any: the encoder says the stage is not where the counter says, so a completion
+// on the counter would be a lie. Mirrors check_position's bookkeeping: clear this axis's
+// in-progress flag, keep mcu_cmd_execution_in_progress true while any other axis still
+// moves, and set the status the host reads on the next packet.
+static void fail_commanded_move(uint8_t axis)
+{
+  bool *flag = axis == x ? &X_commanded_movement_in_progress
+             : axis == y ? &Y_commanded_movement_in_progress
+             : axis == z ? &Z_commanded_movement_in_progress
+             : axis == w ? &W_commanded_movement_in_progress
+             : axis == w2 ? &W2_commanded_movement_in_progress : (bool *)0;
+  if (flag == (bool *)0 || !*flag) return;
+  *flag = false;
+  mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+  mcu_cmd_execution_in_progress = X_commanded_movement_in_progress || Y_commanded_movement_in_progress
+                               || Z_commanded_movement_in_progress || W_commanded_movement_in_progress
+                               || W2_commanded_movement_in_progress;
+}
+
+// Bounded-correction watch state, one per axis (pid_policy.h). Reset whenever the loop is
+// not engaged at rest, so a correction is only ever judged against its own timeline.
+static PidCorrectionWatch pid_corr_watch[TOTAL_AXES];
+
+// The loop on `axis` has proven unsafe to leave engaged. The post-fault contract (finish plan,
+// 2026-09-14): open the loop, stop the ramp, drop the REQUEST, latch the cause the status packet
+// carries, fail the move in flight if there is one - and, on a STAGE axis, refuse ordinary motion
+// (commands, joystick, focus wheel: axis_driver_ready() and the two operator paths test
+// pid_fault) until the host explicitly DISABLEs (deliberate open-loop recovery) or a validated
+// ENABLE re-engages. The filter wheels are exempt from the refusal (rotary, no hard limit; their
+// fault is not on the wire). Other axes are unaffected. Every fault path uses this.
+//
+// Stopping the ramp matters: failing the command's bookkeeping does not stop a ramp that is
+// already running (a watchdog or switch fault with the loop engaged in flight, threshold mode),
+// and the joystick's velocity mode keeps its last VMAX. tmc4361A_stop_here() writes XTARGET =
+// XACTUAL and leaves velocity mode without the travel-range check of tmc4361A_moveTo() (which
+// would silently do nothing with XACTUAL outside [xmin, xmax], e.g. after a homing that timed
+// out): the axis is brought to rest about where the fault was seen - an S-ramp at speed
+// overshoots and returns - and at rest it is a no-op. The focus wheel's target follows and
+// nothing is left pending for it: do_focus_control() issues a ramp only for a wheel input, so the
+// fault clearing cannot resume the interrupted move.
+static void pid_trip_fault(uint8_t axis, uint8_t cause)
+{
+  tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+  int32_t here = tmc4361A_stop_here(&tmc4361[axis]);   // the target it wrote: one read, one number
+  if (axis == z)
+  {
+    focusPosition = here;          // the wheel's target follows the stop ...
+    focus_wheel_pending = false;   // ... and nothing is issued for it until a wheel input arrives
+  }
+  stage_PID_enabled[axis] = 0;
+  pid_requested[axis] = false;
+  pid_zone_hold[axis] = false;
+  pid_fault[axis] = true;
+  pid_fault_cause[axis] = cause;   // status bytes 19-21 while reporting is off
+  pid_correction_watch_reset(&pid_corr_watch[axis]);
+  fail_commanded_move(axis);
+}
+
+// Deadband the chip is regulating to, in usteps: the configured/derived tolerance held in the
+// struct by CONFIGURE_STAGE_PID / SET_PID_TOLERANCE, else the legacy 25 usteps.
+static inline int32_t pid_tolerance_eff(uint8_t axis)
+{
+  return tmc4361[axis].pid_tolerance > 0 ? tmc4361[axis].pid_tolerance : 25;
+}
+
+void check_closed_loop()
+{
+  for (uint8_t i = 0; i < TOTAL_AXES; i++)
+  {
+    // Nothing is read for axes the host never asked a loop for: the shipping
+    // path costs nothing here. A loop that is not engaged is not correcting:
+    // its watch starts fresh when it next engages.
+    if (!pid_requested[i] || !stage_PID_enabled[i])
+      pid_correction_watch_reset(&pid_corr_watch[i]);
+    if (!pid_requested[i])
+      continue;
+
+    int32_t zone = pid_home_zone_usteps[i];
+    int32_t pos = tmc4361A_currentPosition(&tmc4361[i]);
+    bool in_zone = pid_in_home_zone(zone, pos);   // the edge is inside (pid_policy.h)
+    bool homing = axis_is_homing(i);
+    // Homing re-zeroes both frames at the switch. On a stage whose actuator homes
+    // below the stage's stop (0.64 mm gap on the second bench Z) the encoder then
+    // stands still for the first part of the travel out, so when the axis reaches
+    // a coupled position the two frames differ by the gap - a mechanical offset,
+    // not a loop error. Remember that a homing happened; the next engage aligns.
+    if (homing)
+      pid_realign_pending[i] = true;
+
+    int32_t v_abs = tmc4361A_speed(&tmc4361[i]);   // VACTUAL, pps
+    if (v_abs < 0) v_abs = -v_abs;
+
+
+    if (stage_PID_enabled[i])
+    {
+      // Reference switches: the chip's hard stop gates the RAMP (VACTUAL), and the correction
+      // vPID is added after it - with the base pulse generator at 0, as engaged here, the
+      // ramp is not even part of the output. So an active switch does not stop a correction
+      // driving into it (datasheet §8.1 / §12.2.2). Apply the chip's own rule to vPID: active
+      // switch + drive toward it = fault, within one pass (~1-2 ms). Resting on the home
+      // switch with no drive is not a fault. Physical switches only: the virtual limits act
+      // on XACTUAL, which a correction does not move.
+      int32_t pv = tmc4361A_read_pid_vel(&tmc4361[i]);
+      uint8_t sw = tmc4361A_readLimitSwitches(&tmc4361[i]);   // bit 0 = STOPL active, bit 1 = STOPR active
+      bool inverted = (i == x) ? flip_limit_switch_x : (i == y) ? flip_limit_switch_y : false;
+      if (pid_stop_blocks_correction((sw & 1) != 0, (sw & 2) != 0, pv, inverted))
+      {
+        pid_trip_fault(i, PID_FAULT_STOP_SWITCH);
+        continue;
+      }
+      // Home zone: the stage may be resting on its stop while the actuator
+      // keeps moving, so the encoder error is meaningless there and the loop
+      // would drive the actuator into its end. Drop to open loop; the ramp
+      // generator finishes the commanded move on its own. Same during homing,
+      // which ends at that very stop.
+      if (in_zone || homing)
+      {
+        pid_open_for_move(i);
+        continue;
+      }
+      // Open above the velocity threshold (see pid_open_for_move); with the threshold
+      // at 0 any motion opens the loop - a move that did not come through a stage
+      // command (joystick, focus wheel) is caught here, within 1 ms.
+      int32_t v_open = pid_open_above_pps[i];
+      if (v_open == 0 ? tmc4361A_isRunning(&tmc4361[i], 0) : (v_abs > v_open))
+      {
+        pid_open_for_move(i);
+        continue;
+      }
+      // Deviation watchdog: a fault drops the REQUEST as well, so a decoupled
+      // or runaway axis stays open-loop until the host explicitly enables again.
+      // It also fails the move in flight on this axis - the counter will still
+      // reach the target, but the encoder says the stage did not, so reporting
+      // COMPLETED would hand the host a position it does not have. A fault with
+      // no move in flight reaches the host through the status packet's fault bits
+      // (BIT_POS_PID_FAULT_*), which are set in every packet.
+      int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
+      if (pid_max_dev_usteps[i] > 0 && (dev > pid_max_dev_usteps[i] || dev < -pid_max_dev_usteps[i]))
+      {
+        pid_trip_fault(i, PID_FAULT_WATCHDOG);
+        continue;
+      }
+      // Bounded correction (pid_policy.h): the deviation watchdog cannot see a frozen encoder
+      // - the error it reports never grows - nor a stage resting on its stop while the actuator
+      // retracts, and the correction moves the motor without moving XACTUAL, so the travel
+      // limits see nothing either. Judged only with the ramp idle: while the ramp moves the
+      // target in threshold mode the deviation changes for legitimate reasons.
+      if (v_abs == 0)
+      {
+        uint32_t progress_us, total_us;
+        pid_correction_windows((int32_t)axes_pid_arg[i].p, pid_max_dev_usteps[i], pid_clamp[i].effective_pps, pid_tolerance_eff(i), &progress_us, &total_us);
+        uint32_t now = micros();
+        uint8_t verdict = pid_correction_watch_step(&pid_corr_watch[i], dev < 0 ? -dev : dev, pid_tolerance_eff(i),
+                                                    now, progress_us, total_us);
+        if (verdict == PID_CORRECTION_NO_PROGRESS)
+        {
+          pid_trip_fault(i, PID_FAULT_NO_PROGRESS);
+          continue;
+        }
+        if (verdict == PID_CORRECTION_TIMEOUT)
+        {
+          pid_trip_fault(i, PID_FAULT_TIMEOUT);
+          continue;
+        }
+        // Distance and response bounds (pid_policy.h): only while the chip is driving (the watch
+        // is armed, i.e. |dev| outside the deadband). No extra read: PID_VEL and the deviation
+        // were read above. The correction may never travel farther than the watchdog distance without
+        // converging, and it may never drive for a whole response window with the encoder standing
+        // still - that is a frozen encoder or a stage that does not follow, whatever the error size.
+        if (pid_corr_watch[i].active)
+        {
+          uint32_t response_us = PID_CORRECTION_RESPONSE_WINDOWS * progress_us;
+          if (response_us < PID_CORRECTION_RESPONSE_MIN_US) response_us = PID_CORRECTION_RESPONSE_MIN_US;
+          // Response is judged on the encoder's displacement (dev, read above; XACTUAL is idle),
+          // not on V_ENC_MEAN, which holds its last value for ~1 s after the edges stop.
+          uint32_t min_drive = (uint32_t)PID_CORRECTION_RESPONSE_MIN_DRIVE_FULLSTEPS * (uint32_t)tmc4361[i].microsteps;
+          uint32_t min_tol = 8u * (uint32_t)pid_tolerance_eff(i);
+          if (min_drive < min_tol) min_drive = min_tol;
+          uint8_t v2 = pid_correction_travel_step(&pid_corr_watch[i], (uint32_t)(pv < 0 ? -pv : pv), dev,
+                                                  now, pid_max_dev_usteps[i] > 0 ? (uint32_t)pid_max_dev_usteps[i] : 0u, response_us,
+                                                  min_drive);
+          if (v2 == PID_CORRECTION_TRAVEL)
+            pid_trip_fault(i, PID_FAULT_TRAVEL);
+          else if (v2 == PID_CORRECTION_NO_RESPONSE)
+            pid_trip_fault(i, PID_FAULT_NO_RESPONSE);
+        }
+      }
+      else
+        pid_correction_watch_reset(&pid_corr_watch[i]);
+    }
+    else if (pid_zone_hold[i] && !in_zone && !homing && encoder_configured[i])
+    {
+      // Requested, held open by the zone, by homing or by a fast move, now allowed:
+      // re-engage, but only from a small error - the loop slews by the error it
+      // starts with - and only once the ramp is slow enough. Engaging while the ramp
+      // runs fast adds the correction velocity (up to PID_DV_CLIP) on top of VMAX and
+      // steps the velocity output; on the second bench Z (2026-09-07) that stalled
+      // the motor the instant the loop came in at 3 mm/s on leaving the home zone,
+      // and the ramp then ran on with the stage standing still. Rest-only (threshold
+      // 0) waits for the axis to stop; a threshold re-engages below 7/8 of it, so a
+      // long move closes its loop during the deceleration and a cruise exactly at
+      // the threshold does not toggle the loop every millisecond.
+      int32_t v_open = pid_open_above_pps[i];
+      bool running = tmc4361A_isRunning(&tmc4361[i], 0);
+      if (v_open == 0 ? running : (v_abs > v_open - v_open / 8))
+        continue;
+      if (pid_realign_pending[i])
+      {
+        // First engage after a homing: take the counter's frame as the encoder's.
+        // The loop then corrects only deviations that arise from here on, which is
+        // the same position semantics open loop has always had on such a stage.
+        // Only at rest: the two frames must be compared with nothing in motion.
+        if (running)
+          continue;
+        // The absorbed offset is bounded by what the configuration declares (home zone +
+        // watchdog): a larger one is lost motion during the first departure, or an encoder
+        // that never started following - a fault, not a gap (pid_policy.h).
+        int32_t frame_offset = tmc4361A_read_deviation(&tmc4361[i]);
+        // ENC_POS was zeroed at the switch by the homing: it is the encoder's travel since then.
+        int32_t enc_travel = tmc4361A_read_encoder(&tmc4361[i], 0);
+        pid_realign_pending[i] = false;
+        if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i],
+                                 enc_travel, PID_REALIGN_MIN_ENC_TRAVEL_TOLERANCES * pid_tolerance_eff(i)))
+        {
+          pid_trip_fault(i, PID_FAULT_REALIGN_REFUSED);
+          continue;
+        }
+        tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
+      }
+      int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
+      int32_t lim = pid_max_dev_usteps[i] > 0 ? pid_max_dev_usteps[i] : 0x7FFFFFFF;
+      if (dev <= lim && dev >= -lim)
+      {
+        tmc4361A_set_PID(&tmc4361[i], PID_BPG0);
+        stage_PID_enabled[i] = 1;
+        pid_zone_hold[i] = false;
+      }
+      else
+      {
+        // At rest, outside the zone, frames aligned, and still beyond the watchdog limit: the
+        // encoder stopped following during the open-loop move (lost encoder, stuck stage). Say
+        // so, the same way the engaged watchdog does, instead of silently never re-engaging.
+        // The move in flight on this axis fails with it: the ramp finished on the counter but
+        // the encoder is beyond the limit, so COMPLETED would be a lie. A fault with no move
+        // in flight reaches the host through the status packet's fault bits, set in every packet.
+        pid_trip_fault(i, PID_FAULT_REENGAGE_REFUSED);
       }
     }
   }

@@ -95,6 +95,13 @@ typedef struct
      nothing). Not over the packet protocol: design M7 keeps host visibility to
      a serial log precisely so that no protocol change is needed. */
   uint32_t driver_probe_raw;
+
+  /* Ramp profile used by tmc4361A_sRampInit(): TMC4361A_RAMP_SSHAPE (default,
+     bow-limited) or TMC4361A_RAMP_TRAPEZ (acceleration-limited). Selected per
+     axis by SET_RAMP_PROFILE (firmware 1.6). At 256 usteps/FS on a fine-pitch
+     axis the 24-bit BOW registers clamp the jerk so low that a 1 um S-ramp move
+     takes ~50 ms; the trapezoid is the way to make small moves fast. */
+  uint8_t ramp_profile;
   /* Shadow copy of TMC2240 registers. Cover READS are unreliable, so every
      read-modify-write sources from here. See design §6.3. */
   uint32_t tmc2240_shadow[TMC2240_SHADOW_COUNT];

@@ -967,7 +967,10 @@ void tmc4361A_moveToExtreme(TMC4361ATypeDef *tmc4361A, int32_t vel, int8_t dir) 
   -----------------------------------------------------------------------------
 */
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | TMC4361A_RAMP_SSHAPE); // positioning mode, s-shaped ramp
+  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request).
+  // Clear the two profile bits first: a plain setBits cannot change SSHAPE (2) into TRAPEZ (1).
+  tmc4361A_rstBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
+  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE));
   tmc4361A_rstBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_USE_ASTART_AND_VSTART_MASK); // keep astart, vstart = 0
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW1, tmc4361A->rampParam[BOW1_IDX]); // determines the value which increases the absolute acceleration value.
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW2, tmc4361A->rampParam[BOW2_IDX]); // determines the value which decreases the absolute acceleration value.
@@ -1481,6 +1484,24 @@ void tmc4361A_stop(TMC4361ATypeDef *tmc4361A) {
 }
 
 /*
+  tmc4361A_stop_here(): bring the axis to rest where it is - XTARGET = XACTUAL in positioning
+  mode - WITHOUT tmc4361A_moveTo()'s travel-range check, which returns ERR_OUT_OF_RANGE and writes
+  nothing when XACTUAL sits outside [xmin, xmax] (a homing finalize that timed out, a joystick
+  move past the latch). Used by the closed-loop fault path, where doing nothing is not an option.
+*/
+int32_t tmc4361A_stop_here(TMC4361ATypeDef *tmc4361A) {
+  if (tmc4361A->velocity_mode) {
+    tmc4361A_sRampInit(tmc4361A);
+    tmc4361A->velocity_mode = false;
+  }
+  int32_t here = tmc4361A_currentPosition(tmc4361A);
+  tmc4361A_readInt(tmc4361A, TMC4361A_EVENTS);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_X_TARGET, here);
+  tmc4361A_readInt(tmc4361A, TMC4361A_EVENTS);
+  return here;
+}
+
+/*
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_isRunning() checks whether the motor is moving and returns either true or false
 
@@ -1645,9 +1666,13 @@ void tmc4361A_init_ABN_encoder(TMC4361ATypeDef *tmc4361A, uint32_t enc_res, uint
   datagram = uint32_t(filter_wait_time) + ((uint32_t(filter_exponent) << TMC4361A_ENC_VMEAN_FILTER_SHIFT)&TMC4361A_ENC_VMEAN_FILTER_MASK) + ((uint32_t(filter_vmean) << TMC4361A_ENC_VMEAN_INT_SHIFT)&TMC4361A_ENC_VMEAN_INT_MASK);
   tmc4361A_writeInt(tmc4361A, TMC4361A_ENC_VMEAN_FILTER_WR, datagram);
 
-  // set whether or not to invert
+  // set whether or not to invert. Clear the bit explicitly when not inverting:
+  // a re-configuration with invert = false after one with invert = true must
+  // actually un-invert, and a chip reset is the only other thing that clears it.
   if (invert) {
     tmc4361A_setBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_INVERT_ENC_DIR_MASK);
+  } else {
+    tmc4361A_rstBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_INVERT_ENC_DIR_MASK);
   }
 
   return;
@@ -1691,6 +1716,12 @@ int32_t tmc4361A_read_encoder_vel(TMC4361ATypeDef *tmc4361A) {
 }
 int32_t tmc4361A_read_encoder_vel_filtered(TMC4361ATypeDef *tmc4361A) {
   return tmc4361A_readInt(tmc4361A, TMC4361A_V_ENC_MEAN_RD);
+}
+
+/* The closed loop's velocity output (PID_VEL_RD, pps, signed): what the correction is
+   asking of the motor right now. Zero when the loop is off or inside the deadband. */
+int32_t tmc4361A_read_pid_vel(TMC4361ATypeDef *tmc4361A) {
+  return tmc4361A_readInt(tmc4361A, TMC4361A_PID_VEL_RD);
 }
 
 /*
@@ -1811,6 +1842,33 @@ void tmc4361A_set_PID(TMC4361ATypeDef *tmc4361A, uint8_t pid_mode) {
   tmc4361A_setBits(tmc4361A, TMC4361A_ENC_IN_CONF, pid_mode << TMC4361A_REGULATION_MODUS_SHIFT);
   return;
 }
+/*
+  -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_set_PID_gains() rewrites only PID_P / PID_I / PID_D, so a
+               host can retune a running loop without re-initialising the encoder
+               (tmc4361A_init_PID writes tolerances and the I clip as well). Same
+               masking as tmc4361A_init_PID; takes effect on the next PID cycle.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_set_PID_gains(TMC4361ATypeDef *tmc4361A, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_P_WR, pid_p & TMC4361A_PID_P_MASK);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_I_WR, pid_i & TMC4361A_PID_I_MASK);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_D_WR, pid_d & TMC4361A_PID_D_MASK);
+  return;
+}
+/*
+  -----------------------------------------------------------------------------
+  DESCRIPTION: tmc4361A_set_PID_dv_clip() sets PID_DV_CLIP, the ceiling on the
+               velocity the closed loop may add to null the encoder error. This is
+               the closed loop's speed limit: with a wrong encoder sign or a bad
+               gain the correction runs the axis away at exactly this speed, so
+               a bench keeps it low (well under 1 mm/s on Z) while tuning.
+  -----------------------------------------------------------------------------
+*/
+void tmc4361A_set_PID_dv_clip(TMC4361ATypeDef *tmc4361A, uint32_t pid_dclip) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_DV_CLIP_WR, pid_dclip & TMC4361A_PID_DV_CLIP_MASK);
+  return;
+}
 
 /*
   -----------------------------------------------------------------------------
@@ -1825,7 +1883,6 @@ void tmc4361A_set_PID(TMC4361ATypeDef *tmc4361A, uint8_t pid_mode) {
       uint32_t pid_p:            24-bit proportional term. (PID_P/256) * error * 1/seconds
       uint32_t pid_i:            24-bit integral term. (PID_I/256) * (PID_ISUM / 256) * 1/seconds
       uint32_t pid_d:            24-bit differential term. (PID_D) * error * d/dt
-      uint32_t pid_dclip:        Limits the speed to be at most pid_dclip
       uint32_t pid_iclip:        15-bit integral winding limit, limit = pid_iclip * 2^16
       uint8_t pid_d_clkdiv:      For the derivate term of the PID control, PID_E will be compared to its former value every PID_D_CLK_DIV*128 / fCLK seconds
 
@@ -1844,7 +1901,7 @@ void tmc4361A_set_PID(TMC4361ATypeDef *tmc4361A, uint8_t pid_mode) {
   DEPENDENCIES: tmc4316A.h
   -----------------------------------------------------------------------------
 */
-void tmc4361A_init_PID(TMC4361ATypeDef *tmc4361A, uint32_t target_tolerance, uint32_t pid_tolerance, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d, uint32_t pid_dclip, uint32_t pid_iclip, uint8_t pid_d_clkdiv) {
+void tmc4361A_init_PID(TMC4361ATypeDef *tmc4361A, uint32_t target_tolerance, uint32_t pid_tolerance, uint32_t pid_p, uint32_t pid_i, uint32_t pid_d, uint32_t pid_iclip, uint8_t pid_d_clkdiv) {
   uint32_t datagram;
 
   tmc4361A_writeInt(tmc4361A, TMC4361A_CL_TR_TOLERANCE_WR, target_tolerance);   // Set the TARGET_REACHED tolerance
@@ -1856,7 +1913,7 @@ void tmc4361A_init_PID(TMC4361ATypeDef *tmc4361A, uint32_t target_tolerance, uin
   tmc4361A_writeInt(tmc4361A, TMC4361A_PID_I_WR, pid_i & TMC4361A_PID_I_MASK);
   tmc4361A_writeInt(tmc4361A, TMC4361A_PID_D_WR, pid_d & TMC4361A_PID_D_MASK);
 
-  tmc4361A_writeInt(tmc4361A, TMC4361A_PID_DV_CLIP_WR, pid_dclip & TMC4361A_PID_DV_CLIP_MASK);
+  // PID_DV_CLIP is written by pid_clamp.h (commands.cpp), the one path the native test covers.
 
   // Set up the datagram
   datagram = ((pid_iclip << TMC4361A_PID_I_CLIP_SHIFT) & TMC4361A_PID_I_CLIP_MASK) + ((pid_d_clkdiv << TMC4361A_PID_D_CLKDIV_SHIFT) & TMC4361A_PID_D_CLKDIV_MASK);

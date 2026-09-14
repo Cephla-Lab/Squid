@@ -3,6 +3,8 @@
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
+#include "../pid_clamp.h"               // the correction clamp's one path to PID_DV_CLIP and the watch
+#include "../pid_policy.h"              // pid_in_home_zone
 
 CommandCallback cmd_map[256] = {0};
 
@@ -56,6 +58,13 @@ void init_callbacks()
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
     cmd_map[INITIALIZE] = &callback_initialize;
+    cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
+    cmd_map[SET_PID_LIMITS] = &callback_set_pid_limits;
+    cmd_map[SET_PID_HOME_ZONE] = &callback_set_pid_home_zone;
+    cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
+    cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
+    cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
+    cmd_map[SET_PID_OPEN_ABOVE] = &callback_set_pid_open_above;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -118,30 +127,97 @@ void callback_set_pin_level()
     digitalWrite(pin, level);
 }
 
+// pid_clamp.h's register write and geometry for one axis (the test supplies a recorder instead).
+static void write_pid_dv_clip(void *chip, uint32_t pps)
+{
+    tmc4361A_set_PID_dv_clip((TMC4361ATypeDef *)chip, pps);
+}
+static PidClampGeometry clamp_geometry(uint8_t axis)
+{
+    PidClampGeometry g = {tmc4361[axis].microsteps, tmc4361[axis].stepsPerRev, tmc4361[axis].threadPitch};
+    return g;
+}
+
 void callback_configure_stage_pid()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
-    if (axis == 0xFF) return;  // Invalid axis
+    // 0xFF is the invalid-axis sentinel; the >= form is the same test for every value the mapping
+    // returns and lets the compiler see the array bound (it warned "subscript 5" on the per-axis
+    // bookkeeping below for a path the mapping cannot take).
+    if (axis >= TOTAL_AXES) return;
 
     int flip_direction = buffer_rx[3];
     int transitions_per_revolution = (buffer_rx[4] << 8) + buffer_rx[5];
     // Init encoder. transitions per revolution, velocity filter wait time (# of clock cycles), IIR filter exponent, vmean update frequency, invert direction (must increase as microsteps increases)
     tmc4361A_init_ABN_encoder(&tmc4361[axis], transitions_per_revolution, 32, 4, 512, flip_direction);
-    // Init PID. target reach tolerance, position error tolerance, P, I, and D coefficients, max speed, winding limit, derivative update rate
-    if (axis == x)
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_X_mm), 32767, 2);
-    else if (axis == y)
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Y_mm), 32767, 2);
-    else if (axis == z)
-        tmc4361A_init_PID(&tmc4361[axis], 25, 25, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_Z_mm), 4096, 2);
-    else if (axis == w) {
-        if (enable_filterwheel == true)
-            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
+    // Align the encoder frame with XACTUAL under the scale and direction just
+    // written. ENC_POS is derived from the raw count, so a zero taken earlier
+    // (homing, or the chip reset) under a different ENC_IN_RES / invert setting
+    // does not survive this write - the first bench run found the loop error
+    // pinned at the int16 clip for exactly that reason.
+    // ... except while a closed-loop fault is latched: the frames as they are ARE the evidence a
+    // validated ENABLE_STAGE_PID is checked against (deviation within the watchdog). Realigning here
+    // would make that check pass with nothing verified. DISABLE + homing, or a validated ENABLE on
+    // agreeing frames, are the ways out (post-fault contract).
+    if (!pid_fault[axis])
+        tmc4361A_write_encoder(&tmc4361[axis], tmc4361A_currentPosition(&tmc4361[axis]));
+
+    // Closed-loop correction velocity ceiling (PID_DV_CLIP): the host's
+    // SET_PID_LIMITS value if it has sent one, else the axis's max velocity as
+    // before 1.6. A bench tuning session sets this low first, so that a wrong
+    // encoder sign cannot run the axis away faster than the watchdog reacts.
+    // Written and cached through pid_clamp.h, in integer pulses per second - the unit
+    // PID_DV_CLIP and PID_VEL use. NOT tmc4361A_vmmToMicrosteps(): that is VMAX's 24.8 format,
+    // and writing it here set the clamp 256 times too high (a "1 mm/s" clamp was 256 mm/s, no
+    // clamp at all) from the first closed-loop firmware through 6a8b12cd, which shifted only the
+    // budget's cached copy. test_pid_clamp asserts the value the register receives.
+    float clamp_mm_s = (axis == x) ? MAX_VELOCITY_X_mm : (axis == y) ? MAX_VELOCITY_Y_mm
+                     : (axis == z) ? MAX_VELOCITY_Z_mm : MAX_VELOCITY_W_mm;
+
+    // Loop deadband (PID_TOLERANCE: inside this error the chip stops correcting) and
+    // target-reached tolerance (CL_TR_TOLERANCE: what check_position's completion rule
+    // accepts as arrived, never tighter than the deadband - see pid_completion_encoder_ok).
+    // Both are in microsteps, so a fixed number is a physical size that
+    // scales with microstepping: master's 25 usteps is 0.15 um at 256 usteps/FS on Z
+    // but 2.3 um at 16, where a 20 x 1 um closed-loop stack landed up to 2.2 um off.
+    // Default: TWO ENCODER COUNTS, computed from the encoder resolution just written.
+    // A deadband below one count makes the loop chase the quantisation after every
+    // move (15 kHz bursts on the bench); two counts tolerates a 1-count error and was
+    // acoustically identical to open loop. This reproduces master's 25 usteps at 256
+    // usteps/FS (1.5 counts -> rounds to the same behaviour) at every resolution.
+    // SET_PID_TOLERANCE overrides both in physical units.
+    uint32_t default_tol = (axis == w || axis == w2) ? 2 : 25;  // legacy, if the encoder resolution is unusable
+    if (transitions_per_revolution > 0) {
+        uint32_t usteps_per_rev = (uint32_t)tmc4361[axis].microsteps * (uint32_t)tmc4361[axis].stepsPerRev;
+        default_tol = (2u * usteps_per_rev + (uint32_t)transitions_per_revolution / 2u) / (uint32_t)transitions_per_revolution;
+        if (default_tol < 1) default_tol = 1;
     }
-    else if (axis == w2) {
-        if (enable_filterwheel_w2 == true)
-            tmc4361A_init_PID(&tmc4361[axis], 2, 2, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d, tmc4361A_vmmToMicrosteps(&tmc4361[axis], MAX_VELOCITY_W_mm), 4096, 2);
+    uint32_t pid_tol = pid_tolerance_usteps[axis] ? pid_tolerance_usteps[axis] : default_tol;
+    uint32_t tr_tol  = pid_tr_tolerance_usteps[axis] ? pid_tr_tolerance_usteps[axis] : default_tol;
+
+    // Write the clamp and the PID registers only to a chip that has been initialised: the stage
+    // axes at boot, a wheel by INITFILTERWHEEL (before that its tmc4361 struct has no bus config).
+    // Clamp first, then target-reached tolerance, deadband, P, I, D, winding limit and derivative
+    // update rate; no ordering dependency between them on the chip.
+    bool configured = (axis == x || axis == y || axis == z)
+                   || (axis == w && enable_filterwheel == true)
+                   || (axis == w2 && enable_filterwheel_w2 == true);
+    if (configured) {
+        pid_clamp_configure(&pid_clamp[axis], clamp_mm_s, clamp_geometry(axis), write_pid_dv_clip, &tmc4361[axis]);
+        tmc4361A_init_PID(&tmc4361[axis], tr_tol, pid_tol, axes_pid_arg[axis].p, axes_pid_arg[axis].i, axes_pid_arg[axis].d,
+                          (axis == x || axis == y) ? 32767 : 4096, 2);
     }
+
+    // Bookkeeping for ENABLE_STAGE_PID's gate and for the deviation watchdog.
+    // Default watchdog limit: 0.25 mm of loop error (0.25 rev on a wheel) - far
+    // above any sane following error, far below a travel end.
+    encoder_configured[axis] = configured;
+    // A latched fault survives CONFIGURE_STAGE_PID: only DISABLE (acknowledge, open-loop recovery),
+    // a validated ENABLE, RESET, INITIALIZE or INITFILTERWHEEL clear it (post-fault contract,
+    // pid_trip_fault). The write_encoder() above aligns the frames when no fault is latched; it does
+    // not restore confidence in the position.
+    if (configured && pid_max_dev_usteps[axis] == 0)
+        pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], 0.25f);
 }
 
 void callback_enable_stage_pid()
@@ -155,22 +231,229 @@ void callback_enable_stage_pid()
       closed loop: from that write on the controller drives the motor
       continuously to null the encoder error, with no further command from the
       host. On an axis the probe could not identify, the current scaling — and
-      therefore the torque — is unknown, so this is gated exactly like a move.
+      therefore the torque — is unknown, so this is gated on driver presence like
+      a move (axis_driver_present) - but NOT on a latched closed-loop fault: ENABLE
+      is the recovery path and validates the frames itself below.
 
       It reports the rejection rather than dropping it silently: ENABLE_STAGE_PID
       is a host command, so the host is owed an answer. That is the same split
       the rest of the branch makes — host commands report through
-      axis_driver_ready, the joystick and focus-wheel paths in operations.cpp
-      reject silently because there is no command to attribute a failure to.
+      axis_driver_present / axis_driver_ready, the joystick and focus-wheel paths
+      in operations.cpp reject silently because there is no command to attribute
+      a failure to.
 
       Note this also gates the PID_BPG0 re-enables in finalize_homing_* : they
       fire only when stage_PID_enabled[axis] is set, and this is the only writer
       that sets it.
     */
-    if (!axis_driver_ready(axis)) return;
+    // Driver presence only: ENABLE is the recovery path and must reach its own validation while a
+    // fault is latched (the fault-gated helper the move commands use would refuse it like a move).
+    if (!axis_driver_present(axis)) return;
 
+    // The loop nulls XACTUAL - ENC_POS using ENC_IN_RES to scale the encoder.
+    // With no CONFIGURE_STAGE_PID since the last chip reset that scale is the
+    // reset value and the "error" is garbage: enabling would drive the axis at
+    // PID_DV_CLIP toward nowhere. Refuse, and say so through the status byte.
+    if (!encoder_configured[axis])
+    {
+        report_move_error();   // early return: nothing of this command's to unwind
+        return;
+    }
+
+    // Closing the loop makes the chip slew the axis by the CURRENT error at up to
+    // PID_DV_CLIP. If that error is already beyond the watchdog limit (encoder
+    // frame offset from XACTUAL, e.g. INITIALIZE zeroed ENC_POS mid-travel and
+    // nobody homed since), enabling would be exactly the run-away the watchdog
+    // exists to stop - so refuse up front instead of tripping a moment later.
+    if (pid_max_dev_usteps[axis] > 0)
+    {
+        int32_t dev = tmc4361A_read_deviation(&tmc4361[axis]);
+        if (dev > pid_max_dev_usteps[axis] || dev < -pid_max_dev_usteps[axis])
+        {
+            report_move_error();
+            return;
+        }
+    }
+
+    pid_fault[axis] = false;
+
+    pid_fault_cause[axis] = PID_FAULT_NONE;
+    pid_requested[axis] = true;
+    pid_realign_pending[axis] = false;   // an explicit enable takes the frames as they are (gate below)
+
+    // Inside the home exclusion zone the encoder may not follow the actuator
+    // (stage resting on its stop while the actuator retracts), so the loop is not
+    // engaged here: it is recorded as requested and check_closed_loop() engages
+    // it once the axis is outside the zone with a small error. The status flags
+    // (ENC_FLAG_PID_ENABLED / ENC_FLAG_PID_ZONE) tell the host which it got.
+    int32_t zone = pid_home_zone_usteps[axis];
+    int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
+    if (pid_in_home_zone(zone, pos))   // the edge is inside, as check_closed_loop() sees it
+    {
+        if (stage_PID_enabled[axis]) tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);   // bookkeeping and chip agree
+        pid_zone_hold[axis] = true;
+        stage_PID_enabled[axis] = 0;
+        return;
+    }
+    // Never engage while the ramp runs (see check_closed_loop): coming in at speed
+    // adds the correction velocity on top of VMAX and stalled the second bench Z.
+    // Record the request; check_closed_loop() engages it when the axis stops.
+    if (tmc4361A_isRunning(&tmc4361[axis], 0))
+    {
+        if (stage_PID_enabled[axis]) tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+        pid_zone_hold[axis] = true;
+        stage_PID_enabled[axis] = 0;
+        return;
+    }
+    pid_zone_hold[axis] = false;
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
+}
+
+// SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
+// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
+// INITIALIZE (the host sets it once with the other motion parameters).
+void callback_set_ramp_profile()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint8_t profile = buffer_rx[3];
+    if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
+    tmc4361[axis].ramp_profile = profile;
+    tmc4361A_sRampInit(&tmc4361[axis]);
+}
+
+// SET_COMPLETION_WINDOW (49): [2] protocol axis, [3..4] window in 0.1 um of travel. While a
+// move is inside the window the ramp is still finishing, but the host is told COMPLETED so an
+// exposure can start while the last part is travelled. Meant for the filter wheels, where the
+// filter's clear aperture covers the field for the last few degrees of a slot change (their
+// "mm" is one revolution, so 1e-4 rev = 0.036 deg per unit). 0 (default) = complete only at the
+// exact target with the ramp stopped, as before. Homing is not affected. Not intended for a
+// closed-loop axis: the PID completion waits for the encoder error, this does not.
+void callback_set_completion_window()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t units = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(units) / 10000.0f);
+    completion_window_usteps[axis] = v < 0 ? -v : v;
+}
+
+// SET_PID_OPEN_ABOVE (50): [2] protocol axis, [3..4] ramp velocity in 0.01 mm/s. A requested
+// closed loop is opened while |VACTUAL| exceeds this and re-engages once the ramp has slowed
+// below it (7/8 of it, for hysteresis). The loop misbehaves only when its correction saturates,
+// which happens at cruise speed (second bench Z, 2026-09-07: limit cycle at every cruise speed,
+// stall from 2.5 mm/s); focus steps of a few um never get there (1 um at 300 mm/s2 peaks at
+// 0.55 mm/s), so with the threshold around 1 mm/s they run fully closed-loop with the in-flight
+// timing, and only repositioning moves open the loop. 0 (default) is rest-only; a value at or
+// above VMAX keeps the loop engaged throughout (the behaviour the Squid+ bench qualified).
+// Stored in pps (VACTUAL units) at the current microstep setting.
+void callback_set_pid_open_above()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t v_x100 = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    // vmmToMicrosteps returns the VMAX register format (8 fractional bits); VACTUAL is integer pps
+    int32_t pps = tmc4361A_vmmToMicrosteps(&tmc4361[axis], float(v_x100) / 100.0f) >> 8;
+    pid_open_above_pps[axis] = pps < 0 ? -pps : pps;
+}
+
+
+// SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]
+// target-reached tolerance in 0.01 um; 0 keeps the current value. Applied at once if
+// the encoder is configured (the two registers are plain writes) and by every later
+// CONFIGURE_STAGE_PID. Minimum 1 ustep.
+void callback_set_pid_tolerance()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t dead_c = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    uint16_t tr_c   = (uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]);
+    if (dead_c != 0)
+    {
+        int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dead_c) / 100000.0f);
+        if (v < 0) v = -v;
+        pid_tolerance_usteps[axis] = v < 1 ? 1 : (uint32_t)v;
+        if (encoder_configured[axis])
+        {
+            tmc4361A_writeInt(&tmc4361[axis], TMC4361A_PID_TOLERANCE_WR, pid_tolerance_usteps[axis]);
+            tmc4361[axis].pid_tolerance = pid_tolerance_usteps[axis];
+        }
+    }
+    if (tr_c != 0)
+    {
+        int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(tr_c) / 100000.0f);
+        if (v < 0) v = -v;
+        pid_tr_tolerance_usteps[axis] = v < 1 ? 1 : (uint32_t)v;
+        if (encoder_configured[axis])
+        {
+            tmc4361A_writeInt(&tmc4361[axis], TMC4361A_CL_TR_TOLERANCE_WR, pid_tr_tolerance_usteps[axis]);
+            tmc4361[axis].target_tolerance = pid_tr_tolerance_usteps[axis];
+        }
+    }
+}
+
+// SET_PID_HOME_ZONE (46): [2] protocol axis, [3..4] zone half-width in um around
+// the home position (XACTUAL = 0). 0 disables the zone. Inside the zone the loop
+// is held open; see check_closed_loop() for the engage / release rules.
+void callback_set_pid_home_zone()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t zone_um = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    int32_t zone = (zone_um == 0) ? 0 : tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(zone_um) / 1000.0f);
+    pid_home_zone_usteps[axis] = (zone < 0) ? -zone : zone;
+}
+
+// SET_ENCODER_REPORTING (44): [2] protocol axis, [3] ENCODER_REPORT_* mode.
+// Chooses which axis's encoder the status packet carries and how; see
+// send_position_update(). Reporting is a read-only diagnostic: it moves nothing.
+void callback_set_encoder_reporting()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    uint8_t mode = buffer_rx[3];
+
+    // Leaving mode 2 must hand the position field back to XACTUAL for every axis.
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+
+    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        encoder_report_axis = 0xFF;
+        encoder_report_mode = ENCODER_REPORT_OFF;
+        return;
+    }
+    encoder_report_axis = axis;
+    encoder_report_mode = mode;
+    if (mode == ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        if (axis == x) X_use_encoder = true;
+        else if (axis == y) Y_use_encoder = true;
+        else if (axis == z) Z_use_encoder = true;
+    }
+}
+
+// SET_PID_LIMITS (45): [2] protocol axis, [3..4] max closed-loop correction
+// velocity in mm/s x 100, [5..6] deviation watchdog limit in um. A zero field
+// keeps the current value. Written to the TMC4361A at once if the encoder is
+// configured, and re-applied by every later CONFIGURE_STAGE_PID.
+void callback_set_pid_limits()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+
+    uint16_t v_x100 = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    uint16_t dev_um = (uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]);
+
+    if (v_x100 != 0)
+    {
+        // pid_clamp.h: pps to the register and to the watch's copy (see callback_configure_stage_pid)
+        pid_clamp_set_limit(&pid_clamp[axis], float(v_x100) / 100.0f, clamp_geometry(axis), encoder_configured[axis],
+                            write_pid_dv_clip, &tmc4361[axis]);
+    }
+    if (dev_um != 0)
+        pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dev_um) / 1000.0f);
 }
 
 void callback_disable_stage_pid()
@@ -180,6 +463,13 @@ void callback_disable_stage_pid()
 
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
     stage_PID_enabled[axis] = 0;
+    pid_requested[axis] = false;
+    pid_zone_hold[axis] = false;
+    // An explicit DISABLE acknowledges a latched watchdog fault: the host has chosen to run
+    // this axis open-loop knowingly, so the fault bit (status byte 18) is cleared here. ENABLE
+    // clears it too, but only after its own deviation check passes.
+    pid_fault[axis] = false;
+    pid_fault_cause[axis] = PID_FAULT_NONE;
 }
 
 // Helper function for filter wheel initialization (shared by W and W2)
@@ -234,7 +524,25 @@ static void init_filterwheel_axis(uint8_t axis)
     tmc4361A_sRampInit(&tmc4361[axis]);
 
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+    stage_PID_enabled[axis] = 0;
+    encoder_configured[axis] = false;   // tmc4361A_init() above reset the chip
+    pid_clamp_chip_reset(&pid_clamp[axis]);   // ... PID_DV_CLIP included; the host's override survives
+    pid_fault[axis] = false;
+    pid_fault_cause[axis] = PID_FAULT_NONE;
+    pid_requested[axis] = false;
+    pid_zone_hold[axis] = false;
 
+    // The index flag is enabled as the LEFT stop switch above, but enableHomingLimit()
+    // sets STOP_LEFT_IS_HOME, which turns that input into the HOME_REF input. The
+    // TMC4361A datasheet rev 1.26, 8.3.4 "Homing with STOPL or STOPR": with stop_left_is_home
+    // = 1 "the stop event at STOPL only occurs when the home range is crossed after STOPL
+    // becomes active" (home range = X_HOME +/- HOME_SAFETY_MARGIN). This firmware never
+    // starts home tracking (START_HOME_TRACKING), so that condition is never met and the
+    // flag does not stop the wheel in either direction; homing polls the switch state and
+    // uses X_LATCH instead (check_homing_w). Bench-verified 2026-09-07: forward and
+    // backward crossings, full turns and single slots, all completed. The host relies on
+    // this to take the shortest path between slots (SquidFilterWheel.wrap). The same
+    // mechanism is why X/Y/Z are stopped on their switches in software (check_limits).
     tmc4361A_enableHomingLimit(&tmc4361[axis], rht_sw_pol[axis], TMC4361_homing_sw[axis], home_safety_margin[axis]);
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], -1);
     tmc4361A_disableVirtualLimitSwitch(&tmc4361[axis], 1);
@@ -276,6 +584,7 @@ void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
+    focus_wheel_pending = false;
     first_packet_from_joystick_panel = true;
     // Re-initialise the TMC4361A and its power stage on each stage axis.
     //
@@ -360,7 +669,24 @@ void callback_initialize()
         tmc4361[i].rampParam[ASTART_IDX] = 0;
         tmc4361[i].rampParam[DFINAL_IDX] = 0;
         tmc4361A_sRampInit(&tmc4361[i]);
+
+        // tmc_driver_init() above reset the TMC4361A, which wiped ENC_IN_RES and
+        // REGULATION_MODUS: the loop is off in hardware and the encoder scale is
+        // gone, so the host must CONFIGURE_STAGE_PID again before ENABLE_STAGE_PID.
+        // Keep the bookkeeping honest about that.
+        stage_PID_enabled[i] = 0;
+        encoder_configured[i] = false;
+        pid_clamp_chip_reset(&pid_clamp[i]);   // the driver init reset the chip: PID_DV_CLIP is 0 until the next CONFIGURE
+        pid_fault[i] = false;
+        pid_fault_cause[i] = PID_FAULT_NONE;
+        pid_requested[i] = false;
+        pid_zone_hold[i] = false;
     }
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
 
     // homing switch settings
     tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
@@ -384,6 +710,7 @@ void callback_reset()
     W_commanded_movement_in_progress = false;
     W2_commanded_movement_in_progress = false;
     is_homing_X = false;
+    focus_wheel_pending = false;   // nothing the wheel queued survives a RESET
     is_homing_Y = false;
     is_homing_Z = false;
     is_homing_W = false;
@@ -401,4 +728,34 @@ void callback_reset()
     is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
+
+    // Encoder diagnostics are a host-session thing: a fresh host must see the
+    // shipping packet until it asks otherwise. Watchdog faults are cleared with it.
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+    for (uint8_t i = 0; i < TOTAL_AXES; i++)
+    {
+        // an engaged loop would otherwise keep regulating with no watchdog until INITIALIZE
+        if (stage_PID_enabled[i]) tmc4361A_set_PID(&tmc4361[i], PID_DISABLE);
+        stage_PID_enabled[i] = 0;
+        pid_fault[i] = false;
+        pid_fault_cause[i] = PID_FAULT_NONE;
+        pid_requested[i] = false;
+        pid_zone_hold[i] = false;
+        pid_realign_pending[i] = false;
+        // The loop CONFIGURATION goes back to the firmware defaults as well. The host sends
+        // only the values it wants to change (0 = keep the default), so anything a tool or an
+        // earlier session left here would otherwise survive the reset: on 2026-09-08 a 3.5 mm/s
+        // loop-mode threshold outlived a RESET and a "rest-only" test ran engaged in flight.
+        pid_max_dev_usteps[i] = 0;
+        pid_clamp_reset(&pid_clamp[i]);
+        pid_home_zone_usteps[i] = 0;
+        pid_tolerance_usteps[i] = 0;
+        pid_tr_tolerance_usteps[i] = 0;
+        completion_window_usteps[i] = 0;
+        pid_open_above_pps[i] = 0;
+    }
 }

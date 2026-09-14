@@ -19,6 +19,14 @@ void callback_send_hardware_trigger();
 void callback_set_pin_level();
 void callback_configure_stage_pid();
 void callback_enable_stage_pid();
+void callback_set_encoder_reporting();
+void callback_set_pid_limits();
+void callback_set_pid_home_zone();
+void callback_set_ramp_profile();
+void callback_set_pid_tolerance();
+void callback_set_completion_window();
+void callback_set_pid_open_above();
+
 void callback_disable_stage_pid();
 void callback_initfilterwheel();
 void callback_initfilterwheel_w2();

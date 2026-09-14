@@ -123,6 +123,10 @@ if __name__ == "__main__":
         reset_turret_action.triggered.connect(win.resetObjectiveTurret)
         microscope_utils_menu.addAction(reset_turret_action)
 
+    motion_selftest_action = QAction("Motion Self-Test (Z)...", win)
+    motion_selftest_action.triggered.connect(win.openMotionSelfTest)
+    microscope_utils_menu.addAction(motion_selftest_action)
+
     workflow_runner_action = QAction("Workflow Runner...", win)
     workflow_runner_action.triggered.connect(win.openWorkflowRunner)
     microscope_utils_menu.addAction(workflow_runner_action)

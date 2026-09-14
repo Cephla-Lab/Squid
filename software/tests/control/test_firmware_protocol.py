@@ -18,8 +18,13 @@ import pytest
 from crc import CrcCalculator, Crc8
 
 from control._def import (
+    BIT_POS_JOYSTICK_BUTTON,
+    BIT_POS_PID_FAULT_X,
+    BIT_POS_PID_FAULT_Y,
+    BIT_POS_PID_FAULT_Z,
     CMD_SET,
     MicrocontrollerDef,
+    PID_FAULT_CAUSE,
     AXIS,
     HOME_OR_ZERO,
     LIMIT_CODE,
@@ -133,6 +138,13 @@ class TestProtocolConsistency:
             "SET_STROBE_DELAY": CMD_SET.SET_STROBE_DELAY,
             "SET_AXIS_DISABLE_ENABLE": CMD_SET.SET_AXIS_DISABLE_ENABLE,
             "SET_PIN_LEVEL": CMD_SET.SET_PIN_LEVEL,
+            "SET_ENCODER_REPORTING": CMD_SET.SET_ENCODER_REPORTING,
+            "SET_PID_LIMITS": CMD_SET.SET_PID_LIMITS,
+            "SET_PID_HOME_ZONE": CMD_SET.SET_PID_HOME_ZONE,
+            "SET_RAMP_PROFILE": CMD_SET.SET_RAMP_PROFILE,
+            "SET_PID_TOLERANCE": CMD_SET.SET_PID_TOLERANCE,
+            "SET_COMPLETION_WINDOW": CMD_SET.SET_COMPLETION_WINDOW,
+            "SET_PID_OPEN_ABOVE": CMD_SET.SET_PID_OPEN_ABOVE,
             "INITFILTERWHEEL": CMD_SET.INITFILTERWHEEL,
             "INITIALIZE": CMD_SET.INITIALIZE,
             "RESET": CMD_SET.RESET,
@@ -243,6 +255,81 @@ class TestProtocolConsistency:
                 mismatches.append(f"{fw_name}: not found in firmware")
 
         assert len(mismatches) == 0, f"Limit switch polarity mismatches:\n" + "\n".join(mismatches)
+
+    def test_status_byte_bit_positions_match(self, firmware_constants):
+        """Verify the byte 18 bit positions match.
+
+        The host masks these bits individually, so a firmware/host disagreement silently
+        reads the wrong flag rather than failing loudly.
+        """
+        bit_mapping = {
+            "BIT_POS_JOYSTICK_BUTTON": BIT_POS_JOYSTICK_BUTTON,
+            "BIT_POS_PID_FAULT_X": BIT_POS_PID_FAULT_X,
+            "BIT_POS_PID_FAULT_Y": BIT_POS_PID_FAULT_Y,
+            "BIT_POS_PID_FAULT_Z": BIT_POS_PID_FAULT_Z,
+        }
+
+        mismatches = []
+        for fw_name, py_value in bit_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(f"{fw_name}: firmware={fw_value}, software={py_value}")
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"Status byte bit position mismatches:\n" + "\n".join(mismatches)
+
+    def test_pid_fault_cause_values_match(self, firmware_constants):
+        """Verify the closed-loop fault causes in status bytes 19-21 match.
+
+        The host turns these bytes into the sentence an operator reads when the loop opens, so a
+        firmware/host disagreement names the wrong failure rather than failing loudly.
+        """
+        cause_mapping = {
+            "PID_FAULT_CAUSE_X_SHIFT": PID_FAULT_CAUSE.X_SHIFT,
+            "PID_FAULT_CAUSE_Y_SHIFT": PID_FAULT_CAUSE.Y_SHIFT,
+            "PID_FAULT_CAUSE_Z_SHIFT": PID_FAULT_CAUSE.Z_SHIFT,
+            "PID_FAULT_CAUSE_MASK": PID_FAULT_CAUSE.MASK,
+            "PID_FAULT_NONE": PID_FAULT_CAUSE.NONE,
+            "PID_FAULT_WATCHDOG": PID_FAULT_CAUSE.WATCHDOG,
+            "PID_FAULT_NO_PROGRESS": PID_FAULT_CAUSE.NO_PROGRESS,
+            "PID_FAULT_TIMEOUT": PID_FAULT_CAUSE.TIMEOUT,
+            "PID_FAULT_REALIGN_REFUSED": PID_FAULT_CAUSE.REALIGN_REFUSED,
+            "PID_FAULT_REENGAGE_REFUSED": PID_FAULT_CAUSE.REENGAGE_REFUSED,
+        }
+
+        mismatches = []
+        for fw_name, py_value in cause_mapping.items():
+            if fw_name in firmware_constants:
+                fw_value = firmware_constants[fw_name]
+                if fw_value != py_value:
+                    mismatches.append(f"{fw_name}: firmware={fw_value}, software={py_value}")
+            else:
+                mismatches.append(f"{fw_name}: not found in firmware")
+
+        assert len(mismatches) == 0, f"PID fault cause mismatches:\n" + "\n".join(mismatches)
+
+    def test_every_firmware_pid_fault_cause_has_a_host_name(self, firmware_constants):
+        """A cause the firmware can send but the host cannot name would reach the operator as a bare
+        number, which is the situation these constants exist to end."""
+        # PID_FAULT_CAUSE_* are the packing shifts/mask, not causes
+        firmware_causes = {
+            name: value
+            for name, value in firmware_constants.items()
+            if name.startswith("PID_FAULT_") and not name.startswith("PID_FAULT_CAUSE_")
+        }
+        assert firmware_causes, "no PID_FAULT_* constants found in the firmware header"
+
+        unnamed = [
+            f"{name} = {value}"
+            for name, value in firmware_causes.items()
+            if value != PID_FAULT_CAUSE.NONE and value not in PID_FAULT_CAUSE.NAMES
+        ]
+        assert not unnamed, "firmware fault causes with no host wording:\n" + "\n".join(unnamed)
+
+        unknown = [v for v in PID_FAULT_CAUSE.NAMES if v not in firmware_causes.values()]
+        assert not unknown, f"host names causes the firmware never sends: {unknown}"
 
     def test_illumination_source_codes_match(self, firmware_constants):
         """Verify illumination source codes match."""

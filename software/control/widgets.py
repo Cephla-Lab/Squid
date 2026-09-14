@@ -4458,7 +4458,9 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
         self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
-        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
+        # Qt 6 has no activated[str] overload (KeyError 'no matching overloaded signal'); textActivated exists
+        # in Qt >= 5.14 and Qt 6 and carries the same text argument.
+        self.dropdown_modeSelection.textActivated.connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.btn_snap.clicked.connect(self.snap)
