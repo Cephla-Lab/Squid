@@ -227,6 +227,9 @@ class QtMultiPointController(MultiPointController, QObject):
     # Laser engine gate signals — emitted around per-timepoint blocking waits.
     signal_laser_engine_waiting = Signal(list)  # list[str] of channel keys being waited on
     signal_laser_engine_ready = Signal()
+    # Large acquisition pause gate — only fires for runs with large acquisition mode on.
+    signal_acquisition_paused = Signal(object, object)  # PauseState, Optional[DiskStatus]
+    signal_acquisition_resumed = Signal(float)  # seconds spent paused
 
     def __init__(
         self,
@@ -259,6 +262,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
                 signal_laser_engine_waiting=self._signal_laser_engine_waiting_fn,
                 signal_laser_engine_ready=self._signal_laser_engine_ready_fn,
+                signal_acquisition_paused=self._signal_acquisition_paused_fn,
+                signal_acquisition_resumed=self._signal_acquisition_resumed_fn,
             ),
             scan_coordinates=scan_coordinates,
             laser_autofocus_controller=laser_autofocus_controller,
@@ -513,6 +518,12 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_laser_engine_ready_fn(self):
         self.signal_laser_engine_ready.emit()
+
+    def _signal_acquisition_paused_fn(self, pause_state, disk_status):
+        self.signal_acquisition_paused.emit(pause_state, disk_status)
+
+    def _signal_acquisition_resumed_fn(self, paused_s: float):
+        self.signal_acquisition_resumed.emit(paused_s)
 
     # -------------------------------------------------------------------------
     # Helper methods for Zarr FOV path building
@@ -1533,6 +1544,19 @@ class HighContentScreeningGui(QMainWindow):
         # Laser engine readiness gate — modal progress dialog while waiting at timepoint boundaries.
         self.multipointController.signal_laser_engine_waiting.connect(self._show_laser_engine_dialog)
         self.multipointController.signal_laser_engine_ready.connect(self._hide_laser_engine_dialog)
+
+        # Large acquisition pause gate — drives the Pause/Resume controls on the multipoint widgets.
+        # Those controls come from _AcquisitionPauseControlsMixin, so every multipoint widget below
+        # defines the slots (TemplateMultiPointWidget inherits them from FlexibleMultiPointWidget).
+        for multipoint_widget in (
+            self.flexibleMultiPointWidget,
+            self.wellplateMultiPointWidget,
+            self.templateMultiPointWidget,
+        ):
+            if multipoint_widget is None:
+                continue
+            self.multipointController.signal_acquisition_paused.connect(multipoint_widget.on_acquisition_paused)
+            self.multipointController.signal_acquisition_resumed.connect(multipoint_widget.on_acquisition_resumed)
 
         # RAM monitor widget connections - use controller signals which fire AFTER memory monitor is created
         self.multipointController.signal_acquisition_start.connect(self._connect_ram_monitor_widget)

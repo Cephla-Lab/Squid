@@ -643,3 +643,37 @@ def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
     mpc.thread.join(10)
     with open(tmp_path / "R02_image" / "acquisition.yaml", encoding="utf-8") as f:
         assert "protocol" not in yaml.safe_load(f)
+
+
+def test_large_acquisition_mode_reaches_the_params_and_is_reset_after_the_run(tmp_path, monkeypatch):
+    import yaml
+
+    # This test is about the flag's plumbing, not about pausing: drop the reserve so the run cannot
+    # block on the machine's real free space (the pause behaviour has its own tests).
+    monkeypatch.setattr(control._def, "DISK_SPACE_RESERVE_GB", 0.0)
+
+    scope, tt, mpc = _controller_with_tracker()
+    assert mpc.large_acquisition_mode is False  # strictly opt-in
+
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_large", add_timestamp=False)
+    mpc.set_large_acquisition_mode(True)
+
+    mpc.timestamp_acquisition_started = 0.0  # normally set by run_acquisition, which build_params reads
+    assert mpc.build_params(scan_position_information=_empty_scan_positions()).large_acquisition_mode is True
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    with open(tmp_path / "R01_large" / "acquisition.yaml", encoding="utf-8") as f:
+        assert yaml.safe_load(f)["acquisition"]["large_acquisition_mode"] is True
+
+    # A dialog-granted per-run opt-in must not leak into the next run.
+    assert mpc.large_acquisition_mode is False
+
+
+def _empty_scan_positions():
+    from control.core.multi_point_utils import ScanPositionInformation
+
+    return ScanPositionInformation(scan_region_coords_mm=[], scan_region_names=[], scan_region_fov_coords_mm={})

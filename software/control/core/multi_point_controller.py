@@ -16,6 +16,8 @@ import pandas as pd
 
 from control import utils, utils_acquisition
 import control._def
+from control.core.disk_space import DiskStatus
+from control.core.pause_gate import PauseGate, PauseState
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
@@ -79,6 +81,7 @@ def _save_acquisition_yaml(
             "widget_type": widget_type,
             "xy_mode": params.xy_mode,
             "skip_saving": params.skip_saving,
+            "large_acquisition_mode": params.large_acquisition_mode,
         },
         "objective": objective_info or {},
         "sample": {
@@ -240,6 +243,11 @@ class MultiPointController:
         self.use_manual_focus_map = False
         self.base_path = None
         self.skip_saving = False
+        # Per-run opt-in for large acquisition mode (pre-flight dialog); reset when the run finishes.
+        self.large_acquisition_mode = False
+        # Single pause control point of the running acquisition; exists only for runs in large
+        # acquisition mode (operator pause + disk-space guard hold it), None otherwise.
+        self._pause_gate: Optional[PauseGate] = None
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
         self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
@@ -446,6 +454,11 @@ class MultiPointController:
 
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
+
+    def set_large_acquisition_mode(self, enabled: bool) -> None:
+        """Opt this run into large acquisition mode (folded with the global setting in build_params)."""
+        self.large_acquisition_mode = bool(enabled)
+        self._log.info(f"Large acquisition mode for the next run: {self.large_acquisition_mode}")
 
     def set_xy_mode(self, xy_mode):
         self.xy_mode = xy_mode
@@ -950,6 +963,10 @@ class MultiPointController:
             # (starts a new one warming for next acquisition)
             prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
 
+            # Large acquisition mode (opt-in): the gate is the single pause control point and handing
+            # it to the worker is what switches the checkpoints on. None keeps today's acquisition path.
+            self._pause_gate = PauseGate() if acquisition_params.large_acquisition_mode else None
+
             # Worker creation can fail - ensure runner is cleaned up on error
             try:
                 self.multiPointWorker = MultiPointWorker(
@@ -968,6 +985,7 @@ class MultiPointController:
                     prewarmed_job_runner=prewarmed_runner,
                     prewarmed_bp_values=prewarmed_bp_values,
                     run_state_writer=self._run_state_writer,
+                    pause_gate=self._pause_gate,
                 )
             except Exception:
                 # Clean up pre-warmed runner if worker creation failed.
@@ -987,6 +1005,7 @@ class MultiPointController:
             thread_started = True
         finally:
             if not thread_started:
+                self._pause_gate = None
                 # Acquisition never launched a worker — close out the breadcrumb so the
                 # watchdog doesn't later misread the lingering "running" state as a hang.
                 self._run_state_writer.end("error", None)
@@ -1052,6 +1071,9 @@ class MultiPointController:
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
             skip_saving=self.skip_saving,
+            # Effective mode for this run: per-run opt-in (pre-flight dialog / YAML) or the global
+            # setting. Recorded in acquisition.yaml so the run's behaviour is reproducible.
+            large_acquisition_mode=self.large_acquisition_mode or control._def.LARGE_ACQUISITION_MODE,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
@@ -1061,6 +1083,13 @@ class MultiPointController:
     def _on_acquisition_completed(self):
         self._log.debug("MultiPointController._on_acquisition_completed called")
         # Note: Plate views are saved per timepoint in the worker's run_single_time_point method
+
+        # A per-run opt-in (the pre-flight dialog) must not leak into the next run. Reset it first so a
+        # failure further down this method cannot leave the flag set. The global setting is unaffected.
+        self.large_acquisition_mode = False
+        if self._pause_gate is not None:
+            self._pause_gate.clear()
+            self._pause_gate = None
 
         # restore the previous selected mode
         if self.gen_focus_map:
@@ -1120,6 +1149,40 @@ class MultiPointController:
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
+
+    def request_pause(self) -> bool:
+        """Operator pause, honored at the worker's next FOV/timepoint checkpoint.
+
+        Returns False when no acquisition is running or the running one was started without large
+        acquisition mode (it then has no pause support at all).
+        """
+        gate = self._pause_gate
+        if gate is None or not self.acquisition_in_progress():
+            self._log.warning("Pause requested, but no acquisition with large acquisition mode is running")
+            return False
+        gate.hold("operator")
+        return True
+
+    def request_resume(self) -> bool:
+        """Release the operator's pause. Other holders (the disk-space guard) keep theirs."""
+        gate = self._pause_gate
+        if gate is None or not self.acquisition_in_progress():
+            self._log.warning("Resume requested, but no acquisition with large acquisition mode is running")
+            return False
+        gate.release("operator")
+        return True
+
+    @property
+    def pause_state(self) -> Optional[PauseState]:
+        """Pause state of the running acquisition, or None when it has no pause support."""
+        gate = self._pause_gate
+        return gate.state() if gate is not None else None
+
+    @property
+    def disk_status(self) -> Optional[DiskStatus]:
+        """Latest disk-space guard evaluation of the running acquisition, or None."""
+        worker = self.multiPointWorker
+        return worker.disk_status if worker is not None else None
 
     def validate_acquisition_settings(self) -> bool:
         """Validate settings before starting acquisition"""

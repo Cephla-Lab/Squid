@@ -20,6 +20,7 @@ import pytest
 # Import with config handling - skip if configuration not available
 try:
     import control._def
+    import control.slack_notifier as slack_notifier_module
     from control.slack_notifier import (
         SlackNotifier,
         TimepointStats,
@@ -30,6 +31,7 @@ try:
     SLACK_NOTIFIER_AVAILABLE = True
 except (SystemExit, Exception):
     SLACK_NOTIFIER_AVAILABLE = False
+    slack_notifier_module = None
     SlackNotifier = None
     TimepointStats = None
     AcquisitionStats = None
@@ -52,6 +54,7 @@ def notifier():
     control._def.SlackNotifications.NOTIFY_ON_TIMEPOINT_COMPLETE = True
     control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_START = True
     control._def.SlackNotifications.NOTIFY_ON_ACQUISITION_FINISHED = True
+    control._def.SlackNotifications.NOTIFY_ON_PAUSE = True
     control._def.SlackNotifications.SEND_MOSAIC_SNAPSHOTS = True
 
     notifier = SlackNotifier()
@@ -306,6 +309,110 @@ class TestSlackNotifierAcquisitionNotifications:
             notifier.notify_acquisition_finished(stats)
             mock_queue.assert_not_called()
         notifier.close()
+
+
+class TestSlackNotifierPauseNotifications:
+    """Tests for acquisition pause/resume notifications."""
+
+    GIB = 1024**3
+
+    def test_notify_paused_disk_space_includes_disk_numbers(self, notifier):
+        """Disk-space pauses report free/required space, experiment and timepoint."""
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_acquisition_paused(
+                experiment_id="test_exp",
+                reasons=["disk_space"],
+                free_bytes=int(3.1 * self.GIB),
+                required_bytes=int(12.4 * self.GIB),
+                timepoint=3,
+                total_timepoints=10,
+            )
+            mock_queue.assert_called_once()
+            args = mock_queue.call_args[0][0]
+            assert isinstance(args, SlackMessage)
+            assert "paused" in args.text.lower()
+            assert "disk space" in args.text.lower()
+            assert "3.1 GB" in args.text
+            assert "12.4 GB" in args.text
+            assert "test_exp" in args.text
+            assert "3/10" in args.text
+
+    def test_notify_paused_operator_only_omits_disk_numbers(self, notifier):
+        """Operator pauses do not mention disk numbers."""
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_acquisition_paused(
+                experiment_id="test_exp",
+                reasons=["operator"],
+                free_bytes=int(3.1 * self.GIB),
+                required_bytes=int(12.4 * self.GIB),
+            )
+            mock_queue.assert_called_once()
+            args = mock_queue.call_args[0][0]
+            assert "operator" in args.text.lower()
+            assert "test_exp" in args.text
+            assert "GB" not in args.text
+            assert "free" not in args.text.lower()
+
+    def test_notify_resumed_formats_duration(self, notifier):
+        """Resume notifications include the paused duration and experiment."""
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_acquisition_resumed(experiment_id="test_exp", paused_seconds=723.0)
+            mock_queue.assert_called_once()
+            args = mock_queue.call_args[0][0]
+            assert "resumed" in args.text.lower()
+            assert "12m" in args.text
+            assert "test_exp" in args.text
+
+    def test_notify_pause_respects_flag(self):
+        """Pause/resume notifications respect the NOTIFY_ON_PAUSE flag."""
+        control._def.SlackNotifications.ENABLED = True
+        control._def.SlackNotifications.BOT_TOKEN = "xoxb-test"
+        control._def.SlackNotifications.CHANNEL_ID = "C12345"
+        control._def.SlackNotifications.NOTIFY_ON_PAUSE = False
+
+        notifier = SlackNotifier()
+        with mock.patch.object(notifier, "_queue_message") as mock_queue:
+            notifier.notify_acquisition_paused("test", ["disk_space"], free_bytes=1, required_bytes=2)
+            notifier.notify_acquisition_resumed("test", 10.0)
+            mock_queue.assert_not_called()
+        notifier.close()
+        control._def.SlackNotifications.NOTIFY_ON_PAUSE = True
+
+    def test_notify_pause_noop_when_disabled(self, disabled_notifier):
+        """Pause/resume are no-ops (nothing queued) when Slack is disabled."""
+        control._def.SlackNotifications.NOTIFY_ON_PAUSE = True
+        disabled_notifier._message_queue = mock.MagicMock()
+        disabled_notifier.notify_acquisition_paused("test", ["disk_space"], free_bytes=1, required_bytes=2)
+        disabled_notifier.notify_acquisition_resumed("test", 10.0)
+        disabled_notifier._message_queue.put_nowait.assert_not_called()
+
+    def test_notify_pause_noop_when_not_configured(self):
+        """Pause/resume are no-ops when no bot token/channel is configured."""
+        control._def.SlackNotifications.ENABLED = True
+        control._def.SlackNotifications.NOTIFY_ON_PAUSE = True
+        control._def.SlackNotifications.BOT_TOKEN = None
+        control._def.SlackNotifications.CHANNEL_ID = None
+
+        notifier = SlackNotifier()
+        notifier._message_queue = mock.MagicMock()
+        notifier.notify_acquisition_paused("test", ["operator"])
+        notifier.notify_acquisition_resumed("test", 10.0)
+        notifier._message_queue.put_nowait.assert_not_called()
+        notifier.close()
+
+    def test_notify_pause_swallows_send_exception(self, notifier):
+        """A failure while queueing is swallowed and logged, never raised."""
+        with mock.patch.object(notifier, "_queue_message", side_effect=RuntimeError("boom")):
+            with mock.patch.object(slack_notifier_module.log, "warning") as mock_warning:
+                notifier.notify_acquisition_paused("test", ["disk_space"], free_bytes=1, required_bytes=2)
+                notifier.notify_acquisition_resumed("test", 10.0)
+                assert mock_warning.call_count == 2
+
+    def test_format_bytes(self, notifier):
+        """Byte counts are formatted as GB with one decimal."""
+        assert notifier._format_bytes(3.1 * self.GIB) == "3.1 GB"
+        assert notifier._format_bytes(12.4 * self.GIB) == "12.4 GB"
+        assert notifier._format_bytes(0) == "0.0 GB"
 
 
 class TestSlackNotifierTimeEstimation:

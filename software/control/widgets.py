@@ -6,7 +6,7 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, NamedTuple, Optional, TYPE_CHECKING
 
 import psutil
 
@@ -68,6 +68,58 @@ def error_dialog(message: str, title: str = "Error"):
     return
 
 
+LARGE_ACQUISITION_MODE_EXPLANATION = (
+    "Large acquisition mode pauses the acquisition when the disk fills up and writes a transfer manifest so the"
+    " NAS upload tool can move completed files off the disk during the run."
+)
+
+
+class PreflightDiskOptions(NamedTuple):
+    """What the pre-flight disk check should put in front of the operator.
+
+    Attributes:
+        needs_dialog: The acquisition needs more space than the save disk has.
+        offer_enable_mode: Offer to turn large acquisition mode on for this run (it is off in Settings).
+        offer_split_ome: Reserved for the OME-TIFF split PR; always False here.
+    """
+
+    needs_dialog: bool
+    offer_enable_mode: bool
+    offer_split_ome: bool
+
+
+def preflight_disk_options(space_required: float, available: int, mode_on: bool) -> PreflightDiskOptions:
+    """Decide what the pre-flight disk check should do. Pure: no Qt, no I/O."""
+    needs_dialog = space_required > available
+    return PreflightDiskOptions(
+        needs_dialog=needs_dialog,
+        offer_enable_mode=needs_dialog and not mode_on,
+        offer_split_ome=False,
+    )
+
+
+def preflight_disk_dialog(message: str, options: PreflightDiskOptions) -> str:
+    """Ask the operator what to do about a save disk that is too small for this acquisition.
+
+    Returns "enable" (turn large acquisition mode on for this run), "continue" (start anyway, the mode is
+    already on in Settings) or "cancel".
+    """
+    msg = QMessageBox()
+    msg.setIcon(QMessageBox.Warning)
+    msg.setWindowTitle("Not Enough Disk Space")
+    msg.setText(message)
+    if options.offer_enable_mode:
+        proceed_action = "enable"
+        proceed_button = msg.addButton("Enable large acquisition mode for this run", QMessageBox.AcceptRole)
+    else:
+        proceed_action = "continue"
+        proceed_button = msg.addButton("Continue", QMessageBox.AcceptRole)
+    cancel_button = msg.addButton("Cancel", QMessageBox.RejectRole)
+    msg.setDefaultButton(cancel_button)
+    msg.exec_()
+    return proceed_action if msg.clickedButton() is proceed_button else "cancel"
+
+
 def check_space_available_with_error_dialog(
     multi_point_controller: MultiPointController, logger: logging.Logger, factor_of_safecty: float = 1.03
 ) -> bool:
@@ -81,17 +133,27 @@ def check_space_available_with_error_dialog(
     logger.info(
         f"Checking space available: {space_required=}, {available_disk_space=}, {image_count=}, {save_directory=}"
     )
-    if space_required > available_disk_space:
-        megabytes_required = int(space_required / 1024 / 1024)
-        megabytes_available = int(available_disk_space / 1024 / 1024)
-        error_message = (
-            f"This acquisition will capture {image_count:,} images, which will"
-            f" require {megabytes_required:,} [MB], but '{save_directory}' only has {megabytes_available:,} [MB] available."
-        )
-        logger.error(error_message)
-        error_dialog(error_message, title="Not Enough Disk Space")
-        return False
-    return True
+    options = preflight_disk_options(space_required, available_disk_space, control._def.LARGE_ACQUISITION_MODE)
+    if not options.needs_dialog:
+        return True
+
+    megabytes_required = int(space_required / 1024 / 1024)
+    megabytes_available = int(available_disk_space / 1024 / 1024)
+    error_message = (
+        f"This acquisition will capture {image_count:,} images, which will"
+        f" require {megabytes_required:,} [MB], but '{save_directory}' only has {megabytes_available:,} [MB] available."
+    )
+    # Module-level lookup (not a default argument) so tests can monkeypatch the dialog.
+    action = preflight_disk_dialog(f"{error_message}\n\n{LARGE_ACQUISITION_MODE_EXPLANATION}", options)
+    if action == "enable":
+        logger.info("Operator enabled large acquisition mode for this run from the pre-flight disk check.")
+        multi_point_controller.set_large_acquisition_mode(True)
+        return True
+    if action == "continue":
+        logger.info("Operator chose to start anyway; large acquisition mode is already enabled in Settings.")
+        return True
+    logger.error(error_message)
+    return False
 
 
 def check_ram_available_with_error_dialog(
@@ -1125,6 +1187,98 @@ class _ApplyChannelOffsetMixin:
         self.multipointController.set_apply_channel_offset(checked)
 
 
+class _AcquisitionPauseControlsMixin:
+    """Mixin providing the Pause/Resume button and pause status label for a multipoint widget.
+
+    The controls are strictly opt-in: they stay hidden unless the run that just started is in large
+    acquisition mode (``multipointController.pause_state is not None``), so a default acquisition looks
+    exactly as it did before. Host widgets call ``_create_pause_controls()`` while building their
+    layout, ``_show_pause_controls_for_started_run()`` right after starting a run, and
+    ``_reset_pause_controls()`` when the run finishes. ``self.multipointController`` and ``self._log``
+    must already exist.
+    """
+
+    _PAUSE_REASON_LABELS = {"disk_space": "disk space", "operator": "operator"}
+
+    _PAUSE_BUTTON_TOOLTIP = (
+        "Pause the acquisition at the next safe checkpoint. The disk-space guard can hold the pause"
+        " independently, so the run resumes only once every hold is released."
+    )
+
+    def _create_pause_controls(self):
+        """Build the (hidden) Pause button and status label."""
+        self._operator_pause_held = False
+
+        self.btn_pauseAcquisition = QPushButton("Pause")
+        self.btn_pauseAcquisition.setToolTip(self._PAUSE_BUTTON_TOOLTIP)
+        self.btn_pauseAcquisition.setVisible(False)
+        self.btn_pauseAcquisition.clicked.connect(self._on_pause_button_clicked)
+
+        self.label_pauseStatus = QLabel("")
+        self.label_pauseStatus.setWordWrap(True)
+        status_font = self.label_pauseStatus.font()
+        status_font.setPointSize(max(6, status_font.pointSize() - 2))
+        self.label_pauseStatus.setFont(status_font)
+        self.label_pauseStatus.setVisible(False)
+
+    def _show_pause_controls_for_started_run(self):
+        """Reveal the controls iff the run that just started actually has a pause gate."""
+        has_pause_gate = self.multipointController.pause_state is not None
+        self.btn_pauseAcquisition.setVisible(has_pause_gate)
+        self.label_pauseStatus.setVisible(has_pause_gate)
+
+    def _reset_pause_controls(self):
+        """Hide the controls and forget any operator hold (called when the run finishes)."""
+        self._operator_pause_held = False
+        self.btn_pauseAcquisition.setText("Pause")
+        self.btn_pauseAcquisition.setVisible(False)
+        self.label_pauseStatus.setText("")
+        self.label_pauseStatus.setVisible(False)
+
+    def _on_pause_button_clicked(self):
+        if not self._operator_pause_held:
+            if self.multipointController.request_pause():
+                self._operator_pause_held = True
+                self.btn_pauseAcquisition.setText("Resume")
+            else:
+                self._log.warning("Pause request refused; the acquisition is not pausable right now.")
+            return
+
+        if not self.multipointController.request_resume():
+            self._log.warning("Resume request refused; the acquisition was not paused by the operator.")
+        self._operator_pause_held = False
+        self.btn_pauseAcquisition.setText("Pause")
+
+    def on_acquisition_paused(self, pause_state, disk_status):
+        """The acquisition parked itself at a checkpoint (worker thread -> queued Qt connection)."""
+        if not self.is_current_acquisition_widget:
+            return
+        # A pause signal only ever comes from a run in large acquisition mode, so a run started outside
+        # this widget's own start path (TCP/MCP, YAML) reveals the controls here.
+        if not self.btn_pauseAcquisition.isVisible():
+            self._show_pause_controls_for_started_run()
+        reasons = ", ".join(self._PAUSE_REASON_LABELS.get(reason, reason) for reason in pause_state.reasons)
+        text = f"Paused: {reasons}"
+        if disk_status is not None:
+            free_gb = disk_status.free_bytes / 2**30
+            required_gb = disk_status.required_bytes / 2**30
+            text += f" — {free_gb:.1f} GB free, {required_gb:.1f} GB needed"
+        self.label_pauseStatus.setText(text)
+        # A TCP/MCP client may have taken the operator hold, so mirror it onto the button.
+        if "operator" in pause_state.reasons:
+            self._operator_pause_held = True
+            self.btn_pauseAcquisition.setText("Resume")
+
+    def on_acquisition_resumed(self, paused_s: float):
+        """Every pause holder released; the acquisition is running again."""
+        if not self.is_current_acquisition_widget:
+            return
+        minutes, seconds = divmod(int(paused_s), 60)
+        self.label_pauseStatus.setText(f"Resumed after {minutes:02d}:{seconds:02d}")
+        if not self._operator_pause_held:
+            self.btn_pauseAcquisition.setText("Pause")
+
+
 class AcquisitionYAMLMismatchDialog(QDialog):
     """Dialog shown when hardware configuration doesn't match loaded YAML settings."""
 
@@ -1304,6 +1458,49 @@ class PreferencesDialog(QDialog):
             self._get_config_bool("GENERAL", "enable_flexible_multipoint", True)
         )
         layout.addRow("Enable Flexible Multipoint:", self.flexible_multipoint_checkbox)
+
+        # Large Acquisitions section
+        large_acq_group = CollapsibleGroupBox("Large Acquisitions", collapsed=True)
+        large_acq_layout = QFormLayout()
+
+        self.large_acquisition_mode_checkbox = QCheckBox()
+        self.large_acquisition_mode_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "large_acquisition_mode", control._def.LARGE_ACQUISITION_MODE)
+        )
+        self.large_acquisition_mode_checkbox.setToolTip(
+            "Pause the acquisition when the save disk is nearly full and write a transfer manifest so the"
+            " NAS upload tool can move completed files during the run."
+        )
+        large_acq_layout.addRow("Enable large acquisition mode:", self.large_acquisition_mode_checkbox)
+
+        self.disk_space_reserve_spinbox = QDoubleSpinBox()
+        self.disk_space_reserve_spinbox.setRange(0.0, 100000.0)
+        self.disk_space_reserve_spinbox.setDecimals(1)
+        self.disk_space_reserve_spinbox.setSingleStep(1.0)
+        self.disk_space_reserve_spinbox.setValue(
+            self._get_config_float("GENERAL", "disk_space_reserve_gb", control._def.DISK_SPACE_RESERVE_GB)
+        )
+        self.disk_space_reserve_spinbox.setSuffix(" GB")
+        self.disk_space_reserve_spinbox.setToolTip(
+            "Free space to keep on the save disk. The acquisition pauses before free space drops below this."
+        )
+        large_acq_layout.addRow("Disk space reserve (GB):", self.disk_space_reserve_spinbox)
+
+        self.disk_space_poll_interval_spinbox = QDoubleSpinBox()
+        self.disk_space_poll_interval_spinbox.setRange(0.5, 3600.0)
+        self.disk_space_poll_interval_spinbox.setDecimals(1)
+        self.disk_space_poll_interval_spinbox.setSingleStep(0.5)
+        self.disk_space_poll_interval_spinbox.setValue(
+            self._get_config_float("GENERAL", "disk_space_poll_interval_s", control._def.DISK_SPACE_POLL_INTERVAL_S)
+        )
+        self.disk_space_poll_interval_spinbox.setSuffix(" s")
+        self.disk_space_poll_interval_spinbox.setToolTip(
+            "How often free space is re-checked while the acquisition is paused waiting for room."
+        )
+        large_acq_layout.addRow("Disk re-check interval (s):", self.disk_space_poll_interval_spinbox)
+
+        large_acq_group.content.addLayout(large_acq_layout)
+        layout.addRow(large_acq_group)
 
         self.tab_widget.addTab(tab, "Acquisition")
 
@@ -1850,6 +2047,22 @@ class PreferencesDialog(QDialog):
         )
         dev_layout.addRow("Simulate Compression:", self.simulated_io_compression_checkbox)
 
+        self.simulated_disk_capacity_spinbox = QDoubleSpinBox()
+        self.simulated_disk_capacity_spinbox.setRange(0.0, 100000.0)
+        self.simulated_disk_capacity_spinbox.setDecimals(1)
+        self.simulated_disk_capacity_spinbox.setSingleStep(1.0)
+        self.simulated_disk_capacity_spinbox.setValue(
+            self._get_config_float("GENERAL", "simulated_disk_capacity_gb", control._def.SIMULATED_DISK_CAPACITY_GB)
+        )
+        self.simulated_disk_capacity_spinbox.setSuffix(" GB")
+        self.simulated_disk_capacity_spinbox.setToolTip(
+            "Pretend the save disk has this capacity, for exercising large acquisition mode without filling a\n"
+            "real disk. Free space is computed as this capacity minus the size of the experiment folder, so\n"
+            "deleting files from that folder raises free space and lets a paused acquisition resume.\n"
+            "0 = use the real disk."
+        )
+        dev_layout.addRow("Simulated disk capacity (GB, 0 = real disk):", self.simulated_disk_capacity_spinbox)
+
         dev_group.content.addLayout(dev_layout)
         layout.addWidget(dev_group)
 
@@ -1963,6 +2176,15 @@ class PreferencesDialog(QDialog):
             "true" if self.flexible_multipoint_checkbox.isChecked() else "false",
         )
 
+        # Acquisition - Large Acquisitions
+        self.config.set(
+            "GENERAL",
+            "large_acquisition_mode",
+            "true" if self.large_acquisition_mode_checkbox.isChecked() else "false",
+        )
+        self.config.set("GENERAL", "disk_space_reserve_gb", str(self.disk_space_reserve_spinbox.value()))
+        self.config.set("GENERAL", "disk_space_poll_interval_s", str(self.disk_space_poll_interval_spinbox.value()))
+
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
         self.config.set("CAMERA_CONFIG", "flip_image", self.flip_combo.currentText())
@@ -2012,6 +2234,7 @@ class PreferencesDialog(QDialog):
             "simulated_disk_io_compression",
             "true" if self.simulated_io_compression_checkbox.isChecked() else "false",
         )
+        self.config.set("GENERAL", "simulated_disk_capacity_gb", str(self.simulated_disk_capacity_spinbox.value()))
 
         # Advanced - Acquisition Throttling
         self.config.set(
@@ -2163,6 +2386,12 @@ class PreferencesDialog(QDialog):
         control._def.SIMULATED_DISK_IO_ENABLED = self.simulated_io_checkbox.isChecked()
         control._def.SIMULATED_DISK_IO_SPEED_MB_S = self.simulated_io_speed_spinbox.value()
         control._def.SIMULATED_DISK_IO_COMPRESSION = self.simulated_io_compression_checkbox.isChecked()
+        control._def.SIMULATED_DISK_CAPACITY_GB = self.simulated_disk_capacity_spinbox.value()
+
+        # Large acquisition settings
+        control._def.LARGE_ACQUISITION_MODE = self.large_acquisition_mode_checkbox.isChecked()
+        control._def.DISK_SPACE_RESERVE_GB = self.disk_space_reserve_spinbox.value()
+        control._def.DISK_SPACE_POLL_INTERVAL_S = self.disk_space_poll_interval_spinbox.value()
 
         # Acquisition throttling settings
         control._def.ACQUISITION_THROTTLING_ENABLED = self.throttling_enabled_checkbox.isChecked()
@@ -2245,6 +2474,24 @@ class PreferencesDialog(QDialog):
         new_val = self.flexible_multipoint_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Flexible Multipoint", str(old_val), str(new_val), False))
+
+        # Acquisition - Large Acquisitions (takes effect on the next acquisition)
+        old_val = self._get_config_bool("GENERAL", "large_acquisition_mode", control._def.LARGE_ACQUISITION_MODE)
+        new_val = self.large_acquisition_mode_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Large Acquisition Mode", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_float("GENERAL", "disk_space_reserve_gb", control._def.DISK_SPACE_RESERVE_GB)
+        new_val = self.disk_space_reserve_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Disk Space Reserve", f"{old_val} GB", f"{new_val} GB", False))
+
+        old_val = self._get_config_float(
+            "GENERAL", "disk_space_poll_interval_s", control._def.DISK_SPACE_POLL_INTERVAL_S
+        )
+        new_val = self.disk_space_poll_interval_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Disk Re-check Interval", f"{old_val} s", f"{new_val} s", False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)
@@ -2383,6 +2630,13 @@ class PreferencesDialog(QDialog):
         new_val = self.simulated_io_compression_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Simulate Compression", str(old_val), str(new_val), False))
+
+        old_val = self._get_config_float(
+            "GENERAL", "simulated_disk_capacity_gb", control._def.SIMULATED_DISK_CAPACITY_GB
+        )
+        new_val = self.simulated_disk_capacity_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Simulated Disk Capacity", f"{old_val} GB", f"{new_val} GB", False))
 
         # Advanced - Acquisition Throttling (takes effect on next acquisition)
         old_val = self._get_config_bool(
@@ -6020,7 +6274,9 @@ class WellSelectionWidget(QTableWidget):
         self.setStyleSheet(style)
 
 
-class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class FlexibleMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _AcquisitionPauseControlsMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)  # true = started, false = finished
     signal_acquisition_channels = Signal(list)  # list channels
@@ -6275,6 +6531,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
+        self._create_pause_controls()
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         # Add snap images button
@@ -6419,6 +6676,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_pauseAcquisition)
+        button_layout.addWidget(self.label_pauseStatus)
 
         grid_acquisition = QHBoxLayout()
         grid_acquisition.addSpacerItem(edge_spacer)
@@ -6863,6 +7122,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
             # Start coordinate-based acquisition
             self.multipointController.run_acquisition()
+            self._show_pause_controls_for_started_run()
         else:
             # This must eventually propagate through and call out acquisition_finished.
             self.multipointController.request_abort_aquisition()
@@ -7321,6 +7581,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.signal_acquisition_started.emit(False)
         self.btn_startAcquisition.setChecked(False)
         self.btn_startAcquisition.setText("Start\n Acquisition ")
+        self._reset_pause_controls()
         self.setEnabled_all(True)
         self.is_current_acquisition_widget = False
 
@@ -7346,6 +7607,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.checkbox_withReflectionAutofocus.setEnabled(enabled)
         self.checkbox_stitchOutput.setEnabled(enabled)
         self.checkbox_set_z_range.setEnabled(enabled)
+        # btn_pauseAcquisition / label_pauseStatus are deliberately absent: like btn_startAcquisition
+        # they must stay usable while the rest of the widget is disabled during an acquisition.
 
         if exclude_btn_startAcquisition is not True:
             self.btn_startAcquisition.setEnabled(enabled)
@@ -7527,7 +7790,9 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 )
 
 
-class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, QFrame):
+class WellplateMultiPointWidget(
+    AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixin, _AcquisitionPauseControlsMixin, QFrame
+):
 
     signal_acquisition_started = Signal(bool)
     signal_acquisition_channels = Signal(list)
@@ -7774,6 +8039,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
         self.btn_startAcquisition.setChecked(False)
+        self._create_pause_controls()
         # self.btn_startAcquisition.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         self.progress_label = QLabel("Region -/-")
@@ -8004,6 +8270,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
+        button_layout.addWidget(self.btn_pauseAcquisition)
+        button_layout.addWidget(self.label_pauseStatus)
 
         bottom_right = QHBoxLayout()
         bottom_right.addLayout(options_layout)
@@ -9279,6 +9547,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
             # Start acquisition
             self.multipointController.run_acquisition()
+            self._show_pause_controls_for_started_run()
 
         else:
             # This must eventually propagate through and call our aquisition_is_finished, or else we'll be left
@@ -9335,6 +9604,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.is_current_acquisition_widget = False
         self.btn_startAcquisition.setChecked(False)
         self.btn_startAcquisition.setText("Start\n Acquisition ")
+        self._reset_pause_controls()
         if self.focusMapWidget is not None and self.focusMapWidget.focus_points:
             self.focusMapWidget.disable_updating_focus_points_on_signal()
         self.reset_coordinates()
@@ -9347,6 +9617,8 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         for widget in self.findChildren(QWidget):
             if (
                 widget != self.btn_startAcquisition
+                and widget != self.btn_pauseAcquisition
+                and widget != self.label_pauseStatus
                 and widget != self.progress_bar
                 and widget != self.progress_label
                 and widget != self.eta_label

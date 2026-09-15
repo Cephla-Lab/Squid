@@ -815,7 +815,18 @@ class MicroscopeControlServer:
 
     @schema_method
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
-        """Get the status of the current acquisition including progress information."""
+        """Get the status of the current acquisition including progress information.
+
+        Always returns 'in_progress' and 'status' ('idle' / 'running' / 'paused'), plus the
+        experiment id and base path once an acquisition has been started.
+
+        Acquisitions running in large acquisition mode also report their pause details:
+        'pause_reasons' (the active holders, e.g. ['operator'] or ['disk_space']),
+        'paused_since' (wall-clock start of the current pause, None when running) and
+        'paused_total_s' (seconds spent paused so far). When the disk-space guard is watching
+        the acquisition, a 'disk' block reports free_bytes, required_bytes, reserve_bytes,
+        pending_bytes, fov_bytes and whether the guard is currently holding the acquisition.
+        """
         if not self.multipoint_controller:
             raise RuntimeError("MultiPointController not available")
 
@@ -825,6 +836,27 @@ class MicroscopeControlServer:
             "in_progress": in_progress,
             "status": "running" if in_progress else "idle",
         }
+
+        # Pause details, only for acquisitions running in large acquisition mode
+        pause_state = self.multipoint_controller.pause_state
+        if pause_state is not None:
+            result["pause_reasons"] = list(pause_state.reasons)
+            result["paused_since"] = pause_state.since
+            result["paused_total_s"] = pause_state.paused_total_s
+            if pause_state.paused:
+                result["status"] = "paused"
+
+        # Disk-space guard details, only while the guard is watching this acquisition
+        disk_status = self.multipoint_controller.disk_status
+        if disk_status is not None:
+            result["disk"] = {
+                "free_bytes": disk_status.free_bytes,
+                "required_bytes": disk_status.required_bytes,
+                "reserve_bytes": disk_status.reserve_bytes,
+                "pending_bytes": disk_status.pending_bytes,
+                "fov_bytes": disk_status.fov_bytes,
+                "holding": disk_status.holding,
+            }
 
         # Add worker progress if available
         if self.multipoint_controller.multiPointWorker:
@@ -859,6 +891,64 @@ class MicroscopeControlServer:
             # Legacy misspelled method name
             self.multipoint_controller.request_abort_aquisition()
         return {"aborted": True}
+
+    @schema_method
+    def _cmd_pause_acquisition(self) -> Dict[str, Any]:
+        """Pause the running acquisition at the next safe checkpoint (large acquisition mode only).
+
+        The acquisition parks itself between FOVs, so it keeps imaging for up to one FOV after this
+        returns. Nothing is discarded and the acquisition resumes where it stopped. Use this to free
+        the machine or the save disk mid-run; call resume_acquisition to continue.
+
+        Only acquisitions started with large acquisition mode enabled can be paused - this fails for
+        any other acquisition, and when no acquisition is running.
+
+        Returns the pause state: 'paused', 'pause_reasons' (every active holder, e.g. ['operator'] or
+        ['disk_space', 'operator']) and 'paused_since' (wall-clock start of the pause).
+        """
+        self._require_pause_capable_acquisition()
+
+        if not self.multipoint_controller.request_pause():
+            raise RuntimeError("Large acquisition mode is not enabled for this acquisition")
+
+        return self._pause_state_payload()
+
+    @schema_method
+    def _cmd_resume_acquisition(self) -> Dict[str, Any]:
+        """Resume an acquisition paused by the operator (large acquisition mode only).
+
+        This releases the operator's hold. Other holders keep their own hold: if the disk-space guard
+        is still holding the acquisition because the save disk is too full, the acquisition stays
+        paused and the returned 'paused' is True with the remaining 'pause_reasons' (e.g.
+        ['disk_space']) - free disk space and it continues on its own.
+
+        Only acquisitions started with large acquisition mode enabled can be resumed - this fails for
+        any other acquisition, and when no acquisition is running.
+
+        Returns the pause state: 'paused', 'pause_reasons' and 'paused_since'.
+        """
+        self._require_pause_capable_acquisition()
+
+        if not self.multipoint_controller.request_resume():
+            raise RuntimeError("Large acquisition mode is not enabled for this acquisition")
+
+        return self._pause_state_payload()
+
+    def _require_pause_capable_acquisition(self) -> None:
+        """Raise unless there is a running acquisition that could be paused."""
+        if not self.multipoint_controller:
+            raise RuntimeError("MultiPointController not available")
+
+        if not self.multipoint_controller.acquisition_in_progress():
+            raise RuntimeError("No acquisition in progress")
+
+    def _pause_state_payload(self) -> Dict[str, Any]:
+        """Current pause state of the acquisition, as returned by pause_acquisition/resume_acquisition."""
+        state = self.multipoint_controller.pause_state
+        if state is None:
+            # The acquisition finished between the request and this read - nothing is paused anymore.
+            return {"paused": False, "pause_reasons": [], "paused_since": None}
+        return {"paused": state.paused, "pause_reasons": list(state.reasons), "paused_since": state.since}
 
     def _get_widget_for_type(self, widget_type: str):
         """Get the acquisition widget for a given widget type.
