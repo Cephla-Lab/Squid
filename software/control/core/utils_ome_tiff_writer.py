@@ -37,9 +37,14 @@ PHYSICAL_SIZE_X_KEY = "physical_size_x"
 PHYSICAL_SIZE_X_UNIT_KEY = "physical_size_x_unit"
 PHYSICAL_SIZE_Y_KEY = "physical_size_y"
 PHYSICAL_SIZE_Y_UNIT_KEY = "physical_size_y_unit"
+SPLIT_TIMEPOINTS_KEY = "split_timepoints"
+GLOBAL_TIME_POINT_KEY = "global_time_point"
 
 
 def ome_output_folder(acq_info: "AcquisitionInfo", info: "CaptureInfo") -> str:
+    if acq_info.split_timepoints:
+        # info.save_directory IS the timepoint folder, so each timepoint gets its own stack.
+        return os.path.join(info.save_directory, "ome_tiff")
     base_dir = acq_info.experiment_path or os.path.dirname(info.save_directory)
     return os.path.join(base_dir, "ome_tiff")
 
@@ -47,6 +52,10 @@ def ome_output_folder(acq_info: "AcquisitionInfo", info: "CaptureInfo") -> str:
 def metadata_temp_path(acq_info: "AcquisitionInfo", info: "CaptureInfo", base_name: str) -> str:
     base_identifier = acq_info.experiment_path or info.save_directory
     key = f"{base_identifier}:{base_name}"
+    if acq_info.split_timepoints:
+        # Per-timepoint progress files, so an aborted timepoint's leftover progress is never
+        # adopted by the next timepoint (which writes a different file).
+        key = f"{key}:t{info.time_point}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()
     # Use squid_ome_ prefix to avoid conflicts with other OME-TIFF applications
     return os.path.join(tempfile.gettempdir(), f"squid_ome_{digest}_metadata.json")
@@ -94,11 +103,19 @@ def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image:
     physical_size_x_unit = "µm" if physical_size_x is not None else None
     physical_size_y = float(acq_info.physical_size_y_um) if acq_info.physical_size_y_um is not None else None
     physical_size_y_unit = "µm" if physical_size_y is not None else None
+    split_timepoints = bool(acq_info.split_timepoints)
+    # A split file holds a single timepoint; DeltaT stays relative to the acquisition start so
+    # that the per-timepoint files remain comparable to each other.
+    size_t = 1 if split_timepoints else int(acq_info.total_time_points)
+    if split_timepoints and acq_info.acquisition_start_time is not None:
+        start_time = acq_info.acquisition_start_time
+    else:
+        start_time = info.capture_time
     return {
         DTYPE_KEY: np.dtype(image.dtype).str,
         AXES_KEY: "TZCYX",
         SHAPE_KEY: [
-            int(acq_info.total_time_points),
+            size_t,
             int(acq_info.total_z_levels),
             int(acq_info.total_channels),
             int(image.shape[-2]),
@@ -107,12 +124,12 @@ def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image:
         CHANNEL_NAMES_KEY: channel_names,
         WRITTEN_INDICES_KEY: [],
         SAVED_COUNT_KEY: 0,
-        EXPECTED_COUNT_KEY: int(acq_info.total_time_points)
-        * int(acq_info.total_z_levels)
-        * int(acq_info.total_channels),
+        EXPECTED_COUNT_KEY: size_t * int(acq_info.total_z_levels) * int(acq_info.total_channels),
         PLANES_KEY: {},
-        START_TIME_KEY: info.capture_time,
+        START_TIME_KEY: start_time,
         COMPLETED_KEY: False,
+        SPLIT_TIMEPOINTS_KEY: split_timepoints,
+        GLOBAL_TIME_POINT_KEY: int(info.time_point) if split_timepoints and info.time_point is not None else None,
         TIME_INCREMENT_KEY: time_increment,
         TIME_INCREMENT_UNIT_KEY: time_increment_unit,
         PHYSICAL_SIZE_Z_KEY: physical_size_z,
@@ -125,9 +142,12 @@ def initialize_metadata(acq_info: "AcquisitionInfo", info: "CaptureInfo", image:
 
 
 def update_plane_metadata(metadata: Dict[str, Any], info: "CaptureInfo") -> Dict[str, Any]:
-    plane_key = f"{info.time_point}-{info.configuration_idx}-{info.z_index}"
+    # In a split file the plane index is local to that file, which holds a single timepoint.
+    # DeltaT below still measures from START_TIME_KEY (the acquisition start when split).
+    the_t = 0 if metadata.get(SPLIT_TIMEPOINTS_KEY) else int(info.time_point)
+    plane_key = f"{the_t}-{info.configuration_idx}-{info.z_index}"
     plane_data: Dict[str, Any] = {
-        "TheT": int(info.time_point),
+        "TheT": the_t,
         "TheZ": int(info.z_index),
         "TheC": int(info.configuration_idx),
     }
@@ -176,6 +196,14 @@ def metadata_for_imwrite(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return meta
 
 
+def ome_description(metadata: Dict[str, Any]) -> Optional[str]:
+    """Description text for a split file, which alone cannot say which timepoint it holds."""
+    global_time_point = metadata.get(GLOBAL_TIME_POINT_KEY)
+    if global_time_point is None:
+        return None
+    return f"Timepoint {global_time_point} of the acquisition (one timepoint per file)"
+
+
 def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
     # Lazy import: xml.etree.ElementTree only needed for XML generation functions
     import xml.etree.ElementTree as ET
@@ -206,6 +234,10 @@ def build_base_ome_xml(metadata: Dict[str, Any]) -> str:
             image.set("AcquisitionDate", acq_time)
         except Exception:
             pass
+    description = ome_description(metadata)
+    if description is not None:
+        # OME requires Description before Pixels, so add it while Image is still empty.
+        ET.SubElement(image, "{ns}Description".format(ns="{" + ns + "}")).text = description
     pixels = ET.SubElement(
         image,
         "{ns}Pixels".format(ns="{" + ns + "}"),
@@ -263,6 +295,15 @@ def augment_ome_xml(existing_xml: Optional[str], metadata: Dict[str, Any]) -> st
             image.set("AcquisitionDate", acq_time)
         except Exception:
             pass
+
+    description = ome_description(metadata)
+    if description is not None:
+        description_elem = image.find("ome:Description", ns)
+        if description_elem is None:
+            # OME requires Description to precede Pixels.
+            description_elem = ET.Element("{http://www.openmicroscopy.org/Schemas/OME/2016-06}Description")
+            image.insert(0, description_elem)
+        description_elem.text = description
 
     pixels = image.find("ome:Pixels", ns)
     if pixels is None:

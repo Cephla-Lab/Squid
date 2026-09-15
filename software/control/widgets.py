@@ -74,13 +74,19 @@ LARGE_ACQUISITION_MODE_EXPLANATION = (
 )
 
 
+OME_TIFF_SPLIT_EXPLANATION = (
+    "Splitting writes one OME-TIFF per timepoint under <t>/ome_tiff/, so finished timepoints can be offloaded"
+    " while the run continues. The NDViewer cannot yet browse split runs."
+)
+
+
 class PreflightDiskOptions(NamedTuple):
     """What the pre-flight disk check should put in front of the operator.
 
     Attributes:
         needs_dialog: The acquisition needs more space than the save disk has.
         offer_enable_mode: Offer to turn large acquisition mode on for this run (it is off in Settings).
-        offer_split_ome: Reserved for the OME-TIFF split PR; always False here.
+        offer_split_ome: Offer to split the OME-TIFF output by timepoint for this run.
     """
 
     needs_dialog: bool
@@ -88,21 +94,32 @@ class PreflightDiskOptions(NamedTuple):
     offer_split_ome: bool
 
 
-def preflight_disk_options(space_required: float, available: int, mode_on: bool) -> PreflightDiskOptions:
-    """Decide what the pre-flight disk check should do. Pure: no Qt, no I/O."""
+def preflight_disk_options(
+    space_required: float,
+    available: int,
+    mode_on: bool,
+    file_saving_option: Optional[FileSavingOption] = None,
+    nt: int = 1,
+    split_on: bool = False,
+) -> PreflightDiskOptions:
+    """Decide what the pre-flight disk check should do. Pure: no Qt, no I/O.
+
+    The per-timepoint split only helps a multi-timepoint OME-TIFF run: a single-timepoint run already
+    writes one file per timepoint, and the other file formats do not go through the OME-TIFF writer.
+    """
     needs_dialog = space_required > available
     return PreflightDiskOptions(
         needs_dialog=needs_dialog,
         offer_enable_mode=needs_dialog and not mode_on,
-        offer_split_ome=False,
+        offer_split_ome=(needs_dialog and file_saving_option == FileSavingOption.OME_TIFF and nt > 1 and not split_on),
     )
 
 
 def preflight_disk_dialog(message: str, options: PreflightDiskOptions) -> str:
     """Ask the operator what to do about a save disk that is too small for this acquisition.
 
-    Returns "enable" (turn large acquisition mode on for this run), "continue" (start anyway, the mode is
-    already on in Settings) or "cancel".
+    Returns "enable" (turn large acquisition mode on for this run), "split" (also write one OME-TIFF per
+    timepoint), "continue" (start anyway, the mode is already on in Settings) or "cancel".
     """
     msg = QMessageBox()
     msg.setIcon(QMessageBox.Warning)
@@ -114,10 +131,18 @@ def preflight_disk_dialog(message: str, options: PreflightDiskOptions) -> str:
     else:
         proceed_action = "continue"
         proceed_button = msg.addButton("Continue", QMessageBox.AcceptRole)
+    split_button = None
+    if options.offer_split_ome:
+        msg.setInformativeText(OME_TIFF_SPLIT_EXPLANATION)
+        split_button = msg.addButton("Split OME-TIFF by timepoint and continue", QMessageBox.AcceptRole)
+        split_button.setToolTip(OME_TIFF_SPLIT_EXPLANATION)
     cancel_button = msg.addButton("Cancel", QMessageBox.RejectRole)
     msg.setDefaultButton(cancel_button)
     msg.exec_()
-    return proceed_action if msg.clickedButton() is proceed_button else "cancel"
+    clicked = msg.clickedButton()
+    if split_button is not None and clicked is split_button:
+        return "split"
+    return proceed_action if clicked is proceed_button else "cancel"
 
 
 def check_space_available_with_error_dialog(
@@ -133,7 +158,14 @@ def check_space_available_with_error_dialog(
     logger.info(
         f"Checking space available: {space_required=}, {available_disk_space=}, {image_count=}, {save_directory=}"
     )
-    options = preflight_disk_options(space_required, available_disk_space, control._def.LARGE_ACQUISITION_MODE)
+    options = preflight_disk_options(
+        space_required,
+        available_disk_space,
+        control._def.LARGE_ACQUISITION_MODE,
+        file_saving_option=control._def.FILE_SAVING_OPTION,
+        nt=multi_point_controller.Nt,
+        split_on=control._def.OME_TIFF_SPLIT_TIMEPOINTS,
+    )
     if not options.needs_dialog:
         return True
 
@@ -145,6 +177,14 @@ def check_space_available_with_error_dialog(
     )
     # Module-level lookup (not a default argument) so tests can monkeypatch the dialog.
     action = preflight_disk_dialog(f"{error_message}\n\n{LARGE_ACQUISITION_MODE_EXPLANATION}", options)
+    if action == "split":
+        logger.info("Operator chose to split the OME-TIFF output by timepoint for this run.")
+        multi_point_controller.set_split_ome_timepoints(True)
+        if options.offer_enable_mode:
+            # Splitting only helps if the run also pauses instead of failing when the disk fills up.
+            logger.info("Also enabling large acquisition mode for this run.")
+            multi_point_controller.set_large_acquisition_mode(True)
+        return True
     if action == "enable":
         logger.info("Operator enabled large acquisition mode for this run from the pre-flight disk check.")
         multi_point_controller.set_large_acquisition_mode(True)
@@ -1499,6 +1539,13 @@ class PreferencesDialog(QDialog):
         )
         large_acq_layout.addRow("Disk re-check interval (s):", self.disk_space_poll_interval_spinbox)
 
+        self.ome_tiff_split_timepoints_checkbox = QCheckBox()
+        self.ome_tiff_split_timepoints_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "ome_tiff_split_timepoints", control._def.OME_TIFF_SPLIT_TIMEPOINTS)
+        )
+        self.ome_tiff_split_timepoints_checkbox.setToolTip(OME_TIFF_SPLIT_EXPLANATION)
+        large_acq_layout.addRow("Split OME-TIFF by timepoint:", self.ome_tiff_split_timepoints_checkbox)
+
         large_acq_group.content.addLayout(large_acq_layout)
         layout.addRow(large_acq_group)
 
@@ -2184,6 +2231,11 @@ class PreferencesDialog(QDialog):
         )
         self.config.set("GENERAL", "disk_space_reserve_gb", str(self.disk_space_reserve_spinbox.value()))
         self.config.set("GENERAL", "disk_space_poll_interval_s", str(self.disk_space_poll_interval_spinbox.value()))
+        self.config.set(
+            "GENERAL",
+            "ome_tiff_split_timepoints",
+            "true" if self.ome_tiff_split_timepoints_checkbox.isChecked() else "false",
+        )
 
         # Camera settings
         self.config.set("CAMERA_CONFIG", "binning_factor_default", str(self.binning_spinbox.value()))
@@ -2392,6 +2444,7 @@ class PreferencesDialog(QDialog):
         control._def.LARGE_ACQUISITION_MODE = self.large_acquisition_mode_checkbox.isChecked()
         control._def.DISK_SPACE_RESERVE_GB = self.disk_space_reserve_spinbox.value()
         control._def.DISK_SPACE_POLL_INTERVAL_S = self.disk_space_poll_interval_spinbox.value()
+        control._def.OME_TIFF_SPLIT_TIMEPOINTS = self.ome_tiff_split_timepoints_checkbox.isChecked()
 
         # Acquisition throttling settings
         control._def.ACQUISITION_THROTTLING_ENABLED = self.throttling_enabled_checkbox.isChecked()
@@ -2492,6 +2545,11 @@ class PreferencesDialog(QDialog):
         new_val = self.disk_space_poll_interval_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Disk Re-check Interval", f"{old_val} s", f"{new_val} s", False))
+
+        old_val = self._get_config_bool("GENERAL", "ome_tiff_split_timepoints", control._def.OME_TIFF_SPLIT_TIMEPOINTS)
+        new_val = self.ome_tiff_split_timepoints_checkbox.isChecked()
+        if old_val != new_val:
+            changes.append(("Split OME-TIFF by Timepoint", str(old_val), str(new_val), False))
 
         # Camera settings (require restart)
         old_val = self._get_config_int("CAMERA_CONFIG", "binning_factor_default", 2)

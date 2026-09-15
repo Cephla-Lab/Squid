@@ -673,6 +673,42 @@ def test_large_acquisition_mode_reaches_the_params_and_is_reset_after_the_run(tm
     assert mpc.large_acquisition_mode is False
 
 
+def test_split_ome_timepoints_reaches_the_params_and_is_reset_after_the_run(tmp_path, monkeypatch):
+    import yaml
+
+    monkeypatch.setattr(control._def, "OME_TIFF_SPLIT_TIMEPOINTS", False)
+
+    scope, tt, mpc = _controller_with_tracker()
+    assert mpc.split_ome_timepoints is False  # strictly opt-in
+
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_split", add_timestamp=False)
+    mpc.set_split_ome_timepoints(True)
+
+    mpc.timestamp_acquisition_started = 0.0  # normally set by run_acquisition, which build_params reads
+    assert mpc.build_params(scan_position_information=_empty_scan_positions()).split_ome_timepoints is True
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    with open(tmp_path / "R01_split" / "acquisition.yaml", encoding="utf-8") as f:
+        assert yaml.safe_load(f)["acquisition"]["ome_tiff_split_timepoints"] is True
+
+    # A dialog-granted per-run opt-in must not leak into the next run.
+    assert mpc.split_ome_timepoints is False
+
+
+def test_split_ome_timepoints_follows_the_global_setting_when_not_opted_in_per_run(monkeypatch):
+    monkeypatch.setattr(control._def, "OME_TIFF_SPLIT_TIMEPOINTS", True)
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.timestamp_acquisition_started = 0.0
+
+    assert mpc.split_ome_timepoints is False
+    assert mpc.build_params(scan_position_information=_empty_scan_positions()).split_ome_timepoints is True
+
+
 def _empty_scan_positions():
     from control.core.multi_point_utils import ScanPositionInformation
 

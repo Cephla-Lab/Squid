@@ -163,6 +163,9 @@ class MultiPointWorker:
             physical_size_z_um=self._physical_size_z_um,
             physical_size_x_um=self._pixel_size_um,
             physical_size_y_um=self._pixel_size_um,
+            # Opt-in per-timepoint OME-TIFF split (one <t>/ome_tiff/... file per timepoint); off = today's layout.
+            split_timepoints=acquisition_parameters.split_ome_timepoints,
+            acquisition_start_time=self.timestamp_acquisition_started,
         )
 
         self.time_point = 0
