@@ -15,6 +15,7 @@ from numpy import square, mean
 import numpy as np
 from scipy.ndimage import label, gaussian_filter
 from scipy import signal
+from skimage.registration import phase_cross_correlation
 import os
 from typing import Optional, Tuple, List, Callable
 
@@ -28,9 +29,42 @@ from control._def import (
     SpotDetectionMode,
     FocusMeasureOperator,
 )
+import control._def
 import squid.logging
 
 _log = squid.logging.get_logger("control.utils")
+
+
+def to_grayscale(image: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
+
+
+def measure_translation_px(
+    reference: np.ndarray, live: np.ndarray, live_crop_fraction: float = 1.0
+) -> Tuple[float, float]:
+    """Displacement (dx, dy), in pixels of ``live``, of its content relative to ``reference``.
+
+    Below 100% display resolution the live frame is the center ``live_crop_fraction`` of the field
+    of view (see StreamHandler), so the same part of ``reference`` is compared. ``reference`` is then
+    resampled to ``live``'s shape, so a reference acquired at a different binning works too.
+    """
+    reference = crop_to_fraction(to_grayscale(reference), live_crop_fraction)
+    live = to_grayscale(live)
+    if reference.shape != live.shape:
+        height, width = live.shape
+        reference = cv2.resize(reference, (width, height), interpolation=cv2.INTER_AREA)
+    # skimage returns the (row, col) shift that registers ``live`` onto ``reference``
+    shift_rows, shift_cols = phase_cross_correlation(reference, live)[0]
+    return (-float(shift_cols), -float(shift_rows))
+
+
+def image_delta_to_stage_delta_mm(delta_x_px: float, delta_y_px: float, pixel_size_um: float) -> Tuple[float, float]:
+    """Stage move that shifts the displayed image content by (-delta_x_px, -delta_y_px).
+
+    Used both to center a clicked point and to undo a measured displacement.
+    """
+    pixel_sign_y = 1 if control._def.INVERTED_OBJECTIVE else -1
+    return (pixel_size_um * delta_x_px / 1000.0, pixel_sign_y * pixel_size_um * delta_y_px / 1000.0)
 
 
 def crop_image(image, crop_width, crop_height):
@@ -48,9 +82,14 @@ def crop_image(image, crop_width, crop_height):
     return image_cropped
 
 
+def crop_to_fraction(image, fraction):
+    """Center crop keeping ``fraction`` of each dimension (how the live display applies its resolution scaling)."""
+    height, width = image.shape[:2]
+    return crop_image(image, round(width * fraction), round(height * fraction))
+
+
 def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
-    if len(image.shape) == 3:
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)  # optional
+    image = to_grayscale(image)
     if method == FocusMeasureOperator.LAPE:
         if image.dtype == np.uint16:
             lap = cv2.Laplacian(image, cv2.CV_32F)

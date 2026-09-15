@@ -990,10 +990,9 @@ NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 6
 LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
-USE_NAPARI_FOR_LIVE_VIEW = False
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
-USE_NAPARI_WELL_SELECTION = False
-USE_NAPARI_FOR_LIVE_CONTROL = False
+
+# Live view only (no acquisition tabs)
 LIVE_ONLY_MODE = False
 
 # NDViewer integration
