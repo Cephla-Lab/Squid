@@ -2,8 +2,8 @@
 
 import numpy as np
 import pytest
-from qtpy.QtCore import Qt, QPointF, QPoint
-from qtpy.QtGui import QWheelEvent, QPainter
+from qtpy.QtCore import Qt, QPointF, QPoint, QRectF
+from qtpy.QtGui import QWheelEvent, QPainter, QImage
 from qtpy.QtWidgets import QApplication
 
 from control.core.core import ImageDisplayWindow
@@ -255,3 +255,61 @@ def test_current_image_returns_last_displayed_frame(image_display_window):
     image_display_window.display_image(live)
 
     assert np.array_equal(image_display_window.current_image(), live)
+
+
+# ─── Live image rendered in green while a reference is shown ────────────────
+
+GREEN = (0, 255, 0)
+WHITE = (255, 255, 255)
+
+
+def _rendered_center_color(win):
+    """Color painted at the center of the live image, overlays included."""
+    img = win.graphics_widget.img
+    scene = img.scene()
+    target = QImage(9, 9, QImage.Format_RGB32)
+    target.fill(Qt.black)
+    painter = QPainter(target)
+    scene.render(painter, QRectF(0, 0, 9, 9), img.mapRectToScene(img.boundingRect()))
+    painter.end()
+    color = target.pixelColor(4, 4)
+    return (color.red(), color.green(), color.blue())
+
+
+@pytest.mark.parametrize("show_lut", [False, True])
+def test_live_image_is_green_only_while_a_reference_is_shown(qtbot, show_lut):
+    """Reference in magenta over a green live view: fringes show misalignment, overlap adds up to white."""
+    win = ImageDisplayWindow(show_LUT=show_lut)
+    qtbot.addWidget(win)
+    win.show()
+    white_frame = np.full((4, 4), np.iinfo(np.uint16).max, dtype=np.uint16)
+    win.display_image(white_frame)
+    assert _rendered_center_color(win) == WHITE
+
+    win.show_alignment_reference(np.zeros((4, 4), dtype=np.uint16))
+    assert _rendered_center_color(win) == GREEN
+    win.display_image(white_frame)  # the tint survives new frames
+    assert _rendered_center_color(win) == GREEN
+    assert win.live_tint_item.zValue() < win.alignment_reference_item.zValue()
+
+    win.hide_alignment_reference()
+    assert win.live_tint_item is None
+    assert _rendered_center_color(win) == WHITE
+
+
+def test_live_tint_follows_the_live_image_size(image_display_window):
+    win = image_display_window
+    win.show_alignment_reference(np.zeros((4, 4), dtype=np.uint16))
+
+    win.display_image(np.zeros((6, 8), dtype=np.uint16))
+
+    tint = win.live_tint_item
+    assert tint.mapRectToParent(tint.boundingRect()) == win.graphics_widget.img.boundingRect()
+
+
+def test_overexposure_mask_stacks_above_the_alignment_overlays(image_display_window):
+    win = image_display_window
+    win.show_alignment_reference(np.zeros((4, 4), dtype=np.uint16))
+    win.set_overexposure_indicator(True)
+
+    assert win.overexposure_item.zValue() > win.alignment_reference_item.zValue() > win.live_tint_item.zValue()

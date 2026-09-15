@@ -10375,7 +10375,7 @@ class AlignmentWidget(QWidget):
     Allows users to align current sample position with a previous acquisition by:
     1. Loading a past acquisition folder
     2. Moving stage to a reference FOV position
-    3. Displaying reference image as a magenta overlay on the live view
+    3. Displaying reference image as a magenta overlay on the green-tinted live view
     4. Calculating X/Y offset after manual or automatic alignment
     5. Applying offset to future scan coordinates
 
@@ -10394,6 +10394,12 @@ class AlignmentWidget(QWidget):
     STATE_CONFIRM = "confirm"
     STATE_CLEAR = "clear"
     _BUTTON_TEXT = {STATE_ALIGN: "Align", STATE_CONFIRM: "Confirm Offset", STATE_CLEAR: "Clear Offset"}
+    _BUTTON_TOOLTIP = {
+        STATE_ALIGN: "Load a previous acquisition to align to",
+        STATE_CONFIRM: "Line up the two images, then record the offset",
+        STATE_CLEAR: "Remove the alignment offset",
+    }
+    _DISABLED_TOOLTIP = "Start Live first"
 
     def __init__(self, display, parent=None):
         """
@@ -10433,20 +10439,23 @@ class AlignmentWidget(QWidget):
 
         self.btn_auto = QPushButton("Auto")
         self.btn_auto.setCursor(Qt.PointingHandCursor)
-        self.btn_auto.setToolTip("Register the live view against the reference image and move the stage to match")
-        self.btn_auto.hide()  # Only while a reference is loaded
+        self.btn_auto.setToolTip("Move the stage to match the reference (needs Live)")
         self.btn_auto.clicked.connect(lambda: self.signal_auto_align_requested.emit(self._reference_image))
         layout.addWidget(self.btn_auto)
+        self._set_state(self.STATE_ALIGN)
 
     def _set_state(self, state: str):
+        """Derive the button label, tooltip and Auto visibility from the workflow state."""
         self.state = state
         self.btn_align.setText(self._BUTTON_TEXT[state])
-        self.btn_auto.setVisible(state == self.STATE_CONFIRM)
+        enabled = self.btn_align.isEnabled()
+        self.btn_align.setToolTip(self._BUTTON_TOOLTIP[state] if enabled else self._DISABLED_TOOLTIP)
+        self.btn_auto.setVisible(state == self.STATE_CONFIRM)  # only while a reference is loaded
 
     def enable(self):
-        """Enable the alignment button if currently disabled. Call when live view starts."""
-        if not self.btn_align.isEnabled():
-            self.btn_align.setEnabled(True)
+        """Call when live view starts."""
+        self.btn_align.setEnabled(True)
+        self._set_state(self.state)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API

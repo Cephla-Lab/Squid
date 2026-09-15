@@ -219,6 +219,25 @@ def test_clear_removes_offset(widget):
     assert widget.btn_align.text() == "Align"
 
 
+def test_button_tooltip_follows_the_workflow_state(widget):
+    assert widget.btn_align.toolTip() == "Load a previous acquisition to align to"
+    _start_alignment(widget)
+    assert widget.btn_align.toolTip() == "Line up the two images, then record the offset"
+    assert widget.btn_auto.toolTip() == "Move the stage to match the reference (needs Live)"
+    _confirm(widget, *CENTER_FOV_POSITION)
+    assert widget.btn_align.toolTip() == "Remove the alignment offset"
+
+
+def test_disabled_button_says_to_start_live_first(qtbot, image_display_window):
+    w = AlignmentWidget(image_display_window)
+    qtbot.addWidget(w)
+    assert w.btn_align.toolTip() == "Start Live first"
+
+    w.enable()
+
+    assert w.btn_align.toolTip() == "Load a previous acquisition to align to"
+
+
 # ─── GUI auto-align handler ─────────────────────────────────────────────────
 
 

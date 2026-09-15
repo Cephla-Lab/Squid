@@ -844,8 +844,12 @@ class TrackingWorker(QObject):
 
 
 MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+# One green pixel, stretched over the live image and multiplied into it: keeps only the green channel
+GREEN_TINT_PIXEL = np.array([[[0, 255, 0]]], dtype=np.uint8)
 # Mask overlay: 0 = see-through, 1 = red
 OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
+# Stacking order above the live image (z = 0): tint multiplies, reference adds, the red mask covers both
+Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE = 1, 2, 3
 
 
 def _overexposure_mask(image: np.ndarray, upper_level: float) -> np.ndarray:
@@ -900,6 +904,9 @@ class ImageDisplayWindow(QMainWindow):
 
         # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
         self.alignment_reference_item: Optional[pg.ImageItem] = None
+        self.live_tint_item: Optional[pg.ImageItem] = (
+            None  # green multiply over the live image while a reference is shown
+        )
         self.overexposure_item: Optional[pg.ImageItem] = None
         self._overexposure_source = None  # (frame id, levels) the current mask was computed from
 
@@ -1118,7 +1125,7 @@ class ImageDisplayWindow(QMainWindow):
     def set_overexposure_indicator(self, enabled: bool):
         """Overlay pixels at or above the upper contrast limit in red."""
         if enabled and self.overexposure_item is None:
-            self.overexposure_item = self._add_overlay_item(OVEREXPOSURE_LUT)
+            self.overexposure_item = self._add_overlay_item(Z_OVEREXPOSURE, lut=OVEREXPOSURE_LUT)
             self._update_overlays()
         elif not enabled and self.overexposure_item is not None:
             self._active_view().removeItem(self.overexposure_item)
@@ -1130,10 +1137,16 @@ class ImageDisplayWindow(QMainWindow):
         return self._current_image
 
     def show_alignment_reference(self, image: np.ndarray):
-        """Overlay a reference image in additive magenta so misalignment with the live view shows as color fringes."""
+        """Overlay a reference image in additive magenta on a green live view.
+
+        Misalignment shows as magenta and green fringes; where the two line up the colors add to white.
+        The live image item itself (levels, lookup table, histogram) is left untouched.
+        """
         if self.alignment_reference_item is None:
+            self.live_tint_item = self._add_overlay_item(Z_LIVE_TINT, QPainter.CompositionMode_Multiply)
+            self.live_tint_item.setImage(GREEN_TINT_PIXEL, levels=(0, 255))
             self.alignment_reference_item = self._add_overlay_item(
-                MAGENTA_COLORMAP.getLookupTable(nPts=256), QPainter.CompositionMode_Plus
+                Z_ALIGNMENT_REFERENCE, QPainter.CompositionMode_Plus, lut=MAGENTA_COLORMAP.getLookupTable(nPts=256)
             )
         # lookup tables do not apply to H x W x 3 data
         self.alignment_reference_item.setImage(utils.to_grayscale(image), autoLevels=False)
@@ -1142,11 +1155,14 @@ class ImageDisplayWindow(QMainWindow):
     def hide_alignment_reference(self):
         if self.alignment_reference_item is not None:
             self._active_view().removeItem(self.alignment_reference_item)
-            self.alignment_reference_item = None
+            self._active_view().removeItem(self.live_tint_item)
+            self.alignment_reference_item = self.live_tint_item = None
 
-    def _add_overlay_item(self, lut: np.ndarray, composition_mode=None) -> pg.ImageItem:
+    def _add_overlay_item(self, z: int, composition_mode=None, lut: Optional[np.ndarray] = None) -> pg.ImageItem:
         item = pg.ImageItem()
-        item.setLookupTable(lut)
+        item.setZValue(z)
+        if lut is not None:
+            item.setLookupTable(lut)
         if composition_mode is not None:
             item.setCompositionMode(composition_mode)
         self._active_view().addItem(item)
@@ -1154,6 +1170,8 @@ class ImageDisplayWindow(QMainWindow):
 
     def _update_overlays(self, *_):
         """Keep the overlays in step with the live image and its contrast range."""
+        if self.live_tint_item is not None:
+            self.live_tint_item.setRect(self.graphics_widget.img.boundingRect())
         levels = self.graphics_widget.img.getLevels()
         if levels is None:
             return
