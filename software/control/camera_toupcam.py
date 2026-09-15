@@ -24,6 +24,16 @@ from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
 
+# Mono format a sensor really delivers in the SDK's 16-bit mode, (unbinned, binned). MONO12/14/16 requests
+# all select that one mode, and the sensor decides the depth per resolution; the SDK cannot be asked (it
+# reports RAW16 throughout). Verified on the ITR3CMOS26000KMA (2026-09-15): unbinned frames are true
+# 16-bit, while 2x2 and 3x3 frames have their low four bits zero in every pixel (12-bit, left-aligned, so
+# a clipped pixel reads 65520). Add a model after checking the low bits of one of its binned frames;
+# unlisted models keep the requested label.
+_DELIVERED_PIXEL_FORMAT = {
+    ToupcamCameraModel.ITR3CMOS26000KMA: (CameraPixelFormat.MONO16, CameraPixelFormat.MONO12),
+}
+
 
 class ToupCamCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
@@ -247,7 +257,8 @@ class ToupcamCamera(AbstractCamera):
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
-        self._pixel_format = self._config.default_pixel_format
+        self._pixel_format = self._config.default_pixel_format  # requested; selects the SDK 8/16-bit mode
+        self._delivered_pixel_format = self._pixel_format  # see _DELIVERED_PIXEL_FORMAT
         self._binning = self._config.default_binning
 
         # Since we need to set the on-camera exposure time different depending on our trigger mode
@@ -420,6 +431,8 @@ class ToupcamCamera(AbstractCamera):
         It might be called in a performance sensitive context, so you should make sure any updates here
         are as fast as they can be.
         """
+        self._refresh_delivered_pixel_format()
+
         # resize the buffer
         _, _, width, height = self._camera.get_Roi()
 
@@ -648,7 +661,18 @@ class ToupcamCamera(AbstractCamera):
         self._update_internal_settings()
 
     def get_pixel_format(self) -> CameraPixelFormat:
-        return self._pixel_format
+        """Format actually delivered; narrower than the requested one on sensors in _DELIVERED_PIXEL_FORMAT."""
+        return self._delivered_pixel_format
+
+    def _refresh_delivered_pixel_format(self):
+        requested = self._pixel_format
+        delivered = requested
+        depths = _DELIVERED_PIXEL_FORMAT.get(self._config.camera_model)
+        if depths is not None and requested.bit_depth > 8 and not CameraPixelFormat.is_color_format(requested):
+            delivered = depths[0] if self._binning == (1, 1) else depths[1]
+        if delivered != self._delivered_pixel_format:
+            self._log.info(f"Camera delivers {delivered.name} data (requested {requested.name})")
+        self._delivered_pixel_format = delivered
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
         raise NotImplementedError("get_available_pixel_formats is not implemented for Toupcam")
@@ -884,7 +908,7 @@ class ToupcamCamera(AbstractCamera):
     }
 
     def _get_black_level_factor(self):
-        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
+        frame_and_format = (self.get_frame_format(), self._pixel_format)  # SDK mode, not delivered depth
         if frame_and_format not in ToupcamCamera._BLACK_LEVEL_MAPPING:
             raise ValueError(f"Unknown combo for black level: {frame_and_format=}")
 
@@ -905,7 +929,7 @@ class ToupcamCamera(AbstractCamera):
     }
 
     def _get_pixel_size_in_bytes(self):
-        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
+        frame_and_format = (self.get_frame_format(), self._pixel_format)  # SDK mode, not delivered depth
         if frame_and_format not in ToupcamCamera._PIXEL_SIZE_MAPPING:
             raise ValueError(f"Unknown combo for pixel size: {frame_and_format=}")
 

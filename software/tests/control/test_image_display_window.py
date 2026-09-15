@@ -6,7 +6,10 @@ from qtpy.QtCore import Qt, QPointF, QPoint, QRectF
 from qtpy.QtGui import QWheelEvent, QPainter, QImage
 from qtpy.QtWidgets import QApplication
 
+from types import SimpleNamespace
+
 from control.core.core import ImageDisplayWindow
+from squid.config import CameraPixelFormat
 
 
 def _wheel_event(angle_y, modifiers):
@@ -123,7 +126,7 @@ def test_overexposure_indicator_is_off_by_default(image_display_window):
 
 
 @pytest.mark.parametrize("show_lut", [False, True])
-def test_overexposure_overlays_pixels_at_the_upper_contrast_limit_in_red(qtbot, show_lut):
+def test_overexposure_overlays_pixels_at_the_dtype_maximum_in_red_without_a_camera(qtbot, show_lut):
     win = ImageDisplayWindow(show_LUT=show_lut)
     qtbot.addWidget(win)
     win.btn_overexposure.click()
@@ -149,7 +152,7 @@ def test_overexposure_marks_rgb_frames_without_modifying_them(image_display_wind
     assert np.array_equal(win.graphics_widget.img.image, frame)
 
 
-def test_overexposure_follows_histogram_level_changes(qtbot):
+def test_overexposure_ignores_the_contrast_levels(qtbot):
     win = ImageDisplayWindow(show_LUT=True)
     qtbot.addWidget(win)
     win.btn_overexposure.click()
@@ -158,7 +161,31 @@ def test_overexposure_follows_histogram_level_changes(qtbot):
 
     win.LUTWidget.setLevels(0, 50)
 
-    assert win.overexposure_item.image.tolist() == [[1, 0], [0, 0]]
+    assert win.overexposure_item.image.tolist() == [[0, 0], [0, 0]]
+
+
+@pytest.mark.parametrize(
+    "pixel_format, dtype, saturation",
+    [
+        (CameraPixelFormat.MONO16, np.uint16, 65535),
+        (CameraPixelFormat.MONO12, np.uint16, 4095 << 4),  # 12-bit data is left-aligned in the container
+        (CameraPixelFormat.MONO8, np.uint8, 255),
+        (CameraPixelFormat.RGB24, np.uint8, 255),
+    ],
+)
+def test_pixel_format_max_value_is_the_format_maximum_in_the_frame_container(pixel_format, dtype, saturation):
+    assert pixel_format.max_value(dtype) == saturation
+
+
+def test_overexposure_marks_the_camera_saturation_value_not_the_dtype_maximum(qtbot):
+    camera = SimpleNamespace(get_pixel_format=lambda: CameraPixelFormat.MONO12)
+    win = ImageDisplayWindow(liveController=SimpleNamespace(camera=camera))
+    qtbot.addWidget(win)
+    win.btn_overexposure.click()
+
+    win.display_image(np.array([[4095 << 4, 65535], [4095, 0]], dtype=np.uint16))
+
+    assert win.overexposure_item.image.tolist() == [[1, 1], [0, 0]]
 
 
 def test_overexposure_off_removes_the_overlay(image_display_window):
@@ -267,6 +294,7 @@ def _rendered_center_color(win):
     """Color painted at the center of the live image, overlays included."""
     img = win.graphics_widget.img
     scene = img.scene()
+    scene.prepareForPaint()  # apply any pending ViewBox auto-range now, not halfway through render()
     target = QImage(9, 9, QImage.Format_RGB32)
     target.fill(Qt.black)
     painter = QPainter(target)
@@ -290,7 +318,7 @@ def test_live_image_is_green_only_while_a_reference_is_shown(qtbot, show_lut):
     assert _rendered_center_color(win) == GREEN
     win.display_image(white_frame)  # the tint survives new frames
     assert _rendered_center_color(win) == GREEN
-    assert win.live_tint_item.zValue() < win.alignment_reference_item.zValue()
+    assert win.live_tint_item.zValue() < win.alignment_reference_item.zValue() < win.frame_item.zValue()
 
     win.hide_alignment_reference()
     assert win.live_tint_item is None
@@ -305,6 +333,7 @@ def test_live_tint_follows_the_live_image_size(image_display_window):
 
     tint = win.live_tint_item
     assert tint.mapRectToParent(tint.boundingRect()) == win.graphics_widget.img.boundingRect()
+    assert win.frame_item.rect() == win.graphics_widget.img.boundingRect()
 
 
 def test_overexposure_mask_stacks_above_the_alignment_overlays(image_display_window):

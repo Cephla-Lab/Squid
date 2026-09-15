@@ -849,13 +849,18 @@ GREEN_TINT_PIXEL = np.array([[[0, 255, 0]]], dtype=np.uint8)
 # Mask overlay: 0 = see-through, 1 = red
 OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
 # Stacking order above the live image (z = 0): tint multiplies, reference adds, the red mask covers both
-Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE = 1, 2, 3
+Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE, Z_FRAME = 1, 2, 3, 4
 
 
-def _overexposure_mask(image: np.ndarray, upper_level: float) -> np.ndarray:
-    """1 where any channel is at or above the upper contrast limit, else 0."""
+def _overexposure_mask(image: np.ndarray, saturation: float) -> np.ndarray:
+    """1 where any channel is at or above ``saturation``, else 0."""
     intensity = image if image.ndim == 2 else image.max(axis=2)
-    return (intensity >= upper_level).view(np.uint8)
+    return (intensity >= saturation).view(np.uint8)
+
+
+def _dtype_range(dtype):
+    """np.iinfo / np.finfo for the dtype, whichever applies."""
+    return np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
 
 
 class ImageDisplayWindow(QMainWindow):
@@ -908,7 +913,7 @@ class ImageDisplayWindow(QMainWindow):
             None  # green multiply over the live image while a reference is shown
         )
         self.overexposure_item: Optional[pg.ImageItem] = None
-        self._overexposure_source = None  # (frame id, levels) the current mask was computed from
+        self._overexposure_source = None  # (frame id, saturation) the current mask was computed from
 
         # Create main layout
         layout = QVBoxLayout()
@@ -940,7 +945,7 @@ class ImageDisplayWindow(QMainWindow):
 
         self.btn_overexposure = QPushButton("Over-exposed Pixels")
         self.btn_overexposure.setCheckable(True)
-        self.btn_overexposure.setToolTip("Highlight pixels at or above the upper contrast limit in red")
+        self.btn_overexposure.setToolTip("Highlight pixels at the camera's maximum value in red")
         self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
 
         # Add well selector toggle button
@@ -990,7 +995,6 @@ class ImageDisplayWindow(QMainWindow):
         if self.show_LUT:
             self.graphics_widget.view = pg.ImageView()
             self.graphics_widget.img = self.graphics_widget.view.getImageItem()
-            self.graphics_widget.img.setBorder("w")
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
@@ -998,8 +1002,14 @@ class ImageDisplayWindow(QMainWindow):
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
             self.LUTWidget.item.sigLevelsChanged.connect(self._update_overlays)
         else:
-            self.graphics_widget.img = pg.ImageItem(border="w")
+            self.graphics_widget.img = pg.ImageItem()
             self.graphics_widget.view.addItem(self.graphics_widget.img)
+
+        # White frame around the live image, above every overlay so tints and masks never recolor it
+        self.frame_item = QGraphicsRectItem()
+        self.frame_item.setPen(pg.mkPen("w"))
+        self.frame_item.setZValue(Z_FRAME)
+        self._active_view().addItem(self.frame_item)
 
         ## Create ROI
         self.roi_pos = (500, 500)
@@ -1123,7 +1133,7 @@ class ImageDisplayWindow(QMainWindow):
         super().closeEvent(event)
 
     def set_overexposure_indicator(self, enabled: bool):
-        """Overlay pixels at or above the upper contrast limit in red."""
+        """Overlay pixels at the camera's maximum value in red, whatever the contrast setting."""
         if enabled and self.overexposure_item is None:
             self.overexposure_item = self._add_overlay_item(Z_OVEREXPOSURE, lut=OVEREXPOSURE_LUT)
             self._update_overlays()
@@ -1170,8 +1180,10 @@ class ImageDisplayWindow(QMainWindow):
 
     def _update_overlays(self, *_):
         """Keep the overlays in step with the live image and its contrast range."""
+        image_rect = self.graphics_widget.img.boundingRect()
+        self.frame_item.setRect(image_rect)
         if self.live_tint_item is not None:
-            self.live_tint_item.setRect(self.graphics_widget.img.boundingRect())
+            self.live_tint_item.setRect(image_rect)
         levels = self.graphics_widget.img.getLevels()
         if levels is None:
             return
@@ -1179,11 +1191,18 @@ class ImageDisplayWindow(QMainWindow):
         if reference is not None and not np.array_equal(reference.getLevels(), levels):
             reference.setLevels(levels)
         if self.overexposure_item is not None and self._current_image is not None:
-            source = (id(self._current_image), tuple(levels))
+            saturation = self._saturation_level(self._current_image)
+            source = (id(self._current_image), saturation)
             if source != self._overexposure_source:
                 self._overexposure_source = source
-                mask = _overexposure_mask(self._current_image, levels[1])
+                mask = _overexposure_mask(self._current_image, saturation)
                 self.overexposure_item.setImage(mask, autoLevels=False, levels=(0, 1))
+
+    def _saturation_level(self, image: np.ndarray) -> float:
+        """The camera's maximum pixel value; the dtype's full range when no camera is attached."""
+        if self.liveController is None or not np.issubdtype(image.dtype, np.integer):
+            return _dtype_range(image.dtype).max
+        return self.liveController.camera.get_pixel_format().max_value(image.dtype)
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
@@ -1505,7 +1524,7 @@ class ImageDisplayWindow(QMainWindow):
                 cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
-        info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
+        info = _dtype_range(image.dtype)
         min_val, max_val = info.min, info.max
 
         if self.liveController is not None and self.contrastManager is not None:
