@@ -394,8 +394,9 @@ def test_mtime_is_preserved(experiment, destination):
 
 
 @pytest.mark.parametrize("pad", [5, 0])
-def test_legacy_timepoint_folders_with_done_move(tmp_path, destination, pad):
-    # Timepoint folder names use FILE_ID_PADDING, which is 0 in the CI configuration.
+def test_legacy_timepoint_done_markers_do_not_authorize_mid_run_moves(tmp_path, destination, pad):
+    # A timepoint .done only means imaging finished; asynchronous saves may still be writing, so
+    # without a manifest nothing moves until the root .done says the acquisition is over.
     first, second = f"{0:0{pad}d}", f"{1:0{pad}d}"
     exp = tmp_path / "legacy"
     write_file(exp / first / "A1_0000_0000_BF.tiff", b"a" * 10)
@@ -404,18 +405,13 @@ def test_legacy_timepoint_folders_with_done_move(tmp_path, destination, pad):
     write_file(exp / second / "A1_0000_0000_BF.tiff", b"b" * 10)
     write_file(exp / "acquisition.log", b"log\n")
 
-    entries = ua.legacy_movable(exp, quiesce_s=30.0, now=FUTURE)
-    assert [e.path for e in entries] == [first]
-
+    assert ua.legacy_movable(exp, quiesce_s=30.0, now=FUTURE) == []
     summary = ua.run_pass(exp, destination, mode="move", quiesce_s=30.0, now=FUTURE)
 
-    out = destination / "legacy"
-    assert (out / first / "A1_0000_0000_BF.tiff").exists()
-    assert (out / first / ".done").exists()
-    assert not (out / second).exists()
-    assert not (out / "acquisition.log").exists()
-    assert (exp / second / "A1_0000_0000_BF.tiff").exists()
-    assert not summary.finished
+    assert not (destination / "legacy").exists()
+    assert (exp / first / "A1_0000_0000_BF.tiff").exists()
+    assert summary.files == 0 and not summary.finished
+    assert ua.main([str(exp), str(destination), "--mode", "move", "--quiesce-s", "0"]) == ua.EXIT_NOTHING_MOVABLE
 
 
 def test_timepoint_folders_are_ordered_numerically(tmp_path):
@@ -425,15 +421,39 @@ def test_timepoint_folders_are_ordered_numerically(tmp_path):
     write_file(exp / "not_a_timepoint" / "x.tiff", b"x")
 
     assert [p.name for p in ua.timepoint_dirs(exp)] == ["0", "1", "2", "10", "11"]
-    assert [e.path for e in ua.legacy_movable(exp, quiesce_s=30.0, now=FUTURE)] == ["0", "1", "2", "10", "11"]
 
 
-def test_legacy_timepoint_not_quiescent_is_skipped(tmp_path, destination):
-    exp = tmp_path / "legacy"
+def test_destination_that_aliases_or_overlaps_the_source_is_rejected(tmp_path):
+    exp = tmp_path / "data" / "exp"
     write_file(exp / "0" / "A1_0000_0000_BF.tiff", b"a" * 10)
-    write_file(exp / "0" / ".done", b"")
+    write_file(exp / ".done", b"")
 
-    assert ua.legacy_movable(exp, quiesce_s=30.0, now=time.time()) == []
+    # dest/<name> == source: every file would "match" itself and move mode would delete the run.
+    with pytest.raises(ValueError):
+        ua.run_pass(exp, exp.parent, mode="move", quiesce_s=0.0, now=FUTURE)
+    # destination inside the source
+    with pytest.raises(ValueError):
+        ua.run_pass(exp, exp / "nas", mode="move", quiesce_s=0.0, now=FUTURE)
+    # symlinked alias of the parent
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path / "data")
+    with pytest.raises(ValueError):
+        ua.run_pass(exp, alias, mode="move", quiesce_s=0.0, now=FUTURE)
+    assert (exp / "0" / "A1_0000_0000_BF.tiff").exists(), "nothing may be touched when the destination is rejected"
+    assert ua.main([str(exp), str(exp.parent), "--mode", "move"]) == ua.EXIT_PROBLEMS
+    assert (exp / "0" / "A1_0000_0000_BF.tiff").exists()
+
+    # A disjoint sibling is fine.
+    sibling = tmp_path / "data" / "nas"
+    sibling.mkdir()
+    summary = ua.run_pass(exp, sibling, mode="copy", quiesce_s=0.0, now=FUTURE)
+    assert summary.finished and (sibling / "exp" / "0" / "A1_0000_0000_BF.tiff").exists()
+
+
+def test_transfer_file_refuses_the_same_file(tmp_path):
+    src = write_file(tmp_path / "a.tiff", b"a" * 10)
+    result = ua.transfer_file(src, src, mode="move")
+    assert result.status == "failed" and src.exists()
 
 
 def test_legacy_root_done_moves_everything(tmp_path, destination):

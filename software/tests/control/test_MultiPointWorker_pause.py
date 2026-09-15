@@ -6,6 +6,7 @@ checkpoint, keep the watchdog alive with status "paused", re-anchor the timepoin
 unwind cleanly on abort.
 """
 
+import queue
 import threading
 import time
 from types import SimpleNamespace
@@ -74,6 +75,11 @@ def _make_worker(gate=None, disk_guard=None):
     w._pause_gate = gate
     w._large_acquisition_mode = gate is not None
     w._disk_guard = disk_guard
+    # The pause tick drains job results in mode-on runs; give the bare worker an empty drain.
+    w._job_runners = []
+    w._completion_tracker = None
+    w._inline_results = queue.SimpleQueue()
+    w._abort_on_failed_job = True
     w._last_disk_check_mono = 0.0
     w._run_state = RecordingRunState()
     w.paused_events = []
