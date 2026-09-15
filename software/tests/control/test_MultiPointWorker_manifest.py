@@ -255,3 +255,51 @@ def test_pause_tick_never_drains_when_mode_is_off():
     w._disk_guard = None
     w._summarize_runner_outputs = lambda drain_all=False: (_ for _ in ()).throw(AssertionError("must not drain"))
     w._pause_tick()
+
+
+class _QueueRunner:
+    """Stand-in for a JobRunner: only output_queue() is used by the drain."""
+
+    def __init__(self, results):
+        self._queue = queue.Queue()
+        for r in results:
+            self._queue.put(r)
+
+    def output_queue(self):
+        return self._queue
+
+
+def _failed(job_id):
+    return JobResult(job_id=job_id, result=None, exception=RuntimeError("disk error"))
+
+
+def _ok(job_id, path):
+    return JobResult(job_id=job_id, result=_save_result(immediate_paths=(path,), bytes_written=1), exception=None)
+
+
+def test_a_failed_result_does_not_hide_the_successes_behind_it_in_the_runner_queue():
+    tracker = FakeTracker()
+    w = _make_worker(manifest=FakeManifest(), tracker=tracker)
+    w._job_runners = [
+        (object, _QueueRunner([_failed("f1"), _ok("s1", "/exp/a"), _ok("s2", "/exp/b"), _ok("s3", "/exp/c")]))
+    ]
+
+    summary = w._summarize_runner_outputs(drain_all=True)
+
+    assert summary.had_results and summary.none_failed is False
+    assert [r.immediate_paths[0] for r in tracker.fed] == ["/exp/a", "/exp/b", "/exp/c"], "every result is processed"
+    assert w._acquisition_error_count == 1
+    assert w._job_runners[0][1].output_queue().empty()
+
+
+def test_a_failed_result_does_not_hide_the_successes_behind_it_in_the_inline_queue():
+    tracker = FakeTracker()
+    w = _make_worker(manifest=FakeManifest(), tracker=tracker)
+    for item in (_failed("f1"), _ok("s1", "/exp/a"), _ok("s2", "/exp/b")):
+        w._inline_results.put(item)
+
+    summary = w._summarize_runner_outputs()
+
+    assert summary.none_failed is False
+    assert [r.immediate_paths[0] for r in tracker.fed] == ["/exp/a", "/exp/b"]
+    assert w._acquisition_error_count == 1

@@ -1112,7 +1112,10 @@ class MultiPointWorker:
                 inline_result: JobResult = self._inline_results.get_nowait()
             except queue.Empty:
                 break
-            none_failed = none_failed and self._summarize_job_result(inline_result)
+            # Evaluate every result: `a and f()` would skip f() after the first failure and silently
+            # drop the results already taken off the queue.
+            inline_ok = self._summarize_job_result(inline_result)
+            none_failed = none_failed and inline_ok
             had_results = True
         for job_class, job_runner in self._job_runners:
             if job_runner is None:
@@ -1124,7 +1127,8 @@ class MultiPointWorker:
             while True:
                 try:
                     job_result: JobResult = out_queue.get_nowait()
-                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    job_ok = self._summarize_job_result(job_result)
+                    none_failed = none_failed and job_ok
                     had_results = True
                     if not drain_all:
                         break  # Only process one result per queue if not draining
