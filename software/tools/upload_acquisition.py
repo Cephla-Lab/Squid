@@ -277,21 +277,21 @@ def timepoint_dirs(parent) -> List[Path]:
 
 
 def legacy_movable(experiment_dir, quiesce_s: float = DEFAULT_QUIESCE_S, now: Optional[float] = None) -> List[Entry]:
-    """Timepoint folders (``0``/``00000``, ...) that carry a ``.done`` marker and are quiet.
+    """Nothing is movable mid-run without a manifest.
 
-    This is how pre-manifest INDIVIDUAL_IMAGES / MULTI_PAGE_TIFF runs advertise completion.
-    Everything else waits for the root ``.done``.
+    A timepoint folder's ``.done`` marker only says the worker finished *imaging* that timepoint;
+    its save jobs run asynchronously and can still be writing (or stalled) long after, and a quiet
+    period cannot prove they finished. Pre-manifest runs are therefore uploaded once the root
+    ``.done`` marks the acquisition finished (see ``finish_after_end``).
     """
-    entries: List[Entry] = []
-    for child in timepoint_dirs(experiment_dir):
-        if not (child / DONE_MARKER).exists():
-            log.debug("timepoint %s has no %s marker yet", child.name, DONE_MARKER)
-            continue
-        if not is_quiescent(child, quiesce_s, now):
-            log.debug("timepoint %s is still being written", child.name)
-            continue
-        entries.append(Entry(path=child.name, kind="dir"))
-    return entries
+    pending = [child.name for child in timepoint_dirs(experiment_dir) if (child / DONE_MARKER).exists()]
+    if pending:
+        log.debug(
+            "timepoints %s are imaged but their saves cannot be confirmed without a manifest; waiting for the root %s",
+            ", ".join(pending),
+            DONE_MARKER,
+        )
+    return []
 
 
 def has_root_done(experiment_dir) -> bool:
@@ -336,6 +336,19 @@ def _newest_mtime(path: Path) -> Optional[float]:
 def destination_experiment_dir(experiment_dir, destination_dir) -> Path:
     """``dest/<experiment name>`` - the experiment folder name is appended to the destination."""
     return Path(destination_dir) / Path(experiment_dir).name
+
+
+def ensure_disjoint(experiment_dir, dest_dir) -> None:
+    """Refuse a destination that is, contains, or lies inside the experiment folder.
+
+    ``upload_acquisition.py /data/exp /data`` would otherwise compute ``/data/exp`` as the
+    destination: every file "matches" itself and move mode deletes the acquisition. Resolving
+    both paths also catches symlinked aliases of the same tree.
+    """
+    src = Path(experiment_dir).resolve()
+    dst = Path(dest_dir).resolve()
+    if src == dst or src in dst.parents or dst in src.parents:
+        raise ValueError(f"destination {dst} overlaps the experiment folder {src}; choose a disjoint destination")
 
 
 def _sha256(path: Path) -> str:
@@ -389,6 +402,8 @@ def transfer_file(src, dst, mode: str = "copy", checksum: bool = False, dry_run:
 
     partial = dst.with_name(dst.name + PARTIAL_SUFFIX)
     try:
+        if dst.exists() and os.path.samefile(src, dst):
+            return FileResult("failed", 0, "source and destination are the same file")
         if _destination_matches(src, dst, src_stat, checksum):
             if mode == "move" and not dry_run:
                 src.unlink()
@@ -535,6 +550,7 @@ def run_pass(
     """One sweep: transfer everything that is movable, and finish up if the run has ended."""
     experiment_dir = Path(experiment_dir)
     dest_dir = destination_experiment_dir(experiment_dir, destination_dir)
+    ensure_disjoint(experiment_dir, dest_dir)
     summary = Summary()
 
     manifest_path = experiment_dir / MANIFEST_NAME
@@ -549,8 +565,8 @@ def run_pass(
     else:
         entries = legacy_movable(experiment_dir, quiesce_s, now)
         ended = has_root_done(experiment_dir)
-        if entries:
-            log.info("no manifest; using %s markers in timepoint folders", DONE_MARKER)
+        if not ended:
+            log.info("no manifest and no root %s yet; nothing can be moved safely until the run finishes", DONE_MARKER)
 
     for entry in entries:
         summary.merge(transfer_entry(experiment_dir, dest_dir, entry, mode, checksum=checksum, dry_run=dry_run))
@@ -738,6 +754,12 @@ def _run_upload(argv: Sequence[str]) -> int:
         return EXIT_PROBLEMS
     if not destination_dir.is_dir():
         log.error("destination is not a mounted directory: %s", destination_dir)
+        return EXIT_PROBLEMS
+
+    try:
+        ensure_disjoint(experiment_dir, destination_experiment_dir(experiment_dir, destination_dir))
+    except ValueError as exc:
+        log.error("%s", exc)
         return EXIT_PROBLEMS
 
     totals = Summary()

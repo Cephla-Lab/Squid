@@ -9,9 +9,16 @@ It decides what is safe to take using, in order:
 1. `transfer_manifest.jsonl` in the experiment folder — see
    [transfer-manifest.md](transfer-manifest.md). This is what large acquisition mode
    writes, and it is the only source of truth that works mid-run for every format.
-2. Otherwise, timepoint folders (`00000`/`0`, ...) that contain a `.done` marker — how
-   pre-manifest INDIVIDUAL_IMAGES / MULTI_PAGE_TIFF runs advertise a finished timepoint.
-3. Otherwise, a `.done` file in the experiment folder itself: the whole run is finished.
+2. Otherwise, a `.done` file in the experiment folder itself: the whole run is finished and
+   everything is movable once the folder has gone quiet.
+
+Without a manifest **nothing moves mid-run**. A timepoint folder's own `.done` marker only
+says the worker finished *imaging* that timepoint; its save jobs run asynchronously and can
+still be writing (or stalled) long after, and no quiet period can prove they finished. Runs
+you want to offload while they are still going must use large acquisition mode, which writes
+the manifest.
+
+The destination must be a folder disjoint from the experiment folder: the tool appends the experiment name to it (`<nas>/<experiment>/…`) and refuses a destination that is, contains, or lies inside the source (for example `upload_acquisition.py /data/exp /data`), because that would make every file match itself and, in move mode, delete the run.
 
 Standard library only, Python 3.10+. Copy it onto a transfer box if you like; it does not
 need a Squid checkout.
@@ -91,7 +98,7 @@ landed, so an interrupted move always leaves enough information at the source to
 | `--mode move` | unlink each source file *after* its copy is verified at the destination. Frees the acquisition disk as the run goes. Empty source directories are removed only after `end` (the experiment folder itself is left behind). |
 | `--follow` | keep polling until the run ends and the final sweep completes. Without it, the tool transfers what is movable now and exits. |
 | `--checksum` | verify sha256 as well as size — on copy, and when deciding whether an existing destination file can be skipped. Slower (the destination is read back). |
-| `--quiesce-s` | how long the experiment folder must be untouched before unlisted files (and legacy timepoint folders) are considered safe. Default 30 s. |
+| `--quiesce-s` | how long the experiment folder must be untouched before unlisted files are considered safe after the run has ended. Default 30 s. |
 | `--poll-s` | poll interval for `--follow`. Default 2 s. |
 | `--dry-run` | report what would move; change nothing, poll nothing. |
 | `--log-level` | `DEBUG` lists every skipped and moved file. |
@@ -102,7 +109,7 @@ landed, so an interrupted move always leaves enough information at the source to
 |---|---|
 | 0 | everything movable was transferred (and, if the run had ended, the final sweep completed) |
 | 1 | transfer failures, a bad argument, or `verify` found problems |
-| 2 | nothing was movable yet and the run is still in progress — no manifest, no `.done` markers. Normal early in a run; try again later, or use `--follow`. |
+| 2 | nothing was movable yet and the run is still in progress — no manifest and no root `.done`. Normal early in a run; try again later, or use `--follow`. |
 
 ## Notes
 

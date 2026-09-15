@@ -2,11 +2,13 @@
 
 import os
 import queue
+import time
 from types import SimpleNamespace
 
 import control._def
 from control.core.job_processing import JobResult, SaveResult, ZarrWriteResult
 from control.core.multi_point_worker import MultiPointWorker
+from control.core.pause_gate import PauseGate
 from control.core.transfer_manifest import CompletedUnit, UnitKey
 
 
@@ -47,6 +49,11 @@ def _make_worker(manifest=None, tracker=None):
     w._log = __import__("squid.logging").logging.get_logger("test-worker")
     w._manifest = manifest
     w._completion_tracker = tracker
+    w._large_acquisition_mode = tracker is not None
+    w._abort_on_failed_job = True
+    w._run_state = SimpleNamespace(beat=lambda progress=None, force=False: None, set_status=lambda s: None)
+    w._timepoint_fov_count = 0
+    w.image_count = 0
     w._inline_results = queue.SimpleQueue()
     w._job_runners = []
     w._slack_notifier = None
@@ -174,7 +181,10 @@ def test_timepoint_drain_barrier_waits_for_pending_jobs_then_drains(monkeypatch)
     w.abort_requested_fn = lambda: False
     w._sleep = lambda s: None
     drains = []
-    w._summarize_runner_outputs = lambda drain_all=False: drains.append(drain_all)
+    w._summarize_runner_outputs = lambda drain_all=False: (
+        drains.append(drain_all),
+        SimpleNamespace(none_failed=True, had_results=True),
+    )[1]
     w._drain_results_for_timepoint(timeout_s=5.0)
     assert drains == [True, True, True], "one drain per wait iteration plus the final one"
 
@@ -184,7 +194,7 @@ def test_timepoint_drain_barrier_is_bounded_and_abort_aware():
     w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 99)
     w._wait_for_outstanding_callback_images = lambda: None
     w._sleep = lambda s: None
-    w._summarize_runner_outputs = lambda drain_all=False: None
+    w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=True, had_results=False)
     w.abort_requested_fn = lambda: True
     w._drain_results_for_timepoint(timeout_s=5.0)  # returns immediately on abort
 
@@ -200,3 +210,48 @@ def test_timepoint_drain_barrier_is_a_no_op_when_mode_is_off():
     w = _make_worker(manifest=None, tracker=None)
     w._backpressure = SimpleNamespace(get_pending_jobs=lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     w._drain_results_for_timepoint()
+
+
+def test_timepoint_drain_applies_the_abort_on_failed_job_policy():
+    w = _make_worker(manifest=FakeManifest(), tracker=FakeTracker())
+    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 0)
+    w._wait_for_outstanding_callback_images = lambda: None
+    w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=False, had_results=True)
+    aborts = []
+    w._abort_due_to_error = lambda: aborts.append(1)
+    w.abort_requested_fn = lambda: False
+
+    w._drain_results_for_timepoint(timeout_s=1.0)
+    assert aborts == [1], "a save failure drained at the timepoint barrier must abort like one seen in the FOV loop"
+
+    aborts.clear()
+    w._abort_on_failed_job = False
+    w._drain_results_for_timepoint(timeout_s=1.0)
+    assert aborts == []
+
+
+def test_pause_tick_drains_results_every_tick_and_applies_the_abort_policy():
+    w = _make_worker(manifest=FakeManifest(), tracker=FakeTracker())
+    w._pause_gate = PauseGate()
+    w._disk_guard = None
+    w._last_disk_check_mono = time.monotonic()  # the disk re-check is not due; draining must not depend on it
+    outcomes = iter(
+        [SimpleNamespace(none_failed=True, had_results=True), SimpleNamespace(none_failed=False, had_results=True)]
+    )
+    drains = []
+    w._summarize_runner_outputs = lambda drain_all=False: (drains.append(drain_all), next(outcomes))[1]
+    aborts = []
+    w._abort_due_to_error = lambda: aborts.append(1)
+    w.abort_requested_fn = lambda: False
+
+    w._pause_tick()
+    assert drains == [True] and aborts == []
+    w._pause_tick()
+    assert drains == [True, True] and aborts == [1]
+
+
+def test_pause_tick_never_drains_when_mode_is_off():
+    w = _make_worker(manifest=None, tracker=None)
+    w._disk_guard = None
+    w._summarize_runner_outputs = lambda drain_all=False: (_ for _ in ()).throw(AssertionError("must not drain"))
+    w._pause_tick()

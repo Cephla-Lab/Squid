@@ -524,9 +524,18 @@ class MultiPointWorker:
                     "Timed out waiting for save jobs before the timepoint_done record; listing what is complete"
                 )
                 break
-            self._summarize_runner_outputs(drain_all=True)
+            self._drain_job_results()
             self._sleep(0.05)
-        self._summarize_runner_outputs(drain_all=True)
+        self._drain_job_results()
+
+    def _drain_job_results(self) -> bool:
+        """Drain every queued job result (feeding the completion tracker) and apply the abort-on-failed-job
+        policy exactly as the FOV loop does, so a failure consumed here is never lost. Returns none_failed."""
+        result = self._summarize_runner_outputs(drain_all=True)
+        if not result.none_failed and self._abort_on_failed_job and not self.abort_requested_fn():
+            self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
+            self._abort_due_to_error()
+        return result.none_failed
 
     def _manifest_timepoint_done(self) -> None:
         if self._manifest is None:
@@ -633,8 +642,13 @@ class MultiPointWorker:
         return not aborted
 
     def _pause_tick(self) -> None:
-        """Runs every poll while paused: keep the watchdog alive, re-check the disk, refresh the GUI."""
+        """Runs every poll while paused: keep the watchdog alive, list finished saves, re-check the disk."""
         self._run_state_beat()
+        if self._large_acquisition_mode:
+            # Save jobs still in flight when the pause began finish during it. Their results must keep
+            # flowing into the transfer manifest, or the offload tool can never free their space and a
+            # disk-space pause would not resolve. Failed saves still abort under the usual policy.
+            self._drain_job_results()
         if self._disk_guard is None:
             return
         now = time.monotonic()
