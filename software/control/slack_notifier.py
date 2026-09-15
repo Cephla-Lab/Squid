@@ -17,7 +17,7 @@ import urllib.error
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Sequence, Tuple
 
 import numpy as np
 
@@ -77,6 +77,7 @@ class SlackNotifier:
     MAX_IMAGE_SIZE = 1024  # Maximum dimension for image attachments
     QUEUE_TIMEOUT = 1.0  # Timeout for queue operations
     SLACK_API_BASE = "https://slack.com/api"
+    PAUSE_REASON_LABELS = {"disk_space": "disk space", "operator": "operator"}
 
     def __init__(
         self,
@@ -361,6 +362,15 @@ class SlackNotifier:
             minutes = int((seconds % 3600) // 60)
             return f"{hours}h {minutes}m"
 
+    def _format_bytes(self, num_bytes: float) -> str:
+        """Format a byte count as gigabytes with one decimal place."""
+        return f"{num_bytes / (1024**3):.1f} GB"
+
+    def _format_pause_reasons(self, reasons: Sequence[str]) -> str:
+        """Format pause reason keys into a human-readable, comma-separated string."""
+        labels = [self.PAUSE_REASON_LABELS.get(reason, str(reason).replace("_", " ")) for reason in reasons]
+        return ", ".join(labels) if labels else "unknown"
+
     def set_pending_image(self, image: Optional[np.ndarray]):
         """Set a pending image to be sent with the next timepoint notification.
 
@@ -603,6 +613,124 @@ class SlackNotifier:
         self._current_experiment_id = None
         with self._lock:
             self._timepoint_durations = []
+
+    def notify_acquisition_paused(
+        self,
+        experiment_id: str,
+        reasons: Sequence[str],
+        free_bytes: Optional[int] = None,
+        required_bytes: Optional[int] = None,
+        timepoint: Optional[int] = None,
+        total_timepoints: Optional[int] = None,
+    ) -> None:
+        """Send an acquisition pause notification to Slack.
+
+        Intended to be called by the acquisition worker on the pause state
+        transition only (not repeatedly while paused).
+
+        Args:
+            experiment_id: Experiment the acquisition belongs to.
+            reasons: Active pause reasons, e.g. ("disk_space",) or ("operator",).
+            free_bytes: Free space on the save disk, for disk-space pauses.
+            required_bytes: Space the acquisition still needs, for disk-space pauses.
+            timepoint: Current timepoint, if known.
+            total_timepoints: Total timepoints, if known.
+        """
+        if not control._def.SlackNotifications.NOTIFY_ON_PAUSE:
+            return
+        if not self.enabled:
+            return
+
+        try:
+            reason_list = list(reasons or [])
+            reason_str = self._format_pause_reasons(reason_list)
+
+            # Disk numbers are only meaningful for disk-space pauses.
+            disk_parts = []
+            if "disk_space" in reason_list:
+                if free_bytes is not None:
+                    disk_parts.append(f"{self._format_bytes(free_bytes)} free")
+                if required_bytes is not None:
+                    disk_parts.append(f"{self._format_bytes(required_bytes)} required")
+
+            context_parts = [f"experiment {experiment_id}"]
+            if timepoint is not None:
+                if total_timepoints is not None:
+                    context_parts.append(f"timepoint {timepoint}/{total_timepoints}")
+                else:
+                    context_parts.append(f"timepoint {timepoint}")
+
+            text = f"⏸️ Acquisition paused ({reason_str})"
+            if disk_parts:
+                text += ": " + ", ".join(disk_parts)
+            text += " — " + ", ".join(context_parts)
+
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            detail_lines = [f"*Experiment:* {experiment_id}", f"*Reason:* {reason_str}"]
+            if "disk_space" in reason_list:
+                if free_bytes is not None:
+                    detail_lines.append(f"*Free space:* {self._format_bytes(free_bytes)}")
+                if required_bytes is not None:
+                    detail_lines.append(f"*Required:* {self._format_bytes(required_bytes)}")
+            if timepoint is not None:
+                if total_timepoints is not None:
+                    detail_lines.append(f"*Timepoint:* {timepoint}/{total_timepoints}")
+                else:
+                    detail_lines.append(f"*Timepoint:* {timepoint}")
+            detail_lines.append(f"*Paused:* {timestamp}")
+
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Acquisition Paused", "emoji": True},
+                },
+                {"type": "section", "text": {"type": "mrkdwn", "text": "\n".join(detail_lines)}},
+            ]
+
+            self._queue_message(SlackMessage(text=text, blocks=blocks))
+        except Exception as e:
+            log.warning(f"Failed to send Slack pause notification: {e}")
+
+    def notify_acquisition_resumed(self, experiment_id: str, paused_seconds: float) -> None:
+        """Send an acquisition resume notification to Slack.
+
+        Args:
+            experiment_id: Experiment the acquisition belongs to.
+            paused_seconds: How long the acquisition stayed paused.
+        """
+        if not control._def.SlackNotifications.NOTIFY_ON_PAUSE:
+            return
+        if not self.enabled:
+            return
+
+        try:
+            paused_str = self._format_duration(paused_seconds)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            blocks = [
+                {
+                    "type": "header",
+                    "text": {"type": "plain_text", "text": "Acquisition Resumed", "emoji": True},
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f"*Experiment:* {experiment_id}\n" f"*Paused for:* {paused_str}\n" f"*Resumed:* {timestamp}"
+                        ),
+                    },
+                },
+            ]
+
+            self._queue_message(
+                SlackMessage(
+                    text=f"▶️ Acquisition resumed after {paused_str} — experiment {experiment_id}",
+                    blocks=blocks,
+                )
+            )
+        except Exception as e:
+            log.warning(f"Failed to send Slack resume notification: {e}")
 
     def record_timepoint_duration(self, duration_seconds: float):
         """Record the duration of a completed timepoint for estimation."""

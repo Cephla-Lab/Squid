@@ -561,3 +561,35 @@ class TestExtendedLoader:
         regions = {r["name"]: r for r in data.wellplate_regions}
         assert regions["A1"]["fovs"] == [[9.0, 9.0]]  # kept
         assert regions["B2"]["fovs"] == [[4.0, 5.0]]  # completed from the CSV
+
+
+class TestLargeAcquisitionMode:
+    """acquisition.large_acquisition_mode is a per-run opt-in: absent means 'not specified'."""
+
+    def test_dataclass_default_is_unspecified(self):
+        assert AcquisitionYAMLData(widget_type="wellplate").large_acquisition_mode is None
+
+    @pytest.mark.parametrize("value,expected", [(True, True), (False, False)])
+    def test_parse_dict_reads_the_key(self, value, expected):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict({"acquisition": {"widget_type": "wellplate", "large_acquisition_mode": value}})
+
+        assert data.large_acquisition_mode is expected
+
+    def test_parse_dict_without_the_key_leaves_it_unspecified(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict({"acquisition": {"widget_type": "wellplate"}})
+
+        assert data.large_acquisition_mode is None
+
+    def test_round_trip_through_a_yaml_file(self, tmp_path):
+        import yaml
+
+        # The same "acquisition" block the controller writes for a run with the mode on.
+        (tmp_path / "acquisition.yaml").write_text(
+            yaml.safe_dump({"acquisition": {"widget_type": "wellplate", "large_acquisition_mode": True}})
+        )
+
+        assert parse_acquisition_yaml(str(tmp_path / "acquisition.yaml")).large_acquisition_mode is True

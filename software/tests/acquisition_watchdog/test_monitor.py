@@ -7,7 +7,7 @@ from acquisition_watchdog.config import SlackConfig
 from acquisition_watchdog.monitor import Monitor
 
 
-def _running(tmp_path, pid, heartbeat_age=0.0, run_id="r1"):
+def _running(tmp_path, pid, heartbeat_age=0.0, run_id="r1", status="running"):
     rec = {
         "schema_version": 1,
         "run_id": run_id,
@@ -20,7 +20,7 @@ def _running(tmp_path, pid, heartbeat_age=0.0, run_id="r1"):
         "heartbeat_at": time.time() - heartbeat_age,
         "progress": {},
         "expected": {},
-        "status": "running",
+        "status": status,
         "reason": None,
         "ended_at": None,
         "stats": None,
@@ -46,6 +46,29 @@ def test_dead_pid_is_crash(tmp_path):
 def test_stale_heartbeat_with_live_pid_is_hang(tmp_path):
     _running(tmp_path, pid=os.getpid(), heartbeat_age=999.0)
     assert _mon(tmp_path).classify(ast.read_run(tmp_path), time.time()) == "hang"
+
+
+def test_paused_with_live_pid_and_fresh_heartbeat_is_silent(tmp_path):
+    # A paused run still heartbeats; it must never look like a hang.
+    _running(tmp_path, pid=os.getpid(), heartbeat_age=1.0, status="paused")
+    assert _mon(tmp_path).classify(ast.read_run(tmp_path), time.time()) is None
+
+
+def test_paused_with_stale_heartbeat_is_hang(tmp_path):
+    _running(tmp_path, pid=os.getpid(), heartbeat_age=999.0, status="paused")
+    assert _mon(tmp_path).classify(ast.read_run(tmp_path), time.time()) == "hang"
+
+
+def test_paused_with_dead_pid_is_crash(tmp_path):
+    _running(tmp_path, pid=2_000_000_000, heartbeat_age=1.0, status="paused")
+    assert _mon(tmp_path).classify(ast.read_run(tmp_path), time.time()) == "crash"
+
+
+def test_paused_already_alerted_is_silent(tmp_path):
+    _running(tmp_path, pid=2_000_000_000, heartbeat_age=999.0, run_id="paused-dup", status="paused")
+    mon = _mon(tmp_path)
+    mon._mark_alerted("paused-dup")
+    assert mon.classify(ast.read_run(tmp_path), time.time()) is None
 
 
 def test_ended_reasons(tmp_path):

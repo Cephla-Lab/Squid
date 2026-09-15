@@ -865,6 +865,13 @@ ACQUISITION_MAX_PENDING_JOBS = 10  # Max jobs in flight before throttling
 ACQUISITION_MAX_PENDING_MB = 2000.0  # Max pending MB before throttling
 ACQUISITION_THROTTLE_TIMEOUT_S = 30.0  # Max wait time when throttled
 
+# Large acquisition mode (opt-in): pause the acquisition when the save disk is nearly full and write a
+# transfer manifest so an external tool can move completed files off the disk during the run.
+LARGE_ACQUISITION_MODE = False
+DISK_SPACE_RESERVE_GB = 10.0  # Minimum free space to keep on the save disk before pausing
+DISK_SPACE_POLL_INTERVAL_S = 5.0  # How often to re-check free space while paused
+SIMULATED_DISK_CAPACITY_GB = 0.0  # Dev only: pretend the save disk has this capacity (0 = use the real disk)
+
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 
 ENABLE_STROBE_OUTPUT = False
@@ -1330,6 +1337,7 @@ class SlackNotifications:
     NOTIFY_ON_TIMEPOINT_COMPLETE = True
     NOTIFY_ON_ACQUISITION_START = False
     NOTIFY_ON_ACQUISITION_FINISHED = True
+    NOTIFY_ON_PAUSE = True  # Acquisition paused (disk space / operator) and resumed
     SEND_MOSAIC_SNAPSHOTS = True
     WATCHDOG_ENABLED = True  # Standalone acquisition watchdog: alert on crash / hang / error / abort
 
