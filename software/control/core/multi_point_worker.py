@@ -33,7 +33,7 @@ from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
 import squid.logging
 import control.core.job_processing
-from control.core.job_processing import ZarrWriteResult
+from control.core.job_processing import JobResult, SaveResult, ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
     SaveImageJob,
@@ -53,6 +53,7 @@ from control.core.mosaic_utils import (
 from control.core.backpressure import BackpressureController, BackpressureValues
 from control.core.disk_space import DiskSpaceGuard, DiskStatus
 from control.core.pause_gate import PauseGate, PauseState
+from control.core.transfer_manifest import CompletedUnit, CompletionTracker, TransferManifestWriter, UnitKey
 from squid.config import CameraPixelFormat
 
 # Module-level logger for static methods
@@ -267,6 +268,21 @@ class MultiPointWorker:
                 planes_per_fov=self.NZ * len(self.selected_configurations),
             )
 
+        # Transfer manifest (large acquisition mode only): lists files that are complete and safe for the
+        # NAS upload tool to move off the disk during the run. Completion is decided here on the main side
+        # from the save jobs' results; nothing is written when the mode is off.
+        self._manifest: Optional[TransferManifestWriter] = None
+        self._completion_tracker: Optional[CompletionTracker] = None
+        self._inline_results: "queue.SimpleQueue[JobResult]" = queue.SimpleQueue()
+        self._region_fov_counts_by_id: Dict[str, int] = {
+            str(region_id): len(coords) for region_id, coords in self.scan_region_fov_coords_mm.items()
+        }
+        if self._large_acquisition_mode and not self.skip_saving and self.experiment_path:
+            self._manifest = TransferManifestWriter(self.experiment_path)
+            self._completion_tracker = CompletionTracker(
+                expected_planes_fn=self._expected_planes, on_complete=self._on_unit_complete
+            )
+
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
@@ -475,6 +491,109 @@ class MultiPointWorker:
         guard = self._disk_guard
         return guard.last_status if guard is not None else None
 
+    # --- transfer manifest (large acquisition mode) ---------------------------------------------------
+
+    def _expected_planes(self, key: UnitKey) -> int:
+        """Plane results that complete one unit: z levels x channels, times the region's FOVs for region units."""
+        planes = self.NZ * len(self.selected_configurations)
+        if key.fov is None:
+            planes *= self._region_fov_counts_by_id.get(key.region, 0)
+        return planes
+
+    def _manifest_start(self) -> None:
+        if self._manifest is None:
+            return
+        self._manifest.start(
+            experiment_id=self.experiment_ID or "unknown", file_format=FILE_SAVING_OPTION.name, nt=self.Nt
+        )
+
+    def _drain_results_for_timepoint(self, timeout_s: float = 30.0) -> None:
+        """Best-effort barrier so the timepoint_done record follows every complete entry of the timepoint.
+
+        Large acquisition mode only. Waits (bounded, abort-aware) until the save jobs dispatched so far
+        have finished, then drains their results into the completion tracker. Nothing here changes the
+        images or their order; a slow disk just delays the marker by up to ``timeout_s``.
+        """
+        if self._completion_tracker is None:
+            return
+        self._wait_for_outstanding_callback_images()
+        deadline = time.monotonic() + timeout_s
+        while self._backpressure.get_pending_jobs() > 0:
+            if self.abort_requested_fn() or time.monotonic() > deadline:
+                self._log.warning(
+                    "Timed out waiting for save jobs before the timepoint_done record; listing what is complete"
+                )
+                break
+            self._drain_job_results()
+            self._sleep(0.05)
+        self._drain_job_results()
+
+    def _drain_job_results(self) -> bool:
+        """Drain every queued job result (feeding the completion tracker) and apply the abort-on-failed-job
+        policy exactly as the FOV loop does, so a failure consumed here is never lost. Returns none_failed."""
+        result = self._summarize_runner_outputs(drain_all=True)
+        if not result.none_failed and self._abort_on_failed_job and not self.abort_requested_fn():
+            self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
+            self._abort_due_to_error()
+        return result.none_failed
+
+    def _manifest_timepoint_done(self) -> None:
+        if self._manifest is None:
+            return
+        self._manifest.timepoint_done(self.time_point)
+
+    def _manifest_end(self, reason: str) -> None:
+        if self._manifest is None:
+            return
+        if self._completion_tracker is not None:
+            incomplete = self._completion_tracker.incomplete_units()
+            if incomplete:
+                self._log.warning(
+                    f"{len(incomplete)} unit(s) never completed and are not listed in the transfer manifest "
+                    f"(movable only after the end record): {incomplete[:5]}"
+                )
+        try:
+            self._manifest.end(reason)
+        except Exception:
+            self._log.exception("Failed to write the transfer manifest end record")
+
+    def _feed_completion(self, result) -> None:
+        """Route a save job's result into the completion tracker (no-op unless the manifest is on)."""
+        tracker = self._completion_tracker
+        if tracker is None or not isinstance(result, (SaveResult, ZarrWriteResult)):
+            return
+        try:
+            tracker.feed(result)
+        except Exception:
+            # Bookkeeping must never take an acquisition down; unlisted files are still moved after
+            # the end record, so the safe failure mode is "list less".
+            self._log.exception("Transfer manifest completion tracking failed; disabling it for this run")
+            self._completion_tracker = None
+
+    def _on_unit_complete(self, unit: CompletedUnit) -> None:
+        # A file unit is final now, so its on-disk size is the truth the mover verifies against; the
+        # planes' summed pixel bytes would miss headers and the finalized OME-XML. Directories get none.
+        for path in unit.paths:
+            nbytes = None
+            if unit.kind == "file":
+                try:
+                    nbytes = os.path.getsize(path)
+                except OSError:
+                    self._log.warning(f"Completed unit path missing when listing it in the transfer manifest: {path}")
+            self._manifest.complete(path, unit.kind, nbytes, unit.t, unit.region, unit.fov)
+
+    def _record_written_file(self, path: str, region_id=None, fov=None) -> None:
+        """List a file the worker wrote synchronously (coordinates.csv, RGB merges, laser-AF images)."""
+        if self._manifest is None:
+            return
+        try:
+            nbytes = os.path.getsize(path)
+        except OSError:
+            nbytes = None
+        self._manifest.complete(
+            path, "file", nbytes, self.time_point, None if region_id is None else str(region_id), fov
+        )
+
     def _estimate_frame_bytes(self) -> int:
         """Bytes of one camera frame, for the disk-space estimate: last captured frame, else worst case."""
         if self._last_frame_nbytes:
@@ -523,8 +642,13 @@ class MultiPointWorker:
         return not aborted
 
     def _pause_tick(self) -> None:
-        """Runs every poll while paused: keep the watchdog alive, re-check the disk, refresh the GUI."""
+        """Runs every poll while paused: keep the watchdog alive, list finished saves, re-check the disk."""
         self._run_state_beat()
+        if self._large_acquisition_mode:
+            # Save jobs still in flight when the pause began finish during it. Their results must keep
+            # flowing into the transfer manifest, or the offload tool can never free their space and a
+            # disk-space pause would not resolve. Failed saves still abort under the usual policy.
+            self._drain_job_results()
         if self._disk_guard is None:
             return
         now = time.monotonic()
@@ -584,6 +708,7 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
+            self._manifest_start()
             sleep_time = min(self.dt / 20.0, 0.5)
 
             # Send Slack acquisition start notification
@@ -674,6 +799,7 @@ class MultiPointWorker:
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
             reason = self.end_reason = self._compute_end_reason()
+            self._manifest_end(reason)
             total_duration = time.time() - self.timestamp_acquisition_started
             self._run_state.end(
                 reason,
@@ -862,7 +988,9 @@ class MultiPointWorker:
                 self.run_coordinate_acquisition(current_path)
 
             # finished region scan
-            self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
+            coordinates_path = os.path.join(current_path, "coordinates.csv")
+            self.coordinates_pd.to_csv(coordinates_path, index=False, header=True)
+            self._record_written_file(coordinates_path)
 
             # Send Slack timepoint notification via callback (allows main thread to capture screenshot)
             if self._slack_notifier is not None:
@@ -892,6 +1020,8 @@ class MultiPointWorker:
             except Exception:
                 self._log.exception("signal_timepoint_finished callback failed")
 
+            self._drain_results_for_timepoint()
+            self._manifest_timepoint_done()
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
         finally:
@@ -974,6 +1104,16 @@ class MultiPointWorker:
         """
         none_failed = True
         had_results = False
+        while self._completion_tracker is not None:
+            try:
+                inline_result: JobResult = self._inline_results.get_nowait()
+            except queue.Empty:
+                break
+            # Evaluate every result: `a and f()` would skip f() after the first failure and silently
+            # drop the results already taken off the queue.
+            inline_ok = self._summarize_job_result(inline_result)
+            none_failed = none_failed and inline_ok
+            had_results = True
         for job_class, job_runner in self._job_runners:
             if job_runner is None:
                 continue
@@ -984,7 +1124,8 @@ class MultiPointWorker:
             while True:
                 try:
                     job_result: JobResult = out_queue.get_nowait()
-                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    job_ok = self._summarize_job_result(job_result)
+                    none_failed = none_failed and job_ok
                     had_results = True
                     if not drain_all:
                         break  # Only process one result per queue if not draining
@@ -1017,6 +1158,7 @@ class MultiPointWorker:
             return False
         else:
             self._log.info(f"Got result for job {job_result.job_id}, it completed!")
+            self._feed_completion(job_result.result)
             # Handle ZarrWriteResult - notify viewer that frame is written
             if isinstance(job_result.result, ZarrWriteResult):
                 r = job_result.result
@@ -1231,6 +1373,7 @@ class MultiPointWorker:
                 image = self.laser_auto_focus_controller.get_image()
                 saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
                 iio.imwrite(saving_path, image)
+                self._record_written_file(saving_path, region_id=region_id, fov=fov)
 
             current_round_images = {}
             # iterate through selected modes
@@ -1542,9 +1685,11 @@ class MultiPointWorker:
                                 return
                         else:
                             try:
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
                                 result = job.run()
+                                if self._completion_tracker is not None:
+                                    self._inline_results.put(
+                                        JobResult(job_id=job.job_id, result=result, exception=None)
+                                    )
                             except Exception:
                                 self._log.exception("Failed to execute job, abandoning acquisition!")
                                 self._abort_due_to_error()
@@ -1737,20 +1882,16 @@ class MultiPointWorker:
             if len(rgb_image.shape) == 3:
                 _log.debug("writing RGB image")
                 if rgb_image.dtype == np.uint16:
-                    iio.imwrite(
-                        os.path.join(
-                            capture_info.save_directory, capture_info.file_id + "_BF_LED_matrix_full_RGB.tiff"
-                        ),
-                        rgb_image,
+                    saving_path = os.path.join(
+                        capture_info.save_directory, capture_info.file_id + "_BF_LED_matrix_full_RGB.tiff"
                     )
                 else:
-                    iio.imwrite(
-                        os.path.join(
-                            capture_info.save_directory,
-                            capture_info.file_id + "_BF_LED_matrix_full_RGB." + Acquisition.IMAGE_FORMAT,
-                        ),
-                        rgb_image,
+                    saving_path = os.path.join(
+                        capture_info.save_directory,
+                        capture_info.file_id + "_BF_LED_matrix_full_RGB." + Acquisition.IMAGE_FORMAT,
                     )
+                iio.imwrite(saving_path, rgb_image)
+                self._record_written_file(saving_path, region_id=capture_info.region_id, fov=capture_info.fov)
 
     def handle_rgb_channels(self, images, capture_info: CaptureInfo):
         for channel in ["BF LED matrix full_R", "BF LED matrix full_G", "BF LED matrix full_B"]:
@@ -1776,7 +1917,9 @@ class MultiPointWorker:
                 + channel.replace(" ", "_")
                 + (".tiff" if images[channel].dtype == np.uint16 else "." + Acquisition.IMAGE_FORMAT)
             )
-            iio.imwrite(os.path.join(capture_info.save_directory, file_name), images[channel])
+            saving_path = os.path.join(capture_info.save_directory, file_name)
+            iio.imwrite(saving_path, images[channel])
+            self._record_written_file(saving_path, region_id=capture_info.region_id, fov=capture_info.fov)
 
     def construct_rgb_image(self, images, capture_info: CaptureInfo):
         rgb_image = np.zeros((*images["BF LED matrix full_R"].shape, 3), dtype=images["BF LED matrix full_R"].dtype)
@@ -1809,7 +1952,9 @@ class MultiPointWorker:
             + "_BF_LED_matrix_full_RGB"
             + (".tiff" if rgb_image.dtype == np.uint16 else "." + Acquisition.IMAGE_FORMAT)
         )
-        iio.imwrite(os.path.join(capture_info.save_directory, file_name), rgb_image)
+        saving_path = os.path.join(capture_info.save_directory, file_name)
+        iio.imwrite(saving_path, rgb_image)
+        self._record_written_file(saving_path, region_id=capture_info.region_id, fov=capture_info.fov)
 
     def handle_acquisition_abort(self, current_path):
         # Undo any stranded per-channel offset before saving abort state
