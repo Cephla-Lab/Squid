@@ -111,15 +111,19 @@ def test_tracker_failure_disables_tracking_but_does_not_raise():
     w._feed_completion(_save_result(unit_paths=("/exp/u",)))  # now a no-op
 
 
-def test_unit_complete_writes_one_manifest_line_per_path():
+def test_unit_complete_writes_one_manifest_line_per_path_with_the_on_disk_size(tmp_path):
     m = FakeManifest()
     w = _make_worker(manifest=m, tracker=FakeTracker())
-    w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=3, paths=("/exp/a",), kind="file", nbytes=11))
+    stack = tmp_path / "A1_0003_stack.tiff"
+    stack.write_bytes(b"header" + b"\0" * 100)  # a multi-plane file is bigger than its summed pixel bytes
+    w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=3, paths=(str(stack),), kind="file", nbytes=100))
     w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=None, paths=("/exp/b", "/exp/c"), kind="dir", nbytes=99))
+    w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=4, paths=(str(tmp_path / "gone"),), kind="file", nbytes=5))
     assert m.calls == [
-        ("complete", "/exp/a", "file", 11, 2, "A1", 3),
+        ("complete", str(stack), "file", 106, 2, "A1", 3),
         ("complete", "/exp/b", "dir", None, 2, "A1", None),
         ("complete", "/exp/c", "dir", None, 2, "A1", None),
+        ("complete", str(tmp_path / "gone"), "file", None, 2, "A1", 4),
     ]
 
 

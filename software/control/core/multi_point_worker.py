@@ -562,8 +562,15 @@ class MultiPointWorker:
             self._completion_tracker = None
 
     def _on_unit_complete(self, unit: CompletedUnit) -> None:
-        nbytes = unit.nbytes if len(unit.paths) == 1 else None
+        # A file unit is final now, so its on-disk size is the truth the mover verifies against; the
+        # planes' summed pixel bytes would miss headers and the finalized OME-XML. Directories get none.
         for path in unit.paths:
+            nbytes = None
+            if unit.kind == "file":
+                try:
+                    nbytes = os.path.getsize(path)
+                except OSError:
+                    self._log.warning(f"Completed unit path missing when listing it in the transfer manifest: {path}")
             self._manifest.complete(path, unit.kind, nbytes, unit.t, unit.region, unit.fov)
 
     def _record_written_file(self, path: str, region_id=None, fov=None) -> None:
