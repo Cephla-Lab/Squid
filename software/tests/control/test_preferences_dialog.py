@@ -753,6 +753,7 @@ class TestLargeAcquisitionSettings:
         monkeypatch.setattr(control._def, "DISK_SPACE_RESERVE_GB", 10.0)
         monkeypatch.setattr(control._def, "DISK_SPACE_POLL_INTERVAL_S", 5.0)
         monkeypatch.setattr(control._def, "SIMULATED_DISK_CAPACITY_GB", 0.0)
+        monkeypatch.setattr(control._def, "OME_TIFF_SPLIT_TIMEPOINTS", False)
 
     @pytest.fixture
     def dialog(self, qtbot, sample_config, temp_config_file, pinned_defaults):
@@ -830,3 +831,34 @@ class TestLargeAcquisitionSettings:
 
     def test_no_phantom_changes_at_defaults(self, dialog):
         assert dialog._get_changes() == []
+
+    def test_split_ome_checkbox_defaults_off(self, dialog):
+        assert dialog.ome_tiff_split_timepoints_checkbox.isChecked() is False
+
+    def test_split_ome_checkbox_loads_from_config(self, qtbot, sample_config, temp_config_file, pinned_defaults):
+        sample_config.set("GENERAL", "ome_tiff_split_timepoints", "true")
+
+        dlg = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dlg)
+
+        assert dlg.ome_tiff_split_timepoints_checkbox.isChecked() is True
+
+    def test_split_ome_round_trip_and_live_apply(self, dialog, temp_config_file):
+        import control._def
+
+        dialog.ome_tiff_split_timepoints_checkbox.setChecked(True)
+
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            dialog.accept = MagicMock()
+            dialog._save_and_close()
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "ome_tiff_split_timepoints").lower() == "true"
+        assert control._def.OME_TIFF_SPLIT_TIMEPOINTS is True
+
+    def test_split_ome_change_appears_in_diff_summary_without_restart(self, dialog):
+        dialog.ome_tiff_split_timepoints_checkbox.setChecked(True)
+
+        changes = {c[0]: c for c in dialog._get_changes()}
+        assert changes["Split OME-TIFF by Timepoint"][1:] == ("False", "True", False)
