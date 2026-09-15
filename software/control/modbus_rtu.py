@@ -416,6 +416,19 @@ class ModbusRTUClient:
         response = self._send_receive(frame, expected_response_len=7)
         return (response[3] << 8) | response[4]
 
+    def read_input_registers(self, slave_id: int, address: int, count: int) -> list[int]:
+        """Read `count` consecutive 16-bit input registers in one FC 0x04 transaction.
+
+        One frame instead of `count` round-trips — needed by pollers that must see a
+        consistent snapshot of several registers (e.g. DI level + position + alarm)
+        within a tight polling period.
+        """
+        self._require_connected()
+        frame = build_read_input_registers_frame(slave_id, address, count)
+        # Response: slave(1) + fc(1) + byte_count(1) + data(2*count) + crc(2)
+        response = self._send_receive(frame, expected_response_len=5 + 2 * count)
+        return [(response[3 + 2 * i] << 8) | response[4 + 2 * i] for i in range(count)]
+
     def read_input_register_32bit(self, slave_id: int, address: int, signed: bool = False) -> int:
         """Read a 32-bit input register pair via FC 0x04 (see read_input_register)."""
         self._require_connected()
