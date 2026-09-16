@@ -739,3 +739,94 @@ class TestClickToMoveSettings:
 
         assert control._def.LIVE_VIEW_Z_STEP_UM == pytest.approx(2.5)
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
+
+
+class TestLargeAcquisitionSettings:
+    """Large acquisition mode settings (Acquisition tab) and simulated disk capacity (Dev tab)."""
+
+    @pytest.fixture
+    def pinned_defaults(self, monkeypatch):
+        """Pin the control._def defaults so earlier tests' live-applies can't leak in."""
+        import control._def
+
+        monkeypatch.setattr(control._def, "LARGE_ACQUISITION_MODE", False)
+        monkeypatch.setattr(control._def, "DISK_SPACE_RESERVE_GB", 10.0)
+        monkeypatch.setattr(control._def, "DISK_SPACE_POLL_INTERVAL_S", 5.0)
+        monkeypatch.setattr(control._def, "SIMULATED_DISK_CAPACITY_GB", 0.0)
+
+    @pytest.fixture
+    def dialog(self, qtbot, sample_config, temp_config_file, pinned_defaults):
+        dlg = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dlg)
+        return dlg
+
+    def test_controls_default_to_module_constants(self, dialog):
+        assert dialog.large_acquisition_mode_checkbox.isChecked() is False
+        assert dialog.disk_space_reserve_spinbox.value() == pytest.approx(10.0)
+        assert dialog.disk_space_poll_interval_spinbox.value() == pytest.approx(5.0)
+        assert dialog.simulated_disk_capacity_spinbox.value() == pytest.approx(0.0)
+
+    def test_controls_load_from_config(self, qtbot, sample_config, temp_config_file, pinned_defaults):
+        sample_config.set("GENERAL", "large_acquisition_mode", "true")
+        sample_config.set("GENERAL", "disk_space_reserve_gb", "25.5")
+        sample_config.set("GENERAL", "disk_space_poll_interval_s", "12.0")
+        sample_config.set("GENERAL", "simulated_disk_capacity_gb", "64.0")
+
+        dlg = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dlg)
+
+        assert dlg.large_acquisition_mode_checkbox.isChecked() is True
+        assert dlg.disk_space_reserve_spinbox.value() == pytest.approx(25.5)
+        assert dlg.disk_space_poll_interval_spinbox.value() == pytest.approx(12.0)
+        assert dlg.simulated_disk_capacity_spinbox.value() == pytest.approx(64.0)
+
+    def test_round_trip_writes_four_keys(self, dialog, temp_config_file):
+        dialog.large_acquisition_mode_checkbox.setChecked(True)
+        dialog.disk_space_reserve_spinbox.setValue(42.5)
+        dialog.disk_space_poll_interval_spinbox.setValue(30.0)
+        dialog.simulated_disk_capacity_spinbox.setValue(128.0)
+
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            dialog.accept = MagicMock()
+            dialog._save_and_close()
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.get("GENERAL", "large_acquisition_mode").lower() == "true"
+        assert saved.getfloat("GENERAL", "disk_space_reserve_gb") == pytest.approx(42.5)
+        assert saved.getfloat("GENERAL", "disk_space_poll_interval_s") == pytest.approx(30.0)
+        assert saved.getfloat("GENERAL", "simulated_disk_capacity_gb") == pytest.approx(128.0)
+
+    def test_save_pushes_values_to_def_module(self, dialog):
+        import control._def
+
+        dialog.large_acquisition_mode_checkbox.setChecked(True)
+        dialog.disk_space_reserve_spinbox.setValue(7.5)
+        dialog.disk_space_poll_interval_spinbox.setValue(2.5)
+        dialog.simulated_disk_capacity_spinbox.setValue(256.0)
+
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            dialog.accept = MagicMock()
+            dialog._save_and_close()
+
+        assert control._def.LARGE_ACQUISITION_MODE is True
+        assert control._def.DISK_SPACE_RESERVE_GB == pytest.approx(7.5)
+        assert control._def.DISK_SPACE_POLL_INTERVAL_S == pytest.approx(2.5)
+        assert control._def.SIMULATED_DISK_CAPACITY_GB == pytest.approx(256.0)
+
+    def test_changes_appear_in_diff_summary_without_restart(self, dialog):
+        dialog.large_acquisition_mode_checkbox.setChecked(True)
+        dialog.disk_space_reserve_spinbox.setValue(20.0)
+        dialog.disk_space_poll_interval_spinbox.setValue(15.0)
+        dialog.simulated_disk_capacity_spinbox.setValue(500.0)
+
+        changes = {c[0]: c for c in dialog._get_changes()}
+        assert changes["Large Acquisition Mode"][1:] == ("False", "True", False)
+        assert changes["Disk Space Reserve"][2] == "20.0 GB"
+        assert changes["Disk Re-check Interval"][2] == "15.0 s"
+        assert changes["Simulated Disk Capacity"][2] == "500.0 GB"
+        for name in ("Disk Space Reserve", "Disk Re-check Interval", "Simulated Disk Capacity"):
+            assert changes[name][3] is False
+
+    def test_no_phantom_changes_at_defaults(self, dialog):
+        assert dialog._get_changes() == []

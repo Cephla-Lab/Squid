@@ -51,6 +51,8 @@ from control.core.mosaic_utils import (
     parse_well_id,
 )
 from control.core.backpressure import BackpressureController, BackpressureValues
+from control.core.disk_space import DiskSpaceGuard, DiskStatus
+from control.core.pause_gate import PauseGate, PauseState
 from squid.config import CameraPixelFormat
 
 # Module-level logger for static methods
@@ -83,6 +85,7 @@ class MultiPointWorker:
         prewarmed_job_runner: Optional[JobRunner] = None,
         prewarmed_bp_values: Optional["BackpressureValues"] = None,
         run_state_writer=None,
+        pause_gate: Optional[PauseGate] = None,
     ):
         self._log = squid.logging.get_logger(__class__.__name__)
         self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
@@ -144,6 +147,10 @@ class MultiPointWorker:
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
+        # Timed acquisitions schedule timepoint n at anchor + n*dt. The anchor starts equal to the
+        # acquisition start time and is shifted forward by any time spent paused, so a pause never
+        # silently skips timepoints. timestamp_acquisition_started keeps its meaning for durations.
+        self._schedule_anchor = self.timestamp_acquisition_started
 
         self.acquisition_info = AcquisitionInfo(
             total_time_points=self.Nt,
@@ -244,6 +251,21 @@ class MultiPointWorker:
         if prewarmed_bp_values is not None:
             bp_kwargs["bp_values"] = prewarmed_bp_values
         self._backpressure = BackpressureController(**bp_kwargs)
+
+        # Large acquisition mode (opt-in). The controller hands us a PauseGate only when the mode is on;
+        # without one, every checkpoint below is a no-op and the acquisition path is unchanged.
+        self._pause_gate: Optional[PauseGate] = pause_gate
+        self._large_acquisition_mode: bool = pause_gate is not None
+        self._last_frame_nbytes: Optional[int] = None
+        self._last_disk_check_mono: float = 0.0
+        self._disk_guard: Optional[DiskSpaceGuard] = None
+        if self._large_acquisition_mode and not self.skip_saving and self.experiment_path:
+            self._disk_guard = DiskSpaceGuard(
+                directory=self.experiment_path,
+                pending_bytes_fn=self._backpressure.get_pending_bytes,
+                frame_bytes_fn=self._estimate_frame_bytes,
+                planes_per_fov=self.NZ * len(self.selected_configurations),
+            )
 
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
@@ -447,6 +469,105 @@ class MultiPointWorker:
             }
         )
 
+    @property
+    def disk_status(self) -> Optional[DiskStatus]:
+        """Latest disk-space guard evaluation, or None when the guard is not active for this run."""
+        guard = self._disk_guard
+        return guard.last_status if guard is not None else None
+
+    def _estimate_frame_bytes(self) -> int:
+        """Bytes of one camera frame, for the disk-space estimate: last captured frame, else worst case."""
+        if self._last_frame_nbytes:
+            return self._last_frame_nbytes
+        width, height = self.camera.get_crop_size()
+        is_color = CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
+        return int(width) * int(height) * (3 if is_color else 2)
+
+    def _pause_checkpoint(self, current_path: Optional[str] = None) -> bool:
+        """Park the acquisition thread while the pause gate is held (large acquisition mode only).
+
+        Called at FOV and timepoint boundaries, the only places control flow may change: nothing
+        inside a z-stack or channel sequence is interruptible. Re-evaluates the disk-space guard,
+        then blocks while any holder (disk space, operator) is active, heart-beating the watchdog
+        with status "paused". Returns False when an abort was requested; the caller unwinds exactly
+        as for any other abort.
+        """
+        gate = self._pause_gate
+        if gate is None:
+            return True
+        if self._disk_guard is not None:
+            self._disk_guard.update(gate)
+            self._last_disk_check_mono = time.monotonic()
+        if not gate.is_paused():
+            return not self.abort_requested_fn()
+
+        state = gate.state()
+        disk = self._disk_guard.last_status if self._disk_guard is not None else None
+        self._log.info(f"Acquisition paused ({', '.join(state.reasons)}); waiting at a safe checkpoint")
+        self._run_state.set_status("paused")
+        self._emit_pause_state(state, disk)
+        self._notify_slack_paused(state, disk)
+        try:
+            paused_s = gate.wait_while_paused(cancel_fn=self.abort_requested_fn, tick=self._pause_tick)
+        finally:
+            self._run_state.set_status("running")
+        self._schedule_anchor += paused_s
+        aborted = self.abort_requested_fn()
+        self._log.info(f"Acquisition {'aborted' if aborted else 'resumed'} after {paused_s:.1f} s paused")
+        try:
+            self.callbacks.signal_acquisition_resumed(paused_s)
+        except Exception:
+            self._log.exception("signal_acquisition_resumed callback failed")
+        if not aborted:
+            self._notify_slack_resumed(paused_s)
+        return not aborted
+
+    def _pause_tick(self) -> None:
+        """Runs every poll while paused: keep the watchdog alive, re-check the disk, refresh the GUI."""
+        self._run_state_beat()
+        if self._disk_guard is None:
+            return
+        now = time.monotonic()
+        if now - self._last_disk_check_mono < control._def.DISK_SPACE_POLL_INTERVAL_S:
+            return
+        self._last_disk_check_mono = now
+        gate = self._pause_gate
+        disk = self._disk_guard.update(gate)
+        state = gate.state()
+        if state.paused:
+            self._emit_pause_state(state, disk)
+
+    def _emit_pause_state(self, state: PauseState, disk: Optional[DiskStatus]) -> None:
+        try:
+            self.callbacks.signal_acquisition_paused(state, disk)
+        except Exception:
+            self._log.exception("signal_acquisition_paused callback failed")
+
+    def _notify_slack_paused(self, state: PauseState, disk: Optional[DiskStatus]) -> None:
+        if self._slack_notifier is None:
+            return
+        try:
+            self._slack_notifier.notify_acquisition_paused(
+                experiment_id=self.experiment_ID or "unknown",
+                reasons=state.reasons,
+                free_bytes=disk.free_bytes if disk is not None else None,
+                required_bytes=disk.required_bytes if disk is not None else None,
+                timepoint=self.time_point + 1,
+                total_timepoints=self.Nt,
+            )
+        except Exception as e:
+            self._log.warning(f"Failed to send Slack pause notification: {e}")
+
+    def _notify_slack_resumed(self, paused_s: float) -> None:
+        if self._slack_notifier is None:
+            return
+        try:
+            self._slack_notifier.notify_acquisition_resumed(
+                experiment_id=self.experiment_ID or "unknown", paused_seconds=paused_s
+            )
+        except Exception as e:
+            self._log.warning(f"Failed to send Slack resume notification: {e}")
+
     def _compute_end_reason(self) -> str:
         if self._run_state_fatal:
             return "error"
@@ -491,6 +612,9 @@ class MultiPointWorker:
                     self._log.debug("In run, abort_acquisition_requested=True")
                     break
                 self._run_state_beat()
+                if not self._pause_checkpoint():
+                    self._log.debug("Abort requested while paused at the timepoint boundary")
+                    break
 
                 # Gate on laser engine readiness for the channels this acquisition will fire.
                 # Re-checked every timepoint so dt-induced sleep gaps are handled.
@@ -508,7 +632,7 @@ class MultiPointWorker:
                 else:  # timed acquisition
 
                     # check if the aquisition has taken longer than dt or integer multiples of dt, if so skip the next time point(s)
-                    while time.time() > self.timestamp_acquisition_started + self.time_point * self.dt:
+                    while time.time() > self._schedule_anchor + self.time_point * self.dt:
                         self._log.info("skip time point " + str(self.time_point + 1))
                         self.time_point = self.time_point + 1
 
@@ -517,7 +641,7 @@ class MultiPointWorker:
                         break  # no waiting after taking the last time point
 
                     # wait until it's time to do the next acquisition
-                    while time.time() < self.timestamp_acquisition_started + self.time_point * self.dt:
+                    while time.time() < self._schedule_anchor + self.time_point * self.dt:
                         if self.abort_requested_fn():
                             self._log.debug("In run wait loop, abort_acquisition_requested=True")
                             break
@@ -1060,11 +1184,15 @@ class MultiPointWorker:
             for fov, coordinate_mm in enumerate(coordinates):
                 # Just so the job result queues don't get too big, check and print a summary of intermediate results here
                 with self._timing.get_timer("job result summaries"):
-                    result = self._summarize_runner_outputs()
+                    result = self._summarize_runner_outputs(drain_all=self._large_acquisition_mode)
                     if not result.none_failed and self._abort_on_failed_job:
                         self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
                         self._abort_due_to_error()
                         return
+
+                if not self._pause_checkpoint(current_path):
+                    self.handle_acquisition_abort(current_path)
+                    return
 
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm, region_id, fov)
@@ -1356,9 +1484,11 @@ class MultiPointWorker:
     def _image_callback(self, camera_frame: CameraFrame):
         try:
             if self._ready_for_next_trigger.is_set():
-                self._log.warning(
-                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
-                )
+                msg = "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
+                if self._pause_gate is not None and self._pause_gate.is_paused():
+                    self._log.debug(msg)  # expected while parked with a free-running camera
+                else:
+                    self._log.warning(msg)
                 return
 
             self._image_callback_idle.clear()
@@ -1378,6 +1508,8 @@ class MultiPointWorker:
                     self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
                     self._abort_due_to_error()
                     return
+
+                self._last_frame_nbytes = int(image.nbytes)
 
                 # Increment image counter for Slack notification stats
                 self._timepoint_image_count += 1

@@ -241,3 +241,18 @@ def test_default_image_format_is_tiff():
 
     source = inspect.getsource(control._def.Acquisition)
     assert 'IMAGE_FORMAT = "tiff"' in source
+
+
+def test_large_acquisition_mode_defaults_off():
+    """Large acquisition mode is strictly opt-in: the in-code defaults must keep it off.
+
+    INI files with [GENERAL] large_acquisition_mode=... override this at module load time,
+    so we assert against the source rather than the runtime value.
+    """
+    import inspect
+    import control._def
+
+    source = inspect.getsource(control._def)
+    assert "LARGE_ACQUISITION_MODE = False" in source
+    assert "DISK_SPACE_RESERVE_GB = 10.0" in source
+    assert "SIMULATED_DISK_CAPACITY_GB = 0.0" in source

@@ -5,6 +5,7 @@ Tests for the _cmd_run_acquisition_from_yaml command.
 """
 
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -420,3 +421,223 @@ class TestHelperMethods:
         mpc.set_selected_configurations.assert_called_with(["Channel1"])
         mock_server.scan_coordinates.clear_regions.assert_called_once()
         assert mock_server.scan_coordinates.add_region.called
+
+
+def create_pause_capable_controller(
+    in_progress: bool = True,
+    paused: bool = False,
+    reasons: tuple = (),
+    since: float = None,
+    paused_total_s: float = 0.0,
+    request_result: bool = True,
+    disk_status=None,
+):
+    """Mock MultiPointController implementing the large-acquisition pause contract.
+
+    The controller itself is written by another engineer; this mirrors the agreed API:
+    request_pause()/request_resume() -> bool, pause_state -> Optional[PauseState],
+    disk_status -> Optional[DiskStatus].
+    """
+    from control.core.pause_gate import PauseState
+
+    controller = MagicMock()
+    controller.acquisition_in_progress.return_value = in_progress
+    controller.request_pause.return_value = request_result
+    controller.request_resume.return_value = request_result
+    controller.pause_state = PauseState(
+        paused=paused, reasons=tuple(reasons), since=since, paused_total_s=paused_total_s
+    )
+    controller.disk_status = disk_status
+    controller.multiPointWorker = None
+    controller.experiment_ID = "exp1"
+    controller.base_path = "/data"
+    return controller
+
+
+def make_disk_status(holding: bool = False):
+    """Stand-in for control.core.disk_space.DiskStatus (module written concurrently)."""
+    return SimpleNamespace(
+        free_bytes=10_000_000,
+        required_bytes=50_000_000,
+        reserve_bytes=5_000_000,
+        pending_bytes=1_000_000,
+        fov_bytes=2_000_000,
+        holding=holding,
+    )
+
+
+def server_with_controller(controller):
+    server = create_mock_server()
+    server.multipoint_controller = controller
+    return server
+
+
+class TestPauseAcquisition:
+    """Tests for the _cmd_pause_acquisition command."""
+
+    def test_no_acquisition_in_progress(self):
+        server = server_with_controller(create_pause_capable_controller(in_progress=False))
+
+        with pytest.raises(RuntimeError, match="No acquisition in progress"):
+            server._cmd_pause_acquisition()
+
+        server.multipoint_controller.request_pause.assert_not_called()
+
+    def test_large_acquisition_mode_disabled(self):
+        server = server_with_controller(create_pause_capable_controller(request_result=False))
+
+        with pytest.raises(RuntimeError, match="Large acquisition mode is not enabled for this acquisition"):
+            server._cmd_pause_acquisition()
+
+    def test_pause_requested(self):
+        server = server_with_controller(
+            create_pause_capable_controller(paused=True, reasons=("operator",), since=1234.5)
+        )
+
+        result = server._cmd_pause_acquisition()
+
+        server.multipoint_controller.request_pause.assert_called_once_with()
+        assert result == {"paused": True, "pause_reasons": ["operator"], "paused_since": 1234.5}
+
+    def test_controller_missing(self):
+        server = server_with_controller(None)
+
+        with pytest.raises(RuntimeError, match="MultiPointController not available"):
+            server._cmd_pause_acquisition()
+
+
+class TestResumeAcquisition:
+    """Tests for the _cmd_resume_acquisition command."""
+
+    def test_no_acquisition_in_progress(self):
+        server = server_with_controller(create_pause_capable_controller(in_progress=False))
+
+        with pytest.raises(RuntimeError, match="No acquisition in progress"):
+            server._cmd_resume_acquisition()
+
+        server.multipoint_controller.request_resume.assert_not_called()
+
+    def test_large_acquisition_mode_disabled(self):
+        server = server_with_controller(create_pause_capable_controller(request_result=False))
+
+        with pytest.raises(RuntimeError, match="Large acquisition mode is not enabled for this acquisition"):
+            server._cmd_resume_acquisition()
+
+    def test_resume_releases_operator_hold(self):
+        server = server_with_controller(create_pause_capable_controller(paused=False))
+
+        result = server._cmd_resume_acquisition()
+
+        server.multipoint_controller.request_resume.assert_called_once_with()
+        assert result == {"paused": False, "pause_reasons": [], "paused_since": None}
+
+    def test_resume_still_held_by_disk_guard(self):
+        """A resume that does not actually resume must say so, with the remaining holders."""
+        server = server_with_controller(
+            create_pause_capable_controller(paused=True, reasons=("disk_space",), since=99.0)
+        )
+
+        result = server._cmd_resume_acquisition()
+
+        assert result["paused"] is True
+        assert result["pause_reasons"] == ["disk_space"]
+        assert result["paused_since"] == 99.0
+
+    def test_controller_missing(self):
+        server = server_with_controller(None)
+
+        with pytest.raises(RuntimeError, match="MultiPointController not available"):
+            server._cmd_resume_acquisition()
+
+
+class TestAcquisitionStatusWithPause:
+    """Tests for the pause/disk additions to _cmd_get_acquisition_status."""
+
+    def test_status_unchanged_when_mode_off(self):
+        """Acquisitions without pause support keep exactly the payload they had before."""
+        controller = create_pause_capable_controller()
+        controller.pause_state = None
+        controller.disk_status = None
+        server = server_with_controller(controller)
+
+        result = server._cmd_get_acquisition_status()
+
+        assert result == {
+            "in_progress": True,
+            "status": "running",
+            "experiment_id": "exp1",
+            "base_path": "/data",
+        }
+        for key in ("pause_reasons", "paused_since", "paused_total_s", "disk"):
+            assert key not in result
+
+    def test_status_running_with_pause_support(self):
+        server = server_with_controller(create_pause_capable_controller(paused=False, paused_total_s=12.5))
+
+        result = server._cmd_get_acquisition_status()
+
+        assert result["status"] == "running"
+        assert result["pause_reasons"] == []
+        assert result["paused_since"] is None
+        assert result["paused_total_s"] == 12.5
+
+    def test_status_paused(self):
+        server = server_with_controller(
+            create_pause_capable_controller(
+                paused=True, reasons=("disk_space", "operator"), since=555.0, paused_total_s=60.0
+            )
+        )
+
+        result = server._cmd_get_acquisition_status()
+
+        assert result["status"] == "paused"
+        assert result["in_progress"] is True
+        assert result["pause_reasons"] == ["disk_space", "operator"]
+        assert result["paused_since"] == 555.0
+        assert result["paused_total_s"] == 60.0
+
+    def test_status_includes_disk_block(self):
+        server = server_with_controller(
+            create_pause_capable_controller(paused=True, reasons=("disk_space",), disk_status=make_disk_status(True))
+        )
+
+        result = server._cmd_get_acquisition_status()
+
+        assert result["disk"] == {
+            "free_bytes": 10_000_000,
+            "required_bytes": 50_000_000,
+            "reserve_bytes": 5_000_000,
+            "pending_bytes": 1_000_000,
+            "fov_bytes": 2_000_000,
+            "holding": True,
+        }
+
+    def test_status_without_disk_guard_has_no_disk_block(self):
+        server = server_with_controller(create_pause_capable_controller(disk_status=None))
+
+        result = server._cmd_get_acquisition_status()
+
+        assert "disk" not in result
+
+
+class TestPauseCommandDiscovery:
+    """The new commands must be auto-registered and documented for MCP consumers."""
+
+    @pytest.fixture
+    def real_server(self):
+        from control.microscope_control_server import MicroscopeControlServer
+
+        return MicroscopeControlServer(microscope=MagicMock(), multipoint_controller=MagicMock())
+
+    def test_commands_registered(self, real_server):
+        assert "pause_acquisition" in real_server._commands
+        assert "resume_acquisition" in real_server._commands
+
+    def test_schemas_document_the_commands(self, real_server):
+        schemas = real_server._cmd_get_schemas()["schemas"]
+
+        for name in ("pause_acquisition", "resume_acquisition"):
+            assert name in schemas
+            assert schemas[name]["parameters"] == {}
+            assert schemas[name]["required"] == []
+            assert len(schemas[name]["description"]) > 20
