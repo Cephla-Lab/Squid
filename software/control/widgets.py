@@ -1227,7 +1227,7 @@ class PreferencesDialog(QDialog):
         # File Saving Format
         self.file_saving_combo = QComboBox()
         self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
+        current_value = self._get_file_saving_option()
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
 
@@ -1898,6 +1898,17 @@ class PreferencesDialog(QDialog):
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
             return default
 
+    def _get_file_saving_option(self):
+        """The file saving format currently in effect, as a FileSavingOption name.
+
+        The config file usually has no file_saving_option key, so the fallback has to be the value
+        the software is actually running with (control._def, which the dialog itself updates live)
+        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
+        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
+        wrong format into the machine config file.
+        """
+        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
         return abs(a - b) < epsilon
@@ -2199,7 +2210,7 @@ class PreferencesDialog(QDialog):
         changes = []
 
         # General settings (live update)
-        old_val = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
+        old_val = self._get_file_saving_option()
         new_val = self.file_saving_combo.currentText()
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))

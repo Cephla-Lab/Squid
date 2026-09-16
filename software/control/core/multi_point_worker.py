@@ -57,6 +57,15 @@ from squid.config import CameraPixelFormat
 _log = squid.logging.get_logger(__name__)
 
 
+def save_job_classes_for_format(file_saving_option: FileSavingOption) -> List[Type[Job]]:
+    """The saving job classes that implement the given file saving format."""
+    if file_saving_option == FileSavingOption.OME_TIFF:
+        return [SaveOMETiffJob]
+    if file_saving_option == FileSavingOption.ZARR_V3:
+        return [SaveZarrJob]
+    return [SaveImageJob]
+
+
 class SummarizeResult(NamedTuple):
     """Result from processing job output queues."""
 
@@ -197,16 +206,12 @@ class MultiPointWorker:
         self._current_round_images = {}
 
         self.skip_saving = acquisition_parameters.skip_saving
-        job_classes = []
-        use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
-        use_zarr_v3 = FILE_SAVING_OPTION == FileSavingOption.ZARR_V3
-        if not self.skip_saving:
-            if use_ome_tiff:
-                job_classes.append(SaveOMETiffJob)
-            elif use_zarr_v3:
-                job_classes.append(SaveZarrJob)
-            else:
-                job_classes.append(SaveImageJob)
+        # Read through control._def, not the bare star-imported name (which is a copy bound at
+        # import time), so that changing the format in Preferences applies to this acquisition.
+        file_saving_option = control._def.FILE_SAVING_OPTION
+        use_ome_tiff = file_saving_option == FileSavingOption.OME_TIFF
+        use_zarr_v3 = file_saving_option == FileSavingOption.ZARR_V3
+        job_classes = [] if self.skip_saving else save_job_classes_for_format(file_saving_option)
 
         if extra_job_classes:
             job_classes.extend(extra_job_classes)

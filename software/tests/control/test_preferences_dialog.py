@@ -435,6 +435,71 @@ class TestUIInitialization:
         assert preferences_dialog.af_stop_threshold.value() == 0.85
 
 
+class TestFileSavingOptionFallback:
+    """The file saving format shown must be the one in effect, even with no key in the config.
+
+    No shipped machine config sets file_saving_option, so the fallback has to come from
+    control._def.  With a hardcoded fallback the dialog showed a format that wasn't in use, and
+    since _apply_settings() always writes file_saving_option, saving any unrelated preference
+    persisted that wrong format into the machine config file.
+    """
+
+    @pytest.fixture
+    def config_without_file_saving_option(self, sample_config):
+        sample_config.remove_option("GENERAL", "file_saving_option")
+        return sample_config
+
+    def test_combo_falls_back_to_value_in_effect(self, qtbot, config_without_file_saving_option, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.MULTI_PAGE_TIFF
+
+            dialog = control.widgets.PreferencesDialog(config_without_file_saving_option, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+            assert not dialog._get_changes(), "Untouched dialog must not report a format change"
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_saving_unrelated_setting_does_not_rewrite_format(
+        self, qtbot, config_without_file_saving_option, temp_config_file
+    ):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.INDIVIDUAL_IMAGES
+
+            dialog = control.widgets.PreferencesDialog(config_without_file_saving_option, temp_config_file)
+            qtbot.addWidget(dialog)
+            dialog.saving_path_edit.setText("/some/other/path")
+            assert dialog._apply_settings()
+
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            assert saved.get("GENERAL", "file_saving_option") == "INDIVIDUAL_IMAGES"
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_config_value_still_wins_over_value_in_effect(self, qtbot, sample_config, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
+
+            # sample_config sets file_saving_option = OME_TIFF, which must win over the fallback.
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+
 class TestViewsTab:
     """Test Views tab functionality."""
 
