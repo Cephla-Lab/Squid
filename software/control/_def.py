@@ -1301,6 +1301,11 @@ USE_TEMPLATE_MULTIPOINT = False
 
 FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
 
+# TIFF saving configuration: 0 writes uncompressed TIFFs, 1-9 pick the zlib compression level
+# (higher = smaller files, slower writes).  Applies to INDIVIDUAL_IMAGES and MULTI_PAGE_TIFF;
+# OME-TIFF stacks are written through a memory map, which requires an uncompressed file.
+TIFF_COMPRESSION_LEVEL = 0
+
 # Zarr v3 saving configuration
 ZARR_CHUNK_MODE = ZarrChunkMode.FULL_FRAME
 ZARR_COMPRESSION = ZarrCompression.FAST  # Safe for 10-20 fps, ~1000 MB/s encode
@@ -1457,6 +1462,9 @@ ZARR_CHUNK_MODE = ZarrChunkMode.convert_to_enum(ZARR_CHUNK_MODE)
 ZARR_COMPRESSION = ZarrCompression.convert_to_enum(ZARR_COMPRESSION)
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
+
+# Keep an out of range value in the machine config from failing every image write.
+TIFF_COMPRESSION_LEVEL = min(max(int(TIFF_COMPRESSION_LEVEL), 0), 9)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):

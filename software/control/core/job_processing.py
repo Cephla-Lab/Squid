@@ -200,6 +200,7 @@ class SaveImageJob(Job):
                     metadata=metadata,
                     description=description,
                     extratags=extratags,
+                    **utils_acquisition.tiff_compression_kwargs(),
                 )
         else:
             saved_image = utils_acquisition.save_image(
