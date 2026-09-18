@@ -129,9 +129,8 @@ class SaveResult:
 
     immediate_paths are final as soon as this result is seen (individual TIFFs). unit_paths are final
     once every plane of the (time_point, region_id, fov) unit has been written (multi-page TIFF file,
-    OME-TIFF file, Zarr chunk directory); unit_per_region=True widens the unit to (time_point,
-    region_id) for stores shared by all FOVs of a region. unit_complete, when not None, is the
-    writer's own verdict (OME-TIFF counts planes on disk) and overrides counting.
+    OME-TIFF file, Zarr chunk directory). unit_complete, when not None, is the writer's own verdict
+    (OME-TIFF counts planes on disk) and overrides counting.
     """
 
     time_point: int
@@ -144,7 +143,6 @@ class SaveResult:
     unit_kind: str = "file"  # "file" | "dir"
     bytes_written: int = 0
     unit_complete: Optional[bool] = None
-    unit_per_region: bool = False
 
 
 def make_save_result(info: CaptureInfo, **kwargs) -> SaveResult:
@@ -551,8 +549,8 @@ class ZarrWriteResult:
 
     The fields after region_idx mirror SaveResult: they tell the transfer manifest which on-disk
     paths this write contributes to.  unit_paths (the timepoint's chunk directory) are final once
-    every plane of the (time_point, region_id, fov) unit has been written; unit_per_region=True
-    widens that unit to (time_point, region_id) for a 6D store shared by all FOVs of a region.
+    every plane of the (time_point, region_id, fov) unit has been written (for a 6D store that is the
+    FOV's own <store>/c/<fov>/<t> directory).
     """
 
     fov: int
@@ -566,7 +564,6 @@ class ZarrWriteResult:
     unit_kind: str = "dir"
     bytes_written: int = 0
     unit_complete: Optional[bool] = None
-    unit_per_region: bool = False
 
 
 @dataclass
@@ -692,15 +689,11 @@ class SaveZarrJob(Job):
         # Build result with frame info for viewer notification
         region_names = list(self.zarr_writer_info.region_fov_counts.keys())
         # With the default chunk key encoding a chunk's key is its grid index, so for a 5D (T, C, Z, Y, X)
-        # store the chunks of timepoint t live under <store>/c/<t>. A non-HCS 6D store is (FOV, T, ...),
-        # shared by every FOV of the region: its unit is the whole region and the movable set is one
-        # <store>/c/<fov>/<t> directory per FOV.
-        unit_per_region = not is_hcs and use_6d_fov
-        if unit_per_region:
-            unit_paths = tuple(
-                os.path.join(output_path, "c", str(f), str(time_point))
-                for f in range(self.zarr_writer_info.get_fov_count(region_id))
-            )
+        # store the chunks of timepoint t live under <store>/c/<t>, and for a non-HCS 6D (FOV, T, ...)
+        # store under <store>/c/<fov>/<t>. Chunk and shard extents are 1 along both FOV and T, so either
+        # directory is final once this FOV's Z x C planes for the timepoint are written.
+        if not is_hcs and use_6d_fov:
+            unit_paths = (os.path.join(output_path, "c", str(fov), str(time_point)),)
         else:
             unit_paths = (os.path.join(output_path, "c", str(time_point)),)
         result = ZarrWriteResult(
@@ -713,7 +706,6 @@ class SaveZarrJob(Job):
             unit_paths=unit_paths,
             unit_kind="dir",
             bytes_written=image.nbytes,
-            unit_per_region=unit_per_region,
         )
 
         # Determine shape based on acquisition mode

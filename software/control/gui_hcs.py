@@ -1920,7 +1920,11 @@ class HighContentScreeningGui(QMainWindow):
 
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:
-            self.unifiedMosaicWidget.save_for_timepoint(time_point)
+            pending = self.unifiedMosaicWidget.save_for_timepoint(time_point)
+            if pending is not None:
+                # Let the acquisition wait for this asynchronous save before it closes its
+                # transfer manifest (large acquisition mode); a no-op otherwise.
+                self.multipointController.register_pending_output(*pending)
 
     def _on_live_controller_warning(self, message: str) -> None:
         """Non-modal warning from LiveController. 5s rate-limit; one popup max."""

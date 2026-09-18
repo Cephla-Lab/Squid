@@ -19,6 +19,7 @@ Completion is decided on the main side by :class:`CompletionTracker`, fed with t
 jobs return (``SaveResult`` / ``ZarrWriteResult`` in ``control.core.job_processing``): a result's
 ``immediate_paths`` are final on arrival, its ``unit_paths`` once every plane of the
 (timepoint, region, fov) unit has arrived (or once the writer itself says so via ``unit_complete``).
+Directory units are then listed file by file, so the manifest is also the inventory ``verify`` checks.
 """
 
 import json
@@ -146,11 +147,11 @@ def read_manifest(path) -> List[dict]:
 
 @dataclass(frozen=True)
 class UnitKey:
-    """Identity of a completion unit: (timepoint, region, fov), or (timepoint, region) when fov is None."""
+    """Identity of a completion unit: (timepoint, region, fov)."""
 
     t: int
     region: str
-    fov: Optional[int]
+    fov: int
 
 
 @dataclass(frozen=True)
@@ -176,7 +177,7 @@ class CompletionTracker:
     """Turns per-plane save results into "this unit is complete" events.
 
     ``expected_planes_fn(key)`` returns how many plane results make the unit complete (z levels x
-    channels, times the region's FOV count for region-scoped units). ``on_complete`` receives one
+    channels). ``on_complete`` receives one
     :class:`CompletedUnit` per immediate path as it arrives and one per unit when it completes.
     """
 
@@ -190,7 +191,7 @@ class CompletionTracker:
     def feed(self, result) -> None:
         t = int(result.time_point)
         region = str(result.region_id)
-        fov = None if result.unit_per_region else int(result.fov)
+        fov = int(result.fov)
         nbytes = int(result.bytes_written)
 
         immediate = tuple(result.immediate_paths)

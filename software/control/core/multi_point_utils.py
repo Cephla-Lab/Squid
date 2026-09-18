@@ -164,3 +164,7 @@ class MultiPointControllerFunctions:
     # while paused; resumed: seconds spent paused (also fired when an abort ends the pause).
     signal_acquisition_paused: Callable[["PauseState", Optional["DiskStatus"]], None] = lambda *a, **kw: None
     signal_acquisition_resumed: Callable[[float], None] = lambda *a, **kw: None
+    # Finalization barrier for outputs written asynchronously outside the worker (the GUI's mosaic
+    # saves): block up to timeout_s for the writers registered with the controller and return the
+    # directories they wrote, so the transfer manifest can list them before its end record.
+    wait_for_pending_outputs: Callable[[float], List[str]] = lambda *a, **kw: []

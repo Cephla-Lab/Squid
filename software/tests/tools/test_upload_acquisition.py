@@ -690,3 +690,45 @@ def test_transfer_file_verifies_checksum(tmp_path):
     assert result.status == "transferred"
     assert result.bytes == src.stat().st_size
     assert hashlib.sha256(dst.read_bytes()).hexdigest() == hashlib.sha256(src.read_bytes()).hexdigest()
+
+
+def _zarr_store_with_chunks(root: Path, name: str = "fov_0.ome.zarr"):
+    store = root / name
+    write_file(store / "zarr.json", b'{"attributes": {}}')
+    write_file(store / "0" / "zarr.json", b'{"attributes": {"_squid": {"acquisition_complete": true}}}')
+    chunks = [
+        write_file(store / "0" / "c" / "0" / c / "0" / "0" / "0", bytes([c_i]) * 16) for c_i, c in enumerate(("0", "1"))
+    ]
+    return store, chunks
+
+
+def test_verify_detects_a_zarr_array_that_lost_its_metadata_or_chunks_after_the_move(tmp_path):
+    dest = tmp_path / "nas" / "exp"
+    store, chunks = _zarr_store_with_chunks(dest / "zarr" / "A1")
+    rel = lambda p: p.relative_to(dest).as_posix()
+    # Squid lists chunk directories file by file, so the manifest is the inventory.
+    write_manifest(
+        dest,
+        [
+            {"event": "start", "schema": 1, "experiment_id": "exp", "format": "ZARR_V3", "nt": 1, "ts": 1.0},
+            complete(rel(chunks[0]), 16, t=0),
+            complete(rel(chunks[1]), 16, t=0),
+            {"event": "end", "reason": "completed", "ts": 9.0},
+        ],
+    )
+    write_file(dest / ".done", b"")
+    assert ua.verify_destination(tmp_path / "local" / "exp", dest.parent) == []
+
+    (store / "0" / "zarr.json").unlink()
+    problems = ua.verify_destination(tmp_path / "local" / "exp", dest.parent)
+    assert any("missing array metadata" in p for p in problems), problems
+
+    write_file(store / "0" / "zarr.json", b'{"attributes": {}}')
+    chunks[1].unlink()
+    problems = ua.verify_destination(tmp_path / "local" / "exp", dest.parent)
+    assert any(p.startswith("missing file:") and "c/0/1/" in p for p in problems), problems
+
+    for chunk in chunks:
+        chunk.unlink(missing_ok=True)
+    problems = ua.verify_destination(tmp_path / "local" / "exp", dest.parent)
+    assert any("no chunk files" in p for p in problems), problems
