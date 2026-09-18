@@ -39,7 +39,9 @@ One JSON object per line, appended and flushed as the acquisition progresses.
   `Path(dest, *rel.split("/"))` rather than `Path(dest) / rel`, and reject anything that
   does not look relative — the manifest is data, not a trusted command.
 - **`kind`** — `"file"`, or `"dir"` meaning *the whole subtree at this path*. Walk a `dir`
-  unit file by file (sharded Zarr chunks arrive as chunk directories).
+  unit file by file. Squid itself lists every file individually, including each chunk of a
+  finished Zarr chunk directory, so the manifest doubles as the inventory `verify` checks; the
+  `dir` kind stays in the contract for other writers.
 - **`bytes`** — the file size, or `null` (always `null` for `kind: "dir"`).
 - **`t`**, **`region`**, **`fov`** — provenance, useful for progress reporting.
 

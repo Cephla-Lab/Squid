@@ -100,17 +100,20 @@ def test_individual_images_manifest_lists_every_image_and_timepoint(tmp_path, mo
     assert max(t0_complete_idx) < done_idx[0]
 
 
-def test_zarr_manifest_lists_chunk_directories_per_timepoint(tmp_path, monkeypatch):
+def test_zarr_manifest_lists_each_timepoints_chunk_files(tmp_path, monkeypatch):
     pytest.importorskip("tensorstore")
     exp, tt, mpc = _run(tmp_path, monkeypatch, mode_on=True, saving_option=FileSavingOption.ZARR_V3, nt=2)
     records = read_manifest(exp / MANIFEST_FILE_NAME)
     completes = [r for r in records if r["event"] == "complete"]
-    dirs = [r for r in completes if r["kind"] == "dir"]
-    assert len(dirs) == 2, dirs  # one FOV x two timepoints
-    for r in dirs:
-        assert r["path"].endswith(f"/c/{r['t']}"), r
-        d = exp / Path(*r["path"].split("/"))
-        assert d.is_dir() and any(d.rglob("*")), "chunk dir must exist and hold chunk files"
+    chunk_files = [r for r in completes if "/c/" in r["path"]]
+    assert chunk_files, "chunk files must be listed"
+    assert all(r["kind"] == "file" for r in chunk_files), "chunk folders are listed file by file (the inventory)"
+    timepoint_dirs = {r["path"].split("/c/")[0] + "/c/" + r["path"].split("/c/")[1].split("/")[0] for r in chunk_files}
+    assert len(timepoint_dirs) == 2, timepoint_dirs  # one FOV x two timepoints
+    assert {d.rsplit("/", 1)[1] for d in timepoint_dirs} == {"0", "1"}
+    for r in chunk_files:
+        p = exp / Path(*r["path"].split("/"))
+        assert p.is_file() and os.path.getsize(p) == r["bytes"], r
     listed = {r["path"] for r in completes}
     assert not any(p.endswith("zarr.json") for p in listed), "store metadata is only movable after end"
     assert records[-1]["event"] == "end"

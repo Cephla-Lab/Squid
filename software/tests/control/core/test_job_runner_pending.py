@@ -337,7 +337,6 @@ class TestSaveResultRoundTrip:
             unit_kind="file",
             bytes_written=1234,
             unit_complete=True,
-            unit_per_region=False,
         )
 
         runner = JobRunner()

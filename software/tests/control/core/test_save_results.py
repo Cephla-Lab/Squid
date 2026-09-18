@@ -96,7 +96,6 @@ class TestSaveImageJobResult:
         assert (result.time_point, result.region_id, result.fov) == (4, "A1", 3)
         assert (result.z_index, result.channel_idx) == (2, 1)
         assert result.unit_complete is None
-        assert result.unit_per_region is False
         assert_picklable(result)
 
     def test_multi_page_tiff_reports_unit_path(self, tmp_path, monkeypatch):
@@ -162,7 +161,6 @@ class TestSaveOMETiffJobResult:
             assert result.unit_kind == "file"
             assert result.unit_complete is expect_complete
             assert result.bytes_written == tiny_image().nbytes
-            assert result.unit_per_region is False
             assert_picklable(result)
 
         assert results[1].channel_idx == 1
@@ -203,13 +201,12 @@ class TestSaveZarrJobResult:
         assert result.region_id == "A1"
         assert result.unit_paths == (os.path.join(output_path, "c", "0"),)
         assert result.unit_kind == "dir"
-        assert result.unit_per_region is False
         assert result.unit_complete is None
         assert result.bytes_written == tiny_image().nbytes
         assert os.path.isdir(result.unit_paths[0])
         assert_picklable(result)
 
-    def test_6d_store_is_per_region(self, tmp_path):
+    def test_6d_store_unit_is_the_fovs_own_chunk_directory(self, tmp_path):
         pytest.importorskip("tensorstore")
         zarr_info = ZarrWriterInfo(
             base_path=str(tmp_path),
@@ -228,9 +225,9 @@ class TestSaveZarrJobResult:
         SaveZarrJob.finalize_all_writers()
 
         output_path = zarr_info.get_output_path("A1", 1)
-        assert result.unit_per_region is True
-        # 6D chunk grid is (FOV, T, ...): the region unit is one <store>/c/<fov>/<t> directory per FOV.
-        assert result.unit_paths == tuple(os.path.join(output_path, "c", str(f), "0") for f in range(2))
+        # 6D chunk grid is (FOV, T, ...) with FOV and T extents of 1: this FOV's timepoint directory is
+        # final on its own, so a region larger than the disk can still be offloaded FOV by FOV.
+        assert result.unit_paths == (os.path.join(output_path, "c", "1", "0"),)
         assert os.path.isdir(os.path.join(output_path, "c", "1", "0")), "chunks of fov 1 / t 0 live under c/1/0"
         assert result.unit_kind == "dir"
         assert result.region_id == "A1"
@@ -259,4 +256,3 @@ def test_zarr_write_result_defaults_keep_old_construction_working():
     assert result.unit_kind == "dir"
     assert result.bytes_written == 0
     assert result.unit_complete is None
-    assert result.unit_per_region is False

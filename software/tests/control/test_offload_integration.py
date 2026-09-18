@@ -150,14 +150,17 @@ def test_zarr_run_moves_chunk_directories_and_reassembles_a_readable_store(tmp_p
     assert tt.paused_states and tt.resumed_seconds
 
     records = read_manifest(dest_exp / MANIFEST_FILE_NAME)
-    dirs = [r for r in records if r["event"] == "complete" and r["kind"] == "dir"]
-    assert len(dirs) == 6
-    stores = {Path(r["path"]).parents[1] for r in dirs}  # <store>/c/<t> -> <store>
+    chunk_files = [r for r in records if r["event"] == "complete" and "/c/" in r["path"]]
+    assert chunk_files and all(r["kind"] == "file" for r in chunk_files)
+    stores = {r["path"].split("/c/")[0] for r in chunk_files}  # <store>/<array>/c/<t>/... -> <store>/<array>
     assert len(stores) == 1
     store = dest_exp / next(iter(stores))
     assert (store / "zarr.json").is_file(), "array metadata moved after end"
-    for r in dirs:
-        assert (dest_exp / Path(*r["path"].split("/"))).is_dir()
+    timepoints = {r["path"].split("/c/")[1].split("/")[0] for r in chunk_files}
+    assert timepoints == {str(t) for t in range(6)}
+    for r in chunk_files:
+        p = dest_exp / Path(*r["path"].split("/"))
+        assert p.is_file() and os.path.getsize(p) == r["bytes"], r
 
     import tensorstore as ts_
 

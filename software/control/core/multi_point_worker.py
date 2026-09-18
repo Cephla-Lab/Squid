@@ -5,6 +5,7 @@ import threading
 import time
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type
 from datetime import datetime
+from pathlib import Path
 
 import imageio as iio
 import numpy as np
@@ -274,9 +275,6 @@ class MultiPointWorker:
         self._manifest: Optional[TransferManifestWriter] = None
         self._completion_tracker: Optional[CompletionTracker] = None
         self._inline_results: "queue.SimpleQueue[JobResult]" = queue.SimpleQueue()
-        self._region_fov_counts_by_id: Dict[str, int] = {
-            str(region_id): len(coords) for region_id, coords in self.scan_region_fov_coords_mm.items()
-        }
         if self._large_acquisition_mode and not self.skip_saving and self.experiment_path:
             self._manifest = TransferManifestWriter(self.experiment_path)
             self._completion_tracker = CompletionTracker(
@@ -494,11 +492,8 @@ class MultiPointWorker:
     # --- transfer manifest (large acquisition mode) ---------------------------------------------------
 
     def _expected_planes(self, key: UnitKey) -> int:
-        """Plane results that complete one unit: z levels x channels, times the region's FOVs for region units."""
-        planes = self.NZ * len(self.selected_configurations)
-        if key.fov is None:
-            planes *= self._region_fov_counts_by_id.get(key.region, 0)
-        return planes
+        """Plane results that complete one (timepoint, region, fov) unit: z levels x channels."""
+        return self.NZ * len(self.selected_configurations)
 
     def _manifest_start(self) -> None:
         if self._manifest is None:
@@ -507,26 +502,29 @@ class MultiPointWorker:
             experiment_id=self.experiment_ID or "unknown", file_format=FILE_SAVING_OPTION.name, nt=self.Nt
         )
 
-    def _drain_results_for_timepoint(self, timeout_s: float = 30.0) -> None:
-        """Best-effort barrier so the timepoint_done record follows every complete entry of the timepoint.
+    def _drain_results_for_timepoint(self, timeout_s: float = 30.0) -> bool:
+        """Barrier so a timepoint_done record can follow every complete entry of the timepoint.
 
         Large acquisition mode only. Waits (bounded, abort-aware) until the save jobs dispatched so far
-        have finished, then drains their results into the completion tracker. Nothing here changes the
-        images or their order; a slow disk just delays the marker by up to ``timeout_s``.
+        have finished, draining their results into the completion tracker as they arrive. Returns True
+        only when every job finished and was drained; the caller emits timepoint_done only then, so the
+        marker never overstates what is listed. A slow disk delays the marker by up to ``timeout_s``.
         """
         if self._completion_tracker is None:
-            return
+            return False
         self._wait_for_outstanding_callback_images()
         deadline = time.monotonic() + timeout_s
         while self._backpressure.get_pending_jobs() > 0:
             if self.abort_requested_fn() or time.monotonic() > deadline:
+                self._drain_job_results()
                 self._log.warning(
-                    "Timed out waiting for save jobs before the timepoint_done record; listing what is complete"
+                    "Save jobs still pending at the end of the timepoint; not emitting timepoint_done for it"
                 )
-                break
+                return False
             self._drain_job_results()
             self._sleep(0.05)
         self._drain_job_results()
+        return True
 
     def _drain_job_results(self) -> bool:
         """Drain every queued job result (feeding the completion tracker) and apply the abort-on-failed-job
@@ -552,10 +550,25 @@ class MultiPointWorker:
                     f"{len(incomplete)} unit(s) never completed and are not listed in the transfer manifest "
                     f"(movable only after the end record): {incomplete[:5]}"
                 )
+        self._list_pending_outputs()
         try:
             self._manifest.end(reason)
         except Exception:
             self._log.exception("Failed to write the transfer manifest end record")
+
+    _PENDING_OUTPUTS_TIMEOUT_S = 60.0
+
+    def _list_pending_outputs(self) -> None:
+        """Finalization barrier: wait for output writers outside the worker (the GUI's mosaic saves),
+        then list what they wrote, so the end record really means every output has finished."""
+        try:
+            output_dirs = self.callbacks.wait_for_pending_outputs(self._PENDING_OUTPUTS_TIMEOUT_S)
+        except Exception:
+            self._log.exception("wait_for_pending_outputs callback failed; asynchronous outputs stay unlisted")
+            return
+        for output_dir in output_dirs:
+            for path in sorted(str(p) for p in Path(output_dir).rglob("*") if p.is_file()):
+                self._record_written_file(path)
 
     def _feed_completion(self, result) -> None:
         """Route a save job's result into the completion tracker (no-op unless the manifest is on)."""
@@ -571,16 +584,27 @@ class MultiPointWorker:
             self._completion_tracker = None
 
     def _on_unit_complete(self, unit: CompletedUnit) -> None:
-        # A file unit is final now, so its on-disk size is the truth the mover verifies against; the
-        # planes' summed pixel bytes would miss headers and the finalized OME-XML. Directories get none.
+        # A unit is final now, so on-disk sizes are the truth the mover verifies against (the planes'
+        # summed pixel bytes would miss headers and finalized OME-XML). A directory unit (a Zarr chunk
+        # folder) is listed file by file for the same reason: the manifest then doubles as the inventory
+        # verify needs to notice a chunk that went missing after the move.
         for path in unit.paths:
+            if unit.kind == "dir":
+                files = sorted(str(p) for p in Path(path).rglob("*") if p.is_file())
+                if not files:
+                    self._log.warning(f"Completed unit directory has no files to list in the transfer manifest: {path}")
+                for file_path in files:
+                    self._list_completed_file(file_path, unit)
+            else:
+                self._list_completed_file(path, unit)
+
+    def _list_completed_file(self, path: str, unit: CompletedUnit) -> None:
+        try:
+            nbytes = os.path.getsize(path)
+        except OSError:
+            self._log.warning(f"Completed unit path missing when listing it in the transfer manifest: {path}")
             nbytes = None
-            if unit.kind == "file":
-                try:
-                    nbytes = os.path.getsize(path)
-                except OSError:
-                    self._log.warning(f"Completed unit path missing when listing it in the transfer manifest: {path}")
-            self._manifest.complete(path, unit.kind, nbytes, unit.t, unit.region, unit.fov)
+        self._manifest.complete(path, "file", nbytes, unit.t, unit.region, unit.fov)
 
     def _record_written_file(self, path: str, region_id=None, fov=None) -> None:
         """List a file the worker wrote synchronously (coordinates.csv, RGB merges, laser-AF images)."""
@@ -1020,8 +1044,8 @@ class MultiPointWorker:
             except Exception:
                 self._log.exception("signal_timepoint_finished callback failed")
 
-            self._drain_results_for_timepoint()
-            self._manifest_timepoint_done()
+            if self._drain_results_for_timepoint():
+                self._manifest_timepoint_done()
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")
         finally:

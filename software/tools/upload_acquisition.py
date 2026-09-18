@@ -691,6 +691,15 @@ def _verify_zarr_store(store: Path, dest_dir: Path) -> List[str]:
         if "acquisition_complete" in squid and not squid["acquisition_complete"]:
             problems.append(f"{rel}: acquisition_complete is not true")
 
+    # Every array that holds chunk data must have its metadata: a store whose zarr.json vanished
+    # after the move is unreadable even if every chunk arrived.
+    for chunk_root in sorted(p for p in store.rglob("c") if p.is_dir() and p.parent != store.parent):
+        array_dir = chunk_root.parent
+        if not (array_dir / "zarr.json").is_file():
+            problems.append(f"{array_dir.relative_to(dest_dir).as_posix()}/zarr.json: missing array metadata")
+        elif not any(p.is_file() for p in chunk_root.rglob("*")):
+            problems.append(f"{chunk_root.relative_to(dest_dir).as_posix()}/: no chunk files")
+
     if store.name == "plate.ome.zarr":
         if not (store / "zarr.json").is_file():
             problems.append(f"{store.relative_to(dest_dir).as_posix()}/zarr.json: missing plate metadata")

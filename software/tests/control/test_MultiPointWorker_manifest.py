@@ -60,7 +60,6 @@ def _make_worker(manifest=None, tracker=None):
     w._acquisition_error_count = 0
     w.NZ = 3
     w.selected_configurations = [object(), object()]
-    w._region_fov_counts_by_id = {"A1": 4, "B2": 1}
     w.time_point = 1
     w.Nt = 5
     w.experiment_ID = "exp"
@@ -92,11 +91,9 @@ def test_start_records_format_and_timepoints():
     ]
 
 
-def test_expected_planes_for_fov_and_region_units():
+def test_expected_planes_is_z_levels_times_channels():
     w = _make_worker()
     assert w._expected_planes(UnitKey(t=0, region="A1", fov=2)) == 3 * 2
-    assert w._expected_planes(UnitKey(t=0, region="A1", fov=None)) == 4 * 3 * 2
-    assert w._expected_planes(UnitKey(t=0, region="unknown", fov=None)) == 0
 
 
 def test_feed_completion_routes_save_results_and_ignores_other_results():
@@ -118,18 +115,24 @@ def test_tracker_failure_disables_tracking_but_does_not_raise():
     w._feed_completion(_save_result(unit_paths=("/exp/u",)))  # now a no-op
 
 
-def test_unit_complete_writes_one_manifest_line_per_path_with_the_on_disk_size(tmp_path):
+def test_unit_complete_lists_files_with_their_on_disk_size_and_expands_directories(tmp_path):
     m = FakeManifest()
     w = _make_worker(manifest=m, tracker=FakeTracker())
     stack = tmp_path / "A1_0003_stack.tiff"
     stack.write_bytes(b"header" + b"\0" * 100)  # a multi-plane file is bigger than its summed pixel bytes
+    chunk_dir = tmp_path / "fov_0.ome.zarr" / "0" / "c" / "2"
+    (chunk_dir / "0" / "0").mkdir(parents=True)
+    (chunk_dir / "1" / "0").mkdir(parents=True)
+    (chunk_dir / "0" / "0" / "0").write_bytes(b"\0" * 7)
+    (chunk_dir / "1" / "0" / "0").write_bytes(b"\0" * 9)
     w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=3, paths=(str(stack),), kind="file", nbytes=100))
-    w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=None, paths=("/exp/b", "/exp/c"), kind="dir", nbytes=99))
+    w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=0, paths=(str(chunk_dir),), kind="dir", nbytes=99))
     w._on_unit_complete(CompletedUnit(t=2, region="A1", fov=4, paths=(str(tmp_path / "gone"),), kind="file", nbytes=5))
     assert m.calls == [
         ("complete", str(stack), "file", 106, 2, "A1", 3),
-        ("complete", "/exp/b", "dir", None, 2, "A1", None),
-        ("complete", "/exp/c", "dir", None, 2, "A1", None),
+        # a chunk directory is listed file by file: the manifest is the inventory verify checks
+        ("complete", str(chunk_dir / "0" / "0" / "0"), "file", 7, 2, "A1", 0),
+        ("complete", str(chunk_dir / "1" / "0" / "0"), "file", 9, 2, "A1", 0),
         ("complete", str(tmp_path / "gone"), "file", None, 2, "A1", 4),
     ]
 
@@ -303,3 +306,53 @@ def test_a_failed_result_does_not_hide_the_successes_behind_it_in_the_inline_que
     assert summary.none_failed is False
     assert [r.immediate_paths[0] for r in tracker.fed] == ["/exp/a", "/exp/b"]
     assert w._acquisition_error_count == 1
+
+
+def test_timepoint_done_is_emitted_only_when_the_barrier_completed():
+    m = FakeManifest()
+    w = _make_worker(manifest=m, tracker=FakeTracker())
+    w._wait_for_outstanding_callback_images = lambda: None
+    w._sleep = lambda s: None
+    w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=True, had_results=True)
+    w.abort_requested_fn = lambda: False
+
+    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 0)
+    assert w._drain_results_for_timepoint(timeout_s=1.0) is True
+
+    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 3)
+    assert w._drain_results_for_timepoint(timeout_s=0.0) is False, "saves still pending: no marker"
+
+    w2 = _make_worker(manifest=None, tracker=None)
+    assert w2._drain_results_for_timepoint() is False
+
+
+def test_manifest_end_waits_for_asynchronous_outputs_and_lists_them_first(tmp_path):
+    m = FakeManifest()
+    w = _make_worker(manifest=m, tracker=FakeTracker(incomplete=[]))
+    mosaic_dir = tmp_path / "0" / "mosaic_view"
+    mosaic_dir.mkdir(parents=True)
+    (mosaic_dir / "mosaic_BF_10um.ome.tiff").write_bytes(b"\0" * 12)
+    (mosaic_dir / "mosaic_BF_10um.yaml").write_bytes(b"a: 1\n")
+    waits = []
+
+    def wait_for_pending_outputs(timeout_s):
+        waits.append(timeout_s)
+        return [str(mosaic_dir)]
+
+    w.callbacks = SimpleNamespace(wait_for_pending_outputs=wait_for_pending_outputs)
+    w._manifest_end("completed")
+
+    assert waits == [w._PENDING_OUTPUTS_TIMEOUT_S]
+    assert m.calls == [
+        ("complete", str(mosaic_dir / "mosaic_BF_10um.ome.tiff"), "file", 12, 1, None, None),
+        ("complete", str(mosaic_dir / "mosaic_BF_10um.yaml"), "file", 5, 1, None, None),
+        ("end", "completed"),
+    ], "asynchronous outputs are listed before the end record"
+
+
+def test_manifest_end_survives_a_failing_outputs_callback():
+    m = FakeManifest()
+    w = _make_worker(manifest=m, tracker=FakeTracker())
+    w.callbacks = SimpleNamespace(wait_for_pending_outputs=lambda t: (_ for _ in ()).throw(RuntimeError("gui gone")))
+    w._manifest_end("completed")
+    assert m.calls == [("end", "completed")]

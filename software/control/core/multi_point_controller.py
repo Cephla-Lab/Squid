@@ -8,8 +8,9 @@ import time
 import yaml
 from datetime import datetime
 from enum import Enum
-from threading import Thread
-from typing import Optional, Tuple, Any
+import concurrent.futures
+from threading import Lock, Thread
+from typing import Any, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -248,6 +249,10 @@ class MultiPointController:
         # Single pause control point of the running acquisition; exists only for runs in large
         # acquisition mode (operator pause + disk-space guard hold it), None otherwise.
         self._pause_gate: Optional[PauseGate] = None
+        # Asynchronous output writers (the GUI's mosaic saves) register their futures here so the
+        # worker can wait for them before closing the transfer manifest.
+        self._pending_outputs: List[Tuple[concurrent.futures.Future, str]] = []
+        self._pending_outputs_lock = Lock()
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
         self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
@@ -797,6 +802,8 @@ class MultiPointController:
             self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
 
             self.abort_acqusition_requested = False
+            with self._pending_outputs_lock:
+                self._pending_outputs.clear()
 
             self.configuration_before_running_multipoint = self.liveController.currentConfiguration
             # stop live
@@ -899,7 +906,11 @@ class MultiPointController:
                 finally:
                     self._stop_per_acquisition_log()
 
-            updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
+            updated_callbacks = dataclasses.replace(
+                self.callbacks,
+                signal_acquisition_finished=finish_fn,
+                wait_for_pending_outputs=self._wait_for_pending_outputs,
+            )
 
             acquisition_params = self.build_params(
                 scan_position_information=scan_position_information,
@@ -1149,6 +1160,31 @@ class MultiPointController:
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
+
+    def register_pending_output(self, future: concurrent.futures.Future, output_dir: str) -> None:
+        """Register an asynchronous output writer (e.g. a mosaic save) so the run waits for it before
+        closing the transfer manifest; ``output_dir`` is what it writes into."""
+        with self._pending_outputs_lock:
+            self._pending_outputs.append((future, str(output_dir)))
+
+    def _wait_for_pending_outputs(self, timeout_s: float) -> List[str]:
+        """Wait (bounded) for registered output writers; return the directories of those that finished."""
+        with self._pending_outputs_lock:
+            pending = list(self._pending_outputs)
+            self._pending_outputs.clear()
+        if not pending:
+            return []
+        done, not_done = concurrent.futures.wait([f for f, _ in pending], timeout=timeout_s)
+        finished: List[str] = []
+        for future, output_dir in pending:
+            if future in not_done:
+                self._log.warning(f"Asynchronous output writer for {output_dir} did not finish within {timeout_s} s")
+                continue
+            if future.exception() is not None:
+                self._log.warning(f"Asynchronous output writer for {output_dir} failed: {future.exception()}")
+                continue
+            finished.append(output_dir)
+        return finished
 
     def request_pause(self) -> bool:
         """Operator pause, honored at the worker's next FOV/timepoint checkpoint.

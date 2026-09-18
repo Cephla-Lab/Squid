@@ -17,9 +17,7 @@ from control.core.transfer_manifest import (
 )
 
 
-def _result(
-    t=0, region="A1", fov=0, z=0, c=0, immediate=(), unit=(), kind="file", nbytes=10, complete=None, per_region=False
-):
+def _result(t=0, region="A1", fov=0, z=0, c=0, immediate=(), unit=(), kind="file", nbytes=10, complete=None):
     return SimpleNamespace(
         time_point=t,
         region_id=region,
@@ -31,7 +29,6 @@ def _result(
         unit_kind=kind,
         bytes_written=nbytes,
         unit_complete=complete,
-        unit_per_region=per_region,
     )
 
 
@@ -153,12 +150,10 @@ def test_writer_is_thread_safe(tmp_path):
 # --- completion tracker -----------------------------------------------------------------------------
 
 
-def _tracker(expected=2, per_region_expected=None):
+def _tracker(expected=2):
     emitted = []
 
     def expected_fn(key):
-        if key.fov is None:
-            return per_region_expected
         return expected
 
     tracker = CompletionTracker(expected_planes_fn=expected_fn, on_complete=lambda unit: emitted.append(unit))
@@ -197,25 +192,15 @@ def test_units_are_keyed_by_timepoint_region_and_fov():
     assert all(u.kind == "dir" for u in emitted)
 
 
-def test_per_region_units_wait_for_every_fov_of_the_region():
-    tracker, emitted = _tracker(expected=1, per_region_expected=4)  # 2 fovs x 2 planes
-    for fov in (0, 1):
-        for z in (0, 1):
-            tracker.feed(
-                _result(
-                    t=0,
-                    region="R",
-                    fov=fov,
-                    z=z,
-                    unit=("/exp/zarr/R/acquisition.zarr/c/0",),
-                    kind="dir",
-                    per_region=True,
-                )
-            )
-            if not (fov == 1 and z == 1):
-                assert emitted == []
+def test_fovs_sharing_a_6d_store_complete_independently():
+    tracker, emitted = _tracker(expected=2)
+    store = "/exp/zarr/R/acquisition.zarr"
+    for z in (0, 1):
+        tracker.feed(_result(t=0, region="R", fov=1, z=z, unit=(f"{store}/c/1/0",), kind="dir"))
+    assert [u.paths for u in emitted] == [(f"{store}/c/1/0",)], "fov 1 is movable without waiting for fov 0"
+    tracker.feed(_result(t=0, region="R", fov=0, z=0, unit=(f"{store}/c/0/0",), kind="dir"))
     assert len(emitted) == 1
-    assert emitted[0].fov is None and emitted[0].region == "R"
+    assert [(k.region, k.fov) for k in tracker.incomplete_units()] == [("R", 0)]
 
 
 def test_writer_authoritative_completion_overrides_counting():
