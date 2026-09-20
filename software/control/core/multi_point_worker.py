@@ -196,6 +196,9 @@ class MultiPointWorker:
         # The captures whose frames are still to arrive, in order: one for an ordinary capture, N
         # for a hardware-sequenced burst. Invariant: empty <=> _ready_for_next_trigger is set.
         self._pending_captures: PendingCaptures[CaptureInfo] = PendingCaptures()
+        # Where a paired frame goes. Ordinary captures dispatch immediately; a hardware-sequenced
+        # burst swaps in a collecting sink for its duration (frames are validated before saving).
+        self._frame_sink: Callable[[CameraFrame, CaptureInfo], None] = self._dispatch_frame
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
@@ -1388,60 +1391,67 @@ class MultiPointWorker:
                     self._abort_due_to_error()
                     return
 
-                # Increment image counter for Slack notification stats
-                self._timepoint_image_count += 1
-                self.image_count += 1
-                self._run_state_beat()
-
-                with self._timing.get_timer("job creation and dispatch"):
-                    # Wait for subprocess to be ready before first dispatch
-                    if not self._first_job_dispatched:
-                        for job_class, job_runner in self._job_runners:
-                            if job_runner is not None:
-                                t_wait_start = time.perf_counter()
-                                if job_runner.wait_ready(timeout_s=10.0):
-                                    t_wait_end = time.perf_counter()
-                                    wait_ms = (t_wait_end - t_wait_start) * 1000
-                                    if wait_ms > 10:  # Only log if we actually had to wait
-                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
-                                else:
-                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
-                        self._first_job_dispatched = True
-
-                    for job_class, job_runner in self._job_runners:
-                        job = self._create_job(job_class, info, image)
-                        if job is None:
-                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self._abort_due_to_error()
-                                return
-                        else:
-                            try:
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self._abort_due_to_error()
-                                return
-
-                height, width = image.shape[:2]
-                # with self._timing.get_timer("crop_image"):
-                #     image_to_display = utils.crop_image(
-                #         image,
-                #         round(width * self.display_resolution_scaling),
-                #         round(height * self.display_resolution_scaling),
-                #     )
-                # Emit plate layout once on the first image so the unified mosaic
-                # widget can lay out the plate grid before tiles start arriving.
-                self._emit_plate_layout(image)
-                with self._timing.get_timer("image_to_display*.emit"):
-                    self.callbacks.signal_new_image(camera_frame, info)
+                # One sink per frame: an ordinary capture dispatches at once; a hardware-sequenced
+                # burst collects, so nothing is saved until the whole burst is validated.
+                self._frame_sink(camera_frame, info)
 
         finally:
             self._image_callback_idle.set()
+
+    def _dispatch_frame(self, camera_frame: CameraFrame, info: CaptureInfo):
+        """Hand one paired frame to the save / display pipeline (the default frame sink)."""
+        image = camera_frame.frame
+        # Increment image counter for Slack notification stats
+        self._timepoint_image_count += 1
+        self.image_count += 1
+        self._run_state_beat()
+
+        with self._timing.get_timer("job creation and dispatch"):
+            # Wait for subprocess to be ready before first dispatch
+            if not self._first_job_dispatched:
+                for job_class, job_runner in self._job_runners:
+                    if job_runner is not None:
+                        t_wait_start = time.perf_counter()
+                        if job_runner.wait_ready(timeout_s=10.0):
+                            t_wait_end = time.perf_counter()
+                            wait_ms = (t_wait_end - t_wait_start) * 1000
+                            if wait_ms > 10:  # Only log if we actually had to wait
+                                self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
+                        else:
+                            self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
+                self._first_job_dispatched = True
+
+            for job_class, job_runner in self._job_runners:
+                job = self._create_job(job_class, info, image)
+                if job is None:
+                    continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
+                if job_runner is not None:
+                    if not job_runner.dispatch(job):
+                        self._log.error("Failed to dispatch multiprocessing job!")
+                        self._abort_due_to_error()
+                        return
+                else:
+                    try:
+                        # NOTE(imo): We don't have any way of people using results, so for now just
+                        # grab and ignore it.
+                        result = job.run()
+                    except Exception:
+                        self._log.exception("Failed to execute job, abandoning acquisition!")
+                        self._abort_due_to_error()
+                        return
+
+        height, width = image.shape[:2]
+        # with self._timing.get_timer("crop_image"):
+        #     image_to_display = utils.crop_image(
+        #         image,
+        #         round(width * self.display_resolution_scaling),
+        #         round(height * self.display_resolution_scaling),
+        #     )
+        # Emit plate layout once on the first image so the unified mosaic
+        # widget can lay out the plate grid before tiles start arriving.
+        self._emit_plate_layout(image)
+        with self._timing.get_timer("image_to_display*.emit"):
+            self.callbacks.signal_new_image(camera_frame, info)
 
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
