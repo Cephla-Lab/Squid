@@ -583,7 +583,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_available_pixel_formats(self) -> Sequence[squid.config.CameraPixelFormat]:
         """
-        Returns the list of pixel formats supported by the camera.
+        Returns the pixel formats available at the camera's current settings. Some cameras deliver a
+        different depth per binning or frame format, so re-query after set_binning / set_frame_format.
         """
         pass
 
@@ -788,14 +789,15 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def set_black_level(self, black_level: float):
         """
-        Sets the black level of captured images.
+        Sets the black level of captured images, in counts on the 8-bit scale (0-255) whatever the pixel
+        format; drivers convert to their SDK's units.
         """
         pass
 
     @abc.abstractmethod
     def get_black_level(self) -> float:
         """
-        Gets the black level set on the camera.
+        Gets the black level set on the camera, in counts on the 8-bit scale.
         """
         pass
 

@@ -944,7 +944,6 @@ class HighContentScreeningGui(QMainWindow):
             self.streamHandler,
             self.liveController,
             self.objectiveStore,
-            show_display_options=False,
             show_autolevel=True,
             autolevel=True,
         )
@@ -1009,7 +1008,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.liveController_focus_camera,
                 self.laserAutofocusController,
                 stretch=False,
-            )  # ,show_display_options=True)
+            )
             self.waveformDisplay = widgets.WaveformDisplay(N=1000, include_x=True, include_y=False)
             self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
                 self.displacementMeasurementController, self.waveformDisplay
@@ -1102,21 +1101,10 @@ class HighContentScreeningGui(QMainWindow):
 
         Returns True if successfully applied, False otherwise.
         """
-        try:
-            self.camera.set_binning(*binning)
-        except ValueError as e:
-            self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
-            return False
-        except (AttributeError, RuntimeError) as e:
-            self.log.error(f"Camera error while restoring binning settings: {e}")
-            return False
-
-        binning_text = f"{binning[0]}x{binning[1]}"
-        self.cameraSettingWidget.dropdown_binning.blockSignals(True)
-        self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
-        self.cameraSettingWidget.dropdown_binning.blockSignals(False)
-        self.cameraSettingWidget.refresh_pixel_format_options()
-        return True
+        restored = self.cameraSettingWidget.restore_binning(binning)
+        if not restored:
+            self.log.warning(f"Cannot restore binning {binning} - not supported by the camera")
+        return restored
 
     def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
         """Apply pixel format setting to camera and sync UI dropdown.
@@ -1126,23 +1114,7 @@ class HighContentScreeningGui(QMainWindow):
         if not pixel_format_str:
             return False
 
-        try:
-            pixel_format = squid.config.CameraPixelFormat.from_string(pixel_format_str)
-        except KeyError:
-            self.log.warning(f"Cached pixel format '{pixel_format_str}' is not recognized")
-            return False
-
-        try:
-            self.camera.set_pixel_format(pixel_format)
-        except ValueError as e:
-            self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
-            return False
-        except (AttributeError, RuntimeError) as e:
-            self.log.error(f"Camera error while restoring pixel format settings: {e}")
-            return False
-
-        self.cameraSettingWidget.refresh_pixel_format_options()  # shows what the camera delivers for the request
-        return True
+        return self.cameraSettingWidget.restore_pixel_format(pixel_format_str)
 
     def _restore_sensor_mode(self, sensor_mode: Optional[str]) -> bool:
         """Apply cached sensor mode via the camera settings widget.

@@ -6,7 +6,7 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import psutil
 
@@ -3828,9 +3828,7 @@ class CameraSettingsWidget(QFrame):
         # connection
         self.entry_exposureTime.valueChanged.connect(self.camera.set_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.set_analog_gain_if_supported)
-        self.dropdown_pixelFormat.currentTextChanged.connect(
-            lambda s: self.camera.set_pixel_format(CameraPixelFormat.from_string(s))
-        )
+        self.dropdown_pixelFormat.currentTextChanged.connect(self.set_pixel_format)
         self.entry_ROI_offset_x.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_offset_y.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_height.valueChanged.connect(self.set_Height)
@@ -4054,6 +4052,35 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
+    def set_pixel_format(self, name: str):
+        self.camera.set_pixel_format(CameraPixelFormat.from_string(name))
+        self.refresh_pixel_format_options()  # the camera may deliver a narrower format than the one asked for
+
+    def restore_pixel_format(self, name: str) -> bool:
+        """Apply a cached pixel format; the dropdown then shows what the camera delivers for it.
+
+        Returns True if the camera accepted the request.
+        """
+        try:
+            self.set_pixel_format(name)
+        except (KeyError, ValueError) as e:
+            self._log.warning(f"Cannot restore pixel format {name!r}: {e}")
+            return False
+        return True
+
+    def restore_binning(self, binning: Tuple[int, int]) -> bool:
+        """Apply a cached binning by driving the dropdown, reusing set_binning's dependent refreshes.
+
+        Returns True if the camera ends up at the requested binning. An unsupported binning is not in the
+        item list, so the selection and the camera stay unchanged.
+        """
+        self.dropdown_binning.setCurrentText(f"{binning[0]}x{binning[1]}")
+        try:
+            return tuple(self.camera.get_binning()) == tuple(binning)
+        except (AttributeError, CameraError):
+            self._log.exception("Failed to read back binning after restore.")
+            return False
+
     def refresh_pixel_format_options(self):
         """List the formats the camera offers at its current settings and select the one it delivers."""
         try:
@@ -4274,7 +4301,6 @@ class LiveControlWidget(QFrame):
         liveController,
         objectiveStore,
         show_trigger_options=True,
-        show_display_options=False,
         show_autolevel=False,
         autolevel=False,
         stretch=True,
@@ -4300,7 +4326,7 @@ class LiveControlWidget(QFrame):
         else:
             self.currentConfiguration = channels[0]
 
-        self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
+        self.add_components(show_trigger_options, show_autolevel, autolevel, stretch)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         if self.currentConfiguration:
             self.liveController.set_microscope_mode(self.currentConfiguration)
@@ -4330,7 +4356,7 @@ class LiveControlWidget(QFrame):
         self._live_current_z_offset_um: float = 0.0
         self.checkbox_applyOnChannelSwitch.toggled.connect(self._on_apply_in_live_toggled)
 
-    def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
+    def add_components(self, show_trigger_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
         trigger_modes = [TriggerMode.SOFTWARE, TriggerMode.HARDWARE]
@@ -4416,15 +4442,6 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.setSuffix("%")
         self.entry_illuminationIntensity.setValue(100)
 
-        # line 4: display fps and resolution scaling
-        self.entry_displayFPS = QDoubleSpinBox()
-        self.entry_displayFPS.setKeyboardTracking(False)
-        self.entry_displayFPS.setMinimum(1)
-        self.entry_displayFPS.setMaximum(240)
-        self.entry_displayFPS.setSingleStep(1)
-        self.entry_displayFPS.setDecimals(0)
-        self.entry_displayFPS.setValue(self.fps_display)
-
         # autolevel
         self.btn_autolevel = QPushButton("Autolevel")
         self.btn_autolevel.setCheckable(True)
@@ -4442,7 +4459,6 @@ class LiveControlWidget(QFrame):
 
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-        self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
         self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
@@ -4486,12 +4502,6 @@ class LiveControlWidget(QFrame):
             grid_line0.addWidget(self.dropdown_triggerManu)
             grid_line0.addWidget(QLabel("Trigger FPS"))
             grid_line0.addWidget(self.entry_triggerFPS)
-
-        grid_line05 = QHBoxLayout()
-        show_dislpay_fps = False
-        if show_display_options and show_dislpay_fps:
-            grid_line05.addWidget(QLabel("Display FPS"))
-            grid_line05.addWidget(self.entry_displayFPS)
 
         # Z-offset row (hidden by default; toggled by checkbox_showZOffset)
         self.checkbox_showZOffset = QCheckBox("Show Z-offset controls")
@@ -4555,8 +4565,6 @@ class LiveControlWidget(QFrame):
         self.grid.addLayout(grid_line1)
         self.grid.addLayout(grid_line2)
         self.grid.addLayout(grid_line4)
-        if show_display_options:
-            self.grid.addLayout(grid_line05)
         self.grid.addWidget(self.checkbox_showZOffset)
         self.grid.addWidget(self.widget_zOffsetRow)
         if not stretch:

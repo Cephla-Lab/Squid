@@ -259,7 +259,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_camera_stream_started = False
         self._raw_frame_callback_lock = threading.Lock()
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
-        self._pixel_format = self._config.default_pixel_format  # what the sensor delivers, see _DELIVERED_PIXEL_FORMAT
+        self._pixel_format = self._config.default_pixel_format
         self._binning = self._config.default_binning
 
         # Since we need to set the on-camera exposure time different depending on our trigger mode
@@ -670,8 +670,12 @@ class ToupcamCamera(AbstractCamera):
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        """8-bit, plus whatever the sensor fills in the 16-bit mode at the current binning."""
-        formats = [CameraPixelFormat.MONO8, self._delivered_format(CameraPixelFormat.MONO16)]
+        """8-bit, plus what the sensor fills in the 16-bit mode at the current binning."""
+        if self._config.camera_model in _DELIVERED_PIXEL_FORMAT:
+            sixteen_bit_mode = [self._delivered_format(CameraPixelFormat.MONO16)]
+        else:  # unverified sensor: any of these labels may be what it delivers, so keep them all selectable
+            sixteen_bit_mode = [CameraPixelFormat.MONO12, CameraPixelFormat.MONO14, CameraPixelFormat.MONO16]
+        formats = [CameraPixelFormat.MONO8, *sixteen_bit_mode]
         if self.get_frame_format() == CameraFrameFormat.RGB:
             formats += [CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48]
         return formats
@@ -683,13 +687,12 @@ class ToupcamCamera(AbstractCamera):
         return depths[0] if self._binning == (1, 1) else depths[1]
 
     def _refresh_pixel_format(self):
-        """Re-resolve the delivered format; called whenever a camera-side setting changes."""
         delivered = self._delivered_format(self._pixel_format)
         if delivered != self._pixel_format:
             self._log.info(
                 f"Camera delivers {delivered.name} data at binning {self._binning} (was {self._pixel_format.name})"
             )
-            self._pixel_format = delivered
+        self._pixel_format = delivered
 
     def set_auto_exposure(self, enabled: bool):
         try:
@@ -907,36 +910,17 @@ class ToupcamCamera(AbstractCamera):
         return self.get_white_balance_gains()
 
     def _get_black_level_factor(self):
-        """Black level is configured on the 8-bit scale; the SDK takes it on the ADC's scale in 16-bit mode.
-
-        Measured on the ITR3CMOS26000KMA: the SDK applies the value in 16-bit units whether the sensor fills
-        12 or 16 of those bits (binned or not), so the factor follows the mode and the ADC depth, not the
-        delivered format.
-        """
+        """Black level is configured on the 8-bit scale; the SDK takes it on the ADC's scale in 16-bit mode
+        (measured on the ITR3CMOS26000KMA: applied in ADC units even when binned frames fill only 12 bits)."""
         if self._pixel_format.bit_depth == 8:
             return 1
         return 2 ** (self._capabilities.max_bit_depth - 8)
 
-    _PIXEL_SIZE_MAPPING = {
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 2,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 2,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 3,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 4,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 6,
-    }
+    _COLOR_CHANNELS = {CameraPixelFormat.RGB24: 3, CameraPixelFormat.RGB32: 4, CameraPixelFormat.RGB48: 3}
 
     def _get_pixel_size_in_bytes(self):
-        frame_and_format = (self.get_frame_format(), self._pixel_format)
-        if frame_and_format not in ToupcamCamera._PIXEL_SIZE_MAPPING:
-            raise ValueError(f"Unknown combo for pixel size: {frame_and_format=}")
-
-        return ToupcamCamera._PIXEL_SIZE_MAPPING[frame_and_format]
+        pixel_format = self._pixel_format
+        return ToupcamCamera._COLOR_CHANNELS.get(pixel_format, 1) * (1 if pixel_format.bit_depth == 8 else 2)
 
     def get_black_level(self) -> float:
         if not self._capabilities.has_black_level:

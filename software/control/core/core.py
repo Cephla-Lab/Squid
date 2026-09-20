@@ -1129,7 +1129,7 @@ class ImageDisplayWindow(QMainWindow):
             self._overexposure_source = None
 
     def current_image(self) -> Optional[np.ndarray]:
-        """The most recently received frame, unmodified (None before the first one)."""
+        """The most recently received frame, unmodified (None before the first one or after invalidation)."""
         return self._current_image
 
     def invalidate_current_image(self):

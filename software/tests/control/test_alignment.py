@@ -67,7 +67,8 @@ def test_wellplate_calibration_click_uses_the_shared_stage_convention(monkeypatc
 # ─── AlignmentWidget ────────────────────────────────────────────────────────
 
 REFERENCE_IMAGE = _textured_image(shape=(32, 32))
-COLOR_REFERENCE_IMAGE = np.stack([_textured_image(shape=(32, 32), dtype=np.uint8)] * 3, axis=-1)
+COLOR_REFERENCE_IMAGE = np.zeros((32, 32, 3), dtype=np.uint8)
+COLOR_REFERENCE_IMAGE[..., 0] = 200  # red-dominant, so a BGR/RGB mix-up is visible
 CENTER_FOV_POSITION = (2.0, 5.0)
 
 
@@ -134,18 +135,14 @@ def test_color_reference_is_overlaid_as_an_intensity_image(widget, image_display
     assert image_display_window.alignment_reference_item.image.ndim == 2
 
 
-RGB_REFERENCE_IMAGE = np.zeros((32, 32, 3), dtype=np.uint8)
-RGB_REFERENCE_IMAGE[..., 0] = 200  # red-dominant, so a BGR/RGB mix-up is visible
-
-
 @pytest.mark.parametrize(
-    "acquisition_folder", [(cv2.cvtColor(RGB_REFERENCE_IMAGE, cv2.COLOR_RGB2BGR), "bmp")], indirect=True
+    "acquisition_folder", [(cv2.cvtColor(COLOR_REFERENCE_IMAGE, cv2.COLOR_RGB2BGR), "bmp")], indirect=True
 )
 def test_color_reference_loaded_with_opencv_is_stored_as_rgb(widget):
     """cv2.imread returns BGR; the registration and overlay paths expect RGB like the live frames."""
     _start_alignment(widget)
 
-    assert np.array_equal(widget._reference_image, RGB_REFERENCE_IMAGE)
+    assert np.array_equal(widget._reference_image, COLOR_REFERENCE_IMAGE)
 
 
 def test_auto_is_only_shown_while_a_reference_is_loaded(widget):
@@ -271,8 +268,8 @@ def test_stage_moves_made_for_alignment_invalidate_the_displayed_frame(monkeypat
     gui = _gui_stub(np.roll(REFERENCE_IMAGE, shift=(0, 4), axis=(0, 1)), pixel_size_um=0.5)
 
     HighContentScreeningGui._alignment_auto_align(gui, REFERENCE_IMAGE)
+    assert gui.imageDisplayWindow.invalidate_current_image.call_count == 1
     HighContentScreeningGui._alignment_move_to(gui, 2.0, 5.0)
-
     assert gui.imageDisplayWindow.invalidate_current_image.call_count == 2
 
 
