@@ -13,6 +13,22 @@ from squid.config import SquidFilterWheelConfig
 from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 
+@pytest.fixture(autouse=True)
+def _wheel_cache_in_tmp(tmp_path, monkeypatch):
+    """The wheel records its position for a restart; keep that record out of the real cache/ folder."""
+    import squid.filter_wheel_controller.cephla as cephla
+
+    monkeypatch.setattr(cephla, "_WHEEL_CACHE_PATH", str(tmp_path / "filter_wheel_position.json"))
+
+
+def _as_homed(wheel):
+    """These tests build the controller with skip_init=True only to avoid hardware init, and then exercise a
+    wheel whose position is known. Mark it so, as a successful home by this process would."""
+    for wheel_id in wheel._configs:
+        wheel._position_known[wheel_id] = True
+    return wheel
+
+
 def _config(motor_slot: int = 3, slots: int = 8) -> SquidFilterWheelConfig:
     return SquidFilterWheelConfig(
         max_index=slots, min_index=1, offset=0.008, motor_slot_index=motor_slot, transitions_per_revolution=4000
@@ -23,7 +39,7 @@ def _wheel(wrap=True, slots=8):
     mc = MagicMock()
     mc.firmware_version = (1, 4)
     cfg = _config(slots=slots)
-    w = SquidFilterWheel(mc, cfg, skip_init=True)
+    w = _as_homed(SquidFilterWheel(mc, cfg, skip_init=True))
     w.wrap = wrap
     return w, mc, cfg
 
@@ -169,7 +185,7 @@ def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
     mc = MagicMock()
     mc.firmware_version = (1, 4)
     cfg = _config()
-    w = SquidFilterWheel(mc, cfg, skip_init=True)
+    w = _as_homed(SquidFilterWheel(mc, cfg, skip_init=True))
 
     assert w.wrap is False
     assert w._wrap_enabled() is False
@@ -183,23 +199,22 @@ def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
     assert expected * TURN > 0, f"target {expected} must have the same sign as a forward turn ({TURN})"
 
 
-def test_the_default_is_auto_on_from_firmware_1_6_and_off_below():
+@pytest.mark.parametrize("fw, expect_wrap", [((1, 4), False), ((1, 5), False), ((1, 6), True), ((2, 0), True)])
+def test_the_default_is_auto_on_from_firmware_1_6_and_off_below(fw, expect_wrap):
     """Crossing the flag was verified on firmware 1.6; below it the wheel keeps the flag-free arc unless the
     machine's ini says True."""
     import control._def
 
     assert control._def.SQUID_FILTERWHEEL_WRAP == "auto"
-    for fw, expect_wrap in [((1, 4), False), ((1, 5), False), ((1, 6), True), ((2, 0), True)]:
-        mc = MagicMock()
-        mc.firmware_version = fw
-        w = SquidFilterWheel(mc, _config(), skip_init=True)
-        assert w.wrap == "auto" and w._wrap_enabled() is expect_wrap
-        w._positions[1] = 1
-        w.set_filter_wheel_position({1: 8})
-        long_way = SquidFilterWheel._target_pos_to_usteps(_config(), 8)
-        expected = long_way - TURN if expect_wrap else long_way  # one slot back across the flag, or seven forward
-        mc.move_w_to_usteps.assert_called_once_with(expected)
-        assert w._turns[1] == (-1 if expect_wrap else 0)
+    mc = MagicMock()
+    mc.firmware_version = fw
+    w = _as_homed(SquidFilterWheel(mc, _config(), skip_init=True))
+    assert w.wrap == "auto" and w._wrap_enabled() is expect_wrap
+    w.set_filter_wheel_position({1: 8})
+    long_way = SquidFilterWheel._target_pos_to_usteps(_config(), 8)
+    expected = long_way - TURN if expect_wrap else long_way  # one slot back across the flag, or seven forward
+    mc.move_w_to_usteps.assert_called_once_with(expected)
+    assert w._turns[1] == (-1 if expect_wrap else 0)
 
 
 @pytest.mark.parametrize(

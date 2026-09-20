@@ -77,6 +77,12 @@ class AbstractFilterWheelController(ABC):
         """Home the filter wheel with the given index. If index is None, home all filter wheels."""
         pass
 
+    def position_is_known(self) -> bool:
+        """False when the controller cannot vouch for where its wheels are. Controllers that read their position
+        back from the hardware keep this default; one that only tracks its own commands (the Squid wheel, which
+        has no position readback) overrides it, and is homed before use when it says False."""
+        return True
+
     @abstractmethod
     def set_filter_wheel_position(self, positions: Dict[int, int]):
         """

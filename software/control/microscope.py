@@ -266,7 +266,10 @@ class MicroscopeAddons:
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
             self.emission_filter_wheel.initialize(fw_config.indices)
-            if not skip_init:
+            # A restart skips homing so the system stays on the same channel. That only holds for a wheel whose
+            # position is known - read back from the hardware, or restored from the previous process's record.
+            # A wheel that cannot say where it is gets homed: slot 1 for certain beats an unknown slot.
+            if not skip_init or not self.emission_filter_wheel.position_is_known():
                 try:
                     self.emission_filter_wheel.home()
                 except Exception:

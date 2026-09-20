@@ -1,5 +1,7 @@
+import json
+import os
 import time
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Tuple, Union
 
 import squid.logging
 import control._def
@@ -10,6 +12,71 @@ from squid.config import SquidFilterWheelConfig
 
 
 _log = squid.logging.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# Where the wheel is, across a restart.
+#
+# TEMPORARY, TO BE REPLACED BY A POSITION READBACK. The controller does not report the wheel's position: the
+# status packet carries X, Y and Z only, and there is no command that returns W. The slot and the turn count are
+# therefore this process's own bookkeeping. A `--skip-init` restart (GUI "restart" after a settings change) does
+# not reset the controller and must not move the wheel - the system is meant to stay on the same channel - so the
+# new process has to be told where the old one left the wheel. It is told through this file, written after every
+# successful move and home and read back on a skip_init start. Limits, all of which a readback would remove:
+#   * a wheel turned by hand, or a controller power-cycled between the two processes, is not noticed here (the
+#     second is caught by the firmware rejecting the first move, which re-homes);
+#   * a process that dies mid-move leaves the previous move's record. The first move after a restore is
+#     therefore always sent, never skipped as "already there": moves are absolute, so the wheel cannot end on
+#     the wrong filter, and the turn count can be off by at most that one move.
+# Replace with: firmware >= 1.6 can report W through SET_ENCODER_REPORTING (ENC_POS and ENC_POS - XACTUAL); a
+# permanent W field in the status packet would let every host read it for free.
+# ---------------------------------------------------------------------------------------------------------
+_WHEEL_CACHE_PATH = "cache/filter_wheel_position.json"
+_MAX_WHEEL_CACHE_BYTES = 4096
+
+
+def load_cached_wheel_state(cache_path: Optional[str] = None) -> Dict[int, Tuple[int, int]]:
+    """{wheel_id: (slot, turns)} written by cache_wheel_state(), or {} when there is no usable file. A file
+    that cannot be read or parsed is treated exactly like a missing one, as the stage position cache does:
+    an unreadable cache must not stop the software from starting."""
+    cache_path = cache_path or _WHEEL_CACHE_PATH  # resolved at call time, so tests can redirect it
+    if not os.path.isfile(cache_path):
+        return {}
+    try:
+        with open(cache_path, "r") as f:
+            contents = f.read(_MAX_WHEEL_CACHE_BYTES + 1)
+        if len(contents) > _MAX_WHEEL_CACHE_BYTES:
+            raise ValueError(f"file is larger than {_MAX_WHEEL_CACHE_BYTES} bytes")
+        data = json.loads(contents)
+        state = {}
+        for wheel_id, entry in data["wheels"].items():
+            slot, turns = entry["position"], entry["turns"]
+            if type(slot) is not int or type(turns) is not int:  # bool is an int subclass: reject it too
+                raise ValueError(f"wheel {wheel_id}: position and turns must be integers")
+            state[int(wheel_id)] = (slot, turns)
+        return state
+    except (OSError, UnicodeDecodeError, ValueError, KeyError, TypeError, AttributeError) as e:
+        _log.warning(
+            f"Filter wheel position cache '{cache_path}' is unusable ({e!r}); continuing as if there were none."
+        )
+        return {}
+
+
+def cache_wheel_state(state: Dict[int, Tuple[int, int]], cache_path: Optional[str] = None) -> None:
+    """Write {wheel_id: (slot, turns)} atomically. Never raises: failing to write the record must not fail the
+    filter change that was just completed."""
+    cache_path = cache_path or _WHEEL_CACHE_PATH
+    try:
+        os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+        tmp_path = f"{cache_path}.tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(
+                {"version": 1, "wheels": {str(k): {"position": p, "turns": t} for k, (p, t) in sorted(state.items())}},
+                f,
+            )
+        os.replace(tmp_path, cache_path)
+    except OSError as e:
+        _log.warning(f"Could not write the filter wheel position cache '{cache_path}': {e}")
 
 
 class SquidFilterWheel(AbstractFilterWheelController):
@@ -74,6 +141,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # coordinate has accumulated since homing (wheel_id -> int, may be negative).
         self._positions: Dict[int, int] = {}
         self._turns: Dict[int, int] = {}
+        # Whether the tracked slot can be believed. False from construction until a successful home (or a
+        # restored record), and again after a failed home or recovery. A move on a wheel whose position is
+        # unknown homes first. See the note above load_cached_wheel_state().
+        self._position_known: Dict[int, bool] = {}
+        # Set by a restore: the record may be one move old, so the next move is always sent.
+        self._restored_unverified: Dict[int, bool] = {}
 
         for wheel_id, config in self._configs.items():
             _log.info(
@@ -85,18 +158,27 @@ class SquidFilterWheel(AbstractFilterWheelController):
             # Configure each wheel
             for wheel_id, config in self._configs.items():
                 self._configure_wheel(wheel_id, config)
-                # Initialize position tracking to min_index
-                self._positions[wheel_id] = config.min_index
-                self._turns[wheel_id] = 0
+                # Unknown until homed: INITFILTERWHEEL re-initialised the axis, prepare_for_use() homes it.
+                self._set_unknown(wheel_id)
         else:
-            # Just initialize position tracking without hardware init
+            # Restart: the controller was not reset and the wheel has not moved, so the system stays on the
+            # same channel - provided this process learns where the previous one left the wheel. Nothing is
+            # assumed: no usable record means unknown, and an unknown wheel is homed before it is used.
+            cached = load_cached_wheel_state()
             for wheel_id, config in self._configs.items():
-                self._positions[wheel_id] = config.min_index
-                self._turns[wheel_id] = 0
-            _log.warning(
-                f"skip_init=True: assuming all wheels at min_index without homing — "
-                f"tracked positions may not match physical state"
-            )
+                slot, turns = cached.get(wheel_id, (None, None))
+                if slot is not None and config.min_index <= slot <= config.max_index:
+                    self._positions[wheel_id] = slot
+                    self._turns[wheel_id] = turns
+                    self._position_known[wheel_id] = True
+                    self._restored_unverified[wheel_id] = True
+                    _log.info(f"skip_init=True: filter wheel {wheel_id} restored at slot {slot}, turn {turns}")
+                else:
+                    self._set_unknown(wheel_id)
+                    _log.warning(
+                        f"skip_init=True: no usable position record for filter wheel {wheel_id} "
+                        f"(cached={cached.get(wheel_id)}); it will be homed before it is used"
+                    )
 
         self._available_filter_wheels: List[int] = []
 
@@ -150,6 +232,28 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # and still hundreds of thousands of slot changes apart, so the ~4 s re-home is not a cost
     # any real session notices.
     REHOME_AFTER_TURNS: int = 10000
+
+    def _set_unknown(self, wheel_id: int):
+        """Forget where the wheel is, here and in the record a restart would read. The tracked slot keeps a
+        placeholder (min_index, where a home leaves it) so the getters keep their shape; position_is_known()
+        says whether to believe it."""
+        self._positions[wheel_id] = self._configs[wheel_id].min_index
+        self._turns[wheel_id] = 0
+        self._position_known[wheel_id] = False
+        self._restored_unverified[wheel_id] = False
+        self._persist()
+
+    def _persist(self):
+        """Record the wheels whose position is known. An unknown wheel is left out, so a restart homes it."""
+        cache_wheel_state(
+            {i: (self._positions[i], self._turns.get(i, 0)) for i in self._configs if self._position_known.get(i)}
+        )
+
+    def position_is_known(self, wheel_id: Optional[int] = None) -> bool:
+        """True when the wheel (or, with no argument, every configured wheel) has been homed by this process
+        or restored from the previous one's record, and nothing has failed since."""
+        ids = [wheel_id] if wheel_id is not None else list(self._configs)
+        return all(self._position_known.get(i, False) for i in ids)
 
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
@@ -302,9 +406,16 @@ class SquidFilterWheel(AbstractFilterWheelController):
             TimeoutError or CommandAborted: If all attempts fail.
         """
         config = self._configs[wheel_id]
+
+        if not self._position_known.get(wheel_id, False):
+            _log.info(f"Filter wheel {wheel_id}: position unknown, homing before the move")
+            self._home_wheel(wheel_id)
         current_pos = self._positions[wheel_id]
 
-        if target_pos == current_pos:
+        # "Already there" is only concluded from a position this process has established itself. The first
+        # move after a restore is sent regardless: the record may be one move old, the move is absolute, and
+        # sending it to a wheel that is already there costs one command.
+        if target_pos == current_pos and not self._restored_unverified.get(wheel_id, False):
             return
 
         # Keep the driver coordinate bounded (see REHOME_AFTER_TURNS). Homing re-anchors both
@@ -326,6 +437,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self._move_to_usteps_with_resend(wheel_id, target_usteps)
             self._positions[wheel_id] = target_pos
             self._turns[wheel_id] = target_turns
+            self._restored_unverified[wheel_id] = False
+            self._persist()
             return
         except self._RECOVERABLE_MOVE_ERRORS as e:
             # CMD_EXECUTION_ERROR survived a resend, or the ack never arrived
@@ -346,9 +459,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
             self.microcontroller.wait_till_operation_is_completed()
             self._positions[wheel_id] = target_pos
             self._turns[wheel_id] = target_turns
+            self._persist()
             _log.info(f"Filter wheel {wheel_id} recovery via re-home succeeded, now at position {target_pos}")
         except self._RECOVERABLE_MOVE_ERRORS:
             _log.error(f"Filter wheel {wheel_id} movement failed even after re-home. Hardware may need attention.")
+            self._set_unknown(wheel_id)  # the ack never came or the move was refused: do not trust the record
             raise
 
     def _home_wheel(self, wheel_id: int):
@@ -365,6 +480,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
         config = self._configs[wheel_id]
         _log.info(f"Homing filter wheel {wheel_id} (prev tracked={self._positions.get(wheel_id)})")
         home_start = time.monotonic()
+        # Unknown until this home has fully succeeded; the record is withdrawn now, so a process that dies
+        # during the home does not leave a restart believing the pre-home slot.
+        self._position_known[wheel_id] = False
+        self._restored_unverified[wheel_id] = False
+        self._persist()
 
         try:
             self._mcu_method(wheel_id, "home")()
@@ -394,6 +514,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         self._positions[wheel_id] = config.min_index
         self._turns[wheel_id] = 0
+        self._position_known[wheel_id] = True
+        self._persist()
         _log.info(f"Filter wheel {wheel_id} homed in {time.monotonic() - home_start:.2f}s")
 
     def initialize(self, filter_wheel_indices: List[int]):
