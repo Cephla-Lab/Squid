@@ -228,3 +228,34 @@ def test_the_pattern_starts_one_slot_before_its_first_target(mod, tmp_path):
     t.slot = 3
     t.endurance("x")
     assert t.parked == [8]  # one before slot 1 is the last slot, around the circle
+
+
+# ---------------------------------------------------------------- bench: a REDUCED current to reach the stall edge
+def test_the_bench_current_only_ever_reduces(mod):
+    assert mod.bench_current_ma(None, 1900) == 1900
+    assert mod.bench_current_ma(1200, 1900) == 1200
+    assert mod.bench_current_ma(1900, 1900) == 1900
+    for bad in (1901, 2500, 0, -5):
+        with pytest.raises(ValueError, match="REDUCES"):
+            mod.bench_current_ma(bad, 1900)
+
+
+def test_a_profile_found_at_a_reduced_current_is_never_written_to_the_ini(mod, tmp_path):
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_bytes(INI.encode())
+    t = _tuner(mod, tmp_path, _Wheel(200, 200), write_ini=True, ini=str(ini))
+    t.reduced_current, t.current_ma = True, 1200.0
+    rec = t.tune()
+    assert rec["max_acceleration_w_mm"] == 160 and rec["reduced_current_ma"] == 1200.0
+    assert ini.read_bytes().decode() == INI  # untouched, whatever --write-ini said
+    assert not list(tmp_path.glob("configuration_test.ini.bak-*"))
+    assert "ini" not in t.summary["tune"]
+
+
+def test_a_current_above_the_machines_is_refused_before_anything_connects(mod):
+    """resolve_defaults runs in main() ahead of WheelTuner(): a bad --current-ma never opens the port."""
+    machine = float(mod._def.W_MOTOR_RMS_CURRENT_mA)
+    with pytest.raises(ValueError, match="REDUCES"):
+        _args(mod, "tune", current_ma=machine + 1)
+    assert _args(mod, "tune", current_ma=machine / 2).current_ma == machine / 2
+    assert _args(mod, "tune").microsteps == 8  # no --current-ma at all is fine

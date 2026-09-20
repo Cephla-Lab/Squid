@@ -25,6 +25,8 @@ verify and tune are the per-instrument procedures. A wheel's stall edge depends 
 filters, how balanced), on the motor and on its temperature, so a profile qualified on one wheel is a starting point,
 not a setting. `verify` runs the endurance pattern (--laps x the 16-move pattern, default 6 = 96 moves) at the
 settings the machine is configured with and fails on lost steps: run it after a filter change or a service visit.
+A lightly loaded wheel may show no stall edge at all. --current-ma runs it at a REDUCED current (bench only, never
+above the machine's, restored at exit, never written to an ini) so the edge-finding logic can still be exercised.
 `tune` screens the acceleration ladder with the short pattern, takes the highest clean level, backs off by --margin
 when a stall edge was found (the edge is statistical: a level can pass 16 moves and slip in 96), never asks for more
 acceleration than makes the wheel faster (--plateau-ms: above some level the jerk register clamps the ramp), confirms the result
@@ -107,6 +109,20 @@ def choose_accel(highest_clean, edge_found, margin, quantum=10.0):
     if not edge_found:
         return float(highest_clean)
     return max(quantum, float(int(highest_clean * margin / quantum) * quantum))
+
+
+def bench_current_ma(requested, machine_ma):
+    """The motor current a run uses. None = the machine's. A value is a BENCH device: running the wheel at a
+    REDUCED current lowers the torque, which brings the stall edge into reach on a lightly loaded wheel so that the
+    edge-finding, margin and step-down logic can be exercised. It is never allowed above the machine's configured
+    current (that is a thermal limit, not a tuning knob), and a profile found this way is not the machine's."""
+    if requested is None:
+        return float(machine_ma)
+    if not (0 < requested <= machine_ma):
+        raise ValueError(
+            f"--current-ma must be above 0 and at most the machine's {machine_ma:g} mA (it only ever REDUCES the current)"
+        )
+    return float(requested)
 
 
 def gentlest_as_fast(clean_levels, tol_ms=2.0):
@@ -228,9 +244,17 @@ class WheelTuner:
         self.wait(10)
         time.sleep(0.3)
         m.configure_squidfilter(AXIS.W)  # pitch 1, ini microstepping/current, ini v/a
-        if MICROSTEPS != int(_def.MICROSTEPPING_DEFAULT_W):
-            m.configure_motor_driver(AXIS.W, MICROSTEPS, _def.W_MOTOR_RMS_CURRENT_mA, _def.W_MOTOR_I_HOLD)
+        self.current_ma = bench_current_ma(self.a.current_ma, _def.W_MOTOR_RMS_CURRENT_mA)
+        self.reduced_current = self.current_ma < float(_def.W_MOTOR_RMS_CURRENT_mA)
+        if MICROSTEPS != int(_def.MICROSTEPPING_DEFAULT_W) or self.reduced_current:
+            m.configure_motor_driver(AXIS.W, MICROSTEPS, int(round(self.current_ma)), _def.W_MOTOR_I_HOLD)
             self.wait()
+        if self.reduced_current:
+            self.summary["reduced_current_ma"] = self.current_ma
+            self.log(
+                f"BENCH: motor current REDUCED to {self.current_ma:g} mA (machine: {_def.W_MOTOR_RMS_CURRENT_mA} mA) - "
+                f"results exercise the tool, they are not this machine's profile"
+            )
         self.set_motion(self.a.vmax, self.a.accel, self.a.ramp)
         if self.a.window_deg > 0:
             m.set_completion_window(AXIS.W, self.a.window_deg / 360.0)
@@ -248,7 +272,7 @@ class WheelTuner:
         self.sampler = Sampler(m)
         self.sampler.start()
         self.log(
-            f"W configured: {MICROSTEPS} usteps/FS ({USTEPS_PER_REV} usteps/rev), {_def.W_MOTOR_RMS_CURRENT_mA} mA, "
+            f"W configured: {MICROSTEPS} usteps/FS ({USTEPS_PER_REV} usteps/rev), {self.current_ma:g} mA, "
             f"encoder {self.transitions} transitions/rev (flip={self.flip}), reporting on"
         )
 
@@ -752,7 +776,12 @@ class WheelTuner:
             self.log(
                 "    NOTE: the host does not set the wheel's ramp profile; the firmware default is S-shape. Tune with --ramp sshape for a profile the GUI will actually run."
             )
-        if self.a.write_ini:
+        if getattr(self, "reduced_current", False):
+            rec["reduced_current_ma"] = self.current_ma
+            self.log(
+                f"found at a REDUCED current ({self.current_ma:g} mA): not written to any ini, whatever --write-ini says"
+            )
+        elif self.a.write_ini:
             self.write_ini(rec)
         else:
             self.log("not written (pass --write-ini to update the machine ini; a backup is saved first)")
@@ -835,6 +864,15 @@ class WheelTuner:
                 ),
             ),
             (
+                "driver restored to the machine's microstepping and current",
+                lambda: (
+                    self.mcu.configure_motor_driver(
+                        AXIS.W, int(_def.MICROSTEPPING_DEFAULT_W), _def.W_MOTOR_RMS_CURRENT_mA, _def.W_MOTOR_I_HOLD
+                    ),
+                    self.wait(5),
+                ),
+            ),
+            (
                 "ramp restored to S-shape",
                 lambda: (self.mcu.set_ramp_profile(AXIS.W, RAMP_PROFILE.SSHAPE), self.wait(5)),
             ),
@@ -872,6 +910,8 @@ def resolve_defaults(a):
         a.ramp = "sshape" if a.action in ("tune", "verify") else "trapezoid"
     if a.action == "verify" and a.window_deg == 0.0:
         a.window_deg = float(getattr(_def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", 0.0))
+    # Checked HERE, before anything connects: a bad argument must never reach the port.
+    bench_current_ma(getattr(a, "current_ma", None), _def.W_MOTOR_RMS_CURRENT_mA)
     return a
 
 
@@ -899,6 +939,13 @@ def main():
     )
     ap.add_argument("--lost-fullsteps", type=float, default=0.5, help="verify/tune: level drift that fails, full steps")
     ap.add_argument("--slip-fullsteps", type=float, default=2.0, help="verify/tune: single-move loss that fails")
+    ap.add_argument(
+        "--current-ma",
+        type=float,
+        default=None,
+        help="BENCH: run at a REDUCED motor current (never above the machine's) to bring the stall edge into reach "
+        "on a lightly loaded wheel; the result is never written to an ini; the machine's current is restored at exit",
+    )
     ap.add_argument("--write-ini", action="store_true", help="tune: write the result to the machine ini (backup first)")
     ap.add_argument("--ini", default=None, help="tune: ini to update (default: the one control._def loaded)")
     ap.add_argument("--flip", choices=["auto", "0", "1"], default="auto")
@@ -925,7 +972,10 @@ def main():
     ap.add_argument("--leave-enabled", action="store_true", help="leave the W driver energised at exit")
     ap.add_argument("--out", default="wheel_tune")
     a = ap.parse_args()
-    resolve_defaults(a)
+    try:
+        resolve_defaults(a)
+    except ValueError as e:
+        ap.error(str(e))  # exits before a WheelTuner exists, i.e. before the port is opened
     set_microsteps(a.microsteps)
     for s in a.pattern:
         if not (MIN_INDEX <= s <= MIN_INDEX + SLOTS - 1):
