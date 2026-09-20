@@ -153,9 +153,11 @@ void init_camera()
     pinMode(controller::kActive.trigger_pins[i], OUTPUT);
     trigger_release(i);
   }
-  // A controller without the wire must read a steady "not ready", never a floating input.
+  // The board pulls the ready input to its NOT-ready level; the internal pull agrees with it, so
+  // the input reads a steady "not ready" with no cable. (An internal pull AGAINST the board's
+  // cannot win: the chip's only pulldown is 100 k.)
   if (TRIGGER_READY_PIN >= 0)
-    pinMode(TRIGGER_READY_PIN, INPUT_PULLDOWN);
+    pinMode(TRIGGER_READY_PIN, controller::kActive.ready_assert_level == 0 ? INPUT_PULLUP : INPUT_PULLDOWN);
 }
 
 void init_io()
