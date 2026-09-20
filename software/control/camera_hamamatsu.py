@@ -280,6 +280,35 @@ class HamamatsuCamera(AbstractCamera):
 
         self._log.info("Camera is in LEVEL trigger + global reset mode.")
 
+    def _apply_trigger_ready_output(self):
+        """Drive output trigger connector 1 as TRIGGER READY, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, and a
+        no-op unless the CAMERA_TRIGGER_READY_OUTPUT opt-in is on. The controller gates
+        the next trigger on this line, so a connector that is configured as something
+        else (or not at all) would either stall the sequence or let it fire blind --
+        neither may be discovered silently.
+
+        The property ids below address connector 1 (array index 0). DCAM addresses the
+        Nth connector as <id> + N * DCAM_IDPROP._OUTPUTTRIGGER; only connector 1 is used
+        here, so no offset is applied.
+        """
+        if not control._def.CAMERA_TRIGGER_READY_OUTPUT:
+            return
+
+        self._set_prop_or_raise(
+            DCAM_IDPROP.OUTPUTTRIGGER_KIND,
+            DCAMPROP.OUTPUTTRIGGER_KIND.TRIGGERREADY,
+            "OUTPUTTRIGGER_KIND[0]",
+        )
+        self._set_prop_or_raise(
+            DCAM_IDPROP.OUTPUTTRIGGER_POLARITY,
+            DCAMPROP.OUTPUTTRIGGER_POLARITY.POSITIVE,
+            "OUTPUTTRIGGER_POLARITY[0]",
+        )
+
+        self._log.info("Camera output trigger 1 is configured as TRIGGER READY, active high.")
+
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()
         line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * resolution[1]
@@ -554,6 +583,7 @@ class HamamatsuCamera(AbstractCamera):
                 # the exposure/strobe refresh below so the strobe delay pushed to the
                 # microcontroller matches the exposure mode the sensor is actually in.
                 self._apply_level_trigger_global_reset()
+                self._apply_trigger_ready_output()
 
             self.set_exposure_time(self._exposure_time_ms)
         return True
