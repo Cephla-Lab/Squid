@@ -9,6 +9,7 @@ import control._def
 from control.core.job_processing import JobResult, SaveResult, ZarrWriteResult
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.pause_gate import PauseGate
+from control.core.pending_outputs import FinishedOutputs
 from control.core.transfer_manifest import CompletedUnit, UnitKey
 
 
@@ -326,33 +327,54 @@ def test_timepoint_done_is_emitted_only_when_the_barrier_completed():
     assert w2._drain_results_for_timepoint() is False
 
 
-def test_manifest_end_waits_for_asynchronous_outputs_and_lists_them_first(tmp_path):
+def test_manifest_end_waits_for_leftover_outputs_and_lists_them_under_their_own_timepoint(tmp_path):
     m = FakeManifest()
     w = _make_worker(manifest=m, tracker=FakeTracker(incomplete=[]))
-    mosaic_dir = tmp_path / "0" / "mosaic_view"
+    w.time_point = 4  # the run ended at timepoint 4; the leftover mosaic belongs to timepoint 2
+    mosaic_dir = tmp_path / "2" / "mosaic_view"
     mosaic_dir.mkdir(parents=True)
     (mosaic_dir / "mosaic_BF_10um.ome.tiff").write_bytes(b"\0" * 12)
     (mosaic_dir / "mosaic_BF_10um.yaml").write_bytes(b"a: 1\n")
     waits = []
 
-    def wait_for_pending_outputs(timeout_s):
-        waits.append(timeout_s)
-        return [str(mosaic_dir)]
+    def wait_for_pending_outputs(time_point, timeout_s):
+        waits.append((time_point, timeout_s))
+        return FinishedOutputs(((2, str(mosaic_dir)),), True)
 
     w.callbacks = SimpleNamespace(wait_for_pending_outputs=wait_for_pending_outputs)
     w._manifest_end("completed")
 
-    assert waits == [w._PENDING_OUTPUTS_TIMEOUT_S]
+    assert waits == [(None, w._PENDING_OUTPUTS_TIMEOUT_S)]
     assert m.calls == [
-        ("complete", str(mosaic_dir / "mosaic_BF_10um.ome.tiff"), "file", 12, 1, None, None),
-        ("complete", str(mosaic_dir / "mosaic_BF_10um.yaml"), "file", 5, 1, None, None),
+        ("complete", str(mosaic_dir / "mosaic_BF_10um.ome.tiff"), "file", 12, 2, None, None),
+        ("complete", str(mosaic_dir / "mosaic_BF_10um.yaml"), "file", 5, 2, None, None),
         ("end", "completed"),
-    ], "asynchronous outputs are listed before the end record"
+    ], "outputs are listed before the end record, with the timepoint they belong to"
 
 
 def test_manifest_end_survives_a_failing_outputs_callback():
     m = FakeManifest()
     w = _make_worker(manifest=m, tracker=FakeTracker())
-    w.callbacks = SimpleNamespace(wait_for_pending_outputs=lambda t: (_ for _ in ()).throw(RuntimeError("gui gone")))
+    w.callbacks = SimpleNamespace(wait_for_pending_outputs=lambda t, s: (_ for _ in ()).throw(RuntimeError("gui gone")))
     w._manifest_end("completed")
     assert m.calls == [("end", "completed")]
+
+
+def test_list_pending_outputs_reports_whether_the_timepoint_is_fully_listed(tmp_path):
+    m = FakeManifest()
+    w = _make_worker(manifest=m, tracker=FakeTracker())
+    out = tmp_path / "1" / "mosaic_view"
+    out.mkdir(parents=True)
+    (out / "mosaic.yaml").write_bytes(b"ok\n")
+    w.callbacks = SimpleNamespace(wait_for_pending_outputs=lambda t, s: FinishedOutputs(((1, str(out)),), True))
+    assert w._list_pending_outputs(1, 5.0) is True
+    assert m.calls == [("complete", str(out / "mosaic.yaml"), "file", 3, 1, None, None)]
+
+    w.callbacks = SimpleNamespace(wait_for_pending_outputs=lambda t, s: FinishedOutputs((), False))
+    assert w._list_pending_outputs(1, 5.0) is False, "an unanswered or unfinished writer: no timepoint_done"
+
+    w_off = _make_worker(manifest=None, tracker=None)
+    w_off.callbacks = SimpleNamespace(
+        wait_for_pending_outputs=lambda t, s: (_ for _ in ()).throw(AssertionError("mode off must never wait"))
+    )
+    assert w_off._list_pending_outputs(1, 5.0) is False

@@ -4,6 +4,7 @@ from typing import List, Tuple, Dict, Optional, Callable, TYPE_CHECKING
 from control.core.job_processing import CaptureInfo
 from control.core.scan_coordinates import ScanCoordinates
 from control.models import AcquisitionChannel
+from control.core.pending_outputs import FinishedOutputs
 from squid.abc import CameraFrame
 
 if TYPE_CHECKING:
@@ -161,7 +162,9 @@ class MultiPointControllerFunctions:
     # while paused; resumed: seconds spent paused (also fired when an abort ends the pause).
     signal_acquisition_paused: Callable[["PauseState", Optional["DiskStatus"]], None] = lambda *a, **kw: None
     signal_acquisition_resumed: Callable[[float], None] = lambda *a, **kw: None
-    # Finalization barrier for outputs written asynchronously outside the worker (the GUI's mosaic
-    # saves): block up to timeout_s for the writers registered with the controller and return the
-    # directories they wrote, so the transfer manifest can list them before its end record.
-    wait_for_pending_outputs: Callable[[float], List[str]] = lambda *a, **kw: []
+    # Barrier for outputs written outside the worker's save jobs (the GUI's per-timepoint mosaic
+    # saves): (time_point or None for all, timeout_s) -> FinishedOutputs, so the transfer manifest can
+    # list them before its timepoint_done / end records. See control.core.pending_outputs.
+    wait_for_pending_outputs: Callable[[Optional[int], float], FinishedOutputs] = lambda *a, **kw: FinishedOutputs(
+        (), True
+    )

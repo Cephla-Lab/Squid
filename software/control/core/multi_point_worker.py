@@ -550,25 +550,32 @@ class MultiPointWorker:
                     f"{len(incomplete)} unit(s) never completed and are not listed in the transfer manifest "
                     f"(movable only after the end record): {incomplete[:5]}"
                 )
-        self._list_pending_outputs()
+        self._list_pending_outputs(None, self._PENDING_OUTPUTS_TIMEOUT_S)
         try:
             self._manifest.end(reason)
         except Exception:
             self._log.exception("Failed to write the transfer manifest end record")
 
+    _TIMEPOINT_OUTPUTS_TIMEOUT_S = 30.0
     _PENDING_OUTPUTS_TIMEOUT_S = 60.0
 
-    def _list_pending_outputs(self) -> None:
-        """Finalization barrier: wait for output writers outside the worker (the GUI's mosaic saves),
-        then list what they wrote, so the end record really means every output has finished."""
+    def _list_pending_outputs(self, time_point: Optional[int], timeout_s: float) -> bool:
+        """Wait for the output writers outside the worker (the GUI's mosaic saves) of ``time_point`` (None =
+        whatever is left) and list what they wrote under the timepoint it belongs to. Returns True when
+        nothing in scope is still outstanding. Large acquisition mode only."""
+        if self._manifest is None:
+            return False
         try:
-            output_dirs = self.callbacks.wait_for_pending_outputs(self._PENDING_OUTPUTS_TIMEOUT_S)
+            finished = self.callbacks.wait_for_pending_outputs(time_point, timeout_s)
         except Exception:
-            self._log.exception("wait_for_pending_outputs callback failed; asynchronous outputs stay unlisted")
-            return
-        for output_dir in output_dirs:
+            self._log.exception("wait_for_pending_outputs callback failed; those outputs stay unlisted")
+            return False
+        for output_time_point, output_dir in finished.outputs:
             for path in sorted(str(p) for p in Path(output_dir).rglob("*") if p.is_file()):
-                self._record_written_file(path)
+                self._record_written_file(path, time_point=output_time_point)
+        if not finished.complete:
+            self._log.warning(f"Outputs written outside the worker are still outstanding (timepoint={time_point})")
+        return finished.complete
 
     def _feed_completion(self, result) -> None:
         """Route a save job's result into the completion tracker (no-op unless the manifest is on)."""
@@ -606,7 +613,7 @@ class MultiPointWorker:
             nbytes = None
         self._manifest.complete(path, "file", nbytes, unit.t, unit.region, unit.fov)
 
-    def _record_written_file(self, path: str, region_id=None, fov=None) -> None:
+    def _record_written_file(self, path: str, region_id=None, fov=None, time_point: Optional[int] = None) -> None:
         """List a file the worker wrote synchronously (coordinates.csv, RGB merges, laser-AF images)."""
         if self._manifest is None:
             return
@@ -615,7 +622,12 @@ class MultiPointWorker:
         except OSError:
             nbytes = None
         self._manifest.complete(
-            path, "file", nbytes, self.time_point, None if region_id is None else str(region_id), fov
+            path,
+            "file",
+            nbytes,
+            self.time_point if time_point is None else time_point,
+            None if region_id is None else str(region_id),
+            fov,
         )
 
     def _estimate_frame_bytes(self) -> int:
@@ -1044,7 +1056,11 @@ class MultiPointWorker:
             except Exception:
                 self._log.exception("signal_timepoint_finished callback failed")
 
-            if self._drain_results_for_timepoint():
+            # timepoint_done promises that everything of this timepoint is listed: its save jobs and the
+            # outputs written outside the worker (the GUI's mosaic view). Omit it when either fell short.
+            saves_listed = self._drain_results_for_timepoint()
+            outputs_listed = self._list_pending_outputs(self.time_point, self._TIMEPOINT_OUTPUTS_TIMEOUT_S)
+            if saves_listed and outputs_listed:
                 self._manifest_timepoint_done()
             utils.create_done_file(current_path)
             self._log.debug(f"Single time point took: {time.time() - start} [s]")

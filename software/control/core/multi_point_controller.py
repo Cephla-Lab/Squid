@@ -9,8 +9,8 @@ import yaml
 from datetime import datetime
 from enum import Enum
 import concurrent.futures
-from threading import Lock, Thread
-from typing import Any, List, Optional, Tuple
+from threading import Thread
+from typing import Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,7 @@ from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
 from control.core.memory_profiler import MemoryMonitor, log_memory
+from control.core.pending_outputs import FinishedOutputs, PendingOutputs
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
@@ -249,10 +250,11 @@ class MultiPointController:
         # Single pause control point of the running acquisition; exists only for runs in large
         # acquisition mode (operator pause + disk-space guard hold it), None otherwise.
         self._pause_gate: Optional[PauseGate] = None
-        # Asynchronous output writers (the GUI's mosaic saves) register their futures here so the
-        # worker can wait for them before closing the transfer manifest.
-        self._pending_outputs: List[Tuple[concurrent.futures.Future, str]] = []
-        self._pending_outputs_lock = Lock()
+        # Output writers outside the worker (the GUI's per-timepoint mosaic saves) answer here so a
+        # large-acquisition run can list their files before timepoint_done / end. Nothing is expected
+        # until a writer attaches, so headless runs never wait.
+        self._pending_outputs = PendingOutputs()
+        self._timepoint_output_writer_attached = False
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
         self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
@@ -802,8 +804,7 @@ class MultiPointController:
             self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
 
             self.abort_acqusition_requested = False
-            with self._pending_outputs_lock:
-                self._pending_outputs.clear()
+            self._pending_outputs.reset()
 
             self.configuration_before_running_multipoint = self.liveController.currentConfiguration
             # stop live
@@ -906,15 +907,27 @@ class MultiPointController:
                 finally:
                     self._stop_per_acquisition_log()
 
-            updated_callbacks = dataclasses.replace(
-                self.callbacks,
-                signal_acquisition_finished=finish_fn,
-                wait_for_pending_outputs=self._wait_for_pending_outputs,
-            )
-
             acquisition_params = self.build_params(
                 scan_position_information=scan_position_information,
                 region_laser_af_offsets=run_region_laser_af_offsets,
+            )
+
+            expect_timepoint_outputs = (
+                self._timepoint_output_writer_attached and acquisition_params.large_acquisition_mode
+            )
+
+            def timepoint_finished_fn(time_point: int):
+                # Record the expectation before the (queued) signal goes out, so the worker's wait can
+                # tell "the writer has not answered yet" from "there is nothing to wait for".
+                if expect_timepoint_outputs:
+                    self._pending_outputs.expect(time_point)
+                self.callbacks.signal_timepoint_finished(time_point)
+
+            updated_callbacks = dataclasses.replace(
+                self.callbacks,
+                signal_acquisition_finished=finish_fn,
+                signal_timepoint_finished=timepoint_finished_fn,
+                wait_for_pending_outputs=self._wait_for_pending_outputs,
             )
 
             # Gather objective and camera info for YAML
@@ -1161,30 +1174,21 @@ class MultiPointController:
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
 
-    def register_pending_output(self, future: concurrent.futures.Future, output_dir: str) -> None:
-        """Register an asynchronous output writer (e.g. a mosaic save) so the run waits for it before
-        closing the transfer manifest; ``output_dir`` is what it writes into."""
-        with self._pending_outputs_lock:
-            self._pending_outputs.append((future, str(output_dir)))
+    def attach_timepoint_output_writer(self) -> None:
+        """Announce a writer that answers every timepoint_finished with register_pending_output() or
+        report_no_timepoint_output(). Large-acquisition runs then wait for that answer."""
+        self._timepoint_output_writer_attached = True
 
-    def _wait_for_pending_outputs(self, timeout_s: float) -> List[str]:
-        """Wait (bounded) for registered output writers; return the directories of those that finished."""
-        with self._pending_outputs_lock:
-            pending = list(self._pending_outputs)
-            self._pending_outputs.clear()
-        if not pending:
-            return []
-        done, not_done = concurrent.futures.wait([f for f, _ in pending], timeout=timeout_s)
-        finished: List[str] = []
-        for future, output_dir in pending:
-            if future in not_done:
-                self._log.warning(f"Asynchronous output writer for {output_dir} did not finish within {timeout_s} s")
-                continue
-            if future.exception() is not None:
-                self._log.warning(f"Asynchronous output writer for {output_dir} failed: {future.exception()}")
-                continue
-            finished.append(output_dir)
-        return finished
+    def register_pending_output(self, time_point: int, future: concurrent.futures.Future, output_dir: str) -> None:
+        """The writer's answer for ``time_point``: an asynchronous save writing into ``output_dir``."""
+        self._pending_outputs.register(time_point, future, output_dir)
+
+    def report_no_timepoint_output(self, time_point: int) -> None:
+        """The writer's answer for ``time_point`` when it has nothing to save."""
+        self._pending_outputs.nothing_to_write(time_point)
+
+    def _wait_for_pending_outputs(self, time_point: Optional[int], timeout_s: float) -> FinishedOutputs:
+        return self._pending_outputs.wait(time_point, timeout_s, abort_fn=lambda: self.abort_acqusition_requested)
 
     def request_pause(self) -> bool:
         """Operator pause, honored at the worker's next FOV/timepoint checkpoint.
