@@ -78,7 +78,7 @@ void SeqEngine::begin_prep(uint32_t k, uint32_t now_us) {
     }
     // Filter wheel
     if (ch.filter_wheel != kNone) {
-        if (!hal_.start_axis_move(ch.filter_wheel, ch.filter_pos)) {
+        if (!hal_.start_axis_move(ch.filter_wheel, ch.filter_target)) {
             fail(SeqError::MoveFailed, ch.filter_wheel);
             return;
         }

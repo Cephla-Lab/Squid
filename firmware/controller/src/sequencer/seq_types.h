@@ -30,7 +30,7 @@ struct __attribute__((packed)) SeqLoop {
 
 struct __attribute__((packed)) SeqChannel {
     uint8_t filter_wheel;    // kNone, or wheel axis id
-    uint8_t filter_pos;      // wheel slot index (absolute target)
+    int32_t filter_target;   // absolute microsteps (host owns slot->ustep mapping)
     uint8_t illum_ttl_mask;  // TTL ports ON during exposure (0 = LED-matrix only)
     uint8_t led_pattern;     // kNone, or LED-matrix pattern id
     uint8_t intensity_dac;   // kNone, or DAC id (pre-armed during previous readout)
@@ -40,6 +40,9 @@ struct __attribute__((packed)) SeqChannel {
     int32_t z_offset;        // per-channel stack-axis offset
     uint8_t flags;           // reserved, 0
 };
+
+static_assert(sizeof(SeqLoop) == 15, "SeqLoop is wire format (seq_wire.h)");
+static_assert(sizeof(SeqChannel) == 20, "SeqChannel is wire format (seq_wire.h)");
 
 // Runtime per-camera config (set via SET_CAMERA_PARAMS, not uploaded with programs).
 struct SeqCameraConfig {

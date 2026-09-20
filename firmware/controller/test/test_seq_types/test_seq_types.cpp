@@ -22,7 +22,7 @@ static SeqLoop good_loop() {
 static SeqChannel good_channel() {
     SeqChannel c{};
     c.filter_wheel = kNone;
-    c.filter_pos = 0;
+    c.filter_target = 0;
     c.illum_ttl_mask = 0x01;
     c.led_pattern = kNone;
     c.intensity_dac = 0;
@@ -104,6 +104,12 @@ void test_channel_count_bounds(void) {
                             (uint8_t)validate(l, ch, cams, 1, 8, 8).error);
 }
 
+// The structs are wire format for the v1 shim (seq_wire.h) — sizes are frozen.
+void test_wire_struct_sizes_are_frozen(void) {
+    TEST_ASSERT_EQUAL(15, (int)sizeof(seq::SeqLoop));
+    TEST_ASSERT_EQUAL(20, (int)sizeof(seq::SeqChannel));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_valid_program_passes);
@@ -112,5 +118,6 @@ int main(int, char**) {
     RUN_TEST(test_camera_mask_beyond_configured_cameras_rejected);
     RUN_TEST(test_stepper_axis_out_of_range_rejected);
     RUN_TEST(test_channel_count_bounds);
+    RUN_TEST(test_wire_struct_sizes_are_frozen);
     return UNITY_END();
 }

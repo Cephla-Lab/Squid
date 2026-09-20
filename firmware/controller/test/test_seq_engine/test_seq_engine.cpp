@@ -25,7 +25,7 @@ static SeqLoop good_loop() {
 static SeqChannel good_channel() {
     SeqChannel c{};
     c.filter_wheel = kNone;
-    c.filter_pos = 0;
+    c.filter_target = 0;
     c.illum_ttl_mask = 0x01;
     c.led_pattern = kNone;
     c.intensity_dac = 0;
@@ -146,7 +146,7 @@ void test_filter_wheel_gates_exposure(void) {
     l.z_settle_us = 0;
     SeqChannel ch[1] = {good_channel()};
     ch[0].filter_wheel = 3;  // FILTER1 axis id
-    ch[0].filter_pos = 5;
+    ch[0].filter_target = 5;
     hal.move_duration_us[3] = 50000;
     SeqCameraConfig cams[1] = {cam_level()};
     e.load(l, ch, cams, 1, 40000);
@@ -191,9 +191,9 @@ void test_filter_move_overlaps_readout(void) {
     l.dz = 0;
     SeqChannel ch[2] = {good_channel(), good_channel()};
     ch[0].filter_wheel = 3;
-    ch[0].filter_pos = 1;
+    ch[0].filter_target = 1;
     ch[1].filter_wheel = 3;
-    ch[1].filter_pos = 2;
+    ch[1].filter_target = 2;
     hal.move_duration_us[3] = 15000;
     SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, exposure 10000, readout 20000
     e.load(l, ch, cams, 1, 40000);
@@ -354,7 +354,7 @@ void test_no_overlap_when_readout_unsafe(void) {
     l.z_settle_us = 0;
     SeqChannel ch[2] = {good_channel(), good_channel()};
     ch[1].filter_wheel = 3;
-    ch[1].filter_pos = 2;
+    ch[1].filter_target = 2;
     SeqCameraConfig cams[1] = {cam_level()};  // readout 20000
     cams[0].readout_overlap_safe = 0;
     e.load(l, ch, cams, 1, 40000);
@@ -426,9 +426,9 @@ void test_run_invariants(void) {
     l.z_settle_us = 1000;
     SeqChannel ch[3] = {good_channel(), good_channel(), good_channel()};
     ch[1].filter_wheel = 3;
-    ch[1].filter_pos = 2;
+    ch[1].filter_target = 2;
     ch[2].filter_wheel = 3;
-    ch[2].filter_pos = 4;
+    ch[2].filter_target = 4;
     hal.move_duration_us[3] = 7000;
     SeqCameraConfig cams[1] = {cam_level()};
     e.load(l, ch, cams, 1, 40000);
@@ -446,6 +446,29 @@ void test_run_invariants(void) {
             TEST_ASSERT_FALSE(c.t_us > p.t_assert_us && c.t_us < p.t_deassert_us);
         }
     }
+}
+
+// E7: the wheel target is absolute microsteps supplied by the host (slot->ustep mapping is
+// host-side); a u8 slot index cannot carry it.
+void test_filter_target_is_passed_as_absolute_usteps(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].filter_wheel = 3;
+    ch[0].filter_target = 123456;
+    SeqCameraConfig cams[1] = {cam_level()};
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1, 40000).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000));
+    bool saw_move = false;
+    for (size_t i = 0; i < hal.calls.size(); i++)
+        if (hal.calls[i].what == "move" && hal.calls[i].a == 3) {
+            TEST_ASSERT_EQUAL_INT32(123456, (int32_t)hal.calls[i].b);
+            saw_move = true;
+        }
+    TEST_ASSERT_TRUE(saw_move);
 }
 
 int main(int, char**) {
@@ -466,5 +489,6 @@ int main(int, char**) {
     RUN_TEST(test_cancel_finishes_current_exposure_then_stops);
     RUN_TEST(test_min_trigger_period_enforced);
     RUN_TEST(test_run_invariants);
+    RUN_TEST(test_filter_target_is_passed_as_absolute_usteps);
     return UNITY_END();
 }
