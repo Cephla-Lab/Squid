@@ -2,7 +2,7 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
@@ -249,6 +249,23 @@ class IlluminationController:
         # Ensure DAC value is in range 0-100
         return np.clip(dac_percent, 0, 100)
 
+    @property
+    def intensity_is_mcu_dac(self) -> bool:
+        """True when channel intensity is set through the controller's DACs (not by a light
+        source's own software interface)."""
+        return self.intensity_control_mode != IntensityControlMode.Software
+
+    def resolve_mcu_illumination(self, channel, intensity) -> Tuple[int, float]:
+        """(illumination source code, DAC percent 0-100) that set_intensity() sends to the
+        controller for this channel, with the calibration LUT applied when one exists.
+
+        The single place a channel becomes controller values: set_intensity() uses it per frame,
+        and the hardware sequencer uses it to resolve a whole burst up front, so the two cannot
+        drift apart.
+        """
+        dac_percent = self._apply_lut(channel, intensity) if channel in self.intensity_luts else intensity
+        return self.channel_mappings_TTL[channel], dac_percent
+
     def set_intensity(self, channel, intensity):
         # initialize intensity setting for this channel if it doesn't exist
         if channel not in self.intensity_settings:
@@ -262,12 +279,7 @@ class IlluminationController:
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
                 self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
         else:
-            if channel in self.intensity_luts:
-                # Apply LUT to convert power percentage to DAC percent (0-100)
-                dac_percent = self._apply_lut(channel, intensity)
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], dac_percent)
-            else:
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
+            self.microcontroller.set_illumination(*self.resolve_mcu_illumination(channel, intensity))
             self.intensity_settings[channel] = intensity
 
     def get_shutter_state(self):
