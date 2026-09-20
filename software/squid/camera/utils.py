@@ -122,6 +122,7 @@ class SimulatedCamera(AbstractCamera):
         (2, 2): (960, 540),
         (3, 3): (640, 360),
     }
+    SENSOR_MODES = ["standard", "fast"]
 
     @staticmethod
     def debug_log(method):
@@ -160,6 +161,9 @@ class SimulatedCamera(AbstractCamera):
         self.set_black_level(0)
         self._acquisition_mode = None
         self.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+        self._sensor_mode = self.SENSOR_MODES[0]
+        if self._config.default_sensor_mode:
+            self.set_sensor_mode(self._config.default_sensor_mode)
         # Set the initial ROI based on 1x1 binning
         # Temporarily set binning to (1,1) to get the unbinned resolution
         temp_binning = self._binning
@@ -359,6 +363,17 @@ class SimulatedCamera(AbstractCamera):
     def get_black_level(self) -> float:
         return self._black_level
 
+    def get_available_sensor_modes(self) -> Sequence[str]:
+        return list(self.SENSOR_MODES)
+
+    def get_sensor_mode(self) -> Optional[str]:
+        return self._sensor_mode
+
+    def set_sensor_mode(self, mode: str):
+        if mode not in self.SENSOR_MODES:
+            raise ValueError(f"Unknown sensor mode '{mode}'. Valid modes: {self.SENSOR_MODES}")
+        self._sensor_mode = mode
+
     @debug_log
     def _set_acquisition_mode_imp(self, acquisition_mode: CameraAcquisitionMode):
         self._acquisition_mode = acquisition_mode
@@ -368,7 +383,7 @@ class SimulatedCamera(AbstractCamera):
         return self._acquisition_mode
 
     @debug_log
-    def send_trigger(self, illumination_time: Optional[float] = None):
+    def _send_trigger_imp(self, illumination_time: Optional[float] = None):
         if self._acquisition_mode == CameraAcquisitionMode.CONTINUOUS:
             self._log.warning("Sending triggers in continuous acquisition mode is not allowed.")
             return

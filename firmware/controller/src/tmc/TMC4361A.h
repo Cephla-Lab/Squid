@@ -13,6 +13,9 @@
 #include "TMC4361A_Register.h"
 #include "TMC4361A_Constants.h"
 #include "TMC4361A_Fields.h"
+// For TMC2240_SHADOW_COUNT, which sizes the per-axis shadow array below.
+// This header pulls in <stdint.h> only, so it cannot cycle back into this one.
+#include "drivers/tmc2240_regs.h"
 
 // Constants for indexing ramp parameter array
 #define N_RPARAM   9
@@ -62,7 +65,40 @@ typedef struct
   bool velocity_mode;
   uint8_t dac_idx;
   uint32_t dac_fullscale_msteps;
-  
+
+  /* --- Stepper driver identity and per-driver state (design M3/M4/M8) ---
+     driver_type is set per axis by tmc_driver_probe() and cached here, so
+     callback_initialize can re-init the drivers without re-probing.
+     NOTE: init_filterwheel_axis does NOT inherit a cached identity — it calls
+     tmc4361A_init() on its first line, which resets this field to
+     DRIVER_UNKNOWN, so that path must probe every time it runs. A second
+     INITFILTERWHEEL that skipped the probe would leave the wheel at
+     DRIVER_UNKNOWN and, by the fail-safe rule, rejecting all moves.
+     The DRIVER_UNKNOWN default is what makes that failure safe rather than
+     silent: an axis that was never probed rejects moves. */
+  uint8_t  driver_type;
+  float    r_sense;             /* TMC2660 only, ohms */
+  uint8_t  current_range;       /* TMC2240 only: 0 = 1 A, 1 = 2 A, 2/3 = 3 A peak */
+  uint8_t  driver_toff;         /* cached TOFF so enable() can restore it */
+  /* The raw 32-bit word of the LAST cover read tmc_driver_probe() performed,
+     kept whatever the verdict was. Diagnostic only — nothing branches on it.
+
+     It exists because two open questions about the probe can only be closed by
+     looking at the bytes a real driver returns: whether a live TMC2660 can read
+     all-zeros (the liveness rule would then declare a working axis
+     DRIVER_UNKNOWN and refuse its moves) and whether a 2660 reply can carry
+     0x40 in byte [31:24] (it would then misdetect as a TMC2240, the one
+     genuinely unsafe direction). Neither is visible in driver_type.
+     report_driver_probe() (init.cpp) prints it per axis over the USB serial
+     link, for probed axes only, in a -D TMC_PROBE_REPORT bench build (the
+     text can misalign the host's packet parser, so shipping builds print
+     nothing). Not over the packet protocol: design M7 keeps host visibility to
+     a serial log precisely so that no protocol change is needed. */
+  uint32_t driver_probe_raw;
+  /* Shadow copy of TMC2240 registers. Cover READS are unreliable, so every
+     read-modify-write sources from here. See design §6.3. */
+  uint32_t tmc2240_shadow[TMC2240_SHADOW_COUNT];
+
   //TMotorConfig motorConfig;
   //TClosedLoopConfig closedLoopConfig;
   uint8_t status;

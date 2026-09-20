@@ -1,5 +1,7 @@
 #include "stage_commands.h"
 
+#include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
 // so the host stops waiting for a completion that won't arrive.
@@ -18,8 +20,40 @@ static inline void report_move_error()
     mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 }
 
+/*
+  An axis whose driver could not be identified is never commanded. The probe
+  could not confirm that anything is answering on that axis's SPI, so its
+  current scaling — and therefore its torque — is unknown (design M4).
+
+  Failing loudly here is the whole point: silently moving an axis whose driver
+  is unidentified is how a mis-populated board turns into a wrecked sample.
+
+  report_move_error(), NOT mark_move_failed(): every call site rejects before
+  its callback has claimed mcu_cmd_execution_in_progress for this command, so
+  there is nothing of this command's to unwind. Clearing the flag would instead
+  unwind an unrelated motion still running on another axis —
+  send_position_update() fires on its own timer, so the host would see
+  in_progress false and read a still-moving axis as finished. This is the same
+  distinction the filter-wheel `enabled` gate already makes.
+
+  Declared in stage_commands.h rather than kept static: callback_enable_stage_pid
+  in commands.cpp is a motion path too (PID_BPG0 hands the axis to the TMC4361A's
+  closed loop) and must reject through this same helper, so that the guard's
+  contract — report, do not silently drop, do not touch in_progress — has exactly
+  one definition.
+*/
+bool axis_driver_ready(uint8_t axis)
+{
+    if (!tmc_driver_ready(&tmc4361[axis])) {
+        report_move_error();
+        return false;
+    }
+    return true;
+}
+
 void callback_move_x()
 {
+    if (!axis_driver_ready(x)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[x]);
     X_direction = sgn(relative_position);
@@ -37,6 +71,7 @@ void callback_move_x()
 
 void callback_move_y()
 {
+    if (!axis_driver_ready(y)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[y]);
     Y_direction = sgn(relative_position);
@@ -54,6 +89,10 @@ void callback_move_y()
 
 void callback_move_z()
 {
+    // Before focusPosition is touched: do_focus_control() re-issues
+    // moveTo(z, focusPosition) every loop, so a rejected move that had already
+    // written focusPosition would be carried out anyway on the next pass.
+    if (!axis_driver_ready(z)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     long current_position = tmc4361A_currentPosition(&tmc4361[z]);
     Z_direction = sgn(relative_position);
@@ -89,6 +128,8 @@ static void dispatch_filterwheel_move(uint8_t axis, bool enabled, long target, i
         return;
     }
 
+    if (!axis_driver_ready(axis)) return;
+
     *direction = sgn(target - tmc4361A_currentPosition(&tmc4361[axis]));
     *target_position = target;
     mcu_cmd_execution_in_progress = true;
@@ -116,6 +157,7 @@ void callback_move_w2()
 
 void callback_move_to_x()
 {
+    if (!axis_driver_ready(x)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     X_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[x]));
     X_commanded_target_position = absolute_position;
@@ -132,6 +174,7 @@ void callback_move_to_x()
 
 void callback_move_to_y()
 {
+    if (!axis_driver_ready(y)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Y_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[y]));
     Y_commanded_target_position = absolute_position;
@@ -148,6 +191,7 @@ void callback_move_to_y()
 
 void callback_move_to_z()
 {
+    if (!axis_driver_ready(z)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
     Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
     Z_commanded_target_position = absolute_position;
@@ -314,6 +358,51 @@ void callback_set_pid_arguments()
     axes_pid_arg[axis].d = d;
 }
 
+/*
+  The current half of one CONFIGURE_STEPPER_DRIVER arm.
+
+  The invariant it exists to hold: *_MOTOR_RMS_CURRENT_mA and *_MOTOR_I_HOLD
+  only ever contain a value a driver accepted. They are not a record of what
+  the host asked for — they are re-applied, without being re-validated, by
+  callback_initialize() on every INITIALIZE and by init_filterwheel_axis() on
+  every INITFILTERWHEEL. Committing the packet's value before
+  tmc4361A_motor_config() had a chance to refuse it therefore turned one
+  rejected request into a wrong current that reappeared for the rest of the
+  session; on a TMC2240 axis the refusal leaves IRUN at 0, so the axis accepts
+  moves and produces no torque, silently, forever.
+
+  So: parse into locals, let the driver rule on them, and commit only what it
+  took. Everything else in the packet (microstepping, steps per mm) is applied
+  by the caller before this runs and by tmc4361A_motor_config() regardless of
+  the verdict, so those stay committed either way — the refusal is about the
+  current alone.
+
+  report_move_error(), NOT mark_move_failed(): CONFIGURE_STEPPER_DRIVER never
+  claims mcu_cmd_execution_in_progress, so there is nothing of this command's to
+  unwind, and clearing the flag would unwind an unrelated motion still in
+  flight. Same reasoning as the driver-ready gate at the top of this file.
+  (Named indirectly on purpose: test_command_layout counts that helper's
+  occurrences in this file by source text to check no move entry point lost its
+  guard, and a mention in prose would inflate the count.)
+*/
+static void configure_axis_current(uint8_t axis, float &current_global, float &hold_global,
+                                   float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps)
+{
+    float current_ma = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
+    float hold       = float(buffer_rx[6]) / 255;
+
+    if (tmc4361A_motor_config(&tmc4361[axis], current_ma, hold, pitch_mm, steps_per_rev, microsteps)) {
+        current_global = current_ma;
+        hold_global    = hold;
+    }
+    else {
+        // Not encodable for this driver / R_sense, or the axis has no identified
+        // driver at all: the axis kept the current it already had, so the
+        // globals keep theirs too.
+        report_move_error();
+    }
+}
+
 void callback_configure_stepper_driver()
 {
     switch (buffer_rx[2])
@@ -325,10 +414,7 @@ void callback_configure_stepper_driver()
             microstepping_setting = 256;
             MICROSTEPPING_X = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_X = FULLSTEPS_PER_REV_X * MICROSTEPPING_X / SCREW_PITCH_X_MM;
-            X_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
-            X_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_tmc2660_config(&tmc4361[x], (X_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_xy / 0.2298, X_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
-            tmc4361A_tmc2660_update(&tmc4361[x]);
+            configure_axis_current(x, X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD, SCREW_PITCH_X_MM, FULLSTEPS_PER_REV_X, MICROSTEPPING_X);
             break;
         }
         case AXIS_Y:
@@ -338,10 +424,7 @@ void callback_configure_stepper_driver()
             microstepping_setting = 256;
             MICROSTEPPING_Y = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_Y = FULLSTEPS_PER_REV_Y * MICROSTEPPING_Y / SCREW_PITCH_Y_MM;
-            Y_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
-            Y_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_tmc2660_config(&tmc4361[y], (Y_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_xy / 0.2298, Y_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
-            tmc4361A_tmc2660_update(&tmc4361[y]);
+            configure_axis_current(y, Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD, SCREW_PITCH_Y_MM, FULLSTEPS_PER_REV_Y, MICROSTEPPING_Y);
             break;
         }
         case AXIS_Z:
@@ -351,10 +434,7 @@ void callback_configure_stepper_driver()
             microstepping_setting = 256;
             MICROSTEPPING_Z = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_Z = FULLSTEPS_PER_REV_Z * MICROSTEPPING_Z / SCREW_PITCH_Z_MM;
-            Z_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
-            Z_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_tmc2660_config(&tmc4361[z], (Z_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_z / 0.2298, Z_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z);
-            tmc4361A_tmc2660_update(&tmc4361[z]);
+            configure_axis_current(z, Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z);
             break;
         }
         case AXIS_W:
@@ -365,10 +445,7 @@ void callback_configure_stepper_driver()
                 microstepping_setting = 256;
             MICROSTEPPING_W = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;
-            W_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
-            W_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_tmc2660_config(&tmc4361[w], (W_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
-            tmc4361A_tmc2660_update(&tmc4361[w]);
+            configure_axis_current(w, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
             }
             break;
         }
@@ -381,10 +458,7 @@ void callback_configure_stepper_driver()
                 microstepping_setting = 256;
             MICROSTEPPING_W = microstepping_setting == 0 ? 1 : microstepping_setting;
             steps_per_mm_W = FULLSTEPS_PER_REV_W * MICROSTEPPING_W / SCREW_PITCH_W_MM;
-            W_MOTOR_RMS_CURRENT_mA = uint16_t(buffer_rx[4]) * 256 + uint16_t(buffer_rx[5]);
-            W_MOTOR_I_HOLD = float(buffer_rx[6]) / 255;
-            tmc4361A_tmc2660_config(&tmc4361[w2], (W_MOTOR_RMS_CURRENT_mA / 1000.0)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
-            tmc4361A_tmc2660_update(&tmc4361[w2]);
+            configure_axis_current(w2, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
             }
             break;
         }
@@ -525,6 +599,29 @@ void callback_home_or_zero()
     // homing
     else if (buffer_rx[3] == HOME_NEGATIVE || buffer_rx[3] == HOME_POSITIVE)
     {
+        /*
+          Only this branch is gated. The zeroing branch above is not a motion
+          command: tmc4361A_setCurrentPosition() writes VMAX = 0 and then sets
+          XACTUAL and X_TARGET to the same value, i.e. it re-origins the
+          coordinate and halts. Rejecting it would take away the operator's
+          ability to re-zero an axis they are diagnosing while adding no safety.
+
+          This callback decodes no axis of its own — it switches on the raw
+          protocol constant in buffer_rx[2], which is not an array index — so the
+          guard converts. AXES_XY starts two axes and needs both ready;
+          protocol_axis_to_internal() returns 0xFF for it and for AXIS_THETA.
+          An unhandled value falls through the switch untouched, as on master.
+        */
+        if (buffer_rx[2] == AXES_XY)
+        {
+            if (!axis_driver_ready(x) || !axis_driver_ready(y)) return;
+        }
+        else
+        {
+            uint8_t home_axis = protocol_axis_to_internal(buffer_rx[2]);
+            if (home_axis != 0xFF && !axis_driver_ready(home_axis)) return;
+        }
+
         switch (buffer_rx[2])
         {
         case AXIS_X:

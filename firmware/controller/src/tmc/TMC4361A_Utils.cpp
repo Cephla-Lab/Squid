@@ -3,8 +3,10 @@
    This file contains higher-level functions for interacting with the TMC4362A.
    Some functions are low-level helpers and do not need to be accessed directly by the user
     User-facing functions:
-      tmc4361A_tmc2660_init:   Initialize the tmc4361A and tmc2660
-          Arguments: TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361
+      tmc4361A_motor_config:            Configure one axis: current (mA), hold ratio, pitch, steps/rev, microsteps
+          Arguments: TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx, uint32_t dac_fullscale_msteps
+      tmc_driver_init / _set_current / _set_microsteps / _enable / _config_stallguard:
+                                        The five power-stage operations, declared in drivers/stepper_driver.h and dispatched on tmc4361A->driver_type in drivers/stepper_driver.cpp
       tmc4361A_setMaxSpeed:             Write the target velocity to the tmc4361A in units microsteps per second and recalculates bow values
           Arguments: TMC4361ATypeDef *tmc4361A, int32_t velocity
       tmc4361A_setSpeed:                Start moving at a constant speed in units microsteps per second
@@ -88,7 +90,16 @@
       tmc4361A_adjustBows:              Sets shared bow values based on velocity and acceleration
           Arguments: TMC4361ATypeDef *tmc4361A
 */
-#include "TMC4361A_TMC2660_Utils.h"
+#include "TMC4361A_Utils.h"
+// tmc2660.h / tmc2240.h are deliberately absent: with the dispatch moved to
+// drivers/stepper_driver.cpp, nothing here calls a per-driver entry point.
+// What remains is the shared seam (stepper_driver.h, for tmc_driver_set_current
+// and tmc_driver_set_microsteps in tmc4361A_motor_config), the register
+// encoders (driver_math.h) and the TMC2660 register names that
+// tmc4361A_cScaleInit's master-exact datagram spells out (tmc2660_regs.h).
+#include "drivers/tmc2660_regs.h"
+#include "drivers/driver_math.h"
+#include "drivers/stepper_driver.h"
 
 /*
   -----------------------------------------------------------------------------
@@ -231,7 +242,9 @@ void tmc4361A_rstBits(TMC4361ATypeDef *tmc4361A, uint8_t address, int32_t dat) {
   -----------------------------------------------------------------------------
 */
 void tmc4361A_cScaleInit(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, SGCSCONF | SFILT | tmc4361A->cscaleParam[CSCALE_IDX]);
+  // SGCSCONF | SFILT | cs, unmasked exactly as master wrote it. The named
+  // constants come from drivers/tmc2660_regs.h so the magic numbers exist once.
+  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, TMC2660_SGCSCONF_ADDR | TMC2660_SFILT | tmc4361A->cscaleParam[CSCALE_IDX]);
   // current open loop scaling
   tmc4361A_writeInt(tmc4361A, TMC4361A_SCALE_VALUES, (tmc4361A->cscaleParam[HOLDSCALE_IDX] << TMC4361A_HOLD_SCALE_VAL_SHIFT) +   // Set hold scale value (0 to 255)
                     (tmc4361A->cscaleParam[DRV2SCALE_IDX] << TMC4361A_DRV2_SCALE_VAL_SHIFT) +   // Set DRV2 scale  (0 to 255)
@@ -276,9 +289,7 @@ void tmc4361A_setPitch(TMC4361ATypeDef *tmc4361A, float pitchval) {
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_writeMicrosteps() writes the number of microsteps per fullstep to the motor controller.
 
-  OPERATION:   We first check if the mstep argument is a power of 2. We set an error flag if it is not.
-               We then convert the microsteps number to the correct format for the tmc4361A: 256 -> 0, 128 -> 1, ..., 1 -> 8.
-               This conversion is performed by shifting mstep down a bit and incrementing bitsSet until mstep is equal to 0. This is equivalent to evaluating log_2(mstep)+1. Then we calculate 9-bitsSet to convert to the proper format.
+  OPERATION:   tmc_microsteps_to_mres() checks that the stored microstep count is a power of 2 in 1..256 and converts it to the tmc4361A's format: 256 -> 0, 128 -> 1, ..., 1 -> 8. An invalid count writes nothing.
 
   ARGUMENTS:
       TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
@@ -289,42 +300,36 @@ void tmc4361A_setPitch(TMC4361ATypeDef *tmc4361A, float pitchval) {
   INPUTS / OUTPUTS: Sends signals ove MOSI/MISO; the motor should not move
 
   LOCAL VARIABLES:
-      int8_t err:          indicates whether the operation was successful
-      uint8_t bitsSet:     Holds which bits to set on the tmc4361A
-      uint16_t microsteps: Holds a copy of microsteps
+      uint8_t mres:        MSTEP_PER_FS code, or TMC_MRES_INVALID
 
   SHARED VARIABLES:
       TMC4361ATypeDef *tmc4361A: Values are read from the struct
 
   GLOBAL VARIABLES: None
 
-  DEPENDENCIES: tmc4316A.h
+  DEPENDENCIES: tmc4316A.h, drivers/driver_math.h
   -----------------------------------------------------------------------------
 */
 void tmc4361A_writeMicrosteps(TMC4361ATypeDef *tmc4361A) {
-  int8_t err = NO_ERR; // Initally assume mstep is valid
-  uint8_t  bitsSet = 0;
-  uint16_t mstep = tmc4361A->microsteps;
-  // Check if mstep is a valid microstep value (a power of 2 between 1 and 256 inclusive)
-  if ((mstep != 0) && !(mstep & (mstep - 1)) && (mstep <= 256)) {
-    // Clear the low 4 bits of STEP_CONF to prepare it for writing to
-    tmc4361A_rstBits(tmc4361A, TMC4361A_STEP_CONF, 0b1111);
-  }
-  else {
-    // If it's not valid, mark all the bits as invalid
-    mstep = 0;
-    err = ERR_OUT_OF_RANGE;
-  }
-
-  while (mstep > 0) {
-    bitsSet++;
-    mstep = mstep >> 1;
+  // MSTEP_PER_FS (STEP_CONF[3:0]) and the TMC2240's CHOPCONF.MRES use the same
+  // 256 -> 0 ... 1 -> 8 encoding, so both come from one helper. They used to be
+  // computed twice - here and in drivers/driver_math.h - and a TMC2240 axis
+  // takes STEP_CONF from this function and CHOPCONF.MRES from that one, so a
+  // drift between the two would desynchronise the pair on the same axis.
+  //
+  // Behaviour is unchanged from master for every input: the helper's reject
+  // domain (zero, above 256, not a power of two) is the same test master ran
+  // inline, and master wrote NEITHER of the two register operations for a
+  // rejected value - it computed bitsSet and then discarded it under
+  // err != NO_ERR.
+  uint8_t mres = tmc_microsteps_to_mres(tmc4361A->microsteps);
+  if (mres == TMC_MRES_INVALID) {
+    return;
   }
 
-  bitsSet = 9 - bitsSet;
-  if (err == NO_ERR) {
-    tmc4361A_setBits(tmc4361A, TMC4361A_STEP_CONF, bitsSet);
-  }
+  // Clear the low 4 bits of STEP_CONF to prepare it for writing to
+  tmc4361A_rstBits(tmc4361A, TMC4361A_STEP_CONF, 0b1111);
+  tmc4361A_setBits(tmc4361A, TMC4361A_STEP_CONF, mres);
 
   return;
 }
@@ -427,164 +432,131 @@ void tmc4361A_writeSPR(TMC4361ATypeDef *tmc4361A) {
   return;
 }
 
-/*
-  -----------------------------------------------------------------------------
-  DESCRIPTION: tmc4361A_tmc2660_init() initializes the tmc4361A and tmc2660
+/* The five power-stage operations that differ between drivers -
+   tmc_driver_init / _set_current / _set_microsteps / _enable /
+   _config_stallguard - are declared in drivers/stepper_driver.h and dispatched
+   on tmc4361A->driver_type in drivers/stepper_driver.cpp. They used to be
+   defined here; they were moved out so that env:native can compile the
+   dispatch (this file cannot be host-compiled - it needs <SPI.h> and the real
+   TMC4361A primitives) and test_driver_sequence can pin what a DRIVER_UNKNOWN
+   axis gets from each of them.
 
-  OPERATION:   We write several bytes to the two ICs to configure their behaviors.
-
-  ARGUMENTS:
-  TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
-      uint32_t clk_Hz_TMC4361:   Clock frequency we are driving the ICs at
-
-  RETURNS: None
-
-  INPUTS / OUTPUTS: The CS pin and SPI MISO and MOSI pins output, input, and output data respectively
-
-  LOCAL VARIABLES: None
-
-  SHARED VARIABLES:
-      TMC4361ATypeDef *tmc4361A: Values are read from the struct
-
-  GLOBAL VARIABLES: None
-
-  DEPENDENCIES: tmc4316A.h
-  -----------------------------------------------------------------------------
-*/
-void tmc4361A_tmc2660_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361) {
-  // reset
-  tmc4361A_writeInt(tmc4361A, TMC4361A_RESET_REG, 0x52535400);
-  // clk
-  tmc4361A_writeInt(tmc4361A, TMC4361A_CLK_FREQ, clk_Hz_TMC4361);
-  // SPI configuration
-  tmc4361A_writeInt(tmc4361A, TMC4361A_SPIOUT_CONF, 0x4440108A);
-  // cover datagram for TMC2660
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000900C3); // CHOPCONF
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000A0000); // SMARTEN
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000C000A); // SGCSCON
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000E00A1); // SDOFF = 1 -> SPI mode
-  // current scaling
-  tmc4361A_cScaleInit(tmc4361A);
-  // microstepping setting
-  tmc4361A_writeMicrosteps(tmc4361A);
-  tmc4361A_writeSPR(tmc4361A);
-  return;
-}
+   The rest of this file is TMC4361A-only and driver-agnostic, with one
+   deliberate exception: tmc4361A_cScaleInit() above also emits the TMC2660
+   SGCSCONF cover datagram, kept here byte-for-byte as master wrote it (M5). It
+   is called only from the TMC2660 path in drivers/tmc2660.cpp. */
 
 /*
   -----------------------------------------------------------------------------
-  DESCRIPTION: tmc4361A_tmc2660_disable_driver() shut off driver MOSFETs 
+  DESCRIPTION: tmc4361A_motor_config() configures one axis: motor current, hold
+               ratio, mechanics and microstepping.
 
-  OPERATION:   shut off the driver MOSFETs to make axis to disable status
+  OPERATION:   Stores the mechanical parameters in the struct, then writes the
+               current scaling and the microstep/steps-per-revolution settings to
+               the hardware. Replaces master's tmc4361A_tmc2660_config() +
+               tmc4361A_tmc2660_update() pair at all nine call sites.
+
+               Current is taken in mA - the unit the host already sends over cmd
+               21 CONFIGURE_STEPPER_DRIVER - instead of a pre-computed,
+               driver-specific current scale, which is what let the same TMC2660
+               formula be duplicated across those nine sites.
+
+               This FUNCTION's own register writes and their order reproduce
+               master's tmc4361A_tmc2660_update() on a TMC2660 axis: cScaleInit
+               (via tmc_driver_set_current) -> writeMicrosteps -> writeSPR. The
+               last two are NOT optional and are not folded into the driver
+               seam: tmc2660_driver_set_microsteps() is a no-op by design (under
+               DRVCONF.SDOFF = 1 the TMC4361A owns microstepping), so without
+               them cmd 21 would stop writing STEP_CONF and a host microstepping
+               change would silently do nothing.
+
+               ONE DOCUMENTED EXCEPTION to that equivalence: master always wrote
+               the current scale, wrapping a u16 milliamp request mod 32 if it
+               had to. tmc_driver_set_current REFUSES an unencodable request and
+               writes nothing at all, so the cScaleInit is skipped on that path
+               and the axis keeps its previous current. That is the M5 safety
+               carve-out, not a drift.
+
+               THE BOOT SEQUENCE IS NOT MASTER'S, AND THIS SENTENCE IS ABOUT THE
+               FUNCTION, NOT THE SEQUENCE. Master called its struct-only
+               tmc4361A_tmc2660_config() BEFORE SPI.begin() and then
+               tmc4361A_tmc2660_init() once, so each axis saw cScaleInit,
+               writeMicrosteps and writeSPR exactly once, with the real values —
+               15 bus operations per TMC2660 axis. Here the probe forces
+               tmc_driver_init() to run first (it needs SPI, and it must undo the
+               probe's SPIOUT_CONF), so this function necessarily comes after it
+               and the struct is still zeroed during that first pass. A TMC2660
+               stage axis therefore sees:
+
+                 pass 1 (tmc2660_driver_init, struct zeroed)
+                   cScaleInit with CS = 0 and SCALE_VALUES = 0
+                   writeMicrosteps SKIPPED (microsteps = 0 is not a legal MRES)
+                   writeSPR with FS_PER_REV = 0
+                 pass 2 (here, struct populated)
+                   cScaleInit / writeMicrosteps / writeSPR with the real values
+
+               ~21 bus operations per axis instead of 15. The FINAL state is
+               master's, and the transient is zero current and zero steps per
+               rev — the safe direction, and the same direction the TMC2240 path
+               takes deliberately (it seeds IHOLD_IRUN = 0 in its own init). It
+               is a claims problem, not a hazard, and it is recorded here rather
+               than fixed because making the sequence genuinely match would mean
+               splitting the driver seam's set_current into a compute half and a
+               write half — a late API change to the one seam every axis goes
+               through, for no behavioural gain.
+
+               A final-state register dump cannot detect any of this. Catching a
+               regression in the transient needs a bus TRANSCRIPT: capture the
+               boot SPI traffic and check the ordering and the intermediate
+               words, not just where the registers end up.
+
+               Same shape in init_filterwheel_axis (commands.cpp), which runs
+               this pair mid-session on W/W2.
 
   ARGUMENTS:
-      TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
-
-  RETURNS: None
-
-  LOCAL VARIABLES: None
-
-  SHARED VARIABLES:
-      TMC4361ATypeDef *tmc4361A: Values are read from the struct
-
-  GLOBAL VARIABLES: None
-
-  DEPENDENCIES: tmc4316A.h
-  -----------------------------------------------------------------------------
-*/
-void tmc4361A_tmc2660_disable_driver(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000900C0); // CHOPCONF
-}
-
-/*
-  -----------------------------------------------------------------------------
-  DESCRIPTION: tmc4361A_tmc2660_enable_driver() enable driver MOSFETs to init argument value
-
-  OPERATION:   enable the driver MOSFETs to make axis to enable status
-
-  ARGUMENTS:
-      TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
-
-  RETURNS: None
-
-  LOCAL VARIABLES: None
-
-  SHARED VARIABLES:
-      TMC4361ATypeDef *tmc4361A: Values are read from the struct
-
-  GLOBAL VARIABLES: None
-
-  DEPENDENCIES: tmc4316A.h
-  -----------------------------------------------------------------------------
-*/
-void tmc4361A_tmc2660_enable_driver(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, 0x000900C3); // CHOPCONF
-}
-
-/*
-  -----------------------------------------------------------------------------
-  DESCRIPTION: tmc4361A_tmc2660_update() update the tmc4361A and tmc2660 settings (current scaling and microstepping settings)
-
-  OPERATION:   We write several bytes to the two ICs to configure their behaviors.
-
-  ARGUMENTS:
-      TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
-
-  RETURNS: None
-
-  INPUTS / OUTPUTS: The CS pin and SPI MISO and MOSI pins output, input, and output data respectively
-
-  LOCAL VARIABLES: None
-
-  SHARED VARIABLES:
-      TMC4361ATypeDef *tmc4361A: Values are read from the struct
-
-  GLOBAL VARIABLES: None
-
-  DEPENDENCIES: tmc4316A.h
-  -----------------------------------------------------------------------------
-*/
-void tmc4361A_tmc2660_update(TMC4361ATypeDef *tmc4361A) {
-  // current scaling
-  tmc4361A_cScaleInit(tmc4361A);
-  // microstepping setting
-  tmc4361A_writeMicrosteps(tmc4361A);
-  tmc4361A_writeSPR(tmc4361A);
-  return;
-}
-
-/*
-  -----------------------------------------------------------------------------
-  DESCRIPTION: tmc4361A_tmc2660_config() configures the parameters for tmc4361A and tmc2660
-  OPERATION:   set parameters
-  ARGUMENTS:
-      TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
-      float tmc2660_cscale: 0-1
-      float tmc4361a_hold_scale_val: 0-1
-      float tmc4361a_drv2_scale_val: 0-1
-      float tmc4361a_drv1_scale_val: 0-1
-      float tmc4361a_boost_scale_val: maximum current during the boost phase (in certain sections of the velocity ramp it can be useful to boost the current), 0-1
-      float pitch_mm: mm traveled per full motor revolution
-      uint16_t steps_per_rev: full steps per rev
-      uint16_t microsteps: number of microsteps per fullstep. must be a power of 2 from 1 to 256.
-      uint8_t dac_idx: DAC associated with this stage. Set to NO_DAC of there isn't one
+      TMC4361ATypeDef *tmc4361A:     Pointer to a struct containing motor driver info
+      float current_rms_ma:          Motor run current, RMS milliamps
+      float hold_ratio:              Hold current as a fraction of run current, 0-1
+      float pitch_mm:                mm traveled per full motor revolution
+      uint16_t steps_per_rev:        full steps per rev
+      uint16_t microsteps:           microsteps per fullstep; must be a power of 2 from 1 to 256
+      uint8_t dac_idx:               DAC associated with this stage. Set to NO_DAC if there isn't one
       uint32_t dac_fullscale_msteps: abs(mstep when voltage set to 0 - mstep when voltage set to 5V); used for setting the position using the piezo
-  RETURNS: None
+
+  RETURNS: bool - true when the whole configuration was applied.
+
+           false means ONLY that current_rms_ma/hold_ratio could not be encoded
+           for this axis's driver and R_sense, so the axis kept the current it
+           already had. Everything else - pitch, steps per rev, microstepping on
+           both the driver and the TMC4361A, and the DAC fields - was applied
+           either way, which is why this is a return value and not an abort.
+
+           Callers must not commit the requested current to their own state on
+           false, or the refused value comes back on the next re-apply
+           (INITIALIZE, INITFILTERWHEEL) as if the driver had accepted it. Host
+           command callbacks additionally report false to the host as
+           CMD_EXECUTION_ERROR.
+
   INPUTS / OUTPUTS: The CS pin and SPI MISO and MOSI pins output, input, and output data respectively
+
   LOCAL VARIABLES: None
+
   SHARED VARIABLES:
-      TMC4361ATypeDef *tmc4361A: Values are read from the struct
+      TMC4361ATypeDef *tmc4361A: Values are read from and written to the struct
+
   GLOBAL VARIABLES: None
-  DEPENDENCIES: tmc4316A.h
+
+  DEPENDENCIES: tmc4316A.h, drivers/stepper_driver.h
+
+  ORDERING: this writes driver registers, so it must run AFTER SPI.begin() and
+            AFTER tmc_driver_init() for this axis. Master could call its
+            predecessor before SPI.begin() only because that function wrote
+            struct fields and nothing else.
   -----------------------------------------------------------------------------
 */
-void tmc4361A_tmc2660_config(TMC4361ATypeDef *tmc4361A, float tmc2660_cscale, float tmc4361a_hold_scale_val, float tmc4361a_drv2_scale_val, float tmc4361a_drv1_scale_val, float tmc4361a_boost_scale_val, float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps, uint8_t dac_idx, uint32_t dac_fullscale_msteps) {
-
-  tmc4361A->cscaleParam[0] = uint8_t(tmc2660_cscale * 31);
-  tmc4361A->cscaleParam[1] = uint8_t(tmc4361a_hold_scale_val * 255);
-  tmc4361A->cscaleParam[2] = uint8_t(tmc4361a_drv2_scale_val * 255);
-  tmc4361A->cscaleParam[3] = uint8_t(tmc4361a_drv1_scale_val * 255);
-  tmc4361A->cscaleParam[4] = uint8_t(tmc4361a_boost_scale_val * 255);
+bool tmc4361A_motor_config(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio,
+                           float pitch_mm, uint16_t steps_per_rev, uint16_t microsteps,
+                           uint8_t dac_idx, uint32_t dac_fullscale_msteps) {
   tmc4361A_setPitch(tmc4361A, pitch_mm);
   tmc4361A_setSPR(tmc4361A, steps_per_rev);
   tmc4361A_setMicrosteps(tmc4361A, microsteps);
@@ -592,7 +564,19 @@ void tmc4361A_tmc2660_config(TMC4361ATypeDef *tmc4361A, float tmc2660_cscale, fl
   tmc4361A->dac_idx = dac_idx;
   tmc4361A->dac_fullscale_msteps = dac_fullscale_msteps;
 
-  return;
+  // Driver-side: current scaling, and on a TMC2240 the CHOPCONF.MRES mirror.
+  bool current_ok = tmc_driver_set_current(tmc4361A, current_rms_ma, hold_ratio);
+  tmc_driver_set_microsteps(tmc4361A, microsteps);
+
+  // TMC4361A-side: STEP_CONF. Both drivers need it - the 4361A generates the
+  // microsteps in either topology. setMicrosteps/setSPR above only validate and
+  // store, so these two are what reach the chip.
+  tmc4361A_writeMicrosteps(tmc4361A);
+  tmc4361A_writeSPR(tmc4361A);
+
+  // false: the current request could not be encoded and the axis kept its previous current
+  // (everything else above was applied); the command callback reports it to the host.
+  return current_ok;
 }
 
 /*
@@ -2097,62 +2081,4 @@ int8_t tmc4361A_move_no_stick(TMC4361ATypeDef *tmc4361A, int32_t x_pos, int32_t 
   int32_t target = current + x_pos;
 
   return tmc4361A_moveTo_no_stick(tmc4361A, target, backup_amount, err_thresh, timeout_ms);
-}
-
-/*
-  -----------------------------------------------------------------------------
-  DESCRIPTION: tmc4361A_config_init_stallGuard() initializes stall prevention on the TMC4316A and TMC2660
-
-  OPERATION:   First, check if arugments are within bounds. If the argument exceed the bounds, constrain them before writing the values, and note that this function failed.
-               We then write the sensitivitity to the TMC2660.
-               
-
-  ARGUMENTS:
-      TMC4361ATypeDef *tmc4361A: Pointer to a struct containing motor driver info
-      int8_t sensitivity: Value from -64 to +63 indicating sensitivity to stall condition. Larger values are less sensitive.
-      bool filter_en: Set true to use filter (more accurate, slower).
-      uint32_t vstall_lim: 24-bit value. The internal ramp velocity is set immediately to 0 whenever a stall is detected and |VACTUAL| >VSTALL_LIMIT.
-
-  RETURNS: 
-      bool success: return true if there were no errors
-
-  INPUTS / OUTPUTS: Sends signals over SPI
-  
-  LOCAL VARIABLES: None
-
-  SHARED VARIABLES: 
-      TMC4361ATypeDef *tmc4361A: Values are read from the struct
-
-  GLOBAL VARIABLES: None
-
-  DEPENDENCIES: tmc4316A.h
-  -----------------------------------------------------------------------------
-*/
-int16_t tmc4361A_config_init_stallGuard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity, bool filter_en, uint32_t vstall_lim){
-  // First, ensure values are within limits
-  bool success = true;
-  if((sensitivity > 63) || (sensitivity < -64) || (vstall_lim >= (1<<24))){
-    success = false;
-  }
-  sensitivity = constrain(sensitivity, -64, 63);
-  vstall_lim = constrain(vstall_lim, 0, ((1<<24)-1));
-  // Mask the high bit
-  sensitivity = sensitivity & 0x7F;
-  // Build the datagram
-  uint32_t datagram = 0;
-  datagram = filter_en ? SFILT : 0;
-  datagram |= SGCSCONF;
-  datagram |= (sensitivity << 8);
-  datagram |= tmc4361A->cscaleParam[CSCALE_IDX];
-  // Next, write to the TMC2660 - write to the "cover_0.3 *10^6 /(200*256)low" register
-  tmc4361A_writeInt(tmc4361A, TMC4361A_COVER_LOW_WR, datagram);
-  // Enable stall detection on the TMC4316A
-  // set vstall limit
-  tmc4361A_writeInt(tmc4361A, TMC4361A_VSTALL_LIMIT_WR, vstall_lim);
-  // enable stop on stall
-  tmc4361A_setBits(tmc4361A, TMC4361A_REFERENCE_CONF, TMC4361A_STOP_ON_STALL_MASK);
-  // disable drive after stall
-  tmc4361A_rstBits(tmc4361A, TMC4361A_REFERENCE_CONF, TMC4361A_DRV_AFTER_STALL_MASK);
-
-  return success;
 }

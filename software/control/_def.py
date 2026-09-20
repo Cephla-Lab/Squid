@@ -753,6 +753,7 @@ class CAMERA_CONFIG:
     CROP_HEIGHT_UNBINNED = 4168
     BINNING_FACTOR_DEFAULT = 2
     PIXEL_FORMAT_DEFAULT = "MONO12"
+    SENSOR_MODE_DEFAULT = None
     TEMPERATURE_DEFAULT = 20
     FAN_SPEED_DEFAULT = 1
     BLACKLEVEL_VALUE_DEFAULT = 3
@@ -855,6 +856,7 @@ SIMULATE_SPINNING_DISK = False  # XLight/Dragonfly
 SIMULATE_FILTER_WHEEL = False
 SIMULATE_OBJECTIVE_CHANGER = False
 SIMULATE_LASER_AF_CAMERA = False  # Laser autofocus camera
+SIMULATE_FLUIDICS = False  # Fluidics system (syringe pump, valves, TEC, flow sensors); built on Initialize
 
 # Acquisition Backpressure Settings
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
@@ -1093,6 +1095,29 @@ SQUID_FILTERWHEEL_CONFIGS = {
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
 
+# PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
+USE_PI_FOCUS_STAGE = False
+SIMULATE_PI_FOCUS_STAGE = False
+PI_FOCUS_STAGE_SN = ""  # FTDI/USB EEPROM serial (e.g. "1UETR6I!") -> resolved to a port
+PI_FOCUS_SERIAL_PORT = ""  # explicit port fallback (e.g. /dev/ttyUSB0, COM5)
+PI_FOCUS_BAUDRATE = 115200
+PI_FOCUS_AXIS = "1"
+PI_FOCUS_REFERENCE_ON_STARTUP = True  # FRF on bring-up -- MOVES the stage
+PI_FOCUS_VELOCITY_MM_S = 0.0  # >0 sets the closed-loop velocity; 0 keeps the controller default
+# Upright system: the V-308's native 0 is DOWN (objective toward the sample). Invert Z so Squid Z
+# increases toward the sample (Z+ = focus down) and Squid Z 0 = fully retracted; the mapping is
+# squid_z = (native positive travel limit) - native.
+PI_FOCUS_INVERT_Z = False
+# home()/retract drives Z to the stage's positive travel limit (furthest from the sample) instead
+# of OBJECTIVE_RETRACTED_POS_MM. Use this on an upright system where retract = objective UP.
+PI_FOCUS_HOME_TO_POSITIVE_LIMIT = False
+# Full physical Z travel (mm). On the C-414 qTMN/qTMX ARE the Position Range Limit, so fencing
+# shrinks them permanently (until power cycle); >0 restores [0, this] at connect so the inversion
+# offset / soft-limit fencing don't drift across software restarts. Set to the V-308's travel (7).
+PI_FOCUS_Z_TRAVEL_MM = 0.0
+# When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
+# retract constant) on home() and before XY homing -- set that for the objective-clear position.
+
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
@@ -1214,6 +1239,19 @@ XERYON_OBJECTIVE_SWITCHER_POS_1 = ["4x", "10x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 
+
+def xeryon_objective_position(objective_name):
+    """Position index (1 or 2) of an objective on the Xeryon 2-position switcher,
+    or None if the objective is not in either per-machine position list. Single
+    source of the objective->position rule for both the hardware mover and the
+    parfocal Z math (position 2 parks the stage POS_2_OFFSET_MM lower)."""
+    if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_1:
+        return 1
+    if objective_name in XERYON_OBJECTIVE_SWITCHER_POS_2:
+        return 2
+    return None
+
+
 # Motorized 4-position objective turret (NiMotion RS-485 stepper, Modbus-RTU)
 USE_OBJECTIVE_TURRET = False
 OBJECTIVE_TURRET_SERIAL_NUMBER = ""
@@ -1221,6 +1259,31 @@ OBJECTIVE_TURRET_SLAVE_ID = 1
 OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
+# Pulse offset of slot 1 from the homing zero (the origin sensor's trigger edge);
+# the other slots follow at exactly 90-degree spacing. 0 on all normal units; set
+# per machine (may be negative). Software homing (2026-07) moved the zero slightly
+# vs the old driver homing — re-measure after upgrading a machine with an old value.
+OBJECTIVE_TURRET_OFFSET_PULSES = 0
+# Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
+# slot change first overshoots below the target by this angle and then approaches
+# it from below, so the final approach direction is always the same and gear
+# backlash cancels out.
+OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
+# Set True for turret motor models wired with the opposite phase order (same
+# commands spin the other way). The controller then negates move targets, jog
+# signs and the homing-sweep direction bit, and flips position readbacks, so
+# slot mapping, offset and backlash logic keep working in the same logical
+# coordinate system — OBJECTIVE_TURRET_OFFSET_PULSES is always logical-coordinate
+# pulses. After toggling on an existing machine, re-home and re-measure the
+# offset: the physical zero moves with the sweep direction.
+OBJECTIVE_TURRET_DIRECTION_INVERTED = False
+# Set True for objective changers whose origin-switch sensor triggers on the
+# opposite logic level (port of SingleMotor's "原点开关极性取反" option, 2026-08-12).
+# Software homing / distance search then invert the DI1 trigger verdict, so the
+# homing direction and the sweep-backoff-fine-search state machine stay unchanged.
+# Toggling on an existing machine requires re-homing: the sensor edge found by
+# fine search (and thus the physical zero) sits on the other side of the window.
+OBJECTIVE_TURRET_DI_INVERT = False
 
 
 def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
@@ -1232,7 +1295,7 @@ def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> Non
 
 # fluidics
 RUN_FLUIDICS = False
-FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
+FLUIDICS_CONFIG_PATH = "machine_configs/fluidics_config.yaml"  # the library's FluidicsConfig YAML
 
 USE_TEMPLATE_MULTIPOINT = False
 
@@ -1501,5 +1564,8 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             if _sim_config.has_option("SIMULATION", "simulate_laser_af_camera"):
                 SIMULATE_LASER_AF_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_laser_af_camera"))
                 log.info(f"Loaded SIMULATE_LASER_AF_CAMERA={SIMULATE_LASER_AF_CAMERA} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_fluidics"):
+                SIMULATE_FLUIDICS = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_fluidics"))
+                log.info(f"Loaded SIMULATE_FLUIDICS={SIMULATE_FLUIDICS} from config")
     except Exception as e:
         log.warning(f"Failed to load SIMULATION settings from config: {e}")

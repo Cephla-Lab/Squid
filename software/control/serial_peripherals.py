@@ -256,6 +256,8 @@ class XLight:
         self.slider_position = 0
         self.illumination_iris = 0
         self.emission_iris = 0
+        self.emission_wheel_pos = None
+        self._emission_wheel_extracted = False
 
         # Auto-detect protocol: try V3 (115200) first, then V1/V2 (9600)
         self.protocol_version = self._connect_and_detect(SN)
@@ -337,13 +339,19 @@ class XLight:
         if self.disable_emission_filter_wheel:
             self.log.info("Emission filter wheel disabled, skipping set_emission_filter")
             return -1
+        position_str = str(position)
         valid_positions = [str(i + 1) for i in range(XLIGHT_EMISSION_FILTER_POSITIONS)]
-        if str(position) not in valid_positions:
+        if position_str not in valid_positions:
             raise ValueError(
                 f"Invalid emission filter position {position}, must be 1-{XLIGHT_EMISSION_FILTER_POSITIONS}"
             )
-        position_to_write = str(position)
-        position_to_read = str(position)
+        # This runs on every channel switch during multipoint acquisitions; skip the serial write
+        # and the sleep_time_for_wheel settle (250 ms by default) when the wheel is already there.
+        # Compared as str because callers pass the position as both int (configs) and str (widgets).
+        if not extraction and not self._emission_wheel_extracted and str(self.emission_wheel_pos) == position_str:
+            return self.emission_wheel_pos
+        position_to_write = position_str
+        position_to_read = position_str
         if extraction:
             position_to_write += "m"
 
@@ -357,6 +365,9 @@ class XLight:
             time.sleep(self.sleep_time_for_wheel)
             self.emission_wheel_pos = position
 
+        # An extraction move ("m" suffix) leaves the wheel in a special state; remember that so the
+        # next plain call at this position still reaches the hardware.
+        self._emission_wheel_extracted = extraction
         return self.emission_wheel_pos
 
     def get_emission_filter(self):

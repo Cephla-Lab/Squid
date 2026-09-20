@@ -57,6 +57,7 @@ def _save_acquisition_yaml(
     wellplate_format: str = None,
     scan_size_mm: float = 0.0,
     overlap_percent: float = 10.0,
+    protocol: Optional[dict] = None,
 ) -> None:
     """Save acquisition parameters to YAML file.
 
@@ -111,6 +112,10 @@ def _save_acquisition_yaml(
                     "name": name,
                     "center_mm": _serialize_for_yaml(center),
                     "shape": region_shapes.get(name) if region_shapes else None,
+                    "fovs": [
+                        _serialize_for_yaml(c)
+                        for c in params.scan_position_information.scan_region_fov_coords_mm.get(name, [])
+                    ],
                 }
                 for name, center in zip(
                     params.scan_position_information.scan_region_names,
@@ -129,6 +134,10 @@ def _save_acquisition_yaml(
                 {
                     "name": name,
                     "center_mm": _serialize_for_yaml(center),
+                    "fovs": [
+                        _serialize_for_yaml(c)
+                        for c in params.scan_position_information.scan_region_fov_coords_mm.get(name, [])
+                    ],
                 }
                 for name, center in zip(
                     params.scan_position_information.scan_region_names,
@@ -147,9 +156,9 @@ def _save_acquisition_yaml(
         "num_rows": params.plate_num_rows,
         "num_cols": params.plate_num_cols,
     }
-    yaml_dict["fluidics"] = {
-        "enabled": params.use_fluidics,
-    }
+
+    if protocol:
+        yaml_dict["protocol"] = protocol
 
     yaml_path = os.path.join(experiment_path, "acquisition.yaml")
     try:
@@ -187,7 +196,6 @@ class MultiPointController:
         self.objectiveStore: ObjectiveStore = objective_store
         self.callbacks: MultiPointControllerFunctions = callbacks
         self.multiPointWorker: Optional[MultiPointWorker] = None
-        self.fluidics: Optional[Any] = microscope.addons.fluidics
         self.thread: Optional[Thread] = None
         self._per_acq_log_handler = None
         self._memory_monitor: Optional[MemoryMonitor] = None
@@ -213,13 +221,24 @@ class MultiPointController:
 
         self.do_autofocus = False
         self.do_reflection_af = False
-        self.apply_channel_offset = True
+        # GUI-facing default: OFF, so the per-channel Z-offset applies only when the user
+        # opts in (the GUI checkbox seeds this flag on construction). build_params() copies
+        # this flag into AcquisitionParameters.apply_channel_offset at acquisition time, so
+        # the two are coupled at runtime; only the dataclass *default* stays True, as the
+        # direct-constructor contract for TCP/MCP callers that build AcquisitionParameters
+        # without going through this controller.
+        self.apply_channel_offset = False
         self.display_resolution_scaling = control._def.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.use_piezo = control._def.MULTIPOINT_USE_PIEZO_FOR_ZSTACKS
         self.experiment_ID = None
+        # Outcome of the last run_acquisition(): None while in flight; "completed" |
+        # "completed_with_errors" | "user_abort" | "error" from the worker, or "failed_to_start" when the
+        # run never launched a worker. Read by finished-callback consumers (no payload on the signal).
+        self.last_end_reason: Optional[str] = None
+        self.last_image_count: int = 0
+        self.protocol_info: Optional[dict] = None  # fluidics protocol context for the next run's acquisition.yaml
         self.use_manual_focus_map = False
         self.base_path = None
-        self.use_fluidics = False
         self.skip_saving = False
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
@@ -227,6 +246,7 @@ class MultiPointController:
         self.overlap_percent = 10.0  # FOV overlap percentage
 
         self.focus_map = None
+        self.region_laser_af_offsets = {}
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -416,11 +436,13 @@ class MultiPointController:
     def set_focus_map(self, focusMap):
         self.focus_map = focusMap  # None if dont use focusMap
 
+    def set_region_laser_af_offsets(self, offsets):
+        # region_id -> µm offset from the global laser-AF reference plane. Empty dict means
+        # every FOV targets the reference (displacement 0), i.e. current behavior.
+        self.region_laser_af_offsets = dict(offsets or {})
+
     def set_base_path(self, path):
         self.base_path = path
-
-    def set_use_fluidics(self, use_fluidics):
-        self.use_fluidics = use_fluidics
 
     def set_skip_saving(self, skip_saving):
         self.skip_saving = skip_saving
@@ -437,12 +459,22 @@ class MultiPointController:
     def set_overlap_percent(self, overlap_percent: float):
         self.overlap_percent = overlap_percent
 
-    def start_new_experiment(self, experiment_ID):  # @@@ to do: change name to prepare_folder_for_new_experiment
-        # generate unique experiment ID
-        self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+    def start_new_experiment(self, experiment_ID, add_timestamp=True):
+        """Create the experiment folder and write its parameter files.
+
+        add_timestamp=True (default): folder = experiment_ID (spaces -> underscores) + "_" + now.
+        add_timestamp=False: folder = experiment_ID verbatim; raises FileExistsError if it already exists
+        (the fluidics protocol runner names session folders itself and never reuses one).
+        """
+        if add_timestamp:
+            self.experiment_ID = experiment_ID.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+        else:
+            self.experiment_ID = experiment_ID
         self.recording_start_time = time.time()
         # create a new folder
         experiment_dir = os.path.join(self.base_path, self.experiment_ID)
+        if not add_timestamp and os.path.exists(experiment_dir):
+            raise FileExistsError(experiment_dir)
         utils.ensure_directory_exists(experiment_dir)
         # Save acquisition configuration via ConfigRepository
         self.liveController.microscope.config_repo.save_acquisition_output(
@@ -675,8 +707,21 @@ class MultiPointController:
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
     def run_acquisition(self, acquire_current_fov=False):
+        # Consume the per-region laser-AF offsets for THIS run and clear the sticky controller
+        # copy up-front. Any early return below — or a prior GUI abort that pushed offsets but
+        # never reached run_acquisition (e.g. aborted on the disk/RAM dialog) — then cannot leak
+        # them into a later acquisition from an entry point that never sets them (fluidics
+        # widget, TCP control server).
+        run_region_laser_af_offsets = self.region_laser_af_offsets
+        self.region_laser_af_offsets = {}
+        # Same one-run consumption for the protocol context: an early return must not leak it into a later run.
+        run_protocol_info = self.protocol_info
+        self.protocol_info = None
+        self.last_end_reason = None
+        self.last_image_count = 0
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
+            self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
             return
         self._start_per_acquisition_log()
@@ -693,6 +738,7 @@ class MultiPointController:
             log_memory("ACQUISITION START", include_children=True)
 
         thread_started = False
+        hardware_prepared = False
         self._run_state_writer = squid.acquisition_state.NullRunStateWriter()
         try:
             self._log.info("start multipoint")
@@ -751,6 +797,7 @@ class MultiPointController:
             # We need callbacks, because we trigger and then use callbacks for image processing.  This
             # lets us do overlapping triggering (soon).
             self.camera.enable_callbacks(True)
+            hardware_prepared = True
 
             # run the acquisition
             self.timestamp_acquisition_started = time.time()
@@ -758,13 +805,12 @@ class MultiPointController:
                 self._log.info("Using focus surface for Z interpolation")
                 for region_id in scan_position_information.scan_region_names:
                     region_fov_coords = scan_position_information.scan_region_fov_coords_mm[region_id]
-                    # Convert each tuple to list for modification
+                    # Rewrite this acquisition's private snapshot; the GUI's
+                    # ScanCoordinates keeps the user-configured coordinates.
                     for i, coords in enumerate(region_fov_coords):
                         x, y = coords[:2]  # This handles both (x,y) and (x,y,z) formats
                         z = self.focus_map.interpolate(x, y, region_id)
-                        # Modify the list directly
                         region_fov_coords[i] = (x, y, z)
-                        self.scanCoordinates.update_fov_z_level(region_id, i, z)
 
             elif self.gen_focus_map and not self.do_reflection_af:
                 self._log.info("Generating autofocus plane for multipoint grid")
@@ -842,7 +888,10 @@ class MultiPointController:
 
             updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
 
-            acquisition_params = self.build_params(scan_position_information=scan_position_information)
+            acquisition_params = self.build_params(
+                scan_position_information=scan_position_information,
+                region_laser_af_offsets=run_region_laser_af_offsets,
+            )
 
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
@@ -872,6 +921,7 @@ class MultiPointController:
                 wellplate_format,
                 self.scan_size_mm,
                 self.overlap_percent,
+                protocol=run_protocol_info,
             )
 
             # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
@@ -933,8 +983,8 @@ class MultiPointController:
             self.callbacks.signal_acquisition_start(acquisition_params)
 
             self.thread = Thread(target=self.multiPointWorker.run, name="Acquisition thread", daemon=True)
-            thread_started = True
             self.thread.start()
+            thread_started = True
         finally:
             if not thread_started:
                 # Acquisition never launched a worker — close out the breadcrumb so the
@@ -945,8 +995,28 @@ class MultiPointController:
                 if self._memory_monitor is not None:
                     self._memory_monitor.stop()
                     self._memory_monitor = None
+                # The run never launched a worker (validation passed but a focus-map early return or a
+                # pre-worker exception ended it). Undo what was prepared and report exactly once, so every
+                # caller - GUI widgets, TCP server, the fluidics protocol runner - sees acquisition_finished.
+                if hardware_prepared:
+                    try:
+                        self.camera.enable_callbacks(self.camera_callback_was_enabled_before_multipoint)
+                        if (
+                            self.liveController_was_live_before_multipoint
+                            and control._def.RESUME_LIVE_AFTER_ACQUISITION
+                        ):
+                            self.liveController.start_live()
+                    except Exception:
+                        self._log.exception("Failed to restore camera/live state after a failed acquisition start")
+                self.last_end_reason = "failed_to_start"
+                try:
+                    self.callbacks.signal_acquisition_finished()
+                except Exception:
+                    self._log.exception("acquisition_finished callback failed after a failed acquisition start")
 
-    def build_params(self, scan_position_information: ScanPositionInformation) -> AcquisitionParameters:
+    def build_params(
+        self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None
+    ) -> AcquisitionParameters:
         # Determine plate dimensions from wellplate format if available
         plate_num_rows = 8  # Default for 96-well
         plate_num_cols = 12
@@ -981,11 +1051,11 @@ class MultiPointController:
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
             z_range=self.z_range,
-            use_fluidics=self.use_fluidics,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
+            region_laser_af_offsets=region_laser_af_offsets if region_laser_af_offsets is not None else {},
         )
 
     def _on_acquisition_completed(self):
@@ -1026,6 +1096,9 @@ class MultiPointController:
         # emit the acquisition finished signal to enable the UI
         self._log.info(f"total time for acquisition + processing + reset: {time.time() - self.recording_start_time}")
         utils.create_done_file(os.path.join(self.base_path, self.experiment_ID))
+        worker = self.multiPointWorker
+        self.last_end_reason = getattr(worker, "end_reason", None) or "completed"
+        self.last_image_count = int(getattr(worker, "image_count", 0) or 0)
 
         if self.run_acquisition_current_fov:
             self.run_acquisition_current_fov = False

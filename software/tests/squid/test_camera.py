@@ -1,4 +1,7 @@
+import threading
 from typing import Optional, Sequence
+
+import pytest
 
 import squid.camera.utils
 import squid.config
@@ -105,3 +108,64 @@ def test_read_frame_on_timeout():
     assert frames[frame_to_idx(8)] is None
     assert frames[frame_to_idx(9)] is not None
     assert frames[frame_to_idx(10)] is not None
+
+
+def test_abstract_camera_sensor_mode_defaults():
+    # Call the base-class implementations explicitly: SimulatedCamera overrides
+    # these, but the ABC defaults must mean "not supported".
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+
+    assert AbstractCamera.get_available_sensor_modes(sim_cam) == []
+    assert AbstractCamera.get_sensor_mode(sim_cam) is None
+    with pytest.raises(NotImplementedError):
+        AbstractCamera.set_sensor_mode(sim_cam, "fast")
+
+
+def test_camera_config_default_sensor_mode():
+    config = squid.config.get_camera_config()
+    assert config.default_sensor_mode is None
+
+    updated = config.model_copy(update={"default_sensor_mode": "fast"})
+    assert updated.default_sensor_mode == "fast"
+
+
+def test_simulated_camera_sensor_modes():
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+
+    assert sim_cam.get_available_sensor_modes() == ["standard", "fast"]
+    assert sim_cam.get_sensor_mode() == "standard"
+
+    sim_cam.set_sensor_mode("fast")
+    assert sim_cam.get_sensor_mode() == "fast"
+
+    with pytest.raises(ValueError):
+        sim_cam.set_sensor_mode("warp_speed")
+
+
+def test_simulated_camera_default_sensor_mode_from_config():
+    config = squid.config.get_camera_config().model_copy(update={"default_sensor_mode": "fast"})
+    sim_cam = squid.camera.utils.get_camera(config, simulated=True)
+
+    assert sim_cam.get_sensor_mode() == "fast"
+
+
+def test_send_trigger_dropped_while_settings_change_in_flight():
+    """While an operation that pauses streaming holds the trigger lock (see
+    AbstractCamera._pause_streaming), send_trigger from another thread must drop
+    the trigger - no blocking until the pause ends, no exception."""
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    frame_id_before = sim_cam.get_frame_id()
+
+    returned = threading.Event()
+    with sim_cam._trigger_lock:
+        worker = threading.Thread(target=lambda: (sim_cam.send_trigger(), returned.set()))
+        worker.start()
+        assert returned.wait(2.0), "send_trigger blocked while a settings change was in flight"
+    worker.join(2.0)
+
+    assert sim_cam.get_frame_id() == frame_id_before  # the racing trigger was dropped
+
+    # And triggering works normally once the settings change is done.
+    sim_cam.send_trigger()
+    assert sim_cam.read_frame() is not None
+    assert sim_cam.get_frame_id() == frame_id_before + 1

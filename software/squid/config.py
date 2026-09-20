@@ -503,6 +503,10 @@ class CameraConfig(pydantic.BaseModel):
     # The default readout data bit depth of the camera. Note that this may depend on the gain mode being used.
     default_pixel_format: CameraPixelFormat
 
+    # The default sensor mode to apply at camera init. Driver-defined name from
+    # get_available_sensor_modes(); None leaves the camera at its power-on mode.
+    default_sensor_mode: Optional[str] = None
+
     # The binning factor of the camera.  If None, the camera is not using binning, or use 1x1 as default.
     default_binning: Optional[Tuple[int, int]] = None
 
@@ -565,6 +569,7 @@ _camera_config = CameraConfig(
     camera_type=_old_camera_variant_to_enum(_def.CAMERA_TYPE),
     camera_model=_def.MAIN_CAMERA_MODEL,
     default_pixel_format=_def.CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT,
+    default_sensor_mode=_def.CAMERA_CONFIG.SENSOR_MODE_DEFAULT,
     default_binning=(_def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT, _def.CAMERA_CONFIG.BINNING_FACTOR_DEFAULT),
     default_roi=(
         _def.CAMERA_CONFIG.ROI_OFFSET_X_DEFAULT,

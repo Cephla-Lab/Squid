@@ -29,6 +29,7 @@ import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
+import squid.stage.pi
 import squid.stage.utils
 
 _log = squid.logging.get_logger(__name__)
@@ -60,9 +61,9 @@ class ObjectiveChangerProtocol(Protocol):
 
 
 if control._def.RUN_FLUIDICS:
-    from control.fluidics import Fluidics
+    from control.fluidics_system import FluidicsService
 else:
-    Fluidics = None
+    FluidicsService = None
 
 if control._def.ENABLE_NL5:
     import control.NL5 as NL5
@@ -102,6 +103,7 @@ class MicroscopeAddons:
         filter_wheel_simulated = _should_simulate(simulated, control._def.SIMULATE_FILTER_WHEEL)
         objective_changer_simulated = _should_simulate(simulated, control._def.SIMULATE_OBJECTIVE_CHANGER)
         laser_af_camera_simulated = _should_simulate(simulated, control._def.SIMULATE_LASER_AF_CAMERA)
+        fluidics_simulated = _should_simulate(simulated, control._def.SIMULATE_FLUIDICS)
 
         xlight = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
@@ -156,6 +158,10 @@ class MicroscopeAddons:
                 slave_id=control._def.OBJECTIVE_TURRET_SLAVE_ID,
                 baudrate=control._def.OBJECTIVE_TURRET_BAUDRATE,
                 positions=control._def.OBJECTIVE_TURRET_POSITIONS,
+                offset_pulses=control._def.OBJECTIVE_TURRET_OFFSET_PULSES,
+                backlash_deg=control._def.OBJECTIVE_TURRET_BACKLASH_DEG,
+                direction_inverted=control._def.OBJECTIVE_TURRET_DIRECTION_INVERTED,
+                di_invert=control._def.OBJECTIVE_TURRET_DI_INVERT,
                 stage=stage,
             )
             objective_changer = (
@@ -172,7 +178,11 @@ class MicroscopeAddons:
 
         fluidics = None
         if control._def.RUN_FLUIDICS:
-            fluidics = Fluidics(config_path=control._def.FLUIDICS_CONFIG_PATH, simulation=simulated)
+            # Uninitialized on purpose: the Fluidics tab's Initialize button loads the config and brings the
+            # system up (blocking, off the GUI thread). See control/fluidics_system.py.
+            fluidics = FluidicsService(
+                default_config_path=control._def.FLUIDICS_CONFIG_PATH, simulated=fluidics_simulated
+            )
 
         piezo_stage = None
         if control._def.HAS_OBJECTIVE_PIEZO:
@@ -229,7 +239,7 @@ class MicroscopeAddons:
         emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
         objective_changer: Optional[ObjectiveChangerProtocol] = None,
         camera_focus: Optional[AbstractCamera] = None,
-        fluidics: Optional[Fluidics] = None,
+        fluidics: Optional["FluidicsService"] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
         squid_laser_engine: Optional["squid_laser_engine.SquidLaserEngineBase"] = None,
@@ -241,7 +251,7 @@ class MicroscopeAddons:
         self.emission_filter_wheel = emission_filter_wheel
         self.objective_changer = objective_changer
         self.camera_focus: Optional[AbstractCamera] = camera_focus
-        self.fluidics = fluidics
+        self.fluidics: Optional["FluidicsService"] = fluidics
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
@@ -331,6 +341,28 @@ class Microscope:
                 raise ValueError("For a cephla stage microscope, you must provide a microcontroller.")
             stage = CephlaStage(low_level_devices.microcontroller, stage_config)
 
+        if control._def.USE_PI_FOCUS_STAGE:
+            pi_simulated = _should_simulate(simulated, control._def.SIMULATE_PI_FOCUS_STAGE)
+            # Normalise SN to a string (the config reader may coerce an all-digit serial to int);
+            # treat only "" / None as "unset" so a numeric serial of 0 is not lost.
+            pi_sn = control._def.PI_FOCUS_STAGE_SN
+            pi_sn = str(pi_sn) if pi_sn not in (None, "") else None
+            z_stage = squid.stage.pi.connect_pi_focus_stage(
+                simulated=pi_simulated,
+                serialnum=pi_sn,
+                serial_port=control._def.PI_FOCUS_SERIAL_PORT or None,
+                baudrate=control._def.PI_FOCUS_BAUDRATE,
+                axis=control._def.PI_FOCUS_AXIS,
+                reference=control._def.PI_FOCUS_REFERENCE_ON_STARTUP and not skip_init,
+                velocity_mm_s=control._def.PI_FOCUS_VELOCITY_MM_S or None,
+                home_mm=control._def.OBJECTIVE_RETRACTED_POS_MM,
+                invert_z=control._def.PI_FOCUS_INVERT_Z,
+                home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
+                z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                stage_config=stage_config,
+            )
+            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
         )
@@ -419,6 +451,7 @@ class Microscope:
         skip_init: bool = False,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._closed = False
 
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
@@ -432,8 +465,9 @@ class Microscope:
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self._laser_af_controller = None
 
-        # Centralized config management
-        self.config_repo: ConfigRepository = ConfigRepository()
+        # Centralized config management (assigning through the property below also
+        # hands the same repository to the illumination controller).
+        self.config_repo = ConfigRepository()
 
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
@@ -471,6 +505,18 @@ class Microscope:
 
         if not skip_prepare_for_use:
             self._prepare_for_use(skip_init=skip_init)
+
+    @property
+    def config_repo(self) -> ConfigRepository:
+        """Centralized config repository, shared by every consumer in this microscope."""
+        return self._config_repo
+
+    @config_repo.setter
+    def config_repo(self, repo: ConfigRepository) -> None:
+        # One shared cache: keep the illumination controller reading the same
+        # repository so GUI-saved config edits take effect without a restart.
+        self._config_repo = repo
+        self.illumination_controller.config_repo = repo
 
     def _prepare_for_use(self, skip_init: bool = False):
         self.low_level_drivers.prepare_for_use(skip_init=skip_init)
@@ -870,12 +916,23 @@ class Microscope:
     def home_xyz(self) -> None:
         """Home the X, Y, and Z axes based on configuration settings.
 
-        Homes Z first if enabled, then performs a coordinated X/Y homing sequence
-        that avoids the plate clamp actuation post by moving Y first, homing X,
-        moving X clear, then homing Y.
+        Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and
+        retracts it to the objective-clear end before moving XY, then performs a coordinated
+        X/Y homing sequence that avoids the plate clamp actuation post by moving Y first,
+        homing X, moving X clear, then homing Y.
         """
-        if control._def.HOMING_ENABLED_Z:
+        if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
             self.stage.home(x=False, y=False, z=True, theta=False)
+
+        # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
+        # is clear: home(z) references-if-needed and drives Z to the retracted position
+        # (the positive travel limit when PI_FOCUS_HOME_TO_POSITIVE_LIMIT is set, e.g. an upright
+        # system; otherwise OBJECTIVE_RETRACTED_POS_MM). Gated on the PI stage so Cephla/Prior
+        # behaviour is unchanged.
+        if control._def.USE_PI_FOCUS_STAGE:
+            self._log.info("Homing Z (V-308) to the retracted position before XY homing.")
+            self.stage.home(x=False, y=False, z=True, theta=False)
+
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
             # The plate clamp actuation post can get in the way of homing if we start with
             # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x
@@ -1011,11 +1068,21 @@ class Microscope:
 
         Attempts to cleanly shut down all hardware components. Errors during
         shutdown are logged but do not prevent other components from being closed.
+        Calling close() more than once is a no-op.
         """
+        if self._closed:
+            return
+        self._closed = True
+
         try:
             self.stop_live()
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
+
+        try:
+            self.stage.close()  # stage-owned transports, e.g. the PI C-414 serial handle
+        except Exception as e:
+            self._log.warning(f"Error closing stage: {e}")
 
         if self.low_level_drivers.microcontroller:
             try:
@@ -1040,6 +1107,12 @@ class Microscope:
                 self.addons.squid_laser_engine.close()
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
+
+        if self.addons.fluidics is not None:
+            try:
+                self.addons.fluidics.close()
+            except Exception as e:
+                self._log.warning(f"Error closing fluidics: {e}")
 
         try:
             self.camera.close()

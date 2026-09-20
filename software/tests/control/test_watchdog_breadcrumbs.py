@@ -15,5 +15,8 @@ def test_run_acquisition_writes_running_breadcrumb(qtbot):
     assert rec["status"] == "running"
     assert rec["pid"] == os.getpid()
     assert rec["expected"]["timepoints"] >= 1
-    mpc.request_abort_aquisition()
+    # close() aborts the acquisition and joins its thread; that must happen
+    # before closing the scope, otherwise the thread keeps running against a
+    # closed microcontroller and dies with a TimeoutError.
+    mpc.close()
     scope.close()

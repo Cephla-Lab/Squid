@@ -15,12 +15,18 @@
 // Version 1.4 = filter-wheel (W/W2) home resets xmin/xmax to full range (rotary
 //               axis has no travel end-stop); fixes intermittent post-home
 //               MOVETO_W CMD_EXECUTION_ERROR (home left xmin = L - C > offset)
+// Version 1.5 = TMC2240 stepper driver support: each axis's power stage is
+//               identified at init (TMC2660 or TMC2240) behind a driver seam in
+//               src/tmc/drivers/, so one image serves both board populations.
+//               An axis whose driver could not be identified is left
+//               unconfigured and rejects moves. No protocol change: command
+//               codes, packet layout and the host contract are untouched
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 4
+#define FIRMWARE_VERSION_MINOR 5
 
 #include "def/def_v1.h"
 
-#include "tmc/TMC4361A_TMC2660_Utils.h"
+#include "tmc/TMC4361A_Utils.h"
 
 // default axes, such as X,Y,Z
 #define STAGE_AXES 3

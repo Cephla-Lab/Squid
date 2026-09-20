@@ -33,4 +33,8 @@ def test_simulated_acquisition_writes_ended_breadcrumb(qtbot):
     assert rec["status"] == "ended"
     assert rec["reason"] in {"completed", "completed_with_errors", "user_abort", "error"}
     assert rec["ended_at"] is not None
+    # The "ended" breadcrumb is written before the worker's final stage-return
+    # move; join the acquisition thread before closing the scope so it doesn't
+    # run against a closed microcontroller.
+    mpc.close()
     scope.close()
