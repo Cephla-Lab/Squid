@@ -179,6 +179,7 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(channels=[plan(name="BF LED matrix full", source_code=0)], camera_gains=[10.0]), "BF LED matrix full"),
         (dict(channels=[plan(name="Fluorescence 488 nm Ex RGB")], camera_gains=[10.0]), "RGB"),
         (dict(camera_gains=[10.0, 12.0]), "gain"),
+        (dict(channels=[plan(), plan(name="Fluorescence 638 nm Ex", source_code=13, z_offset_um=1.5)]), "z offset"),
         (dict(burst_bytes=3_000_000_000), "memory"),
         (dict(channels=[], camera_gains=[]), "no channels"),
     ],

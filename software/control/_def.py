@@ -1361,6 +1361,18 @@ OBJECTIVE_PIEZO_HOME_UM = 20
 OBJECTIVE_PIEZO_FLIP_DIR = False
 
 MULTIPOINT_PIEZO_DELAY_MS = 20
+
+# Opt-in: hardware-sequenced acquisition (controller firmware >= 1.7). The microcontroller runs a
+# whole multichannel piezo z-stack at each position from one uploaded program instead of the host
+# commanding every z move, illumination switch and trigger. Decided once per acquisition; when an
+# acquisition is not eligible it runs software-sequenced exactly as before and the log says why.
+USE_HARDWARE_SEQUENCED_ACQUISITION = False
+# Gate each trigger on the camera's trigger-ready output (new controller: Teensy pin 18). Off =
+# the controller models readiness from SEQUENCER_CAMERA_READOUT_MS after each exposure instead.
+SEQUENCER_USE_CAMERA_READY_LINE = False
+SEQUENCER_CAMERA_READOUT_MS = 50.0
+# The controller fails a run when a step waits this long (stack settle, camera ready).
+SEQUENCER_WAIT_TIMEOUT_S = 5.0
 MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
 USE_TERMINAL_CONSOLE = False

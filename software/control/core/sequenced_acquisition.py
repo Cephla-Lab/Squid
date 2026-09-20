@@ -183,6 +183,10 @@ def ineligibility_reason(
     for channel in channels:
         if "RGB" in channel.name:
             return f"channel '{channel.name}' is an RGB composite"
+        if channel.z_offset_um != 0:
+            # The per-channel offset is anchored to the autofocus result per FOV today; until that is
+            # modelled in the program, such acquisitions stay software-sequenced.
+            return f"channel '{channel.name}' has a z offset ({channel.z_offset_um} um), which is not sequenced yet"
         if channel.source_code not in SOURCE_CODE_TO_PORT:
             return f"channel '{channel.name}' is not strobed from an MCU TTL port (source code {channel.source_code})"
     if len(set(camera_gains)) > 1:

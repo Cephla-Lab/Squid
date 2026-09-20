@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import os
 import queue
@@ -25,7 +26,7 @@ from control.core.multi_point_utils import (
     PlateViewInit,
 )
 from control.core.objective_store import ObjectiveStore
-from control.microcontroller import Microcontroller
+from control.microcontroller import CommandAborted, Microcontroller
 from control.microscope import Microscope
 from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
@@ -34,6 +35,17 @@ import squid.acquisition_state
 import squid.logging
 import control.core.job_processing
 from control.core.pending_captures import PendingCaptures
+from control.core.sequenced_acquisition import (
+    BurstOutcome,
+    ChannelPlan,
+    build_program,
+    burst_failure_reason,
+    ineligibility_reason,
+    outcome_after_failed_burst,
+    piezo_um_to_dac,
+)
+from control.sequencer_program import NONE_ID, SeqCameraSpec, SequencerProgram
+from control.sequencer_program import TriggerMode as SequencerTriggerMode
 from control.core.job_processing import ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
@@ -199,6 +211,9 @@ class MultiPointWorker:
         # Where a paired frame goes. Ordinary captures dispatch immediately; a hardware-sequenced
         # burst swaps in a collecting sink for its duration (frames are validated before saving).
         self._frame_sink: Callable[[CameraFrame, CaptureInfo], None] = self._dispatch_frame
+        # The uploaded MCU program when this acquisition is hardware-sequenced, else None.
+        # Decided once, in _prepare_sequenced_acquisition().
+        self._sequenced_program: Optional[SequencerProgram] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
@@ -469,6 +484,7 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
+            self._prepare_sequenced_acquisition()
             sleep_time = min(self.dt / 20.0, 0.5)
 
             # Send Slack acquisition start notification
@@ -1098,6 +1114,12 @@ class MultiPointWorker:
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
 
+        if self._sequenced_program is not None:
+            # The microcontroller runs the whole z x channel block (and returns the piezo).
+            self._acquire_sequenced_stack(region_id, current_path, fov)
+            self._timepoint_fov_count += 1
+            return
+
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
 
@@ -1168,6 +1190,240 @@ class MultiPointWorker:
 
         # Increment FOV counter for Slack notification stats
         self._timepoint_fov_count += 1
+
+    # ------------------------------------------------------------------------------------------
+    # Hardware-sequenced acquisition (opt-in, controller firmware >= 1.7). Pure logic lives in
+    # control/core/sequenced_acquisition.py; this is the part that touches hardware and frames.
+    # ------------------------------------------------------------------------------------------
+
+    def _channel_plans(self) -> List[ChannelPlan]:
+        plans = []
+        for config in self.selected_configurations:
+            source_code, dac_percent = self.liveController.resolve_mcu_illumination(config)
+            z_offset_um = config.z_offset_um
+            plans.append(
+                ChannelPlan(
+                    name=config.name,
+                    exposure_ms=config.exposure_time,
+                    source_code=source_code,
+                    dac_percent=float(dac_percent),
+                    z_offset_um=z_offset_um if (z_offset_um is not None and math.isfinite(z_offset_um)) else 0.0,
+                )
+            )
+        return plans
+
+    def _prepare_sequenced_acquisition(self) -> None:
+        """Decide ONCE per acquisition whether it is hardware-sequenced, and upload the program.
+
+        An ineligible acquisition runs software-sequenced exactly as before; the log says why.
+        Asking for the feature on firmware that cannot do it raises (it would answer the
+        sequencer commands with success and do nothing).
+        """
+        self._sequenced_program = None
+        if not control._def.USE_HARDWARE_SEQUENCED_ACQUISITION:
+            return
+
+        plans = self._channel_plans()
+        width, height = self.camera.get_resolution()
+        reason = ineligibility_reason(
+            firmware_supports_sequencer=self.microcontroller.supports_hardware_sequencer(),
+            trigger_is_hardware=self.liveController.trigger_mode == TriggerMode.HARDWARE,
+            use_piezo=bool(self.use_piezo),
+            global_reset_active=control._def.use_level_trigger_global_reset(),
+            intensity_is_mcu_dac=self.microscope.illumination_controller.intensity_is_mcu_dac,
+            channels=plans,
+            camera_gains=[config.analog_gain for config in self.selected_configurations],
+            burst_bytes=self.NZ * len(plans) * width * height * 2,
+            byte_budget=int(control._def.ACQUISITION_MAX_PENDING_MB * 1024 * 1024),
+        )
+        if (
+            reason is None
+            and self.laser_auto_focus_controller
+            and self.laser_auto_focus_controller.characterization_mode
+        ):
+            reason = "laser autofocus characterization mode saves an extra image per z level"
+        if reason is not None:
+            self._log.warning(
+                f"Hardware-sequenced acquisition is enabled, but this acquisition runs software-sequenced: {reason}."
+            )
+            return
+
+        # No camera register write is possible between the frames of a burst: the pulse width
+        # sets each channel's exposure (LEVEL trigger), and the gain is the same for all
+        # channels (an eligibility condition). The longest exposure is set once so the
+        # camera-side timeouts cover every frame.
+        self.camera.set_exposure_time(max(plan.exposure_ms for plan in plans))
+        try:
+            self.camera.set_analog_gain(self.selected_configurations[0].analog_gain)
+        except NotImplementedError:
+            pass
+
+        camera_spec = SeqCameraSpec(
+            trigger_mode=SequencerTriggerMode.LEVEL,
+            ready_line=0 if control._def.SEQUENCER_USE_CAMERA_READY_LINE else NONE_ID,
+            ready_active_high=True,
+            readout_overlap_safe=True,  # global reset + strobed light: nothing is lit during readout
+            strobe_delay_us=round(self.camera.get_strobe_time() * 1000),
+            readout_time_us=round(control._def.SEQUENCER_CAMERA_READOUT_MS * 1000),
+        )
+        program = build_program(
+            plans,
+            n_layers=self.NZ,
+            dz_um=self.deltaZ * 1000,
+            piezo_range_um=self.piezo.range_um,
+            piezo_flip=control._def.OBJECTIVE_PIEZO_FLIP_DIR,
+            z_settle_ms=control._def.MULTIPOINT_PIEZO_DELAY_MS,
+            intensity_factor=control._def.ILLUMINATION_INTENSITY_FACTOR,
+            camera=camera_spec,
+            wait_timeout_s=control._def.SEQUENCER_WAIT_TIMEOUT_S,
+        )
+        self.wait_till_operation_is_completed()
+        self.microcontroller.seq_upload(program)
+        self._sequenced_program = program
+        self._log.info(
+            f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position "
+            f"({len(program.pack())} byte program uploaded)."
+        )
+
+    def _sequenced_burst_timeout_s(self) -> float:
+        """Upper bound for one burst: every step at its worst-case wait, plus the return move."""
+        program = self._sequenced_program
+        steps = program.loop.n_layers * len(program.channels)
+        exposure_s = sum(channel.exposure_us for channel in program.channels) * program.loop.n_layers / 1e6
+        return exposure_s + (steps + 1) * (program.wait_timeout_us / 1e6) + 5.0
+
+    def _wait_for_sequence(self, timeout_s: float) -> None:
+        """Wait for the pending SEQ_RUN. A user abort cancels the run (the controller finishes
+        the exposure in progress, never truncates it) and the wait continues until it ends."""
+        deadline = time.time() + timeout_s
+        cancel_sent = False
+        while self.microcontroller.is_busy():
+            if not cancel_sent and self.abort_requested_fn():
+                self._log.info("Abort requested: cancelling the running hardware sequence.")
+                self.microcontroller.seq_cancel()
+                cancel_sent = True
+            if time.time() > deadline:
+                raise TimeoutError(f"The hardware sequence did not finish within {timeout_s:.1f} s.")
+            self._sleep(0.005)
+        # Surfaces CommandAborted (with the decoded sequencer error) if the run failed.
+        self.microcontroller.wait_till_operation_is_completed()
+
+    def _run_sequenced_burst(
+        self, captures: List[CaptureInfo], stack_start: int
+    ) -> Optional[List[Tuple[CameraFrame, CaptureInfo]]]:
+        """Run one burst. Returns its frames only if the burst is provably complete and in
+        order; otherwise None, and NOTHING of it has reached a save job."""
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.error("A frame from before the hardware sequence never arrived. Aborting acquisition.")
+            self._abort_due_to_error()
+            return None
+
+        collected: List[Tuple[CameraFrame, CaptureInfo]] = []
+
+        def collect(camera_frame: CameraFrame, info: CaptureInfo):
+            collected.append((camera_frame, dataclasses.replace(info, capture_time=time.time())))
+
+        run_error: Optional[Exception] = None
+        first_gap = None
+        self._frame_sink = collect
+        try:
+            self._pending_captures.expect(captures)
+            self._ready_for_next_trigger.clear()
+            try:
+                self.microcontroller.seq_run(stack_start)
+                self._wait_for_sequence(self._sequenced_burst_timeout_s())
+            except (CommandAborted, TimeoutError) as e:
+                run_error = e
+            # The last frames may still be on their way over USB; the ready flag is set when the
+            # last expected frame was PAIRED, the idle flag when its sink call returned.
+            self._ready_for_next_trigger.wait(self._frame_wait_timeout_s())
+            self._image_callback_idle.wait(self._frame_wait_timeout_s())
+        finally:
+            self._frame_sink = self._dispatch_frame
+            first_gap = self._pending_captures.first_gap
+            self._pending_captures.drop_remaining()
+            self._ready_for_next_trigger.set()
+
+        reason = burst_failure_reason(
+            self.microcontroller.seq_status, expected=len(captures), received=len(collected), first_gap=first_gap
+        )
+        if reason is None and run_error is not None:
+            reason = f"the controller reported an error: {run_error}"
+        if reason is not None:
+            self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
+            return None
+        return collected
+
+    def _acquire_sequenced_stack(self, region_id, current_path, fov) -> None:
+        configs = self.selected_configurations
+        start_um = self.z_piezo_um
+        dz_um = self.deltaZ * 1000
+        stack_start = piezo_um_to_dac(start_um, self.piezo.range_um, control._def.OBJECTIVE_PIEZO_FLIP_DIR)
+        acquire_pos = self.stage.get_pos()
+        if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+            self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
+
+        def captures() -> List[CaptureInfo]:
+            return [
+                CaptureInfo(
+                    position=acquire_pos,
+                    z_index=z_level,
+                    capture_time=time.time(),
+                    z_piezo_um=start_um + z_level * dz_um,
+                    configuration=config,
+                    save_directory=current_path,
+                    file_id=f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}",
+                    region_id=region_id,
+                    fov=fov,
+                    configuration_idx=config_idx,
+                    time_point=self.time_point,
+                )
+                for z_level in range(self.NZ)
+                for config_idx, config in enumerate(configs)
+            ]
+
+        frames = None
+        attempt = 0
+        while frames is None:
+            attempt += 1
+            self._log.info(f"Hardware sequence: region {region_id} fov {fov}, attempt {attempt}.")
+            frames = self._run_sequenced_burst(captures(), stack_start)
+            if frames is not None or self.abort_requested_fn():
+                break
+            # O1 (Hongquan, 2026-09-20): retry the FOV once, sequenced; then stop.
+            if outcome_after_failed_burst(attempt) == BurstOutcome.ABORT:
+                self._log.error(
+                    f"Hardware sequence failed {attempt} times at region {region_id} fov {fov}. Aborting acquisition."
+                )
+                self._abort_due_to_error()
+                return
+            self._log.warning(f"Retrying region {region_id} fov {fov} (hardware-sequenced).")
+
+        if frames is None:  # user abort during the burst
+            self.handle_acquisition_abort(current_path)
+            return
+
+        # The burst is validated: only now do its frames reach the save / display pipeline.
+        for index, (camera_frame, info) in enumerate(frames):
+            if self._backpressure.should_throttle():
+                if not self._backpressure.wait_for_capacity():
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                    )
+            self._dispatch_frame(camera_frame, info)
+            self.callbacks.signal_region_progress(
+                RegionProgressUpdate(current_fov=fov * self.NZ * len(configs) + index + 1, region_fovs=self.total_scans)
+            )
+
+        for z_level in range(self.NZ):
+            self.z_piezo_um = start_um + z_level * dz_um  # the coordinates table records the piezo z per level
+            self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
+            self.af_fov_count = self.af_fov_count + 1
+        self.z_piezo_um = start_um  # the controller returned the piezo to the start of the stack
+        self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
+
+        if self.abort_requested_fn():
+            self.handle_acquisition_abort(current_path)
 
     def _select_config(self, config: AcquisitionChannel):
         self.callbacks.signal_current_configuration(config)
