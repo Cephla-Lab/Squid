@@ -1,7 +1,9 @@
+#include <stdio.h>
 #include <string.h>
 #include <unity.h>
 
 // Include sources directly for native tests (same convention as test_crc8)
+#include "protocol/crc16.cpp"
 #include "sequencer/seq_types.cpp"
 #include "sequencer/seq_wire.cpp"
 
@@ -146,6 +148,24 @@ void test_wire_numbers_are_frozen(void) {
     TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)SeqState::Returning);
 }
 
+// Cross-language golden vector. The host mirror (software/control/sequencer_program.py) derives
+// these 80 bytes BY HAND from the field offsets and asserts its pack() against them; here the
+// compiler's own struct packing must produce the very same bytes and CRC. If this test and
+// software/tests/control/test_sequencer_program.py disagree, the wire contract has forked.
+void test_golden_program_bytes_match_the_host_mirror(void) {
+    static const char* kGoldenHex =
+        "01010000404b4c000107780000000a0000204e0000010200ff0000000001ff00e80310270000010000000000"
+        "ff0000000002ff01e903204e0000010000000000010001012c010000a861000000000000";
+    uint8_t buf[kStagingBytes];
+    const uint16_t len = build(buf, 2, 1);
+    TEST_ASSERT_EQUAL_UINT16(80, len);
+    TEST_ASSERT_EQUAL(160, (int)strlen(kGoldenHex));
+    char hex[161];
+    for (uint16_t i = 0; i < len; i++) snprintf(hex + 2 * i, 3, "%02x", buf[i]);
+    TEST_ASSERT_EQUAL_STRING(kGoldenHex, hex);
+    TEST_ASSERT_EQUAL_HEX16(0x57D3, protocol::crc16_ccitt(buf, len));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_layout_constants);
@@ -155,5 +175,6 @@ int main(int, char**) {
     RUN_TEST(test_parse_rejects_more_frames_than_the_u16_counter);
     RUN_TEST(test_status_byte_packing);
     RUN_TEST(test_wire_numbers_are_frozen);
+    RUN_TEST(test_golden_program_bytes_match_the_host_mirror);
     return UNITY_END();
 }

@@ -204,6 +204,13 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    # 44-50 are taken by the Z encoder / PID interface (firmware 1.6, PR #645) - do not reuse.
+    # Hardware sequencer (firmware 1.7). Wire contract: control/sequencer_program.py, mirroring
+    # firmware/controller/src/sequencer/seq_wire.h.
+    SEQ_WRITE = 60  # [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
+    SEQ_COMMIT = 61  # [2..3]=byte length BE, [4..5]=CRC-16/CCITT-FALSE BE; parse + validate
+    SEQ_RUN = 62  # [2..5]=int32 stack start BE; stays IN_PROGRESS until the sequence is terminal
+    SEQ_CANCEL = 63  # finish the current exposure, then wind down
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
