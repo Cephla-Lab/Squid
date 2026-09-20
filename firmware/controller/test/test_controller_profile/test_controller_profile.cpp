@@ -22,6 +22,12 @@ void test_new_controller_profile(void) {
     TEST_ASSERT_EQUAL_INT8(18, kNewCtrl.ready_pin);
 }
 
+void test_new_controller_ready_input_is_asserted_low(void) {
+    // Measured on the board (2026-09-20, through the pin's ADC): ~4.7 k pull-up to 3.3 V, and it is
+    // the whole input circuit. An unplugged cable reads HIGH, so HIGH must mean NOT ready.
+    TEST_ASSERT_EQUAL_UINT8(0, kNewCtrl.ready_assert_level);
+}
+
 void test_channel_bounds_come_from_the_profile(void) {
     TEST_ASSERT_TRUE(trigger_channel_valid(kLegacy, 3));
     TEST_ASSERT_FALSE(trigger_channel_valid(kLegacy, 4));
@@ -40,6 +46,7 @@ int main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_legacy_profile_matches_the_shipped_pin_map);
     RUN_TEST(test_new_controller_profile);
+    RUN_TEST(test_new_controller_ready_input_is_asserted_low);
     RUN_TEST(test_channel_bounds_come_from_the_profile);
     RUN_TEST(test_default_build_selects_legacy);
     return UNITY_END();
