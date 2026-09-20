@@ -120,6 +120,15 @@ class FirmwareConstants:
             "SET_PORT_ILLUMINATION",
             "SET_MULTI_PORT_MASK",
             "TURN_OFF_ALL_PORTS",
+            # Background senders (firmware v1.1+): the heartbeat keeps the serial watchdog
+            # fed and is the one command the sequencer's allow-table lets through a run.
+            "SET_WATCHDOG_TIMEOUT",
+            "HEARTBEAT",
+            # Hardware sequencer (firmware v1.7+)
+            "SEQ_WRITE",
+            "SEQ_COMMIT",
+            "SEQ_RUN",
+            "SEQ_CANCEL",
         ]
         return {name: self._constants[name] for name in command_names if name in self._constants}
 
