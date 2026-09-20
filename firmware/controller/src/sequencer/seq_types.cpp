@@ -7,7 +7,6 @@ static ValidationResult err(SeqError e, uint8_t detail = 0) { return {e, detail}
 ValidationResult validate(const SeqLoop& loop, const SeqChannel* channels,
                           const SeqCameraConfig* cams, uint8_t n_cameras, uint8_t n_axes,
                           uint8_t n_dacs) {
-    (void)cams;
     if (loop.n_layers < 1) return err(SeqError::BadLayerCount);
     if (loop.n_channels < 1 || loop.n_channels > kMaxChannels)
         return err(SeqError::BadChannelCount);
@@ -18,9 +17,17 @@ ValidationResult validate(const SeqLoop& loop, const SeqChannel* channels,
     } else {
         return err(SeqError::BadStackAxis);
     }
+    // Every duration is bounded so the engine's wrap-safe time comparisons stay valid.
+    if (loop.z_settle_us > kMaxDurationUs) return err(SeqError::BadDuration);
+    for (uint8_t i = 0; i < n_cameras && i < kMaxCameras; i++) {
+        if (cams[i].strobe_delay_us > kMaxDurationUs || cams[i].readout_time_us > kMaxDurationUs ||
+            cams[i].min_trigger_period_us > kMaxDurationUs)
+            return err(SeqError::BadDuration, i);
+    }
     for (uint8_t i = 0; i < loop.n_channels; i++) {
         const SeqChannel& c = channels[i];
-        if (c.exposure_us == 0) return err(SeqError::BadExposure, i);
+        if (c.exposure_us == 0 || c.exposure_us > kMaxDurationUs)
+            return err(SeqError::BadExposure, i);
         if (c.camera_mask == 0) return err(SeqError::BadCamera, i);
         for (uint8_t cam = 0; cam < 8; cam++) {
             if ((c.camera_mask >> cam) & 1) {

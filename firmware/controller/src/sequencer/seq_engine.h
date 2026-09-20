@@ -35,11 +35,19 @@ struct SeqProgress {
 class SeqEngine {
    public:
     explicit SeqEngine(SeqHal& hal);
+    // Load once per acquisition; rejected with Busy while a sequence is running.
     ValidationResult load(const SeqLoop& loop, const SeqChannel* channels,
-                          const SeqCameraConfig* cams, uint8_t n_cameras,
-                          int32_t stack_axis_start);
-    bool start(uint32_t now_us, uint32_t wait_timeout_us);
+                          const SeqCameraConfig* cams, uint8_t n_cameras);
+    // Run the loaded program from stack_axis_start (per FOV: usteps, or DAC LSB for a piezo
+    // stack). Returns false when nothing is loaded or a sequence is already running.
+    bool start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start);
+    bool running() const;
     void cancel();  // finish current exposure, then wind down (never truncates)
+    // External abort (laser interlock open, serial watchdog, host TURN_OFF_ALL_PORTS):
+    // terminal immediately, light off, motion stopped. No-op unless a sequence is running.
+    // These must abort THROUGH the engine — cutting the lasers behind its back would let
+    // the run complete 'successfully' with dark frames.
+    void abort(SeqError e);
     void tick(uint32_t now_us);
     SeqState state() const { return state_; }
     const SeqProgress& progress() const { return progress_; }
@@ -48,7 +56,16 @@ class SeqEngine {
     uint32_t total_steps() const;
     void step_to_layer_channel(uint32_t k, uint16_t* layer, uint8_t* ch) const;
     int32_t stack_target_for(uint16_t layer, uint8_t ch) const;
+    // True when every stack target of the run (and the start itself, which is also the
+    // return_to_start target) lies inside the axis range. *bad_channel: offending channel,
+    // or 0xFF for the start position.
+    bool stack_range_ok(int32_t start, uint8_t* bad_channel) const;
     void begin_prep(uint32_t k, uint32_t now_us);   // moves + DAC pre-arm + LED
+    // Command the stack axis (piezo DAC write or stepper move) and arm the settle gate.
+    // Shared by PREP and the return-to-start move. False = move rejected.
+    bool command_stack(int32_t target, uint32_t now_us);
+    bool stack_settled(uint32_t now_us);  // in position (stepper) and z_settle_us elapsed
+    void finish(uint32_t now_us);         // end of run or cancel: return move, then Done
     bool hw_ready_for(uint32_t k, uint32_t now_us);  // WAIT gate (design §5.2)
     void schedule_exposures(uint32_t k, uint32_t now_us);
     void fail(SeqError e, uint8_t detail);
@@ -70,9 +87,15 @@ class SeqEngine {
     // Rolling-shutter support: PREP of the next step is deferred until cameras with
     // readout_overlap_safe == 0 finish reading out (no motion during their readout).
     uint32_t overlap_hold_until_us_ = 0;
+    bool overlap_hold_valid_ = false;
+    // Timestamps carry explicit valid flags: 0 is a legitimate micros() value (it wraps).
     uint32_t last_trigger_us_[kMaxCameras]{};
+    bool trigger_valid_[kMaxCameras]{};
     uint32_t readout_done_us_[kMaxCameras]{};
+    bool readout_valid_[kMaxCameras]{};
     bool cancel_requested_ = false;
+    bool loaded_ = false;
+    bool led_on_ = false;  // the engine lit the LED matrix and owes it an off
 };
 
 }  // namespace seq

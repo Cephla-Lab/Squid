@@ -47,12 +47,22 @@ struct FakeHal : seq::SeqHal {
     }
     bool ready_line(uint8_t line) override { return ready_lines[line]; }
     void all_off() override { calls.push_back({"all_off", now_us, 0, 0}); }
+    void stop_motion() override { calls.push_back({"stop_motion", now_us, 0, 0}); }
 };
 
 // Advance the engine in fixed virtual-time steps (default 100 µs ~ main-loop cadence).
 inline void run_until(seq::SeqEngine& e, FakeHal& hal, uint32_t t_end_us,
                       uint32_t step_us = 100) {
     while (hal.now_us < t_end_us) {
+        hal.now_us += step_us;
+        e.tick(hal.now_us);
+    }
+}
+
+// Advance by a DURATION rather than to an absolute time: run_until() compares absolute
+// timestamps and cannot cross the 32-bit micros() wrap.
+inline void run_for(seq::SeqEngine& e, FakeHal& hal, uint32_t duration_us, uint32_t step_us = 100) {
+    for (uint32_t t = 0; t < duration_us; t += step_us) {
         hal.now_us += step_us;
         e.tick(hal.now_us);
     }
