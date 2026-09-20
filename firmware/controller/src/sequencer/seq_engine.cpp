@@ -4,16 +4,21 @@ namespace seq {
 
 SeqEngine::SeqEngine(SeqHal& hal) : hal_(hal) {}
 
+bool SeqEngine::running() const {
+    return state_ == SeqState::WaitHw || state_ == SeqState::Exposing ||
+           state_ == SeqState::Returning;
+}
+
 ValidationResult SeqEngine::load(const SeqLoop& loop, const SeqChannel* channels,
-                                 const SeqCameraConfig* cams, uint8_t n_cameras,
-                                 int32_t stack_axis_start) {
+                                 const SeqCameraConfig* cams, uint8_t n_cameras) {
+    if (running()) return {SeqError::Busy, 0};
     ValidationResult r = validate(loop, channels, cams, n_cameras, 8, 8);
     if (r.error != SeqError::None) return r;
     loop_ = loop;
     n_cameras_ = (n_cameras < kMaxCameras) ? n_cameras : kMaxCameras;
-    stack_start_ = stack_axis_start;
     for (uint8_t i = 0; i < loop.n_channels; i++) channels_[i] = channels[i];
     for (uint8_t i = 0; i < n_cameras_; i++) cams_[i] = cams[i];
+    loaded_ = true;
     state_ = SeqState::Idle;
     return r;
 }
@@ -36,9 +41,10 @@ int32_t SeqEngine::stack_target_for(uint16_t layer, uint8_t ch) const {
     return stack_start_ + (int32_t)layer * loop_.dz + channels_[ch].z_offset;
 }
 
-bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us) {
-    if (state_ != SeqState::Idle) return false;
+bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start) {
+    if (!loaded_ || running()) return false;  // Idle, Done and Failed may all (re)start
     wait_timeout_us_ = wait_timeout_us;
+    stack_start_ = stack_axis_start;
     progress_ = SeqProgress{};
     progress_.total_layers = loop_.n_layers;
     progress_.total_channels = loop_.n_channels;
@@ -48,10 +54,12 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us) {
     }
     step_ = 0;
     cancel_requested_ = false;
+    // Enter the running state BEFORE the first PREP: a restart from Failed must not read
+    // the previous run's Failed as "this run failed", so fail() below is the only way there.
+    state_ = SeqState::WaitHw;
     begin_prep(0, now_us);
     if (state_ == SeqState::Failed) return true;  // started, then immediately failed
     wait_deadline_us_ = now_us + wait_timeout_us_;
-    state_ = SeqState::WaitHw;
     return true;
 }
 

@@ -63,8 +63,8 @@ void test_single_frame_program_completes(void) {
     SeqChannel ch[1] = {good_channel()};
     SeqCameraConfig cams[1] = {cam_level()};
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None,
-                            (uint8_t)e.load(l, ch, cams, 1, /*stack_start=*/40000).error);
-    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/5000000));
+                            (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/5000000, 40000));
     run_until(e, hal, 2000000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
     TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);
@@ -89,8 +89,8 @@ void test_piezo_step_and_settle_gate_exposure(void) {
     SeqChannel ch[1] = {good_channel()};
     SeqCameraConfig cams[1] = {cam_level()};
     cams[0].readout_time_us = 5000;
-    e.load(l, ch, cams, 1, 40000);
-    e.start(hal.now_us, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, 5000000, 40000);
     run_until(e, hal, 3000000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
     TEST_ASSERT_EQUAL_UINT32(2, e.progress().frames_fired);
@@ -127,8 +127,8 @@ void test_stepper_settle_gates_exposure(void) {
     hal.move_duration_us[2] = 8000;
     SeqChannel ch[1] = {good_channel()};
     SeqCameraConfig cams[1] = {cam_level()};
-    e.load(l, ch, cams, 1, 100000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 100000);
     run_until(e, hal, 1000000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
     // assert >= move done (8000) + settle (4000); 100 µs tick quantum tolerance
@@ -149,8 +149,8 @@ void test_filter_wheel_gates_exposure(void) {
     ch[0].filter_target = 5;
     hal.move_duration_us[3] = 50000;
     SeqCameraConfig cams[1] = {cam_level()};
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 1000000);
     TEST_ASSERT_TRUE(hal.plans[0].t_assert_us >= 50000);
     // Filter move command must have been issued at PREP time (t=0), not lazily:
@@ -171,8 +171,8 @@ void test_model_readiness_spaces_triggers(void) {
     l.z_settle_us = 0;
     SeqChannel ch[1] = {good_channel()};      // exposure 10000
     SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, readout 20000
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 2000000);
     TEST_ASSERT_EQUAL(2, (int)hal.plans.size());
     uint32_t end0 = hal.plans[0].t_deassert_us;  // = assert0 + 10500
@@ -196,8 +196,8 @@ void test_filter_move_overlaps_readout(void) {
     ch[1].filter_target = 2;
     hal.move_duration_us[3] = 15000;
     SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, exposure 10000, readout 20000
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 2000000);
     // exposure0 ends at assert0 + 10500; find the filter move to pos 2:
     uint32_t end0 = hal.plans[0].t_deassert_us;
@@ -221,8 +221,8 @@ void test_z_step_overlaps_readout_between_layers(void) {
     l.n_channels = 1;  // piezo dz = 120
     SeqChannel ch[1] = {good_channel()};
     SeqCameraConfig cams[1] = {cam_level()};
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 2000000);
     uint32_t end0 = hal.plans[0].t_deassert_us;
     uint32_t t_dac1 = 0;
@@ -245,8 +245,8 @@ void test_z_inner_order_and_z_offset(void) {
     ch[1].z_offset = 40;  // channel 1 offset
     SeqCameraConfig cams[1] = {cam_level()};
     cams[0].readout_time_us = 0;
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 3000000);
     TEST_ASSERT_EQUAL_UINT32(4, e.progress().frames_fired);
     // Piezo targets in order: 40000, 40120 (ch0 L0,L1), 40040, 40160 (ch1 L0,L1),
@@ -269,8 +269,8 @@ void test_edge_mode_pulse_and_modeled_exposure_end(void) {
     SeqChannel ch[1] = {good_channel()};
     SeqCameraConfig cams[1] = {cam_level()};
     cams[0].trigger_mode = (uint8_t)TriggerMode::Edge;  // strobe 500
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 1000000);
     const ExposurePlan& p = hal.plans[0];
     TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + kEdgePulseUs, p.t_deassert_us);  // 50 µs
@@ -290,8 +290,8 @@ void test_two_cameras_simultaneous_exposure(void) {
     SeqCameraConfig cams[2] = {cam_level(), cam_level()};
     cams[1].strobe_delay_us = 2000;
     cams[1].readout_time_us = 40000;
-    e.load(l, ch, cams, 2, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 2);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 1000000);
     TEST_ASSERT_EQUAL(2, (int)hal.plans.size());
     TEST_ASSERT_EQUAL_UINT32(hal.plans[0].t_assert_us, hal.plans[1].t_assert_us);
@@ -310,8 +310,8 @@ void test_ready_line_blocks_until_asserted(void) {
     cams[0].ready_line = 0;
     cams[0].ready_active_high = 1;
     hal.ready_lines[0] = false;
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 30000);
     TEST_ASSERT_EQUAL(0, (int)hal.plans.size());  // still gated
     hal.ready_lines[0] = true;
@@ -330,8 +330,8 @@ void test_wait_timeout_aborts_with_all_off(void) {
     SeqCameraConfig cams[1] = {cam_level()};
     cams[0].ready_line = 0;
     hal.ready_lines[0] = false;  // never ready
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, /*wait_timeout_us=*/100000);
+    e.load(l, ch, cams, 1);
+    e.start(0, /*wait_timeout_us=*/100000, 40000);
     run_until(e, hal, 300000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::WaitTimeout, e.progress().abort_error);
@@ -357,8 +357,8 @@ void test_no_overlap_when_readout_unsafe(void) {
     ch[1].filter_target = 2;
     SeqCameraConfig cams[1] = {cam_level()};  // readout 20000
     cams[0].readout_overlap_safe = 0;
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 2000000);
     uint32_t end0 = hal.plans[0].t_deassert_us;
     uint32_t t_move = 0;
@@ -376,8 +376,8 @@ void test_cancel_finishes_current_exposure_then_stops(void) {
     l.n_channels = 1;
     SeqChannel ch[1] = {good_channel()};
     SeqCameraConfig cams[1] = {cam_level()};
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     // run until mid-exposure of frame 2, then cancel:
     while (e.progress().frames_fired < 2) {
         hal.now_us += 100;
@@ -408,8 +408,8 @@ void test_min_trigger_period_enforced(void) {
     SeqCameraConfig cams[1] = {cam_level()};
     cams[0].readout_time_us = 0;
     cams[0].min_trigger_period_us = 50000;
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 1000000);
     TEST_ASSERT_EQUAL(3, (int)hal.plans.size());
     for (int i = 1; i < 3; i++)
@@ -431,8 +431,8 @@ void test_run_invariants(void) {
     ch[2].filter_target = 4;
     hal.move_duration_us[3] = 7000;
     SeqCameraConfig cams[1] = {cam_level()};
-    e.load(l, ch, cams, 1, 40000);
-    e.start(0, 5000000);
+    e.load(l, ch, cams, 1);
+    e.start(0, 5000000, 40000);
     run_until(e, hal, 10000000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
     TEST_ASSERT_EQUAL_UINT32(15, e.progress().frames_fired);  // Nz × Nch
@@ -460,8 +460,8 @@ void test_filter_target_is_passed_as_absolute_usteps(void) {
     ch[0].filter_wheel = 3;
     ch[0].filter_target = 123456;
     SeqCameraConfig cams[1] = {cam_level()};
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1, 40000).error);
-    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000));
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
     bool saw_move = false;
     for (size_t i = 0; i < hal.calls.size(); i++)
         if (hal.calls[i].what == "move" && hal.calls[i].a == 3) {
@@ -469,6 +469,58 @@ void test_filter_target_is_passed_as_absolute_usteps(void) {
             saw_move = true;
         }
     TEST_ASSERT_TRUE(saw_move);
+}
+
+// S10: upload once per acquisition, run once per FOV with that FOV's piezo start.
+void test_loaded_program_runs_again_with_a_new_stack_start(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    TEST_ASSERT_FALSE(e.start(hal.now_us, 5000000, 40000));  // nothing loaded
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    TEST_ASSERT_TRUE(e.running());
+    TEST_ASSERT_FALSE(e.start(hal.now_us, 5000000, 40000));  // already running
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::Busy, (uint8_t)e.load(l, ch, cams, 1).error);
+    run_until(e, hal, 2000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_FALSE(e.running());
+    size_t n_before = hal.calls.size();
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 41000));  // from Done, no reload
+    TEST_ASSERT_EQUAL_STRING("dac", hal.calls[n_before].what.c_str());
+    TEST_ASSERT_EQUAL(41000, (int)hal.calls[n_before].b);
+    run_until(e, hal, 4000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);
+}
+
+// A failed FOV must not poison the next one: the host retries or moves on and runs again.
+void test_program_runs_again_after_a_failed_run(void) {
+    FakeHal hal;
+    hal.ready_lines[0] = false;  // camera never ready -> WAIT timeout
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].ready_line = 0;
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/100000, 40000));
+    run_until(e, hal, 300000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::WaitTimeout, e.progress().abort_error);
+    hal.ready_lines[0] = true;
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 100000, 40000));
+    TEST_ASSERT_TRUE(e.running());  // not the stale Failed from the previous run
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, e.progress().abort_error);
+    run_until(e, hal, 600000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);
 }
 
 int main(int, char**) {
@@ -490,5 +542,7 @@ int main(int, char**) {
     RUN_TEST(test_min_trigger_period_enforced);
     RUN_TEST(test_run_invariants);
     RUN_TEST(test_filter_target_is_passed_as_absolute_usteps);
+    RUN_TEST(test_loaded_program_runs_again_with_a_new_stack_start);
+    RUN_TEST(test_program_runs_again_after_a_failed_run);
     return UNITY_END();
 }

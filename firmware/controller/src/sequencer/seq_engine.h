@@ -35,10 +35,13 @@ struct SeqProgress {
 class SeqEngine {
    public:
     explicit SeqEngine(SeqHal& hal);
+    // Load once per acquisition; rejected with Busy while a sequence is running.
     ValidationResult load(const SeqLoop& loop, const SeqChannel* channels,
-                          const SeqCameraConfig* cams, uint8_t n_cameras,
-                          int32_t stack_axis_start);
-    bool start(uint32_t now_us, uint32_t wait_timeout_us);
+                          const SeqCameraConfig* cams, uint8_t n_cameras);
+    // Run the loaded program from stack_axis_start (per FOV: usteps, or DAC LSB for a piezo
+    // stack). Returns false when nothing is loaded or a sequence is already running.
+    bool start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start);
+    bool running() const;
     void cancel();  // finish current exposure, then wind down (never truncates)
     void tick(uint32_t now_us);
     SeqState state() const { return state_; }
@@ -73,6 +76,7 @@ class SeqEngine {
     uint32_t last_trigger_us_[kMaxCameras]{};
     uint32_t readout_done_us_[kMaxCameras]{};
     bool cancel_requested_ = false;
+    bool loaded_ = false;
 };
 
 }  // namespace seq
