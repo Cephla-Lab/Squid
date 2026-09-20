@@ -18,6 +18,17 @@ Usage (from software/, with the project venv):
   python tools/filter_wheel_tuner.py pattern --ramp sshape        # the shipping profile, as a baseline
   python tools/filter_wheel_tuner.py accelsweep --accel-list 50 100 150 200 250 300 --vmax 3.19
   python tools/filter_wheel_tuner.py velsweep --vel-list 3.19 4 5 6 --accel 150
+  python tools/filter_wheel_tuner.py verify                      # 96 moves at THIS machine's settings: PASS / FAIL
+  python tools/filter_wheel_tuner.py tune [--write-ini]           # find this wheel's profile, confirm it, report ini keys
+
+verify and tune are the per-instrument procedures. A wheel's stall edge depends on what it carries (how many
+filters, how balanced), on the motor and on its temperature, so a profile qualified on one wheel is a starting point,
+not a setting. `verify` runs the endurance pattern (--laps x the 16-move pattern, default 6 = 96 moves) at the
+settings the machine is configured with and fails on lost steps: run it after a filter change or a service visit.
+`tune` screens the acceleration ladder with the short pattern, takes the highest clean level, backs off by --margin
+when a stall edge was found (the edge is statistical: a level can pass 16 moves and slip in 96), confirms the result
+with the endurance pattern, steps down and repeats if that fails, and prints the ini keys. --write-ini puts them in
+the machine ini ([GENERAL]), after saving a timestamped backup next to it. Motor current is never changed.
 Options: --vmax rev/s  --accel rev/s^2  --ramp trapezoid|sshape  --microsteps 64  --flip auto|0|1
          --lost-usteps 32 (stop a sweep when a level drifts by more than this)  --out wheel_tune
 """
@@ -66,6 +77,69 @@ def model_move_s(d_rev, v, a, overhead_s=0.007):
     return d_rev / v + v / a + overhead_s
 
 
+# ---------------------------------------------------------------- tune / verify: pure helpers (unit-tested)
+INI_KEYS = ("microstepping_default_w", "max_velocity_w_mm", "max_acceleration_w_mm")
+
+
+def lost_limits_usteps(microsteps, lost_fullsteps=0.5, slip_fullsteps=2.0):
+    """(level drift limit, single-move limit) in microsteps. A stepper that loses sync slips by whole
+    electrical periods (4 full steps), so both limits sit far below a real slip and above rest scatter,
+    and they scale with the microstepping instead of being a fixed count."""
+    return max(2, int(round(lost_fullsteps * microsteps))), max(4, int(round(slip_fullsteps * microsteps)))
+
+
+def level_ok(res, drift_limit, slip_limit):
+    """A level passes when it completed, its net encoder drift is inside the limit, and no single move
+    lost more than the slip limit (a slip one way and one back cancels in the drift)."""
+    if not res or "error" in res:
+        return False
+    if abs(res.get("drift_usteps", 10**9)) > drift_limit:
+        return False
+    worst = (res.get("worst_move") or {}).get("lost_this_move", 0)
+    return abs(worst) <= slip_limit
+
+
+def choose_accel(highest_clean, edge_found, margin, quantum=10.0):
+    """Acceleration to confirm. With a stall edge found above `highest_clean` the margin is applied and the
+    value rounded DOWN to `quantum`; with no edge found inside the ladder the top of the ladder is kept -
+    backing off from a limit that was never seen costs speed for no evidence."""
+    if not edge_found:
+        return float(highest_clean)
+    return max(quantum, float(int(highest_clean * margin / quantum) * quantum))
+
+
+def update_ini_text(text, updates, comment):
+    """Set `updates` (key -> value) in the [GENERAL] section of an ini file's text, keeping every other line,
+    comment and the file's line endings. An existing key is replaced in place; missing keys are appended to
+    the end of [GENERAL] under `comment`. Returns (new_text, {key: (old_or_None, new)})."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = text.replace("\r\n", "\n").split("\n")
+    start = next((i for i, l in enumerate(lines) if l.strip().upper() == "[GENERAL]"), None)
+    if start is None:
+        raise ValueError("no [GENERAL] section in the ini")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip().startswith("[")), len(lines))
+    changes, missing = {}, []
+    for key, value in updates.items():
+        hit = next(
+            (i for i in range(start + 1, end) if lines[i].split("=", 1)[0].strip().lower() == key and "=" in lines[i]),
+            None,
+        )
+        if hit is None:
+            missing.append(key)
+            changes[key] = (None, str(value))
+        else:
+            old = lines[hit].split("=", 1)[1].strip()
+            lines[hit] = f"{key} = {value}"
+            changes[key] = (old, str(value))
+    if missing:
+        insert_at = end
+        while insert_at > start + 1 and lines[insert_at - 1].strip() == "":
+            insert_at -= 1
+        block = [f"# {comment}"] + [f"{k} = {updates[k]}" for k in missing]
+        lines[insert_at:insert_at] = block
+    return nl.join(lines), changes
+
+
 class Sampler(threading.Thread):
     """Polls the packet fields at ~250 Hz: (t, ENC_POS, deviation). XACTUAL = ENC_POS - deviation."""
 
@@ -112,6 +186,7 @@ class WheelTuner:
         self.transitions = TRANSITIONS if args.transitions == "auto" else int(args.transitions)
         self.slot = None  # last commanded slot
         self.last_cmd_to_ack_s = float("nan")
+        self.exit_code = 0
         self.summary = {
             "config": vars(args),
             "usteps_per_rev": USTEPS_PER_REV,
@@ -530,14 +605,164 @@ class WheelTuner:
                 f"highest {kind} with no lost steps: {best['label']} (adjacent slot {best['adjacent_ms_median']:.0f} ms)"
             )
 
+    # ---------------------------------------------------------------- per-instrument verify / tune
+    def _limits(self):
+        return lost_limits_usteps(MICROSTEPS, self.a.lost_fullsteps, self.a.slip_fullsteps)
+
+    def _judge(self, res):
+        drift_limit, slip_limit = self._limits()
+        ok = level_ok(res, drift_limit, slip_limit)
+        res["pass"] = ok
+        res["drift_limit_usteps"], res["slip_limit_usteps"] = drift_limit, slip_limit
+        return ok
+
+    def endurance(self, label):
+        """The bar for a setting: --laps times the move pattern (default 6 x 16 = 96 moves)."""
+        return self.pattern(label, slots=list(self.a.pattern) * self.a.laps)
+
+    def _timing_text(self, res):
+        by = res.get("by_distance_ms_median", {})
+        return ", ".join(f"{k} slot{'s' if int(k) > 1 else ''} {v:.0f} ms" for k, v in by.items())
+
+    def verify(self):
+        """Endurance pattern at the settings this machine is configured with. Returns True on PASS."""
+        label = f"verify {self.a.ramp} {MICROSTEPS}us v{self.a.vmax:g} a{self.a.accel:g}"
+        res = self.endurance(label)
+        ok = self._judge(res)
+        drift_limit, slip_limit = self._limits()
+        self.summary["verify"] = {"pass": ok, "label": label, "moves": res["n_moves"]}
+        self.log(
+            f"VERIFY {'PASS' if ok else 'FAIL'}: {res['n_moves']} moves at {MICROSTEPS} usteps/FS, {self.a.vmax:g} rev/s, "
+            f"{self.a.accel:g} rev/s2, {self.a.ramp}; encoder drift {res['drift_usteps']:+d} usteps (limit {drift_limit}), "
+            f"worst single move {res['worst_move']['lost_this_move']:+d} (limit {slip_limit}); {self._timing_text(res)}"
+        )
+        if not ok:
+            self.log("The wheel lost steps at its configured profile: run `tune`, or lower max_acceleration_w_mm.")
+        return ok
+
+    def tune(self):
+        """Screen the acceleration ladder, back off from the stall edge, confirm with the endurance pattern.
+        Returns the recommendation dict, or None when no level was clean."""
+        ladder = sorted(set(float(a) for a in self.a.accel_list))
+        screened, edge = [], False
+        for accel in ladder:
+            self.a.accel = accel
+            self.set_motion(self.a.vmax, accel, self.a.ramp)
+            try:
+                res = self.pattern(f"screen a{accel:g}")
+            except Exception as e:  # noqa: BLE001
+                res = {"phase": "level", "label": f"screen a{accel:g}", "error": str(e)}
+                self.summary["results"].append(res)
+            ok = self._judge(res)
+            screened.append({"accel": accel, "pass": ok, "drift_usteps": res.get("drift_usteps")})
+            if not ok:
+                edge = True
+                self.log(
+                    f"screen: a{accel:g} lost steps ({res.get('drift_usteps', res.get('error'))}); stall edge found"
+                )
+                self.home()  # the counter no longer matches the wheel: re-anchor before going on
+                break
+        clean = [x["accel"] for x in screened if x["pass"]]
+        if not clean:
+            self.log(
+                f"TUNE FAIL: no clean level, not even a{ladder[0]:g} rev/s2. Check the wheel, the current and the encoder."
+            )
+            self.summary["tune"] = {"pass": False, "screened": screened}
+            return None
+        cand = choose_accel(clean[-1], edge, self.a.margin)
+        self.log(
+            f"screen: highest clean a{clean[-1]:g}"
+            + (
+                f", stall edge above it -> margin {self.a.margin:g} -> a{cand:g}"
+                if edge
+                else ", no stall edge inside the ladder -> kept"
+            )
+        )
+        attempts, final, final_res = [], None, None
+        while cand >= 10.0 and len(attempts) < self.a.max_attempts:
+            self.a.accel = cand
+            self.set_motion(self.a.vmax, cand, self.a.ramp)
+            try:
+                res = self.endurance(f"endurance a{cand:g}")
+            except Exception as e:  # noqa: BLE001
+                res = {"phase": "level", "label": f"endurance a{cand:g}", "error": str(e)}
+                self.summary["results"].append(res)
+            ok = self._judge(res)
+            attempts.append({"accel": cand, "pass": ok, "drift_usteps": res.get("drift_usteps")})
+            if ok:
+                final, final_res = cand, res
+                break
+            self.log(f"endurance: a{cand:g} lost steps over {self.a.laps} laps; stepping down")
+            self.home()
+            cand = choose_accel(cand, True, self.a.margin)
+        if final is None:
+            self.log("TUNE FAIL: no acceleration passed the endurance pattern.")
+            self.summary["tune"] = {"pass": False, "screened": screened, "endurance": attempts}
+            return None
+        rec = {
+            "pass": True,
+            "microstepping_default_w": MICROSTEPS,
+            "max_velocity_w_mm": self.a.vmax,
+            "max_acceleration_w_mm": final,
+            "ramp": self.a.ramp,
+            "stall_edge_found": edge,
+            "margin": self.a.margin,
+            "screened": screened,
+            "endurance": attempts,
+            "moves_confirmed": final_res["n_moves"],
+            "by_distance_ms_median": final_res["by_distance_ms_median"],
+            "adjacent_ms_median": final_res["adjacent_ms_median"],
+            "date": time.strftime("%Y-%m-%d %H:%M"),
+        }
+        self.summary["tune"] = rec
+        self.log(
+            f"TUNE RESULT: {MICROSTEPS} usteps/FS, {self.a.vmax:g} rev/s, {final:g} rev/s2, {self.a.ramp}; "
+            f"{final_res['n_moves']} moves, drift {final_res['drift_usteps']:+d} usteps; {self._timing_text(final_res)}"
+        )
+        self.log("ini keys ([GENERAL]):")
+        for k in INI_KEYS:
+            self.log(f"    {k} = {rec[k]:g}")
+        if self.a.ramp != "sshape":
+            self.log(
+                "    NOTE: the host does not set the wheel's ramp profile; the firmware default is S-shape. Tune with --ramp sshape for a profile the GUI will actually run."
+            )
+        if self.a.write_ini:
+            self.write_ini(rec)
+        else:
+            self.log("not written (pass --write-ini to update the machine ini; a backup is saved first)")
+        return rec
+
+    def write_ini(self, rec):
+        path = self.a.ini or _def.CACHED_CONFIG_FILE_PATH
+        if not path or not os.path.exists(path):
+            self.log(f"--write-ini: machine ini not found ({path!r}); nothing written")
+            return None
+        with open(path, "r", newline="") as f:
+            text = f.read()
+        comment = (
+            f"filter wheel profile from tools/filter_wheel_tuner.py tune, {rec['date']}: {rec['moves_confirmed']} moves clean, "
+            f"margin {rec['margin']:g}{'' if rec['stall_edge_found'] else ' (no stall edge inside the ladder)'}"
+        )
+        new_text, changes = update_ini_text(text, {k: f"{rec[k]:g}" for k in INI_KEYS}, comment)
+        backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+        with open(backup, "w", newline="") as f:
+            f.write(text)
+        with open(path, "w", newline="") as f:
+            f.write(new_text)
+        self.summary["tune"]["ini"] = {"path": path, "backup": backup, "changes": changes}
+        self.log(f"ini updated: {path} (backup {backup})")
+        for k, (old, new) in changes.items():
+            self.log(f"    {k}: {old} -> {new}")
+        return changes
+
     # ---------------------------------------------------------------- main
     def run(self):
         try:
             self.connect()
             flip = {"auto": bool(_def.ENCODER_FLIP_DIR_W), "0": False, "1": True}[self.a.flip]
             # sweeps start at their gentlest level, so the encoder check itself cannot stall the wheel
-            if self.a.action == "accelsweep":
-                self.a.accel = self.a.accel_list[0]
+            if self.a.action in ("accelsweep", "tune"):
+                self.a.accel = min(self.a.accel_list)
             elif self.a.action == "velsweep":
                 self.a.vmax = self.a.vel_list[0]
             self.setup(flip)
@@ -556,6 +781,12 @@ class WheelTuner:
                 return
             if self.a.action == "wrap":
                 self.wrap()
+                return
+            if self.a.action == "verify":
+                self.exit_code = 0 if self.verify() else 1
+                return
+            if self.a.action == "tune":
+                self.exit_code = 0 if self.tune() else 1
                 return
         finally:
             self.shutdown()
@@ -595,17 +826,44 @@ class WheelTuner:
             self.mcu.close()
 
 
+def resolve_defaults(a):
+    """Action-dependent defaults. verify measures the machine as configured (its microstepping, velocity,
+    acceleration, completion window, and the S-shape ramp the firmware runs the wheel with). tune starts from the
+    bench-qualified shape - 8 usteps/FS (the floor: 4 loses sync, and below 16 the S-shape jerk is no longer
+    register-clamped to uselessness), 6 rev/s, S-shape - and finds the acceleration. Everything else keeps the
+    tool's historical defaults (machine values, trapezoid)."""
+    tune = a.action == "tune"
+    if a.microsteps is None:
+        a.microsteps = 8 if tune else int(_def.MICROSTEPPING_DEFAULT_W)
+    if a.vmax is None:
+        a.vmax = 6.0 if tune else float(_def.MAX_VELOCITY_W_mm)
+    if a.ramp is None:
+        a.ramp = "sshape" if a.action in ("tune", "verify") else "trapezoid"
+    if a.action == "verify" and a.window_deg == 0.0:
+        a.window_deg = float(getattr(_def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", 0.0))
+    return a
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("action", choices=["check", "pattern", "accelsweep", "velsweep", "wrap"])
+    ap.add_argument("action", choices=["check", "pattern", "accelsweep", "velsweep", "wrap", "verify", "tune"])
     ap.add_argument("--wrap-n", type=int, default=5, help="wrap: number of 1<->8 short-way round trips across the flag")
     ap.add_argument(
         "--wrap-timeout", type=float, default=5.0, help="wrap: seconds before a crossing is declared stopped"
     )
-    ap.add_argument("--vmax", type=float, default=float(_def.MAX_VELOCITY_W_mm), help="rev/s")
+    ap.add_argument("--vmax", type=float, default=None, help="rev/s (default: the machine's; tune: 6)")
     ap.add_argument("--accel", type=float, default=float(_def.MAX_ACCELERATION_W_mm), help="rev/s^2")
-    ap.add_argument("--ramp", choices=["trapezoid", "sshape"], default="trapezoid")
-    ap.add_argument("--microsteps", type=int, default=int(_def.MICROSTEPPING_DEFAULT_W))
+    ap.add_argument(
+        "--ramp", choices=["trapezoid", "sshape"], default=None, help="default trapezoid; verify and tune: sshape"
+    )
+    ap.add_argument("--microsteps", type=int, default=None, help="default: the machine's; tune: 8")
+    ap.add_argument("--laps", type=int, default=6, help="verify/tune: endurance = laps x the pattern (6 x 16 = 96)")
+    ap.add_argument("--margin", type=float, default=0.8, help="tune: factor applied below a found stall edge")
+    ap.add_argument("--max-attempts", type=int, default=4, help="tune: endurance attempts before giving up")
+    ap.add_argument("--lost-fullsteps", type=float, default=0.5, help="verify/tune: level drift that fails, full steps")
+    ap.add_argument("--slip-fullsteps", type=float, default=2.0, help="verify/tune: single-move loss that fails")
+    ap.add_argument("--write-ini", action="store_true", help="tune: write the result to the machine ini (backup first)")
+    ap.add_argument("--ini", default=None, help="tune: ini to update (default: the one control._def loaded)")
     ap.add_argument("--flip", choices=["auto", "0", "1"], default="auto")
     ap.add_argument(
         "--window-deg",
@@ -630,11 +888,14 @@ def main():
     ap.add_argument("--leave-enabled", action="store_true", help="leave the W driver energised at exit")
     ap.add_argument("--out", default="wheel_tune")
     a = ap.parse_args()
+    resolve_defaults(a)
     set_microsteps(a.microsteps)
     for s in a.pattern:
         if not (MIN_INDEX <= s <= MIN_INDEX + SLOTS - 1):
             ap.error(f"slot {s} out of range")
-    WheelTuner(a).run()
+    tuner = WheelTuner(a)
+    tuner.run()
+    sys.exit(tuner.exit_code)
 
 
 if __name__ == "__main__":
