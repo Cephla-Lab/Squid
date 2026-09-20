@@ -22,7 +22,7 @@
 //               unconfigured and rejects moves. No protocol change: command
 //               codes, packet layout and the host contract are untouched
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 7  // 1.6 = Z encoder closed loop (PR #645); 1.7 = hardware sequencer
 
 #include "def/def_v1.h"
 
