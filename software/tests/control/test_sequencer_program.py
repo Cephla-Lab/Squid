@@ -389,14 +389,14 @@ class TestUnpack:
         with pytest.raises(ProgramValidationError) as exc:
             unpack(bytes(data))
         assert exc.value.error == SeqError.BAD_PROGRAM
-        assert exc.value.detail == 1
+        assert exc.value.detail == sp.BAD_PROGRAM_VERSION
 
     def test_rejects_a_lost_chunk(self):
         data = golden_program().pack()
         with pytest.raises(ProgramValidationError) as exc:
             unpack(data[:-4])
         assert exc.value.error == SeqError.BAD_PROGRAM
-        assert exc.value.detail == 2
+        assert exc.value.detail == sp.BAD_PROGRAM_MISMATCH
 
     def test_rejects_zero_cameras(self):
         data = bytearray(golden_program().pack())
@@ -673,6 +673,25 @@ class TestHeaderCrossCheck:
         assert k["kStatusByteDetail"] == sp.STATUS_BYTE_DETAIL
         assert k["kStatusByteFramesHi"] == sp.STATUS_BYTE_FRAMES_HI
         assert k["kStatusByteFramesLo"] == sp.STATUS_BYTE_FRAMES_LO
+
+    def test_bad_program_detail_constants(self, seq_wire_h):
+        k = _parse_constexpr(seq_wire_h)
+        assert k["kBadProgramLength"] == sp.BAD_PROGRAM_LENGTH
+        assert k["kBadProgramVersion"] == sp.BAD_PROGRAM_VERSION
+        assert k["kBadProgramMismatch"] == sp.BAD_PROGRAM_MISMATCH
+        assert k["kBadProgramCrc"] == sp.BAD_PROGRAM_CRC
+
+    def test_allow_table_matches_seq_staging_cpp(self):
+        """seq::wire::allowed_while_running() is the firmware's one choke point; the
+        simulator mirrors it, and the host must never send anything else during a run."""
+        import control.sequencer_sim as seq_sim
+        from control._def import CMD_SET
+
+        source = (FIRMWARE_SRC / "sequencer" / "seq_staging.cpp").read_text()
+        body = re.search(r"bool allowed_while_running\(uint8_t opcode\) \{(.*?)\}", source, re.S).group(1)
+        names = set(re.findall(r"opcode == (\w+)", body))
+        assert names == {"HEARTBEAT", "SEQ_CANCEL", "TURN_OFF_ALL_PORTS", "RESET"}
+        assert seq_sim.ALLOWED_WHILE_RUNNING == {getattr(CMD_SET, name) for name in names}
 
     def test_minimum_firmware_version(self, seq_wire_h):
         k = _parse_constexpr(seq_wire_h)

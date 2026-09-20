@@ -1,18 +1,20 @@
 """Simulated hardware sequencer, shared by SimSerial and FirmwareSimSerial.
 
-This is the MCU side of the contract in control/sequencer_program.py: it keeps a staging
-buffer, validates SEQ_COMMIT the way seq::wire::parse_staging() + seq::validate() do, and
-steps a coarse frame timeline on a background thread so `--simulation` and pytest can run a
-real sequenced acquisition.
+This is the MCU side of the contract in control/sequencer_program.py.  It mirrors the
+firmware transport in firmware/controller/src/commands/sequence_commands.cpp and
+sequencer/seq_staging.cpp: a staging buffer, SEQ_COMMIT validated the way
+Staging::commit() + parse_staging() + seq::validate() do, the dispatcher allow-table, and
+the two status globals (mcu_cmd_execution_in_progress / mcu_cmd_execution_status) that a
+run owns while it is in flight.
 
-It is the missing link between a simulated microcontroller and a simulated camera: every
-frame calls `on_hardware_trigger(camera_id)`, which the simulation Microscope wires to
-SimulatedCamera.emit_hardware_triggered_frame().
+It is also the missing link between a simulated microcontroller and a simulated camera:
+every frame calls `on_hardware_trigger(camera_id)`, which the simulation Microscope wires
+to SimulatedCamera.emit_hardware_triggered_frame().
 
 Timeline fidelity is deliberately coarse.  Per frame it dwells
 (strobe_delay + exposure + readout) of the camera(s) in the channel's mask, divided by
-SPEED_UP_FACTOR.  It does not model ready lines, min trigger period, readout overlap or
-per-step settling; the firmware's own native tests cover the engine's timing.
+SPEED_UP_FACTOR.  It does not model ready lines, min trigger period, readout overlap,
+z_settle or per-step settling; the firmware's own native tests cover the engine's timing.
 
 Threading contract
 ------------------
@@ -42,10 +44,17 @@ SPEED_UP_FACTOR = 1.0
 #: How often a running sequence emits a status packet.  The firmware broadcasts every 10 ms.
 STATUS_INTERVAL_S = 0.01
 
-#: What the firmware's dispatcher allow-table lets through while a sequence runs (design
-#: S8).  Everything else is answered with CMD_EXECUTION_ERROR, because v1 tracks exactly one
-#: pending command and SEQ_RUN is that command for the whole run.
-ALLOWED_WHILE_RUNNING = frozenset({CMD_SET.HEARTBEAT, CMD_SET.SEQ_CANCEL, CMD_SET.TURN_OFF_ALL_PORTS})
+#: seq::wire::allowed_while_running() -- the ONLY opcodes the dispatcher accepts while a
+#: sequence runs (design S8).  The MCU owns the stage, the light and the camera trigger for
+#: the duration, so everything else is refused at this one choke point.
+ALLOWED_WHILE_RUNNING = frozenset(
+    {
+        CMD_SET.HEARTBEAT,  # keeps the serial watchdog fed during a long run
+        CMD_SET.SEQ_CANCEL,  # finish the current exposure, then wind down
+        CMD_SET.TURN_OFF_ALL_PORTS,  # safety shutdown -- aborts the run through the engine
+        CMD_SET.RESET,  # a host that restarted mid-run must be able to recover
+    }
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -54,7 +63,7 @@ class CommandOutcome:
 
     `handled` True means the sequencer owns the command and the simulator must not run its
     own handler for it.  `status` is the CMD_EXECUTION_STATUS to answer with either way --
-    the sequencer owns that byte whenever a run is in flight.
+    the MCU has exactly one such byte, and a run in flight owns it.
     """
 
     status: int
@@ -75,19 +84,30 @@ class SimulatedSequencer:
         self._lock = threading.Lock()
         self._staging = bytearray(sp.STAGING_BYTES)
         self._program: Optional[sp.SequencerProgram] = None
+        self._committed = False
 
+        # Engine state (SeqEngine::state_ / progress_).
         self._state = sp.SeqState.IDLE
-        self._error = sp.SeqError.NONE
-        self._detail = 0
+        self._engine_error = sp.SeqError.NONE
+        self._engine_detail = 0
         self._frames_fired = 0
 
-        # Mirrors the firmware's mcu_cmd_execution_in_progress / mcu_cmd_execution_status
-        # globals: a run owns the pending command until the engine is terminal.
+        # Transport refusals (bad upload, RUN without a program). The engine reports
+        # run-time errors, the transport reports refusals; whichever happened last is what
+        # the status bytes show -- sequence_commands.cpp show_transport_error.
+        self._show_transport_error = False
+        self._transport_error = sp.SeqError.NONE
+        self._transport_detail = 0
+
+        # The firmware's two status globals.
         self._cmd_in_progress = False
         self._cmd_status = CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
 
         self._cancel = threading.Event()
         self._abort = threading.Event()
+        # The run was ended by a host safety command that must itself succeed
+        # (sequence_commands.cpp quiet_abort).
+        self._quiet_abort = False
         self._thread: Optional[threading.Thread] = None
 
         #: Called once per triggered camera, per frame, from the run thread with no lock
@@ -101,17 +121,26 @@ class SimulatedSequencer:
             return self._cmd_in_progress
 
     def status(self) -> sp.SequencerStatus:
+        """seq_fill_status(): state from the engine, error/detail from whichever of the
+        transport and the engine spoke last."""
         with self._lock:
-            return sp.SequencerStatus(
-                state=self._state, error=self._error, detail=self._detail, frames_fired=self._frames_fired
-            )
+            if self._show_transport_error:
+                error, detail = self._transport_error, self._transport_detail
+            else:
+                error, detail = self._engine_error, self._engine_detail
+            return sp.SequencerStatus(state=self._state, error=error, detail=detail, frames_fired=self._frames_fired)
 
     def status_bytes(self) -> Tuple[int, int, int, int]:
         """Response bytes 14..17."""
         return self.status().to_response_bytes()
 
     def execution_status(self) -> int:
-        """The CMD_EXECUTION_STATUS byte the MCU reports right now."""
+        """The CMD_EXECUTION_STATUS byte the MCU reports right now.
+
+        send_position_update() checks mcu_cmd_execution_in_progress FIRST, so a run in
+        flight masks everything else -- including a command refused by the allow-table,
+        whose error surfaces only once the run is terminal.
+        """
         with self._lock:
             if self._cmd_in_progress:
                 return CMD_EXECUTION_STATUS.IN_PROGRESS
@@ -119,8 +148,9 @@ class SimulatedSequencer:
 
     @property
     def committed_program(self) -> Optional[sp.SequencerProgram]:
+        """The sealed program, or None when nothing is committed (any SEQ_WRITE unseals)."""
         with self._lock:
-            return self._program
+            return self._program if self._committed else None
 
     # --- command entry point --------------------------------------------------------------
 
@@ -128,16 +158,17 @@ class SimulatedSequencer:
         """Let the sequencer see a command before the serial simulator handles it."""
         code = command[1]
 
-        # Firmware process_serial_message() defaults the status to success on every command
-        # except HEARTBEAT, whose ack must not clobber a pending failure.
+        # process_serial_message() defaults the status to success on every command except
+        # HEARTBEAT, whose ack must not clobber a pending failure.
         if code != CMD_SET.HEARTBEAT:
             with self._lock:
-                if not self._cmd_in_progress:
-                    self._cmd_status = CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+                self._cmd_status = CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
 
         if self.running() and code not in ALLOWED_WHILE_RUNNING:
             self._log.warning(f"command {code} refused: a sequence is running")
-            return CommandOutcome(status=CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR, handled=True)
+            with self._lock:
+                self._cmd_status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+            return CommandOutcome(status=self.execution_status(), handled=True)
 
         if code in sp.SEQ_OPCODES:
             self._handle_seq(code, command)
@@ -145,17 +176,33 @@ class SimulatedSequencer:
 
         if code == CMD_SET.TURN_OFF_ALL_PORTS and self.running():
             # Cutting the lasers behind the engine's back would let the run complete
-            # "successfully" with dark frames, so it aborts through the engine instead.
+            # "successfully" with dark frames, so it aborts through the engine instead --
+            # but the safety command itself still succeeds.
             self.host_abort()
+        elif code == CMD_SET.RESET:
+            self.reset()
 
         # Not ours: the simulator handles it, but the status byte is still the MCU's one
         # global, so a run in flight keeps reporting IN_PROGRESS.
         return CommandOutcome(status=self.execution_status(), handled=False)
 
     def host_abort(self) -> None:
-        """TURN_OFF_ALL_PORTS / serial watchdog: terminal immediately, light off."""
+        """seq_transport_host_shutdown(): TURN_OFF_ALL_PORTS aborts the run through the
+        engine, but the shutdown command itself reports success."""
+        self._quiet_abort = True
         self._abort.set()
-        self._fail(sp.SeqError.HOST_ABORT, 0)
+        self._fail(sp.SeqError.HOST_ABORT, 0, quiet=True)
+
+    def reset(self) -> None:
+        """seq_transport_reset(): RESET aborts a run and drops the committed program."""
+        self._quiet_abort = True
+        self._abort.set()
+        if self.running():
+            self._fail(sp.SeqError.HOST_ABORT, 0, quiet=True)
+        with self._lock:
+            self._committed = False
+            self._program = None
+            self._show_transport_error = False
 
     def close(self) -> None:
         """Stop a run in flight and join its thread.  Must not be called under the serial
@@ -181,85 +228,115 @@ class SimulatedSequencer:
         elif code == CMD_SET.SEQ_RUN:
             self._seq_run(struct.unpack(">i", command[2:6])[0])
         elif code == CMD_SET.SEQ_CANCEL:
-            self._cancel.set()
+            self._seq_cancel()
 
     def _seq_write(self, word_index: int, data: bytes) -> None:
+        with self._lock:
+            self._committed = False  # any write invalidates the sealed program
         offset = word_index * sp.WORD_BYTES
         if offset + sp.WORD_BYTES > sp.STAGING_BYTES:
-            self._reject(sp.SeqError.BAD_PROGRAM, 0, f"SEQ_WRITE word {word_index} past the staging area")
+            self._refuse(
+                sp.SeqError.BAD_PROGRAM, sp.BAD_PROGRAM_LENGTH, f"SEQ_WRITE word {word_index} past the staging area"
+            )
             return
         with self._lock:
             self._staging[offset : offset + sp.WORD_BYTES] = data
 
     def _seq_commit(self, length: int, crc: int) -> None:
-        if length > sp.STAGING_BYTES:
-            self._reject(sp.SeqError.BAD_PROGRAM, 0, f"commit length {length} > staging area {sp.STAGING_BYTES}")
-            return
         with self._lock:
-            staged = bytes(self._staging[:length])
+            self._committed = False
+            staged = bytes(self._staging[: min(length, sp.STAGING_BYTES)])
+        # Staging::commit() order: length, then CRC, then parse_staging + validate.
+        if length < sp.CHANNELS_OFFSET or length > sp.STAGING_BYTES:
+            self._refuse(
+                sp.SeqError.BAD_PROGRAM,
+                sp.BAD_PROGRAM_LENGTH,
+                f"commit length {length} outside {sp.CHANNELS_OFFSET}..{sp.STAGING_BYTES}",
+            )
+            return
         actual_crc = sp.crc16_ccitt_false(staged)
         if actual_crc != crc:
-            self._reject(sp.SeqError.BAD_PROGRAM, 0, f"CRC 0x{actual_crc:04X} != committed 0x{crc:04X}")
+            self._refuse(
+                sp.SeqError.BAD_PROGRAM, sp.BAD_PROGRAM_CRC, f"CRC 0x{actual_crc:04X} != committed 0x{crc:04X}"
+            )
             return
         try:
             program = sp.unpack(staged)
-            program.validate()
+            program.validate()  # what SeqEngine::load() runs
         except sp.ProgramValidationError as e:
-            self._reject(e.error, e.detail, str(e))
+            self._refuse(e.error, e.detail, str(e))
             return
         with self._lock:
             self._program = program
-            self._state = sp.SeqState.IDLE
-            self._error = sp.SeqError.NONE
-            self._detail = 0
+            self._committed = True
+            self._show_transport_error = False
         self._log.debug(f"committed a {program.n_channels}-channel program, {program.n_frames} frames")
 
     def _seq_run(self, stack_start: int) -> None:
         with self._lock:
-            program = self._program
+            program = self._program if self._committed else None
         if program is None:
-            self._reject(sp.SeqError.NOT_COMMITTED, 0, "SEQ_RUN without a committed program")
+            self._refuse(sp.SeqError.NOT_COMMITTED, 0, "SEQ_RUN without a committed program")
             return
+
+        # SeqEngine::start() resets progress before anything else, then refuses the whole
+        # run if any stack target would leave the axis range.
+        with self._lock:
+            self._frames_fired = 0
+            self._engine_error = sp.SeqError.NONE
+            self._engine_detail = 0
+            self._show_transport_error = False
+            self._state = sp.SeqState.WAIT_HW
+        self._quiet_abort = False
         try:
             program.check_stack_range(stack_start)
         except sp.ProgramValidationError as e:
-            # The engine refuses the whole run before the first move: nothing is triggered.
-            self._fail(e.error, e.detail)
+            self._fail(e.error, e.detail)  # nothing is triggered
             return
 
         self._cancel.clear()
         self._abort.clear()
         with self._lock:
-            self._frames_fired = 0
-            self._state = sp.SeqState.WAIT_HW
-            self._error = sp.SeqError.NONE
-            self._detail = 0
             self._cmd_in_progress = True
         self._thread = threading.Thread(
             target=self._run_timeline, args=(program, stack_start), name="SimulatedSequencer", daemon=True
         )
         self._thread.start()
 
+    def _seq_cancel(self) -> None:
+        # Nothing to cancel completes at once, successfully.
+        if self.running():
+            self._cancel.set()
+
     # --- failure paths --------------------------------------------------------------------
 
-    def _reject(self, error: sp.SeqError, detail: int, reason: str) -> None:
-        """A transport-level refusal (bad staging, nothing committed): the engine stays
-        Idle, but the status bytes carry the SeqError."""
+    def _refuse(self, error: sp.SeqError, detail: int, reason: str) -> None:
+        """refuse(): a transport-level rejection.  The engine state is untouched, but the
+        status bytes carry the SeqError until the next successful commit or run."""
         self._log.warning(f"sequencer command refused: {reason}")
         with self._lock:
-            self._error = error
-            self._detail = detail
+            self._transport_error = sp.SeqError(error)
+            self._transport_detail = detail
+            self._show_transport_error = True
             self._cmd_status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
 
-    def _fail(self, error: sp.SeqError, detail: int) -> None:
-        """The engine's fail(): terminal, light off, motion stopped."""
-        self._log.warning(f"sequencer failed: {sp.SeqError(error).name} detail={detail}")
+    def _fail(self, error: sp.SeqError, detail: int, quiet: bool = False) -> None:
+        """SeqEngine::fail(): terminal, light off, motion stopped.
+
+        `quiet` is the host-safety-command case: the run ends Failed and the status bytes
+        say so, but the pending command still completes successfully.
+        """
         with self._lock:
+            if quiet and not self._cmd_in_progress:
+                return  # nothing was running
+            self._log.warning(f"sequencer failed: {sp.SeqError(error).name} detail={detail}")
             self._state = sp.SeqState.FAILED
-            self._error = error
-            self._detail = detail
+            self._engine_error = sp.SeqError(error)
+            self._engine_detail = detail
+            self._show_transport_error = False
             self._cmd_in_progress = False
-            self._cmd_status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+            if not quiet:
+                self._cmd_status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
 
     # --- the run thread -------------------------------------------------------------------
 
@@ -268,7 +345,7 @@ class SimulatedSequencer:
         try:
             for step in range(total_steps):
                 if self._abort.is_set():
-                    return  # host_abort() already set the terminal state
+                    return  # host_abort()/reset()/close() already set the terminal state
                 if self._cancel.is_set():
                     break  # cancel never truncates an exposure, so it stops between frames
                 _layer, channel_index = program.step_to_layer_channel(step)
@@ -288,13 +365,21 @@ class SimulatedSequencer:
                 return
             self._finish(program, total_steps)
         except Exception:
+            # An exception out of the trigger hook is a simulation bug, not a modelled
+            # hardware fault.  Fail the run loudly rather than quietly produce no frames;
+            # the traceback above is the real diagnosis.
             self._log.exception("simulated sequencer run failed")
             self._fail(sp.SeqError.MOVE_FAILED, 0)
         finally:
             self._emit()
 
     def _finish(self, program: sp.SequencerProgram, total_steps: int) -> None:
-        """SeqEngine::finish(): optional return move, then Done."""
+        """SeqEngine::finish(): optional return move, then Done.
+
+        Note what it does NOT do: touch the execution status.  A clean run leaves whatever
+        SEQ_RUN set at dispatch (COMPLETED), so an error latched meanwhile -- a command the
+        allow-table refused -- still reaches the host when the run ends.
+        """
         with self._lock:
             canceled = self._cancel.is_set() and self._frames_fired < total_steps
         if program.loop.return_to_start:
@@ -307,10 +392,9 @@ class SimulatedSequencer:
         with self._lock:
             self._state = sp.SeqState.DONE
             if canceled:
-                self._error = sp.SeqError.CANCELED
+                # A cancelled run still reached Done, not Failed, so the command COMPLETED.
+                self._engine_error = sp.SeqError.CANCELED
             self._cmd_in_progress = False
-            # A cancelled run still COMPLETED: the engine reached Done, not Failed.
-            self._cmd_status = CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
 
     def _dwell(self, seconds: float) -> None:
         """Sleep, emitting status packets meanwhile and returning early on abort."""

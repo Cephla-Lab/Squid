@@ -223,6 +223,7 @@ class TestCommit:
         with pytest.raises(CommandAborted) as exc:
             mcu.wait_till_operation_is_completed()
         assert exc.value.seq_status.error == sp.SeqError.BAD_PROGRAM
+        assert exc.value.seq_status.detail == sp.BAD_PROGRAM_CRC
 
     def test_a_wrong_length_is_refused(self, mcu):
         staged = stack_program(n_channels=1, n_layers=1).pack()
@@ -233,6 +234,7 @@ class TestCommit:
         with pytest.raises(CommandAborted) as exc:
             mcu.wait_till_operation_is_completed()
         assert exc.value.seq_status.error == sp.SeqError.BAD_PROGRAM
+        assert exc.value.seq_status.detail == sp.BAD_PROGRAM_MISMATCH
 
     def test_a_program_that_fails_validation_is_refused_with_its_own_error(self, mcu):
         # Stage a valid program, then corrupt channel 0's exposure to zero -- something
@@ -257,12 +259,19 @@ class TestCommit:
 
         assert sequencer_of(mcu).committed_program == program
 
-    def test_an_uncommitted_restage_does_not_replace_the_committed_program(self, mcu):
-        first = stack_program(n_channels=1, n_layers=2)
-        mcu.seq_upload(first)
-        _stage_raw(mcu, stack_program(n_channels=2, n_layers=5).pack())
+    def test_any_write_unseals_the_committed_program(self, mcu):
+        """callback_seq_write() sets committed = false: a half-written program must never
+        be runnable, so SEQ_RUN after a bare SEQ_WRITE answers NotCommitted."""
+        mcu.seq_upload(stack_program(n_channels=1, n_layers=2))
+        assert sequencer_of(mcu).committed_program is not None
 
-        assert sequencer_of(mcu).committed_program == first
+        _stage_raw(mcu, stack_program(n_channels=2, n_layers=5).pack())
+        assert sequencer_of(mcu).committed_program is None
+
+        mcu.seq_run(0)
+        with pytest.raises(CommandAborted) as exc:
+            mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        assert exc.value.seq_status.error == sp.SeqError.NOT_COMMITTED
 
 
 class TestCancel:
@@ -326,6 +335,12 @@ class TestAllowTableWhileRunning:
         assert mcu.seq_status.error == sp.SeqError.NONE
 
     def test_a_disallowed_command_is_refused_while_running(self, mcu):
+        """The refusal is latched, not answered at once.
+
+        send_position_update() reports IN_PROGRESS while a run holds the pending command,
+        so the CMD_EXECUTION_ERROR the dispatcher latched only reaches the host when the
+        run goes terminal (serial_communication.cpp + seq_transport_tick()).
+        """
         program = stack_program(n_channels=2, n_layers=16)
         mcu.seq_upload(program)
         mcu.seq_run(0)
@@ -334,8 +349,40 @@ class TestAllowTableWhileRunning:
         mcu.move_x_usteps(100)
         with pytest.raises(CommandAborted):
             mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        # the run itself was not disturbed
+        assert mcu.seq_status.state == sp.SeqState.DONE
+        assert mcu.seq_status.frames_fired == program.n_frames
+
+    def test_reset_is_allowed_while_running(self, mcu):
+        """seq::wire::allowed_while_running() lets RESET through: a host that restarted
+        mid-run must be able to recover the controller.  seq_transport_reset() then aborts
+        the run through the engine and drops the committed program.
+
+        Not waited on with wait_till_operation_is_completed(): callback_reset() forces the
+        firmware's cmd_id back to 0 (and Microcontroller.reset() mirrors that), which the
+        serial simulators have never modelled -- they echo the command's own id.  That gap
+        predates the sequencer and is orthogonal to it.
+        """
+        mcu.seq_upload(stack_program(n_channels=2, n_layers=16))
+        mcu.seq_run(0)
+        _wait_until(lambda: mcu.seq_status.frames_fired >= 1, "the run to start")
+
+        mcu.reset()
+        # Wait on the HOST's view: the simulator flips state before the read thread has
+        # consumed the packet that carries it.
+        _wait_until(lambda: mcu.seq_status.state == sp.SeqState.FAILED, "the host to see the aborted run")
+
+        assert mcu.seq_status.error == sp.SeqError.HOST_ABORT
+        assert not sequencer_of(mcu).running()
+        assert sequencer_of(mcu).committed_program is None
 
     def test_turn_off_all_ports_aborts_the_run(self, mcu):
+        """The safety command itself SUCCEEDS; the run fails behind it.
+
+        sequence_commands.cpp marks this a quiet_abort, so
+        wait_till_operation_is_completed() returning is NOT enough to conclude the run
+        succeeded -- the caller has to read seq_status.
+        """
         recorder = TriggerRecorder()
         sequencer_of(mcu).on_hardware_trigger = recorder
         program = stack_program(n_channels=2, n_layers=16)
@@ -344,11 +391,10 @@ class TestAllowTableWhileRunning:
         mcu.seq_run(0)
         _wait_until(lambda: recorder.count >= 1, "the run to start")
         mcu.turn_off_all_ports()
-        with pytest.raises(CommandAborted) as exc:
-            mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)
+        mcu.wait_till_operation_is_completed(RUN_TIMEOUT_S)  # must NOT raise
 
-        assert exc.value.seq_status.error == sp.SeqError.HOST_ABORT
-        assert exc.value.seq_status.state == sp.SeqState.FAILED
+        assert mcu.seq_status.error == sp.SeqError.HOST_ABORT
+        assert mcu.seq_status.state == sp.SeqState.FAILED
         assert recorder.count < program.n_frames
 
     def test_a_second_run_while_running_is_refused(self, mcu):

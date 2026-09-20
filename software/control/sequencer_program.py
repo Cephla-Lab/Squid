@@ -75,6 +75,12 @@ PIEZO_DAC_MAX = 65535
 #: frames_fired travels as a u16 in the status packet.
 MAX_FRAMES = 65535
 
+# ValidationResult.detail for SeqError.BAD_PROGRAM (seq_wire.h kBadProgram*)
+BAD_PROGRAM_LENGTH = 0  # length outside the staging buffer / fixed part
+BAD_PROGRAM_VERSION = 1  # WireHeader.version
+BAD_PROGRAM_MISMATCH = 2  # length != program_bytes(n_channels, n_cameras)
+BAD_PROGRAM_CRC = 3  # CRC-16 of the staged bytes
+
 # --- staging layout (seq_wire.h) -----------------------------------------------------------
 
 WIRE_HEADER_FORMAT = "<BBHI"  # version, n_cameras, reserved, wait_timeout_us
@@ -512,7 +518,9 @@ class SequencerProgram:
         try:
             self._pack_raw()
         except struct.error as e:
-            raise ProgramValidationError(SeqError.BAD_PROGRAM, 0, f"a field does not fit the wire format: {e}") from e
+            raise ProgramValidationError(
+                SeqError.BAD_PROGRAM, BAD_PROGRAM_LENGTH, f"a field does not fit the wire format: {e}"
+            ) from e
 
     @staticmethod
     def _check_duration(name: str, value: int, detail: int) -> None:
@@ -560,11 +568,15 @@ def unpack(data: bytes) -> SequencerProgram:
     length = len(data)
     if length < CHANNELS_OFFSET or length > STAGING_BYTES:
         raise ProgramValidationError(
-            SeqError.BAD_PROGRAM, 0, f"staged length {length} outside {CHANNELS_OFFSET}..{STAGING_BYTES}"
+            SeqError.BAD_PROGRAM,
+            BAD_PROGRAM_LENGTH,
+            f"staged length {length} outside {CHANNELS_OFFSET}..{STAGING_BYTES}",
         )
     version, n_cameras, _reserved, wait_timeout_us = struct.unpack(WIRE_HEADER_FORMAT, data[:WIRE_HEADER_BYTES])
     if version != WIRE_VERSION:
-        raise ProgramValidationError(SeqError.BAD_PROGRAM, 1, f"wire version {version}, expected {WIRE_VERSION}")
+        raise ProgramValidationError(
+            SeqError.BAD_PROGRAM, BAD_PROGRAM_VERSION, f"wire version {version}, expected {WIRE_VERSION}"
+        )
     if not 1 <= n_cameras <= MAX_CAMERAS:
         raise ProgramValidationError(SeqError.BAD_CAMERA, 0, f"n_cameras {n_cameras} must be 1..{MAX_CAMERAS}")
 
@@ -577,7 +589,7 @@ def unpack(data: bytes) -> SequencerProgram:
     if length != expected:
         raise ProgramValidationError(
             SeqError.BAD_PROGRAM,
-            2,
+            BAD_PROGRAM_MISMATCH,
             f"staged length {length} != {expected} for {n_channels} channels and {n_cameras} cameras",
         )
     if loop.n_layers * n_channels > MAX_FRAMES:
