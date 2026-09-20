@@ -47,6 +47,7 @@ struct FakeHal : seq::SeqHal {
     }
     bool ready_line(uint8_t line) override { return ready_lines[line]; }
     void all_off() override { calls.push_back({"all_off", now_us, 0, 0}); }
+    void stop_motion() override { calls.push_back({"stop_motion", now_us, 0, 0}); }
 };
 
 // Advance the engine in fixed virtual-time steps (default 100 µs ~ main-loop cadence).

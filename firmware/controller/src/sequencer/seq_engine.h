@@ -43,6 +43,11 @@ class SeqEngine {
     bool start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start);
     bool running() const;
     void cancel();  // finish current exposure, then wind down (never truncates)
+    // External abort (laser interlock open, serial watchdog, host TURN_OFF_ALL_PORTS):
+    // terminal immediately, light off, motion stopped. No-op unless a sequence is running.
+    // These must abort THROUGH the engine — cutting the lasers behind its back would let
+    // the run complete 'successfully' with dark frames.
+    void abort(SeqError e);
     void tick(uint32_t now_us);
     SeqState state() const { return state_; }
     const SeqProgress& progress() const { return progress_; }

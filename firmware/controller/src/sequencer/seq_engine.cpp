@@ -103,6 +103,10 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
 
 void SeqEngine::cancel() { cancel_requested_ = true; }
 
+void SeqEngine::abort(SeqError e) {
+    if (running()) fail(e, 0);
+}
+
 void SeqEngine::begin_prep(uint32_t k, uint32_t now_us) {
     uint16_t layer;
     uint8_t chi;
@@ -213,6 +217,7 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
 
 void SeqEngine::fail(SeqError e, uint8_t detail) {
     hal_.all_off();
+    hal_.stop_motion();
     progress_.abort_error = (uint8_t)e;
     progress_.abort_detail = detail;
     state_ = SeqState::Failed;

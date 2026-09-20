@@ -49,6 +49,12 @@ static SeqCameraConfig cam_level() {
     return c;
 }
 
+static bool saw(const FakeHal& hal, const char* what) {
+    for (size_t i = 0; i < hal.calls.size(); i++)
+        if (hal.calls[i].what == what) return true;
+    return false;
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -340,6 +346,7 @@ void test_wait_timeout_aborts_with_all_off(void) {
         if (c.what == "all_off") all_off_called = true;
     }
     TEST_ASSERT_TRUE(all_off_called);
+    TEST_ASSERT_TRUE(saw(hal, "stop_motion"));  // E4: failure stops motion too
 }
 
 // Rolling shutter: readout_overlap_safe=0 defers PREP(k+1) until the camera is done
@@ -641,6 +648,54 @@ void test_stack_range_accounts_for_channel_offsets_and_negative_dz(void) {
     }
 }
 
+// E4: an interlock / watchdog abort must go THROUGH the engine (so the run fails visibly
+// instead of silently producing dark frames), and any failure stops motion too.
+void test_abort_turns_everything_off_and_stops_motion(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    e.abort(SeqError::InterlockOpen);  // idle: no-op
+    TEST_ASSERT_EQUAL(0, (int)hal.calls.size());
+    SeqLoop l = good_loop();
+    l.stack_axis_type = (uint8_t)StackAxisType::Stepper;
+    l.stack_axis_id = 2;
+    l.n_channels = 1;
+    hal.move_duration_us[2] = 50000;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 1000));
+    run_for(e, hal, 5000);  // mid-move
+    e.abort(SeqError::InterlockOpen);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::InterlockOpen, e.progress().abort_error);
+    TEST_ASSERT_TRUE(saw(hal, "all_off"));
+    TEST_ASSERT_TRUE(saw(hal, "stop_motion"));
+    size_t n = hal.calls.size();
+    e.abort(SeqError::HostAbort);  // already terminal: no second shutdown, error preserved
+    TEST_ASSERT_EQUAL((int)n, (int)hal.calls.size());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::InterlockOpen, e.progress().abort_error);
+}
+
+// An abort mid-exposure must not leave the run "Exposing": it is terminal immediately.
+void test_abort_during_exposure_is_terminal_immediately(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_channels = 1;
+    l.z_settle_us = 1000;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, 5000000, 40000);
+    for (int i = 0; i < 1000 && e.state() != SeqState::Exposing; i++) run_for(e, hal, 100);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Exposing, (uint8_t)e.state());
+    e.abort(SeqError::HostAbort);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    run_for(e, hal, 100000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);  // nothing fired after the abort
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -667,5 +722,7 @@ int main(int, char**) {
     RUN_TEST(test_durations_beyond_the_wrap_safe_range_are_rejected);
     RUN_TEST(test_stack_leaving_the_piezo_range_fails_before_anything_moves);
     RUN_TEST(test_stack_range_accounts_for_channel_offsets_and_negative_dz);
+    RUN_TEST(test_abort_turns_everything_off_and_stops_motion);
+    RUN_TEST(test_abort_during_exposure_is_terminal_immediately);
     return UNITY_END();
 }

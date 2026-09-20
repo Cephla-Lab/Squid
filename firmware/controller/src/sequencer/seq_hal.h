@@ -34,8 +34,11 @@ class SeqHal {
     virtual void schedule_exposure(const ExposurePlan& plan) = 0;
     // Camera trigger-ready input (polarity-raw; engine normalizes).
     virtual bool ready_line(uint8_t line) = 0;
-    // Abort path: all illumination off, all triggers deasserted.
+    // Abort path: all illumination off, all triggers deasserted, pending exposure edges
+    // dropped.
     virtual void all_off() = 0;
+    // Abort path: stop every axis the sequencer may have commanded.
+    virtual void stop_motion() = 0;
 };
 
 }  // namespace seq
