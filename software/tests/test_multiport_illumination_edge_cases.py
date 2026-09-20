@@ -254,7 +254,7 @@ class TestFirmwareVersionCheck:
         assert hasattr(mcu, "firmware_version")
         assert mcu.firmware_version is not None
         # Version should already be populated - no need to send a command first
-        assert mcu.firmware_version == (1, 3)
+        assert mcu.firmware_version == (SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR)
 
     def test_supports_multi_port_accurate_at_init(self, mcu):
         """supports_multi_port() should return accurate result immediately after init."""

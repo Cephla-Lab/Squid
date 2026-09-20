@@ -402,6 +402,47 @@ class SequencerProgram:
     def nbytes(self) -> int:
         return program_bytes(self.n_channels, self.n_cameras)
 
+    def step_to_layer_channel(self, step: int) -> Tuple[int, int]:
+        """The (layer, channel index) of acquisition step k.
+
+        Mirrors SeqEngine::step_to_layer_channel(); the host needs the same mapping to line
+        up the frames it receives with the z positions it asked for.
+        """
+        if self.loop.order == Order.CHANNELS_INNER:
+            return step // self.n_channels, step % self.n_channels
+        return step % self.loop.n_layers, step // self.loop.n_layers
+
+    def stack_target(self, layer: int, channel_index: int, stack_start: int) -> int:
+        """Mirrors SeqEngine::stack_target_for()."""
+        return stack_start + layer * self.loop.dz + self.channels[channel_index].z_offset
+
+    def check_stack_range(self, stack_start: int) -> None:
+        """Raise if any target of the run would leave the stack axis range.
+
+        Mirrors SeqEngine::stack_range_ok(), which refuses the whole run before the first
+        move rather than discovering the problem part-way through.  detail is the offending
+        channel index, or 0xFF for the start position (which is also the return target).
+        """
+        if self.loop.stack_axis_type == StackAxisType.PIEZO:
+            low, high = PIEZO_DAC_MIN, PIEZO_DAC_MAX  # a piezo target is a u16 DAC code
+        else:
+            low, high = -(2**31), 2**31 - 1
+        if not low <= stack_start <= high:
+            raise ProgramValidationError(
+                SeqError.STACK_OUT_OF_RANGE, 0xFF, f"stack start {stack_start} outside the axis range {low}..{high}"
+            )
+        # Targets are linear in the layer index, so checking both ends covers every layer.
+        span = (self.loop.n_layers - 1) * self.loop.dz
+        for i, channel in enumerate(self.channels):
+            first = stack_start + channel.z_offset
+            last = first + span
+            if not (low <= first <= high and low <= last <= high):
+                raise ProgramValidationError(
+                    SeqError.STACK_OUT_OF_RANGE,
+                    i,
+                    f"channel {i} spans {min(first, last)}..{max(first, last)}, outside the axis range {low}..{high}",
+                )
+
     def validate(self) -> None:
         """Raise ProgramValidationError if the firmware would reject this program.
 

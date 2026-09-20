@@ -18,7 +18,9 @@ from typing import Optional
 
 from crc import CrcCalculator, Crc8
 
+import control.sequencer_program as sequencer_program
 from control.microcontroller import AbstractCephlaMicroSerial
+from control.sequencer_sim import SimulatedSequencer
 
 
 class FirmwareProtocolError(Exception):
@@ -185,6 +187,11 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.commands_validated = 0
         self.validation_errors = []
 
+        # Hardware sequencer (firmware v1.7+). Point sequencer.on_hardware_trigger at a
+        # simulated camera to get real frames out of a simulated sequenced acquisition.
+        self._last_cmd_id = 0
+        self.sequencer = SimulatedSequencer(emit_status_packet=self._emit_status_packet)
+
     def clear_validation_errors(self) -> None:
         """Clear accumulated validation errors. Call between test runs if needed."""
         self.validation_errors = []
@@ -294,9 +301,11 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         - bytes[2-5]: X position (big-endian signed 32-bit)
         - bytes[6-9]: Y position
         - bytes[10-13]: Z position
-        - bytes[14-17]: Theta position
+        - bytes[14-17]: sequencer status (firmware >= 1.7; the theta position before that,
+          which no firmware ever wrote — see sequencer/seq_wire.h)
         - byte[18]: buttons/switches
-        - bytes[19-22]: reserved
+        - bytes[19-21]: reserved
+        - byte[22]: firmware version, nibble-encoded
         - byte[23]: CRC
 
         Note: W axis position is tracked internally (self.w) but is NOT included
@@ -309,17 +318,20 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         # BIT_POS_SWITCH may not be in constants_protocol.h; default to bit position 1
         button_state |= (1 if self.switch else 0) << self.fw.get("BIT_POS_SWITCH", 1)
 
-        reserved = 0
+        # Bytes 19-22 pack as one big-endian int32, so byte 22 is its low byte.
+        major, minor = sequencer_program.MIN_FIRMWARE_VERSION
+        reserved = (major << 4) | (minor & 0x0F)
+        sequencer_status = int.from_bytes(bytes(self.sequencer.status_bytes()), "big", signed=True)
 
         # Struct format ">BBiiiiBi" byte breakdown:
-        #   B: cmd_id       (1 byte)
-        #   B: status       (1 byte)
-        #   i: x            (4 bytes)
-        #   i: y            (4 bytes)
-        #   i: z            (4 bytes)
-        #   i: theta        (4 bytes)
-        #   B: button_state (1 byte)
-        #   i: reserved     (4 bytes)
+        #   B: cmd_id            (1 byte)
+        #   B: status            (1 byte)
+        #   i: x                 (4 bytes)
+        #   i: y                 (4 bytes)
+        #   i: z                 (4 bytes)
+        #   i: sequencer status  (4 bytes)
+        #   B: button_state      (1 byte)
+        #   i: reserved+version  (4 bytes)
         #   Total: 1+1+4+4+4+4+1+4 = 23 bytes (+ 1 byte CRC = 24 = MSG_LENGTH)
         response = bytearray(
             struct.pack(
@@ -329,7 +341,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 self.x,
                 self.y,
                 self.z,
-                self.theta,
+                sequencer_status,
                 button_state,
                 reserved,
             )
@@ -356,6 +368,15 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         """Process a validated command and update state."""
         cmd_id = cmd[0]
         cmd_code = cmd[1]
+
+        # The sequencer sees every command first: it owns the SEQ_* opcodes, refuses
+        # anything not in the allow-table while a sequence runs, and owns the execution
+        # status byte for as long as a run is pending.
+        outcome = self.sequencer.dispatch(bytes(cmd))
+        self._last_cmd_id = cmd_id
+        if outcome.handled:
+            self._queue_response(cmd_id, outcome.status)
+            return
 
         # Extract 4-byte position from bytes 2-5
         def get_position() -> int:
@@ -414,10 +435,24 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.w2 = 0
 
         # Build and queue response
-        status = self.fw.get("COMPLETED_WITHOUT_ERRORS", 0)
-        response = self._build_response(cmd_id, status)
-        self.response_buffer.extend(response)
+        self._queue_response(cmd_id, outcome.status)
+
+    def _queue_response(self, cmd_id: int, status: int) -> None:
+        """Append one MSG_LENGTH status packet. Assumes self._update_lock is held."""
+        self.response_buffer.extend(self._build_response(cmd_id, status))
         self._update_internal_state()
+
+    def _emit_status_packet(self) -> None:
+        """The 10 ms broadcast, for as long as a sequence is running.
+
+        Called from the sequencer's run thread.  Like the firmware, the packet echoes the
+        id of the LAST command received (a heartbeat mid-run moves it) and the execution
+        status the sequencer currently reports.
+        """
+        with self._update_lock:
+            if self._closed:
+                return
+            self._queue_response(self._last_cmd_id, self.sequencer.execution_status())
 
     def _update_internal_state(self, clear_buffer: bool = False):
         if clear_buffer:
@@ -427,6 +462,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
     # AbstractCephlaMicroSerial implementation
 
     def close(self) -> None:
+        # Before the lock: close() joins the run thread, which calls back in here to emit
+        # packets and would deadlock against a held _update_lock.
+        self.sequencer.close()
         with self._update_lock:
             self._closed = True
             self._update_internal_state(clear_buffer=True)

@@ -474,6 +474,104 @@ class TestSequencerStatus:
         assert not SequencerStatus.from_response_bytes(SeqState.EXPOSING << 5, 0, 0, 0).is_terminal
 
 
+class TestStepOrder:
+    """Mirror of SeqEngine::step_to_layer_channel()."""
+
+    def test_channels_inner(self):
+        program = minimal_program(
+            loop=minimal_program().loop.replace(n_layers=3, order=Order.CHANNELS_INNER),
+            channels=(SeqChannelSpec(exposure_us=1), SeqChannelSpec(exposure_us=2)),
+        )
+        assert [program.step_to_layer_channel(k) for k in range(6)] == [
+            (0, 0),
+            (0, 1),
+            (1, 0),
+            (1, 1),
+            (2, 0),
+            (2, 1),
+        ]
+
+    def test_z_inner(self):
+        program = minimal_program(
+            loop=minimal_program().loop.replace(n_layers=3, order=Order.Z_INNER),
+            channels=(SeqChannelSpec(exposure_us=1), SeqChannelSpec(exposure_us=2)),
+        )
+        assert [program.step_to_layer_channel(k) for k in range(6)] == [
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (0, 1),
+            (1, 1),
+            (2, 1),
+        ]
+
+    def test_n_frames_is_layers_times_channels(self):
+        program = minimal_program(
+            loop=minimal_program().loop.replace(n_layers=7),
+            channels=(SeqChannelSpec(exposure_us=1), SeqChannelSpec(exposure_us=2)),
+        )
+        assert program.n_frames == 14
+
+
+class TestStackRange:
+    """Mirror of SeqEngine::stack_range_ok(): the whole run is refused before the first move."""
+
+    def piezo(self, dz=100, n_layers=10, z_offsets=(0,)):
+        return minimal_program(
+            loop=minimal_program().loop.replace(
+                stack_axis_type=StackAxisType.PIEZO, stack_axis_id=0, dz=dz, n_layers=n_layers
+            ),
+            channels=tuple(SeqChannelSpec(exposure_us=100, z_offset=z) for z in z_offsets),
+        )
+
+    def test_accepts_a_stack_inside_the_dac_range(self):
+        self.piezo(dz=100, n_layers=10).check_stack_range(0)
+        self.piezo(dz=-100, n_layers=10).check_stack_range(65535)
+
+    def test_rejects_a_start_below_zero(self):
+        with pytest.raises(ProgramValidationError) as exc:
+            self.piezo().check_stack_range(-1)
+        assert exc.value.error == SeqError.STACK_OUT_OF_RANGE
+        assert exc.value.detail == 0xFF  # the start position itself
+
+    def test_rejects_a_start_above_the_dac_max(self):
+        with pytest.raises(ProgramValidationError) as exc:
+            self.piezo().check_stack_range(65536)
+        assert exc.value.error == SeqError.STACK_OUT_OF_RANGE
+        assert exc.value.detail == 0xFF
+
+    def test_rejects_a_top_layer_past_the_dac_max(self):
+        # start 65000 + 9 layers * 100 = 65900 > 65535
+        with pytest.raises(ProgramValidationError) as exc:
+            self.piezo(dz=100, n_layers=10).check_stack_range(65000)
+        assert exc.value.error == SeqError.STACK_OUT_OF_RANGE
+        assert exc.value.detail == 0
+
+    def test_reports_the_offending_channel(self):
+        with pytest.raises(ProgramValidationError) as exc:
+            self.piezo(dz=0, n_layers=1, z_offsets=(0, 0, -5)).check_stack_range(1)
+        assert exc.value.detail == 2
+
+    def test_a_stepper_stack_has_the_full_int32_range(self):
+        stepper = minimal_program(
+            loop=minimal_program().loop.replace(
+                stack_axis_type=StackAxisType.STEPPER, stack_axis_id=2, dz=-100000, n_layers=100
+            )
+        )
+        stepper.check_stack_range(-1)
+        stepper.check_stack_range(0)
+
+    def test_a_stepper_stack_past_int32_is_rejected(self):
+        stepper = minimal_program(
+            loop=minimal_program().loop.replace(
+                stack_axis_type=StackAxisType.STEPPER, stack_axis_id=2, dz=2**30, n_layers=10
+            )
+        )
+        with pytest.raises(ProgramValidationError) as exc:
+            stepper.check_stack_range(2**30)
+        assert exc.value.error == SeqError.STACK_OUT_OF_RANGE
+
+
 def _strip_comments(text: str) -> str:
     return re.sub(r"//[^\n]*", "", text)
 
