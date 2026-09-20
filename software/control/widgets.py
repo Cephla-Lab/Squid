@@ -1554,10 +1554,10 @@ class PreferencesDialog(QDialog):
             self._get_config_bool("GENERAL", "camera_trigger_ready_output", control._def.CAMERA_TRIGGER_READY_OUTPUT)
         )
         self.camera_trigger_ready_output_checkbox.setToolTip(
-            "Configure the camera's output trigger as TRIGGER READY while hardware\n"
-            "triggering, so the controller can gate the next trigger on the camera being\n"
-            "ready. Hamamatsu only; the ToupCam driver already drives GPIO1 as a\n"
-            "trigger-ready output."
+            "Configure the camera's trigger-ready output while hardware triggering, so the\n"
+            "controller can gate the next trigger on the camera being ready.\n"
+            "Hamamatsu: output trigger 1. ToupCam: GPIO1. Active low on both, so an\n"
+            "unplugged cable reads as not ready."
         )
         hw_layout.addRow("Camera Trigger Ready Output *:", self.camera_trigger_ready_output_checkbox)
 
