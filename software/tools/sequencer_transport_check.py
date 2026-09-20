@@ -24,6 +24,11 @@ USAGE (from software/, with the Squid GUI closed — only one process can hold t
 
     python -m tools.sequencer_transport_check --stack-dac 6
     python -m tools.sequencer_transport_check --stack-dac 6 --simulated     # dry run, no hardware
+    python -m tools.sequencer_transport_check --stack-dac 6 --soak 200      # + 200 runs back to back
+    python -m tools.sequencer_transport_check --stack-dac 6 --ready-line-unconnected
+        # new controller, NOTHING on the camera-ready input (pin 18): measures the level the input
+        # idles at, checks the gate in both polarities, and checks that an unplugged cable would
+        # read NOT READY. Reads the pin only; it drives nothing.
 
 Flash firmware 1.7 first, from firmware/controller on the sequencer branch:
     pio run -e teensy41_newctrl -t upload      (new controller: trigger pin 19, ready pin 18)
@@ -34,7 +39,7 @@ import argparse
 import logging
 import sys
 import time
-from typing import Callable, List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import control.microcontroller as microcontroller
 import squid.logging
@@ -58,9 +63,13 @@ from control.sequencer_program import (
 MID_RANGE = 32768
 DZ_LSB = 218  # ~1 um on a 300 um piezo
 EXPOSURES_US = (20_000, 50_000)
+WAIT_TIMEOUT_US = 2_000_000
+ACQUISITION_READY_ACTIVE_HIGH = True  # what MultiPointWorker puts in the camera record today
 
 
-def make_program(stack_dac: int, n_layers: int) -> SequencerProgram:
+def make_program(
+    stack_dac: int, n_layers: int, ready_line: int = NONE_ID, ready_active_high: bool = True
+) -> SequencerProgram:
     return SequencerProgram(
         loop=SeqLoopSpec(
             stack_axis_type=StackAxisType.PIEZO,
@@ -75,14 +84,14 @@ def make_program(stack_dac: int, n_layers: int) -> SequencerProgram:
         cameras=[
             SeqCameraSpec(
                 trigger_mode=TriggerMode.LEVEL,
-                ready_line=NONE_ID,  # timing model: no camera is attached
-                ready_active_high=True,
+                ready_line=ready_line,  # NONE_ID = timing model: no camera is attached
+                ready_active_high=ready_active_high,
                 readout_overlap_safe=True,
                 strobe_delay_us=300,
                 readout_time_us=25_000,
             )
         ],
-        wait_timeout_us=2_000_000,
+        wait_timeout_us=WAIT_TIMEOUT_US,
     )
 
 
@@ -105,11 +114,18 @@ class CorruptionCounter(logging.Handler):
 
 class Checker:
     def __init__(
-        self, mcu: microcontroller.Microcontroller, stack_dac: int, soak_runs: int, corruption: CorruptionCounter
+        self,
+        mcu: microcontroller.Microcontroller,
+        stack_dac: int,
+        soak_runs: int,
+        ready_line_unconnected: bool,
+        corruption: CorruptionCounter,
     ):
         self.mcu = mcu
         self.stack_dac = stack_dac
         self.soak_runs = soak_runs
+        self.ready_line_unconnected = ready_line_unconnected
+        self.ready_idle_high: Optional[bool] = None  # measured by probe_ready_line
         self.corruption = corruption
         self.results: List[Tuple[str, bool, str]] = []
 
@@ -253,6 +269,51 @@ class Checker:
         # ...while the status says the run did not.
         return self.expect_status(SeqState.FAILED, SeqError.HOST_ABORT, lambda n: 0 < n < 120)
 
+    def probe_ready_line(self) -> str:
+        """With nothing connected the ready input sits at ONE level. A run gated on that level must
+        complete; a run gated on the other must fire NOTHING, give up after wait_timeout_us and say
+        so. Both completing means the gate is not applied; neither, that the input is not steady."""
+        timeout_s = WAIT_TIMEOUT_US / 1e6
+        completed_with = []
+        for active_high in (True, False):
+            self.mcu.seq_upload(make_program(self.stack_dac, 3, ready_line=0, ready_active_high=active_high))
+            started = time.time()
+            try:
+                self.run_and_wait(MID_RANGE, 10)
+            except CommandAborted:
+                elapsed = time.time() - started
+                problem = self.expect_status(SeqState.FAILED, SeqError.WAIT_TIMEOUT, lambda n: n == 0)
+                if not problem and not timeout_s - 0.2 < elapsed < timeout_s + 0.5:
+                    problem = f"gave up after {elapsed:.2f} s, expected about {timeout_s:.0f} s"
+                if problem:
+                    return f"gated on {'HIGH' if active_high else 'LOW'}: {problem}"
+                continue
+            problem = self.expect_status(SeqState.DONE, SeqError.NONE, lambda n: n == 6)
+            if problem:
+                return f"gated on {'HIGH' if active_high else 'LOW'}: {problem}"
+            completed_with.append(active_high)
+        if len(completed_with) == 2:
+            return "the run completed gated on HIGH and gated on LOW: the ready-line gate is not applied"
+        if not completed_with:
+            return "the run timed out gated on HIGH and gated on LOW: the ready input is not at a steady level"
+        self.ready_idle_high = completed_with[0]
+        print(
+            f"         the unconnected ready input idles {'HIGH' if self.ready_idle_high else 'LOW'}; gated on the other "
+            f"level the run fired nothing and gave up after {timeout_s:.0f} s"
+        )
+        return ""
+
+    def unconnected_ready_line_fails_safe(self) -> str:
+        if self.ready_idle_high is None:
+            return "not determined: the ready-line probe above did not pass"
+        if self.ready_idle_high == ACQUISITION_READY_ACTIVE_HIGH:
+            return (
+                "an unplugged or broken ready cable reads READY on this controller: the acquisition treats "
+                f"{'HIGH' if ACQUISITION_READY_ACTIVE_HIGH else 'LOW'} as ready and the input idles there. A gated run "
+                "would not time out; it would trigger without waiting for the camera"
+            )
+        return ""
+
     def soak(self) -> str:
         """Many runs back to back, as an acquisition sends them: one SEQ_RUN per FOV, no re-upload."""
         durations_ms = []
@@ -298,6 +359,13 @@ class Checker:
         self.check(
             "TURN_OFF_ALL_PORTS mid-run: command succeeds, status Failed / HOST_ABORT", self.turn_off_all_ports_mid_run
         )
+        if self.ready_line_unconnected:
+            self.check(
+                "ready-line gate: one level runs, the other gives WAIT_TIMEOUT with no frame", self.probe_ready_line
+            )
+            self.check(
+                "an unconnected ready input reads NOT READY to the acquisition", self.unconnected_ready_line_fails_safe
+            )
         self.check("re-upload the short program", self.upload(3))
         self.check("the controller recovers after the aborts", self.run_again_new_start)
         if self.soak_runs:
@@ -324,8 +392,17 @@ def main() -> int:
         metavar="N",
         help="also run the short program N times back to back (~0.45 s each)",
     )
+    parser.add_argument(
+        "--ready-line-unconnected",
+        action="store_true",
+        help="new controller only, and ONLY with nothing connected to the camera-ready input (pin 18): "
+        "measure the level it idles at, check the gate in both polarities, and check that the idle level "
+        "means NOT READY to the acquisition",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
+    if args.simulated and args.ready_line_unconnected:
+        parser.error("--ready-line-unconnected needs a real controller: the simulator does not model ready lines")
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
     corruption = CorruptionCounter()
     squid.logging.get_logger().addHandler(corruption)  # before the port opens
@@ -340,7 +417,7 @@ def main() -> int:
         if corruption.count:  # the port can open in the middle of a packet; that is not the controller's doing
             print(f"  note: {corruption.count} corrupted packets while connecting - reported here, not counted below")
             corruption.count = 0
-        ok = Checker(mcu, args.stack_dac, args.soak, corruption).run_all()
+        ok = Checker(mcu, args.stack_dac, args.soak, args.ready_line_unconnected, corruption).run_all()
     finally:
         mcu.close()
     print("\nRESULT: " + ("all checks passed" if ok else "FAILURES - see above"))
