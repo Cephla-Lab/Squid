@@ -1523,6 +1523,25 @@ class PreferencesDialog(QDialog):
         )
         hw_layout.addRow("Filter Wheel Shortest Path *:", self.wheel_wrap_combo)
 
+        self.wheel_window_spinbox = QDoubleSpinBox()
+        self.wheel_window_spinbox.setRange(0.0, 10.0)
+        self.wheel_window_spinbox.setDecimals(1)
+        self.wheel_window_spinbox.setSingleStep(0.5)
+        self.wheel_window_spinbox.setSuffix(" \u00b0")
+        self.wheel_window_spinbox.setSpecialValueText("Off (exact slot)")
+        self.wheel_window_spinbox.setValue(
+            self._get_config_float("GENERAL", "squid_filterwheel_completion_window_deg", 0.0)
+        )
+        self.wheel_window_spinbox.setToolTip(
+            "Squid filter wheel, firmware 1.6 or later (ignored on older firmware).\n"
+            "The wheel reports a filter change done once it is within this many degrees of the slot, while it\n"
+            "finishes the last degrees, so the exposure can start about 20 ms earlier.\n"
+            "Size it from the optics: (filter clear aperture - image field diameter) / 2 / filter pitch radius,\n"
+            "in degrees, minus margin. 32 mm filters on a 22 mm field allow about 6\u00b0 (5\u00b0 was used on the bench);\n"
+            "25 mm filters allow about 1.9\u00b0. Off completes at the exact slot with the wheel stopped."
+        )
+        hw_layout.addRow("Filter Wheel Completion Window *:", self.wheel_window_spinbox)
+
         self.led_r_factor = QDoubleSpinBox()
         self.led_r_factor.setRange(0.0, 1.0)
         self.led_r_factor.setSingleStep(0.1)
@@ -2024,6 +2043,7 @@ class PreferencesDialog(QDialog):
             "true" if self.spinning_disk_checkbox.isChecked() else "false",
         )
         self.config.set("GENERAL", "squid_filterwheel_wrap", self.wheel_wrap_combo.currentData())
+        self.config.set("GENERAL", "squid_filterwheel_completion_window_deg", f"{self.wheel_window_spinbox.value():g}")
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
@@ -2379,6 +2399,11 @@ class PreferencesDialog(QDialog):
         if old_val != new_val:
             names = {value: text for text, value in self._WHEEL_WRAP_CHOICES}
             changes.append(("Filter Wheel Shortest Path", names.get(old_val, old_val), names[new_val], True))
+
+        old_val = self._get_config_float("GENERAL", "squid_filterwheel_completion_window_deg", 0.0)
+        new_val = self.wheel_window_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Filter Wheel Completion Window", f"{old_val:g} \u00b0", f"{new_val:g} \u00b0", True))
 
         # LED matrix factors (live update)
         old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)

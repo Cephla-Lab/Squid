@@ -1043,6 +1043,22 @@ class Microcontroller:
         cmd[3] = status
         self.send_command(cmd)
 
+    def set_completion_window(self, axis, window_mm):
+        """Report a move on `axis` complete once |position - target| <= window_mm, while the ramp is still
+        finishing (firmware >= 1.6; older firmware does not know the command, so callers gate on the version).
+        0 restores completion at the exact target with the ramp stopped. Encoded in 0.1 um, range 0 .. 6.5535 mm.
+        For the filter wheels one "mm" is one revolution: pass degrees / 360.
+        """
+        u = int(round(window_mm * 10000))
+        if not (0 <= u <= 0xFFFF):
+            raise ValueError("completion window must be 0 .. 6.5535 mm (or rev)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_COMPLETION_WINDOW
+        cmd[2] = int(axis)
+        cmd[3] = (u >> 8) & 0xFF
+        cmd[4] = u & 0xFF
+        self.send_command(cmd)
+
     def set_trigger_mode(self, mode):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_TRIGGER_MODE

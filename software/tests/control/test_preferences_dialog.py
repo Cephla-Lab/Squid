@@ -787,3 +787,37 @@ class TestFilterWheelShortestPath:
         assert dialog.wheel_wrap_combo.currentData() == "auto"
         change = [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
         assert change == [("Filter Wheel Shortest Path", "off", "Auto (on from firmware 1.6)", True)]
+
+
+class TestFilterWheelCompletionWindow:
+    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_completion_window_deg."""
+
+    def test_missing_key_shows_off_and_is_not_a_change(self, preferences_dialog):
+        assert preferences_dialog.wheel_window_spinbox.value() == 0.0
+        assert preferences_dialog.wheel_window_spinbox.text() == "Off (exact slot)"
+        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_the_ini_value_is_shown(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.wheel_window_spinbox.value() == 5.0
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_a_change_needs_a_restart_and_is_saved_as_a_number_the_config_reader_parses(
+        self, preferences_dialog, temp_config_file
+    ):
+        import control._def
+
+        preferences_dialog.wheel_window_spinbox.setValue(5.0)
+        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+        assert change == [("Filter Wheel Completion Window", "0 \u00b0", "5 \u00b0", True)]
+        assert preferences_dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        text = saved.get("GENERAL", "squid_filterwheel_completion_window_deg")
+        assert control._def.conf_attribute_reader(text) == 5
+
+    def test_the_range_stops_at_ten_degrees(self, preferences_dialog):
+        preferences_dialog.wheel_window_spinbox.setValue(45.0)  # a whole slot: never a sensible window
+        assert preferences_dialog.wheel_window_spinbox.value() == 10.0

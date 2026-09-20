@@ -204,6 +204,9 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    # Firmware >= 1.6 only. The firmware side arrives with PR #645 and is not in this tree's
+    # constants_protocol.h yet; the host never sends it to older firmware (see SquidFilterWheel).
+    SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -1076,6 +1079,13 @@ SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
 #   True    on from firmware 1.4: set it in the machine ini after checking that a 1 -> 8 move completes
 #   False   always the flag-free arc
 SQUID_FILTERWHEEL_WRAP = "auto"
+# > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the last
+# degrees are still travelled, so the exposure can start earlier (firmware >= 1.6, SET_COMPLETION_WINDOW; ignored
+# with a warning on older firmware). 0 = complete at the exact slot with the wheel stopped. Size it from the optics:
+# (filter clear aperture - image field diameter) / 2 / filter pitch radius, in degrees, minus margin. 32 mm filters
+# on a 22 mm field and a ~46 mm pitch radius allow about 6 deg (5 was used on the bench: 58 instead of 78 ms per
+# slot, wheel 2.7 deg from the slot when COMPLETED arrived); 25 mm filters allow about 1.9 deg.
+SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG = 0.0
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)

@@ -223,3 +223,49 @@ def test_controllers_with_a_position_readback_keep_the_default():
     from squid.abc import AbstractFilterWheelController
 
     assert AbstractFilterWheelController.position_is_known(MagicMock()) is True
+
+
+# ---------------------------------------------------------------- the completion window (firmware >= 1.6)
+@pytest.mark.parametrize("skip_init", [False, True])
+def test_the_completion_window_is_sent_on_a_normal_start_and_on_a_restart(monkeypatch, skip_init):
+    """A restart does not reset the controller, so it still holds the previous session's window; a change made in
+    Preferences takes effect through that restart only if the restart sends the configured value."""
+    import control._def
+    from control._def import AXIS
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", 5.0)
+    mc = _mc((1, 6))
+    SquidFilterWheel(mc, {1: _config(3), 2: _config(4)}, skip_init=skip_init)
+    assert [c.args for c in mc.set_completion_window.call_args_list] == [(AXIS.W, 5.0 / 360.0), (AXIS.W2, 5.0 / 360.0)]
+
+
+def test_zero_is_sent_too_because_the_controller_keeps_the_window_across_a_restart(monkeypatch):
+    import control._def
+    from control._def import AXIS
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", 0.0)
+    mc = _mc((1, 6))
+    SquidFilterWheel(mc, _config(), skip_init=True)
+    mc.set_completion_window.assert_called_once_with(AXIS.W, 0.0)
+
+
+@pytest.mark.parametrize("window, warns", [(5.0, True), (0.0, False)])
+def test_older_firmware_never_receives_the_command(monkeypatch, caplog, window, warns):
+    import control._def
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", window)
+    for fw in [(1, 4), (1, 5)]:
+        mc = _mc(fw)
+        with caplog.at_level("WARNING"):
+            caplog.clear()
+            SquidFilterWheel(mc, _config(), skip_init=False)
+        mc.set_completion_window.assert_not_called()
+        assert any("needs firmware >= 1.6" in r.message for r in caplog.records) is warns
+
+
+def test_a_negative_window_is_a_configuration_error(monkeypatch):
+    import control._def
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", -1.0)
+    with pytest.raises(ValueError, match="completion_window"):
+        SquidFilterWheel(_mc((1, 6)), _config(), skip_init=False)

@@ -166,6 +166,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
             # assumed: no usable record means unknown, and an unknown wheel is homed before it is used.
             cached = load_cached_wheel_state()
             for wheel_id, config in self._configs.items():
+                # The controller was not reset, so it still holds the previous session's completion window.
+                # A restart is how a change made in Preferences takes effect: send the configured one.
+                self._apply_completion_window(wheel_id)
                 slot, turns = cached.get(wheel_id, (None, None))
                 if slot is not None and config.min_index <= slot <= config.max_index:
                     self._positions[wheel_id] = slot
@@ -255,6 +258,28 @@ class SquidFilterWheel(AbstractFilterWheelController):
         ids = [wheel_id] if wheel_id is not None else list(self._configs)
         return all(self._position_known.get(i, False) for i in ids)
 
+    _COMPLETION_WINDOW_MIN_FIRMWARE = (1, 6)
+
+    def _apply_completion_window(self, wheel_id: int):
+        """Send squid_filterwheel_completion_window_deg to the wheel's axis. On firmware >= 1.6 it is ALWAYS sent,
+        0 included: the window is a state the controller keeps across a --skip-init restart, so "not configured"
+        has to clear one that an earlier session set. Older firmware does not know the command; a window asked for
+        there is reported once and ignored, and slot changes complete at the exact slot as they always did."""
+        window_deg = float(control._def.SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG)
+        if window_deg < 0:
+            raise ValueError(f"squid_filterwheel_completion_window_deg must be >= 0, not {window_deg}")
+        if tuple(self.microcontroller.firmware_version) < self._COMPLETION_WINDOW_MIN_FIRMWARE:
+            if window_deg > 0:
+                _log.warning(
+                    f"Filter wheel {wheel_id}: completion window {window_deg:g} deg needs firmware >= 1.6 "
+                    f"(this controller runs {tuple(self.microcontroller.firmware_version)}); ignored"
+                )
+            return
+        axis = self._MOTOR_SLOT_TO_AXIS[self._configs[wheel_id].motor_slot_index]
+        self.microcontroller.set_completion_window(axis, window_deg / 360.0)
+        self.microcontroller.wait_till_operation_is_completed()
+        _log.info(f"Filter wheel {wheel_id}: completion window {window_deg:g} deg")
+
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
         motor_slot = config.motor_slot_index
@@ -266,6 +291,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         time.sleep(0.5)
         self.microcontroller.configure_squidfilter(axis)
         time.sleep(0.5)
+        self._apply_completion_window(wheel_id)
 
         # Common PID setup for both wheels (they share identical encoder settings)
         # Use protocol axis (AXIS.W / AXIS.W2), not motor_slot index (3 / 4),
