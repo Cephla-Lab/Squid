@@ -152,6 +152,11 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `get_acquisition_status` | - | Check acquisition progress |
 | `abort_acquisition` | - | Stop running acquisition |
 
+> Both run commands check the save disk first, like the GUI's "Not Enough Disk Space" dialog: an acquisition that
+> will not fit is refused with an error unless large acquisition mode is on for it (`large_acquisition_mode: true`
+> under `acquisition:` in the YAML, or Settings > Acquisition > Large Acquisitions). With the mode on, the run
+> pauses when space runs low and resumes as finished data is offloaded.
+>
 > For scripted automation, see [Automation](automation.md).
 
 ### Performance

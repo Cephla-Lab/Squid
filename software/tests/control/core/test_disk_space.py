@@ -6,6 +6,7 @@ import time
 import pytest
 
 import control._def
+import control.utils
 from control.core.disk_space import DiskSpaceGuard, DiskStatus
 from control.core.pause_gate import PauseGate
 
@@ -373,3 +374,49 @@ def test_simulated_capacity_poll_interval_defaults_to_setting(tmp_path, monkeypa
     assert guard.free_bytes() == 100_000
     _write_file(tmp_path / "img.bin", 40_000)
     assert guard.free_bytes() == 60_000
+
+
+# --- pre-flight check shared by the GUI dialog and the TCP run commands ----------------------------
+
+
+class _EstimateOnlyController:
+    def __init__(self, estimate_bytes, image_count=12):
+        self._estimate = estimate_bytes
+        self._count = image_count
+
+    def get_estimated_acquisition_disk_storage(self):
+        return self._estimate
+
+    def get_acquisition_image_count(self):
+        return self._count
+
+
+def test_preflight_check_applies_the_safety_factor_and_reports_fit(tmp_path, monkeypatch):
+    from control.core.disk_space import preflight_disk_check
+
+    monkeypatch.setattr(control.utils, "get_available_disk_space", lambda d: 1030)
+    fits = preflight_disk_check(_EstimateOnlyController(1000), str(tmp_path))
+    assert fits.fits and fits.required_bytes == 1030 and fits.available_bytes == 1030 and fits.image_count == 12
+
+    too_big = preflight_disk_check(_EstimateOnlyController(1001), str(tmp_path))
+    assert not too_big.fits
+
+
+def test_preflight_check_measures_the_nearest_existing_folder(tmp_path, monkeypatch):
+    from control.core.disk_space import preflight_disk_check
+
+    asked = []
+    monkeypatch.setattr(control.utils, "get_available_disk_space", lambda d: asked.append(str(d)) or 10**9)
+    # The TCP commands check before the experiment folder (or even the base path) has been created.
+    check = preflight_disk_check(_EstimateOnlyController(1), str(tmp_path / "not" / "created" / "yet"))
+    assert asked == [str(tmp_path)]
+    assert check.save_directory == str(tmp_path / "not" / "created" / "yet")
+
+
+def test_preflight_check_describes_the_shortfall(tmp_path, monkeypatch):
+    from control.core.disk_space import preflight_disk_check
+
+    monkeypatch.setattr(control.utils, "get_available_disk_space", lambda d: 5 * 1024 * 1024)
+    check = preflight_disk_check(_EstimateOnlyController(2000 * 1024 * 1024, image_count=1234), str(tmp_path))
+    text = check.describe()
+    assert "1,234 images" in text and "2,060 [MB]" in text and "5 [MB] available" in text and str(tmp_path) in text
