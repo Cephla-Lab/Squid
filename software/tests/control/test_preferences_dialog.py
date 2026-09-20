@@ -739,3 +739,51 @@ class TestClickToMoveSettings:
 
         assert control._def.LIVE_VIEW_Z_STEP_UM == pytest.approx(2.5)
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
+
+
+class TestFilterWheelShortestPath:
+    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_wrap (auto / True / False)."""
+
+    def _dialog(self, qtbot, config, path):
+        dialog = control.widgets.PreferencesDialog(config, path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_missing_key_shows_auto_and_is_not_a_change(self, preferences_dialog):
+        assert preferences_dialog.wheel_wrap_combo.currentData() == "auto"
+        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+
+    @pytest.mark.parametrize(
+        "ini, data",
+        [("auto", "auto"), ("True", "True"), ("true", "True"), ("False", "False"), ("False  # why", "False")],
+    )
+    def test_the_ini_value_selects_the_item(self, qtbot, sample_config, temp_config_file, ini, data):
+        sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.wheel_wrap_combo.currentData() == data
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+
+    def test_a_change_needs_a_restart_and_is_shown_in_words(self, preferences_dialog):
+        preferences_dialog.wheel_wrap_combo.setCurrentIndex(2)
+        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+        assert change == [("Filter Wheel Shortest Path", "Auto (on from firmware 1.6)", "Off", True)]
+
+    def test_it_is_saved_as_the_value_the_wheel_controller_parses(self, preferences_dialog, temp_config_file):
+        import control._def
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        for index, expected in [(1, True), (2, False), (0, "auto")]:
+            preferences_dialog.wheel_wrap_combo.setCurrentIndex(index)
+            assert preferences_dialog._apply_settings()
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            text = saved.get("GENERAL", "squid_filterwheel_wrap")
+            # the same two steps the application takes at startup: the ini reader, then the wheel controller
+            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) == expected
+
+    def test_an_unrecognised_ini_value_is_shown_as_being_replaced(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_wrap", "off")  # a typo the wheel controller refuses
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.wheel_wrap_combo.currentData() == "auto"
+        change = [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+        assert change == [("Filter Wheel Shortest Path", "off", "Auto (on from firmware 1.6)", True)]
