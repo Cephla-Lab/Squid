@@ -13,7 +13,8 @@ from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
-from control.microcontroller import Microcontroller
+from control.microcontroller import Microcontroller, SimSerial
+from squid.camera.utils import SimulatedCamera
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
@@ -91,6 +92,21 @@ def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
         return True  # --simulation flag: all components simulated
     # No --simulation flag: per-component settings apply
     return bool(component_override)
+
+
+def link_simulated_sequencer_to_camera(simulated_serial: SimSerial, camera: SimulatedCamera) -> None:
+    """Wire a simulated microcontroller's sequencer to a simulated camera's trigger input.
+
+    Real hardware carries the sequencer's trigger to the camera on a wire; in simulation
+    nothing did, so a sequenced acquisition produced no frames at all.  This is that wire.
+
+    It lives here, in the simulation build path, on purpose: both ends are simulation-only
+    types, so the acquisition code, the Microcontroller and AbstractCamera stay free of
+    "is this simulated?" branches.
+    """
+    # v1 boards drive one acquisition camera from this build path, so every camera id in a
+    # program's mask maps to the same simulated camera.
+    simulated_serial.sequencer.on_hardware_trigger = lambda camera_id: camera.emit_hardware_triggered_frame()
 
 
 class MicroscopeAddons:
@@ -310,10 +326,16 @@ class LowLevelDrivers:
             reset_and_initialize=not skip_init,
         )
 
-        return LowLevelDrivers(microcontroller=micro)
+        return LowLevelDrivers(
+            microcontroller=micro,
+            # Kept so the simulation build path can reach the simulated sequencer without
+            # reaching into Microcontroller's private serial device.
+            simulated_serial=micro_serial_device if mcu_simulated else None,
+        )
 
-    def __init__(self, microcontroller: Optional[Microcontroller] = None):
+    def __init__(self, microcontroller: Optional[Microcontroller] = None, simulated_serial: Optional[SimSerial] = None):
         self.microcontroller: Optional[Microcontroller] = microcontroller
+        self.simulated_serial: Optional[SimSerial] = simulated_serial
 
     def prepare_for_use(self, skip_init: bool = False):
         # Note: Currently no homing operations here, but accepting skip_init for API consistency
@@ -398,6 +420,10 @@ class Microscope:
             hw_trigger_fn=acquisition_camera_hw_trigger_fn,
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
+
+        if low_level_devices.simulated_serial is not None and camera_simulated:
+            # Both ends are simulated, so the sequencer's trigger has somewhere to go.
+            link_simulated_sequencer_to_camera(low_level_devices.simulated_serial, camera)
 
         if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
             ldi = serial_peripherals.LDI()
