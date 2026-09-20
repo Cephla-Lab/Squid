@@ -183,17 +183,51 @@ def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
     assert expected * TURN > 0, f"target {expected} must have the same sign as a forward turn ({TURN})"
 
 
-def test_wrap_is_off_by_default_until_seen_on_firmware_1_4():
-    """The standalone host change ships with wrapping off: crossing the flag was verified on firmware 1.6 only."""
+def test_the_default_is_auto_on_from_firmware_1_6_and_off_below():
+    """Crossing the flag was verified on firmware 1.6; below it the wheel keeps the flag-free arc unless the
+    machine's ini says True."""
     import control._def
 
-    assert control._def.SQUID_FILTERWHEEL_WRAP is False
+    assert control._def.SQUID_FILTERWHEEL_WRAP == "auto"
+    for fw, expect_wrap in [((1, 4), False), ((1, 5), False), ((1, 6), True), ((2, 0), True)]:
+        mc = MagicMock()
+        mc.firmware_version = fw
+        w = SquidFilterWheel(mc, _config(), skip_init=True)
+        assert w.wrap == "auto" and w._wrap_enabled() is expect_wrap
+        w._positions[1] = 1
+        w.set_filter_wheel_position({1: 8})
+        long_way = SquidFilterWheel._target_pos_to_usteps(_config(), 8)
+        expected = long_way - TURN if expect_wrap else long_way  # one slot back across the flag, or seven forward
+        mc.move_w_to_usteps.assert_called_once_with(expected)
+        assert w._turns[1] == (-1 if expect_wrap else 0)
+
+
+@pytest.mark.parametrize(
+    "setting, fw, enabled",
+    [
+        (True, (1, 3), False),  # a backward wrap lands on a negative target, which firmware before 1.4 rejects
+        (True, (1, 4), True),  # an explicit True is the operator's word that this machine was checked
+        (True, (1, 6), True),
+        (False, (1, 6), False),
+        ("auto", (1, 5), False),
+        ("Auto", (1, 6), True),  # the ini reader hands strings through as typed
+    ],
+)
+def test_wrap_setting_against_firmware(monkeypatch, setting, fw, enabled):
+    import control._def
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", setting)
     mc = MagicMock()
-    mc.firmware_version = (1, 4)
-    w = SquidFilterWheel(mc, _config(), skip_init=True)
-    assert w.wrap is False
-    w._positions[1] = 1
-    w.set_filter_wheel_position({1: 8})
-    # the flag-free arc: seven slots forward, no turn accumulated
-    mc.move_w_to_usteps.assert_called_once_with(SquidFilterWheel._target_pos_to_usteps(_config(), 8))
-    assert w._turns[1] == 0
+    mc.firmware_version = fw
+    assert SquidFilterWheel(mc, _config(), skip_init=True)._wrap_enabled() is enabled
+
+
+@pytest.mark.parametrize("bad", ["off", "yes", 1, None])
+def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
+    import control._def
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", bad)
+    mc = MagicMock()
+    mc.firmware_version = (1, 6)
+    with pytest.raises(ValueError, match="squid_filterwheel_wrap"):
+        SquidFilterWheel(mc, _config(), skip_init=True)

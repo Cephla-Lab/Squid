@@ -1071,10 +1071,11 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
-# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven). Needs firmware >= 1.4.
-# Off by default until a wheel has been seen crossing its flag on firmware 1.4 (verified on 1.6 only); set
-# squid_filterwheel_wrap = True in the machine ini after checking that a 1 -> 8 move completes.
-SQUID_FILTERWHEEL_WRAP = False
+# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven).
+#   "auto"  on when the controller runs firmware >= 1.6 (where crossing the flag was verified), off below
+#   True    on from firmware 1.4: set it in the machine ini after checking that a 1 -> 8 move completes
+#   False   always the flag-free arc
+SQUID_FILTERWHEEL_WRAP = "auto"
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)
