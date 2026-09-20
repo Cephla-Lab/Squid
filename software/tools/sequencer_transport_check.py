@@ -37,6 +37,7 @@ import time
 from typing import Callable, List, Tuple
 
 import control.microcontroller as microcontroller
+import squid.logging
 from control.microcontroller import CommandAborted
 from control.sequencer_program import (
     MIN_FIRMWARE_VERSION,
@@ -85,10 +86,31 @@ def make_program(stack_dac: int, n_layers: int) -> SequencerProgram:
     )
 
 
+class CorruptionCounter(logging.Handler):
+    """Counts the driver's "Bad checksum" warnings: bytes on the protocol port that are not a packet.
+
+    The port carries a binary protocol and nothing else. The first run of this script on a real
+    controller found a library printing text on it (FastLED's debug log, after FastLED.show());
+    the checks only saw the consequences - a lost ack, a bogus status - so count the cause.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if "Bad checksum" in record.getMessage():
+            self.count += 1
+
+
 class Checker:
-    def __init__(self, mcu: microcontroller.Microcontroller, stack_dac: int):
+    def __init__(
+        self, mcu: microcontroller.Microcontroller, stack_dac: int, soak_runs: int, corruption: CorruptionCounter
+    ):
         self.mcu = mcu
         self.stack_dac = stack_dac
+        self.soak_runs = soak_runs
+        self.corruption = corruption
         self.results: List[Tuple[str, bool, str]] = []
 
     # --- helpers ---------------------------------------------------------------------------
@@ -231,6 +253,32 @@ class Checker:
         # ...while the status says the run did not.
         return self.expect_status(SeqState.FAILED, SeqError.HOST_ABORT, lambda n: 0 < n < 120)
 
+    def soak(self) -> str:
+        """Many runs back to back, as an acquisition sends them: one SEQ_RUN per FOV, no re-upload."""
+        durations_ms = []
+        for index in range(self.soak_runs):
+            durations_ms.append(self.run_and_wait(MID_RANGE + (index % 50) * 100, 10) * 1000)
+            problem = self.expect_status(SeqState.DONE, SeqError.NONE, lambda n: n == 6)
+            if problem:
+                return f"run {index + 1} of {self.soak_runs}: {problem}"
+        durations_ms.sort()
+        median = durations_ms[len(durations_ms) // 2]
+        print(
+            f"         {self.soak_runs} runs: min {durations_ms[0]:.0f} / median {median:.0f} / "
+            f"max {durations_ms[-1]:.0f} ms (host wall time; status packets arrive every 10 ms)"
+        )
+        if durations_ms[-1] > median + 100:
+            return f"slowest run took {durations_ms[-1]:.0f} ms against a median of {median:.0f} ms: something stalled"
+        return ""
+
+    def no_corrupted_packets(self) -> str:
+        if self.corruption.count:
+            return (
+                f"{self.corruption.count} corrupted packets: something other than the protocol wrote to the serial "
+                "port (rerun with --verbose to see the bytes; text decodes as ASCII)"
+            )
+        return ""
+
     def run_all(self) -> bool:
         self.check("firmware is >= 1.7", self.firmware_version)
         if not self.results[-1][1]:
@@ -252,6 +300,9 @@ class Checker:
         )
         self.check("re-upload the short program", self.upload(3))
         self.check("the controller recovers after the aborts", self.run_again_new_start)
+        if self.soak_runs:
+            self.check(f"soak: {self.soak_runs} runs back to back, every one Done with 6 frames", self.soak)
+        self.check("nothing but protocol packets on the serial port during all of the above", self.no_corrupted_packets)
         return all(ok for _, ok, _ in self.results)
 
 
@@ -266,9 +317,18 @@ def main() -> int:
     )
     parser.add_argument("--simulated", action="store_true", help="dry run against the firmware simulator")
     parser.add_argument("--sn", default=None, help="controller serial number, when several are connected")
+    parser.add_argument(
+        "--soak",
+        type=int,
+        default=0,
+        metavar="N",
+        help="also run the short program N times back to back (~0.45 s each)",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING)
+    corruption = CorruptionCounter()
+    squid.logging.get_logger().addHandler(corruption)  # before the port opens
 
     serial_device = microcontroller.get_microcontroller_serial_device(sn=args.sn, simulated=args.simulated)
     mcu = microcontroller.Microcontroller(serial_device, reset_and_initialize=False)
@@ -276,7 +336,11 @@ def main() -> int:
         print(
             f"Sequencer transport check ({'SIMULATED' if args.simulated else 'real controller'}), stack DAC {args.stack_dac}"
         )
-        ok = Checker(mcu, args.stack_dac).run_all()
+        time.sleep(0.2)
+        if corruption.count:  # the port can open in the middle of a packet; that is not the controller's doing
+            print(f"  note: {corruption.count} corrupted packets while connecting - reported here, not counted below")
+            corruption.count = 0
+        ok = Checker(mcu, args.stack_dac, args.soak, corruption).run_all()
     finally:
         mcu.close()
     print("\nRESULT: " + ("all checks passed" if ok else "FAILURES - see above"))
