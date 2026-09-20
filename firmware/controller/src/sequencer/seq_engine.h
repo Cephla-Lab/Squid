@@ -19,7 +19,8 @@
 
 namespace seq {
 
-enum class SeqState : uint8_t { Idle, Prep, WaitHw, Exposing, Aborting, Done, Failed };
+// Values are wire format (3 bits of the status byte, seq_wire.h) — append only.
+enum class SeqState : uint8_t { Idle, Prep, WaitHw, Exposing, Aborting, Done, Failed, Returning };
 
 struct SeqProgress {
     uint16_t layer;

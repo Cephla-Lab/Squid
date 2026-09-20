@@ -12,6 +12,10 @@ constexpr uint8_t kMaxChannels = 16;
 constexpr uint8_t kMaxCameras = 8;  // board v2 has 8 trigger channels (v1 has 4)
 constexpr uint8_t kNone = 0xFF;
 constexpr uint32_t kEdgePulseUs = 50;  // matches v1 TRIGGER_PULSE_LENGTH_us
+// Upper bound for every duration the engine handles (~17.9 min). Keeps any two engine
+// timestamps within 2^31 us of each other, which wrap-safe comparisons on the 32-bit
+// micros() timebase require.
+constexpr uint32_t kMaxDurationUs = 0x3FFFFFFF;
 
 enum class StackAxisType : uint8_t { Stepper = 0, Piezo = 1 };
 enum class Order : uint8_t { ChannelsInner = 0, ZInner = 1 };
@@ -66,7 +70,15 @@ enum class SeqError : uint8_t {
     WaitTimeout,
     MoveFailed,
     ReadyTimeout,
-    Canceled,
+    Canceled,         // 10
+    // Values are wire format (status byte, seq_wire.h) — append only, never renumber.
+    StackOutOfRange,  // 11  a stack target leaves the axis range (piezo: 0..65535)
+    InterlockOpen,    // 12
+    HostAbort,        // 13  TURN_OFF_ALL_PORTS / serial watchdog
+    BadDuration,      // 14  a duration exceeds kMaxDurationUs
+    Busy,             // 15  load/run while a sequence is running
+    BadProgram,       // 16  staging length / version / CRC
+    NotCommitted,     // 17  SEQ_RUN without a committed program
 };
 
 struct ValidationResult {
