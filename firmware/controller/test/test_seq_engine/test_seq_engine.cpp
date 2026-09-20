@@ -696,6 +696,96 @@ void test_abort_during_exposure_is_terminal_immediately(void) {
     TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);  // nothing fired after the abort
 }
 
+// E3: the host starts the next XY move on Done — the stack axis must be back first.
+void test_done_waits_for_the_stepper_return_move(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.stack_axis_type = (uint8_t)StackAxisType::Stepper;
+    l.stack_axis_id = 2;
+    l.n_layers = 2;
+    l.n_channels = 1;
+    l.z_settle_us = 2000;
+    hal.move_duration_us[2] = 5000;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 1000));
+    for (int i = 0; i < 20000 && e.state() != SeqState::Returning; i++) run_for(e, hal, 100);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Returning, (uint8_t)e.state());
+    TEST_ASSERT_TRUE(e.running());
+    TEST_ASSERT_EQUAL_UINT32(2, e.progress().frames_fired);
+    const uint32_t t_ret = hal.now_us;
+    for (int i = 0; i < 20000 && e.state() == SeqState::Returning; i++) run_for(e, hal, 100);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_TRUE(hal.now_us - t_ret >= 5000 + 2000);  // move + settle
+}
+
+void test_done_waits_for_the_piezo_return_settle(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 1;
+    l.z_settle_us = 4000;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, 5000000, 40000);
+    for (int i = 0; i < 20000 && e.state() != SeqState::Returning; i++) run_for(e, hal, 100);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Returning, (uint8_t)e.state());
+    const uint32_t t_ret = hal.now_us;
+    for (int i = 0; i < 20000 && e.state() == SeqState::Returning; i++) run_for(e, hal, 100);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_TRUE(hal.now_us - t_ret >= 4000);
+    TEST_ASSERT_EQUAL_STRING("dac", hal.calls.back().what.c_str());  // the return write
+    TEST_ASSERT_EQUAL(40000, (int)hal.calls.back().b);
+}
+
+// Without return_to_start there is nothing to wait for.
+void test_no_return_means_done_at_the_last_exposure_end(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    l.return_to_start = 0;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, 5000000, 40000);
+    bool saw_returning = false;
+    for (int i = 0; i < 20000 && e.state() != SeqState::Done; i++) {
+        run_for(e, hal, 100);
+        if (e.state() == SeqState::Returning) saw_returning = true;
+    }
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_FALSE(saw_returning);
+}
+
+// A return move that never completes must not hang the host forever.
+void test_return_move_that_never_completes_times_out(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.stack_axis_type = (uint8_t)StackAxisType::Stepper;
+    l.stack_axis_id = 2;
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, /*wait_timeout_us=*/200000, 1000);
+    for (int i = 0; i < 20000 && e.state() != SeqState::Returning; i++) run_for(e, hal, 100);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Returning, (uint8_t)e.state());
+    hal.move_done_at_us[2] = hal.now_us + 10000000;  // stalled
+    hal.moving[2] = true;
+    run_for(e, hal, 300000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::WaitTimeout, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT8(2, e.progress().abort_detail);  // the stack axis
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -724,5 +814,9 @@ int main(int, char**) {
     RUN_TEST(test_stack_range_accounts_for_channel_offsets_and_negative_dz);
     RUN_TEST(test_abort_turns_everything_off_and_stops_motion);
     RUN_TEST(test_abort_during_exposure_is_terminal_immediately);
+    RUN_TEST(test_done_waits_for_the_stepper_return_move);
+    RUN_TEST(test_done_waits_for_the_piezo_return_settle);
+    RUN_TEST(test_no_return_means_done_at_the_last_exposure_end);
+    RUN_TEST(test_return_move_that_never_completes_times_out);
     return UNITY_END();
 }

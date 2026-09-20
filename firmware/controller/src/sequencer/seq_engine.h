@@ -61,6 +61,11 @@ class SeqEngine {
     // or 0xFF for the start position.
     bool stack_range_ok(int32_t start, uint8_t* bad_channel) const;
     void begin_prep(uint32_t k, uint32_t now_us);   // moves + DAC pre-arm + LED
+    // Command the stack axis (piezo DAC write or stepper move) and arm the settle gate.
+    // Shared by PREP and the return-to-start move. False = move rejected.
+    bool command_stack(int32_t target, uint32_t now_us);
+    bool stack_settled(uint32_t now_us);  // in position (stepper) and z_settle_us elapsed
+    void finish(uint32_t now_us);         // end of run or cancel: return move, then Done
     bool hw_ready_for(uint32_t k, uint32_t now_us);  // WAIT gate (design §5.2)
     void schedule_exposures(uint32_t k, uint32_t now_us);
     void fail(SeqError e, uint8_t detail);

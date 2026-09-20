@@ -107,24 +107,56 @@ void SeqEngine::abort(SeqError e) {
     if (running()) fail(e, 0);
 }
 
+bool SeqEngine::command_stack(int32_t target, uint32_t now_us) {
+    if (loop_.stack_axis_type == (uint8_t)StackAxisType::Piezo) {
+        hal_.set_dac(loop_.stack_axis_id, (uint16_t)target);  // range proven by stack_range_ok()
+        settle_armed_ = true;
+        settle_done_us_ = now_us + loop_.z_settle_us;
+        return true;
+    }
+    if (!hal_.start_axis_move(loop_.stack_axis_id, target)) return false;
+    settle_armed_ = false;  // armed on the first in-position observation
+    return true;
+}
+
+bool SeqEngine::stack_settled(uint32_t now_us) {
+    if (loop_.stack_axis_type == (uint8_t)StackAxisType::Stepper) {
+        if (!hal_.axis_in_position(loop_.stack_axis_id)) return false;
+        if (!settle_armed_) {
+            settle_armed_ = true;
+            settle_done_us_ = now_us + loop_.z_settle_us;
+        }
+    }
+    return reached(now_us, settle_done_us_);
+}
+
+// End of the run (all steps done, or cancel): command the return move if asked and hand
+// over to Returning. Done is only reported once the stack axis is back, because the host
+// starts the next XY move on Done.
+void SeqEngine::finish(uint32_t now_us) {
+    if (cancel_requested_ && step_ < total_steps())
+        progress_.abort_error = (uint8_t)SeqError::Canceled;
+    if (!loop_.return_to_start) {
+        state_ = SeqState::Done;
+        return;
+    }
+    if (!command_stack(stack_start_, now_us)) {
+        fail(SeqError::MoveFailed, loop_.stack_axis_id);
+        return;
+    }
+    wait_deadline_us_ = now_us + wait_timeout_us_;
+    state_ = SeqState::Returning;
+}
+
 void SeqEngine::begin_prep(uint32_t k, uint32_t now_us) {
     uint16_t layer;
     uint8_t chi;
     step_to_layer_channel(k, &layer, &chi);
     const SeqChannel& ch = channels_[chi];
     // Stack axis
-    int32_t target = stack_target_for(layer, chi);
-    if (loop_.stack_axis_type == (uint8_t)StackAxisType::Piezo) {
-        hal_.set_dac(loop_.stack_axis_id, (uint16_t)target);
-        settle_armed_ = true;
-        settle_done_us_ = now_us + loop_.z_settle_us;
-    } else {
-        if (!hal_.start_axis_move(loop_.stack_axis_id, target)) {
-            fail(SeqError::MoveFailed, loop_.stack_axis_id);
-            return;
-        }
-        settle_armed_ = false;  // armed on first in-position observation
-        settle_done_us_ = 0;
+    if (!command_stack(stack_target_for(layer, chi), now_us)) {
+        fail(SeqError::MoveFailed, loop_.stack_axis_id);
+        return;
     }
     // Filter wheel
     if (ch.filter_wheel != kNone) {
@@ -143,15 +175,7 @@ bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
     uint8_t chi;
     step_to_layer_channel(k, &layer, &chi);
     const SeqChannel& ch = channels_[chi];
-    // Stack axis settled?
-    if (loop_.stack_axis_type == (uint8_t)StackAxisType::Stepper) {
-        if (!hal_.axis_in_position(loop_.stack_axis_id)) return false;
-        if (!settle_armed_) {
-            settle_armed_ = true;
-            settle_done_us_ = now_us + loop_.z_settle_us;
-        }
-    }
-    if (!reached(now_us, settle_done_us_)) return false;
+    if (!stack_settled(now_us)) return false;
     // Filter wheel in position?
     if (ch.filter_wheel != kNone && !hal_.axis_in_position(ch.filter_wheel)) return false;
     // Every camera in the mask ready?
@@ -239,15 +263,7 @@ void SeqEngine::tick(uint32_t now_us) {
             // NOW — this is the overlap that hides filter/z moves behind readout.
             step_++;
             if (cancel_requested_ || step_ >= total_steps()) {
-                if (loop_.return_to_start) {
-                    if (loop_.stack_axis_type == (uint8_t)StackAxisType::Piezo)
-                        hal_.set_dac(loop_.stack_axis_id, (uint16_t)stack_start_);
-                    else
-                        hal_.start_axis_move(loop_.stack_axis_id, stack_start_);
-                }
-                if (cancel_requested_ && step_ < total_steps())
-                    progress_.abort_error = (uint8_t)SeqError::Canceled;
-                state_ = SeqState::Done;
+                finish(now_us);
                 break;
             }
             begin_prep(step_, now_us);
@@ -256,6 +272,14 @@ void SeqEngine::tick(uint32_t now_us) {
             state_ = SeqState::WaitHw;
             break;
         }
+        case SeqState::Returning:
+            if (stack_settled(now_us)) {
+                state_ = SeqState::Done;
+                break;
+            }
+            if (reached(now_us, wait_deadline_us_))
+                fail(SeqError::WaitTimeout, loop_.stack_axis_id);
+            break;
         default:
             break;
     }
