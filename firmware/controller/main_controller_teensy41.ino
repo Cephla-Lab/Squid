@@ -1,6 +1,8 @@
 #include "src/init.h"
 #include "src/operations.h"
 #include "src/serial_communication.h"
+#include "src/sequencer/seq_bind.h"
+#include "src/sequencer/seq_selftest.h"
 
 #include "src/def/def_v1.h"
 
@@ -30,6 +32,7 @@ void loop() {
   if (watchdog_enabled && (millis() - last_serial_message_time >= watchdog_timeout_ms))
   {
     turn_off_all_ports();
+    seq_abort(seq::SeqError::HostAbort);  // a running sequence must fail visibly, not go dark
     watchdog_enabled = false;  // One-shot: don't keep firing every loop iteration
   }
 
@@ -37,6 +40,13 @@ void loop() {
 
   process_serial_message();
   do_camera_trigger();
+
+  // Hardware sequencer: no-op unless a sequence is running. It also aborts the run through the
+  // engine when the laser interlock opens (the block above only forces the pins low).
+  seq_tick();
+#ifdef SEQ_SELFTEST
+  seq_selftest_tick();
+#endif
 
   prepare_homing_x();
   prepare_homing_y();

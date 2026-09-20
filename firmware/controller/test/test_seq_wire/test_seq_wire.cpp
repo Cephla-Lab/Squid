@@ -127,7 +127,7 @@ void test_status_byte_packing(void) {
     TEST_ASSERT_EQUAL_HEX8(0xE7, pack_status(SeqState::Returning, SeqError::WaitTimeout));
     TEST_ASSERT_EQUAL_HEX8(0x00, pack_status(SeqState::Idle, SeqError::None));
     // every error must fit the 5-bit field next to the 3-bit state
-    TEST_ASSERT_TRUE((uint8_t)SeqError::NotCommitted <= 0x1F);
+    TEST_ASSERT_TRUE((uint8_t)SeqError::EdgeQueueFull <= 0x1F);
     TEST_ASSERT_TRUE((uint8_t)SeqState::Returning <= 0x07);
 }
 
@@ -142,6 +142,7 @@ void test_wire_numbers_are_frozen(void) {
     TEST_ASSERT_EQUAL_UINT8(10, (uint8_t)SeqError::Canceled);
     TEST_ASSERT_EQUAL_UINT8(11, (uint8_t)SeqError::StackOutOfRange);
     TEST_ASSERT_EQUAL_UINT8(17, (uint8_t)SeqError::NotCommitted);
+    TEST_ASSERT_EQUAL_UINT8(18, (uint8_t)SeqError::EdgeQueueFull);
     TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)SeqState::Returning);
 }
 

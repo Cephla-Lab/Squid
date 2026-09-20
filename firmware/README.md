@@ -417,6 +417,32 @@ drives hardware only through `SeqHal`, so it is tested natively against a virtua
   every duration to `kMaxDurationUs` so that comparison is always valid.
 - `SeqError` and `SeqState` values are wire format — append only.
 
+**Hardware binding** (`src/sequencer/seq_bind.*`, `src/timing/event_timer.*`): `seq_tick()` runs
+every `loop()` pass. Exposure edges (trigger assert/release, TTL illumination on/off) are
+executed by a one-shot timer whose ISR only pops due edges from a time-sorted queue and writes
+GPIO — no SPI, no FastLED, no waits; the laser interlock is checked on the illumination-ON
+edge. It is separate from the v1 strobe ISR on purpose. An open interlock, the serial watchdog
+and `TURN_OFF_ALL_PORTS` abort a running sequence *through the engine*, so the run fails
+visibly instead of completing with dark frames. `seq_load()` rejects anything the flashed
+controller profile cannot do (camera beyond the trigger count, a ready line the controller
+lacks, a TTL port that does not exist).
+
+**Bench self-test** (`src/sequencer/seq_selftest.*`, never shipped): runs a canned 3-layer ×
+2-channel program every 2 s with no host, to put trigger / illumination / stack-axis timing
+on a scope. You must say which DAC channel is stepped as the stack axis — the build refuses
+to guess, and **7 is the real objective piezo, which will move** (~1 µm per layer around
+mid-range). No light by default.
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-D SEQ_SELFTEST -D SEQ_SELFTEST_STACK_DAC=7" \
+    pio run -e teensy41_newctrl -t upload
+# optional: -D SEQ_SELFTEST_TTL_MASK=0x01   strobe TTL port D1 (lasers disconnected or safe!)
+#           -D SEQ_SELFTEST_READY_LINE      gate on the camera trigger-ready input (pin 18)
+```
+Expect on the scope: trigger HIGH for 20.3 ms then 50.3 ms (strobe delay + exposure), repeating
+per layer; the stack DAC stepping right after the 50 ms exposure ends, i.e. inside that
+frame's readout window; the next trigger no sooner than 20 ms (settle) after the step.
+
 ## Joystick
 
 Control panel firmware for Teensy LC. Handles:

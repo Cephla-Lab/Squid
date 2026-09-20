@@ -79,6 +79,7 @@ enum class SeqError : uint8_t {
     Busy,             // 15  load/run while a sequence is running
     BadProgram,       // 16  staging length / version / CRC
     NotCommitted,     // 17  SEQ_RUN without a committed program
+    EdgeQueueFull,    // 18  an exposure could not be scheduled (binding's edge queue)
 };
 
 struct ValidationResult {
