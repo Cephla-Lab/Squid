@@ -255,3 +255,42 @@ def test_a_failed_burst_is_retried_once_then_the_acquisition_aborts():
     assert MAX_ATTEMPTS_PER_FOV == 2
     assert outcome_after_failed_burst(attempt=1) == BurstOutcome.RETRY
     assert outcome_after_failed_burst(attempt=2) == BurstOutcome.ABORT
+
+
+# --- the opt-in lives in Preferences, off by default --------------------------------------------
+
+
+def test_settings_default_off():
+    import control._def
+
+    assert control._def.USE_HARDWARE_SEQUENCED_ACQUISITION is False
+    assert control._def.SEQUENCER_USE_CAMERA_READY_LINE is False
+
+
+def test_preferences_dialog_round_trips_the_sequencer_settings(qtbot, tmp_path, monkeypatch):
+    from configparser import ConfigParser
+
+    import control._def
+    import control.widgets
+
+    config = ConfigParser()
+    config.add_section("GENERAL")
+    config_path = tmp_path / "configuration_test.ini"
+    monkeypatch.setattr(control._def, "USE_HARDWARE_SEQUENCED_ACQUISITION", False)
+    monkeypatch.setattr(control._def, "SEQUENCER_USE_CAMERA_READY_LINE", False)
+
+    dialog = control.widgets.PreferencesDialog(config, str(config_path))
+    qtbot.addWidget(dialog)
+    assert dialog.hardware_sequenced_acquisition_checkbox.isChecked() is False
+    assert dialog.sequencer_camera_ready_line_checkbox.isChecked() is False
+
+    dialog.hardware_sequenced_acquisition_checkbox.setChecked(True)
+    dialog.sequencer_camera_ready_line_checkbox.setChecked(True)
+    assert dialog._apply_settings() is True
+    assert config.get("GENERAL", "use_hardware_sequenced_acquisition") == "true"
+    assert config.get("GENERAL", "sequencer_use_camera_ready_line") == "true"
+
+    reopened = control.widgets.PreferencesDialog(config, str(config_path))
+    qtbot.addWidget(reopened)
+    assert reopened.hardware_sequenced_acquisition_checkbox.isChecked() is True
+    assert reopened.sequencer_camera_ready_line_checkbox.isChecked() is True
