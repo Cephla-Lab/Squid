@@ -195,6 +195,15 @@ class TestPack:
         assert len(program.pack()) == sp.STAGING_BYTES
         assert unpack(program.pack()) == program
 
+    def test_replace_works_on_the_program_and_on_every_spec(self):
+        program = golden_program()
+        assert program.replace(wait_timeout_us=1).wait_timeout_us == 1
+        assert program.loop.replace(n_layers=5).n_layers == 5
+        assert program.channels[0].replace(exposure_us=7).exposure_us == 7
+        assert program.cameras[0].replace(ready_line=3).ready_line == 3
+        # the original is untouched -- these are all frozen
+        assert program.wait_timeout_us == 5000000
+
     def test_crc16_is_computed_over_the_unpadded_bytes(self):
         program = golden_program()
         assert program.crc16() == crc16_ccitt_false(program.pack())

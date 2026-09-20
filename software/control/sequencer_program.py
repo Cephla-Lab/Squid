@@ -378,7 +378,7 @@ class SeqCameraSpec(_Replaceable):
 
 
 @dataclasses.dataclass(frozen=True)
-class SequencerProgram:
+class SequencerProgram(_Replaceable):
     """One staged sequencer program: what SEQ_WRITE uploads and SEQ_COMMIT seals."""
 
     loop: SeqLoopSpec
