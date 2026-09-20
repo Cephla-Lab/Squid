@@ -380,6 +380,28 @@ controller/
     └── constants.h                  # Constants and pin definitions
 ```
 
+### Sequencer engine (`src/sequencer/`)
+
+Runs a whole multichannel z-stack from one program: per step it moves the stack axis (and
+filter wheel) during the previous frame's readout, waits for settle + camera ready, then
+schedules the trigger and illumination edges. Pure C++11 with no Arduino dependencies — it
+drives hardware only through `SeqHal`, so it is tested natively against a virtual clock
+(`test/test_seq_engine/`). **Not yet wired to hardware or to the serial protocol.**
+
+- `load(loop, channels, cams, n_cameras)` once per acquisition; `start(now_us,
+  wait_timeout_us, stack_axis_start)` once per FOV. `start()` works from `Idle`, `Done` or
+  `Failed`, and refuses the whole run (`StackOutOfRange`) before the first move if any stack
+  target leaves the axis range (piezo: DAC codes 0–65535).
+- States: `WaitHw` → `Exposing` → … → `Returning` → `Done`, or `Failed`. With
+  `return_to_start`, `Done` is reported only after the stack axis is back and settled.
+- `cancel()` never truncates an exposure; while waiting it winds down at once. `abort(err)` is
+  for the laser interlock, the serial watchdog and `TURN_OFF_ALL_PORTS`: terminal immediately.
+  Every failure calls `SeqHal::all_off()` **and** `SeqHal::stop_motion()`.
+- Time is the 32-bit `micros()` counter, which wraps every 71.6 min. Timestamps are compared
+  only through `reached()` (signed difference), never with `<` / `>`; `validate()` bounds
+  every duration to `kMaxDurationUs` so that comparison is always valid.
+- `SeqError` and `SeqState` values are wire format — append only.
+
 ## Joystick
 
 Control panel firmware for Teensy LC. Handles:
