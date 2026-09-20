@@ -10,12 +10,14 @@ import squid.logging
 from squid.abc import (
     AbstractCamera,
     CameraAcquisitionMode,
+    CameraError,
     CameraGainRange,
     CameraFrameFormat,
     CameraPixelFormat,
     CameraFrame,
 )
 from squid.config import CameraConfig, ToupcamCameraModel
+import control._def
 from control._def import *
 
 import threading
@@ -793,7 +795,61 @@ class ToupcamCamera(AbstractCamera):
         else:
             pass
 
+    def _global_reset_active(self) -> bool:
+        """True when this camera is actually running LEVEL trigger + global reset.
+
+        Short-circuits on the opt-in setting, so with the setting off this costs no SDK
+        call at all and the driver behaves exactly as it does today.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return False
+        return self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+
+    def _apply_global_reset_mode(self):
+        """Put the sensor in global reset mode, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp; it is a
+        no-op unless the HARDWARE_TRIGGER_GLOBAL_RESET opt-in is on AND the trigger mode is
+        LEVEL (global reset is meaningless with a fixed-width EDGE trigger).
+
+        There is deliberately no fallback: if the camera does not confirm the mode, the
+        rolling get_strobe_time() below would fire the illumination before the last rows
+        have started exposing, which silently ruins the images.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return
+
+        try:
+            self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
+            read_back = self._camera.get_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE)
+        except toupcam.HRESULTException as ex:
+            raise CameraError(
+                "This camera rejected global reset mode "
+                f"(TOUPCAM_OPTION_GLOBAL_RESET_MODE): {control.toupcam_exceptions.explain(ex)}. "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET or use a camera that supports it."
+            ) from ex
+
+        if read_back != 1:
+            raise CameraError(
+                "This camera accepted the global reset mode write but reports "
+                f"TOUPCAM_OPTION_GLOBAL_RESET_MODE={read_back} instead of 1. "
+                "Refusing to acquire with rolling-shutter strobe timing."
+            )
+
+        self._log.info("Camera is in LEVEL trigger + global reset mode.")
+
     def get_strobe_time(self) -> float:
+        if self._global_reset_active():
+            # In global reset every row starts exposing at the trigger, so there is no
+            # "wait until the last row starts" term: what is left is the camera's own
+            # latency between seeing the trigger and starting the exposure.
+            #
+            # NOTE: trigger_delay_us is derived from the rolling-shutter model in
+            # _calculate_strobe_info (it is the SHR/line-length term). It is the best
+            # estimate the driver has of that residual latency, but whether it is exactly
+            # right in global reset has to be measured on a scope -- see the bench checks.
+            return self._strobe_info.trigger_delay_us / 1000.0
+
         # Use both strobe_time_us and trigger_delay_us here because our notion of "strobe time" is when the
         # last row first starts exposing.  For the toupcam, this happens after trigger delay + strobe time.
         #
@@ -974,6 +1030,10 @@ class ToupcamCamera(AbstractCamera):
                     error_type = hresult_checker(ex)
                     self._log.exception("Unable to set GPIO1 for trigger ready: " + error_type)
                     raise
+
+            # Before the exposure/strobe refresh below, so the strobe delay pushed to the
+            # microcontroller is the global-reset one and not the rolling-shutter one.
+            self._apply_global_reset_mode()
         # Re-set exposure time to force strobe to get set to the remote.
         self.set_exposure_time(self.get_exposure_time())
 
