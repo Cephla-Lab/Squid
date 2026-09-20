@@ -4420,24 +4420,6 @@ class LiveControlWidget(QFrame):
         self.entry_displayFPS.setDecimals(0)
         self.entry_displayFPS.setValue(self.fps_display)
 
-        self.slider_resolutionScaling = QSlider(Qt.Horizontal)
-        self.slider_resolutionScaling.setTickPosition(QSlider.TicksBelow)
-        self.slider_resolutionScaling.setMinimum(10)
-        self.slider_resolutionScaling.setMaximum(100)
-        self.slider_resolutionScaling.setValue(100)
-        self.slider_resolutionScaling.setSingleStep(10)
-
-        self.label_resolutionScaling = QSpinBox()
-        self.label_resolutionScaling.setKeyboardTracking(False)
-        self.label_resolutionScaling.setMinimum(10)
-        self.label_resolutionScaling.setMaximum(100)
-        self.label_resolutionScaling.setValue(self.slider_resolutionScaling.value())
-        self.label_resolutionScaling.setSuffix(" %")
-        self.slider_resolutionScaling.setSingleStep(5)
-
-        self.slider_resolutionScaling.valueChanged.connect(lambda v: self.label_resolutionScaling.setValue(round(v)))
-        self.label_resolutionScaling.valueChanged.connect(lambda v: self.slider_resolutionScaling.setValue(round(v)))
-
         # autolevel
         self.btn_autolevel = QPushButton("Autolevel")
         self.btn_autolevel.setCheckable(True)
@@ -4456,8 +4438,6 @@ class LiveControlWidget(QFrame):
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
         self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
-        self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
-        self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
         self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
@@ -4504,16 +4484,9 @@ class LiveControlWidget(QFrame):
 
         grid_line05 = QHBoxLayout()
         show_dislpay_fps = False
-        if show_display_options:
-            resolution_label = QLabel("Display Resolution")
-            resolution_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            grid_line05.addWidget(resolution_label)
-            grid_line05.addWidget(self.slider_resolutionScaling)
-            if show_dislpay_fps:
-                grid_line05.addWidget(QLabel("Display FPS"))
-                grid_line05.addWidget(self.entry_displayFPS)
-            else:
-                grid_line05.addWidget(self.label_resolutionScaling)
+        if show_display_options and show_dislpay_fps:
+            grid_line05.addWidget(QLabel("Display FPS"))
+            grid_line05.addWidget(self.entry_displayFPS)
 
         # Z-offset row (hidden by default; toggled by checkbox_showZOffset)
         self.checkbox_showZOffset = QCheckBox("Show Z-offset controls")
@@ -10679,6 +10652,8 @@ class AlignmentWidget(QWidget):
             ref_image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             if ref_image is None:
                 raise ValueError(f"Failed to read image: {image_path}")
+            if ref_image.ndim == 3:
+                ref_image = cv2.cvtColor(ref_image, cv2.COLOR_BGR2RGB)  # live frames are RGB
 
         self._reference_image = ref_image
         self._display.show_alignment_reference(ref_image)

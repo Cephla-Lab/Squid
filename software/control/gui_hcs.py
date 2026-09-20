@@ -1291,6 +1291,7 @@ class HighContentScreeningGui(QMainWindow):
         """Handle alignment widget request to move stage."""
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
+        self.imageDisplayWindow.invalidate_current_image()
 
     def _alignment_provide_position(self):
         """Provide current stage position to alignment widget."""
@@ -1301,13 +1302,14 @@ class HighContentScreeningGui(QMainWindow):
         """Register the live view against the reference image and move the stage to cancel the displacement."""
         live_image = self.imageDisplayWindow.current_image()
         pixel_size_um = self.microscope.get_image_pixel_size_um()
-        if not self.liveController.is_live or live_image is None or pixel_size_um is None:
+        if not self.liveController.is_live or pixel_size_um is None:
             QMessageBox.warning(self, "Alignment Error", "Auto align needs a running live view and a known pixel size.")
             return
+        if live_image is None:
+            QMessageBox.warning(self, "Alignment Error", "No live frame since the last stage move yet; try again.")
+            return
 
-        dx_px, dy_px = control.utils.measure_translation_px(
-            reference_image, live_image, live_crop_fraction=self.liveController.display_resolution_scaling
-        )
+        dx_px, dy_px = control.utils.measure_translation_px(reference_image, live_image)
         self.log.info(f"Auto align: live view displaced by ({dx_px:.1f}, {dy_px:.1f}) px")
         self._move_stage_by_image_delta(dx_px, dy_px, pixel_size_um)
 
@@ -1316,6 +1318,7 @@ class HighContentScreeningGui(QMainWindow):
         delta_x_mm, delta_y_mm = control.utils.image_delta_to_stage_delta_mm(delta_x_px, delta_y_px, pixel_size_um)
         self.stage.move_x(delta_x_mm, blocking=False)
         self.stage.move_y(delta_y_mm, blocking=True)
+        self.imageDisplayWindow.invalidate_current_image()  # the frame on screen predates this move
 
     def setupCameraTabWidget(self):
         self.cameraTabWidget.addTab(self.navigationWidget, "Stages")

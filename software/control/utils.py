@@ -39,16 +39,12 @@ def to_grayscale(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if image.ndim == 3 else image
 
 
-def measure_translation_px(
-    reference: np.ndarray, live: np.ndarray, live_crop_fraction: float = 1.0
-) -> Tuple[float, float]:
+def measure_translation_px(reference: np.ndarray, live: np.ndarray) -> Tuple[float, float]:
     """Displacement (dx, dy), in pixels of ``live``, of its content relative to ``reference``.
 
-    Below 100% display resolution the live frame is the center ``live_crop_fraction`` of the field
-    of view (see StreamHandler), so the same part of ``reference`` is compared. ``reference`` is then
-    resampled to ``live``'s shape, so a reference acquired at a different binning works too.
+    ``reference`` is resampled to ``live``'s shape, so a reference acquired at a different binning works too.
     """
-    reference = crop_to_fraction(to_grayscale(reference), live_crop_fraction)
+    reference = to_grayscale(reference)
     live = to_grayscale(live)
     if reference.shape != live.shape:
         height, width = live.shape
@@ -80,12 +76,6 @@ def crop_image(image, crop_width, crop_height):
     roi_bottom = int(min(image_height / 2 + crop_height / 2, image_height))
     image_cropped = image[roi_top:roi_bottom, roi_left:roi_right]
     return image_cropped
-
-
-def crop_to_fraction(image, fraction):
-    """Center crop keeping ``fraction`` of each dimension (how the live display applies its resolution scaling)."""
-    height, width = image.shape[:2]
-    return crop_image(image, round(width * fraction), round(height * fraction))
 
 
 def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):

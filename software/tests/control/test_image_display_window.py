@@ -284,6 +284,18 @@ def test_current_image_returns_last_displayed_frame(image_display_window):
     assert np.array_equal(image_display_window.current_image(), live)
 
 
+def test_invalidated_frame_is_gone_until_the_next_one_arrives(image_display_window):
+    win = image_display_window
+    win.display_image(np.zeros((2, 3), dtype=np.uint16))
+
+    win.invalidate_current_image()
+    assert win.current_image() is None
+
+    fresh = np.ones((2, 3), dtype=np.uint16)
+    win.display_image(fresh)
+    assert np.array_equal(win.current_image(), fresh)
+
+
 # ─── Live image rendered in green while a reference is shown ────────────────
 
 GREEN = (0, 255, 0)

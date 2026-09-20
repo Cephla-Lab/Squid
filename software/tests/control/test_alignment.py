@@ -45,20 +45,6 @@ def test_measure_translation_px_accepts_color_reference_against_mono_live():
     assert utils.measure_translation_px(reference, moving) == pytest.approx((4, -3))
 
 
-def test_measure_translation_px_accounts_for_display_center_crop():
-    """Below 100% display resolution the live frame is the center crop of the field of view."""
-    base = _textured_image()
-    live = utils.crop_to_fraction(np.roll(base, shift=(2, 6), axis=(0, 1)), 0.5)
-
-    assert utils.measure_translation_px(base, live, live_crop_fraction=0.5) == pytest.approx((6, 2))
-
-
-def test_crop_to_fraction_is_the_stream_handler_center_crop():
-    image = _textured_image(shape=(100, 120))
-
-    assert np.array_equal(utils.crop_to_fraction(image, 0.5), utils.crop_image(image, 60, 50))
-
-
 @pytest.mark.parametrize("inverted_objective, expected", [(False, (0.005, -0.010)), (True, (0.005, 0.010))])
 def test_image_delta_to_stage_delta_mm_follows_click_to_move_convention(monkeypatch, inverted_objective, expected):
     monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", inverted_objective)
@@ -108,6 +94,8 @@ def alignment_dialogs(acquisition_folder, monkeypatch):
     """Make the folder picker return the acquisition folder and mute the confirmation popup."""
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *args, **kwargs: str(acquisition_folder))
     monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+    # a failure inside the widget must surface as an assertion, not as a modal dialog that hangs the run
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args, **kwargs: pytest.fail(f"unexpected warning: {args[2:]}"))
 
 
 @pytest.fixture
@@ -144,6 +132,20 @@ def test_color_reference_is_overlaid_as_an_intensity_image(widget, image_display
     _start_alignment(widget)
 
     assert image_display_window.alignment_reference_item.image.ndim == 2
+
+
+RGB_REFERENCE_IMAGE = np.zeros((32, 32, 3), dtype=np.uint8)
+RGB_REFERENCE_IMAGE[..., 0] = 200  # red-dominant, so a BGR/RGB mix-up is visible
+
+
+@pytest.mark.parametrize(
+    "acquisition_folder", [(cv2.cvtColor(RGB_REFERENCE_IMAGE, cv2.COLOR_RGB2BGR), "bmp")], indirect=True
+)
+def test_color_reference_loaded_with_opencv_is_stored_as_rgb(widget):
+    """cv2.imread returns BGR; the registration and overlay paths expect RGB like the live frames."""
+    _start_alignment(widget)
+
+    assert np.array_equal(widget._reference_image, RGB_REFERENCE_IMAGE)
 
 
 def test_auto_is_only_shown_while_a_reference_is_loaded(widget):
@@ -241,13 +243,12 @@ def test_disabled_button_says_to_start_live_first(qtbot, image_display_window):
 # ─── GUI auto-align handler ─────────────────────────────────────────────────
 
 
-def _gui_stub(live_image, pixel_size_um, is_live=True, display_resolution_scaling=1.0):
+def _gui_stub(live_image, pixel_size_um, is_live=True):
     """HighContentScreeningGui-shaped stub with just what _alignment_auto_align touches."""
     stub = MagicMock()
     stub.imageDisplayWindow.current_image.return_value = live_image
     stub.microscope.get_image_pixel_size_um.return_value = pixel_size_um
     stub.liveController.is_live = is_live
-    stub.liveController.display_resolution_scaling = display_resolution_scaling
     # the real method under test must run, not a MagicMock stand-in
     stub._move_stage_by_image_delta = lambda *args: HighContentScreeningGui._move_stage_by_image_delta(stub, *args)
     return stub
@@ -264,15 +265,15 @@ def test_auto_align_moves_stage_to_cancel_measured_displacement(monkeypatch):
     gui.stage.move_y.assert_called_once_with(pytest.approx(3 * 0.5 / 1000), blocking=True)
 
 
-def test_auto_align_uses_the_display_crop_fraction(monkeypatch):
+def test_stage_moves_made_for_alignment_invalidate_the_displayed_frame(monkeypatch):
+    """The frame on screen predates the move; Auto must not register it a second time."""
     monkeypatch.setattr(control._def, "INVERTED_OBJECTIVE", False)
-    reference = _textured_image()
-    live = utils.crop_to_fraction(np.roll(reference, shift=(0, 4), axis=(0, 1)), 0.5)
-    gui = _gui_stub(live, pixel_size_um=0.5, display_resolution_scaling=0.5)
+    gui = _gui_stub(np.roll(REFERENCE_IMAGE, shift=(0, 4), axis=(0, 1)), pixel_size_um=0.5)
 
-    HighContentScreeningGui._alignment_auto_align(gui, reference)
+    HighContentScreeningGui._alignment_auto_align(gui, REFERENCE_IMAGE)
+    HighContentScreeningGui._alignment_move_to(gui, 2.0, 5.0)
 
-    gui.stage.move_x.assert_called_once_with(pytest.approx(4 * 0.5 / 1000), blocking=False)
+    assert gui.imageDisplayWindow.invalidate_current_image.call_count == 2
 
 
 @pytest.mark.parametrize(

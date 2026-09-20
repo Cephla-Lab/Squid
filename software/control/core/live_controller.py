@@ -59,8 +59,6 @@ class LiveController(QObject):
         self.counter = 0
         self.timestamp_last = 0
 
-        self.display_resolution_scaling = 1
-
         self.enable_channel_auto_filter_switching: bool = True
 
         # Confocal mode state - when True, use confocal_override from acquisition configs
@@ -635,6 +633,3 @@ class LiveController(QObject):
         if self.fps_trigger <= 5:
             if self.control_illumination and self.illumination_on == True:
                 self.turn_off_illumination()
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100

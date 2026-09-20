@@ -65,7 +65,6 @@ class QtStreamHandler(QObject):
 
     def __init__(
         self,
-        display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
         force_display_fn: Callable[[], bool] = lambda: False,
     ):
@@ -78,9 +77,7 @@ class QtStreamHandler(QObject):
             accept_new_frame=accept_new_frame_fn,
             force_display=force_display_fn,
         )
-        self._handler = StreamHandler(
-            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
-        )
+        self._handler = StreamHandler(handler_functions=functions)
 
     def get_frame_callback(self) -> Callable[[CameraFrame], None]:
         return self._handler.on_new_frame
@@ -96,9 +93,6 @@ class QtStreamHandler(QObject):
 
     def set_save_fps(self, fps):
         self._handler.set_save_fps(fps)
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
 log = squid.logging.get_logger(__name__)
@@ -503,7 +497,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
         self.base_path = None
@@ -677,7 +670,6 @@ class TrackingWorker(QObject):
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
         self.base_path = self.trackingController.base_path
@@ -771,13 +763,7 @@ class TrackingWorker(QObject):
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
                 image_ = np.squeeze(image_)
-                # display image
-                image_to_display_ = utils.crop_image(
-                    image_,
-                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
-                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
-                )
-                self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
+                self.image_to_display_multi.emit(image_, config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
                     if camera_frame.is_color():
@@ -1145,6 +1131,10 @@ class ImageDisplayWindow(QMainWindow):
     def current_image(self) -> Optional[np.ndarray]:
         """The most recently received frame, unmodified (None before the first one)."""
         return self._current_image
+
+    def invalidate_current_image(self):
+        """Forget the last frame, e.g. after a stage move it no longer shows what is under the objective."""
+        self._current_image = None
 
     def show_alignment_reference(self, image: np.ndarray):
         """Overlay a reference image in additive magenta on a green live view.
