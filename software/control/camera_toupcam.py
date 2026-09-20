@@ -838,6 +838,51 @@ class ToupcamCamera(AbstractCamera):
 
         self._log.info("Camera is in LEVEL trigger + global reset mode.")
 
+    def _apply_trigger_ready_output(self):
+        """Drive GPIO1 as the trigger-ready signal ("Frame Trigger Wait"), active low, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, and a
+        no-op unless the CAMERA_TRIGGER_READY_OUTPUT opt-in is on. Without it the driver
+        configures GPIO1 only in EDGE trigger mode; in LEVEL mode -- the one a controller that
+        gates on this line needs -- the output is left as it was.
+
+        ACTIVE LOW (inverter on): the controller's ready input is pulled up on the board
+        (measured on the new controller: about 4.7 k to 3.3 V), so an unplugged or broken
+        cable reads HIGH. HIGH therefore has to mean NOT ready.
+
+        Read back or raise: a line that is not what the controller expects would either stall
+        the sequence or let it trigger without waiting for the camera.
+        """
+        if not control._def.CAMERA_TRIGGER_READY_OUTPUT:
+            return
+
+        gpio1 = 3  # IoControl line numbers: 0 opto-isolated in, 1 opto-isolated out, 2 GPIO0, 3 GPIO1
+        frame_trigger_wait = 0
+        try:
+            self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, frame_trigger_wait)
+            self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER, 1)
+            mode = self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE, 0)
+            inverter = self._camera.IoControl(gpio1, toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER, 0)
+        except toupcam.HRESULTException as ex:
+            raise CameraError(
+                "This camera rejected the trigger-ready output setup on GPIO1: "
+                f"{control.toupcam_exceptions.explain(ex)}. Turn off CAMERA_TRIGGER_READY_OUTPUT "
+                "or use a camera that supports it."
+            ) from ex
+
+        if mode != frame_trigger_wait:
+            raise CameraError(
+                f"This camera reports GPIO1 output mode {mode} instead of 0 (Frame Trigger Wait). "
+                "Refusing to let a controller gate triggers on a line that is not trigger-ready."
+            )
+        if inverter != 1:
+            raise CameraError(
+                f"This camera reports the GPIO1 output inverter as {inverter} instead of 1 (active low). "
+                "An unplugged ready cable would read as ready."
+            )
+
+        self._log.info("Camera GPIO1 is configured as trigger ready (Frame Trigger Wait), active low.")
+
     def get_strobe_time(self) -> float:
         if self._global_reset_active():
             # In global reset every row starts exposing at the trigger, so there is no
@@ -1034,6 +1079,7 @@ class ToupcamCamera(AbstractCamera):
             # Before the exposure/strobe refresh below, so the strobe delay pushed to the
             # microcontroller is the global-reset one and not the rolling-shutter one.
             self._apply_global_reset_mode()
+            self._apply_trigger_ready_output()
         # Re-set exposure time to force strobe to get set to the remote.
         self.set_exposure_time(self.get_exposure_time())
 

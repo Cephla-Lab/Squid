@@ -289,6 +289,11 @@ class HamamatsuCamera(AbstractCamera):
         else (or not at all) would either stall the sequence or let it fire blind --
         neither may be discovered silently.
 
+        ACTIVE LOW (NEGATIVE polarity): the controller's ready input is pulled up on the
+        board (measured on the new controller: about 4.7 k to 3.3 V), so an unplugged or
+        broken cable reads HIGH. HIGH therefore has to mean NOT ready -- the run then times
+        out before the first frame instead of triggering without waiting for the camera.
+
         The property ids below address connector 1 (array index 0). DCAM addresses the
         Nth connector as <id> + N * DCAM_IDPROP._OUTPUTTRIGGER; only connector 1 is used
         here, so no offset is applied.
@@ -303,11 +308,11 @@ class HamamatsuCamera(AbstractCamera):
         )
         self._set_prop_or_raise(
             DCAM_IDPROP.OUTPUTTRIGGER_POLARITY,
-            DCAMPROP.OUTPUTTRIGGER_POLARITY.POSITIVE,
+            DCAMPROP.OUTPUTTRIGGER_POLARITY.NEGATIVE,
             "OUTPUTTRIGGER_POLARITY[0]",
         )
 
-        self._log.info("Camera output trigger 1 is configured as TRIGGER READY, active high.")
+        self._log.info("Camera output trigger 1 is configured as TRIGGER READY, active low.")
 
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()

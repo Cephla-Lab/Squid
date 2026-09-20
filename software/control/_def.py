@@ -1144,9 +1144,11 @@ HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
 HARDWARE_TRIGGER_GLOBAL_RESET = False
 
 # Opt-in: have the camera drive a "trigger ready" output the controller can gate the next
-# trigger on (Hamamatsu output trigger connector 1). Only configured while the camera is in
-# the HARDWARE trigger acquisition mode. The ToupCam driver already drives GPIO1 as a
-# trigger-ready output in EDGE mode and is not affected by this setting.
+# trigger on (Hamamatsu: output trigger connector 1; ToupCam: GPIO1, "Frame Trigger Wait").
+# Only configured while the camera is in the HARDWARE trigger acquisition mode.
+# ACTIVE LOW on both: the controller's ready input is pulled up, so an unplugged cable reads
+# HIGH, and HIGH has to mean NOT ready. With the setting off nothing changes -- the ToupCam
+# driver keeps driving GPIO1 (active high) in EDGE mode only, as it always has.
 CAMERA_TRIGGER_READY_OUTPUT = False
 
 

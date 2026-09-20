@@ -119,10 +119,21 @@ _GLOBAL_RESET_OPTION = toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE
 class FakeToupcamSdk:
     """Records every SDK call the driver makes and serves option read-backs."""
 
-    def __init__(self, put_option_error=None, option_readback=None):
+    # IoControl GET type -> the SET type whose last value it reports (same io line).
+    _IO_GET_TO_SET = {
+        toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE: toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE,
+        toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER: toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER,
+    }
+
+    def __init__(self, put_option_error=None, option_readback=None, io_error=None, io_readback=None):
         self.put_option_calls = []
         self.get_option_calls = []
         self.io_control_calls = []
+        self._io_state = {}
+        # (io line, control type) -> HRESULTException to raise from IoControl.
+        self._io_error = dict(io_error or {})
+        # (io line, GET control type) -> value to report, regardless of what was written.
+        self._io_readback = dict(io_readback or {})
         self._options = {toupcam.TOUPCAM_OPTION_TRIGGER: 0}
         # Option id -> HRESULTException to raise from put_Option.
         self._put_option_error = dict(put_option_error or {})
@@ -143,6 +154,14 @@ class FakeToupcamSdk:
 
     def IoControl(self, index, control_type, value):
         self.io_control_calls.append((index, control_type, value))
+        if (index, control_type) in self._io_error:
+            raise self._io_error[(index, control_type)]
+        if control_type in self._IO_GET_TO_SET:
+            if (index, control_type) in self._io_readback:
+                return self._io_readback[(index, control_type)]
+            return self._io_state.get((index, self._IO_GET_TO_SET[control_type]), 0)
+        self._io_state[(index, control_type)] = value
+        return 0
 
 
 def _make_toupcam(sdk, strobe_time_us=5000.0, trigger_delay_us=120.0):
@@ -280,6 +299,102 @@ _GLOBALEXPOSURE = int(DCAM_IDPROP.TRIGGER_GLOBALEXPOSURE)
 _OUT_KIND = int(DCAM_IDPROP.OUTPUTTRIGGER_KIND)
 _OUT_POLARITY = int(DCAM_IDPROP.OUTPUTTRIGGER_POLARITY)
 _NEW_HAMAMATSU_PROPS = (_TRIGGERACTIVE, _GLOBALEXPOSURE, _OUT_KIND, _OUT_POLARITY)
+
+
+# --- ToupCam: trigger-ready output ("Frame Trigger Wait" on GPIO1) -----------------------------
+
+_GPIO1 = 3  # IoControl line numbers: 0 opto in, 1 opto out, 2 GPIO0, 3 GPIO1
+_SET_MODE = toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE
+_GET_MODE = toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTMODE
+_SET_INVERTER = toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTINVERTER
+_GET_INVERTER = toupcam.TOUPCAM_IOCONTROLTYPE_GET_OUTPUTINVERTER
+_FRAME_TRIGGER_WAIT = 0
+
+# What master's driver sends today, per trigger mode. The opt-in must not change a single call.
+_TODAYS_IO_CALLS = {
+    HardwareTriggerMode.EDGE: [
+        (1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1),
+        (_GPIO1, _SET_MODE, _FRAME_TRIGGER_WAIT),
+        (_GPIO1, _SET_INVERTER, 0),
+    ],
+    HardwareTriggerMode.LEVEL: [
+        (0, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 4),
+        (2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_GPIODIR, 0),
+        (2, toupcam.TOUPCAM_IOCONTROLTYPE_SET_PWMSOURCE, 1),
+    ],
+}
+
+
+def _last_written(sdk, line, control_type):
+    values = [value for index, kind, value in sdk.io_control_calls if (index, kind) == (line, control_type)]
+    return values[-1] if values else None
+
+
+@pytest.mark.parametrize("trigger_mode", [HardwareTriggerMode.EDGE, HardwareTriggerMode.LEVEL])
+def test_toupcam_trigger_ready_output_off_sends_exactly_todays_io_calls(monkeypatch, trigger_mode):
+    """Characterization: passes before and after the change. It pins the defaults-never-change rule."""
+    _enable_global_reset(monkeypatch, enabled=False, trigger_mode=trigger_mode)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", False)
+    sdk = FakeToupcamSdk()
+
+    _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    assert sdk.io_control_calls == _TODAYS_IO_CALLS[trigger_mode]
+
+
+@pytest.mark.parametrize("trigger_mode", [HardwareTriggerMode.EDGE, HardwareTriggerMode.LEVEL])
+def test_toupcam_trigger_ready_output_on_is_frame_trigger_wait_active_low(monkeypatch, trigger_mode):
+    """In LEVEL mode - the one the hardware sequencer needs - master never configures GPIO1 at all.
+    Active low for the same reason as the Hamamatsu: the controller's ready input is pulled up."""
+    _enable_global_reset(monkeypatch, enabled=False, trigger_mode=trigger_mode)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk()
+
+    _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    assert _last_written(sdk, _GPIO1, _SET_MODE) == _FRAME_TRIGGER_WAIT
+    assert _last_written(sdk, _GPIO1, _SET_INVERTER) == 1
+    # ...and the camera was asked to confirm both
+    assert (_GPIO1, _GET_MODE, 0) in sdk.io_control_calls
+    assert (_GPIO1, _GET_INVERTER, 0) in sdk.io_control_calls
+
+
+def test_toupcam_trigger_ready_output_inverter_readback_mismatch_raises(monkeypatch):
+    _enable_global_reset(monkeypatch, enabled=False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk(io_readback={(_GPIO1, _GET_INVERTER): 0})
+
+    with pytest.raises(CameraError, match="inverter"):
+        _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_toupcam_trigger_ready_output_mode_readback_mismatch_raises(monkeypatch):
+    _enable_global_reset(monkeypatch, enabled=False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk(io_readback={(_GPIO1, _GET_MODE): 2})  # the camera says "Strobe"
+
+    with pytest.raises(CameraError, match="Frame Trigger Wait"):
+        _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_toupcam_trigger_ready_output_sdk_error_raises(monkeypatch):
+    _enable_global_reset(monkeypatch, enabled=False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk(io_error={(_GPIO1, _SET_INVERTER): toupcam.HRESULTException(0x80004001)})
+    cam = _make_toupcam(sdk)
+    # In EDGE mode master's own inverter write would hit the injected error first; LEVEL isolates ours.
+    with pytest.raises(CameraError, match="trigger-ready output"):
+        cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+
+def test_toupcam_trigger_ready_output_not_configured_in_software_trigger(monkeypatch):
+    _enable_global_reset(monkeypatch, enabled=False)
+    monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
+    sdk = FakeToupcamSdk()
+
+    _make_toupcam(sdk)._set_acquisition_mode_imp(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+
+    assert _last_written(sdk, _GPIO1, _SET_INVERTER) is None
 
 
 class FakeDcam:
@@ -510,7 +625,9 @@ def test_hamamatsu_trigger_ready_output_off_leaves_output_untouched(monkeypatch)
     assert dcam.written(_OUT_POLARITY) == []
 
 
-def test_hamamatsu_trigger_ready_output_on_configures_and_reads_back(monkeypatch):
+def test_hamamatsu_trigger_ready_output_on_is_active_low_and_reads_back(monkeypatch):
+    """The controller's ready input is pulled UP (measured: ~4.7 k to 3.3 V), so an unplugged cable
+    reads HIGH. HIGH must therefore mean NOT ready: the camera signals ready by driving LOW."""
     _enable_hamamatsu_global_reset(monkeypatch, enabled=False)
     monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
     dcam = FakeDcam()
@@ -519,7 +636,7 @@ def test_hamamatsu_trigger_ready_output_on_configures_and_reads_back(monkeypatch
     cam._set_acquisition_mode_imp(CameraAcquisitionMode.HARDWARE_TRIGGER)
 
     assert dcam.written(_OUT_KIND) == [int(DCAMPROP.OUTPUTTRIGGER_KIND.TRIGGERREADY)]
-    assert dcam.written(_OUT_POLARITY) == [int(DCAMPROP.OUTPUTTRIGGER_POLARITY.POSITIVE)]
+    assert dcam.written(_OUT_POLARITY) == [int(DCAMPROP.OUTPUTTRIGGER_POLARITY.NEGATIVE)]
 
 
 def test_hamamatsu_trigger_ready_output_is_independent_of_global_reset(monkeypatch):
@@ -548,7 +665,7 @@ def test_hamamatsu_trigger_ready_output_set_failure_raises(monkeypatch):
 def test_hamamatsu_trigger_ready_output_readback_mismatch_raises(monkeypatch):
     _enable_hamamatsu_global_reset(monkeypatch, enabled=False)
     monkeypatch.setattr(control._def, "CAMERA_TRIGGER_READY_OUTPUT", True)
-    dcam = FakeDcam(readback={_OUT_POLARITY: int(DCAMPROP.OUTPUTTRIGGER_POLARITY.NEGATIVE)})
+    dcam = FakeDcam(readback={_OUT_POLARITY: int(DCAMPROP.OUTPUTTRIGGER_POLARITY.POSITIVE)})
     cam = _make_hamamatsu(dcam)
 
     with pytest.raises(CameraError, match="OUTPUTTRIGGER_POLARITY"):
