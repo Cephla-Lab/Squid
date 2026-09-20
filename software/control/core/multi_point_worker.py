@@ -33,6 +33,7 @@ from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
 import squid.logging
 import control.core.job_processing
+from control.core.pending_captures import PendingCaptures
 from control.core.job_processing import ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
@@ -192,7 +193,9 @@ class MultiPointWorker:
         self._image_callback_idle = threading.Event()
         self._image_callback_idle.set()
         # This is protected by the threading event above (aka set after clear, take copy before set)
-        self._current_capture_info: Optional[CaptureInfo] = None
+        # The captures whose frames are still to arrive, in order: one for an ordinary capture, N
+        # for a hardware-sequenced burst. Invariant: empty <=> _ready_for_next_trigger is set.
+        self._pending_captures: PendingCaptures[CaptureInfo] = PendingCaptures()
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
@@ -633,7 +636,11 @@ class MultiPointWorker:
         if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last image to process!")
 
-        # No matter what, set the flags so things can continue
+        # No matter what, set the flags so things can continue. Captures whose frames never
+        # came are dropped with them, so the queue and the flag cannot disagree.
+        never_arrived = self._pending_captures.drop_remaining()
+        if never_arrived:
+            self._log.warning(f"{len(never_arrived)} expected frame(s) never arrived at end of acquisition.")
         self._ready_for_next_trigger.set()
         self._image_callback_idle.set()
 
@@ -1364,10 +1371,12 @@ class MultiPointWorker:
             self._image_callback_idle.clear()
             with self._timing.get_timer("_image_callback"):
                 self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._current_capture_info
-                self._current_capture_info = None
+                info = self._pending_captures.take(camera_frame.frame_id)
 
-                self._ready_for_next_trigger.set()
+                # Ready for the next trigger once every expected frame arrived: the one frame of
+                # an ordinary capture, or all N of a hardware-sequenced burst.
+                if self._pending_captures.empty:
+                    self._ready_for_next_trigger.set()
                 if not info:
                     self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
                     self._abort_due_to_error()
@@ -1496,7 +1505,7 @@ class MultiPointWorker:
                 configuration_idx=config_idx,
                 time_point=self.time_point,
             )
-            self._current_capture_info = current_capture_info
+            self._pending_captures.expect([current_capture_info])
         with self._timing.get_timer("send_trigger"):
             self.camera.send_trigger(illumination_time=camera_illumination_time)
 
