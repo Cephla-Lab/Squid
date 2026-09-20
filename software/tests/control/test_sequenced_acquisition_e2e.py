@@ -2,6 +2,7 @@
 software-sequenced one does - same count, same order, same z / channel / file ids - through the
 real MultiPointWorker, the simulated controller's sequencer and the simulated camera."""
 
+import os
 import threading
 
 import pytest
@@ -24,6 +25,7 @@ class Tracker:
     def __init__(self):
         self.finished = threading.Event()
         self.images = []  # (z_index, channel name, file_id, z_piezo_um), in arrival order
+        self.full = []  # (time_point, region, fov, z_index, channel name), in arrival order
         self.interventions = []  # messages asking the user to step in
 
     def callbacks(self) -> MultiPointControllerFunctions:
@@ -40,6 +42,7 @@ class Tracker:
 
     def _image(self, frame, info):
         self.images.append((info.z_index, info.configuration.name, info.file_id, info.z_piezo_um))
+        self.full.append((info.time_point, info.region_id, info.fov, info.z_index, info.configuration.name))
 
 
 @pytest.fixture
@@ -51,7 +54,16 @@ def sequencing_setup(monkeypatch):
     monkeypatch.setattr(control.sequencer_sim, "SPEED_UP_FACTOR", 50.0)
 
 
-def run_acquisition(channels, *, sequenced: bool, monkeypatch):
+def saved_files(mpc) -> list:
+    """Every file the acquisition wrote, relative to its experiment folder, sorted."""
+    root = os.path.join(mpc.base_path, mpc.experiment_ID)
+    found = []
+    for directory, _, names in os.walk(root):
+        found.extend(os.path.relpath(os.path.join(directory, name), root) for name in names)
+    return sorted(found)
+
+
+def run_acquisition(channels, *, sequenced: bool, monkeypatch, n_regions=1, nz=NZ, nt=1, binning=None):
     monkeypatch.setattr(control._def, "USE_HARDWARE_SEQUENCED_ACQUISITION", sequenced)
     scope = control.microscope.Microscope.build_from_global_config(True)
     try:
@@ -69,18 +81,23 @@ def run_acquisition(channels, *, sequenced: bool, monkeypatch):
         tracker = Tracker()
         mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tracker.callbacks())
         mpc.liveController.set_trigger_mode(control._def.TriggerMode.HARDWARE)
-        mpc.scanCoordinates.add_single_fov_region(
-            "region_1",
-            center_x=mpc.stage.get_config().X_AXIS.MIN_POSITION + 1.0,
-            center_y=mpc.stage.get_config().Y_AXIS.MIN_POSITION + 1.0,
-            center_z=mpc.stage.get_config().Z_AXIS.MIN_POSITION + 1.0,
-        )
+        if binning is not None:
+            scope.camera.set_binning(*binning)  # small frames: many FOVs stay fast
+        for index in range(n_regions):
+            mpc.scanCoordinates.add_single_fov_region(
+                f"region_{index + 1}",
+                center_x=mpc.stage.get_config().X_AXIS.MIN_POSITION + 1.0 + 0.5 * index,
+                center_y=mpc.stage.get_config().Y_AXIS.MIN_POSITION + 1.0,
+                center_z=mpc.stage.get_config().Z_AXIS.MIN_POSITION + 1.0,
+            )
         mpc.set_selected_configurations(selected_configurations_name=channels)
         mpc.set_use_piezo(True)
-        mpc.set_NZ(NZ)
+        mpc.set_NZ(nz)
         mpc.set_deltaZ(DZ_UM)
+        mpc.set_Nt(nt)
         mpc.run_acquisition()
-        assert tracker.finished.wait(60), "acquisition did not finish"
+        assert tracker.finished.wait(300), "acquisition did not finish"
+        tracker.files = saved_files(mpc)
         return tracker, mcu.seq_status, scope.addons.piezo_stage.position
     finally:
         scope.close()
@@ -164,3 +181,23 @@ def test_the_qt_controller_forwards_the_intervention_message_to_the_gui_signal(q
         assert blocker.args == ["check the camera cable"]
     finally:
         scope.close()
+
+
+def test_many_positions_and_time_points_pair_every_frame_and_write_the_same_files(sequencing_setup, monkeypatch):
+    """The stress case: many bursts back to back, across time points, with the camera thread and
+    the worker thread running concurrently. Every frame must land on its own (time point, region,
+    fov, z, channel), and the files on disk must be the ones a software-sequenced run writes."""
+    channels = ["Fluorescence 405 nm Ex", "Fluorescence 488 nm Ex", "Fluorescence 561 nm Ex"]
+    kwargs = dict(monkeypatch=monkeypatch, n_regions=6, nz=4, nt=2, binning=(4, 4))
+    software, _, _ = run_acquisition(channels, sequenced=False, **kwargs)
+    sequenced, status, piezo_um = run_acquisition(channels, sequenced=True, **kwargs)
+
+    assert len(software.full) == 6 * 4 * 3 * 2
+    assert sequenced.full == software.full  # same images, same order, same identities
+    assert len(set(sequenced.full)) == len(sequenced.full)  # nothing delivered twice
+    assert sequenced.interventions == []
+    assert status.state == SeqState.DONE and status.frames_fired == 4 * 3  # the last FOV's burst
+    assert piezo_um == pytest.approx(20)
+
+    assert len(software.files) > 0
+    assert sequenced.files == software.files
