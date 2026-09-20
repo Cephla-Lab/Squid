@@ -1,0 +1,105 @@
+"""A Hamamatsu frame's id comes from the CAMERA's frame stamp, not from a host-side counter.
+
+The read loop takes the NEWEST frame out of DCAM's ring buffer. When two frames land between two
+reads, the older one is never seen; when a frame lands between the wake-up and the read, the newer
+one is read twice. A host-side counter numbers both cases 1, 2, 3... as if nothing had happened.
+A consumer that needs every frame, in order - a hardware-sequenced burst - can only tell from ids
+that follow the camera. Only the SDK boundary is faked here.
+"""
+
+import contextlib
+import ctypes
+import threading
+import types
+from unittest import mock
+
+import numpy as np
+
+import squid.logging
+from squid.config import CameraPixelFormat
+
+# control/dcamapi4.py loads the vendor library (libdcamapi.so / dcamapi.dll) at import time. Only
+# that load is patched, and only while importing, so the driver module is the real one.
+with contextlib.ExitStack() as _stack:
+    _stack.enter_context(mock.patch.object(ctypes.cdll, "LoadLibrary", return_value=mock.MagicMock()))
+    if hasattr(ctypes, "windll"):
+        _stack.enter_context(mock.patch.object(ctypes.windll, "LoadLibrary", return_value=mock.MagicMock()))
+    import control.camera_hamamatsu as camera_hamamatsu
+
+
+class FakeDcam:
+    """Serves buf_getframe(-1) from a scripted list of frame stamps (DCAM counts them from 0 at cap_start)."""
+
+    def __init__(self, stamps):
+        self._stamps = list(stamps)
+        self.cap_starts = 0
+
+    def script(self, stamps):
+        self._stamps = list(stamps)
+
+    def buf_getframe(self, index):
+        assert index == -1  # "the newest frame", exactly what buf_getlastframedata() asks for
+        stamp = self._stamps.pop(0)
+        return types.SimpleNamespace(framestamp=stamp), np.full((4, 4), stamp, dtype=np.uint16)
+
+    def buf_alloc(self, count):
+        return True
+
+    def cap_start(self):
+        self.cap_starts += 1
+        return True
+
+
+def make_camera(dcam):
+    cam = object.__new__(camera_hamamatsu.HamamatsuCamera)
+    cam._camera = dcam
+    cam._log = squid.logging.get_logger("test_camera_hamamatsu_frame_id")
+    cam._frame_lock = threading.Lock()
+    cam._current_frame = None
+    cam._frame_id_base = 1
+    cam._trigger_sent = threading.Event()
+    cam._is_streaming = threading.Event()
+    cam._ensure_read_thread_running = lambda: None  # no thread: the test drives the reads itself
+    cam._process_raw_frame = lambda raw: raw
+    cam.get_frame_format = lambda: None
+    cam.get_pixel_format = lambda: CameraPixelFormat.MONO16
+    return cam
+
+
+def read_ids(cam, count):
+    return [cam._read_newest_frame().frame_id for _ in range(count)]
+
+
+def test_frame_ids_follow_the_cameras_frame_stamp():
+    cam = make_camera(FakeDcam([0, 1, 2]))
+    assert read_ids(cam, 3) == [1, 2, 3]  # the first id stays 1, as it always was
+
+
+def test_a_frame_the_read_loop_never_saw_leaves_a_hole_in_the_ids():
+    cam = make_camera(FakeDcam([0, 2]))  # stamp 1 landed and was overtaken before it was read
+    assert read_ids(cam, 2) == [1, 3]
+
+
+def test_a_frame_read_twice_repeats_its_id():
+    cam = make_camera(FakeDcam([0, 2, 2]))  # stamp 2 landed between the wake-up for 1 and the read
+    assert read_ids(cam, 3) == [1, 3, 3]
+
+
+def test_the_frame_carries_the_pixels_that_belong_to_its_id():
+    cam = make_camera(FakeDcam([0, 2]))
+    frames = [cam._read_newest_frame() for _ in range(2)]
+    assert [int(frame.frame[0, 0]) for frame in frames] == [0, 2]
+    assert cam._current_frame is frames[-1]
+
+
+def test_ids_keep_increasing_when_capture_restarts_and_the_stamp_starts_over():
+    dcam = FakeDcam([0, 1])
+    cam = make_camera(dcam)
+    assert cam.start_streaming()
+    assert read_ids(cam, 2) == [1, 2]
+
+    cam._is_streaming.clear()  # what stop_streaming() leaves behind
+    dcam.script([0, 1])  # DCAM counts from 0 again
+    assert cam.start_streaming()
+    assert read_ids(cam, 2) == [3, 4]
+    assert dcam.cap_starts == 2
