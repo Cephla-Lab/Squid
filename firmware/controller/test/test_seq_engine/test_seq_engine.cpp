@@ -786,6 +786,31 @@ void test_return_move_that_never_completes_times_out(void) {
     TEST_ASSERT_EQUAL_UINT8(2, e.progress().abort_detail);  // the stack axis
 }
 
+// E6: a cancel during WAIT must not fire another frame, nor wait out a stuck ready line.
+void test_cancel_during_wait_fires_nothing_more(void) {
+    FakeHal hal;
+    hal.ready_lines[0] = false;  // camera never becomes ready
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_channels = 1;
+    l.z_settle_us = 1000;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].ready_line = 0;
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_for(e, hal, 10000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::WaitHw, (uint8_t)e.state());
+    e.cancel();
+    run_for(e, hal, 5000);  // far less than the 5 s WAIT timeout
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::Canceled, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT32(0, e.progress().frames_fired);
+    TEST_ASSERT_FALSE(saw(hal, "expose"));
+    TEST_ASSERT_EQUAL_STRING("dac", hal.calls.back().what.c_str());  // piezo returned to start
+    TEST_ASSERT_EQUAL(40000, (int)hal.calls.back().b);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -818,5 +843,6 @@ int main(int, char**) {
     RUN_TEST(test_done_waits_for_the_piezo_return_settle);
     RUN_TEST(test_no_return_means_done_at_the_last_exposure_end);
     RUN_TEST(test_return_move_that_never_completes_times_out);
+    RUN_TEST(test_cancel_during_wait_fires_nothing_more);
     return UNITY_END();
 }

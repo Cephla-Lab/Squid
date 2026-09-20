@@ -250,6 +250,12 @@ void SeqEngine::fail(SeqError e, uint8_t detail) {
 void SeqEngine::tick(uint32_t now_us) {
     switch (state_) {
         case SeqState::WaitHw:
+            // A cancel while waiting winds down at once: no further frame, and no waiting
+            // out a camera-ready line that may never assert.
+            if (cancel_requested_) {
+                finish(now_us);
+                break;
+            }
             if (hw_ready_for(step_, now_us)) {
                 schedule_exposures(step_, now_us);
                 break;
