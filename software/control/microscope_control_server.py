@@ -21,6 +21,7 @@ import squid.logging
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
+from control.core.disk_space import preflight_disk_check
 
 # Qt imports for thread-safe GUI operations
 try:
@@ -693,7 +694,11 @@ class MicroscopeControlServer:
             le=99,
         ),
     ) -> Dict[str, Any]:
-        """Run a multi-point acquisition across wells using the MultiPointController."""
+        """Run a multi-point acquisition across wells using the MultiPointController.
+
+        An acquisition the save disk cannot hold is refused with an error before anything is created,
+        unless the Large Acquisitions setting is on.
+        """
         import os
 
         import control._def
@@ -781,6 +786,10 @@ class MicroscopeControlServer:
 
             # Set the base path and start new experiment
             self.multipoint_controller.set_base_path(base_path)
+            self._refuse_if_acquisition_will_not_fit(
+                base_path,
+                opt_in_hint="enable Settings > Acquisition > Large Acquisitions (large_acquisition_mode = True in the INI)",
+            )
             self.multipoint_controller.start_new_experiment(experiment_id)
 
             # Calculate total FOVs for status reporting
@@ -1066,6 +1075,11 @@ class MicroscopeControlServer:
         and region coordinates - wellplate or flexible), updates the GUI to reflect these
         settings, and starts the acquisition. Regions and every controller setting come from the
         file through control.core.acquisition_settings (shared with the fluidics protocol runner).
+
+        An acquisition the save disk cannot hold is refused with an error before anything is created,
+        unless large acquisition mode is on for it ('large_acquisition_mode: true' under 'acquisition:'
+        in the YAML, or the Large Acquisitions setting); it then pauses when space runs low and resumes
+        as finished data is offloaded.
         """
         import os
 
@@ -1150,6 +1164,13 @@ class MicroscopeControlServer:
 
             # Set the base path and start new experiment
             self.multipoint_controller.set_base_path(base_path)
+            self._refuse_if_acquisition_will_not_fit(
+                base_path,
+                opt_in_hint=(
+                    "add 'large_acquisition_mode: true' under 'acquisition:' in the YAML, or enable "
+                    "Settings > Acquisition > Large Acquisitions"
+                ),
+            )
             self.multipoint_controller.start_new_experiment(experiment_id)
 
             # Calculate total FOVs for status reporting
@@ -1186,6 +1207,30 @@ class MicroscopeControlServer:
             self._log.error(f"Failed to start acquisition from YAML: {e}")
             self._log.error(traceback.format_exc())
             raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
+
+    def _refuse_if_acquisition_will_not_fit(self, base_path: str, opt_in_hint: str) -> None:
+        """The GUI's "Not Enough Disk Space" check for TCP clients, who never see that dialog.
+
+        Call with the controller fully configured and before anything is created on disk. A run the save
+        disk cannot hold is refused unless large acquisition mode is on for it (then the disk-space guard
+        pauses it while data is offloaded). Runs that save nothing are not checked.
+        """
+        controller = self.multipoint_controller
+        if controller.skip_saving:
+            return
+        check = preflight_disk_check(controller, base_path)
+        if check.fits:
+            return
+        if controller.large_acquisition_mode or control._def.LARGE_ACQUISITION_MODE:
+            self._log.warning(
+                f"{check.describe()} Large acquisition mode is on: the run will pause when the disk runs low "
+                "and resume as data is offloaded."
+            )
+            return
+        raise RuntimeError(
+            f"{check.describe()} Free up disk space or reduce the acquisition. To run an acquisition larger "
+            f"than the disk (it pauses when space runs low while you offload finished data), {opt_in_hint}."
+        )
 
     @schema_method
     def _cmd_set_performance_mode(

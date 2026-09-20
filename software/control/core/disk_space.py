@@ -199,3 +199,49 @@ class DiskSpaceGuard:
         if not self._directory.is_dir():
             return 0
         return control.utils.get_directory_disk_usage(self._directory)
+
+
+PREFLIGHT_SAFETY_FACTOR = 1.03
+
+
+@dataclass(frozen=True)
+class PreflightDiskCheck:
+    """Whether the configured acquisition fits on the save disk, as checked before it starts."""
+
+    required_bytes: float
+    available_bytes: int
+    image_count: int
+    save_directory: str
+
+    @property
+    def fits(self) -> bool:
+        return self.required_bytes <= self.available_bytes
+
+    def describe(self) -> str:
+        megabytes_required = int(self.required_bytes / 1024 / 1024)
+        megabytes_available = int(self.available_bytes / 1024 / 1024)
+        return (
+            f"This acquisition will capture {self.image_count:,} images, which will"
+            f" require {megabytes_required:,} [MB], but '{self.save_directory}' only has"
+            f" {megabytes_available:,} [MB] available."
+        )
+
+
+def preflight_disk_check(
+    multi_point_controller, save_directory: str, safety_factor: float = PREFLIGHT_SAFETY_FACTOR
+) -> PreflightDiskCheck:
+    """Compare the fully configured controller's storage estimate with the free space where it will save.
+
+    Shared by the GUI's "Not Enough Disk Space" dialog and the TCP run commands so both decide alike.
+    ``save_directory`` may not exist yet (the TCP commands check before creating anything); free space is
+    then measured on its nearest existing parent, which is the disk it will be created on.
+    """
+    existing = pathlib.Path(save_directory)
+    while not existing.exists() and existing != existing.parent:
+        existing = existing.parent
+    return PreflightDiskCheck(
+        required_bytes=safety_factor * multi_point_controller.get_estimated_acquisition_disk_storage(),
+        available_bytes=control.utils.get_available_disk_space(existing),
+        image_count=multi_point_controller.get_acquisition_image_count(),
+        save_directory=str(save_directory),
+    )
