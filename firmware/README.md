@@ -401,7 +401,7 @@ Runs a whole multichannel z-stack from one program: per step it moves the stack 
 filter wheel) during the previous frame's readout, waits for settle + camera ready, then
 schedules the trigger and illumination edges. Pure C++11 with no Arduino dependencies — it
 drives hardware only through `SeqHal`, so it is tested natively against a virtual clock
-(`test/test_seq_engine/`). **Not yet wired to hardware or to the serial protocol.**
+(`test/test_seq_engine/`).
 
 - `load(loop, channels, cams, n_cameras)` once per acquisition; `start(now_us,
   wait_timeout_us, stack_axis_start)` once per FOV. `start()` works from `Idle`, `Done` or
@@ -426,6 +426,26 @@ and `TURN_OFF_ALL_PORTS` abort a running sequence *through the engine*, so the r
 visibly instead of completing with dark frames. `seq_load()` rejects anything the flashed
 controller profile cannot do (camera beyond the trigger count, a ready line the controller
 lacks, a TTL port that does not exist).
+
+**Serial transport** (firmware 1.7; `src/commands/sequence_commands.*`, `src/sequencer/seq_staging.*`,
+wire contract in `src/sequencer/seq_wire.h`). A v1 command carries 5 payload bytes and the
+protocol tracks ONE pending command, which shapes everything:
+
+| Opcode | Payload | |
+|---|---|---|
+| `SEQ_WRITE` 60 | `[2]` word index, `[3..6]` 4 bytes | absolute write into the staging buffer — a blind v1 resend is idempotent |
+| `SEQ_COMMIT` 61 | `[2..3]` length, `[4..5]` CRC-16/CCITT-FALSE | catches a lost chunk, then parses + validates against the flashed controller profile |
+| `SEQ_RUN` 62 | `[2..5]` int32 stack start | stays `IN_PROGRESS` until the sequence is terminal, so the host's normal wait works; failure = `CMD_EXECUTION_ERROR` |
+| `SEQ_CANCEL` 63 | — | completes when the run is terminal; never truncates an exposure |
+
+The host never polls during a run. Status rides bytes 14–17 of the 10 ms status packet:
+`[14]` = state (3 b) · `SeqError` (5 b), `[15]` = detail, `[16..17]` = frames fired. While a
+sequence runs the dispatcher refuses every opcode except `HEARTBEAT`, `SEQ_CANCEL`,
+`TURN_OFF_ALL_PORTS` and `RESET` (one allow-table, natively tested), and the joystick / focus
+wheel are ignored. `TURN_OFF_ALL_PORTS` and `RESET` abort the run through the engine; the
+shutdown command itself still reports success. Opcodes 44–50 and status bytes 19–21 are left
+to the Z encoder interface (firmware 1.6). **Firmware older than 1.7 answers these opcodes
+with success and does nothing — the host must gate on the version.**
 
 **Bench self-test** (`src/sequencer/seq_selftest.*`, never shipped): runs a canned 3-layer ×
 2-channel program every 2 s with no host, to put trigger / illumination / stack-axis timing

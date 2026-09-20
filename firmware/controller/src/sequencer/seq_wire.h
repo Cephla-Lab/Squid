@@ -39,6 +39,12 @@ constexpr uint8_t kFwMinor = 7;
 
 constexpr uint8_t kWordBytes = 4;
 
+// ValidationResult.detail for SeqError::BadProgram
+constexpr uint8_t kBadProgramLength = 0;    // length outside the staging buffer / fixed part
+constexpr uint8_t kBadProgramVersion = 1;   // WireHeader.version
+constexpr uint8_t kBadProgramMismatch = 2;  // length != program_bytes(n_channels, n_cameras)
+constexpr uint8_t kBadProgramCrc = 3;       // CRC-16 of the staged bytes
+
 struct __attribute__((packed)) WireHeader {
     uint8_t version;  // kWireVersion
     uint8_t n_cameras;

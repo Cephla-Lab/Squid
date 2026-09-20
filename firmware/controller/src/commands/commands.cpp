@@ -4,6 +4,7 @@
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
 #include "../trigger_pins.h"
+#include "sequence_commands.h"
 
 CommandCallback cmd_map[256] = {0};
 
@@ -58,6 +59,10 @@ void init_callbacks()
 
     cmd_map[INITIALIZE] = &callback_initialize;
     cmd_map[RESET] = &callback_reset;
+    cmd_map[SEQ_WRITE] = &callback_seq_write;
+    cmd_map[SEQ_COMMIT] = &callback_seq_commit;
+    cmd_map[SEQ_RUN] = &callback_seq_run;
+    cmd_map[SEQ_CANCEL] = &callback_seq_cancel;
 }
 
 void callback_default()
@@ -387,6 +392,7 @@ void callback_initialize()
 
 void callback_reset()
 {
+    seq_transport_reset();  // a running sequence is aborted through the engine
     mcu_cmd_execution_in_progress = false;
     X_commanded_movement_in_progress = false;
     Y_commanded_movement_in_progress = false;

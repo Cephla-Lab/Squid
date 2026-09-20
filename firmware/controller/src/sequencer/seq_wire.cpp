@@ -6,16 +6,16 @@ namespace seq {
 namespace wire {
 
 ValidationResult parse_staging(const uint8_t* buf, uint16_t len, ParsedProgram* out) {
-    if (len < kChannelsOffset || len > kStagingBytes) return {SeqError::BadProgram, 0};
+    if (len < kChannelsOffset || len > kStagingBytes) return {SeqError::BadProgram, kBadProgramLength};
     // memcpy, not casts: the staging buffer has no alignment guarantee.
     WireHeader h;
     memcpy(&h, buf, sizeof h);
-    if (h.version != kWireVersion) return {SeqError::BadProgram, 1};
+    if (h.version != kWireVersion) return {SeqError::BadProgram, kBadProgramVersion};
     if (h.n_cameras < 1 || h.n_cameras > kMaxCameras) return {SeqError::BadCamera, 0};
     memcpy(&out->loop, buf + kLoopOffset, sizeof(SeqLoop));
     const uint8_t n_ch = out->loop.n_channels;
     if (n_ch < 1 || n_ch > kMaxChannels) return {SeqError::BadChannelCount, 0};
-    if (len != program_bytes(n_ch, h.n_cameras)) return {SeqError::BadProgram, 2};
+    if (len != program_bytes(n_ch, h.n_cameras)) return {SeqError::BadProgram, kBadProgramMismatch};
     // frames_fired travels as a u16 in the status packet
     if ((uint32_t)out->loop.n_layers * n_ch > 65535u) return {SeqError::BadLayerCount, 0};
     memcpy(out->channels, buf + kChannelsOffset, n_ch * sizeof(SeqChannel));

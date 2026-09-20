@@ -1,6 +1,7 @@
 #include "src/init.h"
 #include "src/operations.h"
 #include "src/serial_communication.h"
+#include "src/commands/sequence_commands.h"
 #include "src/sequencer/seq_bind.h"
 #include "src/sequencer/seq_selftest.h"
 
@@ -44,6 +45,7 @@ void loop() {
   // Hardware sequencer: no-op unless a sequence is running. It also aborts the run through the
   // engine when the laser interlock opens (the block above only forces the pins low).
   seq_tick();
+  seq_transport_tick();  // completes the pending SEQ_RUN / SEQ_CANCEL once the run is terminal
 #ifdef SEQ_SELFTEST
   seq_selftest_tick();
 #endif
@@ -67,8 +69,13 @@ void loop() {
   finalize_homing_w2();
   finalize_homing_xy();
 
-  check_joystick();
-  do_focus_control();
+  // The joystick and the focus wheel are ignored while a sequence runs: a nudged wheel must
+  // not move Z in the middle of a stack (do_focus_control writes the Z target every pass).
+  if (!seq_running())
+  {
+    check_joystick();
+    do_focus_control();
+  }
 
   send_position_update();
   check_position();

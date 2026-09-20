@@ -1,5 +1,7 @@
 #include "serial_communication.h"
 
+#include "commands/sequence_commands.h"  // seq_command_refused, seq_fill_status
+
 void process_serial_message()
 {
   while (SerialUSB.available())
@@ -35,6 +37,15 @@ void process_serial_message()
       if (buffer_rx[1] != HEARTBEAT)
       {
           mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
+      }
+
+      // While a hardware sequence runs the MCU owns the stage, the light and the camera
+      // trigger: everything but the keepalive, cancel and the safety commands is refused
+      // here, at one choke point, instead of by guards in every callback.
+      if (seq_command_refused(buffer_rx[1]))
+      {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        continue;
       }
 
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
@@ -83,6 +94,10 @@ void send_position_update()
     // fail-safe clearing of the joystick_button_pressed bit (in case the ack is not received)
     if (joystick_button_pressed && millis() - joystick_button_pressed_timestamp > 1000)
       joystick_button_pressed = false;
+
+    // Bytes 14-17: hardware sequencer status (state|error, detail, frames fired). Firmware
+    // never wrote these before 1.7; the host used to parse them as an unused theta position.
+    seq_fill_status(&buffer_tx[14]);
 
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
