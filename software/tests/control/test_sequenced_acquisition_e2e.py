@@ -24,6 +24,7 @@ class Tracker:
     def __init__(self):
         self.finished = threading.Event()
         self.images = []  # (z_index, channel name, file_id, z_piezo_um), in arrival order
+        self.interventions = []  # messages asking the user to step in
 
     def callbacks(self) -> MultiPointControllerFunctions:
         return MultiPointControllerFunctions(
@@ -34,6 +35,7 @@ class Tracker:
             signal_current_fov=lambda *a: None,
             signal_overall_progress=lambda *a: None,
             signal_region_progress=lambda *a: None,
+            signal_user_intervention_needed=self.interventions.append,
         )
 
     def _image(self, frame, info):
@@ -113,24 +115,25 @@ def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_
     assert status.frames_fired == 0  # the controller's sequencer was never used
 
 
-def test_a_failed_burst_is_discarded_and_the_fov_retried_once(sequencing_setup, monkeypatch):
+def test_failed_bursts_are_discarded_and_the_fov_retried_until_the_third_attempt(sequencing_setup, monkeypatch):
     real = multi_point_worker.burst_failure_reason
     calls = []
 
-    def fail_first(*args, **kwargs):
+    def fail_twice(*args, **kwargs):
         calls.append(1)
-        return "injected: a frame was dropped inside the burst" if len(calls) == 1 else real(*args, **kwargs)
+        return "injected: a frame was dropped inside the burst" if len(calls) <= 2 else real(*args, **kwargs)
 
-    monkeypatch.setattr(multi_point_worker, "burst_failure_reason", fail_first)
+    monkeypatch.setattr(multi_point_worker, "burst_failure_reason", fail_twice)
     tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
 
-    assert len(calls) == 2  # O1: retried once
-    # the discarded burst reached nobody: every image exactly once, in order
+    assert len(calls) == 3  # retry, then retry again (Hongquan, 2026-09-20)
+    # the two discarded bursts reached nobody: every image exactly once, in order
     assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for z in range(NZ) for name in FLUORESCENCE]
     assert status.frames_fired == NZ * len(FLUORESCENCE)
+    assert tracker.interventions == []
 
 
-def test_a_second_failure_aborts_without_saving_anything(sequencing_setup, monkeypatch):
+def test_a_third_failure_stops_the_acquisition_and_asks_the_user_to_intervene(sequencing_setup, monkeypatch):
     calls = []
 
     def always_fail(*args, **kwargs):
@@ -140,5 +143,24 @@ def test_a_second_failure_aborts_without_saving_anything(sequencing_setup, monke
     monkeypatch.setattr(multi_point_worker, "burst_failure_reason", always_fail)
     tracker, _, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
 
-    assert len(calls) == 2  # one retry, then stop
+    assert len(calls) == 3  # three attempts, then stop
     assert tracker.images == []  # nothing of a failed burst is ever dispatched
+    assert len(tracker.interventions) == 1  # the user is asked exactly once
+    message = tracker.interventions[0]
+    assert "region_1" in message and "3 times" in message
+    assert "the camera delivered only 5 of 6 frames" in message
+    assert "restart the acquisition" in message
+
+
+def test_the_qt_controller_forwards_the_intervention_message_to_the_gui_signal(qtbot):
+    """The worker runs on its own thread; the GUI hears about an intervention through a Qt signal."""
+    import tests.control.gui_test_stubs as gts
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        mpc = gts.get_test_qt_multi_point_controller(microscope=scope)
+        with qtbot.waitSignal(mpc.user_intervention_needed, timeout=2000) as blocker:
+            mpc.callbacks.signal_user_intervention_needed("check the camera cable")
+        assert blocker.args == ["check the camera cable"]
+    finally:
+        scope.close()

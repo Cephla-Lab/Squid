@@ -41,6 +41,7 @@ from control.core.sequenced_acquisition import (
     build_program,
     burst_failure_reason,
     ineligibility_reason,
+    intervention_message,
     outcome_after_failed_burst,
     piezo_um_to_dac,
 )
@@ -1310,13 +1311,11 @@ class MultiPointWorker:
 
     def _run_sequenced_burst(
         self, captures: List[CaptureInfo], stack_start: int
-    ) -> Optional[List[Tuple[CameraFrame, CaptureInfo]]]:
-        """Run one burst. Returns its frames only if the burst is provably complete and in
-        order; otherwise None, and NOTHING of it has reached a save job."""
+    ) -> Tuple[Optional[List[Tuple[CameraFrame, CaptureInfo]]], Optional[str]]:
+        """Run one burst. Returns (frames, None) only if the burst is provably complete and in
+        order; otherwise (None, why), and NOTHING of it has reached a save job."""
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.error("A frame from before the hardware sequence never arrived. Aborting acquisition.")
-            self._abort_due_to_error()
-            return None
+            return None, "a frame from before the hardware sequence never arrived"
 
         collected: List[Tuple[CameraFrame, CaptureInfo]] = []
 
@@ -1351,8 +1350,24 @@ class MultiPointWorker:
             reason = f"the controller reported an error: {run_error}"
         if reason is not None:
             self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
-            return None
-        return collected
+            return None, reason
+        return collected, None
+
+    def _ask_user_to_intervene(self, message: str) -> None:
+        """The acquisition cannot continue on its own, so the user decides what happens next.
+
+        Pausing an acquisition is not supported yet, so the run is failed (end reason "error")
+        and the user is told what happened and what to check - in the log, in the GUI, and on
+        Slack when configured. When pause / resume lands, this is the place to pause instead.
+        """
+        self._log.error(message)
+        if self._slack_notifier is not None:
+            try:
+                self._slack_notifier.notify_error(message, {"time_point": self.time_point})
+            except Exception as e:
+                self._log.warning(f"Failed to send Slack error notification: {e}")
+        self.callbacks.signal_user_intervention_needed(message)
+        self._abort_due_to_error()
 
     def _acquire_sequenced_stack(self, region_id, current_path, fov) -> None:
         configs = self.selected_configurations
@@ -1387,17 +1402,16 @@ class MultiPointWorker:
         while frames is None:
             attempt += 1
             self._log.info(f"Hardware sequence: region {region_id} fov {fov}, attempt {attempt}.")
-            frames = self._run_sequenced_burst(captures(), stack_start)
+            frames, reason = self._run_sequenced_burst(captures(), stack_start)
             if frames is not None or self.abort_requested_fn():
                 break
-            # O1 (Hongquan, 2026-09-20): retry the FOV once, sequenced; then stop.
-            if outcome_after_failed_burst(attempt) == BurstOutcome.ABORT:
-                self._log.error(
-                    f"Hardware sequence failed {attempt} times at region {region_id} fov {fov}. Aborting acquisition."
+            # O1 (Hongquan, 2026-09-20): retry, retry again, then ask the user to intervene.
+            if outcome_after_failed_burst(attempt) == BurstOutcome.ASK_USER:
+                self._ask_user_to_intervene(
+                    intervention_message(region_id=region_id, fov=fov, attempts=attempt, last_reason=reason)
                 )
-                self._abort_due_to_error()
                 return
-            self._log.warning(f"Retrying region {region_id} fov {fov} (hardware-sequenced).")
+            self._log.warning(f"Retrying region {region_id} fov {fov} (hardware-sequenced), attempt {attempt + 1}.")
 
         if frames is None:  # user abort during the burst
             self.handle_acquisition_abort(current_path)

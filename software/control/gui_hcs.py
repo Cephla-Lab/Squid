@@ -209,6 +209,8 @@ class QtMultiPointController(MultiPointController, QObject):
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
     timepoint_finished = Signal(int)  # time_point index that just completed
+    # The acquisition stopped because it cannot continue on its own; carries the message to show.
+    user_intervention_needed = Signal(str)
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats
@@ -254,6 +256,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
                 signal_timepoint_finished=self._signal_timepoint_finished_fn,
+                signal_user_intervention_needed=self._signal_user_intervention_needed_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
@@ -475,6 +478,10 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_timepoint_finished_fn(self, time_point: int):
         self.timepoint_finished.emit(time_point)
+
+    def _signal_user_intervention_needed_fn(self, message: str):
+        # Called on the acquisition thread; the queued signal delivers it to the GUI thread.
+        self.user_intervention_needed.emit(message)
 
     def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
         self.signal_slack_timepoint.emit(stats)
@@ -1529,6 +1536,7 @@ class HighContentScreeningGui(QMainWindow):
         # signals over here, where self.unifiedMosaicWidget is reachable.
         self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
         self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
+        self.multipointController.user_intervention_needed.connect(self._on_user_intervention_needed)
 
         # Laser engine readiness gate — modal progress dialog while waiting at timepoint boundaries.
         self.multipointController.signal_laser_engine_waiting.connect(self._show_laser_engine_dialog)
@@ -1893,6 +1901,21 @@ class HighContentScreeningGui(QMainWindow):
         """Route the controller's per-run save dir to the unified widget."""
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
+
+    def _on_user_intervention_needed(self, message: str):
+        """The acquisition stopped and needs the user. Non-blocking: the acquisition is winding
+        down on its own thread and its finished-signal handlers must keep running."""
+        try:
+            box = QMessageBox(self)
+            box.setAttribute(Qt.WA_DeleteOnClose)
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle("Acquisition stopped - your attention is needed")
+            box.setText(message)
+            box.setStandardButtons(QMessageBox.Ok)
+            box.show()
+        except Exception:
+            # Qt swallows exceptions raised in slots; never lose the message silently.
+            self.log.exception(f"Could not show the intervention dialog. Message was: {message}")
 
     def _on_timepoint_finished(self, time_point: int):
         if self.unifiedMosaicWidget is not None:

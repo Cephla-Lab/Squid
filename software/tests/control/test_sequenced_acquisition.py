@@ -13,6 +13,7 @@ from control.core.sequenced_acquisition import (
     build_program,
     ineligibility_reason,
     intensity_percent_to_dac,
+    intervention_message,
     outcome_after_failed_burst,
     piezo_step_lsb,
     piezo_um_to_dac,
@@ -248,13 +249,26 @@ def test_each_burst_failure_names_its_reason(kwargs, fragment):
     assert reason is not None and fragment in reason
 
 
-# --- O1 (Hongquan, 2026-09-20): retry the FOV once, sequenced ------------------------------------
+# --- O1 (Hongquan, 2026-09-20): "Retry the FOV once, sequenced." then: "after a failed retry,
+# retry again. if it still failed, pause or fail the acquisition (depending on what's supported
+# now) and ask the user to intervene" -------------------------------------------------------------
 
 
-def test_a_failed_burst_is_retried_once_then_the_acquisition_aborts():
-    assert MAX_ATTEMPTS_PER_FOV == 2
+def test_a_failed_burst_is_retried_twice_then_the_user_is_asked_to_intervene():
+    assert MAX_ATTEMPTS_PER_FOV == 3
     assert outcome_after_failed_burst(attempt=1) == BurstOutcome.RETRY
-    assert outcome_after_failed_burst(attempt=2) == BurstOutcome.ABORT
+    assert outcome_after_failed_burst(attempt=2) == BurstOutcome.RETRY
+    assert outcome_after_failed_burst(attempt=3) == BurstOutcome.ASK_USER
+
+
+def test_the_intervention_message_says_where_why_and_what_to_check():
+    message = intervention_message(
+        region_id="B4", fov=7, attempts=3, last_reason="the camera delivered only 5 of 6 frames"
+    )
+    assert "B4" in message and "7" in message and "3 times" in message
+    assert "the camera delivered only 5 of 6 frames" in message
+    assert "Nothing from the failed bursts was saved" in message
+    assert "restart the acquisition" in message  # pausing is not supported yet, so the run is stopped
 
 
 # --- the opt-in lives in Preferences, off by default --------------------------------------------

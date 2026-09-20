@@ -39,20 +39,33 @@ SOURCE_CODE_TO_PORT = {11: 0, 12: 1, 14: 2, 13: 3, 15: 4}
 
 PIEZO_DAC_ID = 7  # DAC80508 channel wired to the objective piezo (Microcontroller.set_piezo_um)
 
-# O1 (Hongquan, 2026-09-20): "Retry the FOV once, sequenced." A second failure on the same FOV
-# looks systematic (USB / disk / camera), so the acquisition aborts instead of producing more
-# suspect data.
-MAX_ATTEMPTS_PER_FOV = 2
+# O1 (Hongquan, 2026-09-20): "Retry the FOV once, sequenced." - then, the same day: "after a
+# failed retry, retry again. if it still failed, pause or fail the acquisition (depending on
+# what's supported now) and ask the user to intervene". So: three attempts per FOV, and after the
+# third the acquisition cannot decide on its own. Three failures on one FOV look systematic (USB,
+# disk, camera, trigger cable); carrying on would produce more suspect data.
+MAX_ATTEMPTS_PER_FOV = 3
 
 
 class BurstOutcome(enum.Enum):
     RETRY = "retry"
-    ABORT = "abort"
+    ASK_USER = "ask_user"  # stop and hand the decision to the user (pause when supported, else fail)
 
 
 def outcome_after_failed_burst(attempt: int) -> BurstOutcome:
     """What to do after sequenced attempt number `attempt` (1-based) of a FOV failed."""
-    return BurstOutcome.RETRY if attempt < MAX_ATTEMPTS_PER_FOV else BurstOutcome.ABORT
+    return BurstOutcome.RETRY if attempt < MAX_ATTEMPTS_PER_FOV else BurstOutcome.ASK_USER
+
+
+def intervention_message(*, region_id, fov, attempts: int, last_reason: str) -> str:
+    """What the user is told when a FOV failed every attempt. Pausing an acquisition is not
+    supported yet, so the run is stopped and has to be restarted once the cause is fixed."""
+    return (
+        f"Hardware-sequenced acquisition stopped at region {region_id}, FOV {fov}: the image burst failed "
+        f"{attempts} times in a row. Last reason: {last_reason}. Nothing from the failed bursts was saved. "
+        "Check the camera connection and its trigger / ready cables, the controller, and free disk space, "
+        "then restart the acquisition."
+    )
 
 
 @dataclasses.dataclass(frozen=True)

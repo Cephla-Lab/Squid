@@ -141,6 +141,9 @@ class MultiPointControllerFunctions:
     # (lists/dicts), lambdas are safe as defaults since they're not modified.
     signal_plate_view_init: Callable[[PlateViewInit], None] = lambda *a, **kw: None
     signal_timepoint_finished: Callable[[int], None] = lambda *a, **kw: None
+    # The acquisition stopped because it cannot continue on its own; the message says what
+    # happened and what to check. The GUI shows it to the user.
+    signal_user_intervention_needed: Callable[[str], None] = lambda *a, **kw: None
     # Optional Slack notification callbacks (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint_notification: Callable[["TimepointStats"], None] = lambda *a, **kw: None
     signal_slack_acquisition_finished: Callable[["AcquisitionStats"], None] = lambda *a, **kw: None
