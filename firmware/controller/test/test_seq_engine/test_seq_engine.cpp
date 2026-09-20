@@ -523,6 +523,69 @@ void test_program_runs_again_after_a_failed_run(void) {
     TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);
 }
 
+// E1: micros() wraps every 71.6 min. A stack straddling the wrap must neither skip a wait
+// nor time out falsely.
+void test_timer_wrap_keeps_settle_readout_and_timeout_correct(void) {
+    FakeHal hal;
+    const uint32_t t0 = 0xFFFFF000u;  // 4096 us before the wrap
+    hal.now_us = t0;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 3;
+    l.n_channels = 1;
+    l.z_settle_us = 3000;
+    SeqChannel ch[1] = {good_channel()};      // exposure 10000
+    SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, readout 20000
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_for(e, hal, 200000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL(3, (int)hal.plans.size());
+    TEST_ASSERT_TRUE((uint32_t)(hal.plans[0].t_assert_us - t0) >= 3000);  // settle honoured
+    for (size_t i = 0; i + 1 < hal.plans.size(); i++)  // strobe + exposure + readout
+        TEST_ASSERT_TRUE((uint32_t)(hal.plans[i + 1].t_assert_us - hal.plans[i].t_assert_us) >= 30500);
+}
+
+// The WAIT deadline itself may land beyond the wrap: it must not fire early.
+void test_wait_deadline_beyond_the_wrap_does_not_fire_early(void) {
+    FakeHal hal;
+    hal.now_us = 0xFFFFF000u;
+    hal.ready_lines[0] = false;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].ready_line = 0;
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/100000, 40000));  // deadline wraps
+    run_for(e, hal, 50000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::WaitHw, (uint8_t)e.state());  // still waiting
+    run_for(e, hal, 60000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::WaitTimeout, e.progress().abort_error);
+}
+
+void test_durations_beyond_the_wrap_safe_range_are_rejected(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].exposure_us = kMaxDurationUs + 1;
+    SeqCameraConfig cams[1] = {cam_level()};
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadExposure, (uint8_t)e.load(l, ch, cams, 1).error);
+    ch[0].exposure_us = 10000;
+    l.z_settle_us = kMaxDurationUs + 1;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadDuration, (uint8_t)e.load(l, ch, cams, 1).error);
+    l.z_settle_us = 2000;
+    cams[0].readout_time_us = kMaxDurationUs + 1;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::BadDuration, (uint8_t)e.load(l, ch, cams, 1).error);
+    cams[0].readout_time_us = 20000;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -544,5 +607,8 @@ int main(int, char**) {
     RUN_TEST(test_filter_target_is_passed_as_absolute_usteps);
     RUN_TEST(test_loaded_program_runs_again_with_a_new_stack_start);
     RUN_TEST(test_program_runs_again_after_a_failed_run);
+    RUN_TEST(test_timer_wrap_keeps_settle_readout_and_timeout_correct);
+    RUN_TEST(test_wait_deadline_beyond_the_wrap_does_not_fire_early);
+    RUN_TEST(test_durations_beyond_the_wrap_safe_range_are_rejected);
     return UNITY_END();
 }

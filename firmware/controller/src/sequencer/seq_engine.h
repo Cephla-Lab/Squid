@@ -73,8 +73,12 @@ class SeqEngine {
     // Rolling-shutter support: PREP of the next step is deferred until cameras with
     // readout_overlap_safe == 0 finish reading out (no motion during their readout).
     uint32_t overlap_hold_until_us_ = 0;
+    bool overlap_hold_valid_ = false;
+    // Timestamps carry explicit valid flags: 0 is a legitimate micros() value (it wraps).
     uint32_t last_trigger_us_[kMaxCameras]{};
+    bool trigger_valid_[kMaxCameras]{};
     uint32_t readout_done_us_[kMaxCameras]{};
+    bool readout_valid_[kMaxCameras]{};
     bool cancel_requested_ = false;
     bool loaded_ = false;
 };

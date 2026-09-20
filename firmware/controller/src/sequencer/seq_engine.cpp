@@ -2,6 +2,13 @@
 
 namespace seq {
 
+namespace {
+// Wrap-safe "now has reached t" on the 32-bit micros() timebase (wraps every 71.6 min).
+// Valid while the two are within 2^31 us, which validate() guarantees by bounding every
+// duration to kMaxDurationUs. Never compare engine timestamps with < or >.
+inline bool reached(uint32_t now_us, uint32_t t_us) { return (int32_t)(now_us - t_us) >= 0; }
+}  // namespace
+
 SeqEngine::SeqEngine(SeqHal& hal) : hal_(hal) {}
 
 bool SeqEngine::running() const {
@@ -49,9 +56,10 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     progress_.total_layers = loop_.n_layers;
     progress_.total_channels = loop_.n_channels;
     for (uint8_t i = 0; i < kMaxCameras; i++) {
-        last_trigger_us_[i] = 0;
-        readout_done_us_[i] = 0;
+        trigger_valid_[i] = false;
+        readout_valid_[i] = false;
     }
+    overlap_hold_valid_ = false;
     step_ = 0;
     cancel_requested_ = false;
     // Enter the running state BEFORE the first PREP: a restart from Failed must not read
@@ -109,7 +117,7 @@ bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
             settle_done_us_ = now_us + loop_.z_settle_us;
         }
     }
-    if (now_us < settle_done_us_) return false;
+    if (!reached(now_us, settle_done_us_)) return false;
     // Filter wheel in position?
     if (ch.filter_wheel != kNone && !hal_.axis_in_position(ch.filter_wheel)) return false;
     // Every camera in the mask ready?
@@ -118,11 +126,11 @@ bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
         const SeqCameraConfig& cc = cams_[cam];
         if (cc.ready_line != kNone) {
             if (hal_.ready_line(cc.ready_line) != (bool)cc.ready_active_high) return false;
-        } else {
-            if (now_us < readout_done_us_[cam]) return false;
+        } else if (readout_valid_[cam] && !reached(now_us, readout_done_us_[cam])) {
+            return false;
         }
-        if (cc.min_trigger_period_us && last_trigger_us_[cam] != 0 &&
-            now_us - last_trigger_us_[cam] < cc.min_trigger_period_us)
+        if (cc.min_trigger_period_us && trigger_valid_[cam] &&
+            (uint32_t)(now_us - last_trigger_us_[cam]) < cc.min_trigger_period_us)
             return false;
     }
     return true;
@@ -133,30 +141,40 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
     uint8_t chi;
     step_to_layer_channel(k, &layer, &chi);
     const SeqChannel& ch = channels_[chi];
-    cur_exposure_end_us_ = 0;
-    overlap_hold_until_us_ = 0;
+    // Every max() is taken in OFFSET space (relative to now_us) and only then added to
+    // now_us: absolute timestamps cannot be ordered with > across the micros() wrap.
+    uint32_t max_end_off = 0, max_hold_off = 0;
+    bool hold = false;
     for (uint8_t cam = 0; cam < n_cameras_; cam++) {
         if (!((ch.camera_mask >> cam) & 1)) continue;
         const SeqCameraConfig& cc = cams_[cam];
+        const uint32_t illum_off = cc.strobe_delay_us + ch.exposure_us;
+        const uint32_t deassert_off =
+            (cc.trigger_mode == (uint8_t)TriggerMode::Level) ? illum_off : kEdgePulseUs;
+        const uint32_t end_off = (illum_off > deassert_off) ? illum_off : deassert_off;
         ExposurePlan p{};
         p.camera_id = cam;
         p.trigger_mode = cc.trigger_mode;
         p.illum_ttl_mask = ch.illum_ttl_mask;
         p.t_assert_us = now_us;
         p.t_illum_on_us = now_us + cc.strobe_delay_us;
-        p.t_illum_off_us = p.t_illum_on_us + ch.exposure_us;
-        p.t_deassert_us = (cc.trigger_mode == (uint8_t)TriggerMode::Level)
-                              ? p.t_illum_off_us
-                              : now_us + kEdgePulseUs;
+        p.t_illum_off_us = now_us + illum_off;
+        p.t_deassert_us = now_us + deassert_off;
         hal_.schedule_exposure(p);
         last_trigger_us_[cam] = now_us;
-        uint32_t end = (p.t_illum_off_us > p.t_deassert_us) ? p.t_illum_off_us
-                                                            : p.t_deassert_us;
-        readout_done_us_[cam] = end + cc.readout_time_us;
-        if (end > cur_exposure_end_us_) cur_exposure_end_us_ = end;
-        if (!cc.readout_overlap_safe && readout_done_us_[cam] > overlap_hold_until_us_)
-            overlap_hold_until_us_ = readout_done_us_[cam];
+        trigger_valid_[cam] = true;
+        readout_done_us_[cam] = now_us + end_off + cc.readout_time_us;
+        readout_valid_[cam] = true;
+        if (end_off > max_end_off) max_end_off = end_off;
+        if (!cc.readout_overlap_safe) {
+            hold = true;
+            if (end_off + cc.readout_time_us > max_hold_off)
+                max_hold_off = end_off + cc.readout_time_us;
+        }
     }
+    cur_exposure_end_us_ = now_us + max_end_off;
+    overlap_hold_valid_ = hold;
+    overlap_hold_until_us_ = now_us + max_hold_off;
     progress_.frames_fired++;
     progress_.layer = layer;
     progress_.channel = chi;
@@ -177,10 +195,11 @@ void SeqEngine::tick(uint32_t now_us) {
                 schedule_exposures(step_, now_us);
                 break;
             }
-            if (now_us >= wait_deadline_us_) fail(SeqError::WaitTimeout, 0);
+            if (reached(now_us, wait_deadline_us_)) fail(SeqError::WaitTimeout, 0);
             break;
         case SeqState::Exposing: {
-            if (now_us < cur_exposure_end_us_ || now_us < overlap_hold_until_us_) break;
+            if (!reached(now_us, cur_exposure_end_us_)) break;
+            if (overlap_hold_valid_ && !reached(now_us, overlap_hold_until_us_)) break;
             // Exposure over -> readout window begins: advance and PREP the next step
             // NOW — this is the overlap that hides filter/z moves behind readout.
             step_++;
