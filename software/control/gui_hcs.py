@@ -1115,6 +1115,7 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraSettingWidget.dropdown_binning.blockSignals(True)
         self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
         self.cameraSettingWidget.dropdown_binning.blockSignals(False)
+        self.cameraSettingWidget.refresh_pixel_format_options()
         return True
 
     def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
@@ -1140,9 +1141,7 @@ class HighContentScreeningGui(QMainWindow):
             self.log.error(f"Camera error while restoring pixel format settings: {e}")
             return False
 
-        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
-        self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
-        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
+        self.cameraSettingWidget.refresh_pixel_format_options()  # shows what the camera delivers for the request
         return True
 
     def _restore_sensor_mode(self, sensor_mode: Optional[str]) -> bool:

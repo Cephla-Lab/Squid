@@ -3779,18 +3779,10 @@ class CameraSettingsWidget(QFrame):
             self.entry_analogGain.setEnabled(False)
 
         self.dropdown_pixelFormat = QComboBox()
-        try:
-            pixel_formats = self.camera.get_available_pixel_formats()
-            pixel_formats = [pf.name for pf in pixel_formats]
-        except NotImplementedError:
-            pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
-        self.dropdown_pixelFormat.addItems(pixel_formats)
-        if self.camera.get_pixel_format() is not None:
-            self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
-        else:
+        if self.camera.get_pixel_format() is None:
             print("setting camera's default pixel format")
             self.camera.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
-            self.dropdown_pixelFormat.setCurrentText(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+        self.refresh_pixel_format_options()
         self.dropdown_pixelFormat.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
         # to do: load and save pixel format in configurations
 
@@ -4062,12 +4054,25 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
+    def refresh_pixel_format_options(self):
+        """List the formats the camera offers at its current settings and select the one it delivers."""
+        try:
+            pixel_formats = [pf.name for pf in self.camera.get_available_pixel_formats()]
+        except NotImplementedError:
+            pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
+        self.dropdown_pixelFormat.blockSignals(True)
+        self.dropdown_pixelFormat.clear()
+        self.dropdown_pixelFormat.addItems(pixel_formats)
+        self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
+        self.dropdown_pixelFormat.blockSignals(False)
+
     def set_binning(self, binning_text):
         binning_parts = binning_text.split("x")
         binning_x = int(binning_parts[0])
         binning_y = int(binning_parts[1])
 
         self.camera.set_binning(binning_x, binning_y)
+        self.refresh_pixel_format_options()  # the sensor may fill a different depth at this binning
 
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
