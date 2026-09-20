@@ -51,6 +51,10 @@ class SeqEngine {
     uint32_t total_steps() const;
     void step_to_layer_channel(uint32_t k, uint16_t* layer, uint8_t* ch) const;
     int32_t stack_target_for(uint16_t layer, uint8_t ch) const;
+    // True when every stack target of the run (and the start itself, which is also the
+    // return_to_start target) lies inside the axis range. *bad_channel: offending channel,
+    // or 0xFF for the start position.
+    bool stack_range_ok(int32_t start, uint8_t* bad_channel) const;
     void begin_prep(uint32_t k, uint32_t now_us);   // moves + DAC pre-arm + LED
     bool hw_ready_for(uint32_t k, uint32_t now_us);  // WAIT gate (design §5.2)
     void schedule_exposures(uint32_t k, uint32_t now_us);

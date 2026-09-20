@@ -586,6 +586,61 @@ void test_durations_beyond_the_wrap_safe_range_are_rejected(void) {
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
 }
 
+// E2: the piezo target is a u16 DAC code; an unchecked cast wraps and slams the piezo to the
+// opposite end of its travel.
+void test_stack_leaving_the_piezo_range_fails_before_anything_moves(void) {
+    SeqCameraConfig cams[1] = {cam_level()};
+    SeqChannel ch[1] = {good_channel()};
+    SeqLoop l = good_loop();  // dz 120, 10 layers -> span +1080
+    l.n_channels = 1;
+    const int32_t starts[3] = {65000, 64456, -1};  // overflows; 64456+1080 = 65536; below zero
+    for (int i = 0; i < 3; i++) {
+        FakeHal hal;
+        SeqEngine e(hal);
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+        TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, starts[i]));
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::StackOutOfRange, e.progress().abort_error);
+        for (size_t k = 0; k < hal.calls.size(); k++) {
+            TEST_ASSERT_TRUE(hal.calls[k].what != "dac");
+            TEST_ASSERT_TRUE(hal.calls[k].what != "move");
+            TEST_ASSERT_TRUE(hal.calls[k].what != "expose");
+        }
+    }
+    FakeHal hal;  // exactly at the top is fine: 64455 + 1080 = 65535
+    SeqEngine e(hal);
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 64455));
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::WaitHw, (uint8_t)e.state());
+}
+
+// A per-channel z offset can push an otherwise valid stack out of range; a negative dz
+// stack is checked at its far end too. The failing channel is reported.
+void test_stack_range_accounts_for_channel_offsets_and_negative_dz(void) {
+    SeqCameraConfig cams[1] = {cam_level()};
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[1].z_offset = 600;
+    SeqLoop l = good_loop();
+    l.n_channels = 2;
+    {
+        FakeHal hal;
+        SeqEngine e(hal);
+        e.load(l, ch, cams, 1);
+        TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 64000));  // 64000+1080+600 > 65535
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::StackOutOfRange, e.progress().abort_error);
+        TEST_ASSERT_EQUAL_UINT8(1, e.progress().abort_detail);  // channel 1
+    }
+    {
+        FakeHal hal;
+        SeqEngine e(hal);
+        l.dz = -120;
+        ch[1].z_offset = 0;
+        e.load(l, ch, cams, 1);
+        TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 1000));  // 1000 - 1080 < 0
+        TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::StackOutOfRange, e.progress().abort_error);
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -610,5 +665,7 @@ int main(int, char**) {
     RUN_TEST(test_timer_wrap_keeps_settle_readout_and_timeout_correct);
     RUN_TEST(test_wait_deadline_beyond_the_wrap_does_not_fire_early);
     RUN_TEST(test_durations_beyond_the_wrap_safe_range_are_rejected);
+    RUN_TEST(test_stack_leaving_the_piezo_range_fails_before_anything_moves);
+    RUN_TEST(test_stack_range_accounts_for_channel_offsets_and_negative_dz);
     return UNITY_END();
 }

@@ -48,6 +48,25 @@ int32_t SeqEngine::stack_target_for(uint16_t layer, uint8_t ch) const {
     return stack_start_ + (int32_t)layer * loop_.dz + channels_[ch].z_offset;
 }
 
+bool SeqEngine::stack_range_ok(int32_t start, uint8_t* bad_channel) const {
+    const bool piezo = loop_.stack_axis_type == (uint8_t)StackAxisType::Piezo;
+    const int64_t lo = piezo ? 0 : (int64_t)INT32_MIN;  // piezo target is a u16 DAC code
+    const int64_t hi = piezo ? 65535 : (int64_t)INT32_MAX;
+    *bad_channel = 0xFF;
+    if (start < lo || start > hi) return false;
+    // Targets are linear in the layer index, so checking both ends covers every layer.
+    const int64_t span = (int64_t)(loop_.n_layers - 1) * loop_.dz;
+    for (uint8_t c = 0; c < loop_.n_channels; c++) {
+        const int64_t first = (int64_t)start + channels_[c].z_offset;
+        const int64_t last = first + span;
+        if (first < lo || first > hi || last < lo || last > hi) {
+            *bad_channel = c;
+            return false;
+        }
+    }
+    return true;
+}
+
 bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_axis_start) {
     if (!loaded_ || running()) return false;  // Idle, Done and Failed may all (re)start
     wait_timeout_us_ = wait_timeout_us;
@@ -65,6 +84,17 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     // Enter the running state BEFORE the first PREP: a restart from Failed must not read
     // the previous run's Failed as "this run failed", so fail() below is the only way there.
     state_ = SeqState::WaitHw;
+    // Refuse the whole run before the first move: nothing may be commanded for a stack
+    // that would leave the axis range part-way through.
+    uint8_t bad_channel = 0;
+    if (wait_timeout_us > kMaxDurationUs) {
+        fail(SeqError::BadDuration, 0);
+        return true;
+    }
+    if (!stack_range_ok(stack_axis_start, &bad_channel)) {
+        fail(SeqError::StackOutOfRange, bad_channel);
+        return true;
+    }
     begin_prep(0, now_us);
     if (state_ == SeqState::Failed) return true;  // started, then immediately failed
     wait_deadline_us_ = now_us + wait_timeout_us_;
