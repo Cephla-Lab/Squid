@@ -77,11 +77,17 @@ class AbstractFilterWheelController(ABC):
         """Home the filter wheel with the given index. If index is None, home all filter wheels."""
         pass
 
-    def position_is_known(self) -> bool:
-        """False when the controller cannot vouch for where its wheels are. Controllers that read their position
-        back from the hardware keep this default; one that only tracks its own commands (the Squid wheel, which
-        has no position readback) overrides it, and is homed before use when it says False."""
+    def position_is_known(self, wheel_id: Optional[int] = None) -> bool:
+        """False when the controller cannot vouch for where a wheel is (with no argument: any of its wheels).
+        Controllers that read their position back from the hardware keep this default; one that only tracks its
+        own commands (the Squid wheel, which has no position readback) overrides it, and a wheel it answers False
+        for is homed before use."""
         return True
+
+    def wraps_around(self, wheel_id: Optional[int] = None) -> bool:
+        """True when stepping past the last slot continues at the first, and the other way round. A rotary wheel
+        that may cross its index flag overrides this; the default keeps the ends as ends."""
+        return False
 
     @abstractmethod
     def set_filter_wheel_position(self, positions: Dict[int, int]):

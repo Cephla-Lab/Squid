@@ -219,6 +219,47 @@ def test_prepare_for_use_homes_on_restart_only_a_wheel_that_does_not_know_its_po
     assert wheel.home.called is homed
 
 
+def test_a_restart_homes_only_the_wheel_that_does_not_know_its_position(cache_path, monkeypatch):
+    """Review finding on #657: W1 restored on slot 5, no record for W2. The restart homed BOTH, so W1 lost the
+    channel the record exists to keep. Only W2 may be homed."""
+    import squid.config
+
+    cephla.cache_wheel_state({1: (5, 2)})
+    mc = _mc()
+    w = SquidFilterWheel(mc, {1: _config(3), 2: _config(4)}, skip_init=True)
+    assert w.position_is_known(1) is True and w.position_is_known(2) is False
+    microscope, addons = _addons(w)
+    monkeypatch.setattr(squid.config, "get_filter_wheel_config", lambda: types.SimpleNamespace(indices=[1, 2]))
+    microscope.MicroscopeAddons.prepare_for_use(addons, skip_init=True)
+    mc.home_w.assert_not_called()
+    mc.home_w2.assert_called_once()
+    assert w.get_filter_wheel_position() == {1: 5, 2: 1}
+    assert w._turns[1] == 2 and w.position_is_known() is True
+    assert _record(cache_path) == {"1": {"position": 5, "turns": 2}, "2": {"position": 1, "turns": 0}}
+
+
+def test_one_wheel_failing_to_home_on_restart_does_not_stop_the_next(cache_path, monkeypatch):
+    import squid.config
+
+    wheel = MagicMock()
+    wheel.position_is_known.return_value = False
+    wheel.home.side_effect = [TimeoutError("W never acked"), None]
+    microscope, addons = _addons(wheel)
+    monkeypatch.setattr(squid.config, "get_filter_wheel_config", lambda: types.SimpleNamespace(indices=[1, 2]))
+    microscope.MicroscopeAddons.prepare_for_use(addons, skip_init=True)  # no raise
+    assert [c.args for c in wheel.home.call_args_list] == [(1,), (2,)]
+
+
+def test_a_normal_start_still_homes_every_wheel_in_one_call(monkeypatch):
+    import squid.config
+
+    wheel = MagicMock()
+    microscope, addons = _addons(wheel)
+    monkeypatch.setattr(squid.config, "get_filter_wheel_config", lambda: types.SimpleNamespace(indices=[1, 2]))
+    microscope.MicroscopeAddons.prepare_for_use(addons, skip_init=False)
+    wheel.home.assert_called_once_with()
+
+
 def test_controllers_with_a_position_readback_keep_the_default():
     from squid.abc import AbstractFilterWheelController
 

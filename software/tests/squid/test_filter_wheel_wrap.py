@@ -246,3 +246,24 @@ def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
     mc.firmware_version = (1, 6)
     with pytest.raises(ValueError, match="squid_filterwheel_wrap"):
         SquidFilterWheel(mc, _config(), skip_init=True)
+
+
+@pytest.mark.parametrize(
+    "setting, fw, wraps",
+    [("auto", (1, 6), True), ("auto", (1, 4), False), (True, (1, 4), True), (False, (1, 6), False)],
+)
+def test_wraps_around_is_what_the_gui_buttons_ask(monkeypatch, setting, fw, wraps):
+    import control._def
+
+    monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", setting)
+    mc = MagicMock()
+    mc.firmware_version = fw
+    assert SquidFilterWheel(mc, _config(), skip_init=True).wraps_around(1) is wraps
+
+
+def test_controllers_without_a_rotary_wrap_keep_their_ends():
+    from squid.abc import AbstractFilterWheelController
+
+    assert AbstractFilterWheelController.wraps_around(MagicMock()) is False
+    assert AbstractFilterWheelController.wraps_around(MagicMock(), 1) is False
+    assert AbstractFilterWheelController.position_is_known(MagicMock(), 1) is True

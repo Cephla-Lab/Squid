@@ -280,6 +280,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self.microcontroller.wait_till_operation_is_completed()
         _log.info(f"Filter wheel {wheel_id}: completion window {window_deg:g} deg")
 
+    def wraps_around(self, wheel_id: Optional[int] = None) -> bool:
+        """Next from the last slot is the first and Previous from the first is the last, when shortest-path slot
+        changes are enabled (see `wrap`). The GUI's Next / Previous buttons ask this."""
+        return self._wrap_enabled()
+
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
         motor_slot = config.motor_slot_index

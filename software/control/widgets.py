@@ -5812,12 +5812,7 @@ class FilterControllerWidget(QFrame):
             wheel_info = self.filterController.get_filter_wheel_info(wheel_id)
             max_pos = wheel_info.number_of_slots
 
-            if current_pos < max_pos:
-                new_pos = current_pos + 1
-                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
-                combo_box = self._combo_boxes.get(wheel_id)
-                if combo_box:
-                    combo_box.setCurrentIndex(new_pos - 1)
+            self._step_position(wheel_id, current_pos, +1, max_pos)
         except Exception as e:
             self._log.error(f"Error moving wheel {wheel_id} to next position: {e}")
 
@@ -5825,15 +5820,27 @@ class FilterControllerWidget(QFrame):
         """Move to the previous position."""
         try:
             current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
-
-            if current_pos > 1:
-                new_pos = current_pos - 1
-                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
-                combo_box = self._combo_boxes.get(wheel_id)
-                if combo_box:
-                    combo_box.setCurrentIndex(new_pos - 1)
+            max_pos = self.filterController.get_filter_wheel_info(wheel_id).number_of_slots
+            self._step_position(wheel_id, current_pos, -1, max_pos)
         except Exception as e:
             self._log.error(f"Error moving wheel {wheel_id} to previous position: {e}")
+
+    def _step_position(self, wheel_id: int, current_pos: int, direction: int, max_pos: int):
+        """One slot forward or back. At an end the step continues round the wheel when the controller says its
+        wheel wraps (a rotary wheel allowed to cross its index flag: last -> first is then ONE slot, which the
+        controller takes the short way); otherwise the ends stay ends, as they always were."""
+        new_pos = current_pos + direction
+        if not 1 <= new_pos <= max_pos:
+            if not self.filterController.wraps_around(wheel_id):
+                return
+            new_pos = 1 + (new_pos - 1) % max_pos
+        self.filterController.set_filter_wheel_position({wheel_id: new_pos})
+        combo_box = self._combo_boxes.get(wheel_id)
+        if combo_box:
+            # the move has been made: moving the selection must not send it a second time
+            combo_box.blockSignals(True)
+            combo_box.setCurrentIndex(new_pos - 1)
+            combo_box.blockSignals(False)
 
     def disable_movement_by_switching_channels(self, state):
         """Enable/disable automatic filter wheel movement when changing channels."""
