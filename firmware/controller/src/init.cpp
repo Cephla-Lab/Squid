@@ -2,6 +2,7 @@
 
 #include "tmc/drivers/driver_probe.h"
 #include "tmc/drivers/stepper_driver.h"
+#include "trigger_pins.h"
 
 /*
   Boot-time driver report (design M7: host visibility of the driver type is a
@@ -147,11 +148,14 @@ void init_power()
 
 void init_camera()
 {
-  for (int i = 0; i < 4; i++)
+  for (int i = 0; i < NUM_CAMERA_TRIGGERS; i++)
   {
-    pinMode(camera_trigger_pins[i], OUTPUT);
-    digitalWrite(camera_trigger_pins[i], HIGH);
+    pinMode(controller::kActive.trigger_pins[i], OUTPUT);
+    trigger_release(i);
   }
+  // A controller without the wire must read a steady "not ready", never a floating input.
+  if (TRIGGER_READY_PIN >= 0)
+    pinMode(TRIGGER_READY_PIN, INPUT_PULLDOWN);
 }
 
 void init_io()
