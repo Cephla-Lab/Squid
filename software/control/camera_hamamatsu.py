@@ -9,6 +9,7 @@ from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
 from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
+import control._def
 import control.utils
 
 
@@ -119,6 +120,29 @@ class HamamatsuCamera(AbstractCamera):
             return False
         return True
 
+    def _set_prop_or_raise(self, dcam_prop, prop_value, prop_name: str):
+        """Set a mode property and confirm the camera actually took the value.
+
+        DCAM reports success for a set that it then clips or substitutes, so the write
+        alone proves nothing about the mode the sensor is in. Every property that changes
+        how the exposure is timed goes through here.
+        """
+        # NOTE: lasterr() directly, like _set_prop above, rather than
+        # _last_dcam_error_string() -- that helper's membership test is inverted and it
+        # raises KeyError for any code that is not a known DCAMERR. Fixing it belongs in
+        # its own change; this path must not turn a camera failure into a KeyError.
+        if not self._camera.prop_setvalue(dcam_prop, prop_value):
+            raise CameraError(f"Failed to set {prop_name} to {prop_value}: {self._camera.lasterr()}")
+
+        read_back = self._camera.prop_getvalue(dcam_prop)
+        if isinstance(read_back, bool):
+            raise CameraError(f"Failed to read {prop_name} back from the camera after setting it to {prop_value}.")
+        if int(read_back) != int(prop_value):
+            raise CameraError(
+                f"Camera reports {prop_name}={int(read_back)} after it was set to {int(prop_value)}; "
+                "refusing to acquire with a mode the camera did not accept."
+            )
+
     def _allocate_read_buffers(self, count=5):
         # NOTE: The caller must hold the camera lock!
         if not self._camera.buf_alloc(count):
@@ -205,6 +229,57 @@ class HamamatsuCamera(AbstractCamera):
         exposure_attr = self._camera.prop_getattr(DCAM_IDPROP.EXPOSURETIME)
         return exposure_attr.valuemin * 1000.0, exposure_attr.valuemax * 1000.0  # in ms
 
+    def _global_reset_active(self) -> bool:
+        """True when this camera is actually running LEVEL trigger + global reset.
+
+        Short-circuits on the opt-in setting, so with the setting off this costs no DCAM
+        call at all and the driver behaves exactly as it does today.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return False
+        return self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+
+    def _apply_level_trigger_global_reset(self):
+        """Put the sensor in LEVEL trigger + global reset mode, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, after
+        TRIGGERSOURCE is EXTERNAL, and a no-op unless the HARDWARE_TRIGGER_GLOBAL_RESET
+        opt-in is on AND the trigger mode is LEVEL.
+
+        In LEVEL the camera's exposure is the width of the trigger pulse (the
+        microcontroller holds it for strobe delay + illumination on time); with global
+        reset every row starts exposing at the trigger, so the rows x line-interval wait
+        in get_strobe_time() disappears. There is deliberately no fallback: acquiring with
+        rolling timing against a global-reset sensor (or the reverse) puts the strobe in
+        the wrong place, which silently ruins the images.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return
+
+        global_reset = int(DCAMPROP.TRIGGER_GLOBALEXPOSURE.GLOBALRESET)
+
+        # Check support before writing, so an unsupported camera gets a clear message
+        # instead of a bare "failed to set property".
+        global_exposure_attr = self._camera.prop_getattr(DCAM_IDPROP.TRIGGER_GLOBALEXPOSURE)
+        if global_exposure_attr is False:
+            raise CameraError(
+                "This camera does not support TRIGGER_GLOBALEXPOSURE, so it cannot run in "
+                "global reset mode. Turn off HARDWARE_TRIGGER_GLOBAL_RESET."
+            )
+        if not (global_exposure_attr.valuemin <= global_reset <= global_exposure_attr.valuemax):
+            raise CameraError(
+                f"This camera does not support TRIGGER_GLOBALEXPOSURE = GLOBALRESET ({global_reset}); "
+                f"its supported range is [{global_exposure_attr.valuemin}, {global_exposure_attr.valuemax}]. "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET."
+            )
+
+        # TRIGGERACTIVE first: global exposure refines how the LEVEL exposure is started,
+        # so the active mode has to be in effect for it to be meaningful.
+        self._set_prop_or_raise(DCAM_IDPROP.TRIGGERACTIVE, DCAMPROP.TRIGGERACTIVE.LEVEL, "TRIGGERACTIVE")
+        self._set_prop_or_raise(DCAM_IDPROP.TRIGGER_GLOBALEXPOSURE, global_reset, "TRIGGER_GLOBALEXPOSURE")
+
+        self._log.info("Camera is in LEVEL trigger + global reset mode.")
+
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()
         line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * resolution[1]
@@ -212,6 +287,12 @@ class HamamatsuCamera(AbstractCamera):
 
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
             raise CameraError("Failed to get strobe delay properties from camera")
+
+        if self._global_reset_active():
+            # In global reset every row starts exposing at the trigger, so the
+            # rows x line-interval wait for the last row to start is gone; what is left
+            # is the trigger delay the camera itself imposes.
+            return trigger_delay_s * 1000.0
 
         return (line_interval_s + trigger_delay_s) * 1000.0
 
@@ -467,6 +548,13 @@ class HamamatsuCamera(AbstractCamera):
             if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
                 self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
                 return False
+
+            if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                # Both are no-ops unless their opt-in setting is on, and both run before
+                # the exposure/strobe refresh below so the strobe delay pushed to the
+                # microcontroller matches the exposure mode the sensor is actually in.
+                self._apply_level_trigger_global_reset()
+
             self.set_exposure_time(self._exposure_time_ms)
         return True
 
