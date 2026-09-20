@@ -29,7 +29,7 @@ One JSON object per line, appended and flushed as the acquisition progresses.
 |---|---|---|
 | `start` | `schema`, `experiment_id`, `format`, `nt`, `ts` | the run began. `format` is the `FileSavingOption` (`INDIVIDUAL_IMAGES`, `MULTI_PAGE_TIFF`, `OME_TIFF`, `ZARR_V3`), `nt` the number of timepoints. |
 | `complete` | `path`, `kind`, `bytes`, `t`, `region`, `fov`, `ts` | **the only movable unit.** Squid will not write to this path again. |
-| `timepoint_done` | `t`, `ts` | timepoint `t` is fully listed: no later `complete` record names a file of that timepoint. |
+| `timepoint_done` | `t`, `ts` | timepoint `t` is fully listed: its images, its `coordinates.csv`, and the mosaic view the GUI saves under `<t>/mosaic_view/`. No later `complete` record names a file of that timepoint. Omitted (never wrong) when a save or the mosaic view was still outstanding at the timepoint boundary; those files are then listed later, at the latest before `end`. |
 | `end` | `reason` (`completed`, `completed_with_errors`, `user_abort`, `error`), `ts` | the acquisition is over. Anything still unlisted becomes movable after quiescence. |
 
 ### `complete` fields
@@ -53,7 +53,7 @@ One JSON object per line, appended and flushed as the acquisition progresses.
    includes:
    - `acquisition.log`, `acquisition parameters.json`, `configurations.xml`
    - the root `coordinates.csv`, `acquisition.yaml`
-   - `mosaic_view/**`
+   - a manually saved mosaic view (`mosaic_view_<timestamp>/`); the per-timepoint `<t>/mosaic_view/` is listed
    - Zarr `zarr.json` / plate / well metadata (finalized at the end of the run)
    - `.done` markers
    - the manifest itself

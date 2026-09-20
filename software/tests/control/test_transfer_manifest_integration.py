@@ -1,6 +1,10 @@
 """Simulated acquisitions writing a transfer manifest (large acquisition mode) — and none when the mode is off."""
 
+import concurrent.futures
+import dataclasses
 import os
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -30,7 +34,7 @@ def _one_fov(mpc):
     )
 
 
-def _run(tmp_path, monkeypatch, mode_on: bool, saving_option: FileSavingOption, nt: int = 2):
+def _run(tmp_path, monkeypatch, mode_on: bool, saving_option: FileSavingOption, nt: int = 2, writer=None):
     control._def.MERGE_CHANNELS = False
     monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", saving_option)
     monkeypatch.setattr(mpw, "FILE_SAVING_OPTION", saving_option)  # the worker binds the name at import
@@ -40,7 +44,15 @@ def _run(tmp_path, monkeypatch, mode_on: bool, saving_option: FileSavingOption, 
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    callbacks = tt.get_callbacks()
+    holder = {}
+    if writer is not None:
+        # Stand-in for the GUI's mosaic view: answers every timepoint_finished from another thread.
+        callbacks = dataclasses.replace(callbacks, signal_timepoint_finished=lambda t: writer(holder["mpc"], t))
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=callbacks)
+    holder["mpc"] = mpc
+    if writer is not None:
+        mpc.attach_timepoint_output_writer()
     mpc.set_base_path(str(tmp_path))
     mpc.start_new_experiment("manifest_run", add_timestamp=False)
     _one_fov(mpc)
@@ -117,3 +129,72 @@ def test_zarr_manifest_lists_each_timepoints_chunk_files(tmp_path, monkeypatch):
     listed = {r["path"] for r in completes}
     assert not any(p.endswith("zarr.json") for p in listed), "store metadata is only movable after end"
     assert records[-1]["event"] == "end"
+
+
+def test_outputs_written_outside_the_worker_are_listed_per_timepoint_before_timepoint_done(tmp_path, monkeypatch):
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+    def mosaic_like_writer(mpc, t):
+        def reply():  # like the GUI thread handling the queued signal a little later
+            time.sleep(0.2)
+            out = Path(mpc.base_path) / mpc.experiment_ID / _tp_dir(t) / "mosaic_view"
+
+            def save():
+                time.sleep(0.2)
+                out.mkdir(parents=True, exist_ok=True)
+                (out / "mosaic.yaml").write_text(f"t: {t}\n")
+
+            mpc.register_pending_output(t, pool.submit(save), str(out))
+
+        threading.Thread(target=reply, daemon=True).start()
+
+    exp, tt, mpc = _run(
+        tmp_path,
+        monkeypatch,
+        mode_on=True,
+        saving_option=FileSavingOption.INDIVIDUAL_IMAGES,
+        nt=3,
+        writer=mosaic_like_writer,
+    )
+    records = read_manifest(exp / MANIFEST_FILE_NAME)
+    for t in range(3):
+        mosaic = [i for i, r in enumerate(records) if r.get("path") == f"{_tp_dir(t)}/mosaic_view/mosaic.yaml"]
+        assert len(mosaic) == 1, (t, mosaic)
+        assert records[mosaic[0]]["t"] == t, "listed under the timepoint it belongs to"
+        done = [i for i, r in enumerate(records) if r["event"] == "timepoint_done" and r["t"] == t]
+        assert len(done) == 1 and mosaic[0] < done[0], "timepoint_done follows the timepoint's mosaic files"
+        assert not any(
+            r["event"] == "complete" and r["path"].startswith(f"{_tp_dir(t)}/") for r in records[done[0] + 1 :]
+        ), "nothing of a timepoint is listed after its timepoint_done"
+
+
+def test_a_writer_that_never_answers_costs_the_marker_not_the_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(mpw.MultiPointWorker, "_TIMEPOINT_OUTPUTS_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(mpw.MultiPointWorker, "_PENDING_OUTPUTS_TIMEOUT_S", 0.3)
+    exp, tt, mpc = _run(
+        tmp_path,
+        monkeypatch,
+        mode_on=True,
+        saving_option=FileSavingOption.INDIVIDUAL_IMAGES,
+        nt=2,
+        writer=lambda m, t: None,
+    )
+    events = [r["event"] for r in read_manifest(exp / MANIFEST_FILE_NAME)]
+    assert "timepoint_done" not in events, "an unanswered writer means the timepoint is not claimed fully listed"
+    assert events[-1] == "end"
+
+
+def test_mode_off_never_expects_or_waits_for_outside_writers(tmp_path, monkeypatch):
+    monkeypatch.setattr(mpw.MultiPointWorker, "_TIMEPOINT_OUTPUTS_TIMEOUT_S", 60.0)
+    started = time.monotonic()
+    exp, tt, mpc = _run(
+        tmp_path,
+        monkeypatch,
+        mode_on=False,
+        saving_option=FileSavingOption.INDIVIDUAL_IMAGES,
+        nt=2,
+        writer=lambda m, t: None,
+    )
+    assert not (exp / MANIFEST_FILE_NAME).exists()
+    assert time.monotonic() - started < 45, "a silent writer must not slow a mode-off run"
+    assert mpc._pending_outputs.wait(None, 0.0).complete
