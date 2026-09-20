@@ -811,6 +811,67 @@ void test_cancel_during_wait_fires_nothing_more(void) {
     TEST_ASSERT_EQUAL(40000, (int)hal.calls.back().b);
 }
 
+// E5: brightfield (LED matrix) then fluorescence — the matrix must be dark for the laser frame.
+void test_led_matrix_is_turned_off_for_a_following_ttl_channel(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 2;
+    l.return_to_start = 0;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    ch[0].led_pattern = 3;
+    ch[0].illum_ttl_mask = 0;
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_for(e, hal, 200000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    int led_off_at = -1, second_expose_at = -1, exposes = 0;
+    for (size_t i = 0; i < hal.calls.size(); i++) {
+        if (hal.calls[i].what == "led" && hal.calls[i].a == kNone) led_off_at = (int)i;
+        if (hal.calls[i].what == "expose" && ++exposes == 2) second_expose_at = (int)i;
+    }
+    TEST_ASSERT_TRUE(led_off_at >= 0);
+    TEST_ASSERT_TRUE(second_expose_at >= 0);
+    TEST_ASSERT_TRUE(led_off_at < second_expose_at);
+}
+
+void test_led_matrix_is_off_when_the_run_ends(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].led_pattern = 3;
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, 5000000, 40000);
+    run_for(e, hal, 200000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    long last_led = -1;
+    for (size_t i = 0; i < hal.calls.size(); i++)
+        if (hal.calls[i].what == "led") last_led = hal.calls[i].a;
+    TEST_ASSERT_EQUAL(kNone, (int)last_led);
+}
+
+// A fluorescence-only program must never touch the LED matrix (FastLED is slow).
+void test_ttl_only_program_never_touches_the_led_matrix(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 2;
+    SeqChannel ch[2] = {good_channel(), good_channel()};
+    SeqCameraConfig cams[1] = {cam_level()};
+    e.load(l, ch, cams, 1);
+    e.start(hal.now_us, 5000000, 40000);
+    run_for(e, hal, 400000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_FALSE(saw(hal, "led"));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
@@ -844,5 +905,8 @@ int main(int, char**) {
     RUN_TEST(test_no_return_means_done_at_the_last_exposure_end);
     RUN_TEST(test_return_move_that_never_completes_times_out);
     RUN_TEST(test_cancel_during_wait_fires_nothing_more);
+    RUN_TEST(test_led_matrix_is_turned_off_for_a_following_ttl_channel);
+    RUN_TEST(test_led_matrix_is_off_when_the_run_ends);
+    RUN_TEST(test_ttl_only_program_never_touches_the_led_matrix);
     return UNITY_END();
 }

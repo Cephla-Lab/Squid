@@ -29,6 +29,7 @@ class SeqHal {
     virtual bool axis_in_position(uint8_t axis_id) = 0;
     // Analog / illumination setup (loop-context SPI — engine only calls these in PREP).
     virtual void set_dac(uint8_t dac_id, uint16_t value) = 0;
+    // pattern_id == kNone turns the LED matrix off.
     virtual void set_led_pattern(uint8_t pattern_id) = 0;
     // Exposure execution (µs-precise trigger + illumination edges).
     virtual void schedule_exposure(const ExposurePlan& plan) = 0;

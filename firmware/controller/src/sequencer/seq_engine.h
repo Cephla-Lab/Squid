@@ -95,6 +95,7 @@ class SeqEngine {
     bool readout_valid_[kMaxCameras]{};
     bool cancel_requested_ = false;
     bool loaded_ = false;
+    bool led_on_ = false;  // the engine lit the LED matrix and owes it an off
 };
 
 }  // namespace seq

@@ -81,6 +81,7 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     overlap_hold_valid_ = false;
     step_ = 0;
     cancel_requested_ = false;
+    led_on_ = false;
     // Enter the running state BEFORE the first PREP: a restart from Failed must not read
     // the previous run's Failed as "this run failed", so fail() below is the only way there.
     state_ = SeqState::WaitHw;
@@ -134,6 +135,10 @@ bool SeqEngine::stack_settled(uint32_t now_us) {
 // over to Returning. Done is only reported once the stack axis is back, because the host
 // starts the next XY move on Done.
 void SeqEngine::finish(uint32_t now_us) {
+    if (led_on_) {
+        hal_.set_led_pattern(kNone);
+        led_on_ = false;
+    }
     if (cancel_requested_ && step_ < total_steps())
         progress_.abort_error = (uint8_t)SeqError::Canceled;
     if (!loop_.return_to_start) {
@@ -167,7 +172,15 @@ void SeqEngine::begin_prep(uint32_t k, uint32_t now_us) {
     }
     // Intensity pre-arm + LED pattern (loop-context SPI: only ever in PREP)
     if (ch.intensity_dac != kNone) hal_.set_dac(ch.intensity_dac, ch.intensity);
-    if (ch.led_pattern != kNone) hal_.set_led_pattern(ch.led_pattern);
+    // The matrix is not strobed by the exposure edges (FastLED is too slow for an ISR), so a
+    // lit pattern would bleed into a following TTL-only channel unless PREP turns it off.
+    if (ch.led_pattern != kNone) {
+        hal_.set_led_pattern(ch.led_pattern);
+        led_on_ = true;
+    } else if (led_on_) {
+        hal_.set_led_pattern(kNone);
+        led_on_ = false;
+    }
 }
 
 bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
