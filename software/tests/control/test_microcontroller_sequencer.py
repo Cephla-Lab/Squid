@@ -11,7 +11,7 @@ import threading
 import pytest
 
 import control.sequencer_program as sp
-from control._def import CMD_EXECUTION_STATUS, CMD_SET, MicrocontrollerDef
+from control._def import CMD_EXECUTION_STATUS, CMD_SET
 from control.microcontroller import (
     AbstractCephlaMicroSerial,
     CommandAborted,
@@ -21,8 +21,6 @@ from control.microcontroller import (
 )
 
 from tests.control.test_sequencer_program import golden_program, minimal_program
-
-SEQ_OPCODES = (CMD_SET.SEQ_WRITE, CMD_SET.SEQ_COMMIT, CMD_SET.SEQ_RUN, CMD_SET.SEQ_CANCEL)
 
 
 def status_as_theta(state: sp.SeqState, error: sp.SeqError, detail: int = 0, frames_fired: int = 0) -> int:
