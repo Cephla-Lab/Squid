@@ -11,6 +11,7 @@
 
 #include <Arduino.h>
 
+#include "controller_profile.h"
 #include "sequencer/seq_bind.h"
 
 namespace {
@@ -53,7 +54,7 @@ void load_program() {
 #else
     cam.ready_line = seq::kNone;
 #endif
-    cam.ready_active_high = 1;
+    cam.ready_active_high = controller::kActive.ready_assert_level;  // the board's convention, not ours
     cam.readout_overlap_safe = 1;
     loaded = seq_load(p).error == seq::SeqError::None;
 }
