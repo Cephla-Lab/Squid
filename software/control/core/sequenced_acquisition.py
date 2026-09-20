@@ -21,6 +21,7 @@ from typing import Optional, Sequence, Tuple
 import numpy as np
 
 from control.sequencer_program import (
+    NONE_ID,
     Order,
     SeqCameraSpec,
     SeqChannelSpec,
@@ -30,6 +31,7 @@ from control.sequencer_program import (
     SequencerProgram,
     SequencerStatus,
     StackAxisType,
+    TriggerMode,
 )
 
 # Illumination source code -> TTL port index. The port index is also the TTL mask bit and the
@@ -108,6 +110,26 @@ def piezo_step_lsb(delta_um: float, range_um: float, flip: bool) -> int:
     return -step if flip else step
 
 
+def camera_record(*, use_ready_line: bool, strobe_delay_ms: float, readout_ms: float) -> SeqCameraSpec:
+    """The camera record of a burst: LEVEL trigger, exposure = pulse width.
+
+    Without the ready line the controller models readiness as exposure end + readout_ms. With it,
+    the line is ACTIVE LOW: the controller's ready input is pulled up on the board (new controller:
+    about 4.7 k to 3.3 V, measured), so an unplugged or broken cable reads HIGH. HIGH therefore has
+    to mean NOT ready - the run then times out before its first frame instead of triggering without
+    waiting for the camera. The camera drivers configure their ready outputs to match
+    (CAMERA_TRIGGER_READY_OUTPUT).
+    """
+    return SeqCameraSpec(
+        trigger_mode=TriggerMode.LEVEL,
+        ready_line=0 if use_ready_line else NONE_ID,
+        ready_active_high=False,
+        readout_overlap_safe=True,  # global reset + strobed light: nothing is lit during readout
+        strobe_delay_us=round(strobe_delay_ms * 1000),
+        readout_time_us=round(readout_ms * 1000),
+    )
+
+
 def build_program(
     channels: Sequence[ChannelPlan],
     *,
@@ -168,17 +190,27 @@ def ineligibility_reason(
     camera_gains: Sequence[float],
     burst_bytes: int,
     byte_budget: Optional[int],
+    use_ready_line: bool,
+    camera_drives_ready_line: bool,
 ) -> Optional[str]:
     """Why this acquisition cannot be hardware-sequenced, or None when it can.
 
     Decided once per acquisition. An ineligible acquisition runs software-sequenced exactly as
-    it does today, and the reason is logged. Old firmware is NOT an ineligibility: it answers the
-    sequencer opcodes with success and does nothing, so asking for the feature on it is an error.
+    it does today, and the reason is logged. Two things are NOT ineligibilities but errors, because
+    falling back would hide that the setup cannot deliver what was asked for: old firmware (it
+    answers the sequencer opcodes with success and does nothing), and gating on a camera-ready line
+    the camera was never configured to drive.
     """
     if not firmware_supports_sequencer:
         raise RuntimeError(
             "Hardware-sequenced acquisition is enabled, but the controller firmware is older than 1.7 and "
             "would silently ignore the sequencer commands. Update the firmware or turn the setting off."
+        )
+    if use_ready_line and not camera_drives_ready_line:
+        raise RuntimeError(
+            "SEQUENCER_USE_CAMERA_READY_LINE is on, but CAMERA_TRIGGER_READY_OUTPUT is off: the camera's "
+            "trigger-ready output is not configured (active low), so the controller would gate its triggers on a "
+            "line nobody drives. Turn CAMERA_TRIGGER_READY_OUTPUT on, or the ready-line setting off."
         )
     if not trigger_is_hardware:
         return "the camera is not in hardware trigger mode"

@@ -11,6 +11,7 @@ from control.core.sequenced_acquisition import (
     ChannelPlan,
     burst_failure_reason,
     build_program,
+    camera_record,
     ineligibility_reason,
     intensity_percent_to_dac,
     intervention_message,
@@ -19,6 +20,7 @@ from control.core.sequenced_acquisition import (
     piezo_um_to_dac,
 )
 from control.sequencer_program import (
+    NONE_ID,
     Order,
     SeqCameraSpec,
     SeqError,
@@ -161,6 +163,8 @@ def eligible_kwargs(**overrides):
         camera_gains=[10.0, 10.0],
         burst_bytes=400_000_000,
         byte_budget=2_000_000_000,
+        use_ready_line=False,
+        camera_drives_ready_line=False,
     )
     kwargs.update(overrides)
     return kwargs
@@ -199,6 +203,35 @@ def test_old_firmware_is_not_an_ineligibility_but_an_error():
     # back would hide that the user asked for a feature the controller cannot deliver.
     with pytest.raises(RuntimeError, match="firmware"):
         ineligibility_reason(**eligible_kwargs(firmware_supports_sequencer=False))
+
+
+def test_gating_on_a_ready_line_the_camera_does_not_drive_is_an_error():
+    # Without CAMERA_TRIGGER_READY_OUTPUT the ToupCam driver never configures its ready output in
+    # LEVEL mode and the Hamamatsu's is whatever it last was: the controller would gate on noise.
+    with pytest.raises(RuntimeError, match="CAMERA_TRIGGER_READY_OUTPUT"):
+        ineligibility_reason(**eligible_kwargs(use_ready_line=True, camera_drives_ready_line=False))
+
+
+def test_gating_on_a_ready_line_the_camera_drives_is_eligible():
+    assert ineligibility_reason(**eligible_kwargs(use_ready_line=True, camera_drives_ready_line=True)) is None
+
+
+# --- the camera record ---------------------------------------------------------------------------
+
+
+def test_the_ready_line_is_active_low():
+    # The controller's ready input is pulled UP on the board (~4.7 k to 3.3 V, measured): an
+    # unplugged cable reads HIGH, so HIGH has to mean NOT ready or the run would trigger blind.
+    record = camera_record(use_ready_line=True, strobe_delay_ms=0.3, readout_ms=25.0)
+    assert record.ready_line == 0
+    assert record.ready_active_high is False
+
+
+def test_without_the_ready_line_the_camera_record_uses_the_timing_model():
+    record = camera_record(use_ready_line=False, strobe_delay_ms=0.3, readout_ms=25.0)
+    assert record.ready_line == NONE_ID
+    assert (record.strobe_delay_us, record.readout_time_us) == (300, 25_000)
+    assert record.trigger_mode == TriggerMode.LEVEL and record.readout_overlap_safe is True
 
 
 # --- a finished burst is saved only if it is provably complete and in order ----------------------

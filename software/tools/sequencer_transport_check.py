@@ -42,6 +42,7 @@ import time
 from typing import Callable, List, Optional, Tuple
 
 import control.microcontroller as microcontroller
+from control.core.sequenced_acquisition import camera_record
 import squid.logging
 from control.microcontroller import CommandAborted
 from control.sequencer_program import (
@@ -64,7 +65,10 @@ MID_RANGE = 32768
 DZ_LSB = 218  # ~1 um on a 300 um piezo
 EXPOSURES_US = (20_000, 50_000)
 WAIT_TIMEOUT_US = 2_000_000
-ACQUISITION_READY_ACTIVE_HIGH = True  # what MultiPointWorker puts in the camera record today
+# What a real acquisition puts in the camera record - asked of the code that builds it, not restated.
+ACQUISITION_READY_ACTIVE_HIGH = camera_record(
+    use_ready_line=True, strobe_delay_ms=0.0, readout_ms=0.0
+).ready_active_high
 
 
 def make_program(

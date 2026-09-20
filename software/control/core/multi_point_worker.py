@@ -40,13 +40,13 @@ from control.core.sequenced_acquisition import (
     ChannelPlan,
     build_program,
     burst_failure_reason,
+    camera_record,
     ineligibility_reason,
     intervention_message,
     outcome_after_failed_burst,
     piezo_um_to_dac,
 )
-from control.sequencer_program import NONE_ID, SeqCameraSpec, SequencerProgram
-from control.sequencer_program import TriggerMode as SequencerTriggerMode
+from control.sequencer_program import SequencerProgram
 from control.core.job_processing import ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
@@ -1236,6 +1236,8 @@ class MultiPointWorker:
             camera_gains=[config.analog_gain for config in self.selected_configurations],
             burst_bytes=self.NZ * len(plans) * width * height * 2,
             byte_budget=int(control._def.ACQUISITION_MAX_PENDING_MB * 1024 * 1024),
+            use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
+            camera_drives_ready_line=control._def.CAMERA_TRIGGER_READY_OUTPUT,
         )
         if (
             reason is None
@@ -1259,13 +1261,10 @@ class MultiPointWorker:
         except NotImplementedError:
             pass
 
-        camera_spec = SeqCameraSpec(
-            trigger_mode=SequencerTriggerMode.LEVEL,
-            ready_line=0 if control._def.SEQUENCER_USE_CAMERA_READY_LINE else NONE_ID,
-            ready_active_high=True,
-            readout_overlap_safe=True,  # global reset + strobed light: nothing is lit during readout
-            strobe_delay_us=round(self.camera.get_strobe_time() * 1000),
-            readout_time_us=round(control._def.SEQUENCER_CAMERA_READOUT_MS * 1000),
+        camera_spec = camera_record(
+            use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
+            strobe_delay_ms=self.camera.get_strobe_time(),
+            readout_ms=control._def.SEQUENCER_CAMERA_READOUT_MS,
         )
         program = build_program(
             plans,
