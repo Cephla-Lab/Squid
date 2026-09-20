@@ -1,0 +1,144 @@
+"""End to end, in simulation: a hardware-sequenced acquisition must deliver exactly the image set a
+software-sequenced one does - same count, same order, same z / channel / file ids - through the
+real MultiPointWorker, the simulated controller's sequencer and the simulated camera."""
+
+import threading
+
+import pytest
+
+import control._def
+import control.core.multi_point_worker as multi_point_worker
+import control.microscope
+import control.sequencer_sim
+import tests.control.test_stubs as ts
+from control.core.multi_point_utils import MultiPointControllerFunctions
+from control.piezo import PiezoStage
+from control.sequencer_program import SeqError, SeqState
+
+FLUORESCENCE = ["Fluorescence 405 nm Ex", "Fluorescence 488 nm Ex"]
+NZ = 3
+DZ_UM = 1.5
+
+
+class Tracker:
+    def __init__(self):
+        self.finished = threading.Event()
+        self.images = []  # (z_index, channel name, file_id, z_piezo_um), in arrival order
+
+    def callbacks(self) -> MultiPointControllerFunctions:
+        return MultiPointControllerFunctions(
+            signal_acquisition_start=lambda *a: None,
+            signal_acquisition_finished=lambda *a: self.finished.set(),
+            signal_new_image=self._image,
+            signal_current_configuration=lambda *a: None,
+            signal_current_fov=lambda *a: None,
+            signal_overall_progress=lambda *a: None,
+            signal_region_progress=lambda *a: None,
+        )
+
+    def _image(self, frame, info):
+        self.images.append((info.z_index, info.configuration.name, info.file_id, info.z_piezo_um))
+
+
+@pytest.fixture
+def sequencing_setup(monkeypatch):
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_MODE", control._def.HardwareTriggerMode.LEVEL)
+    monkeypatch.setattr(control._def, "HARDWARE_TRIGGER_GLOBAL_RESET", True)
+    monkeypatch.setattr(control._def, "ACQUISITION_MAX_PENDING_MB", 8000)  # simulated frames are 26 MP
+    monkeypatch.setattr(control.sequencer_sim, "SPEED_UP_FACTOR", 50.0)
+
+
+def run_acquisition(channels, *, sequenced: bool, monkeypatch):
+    monkeypatch.setattr(control._def, "USE_HARDWARE_SEQUENCED_ACQUISITION", sequenced)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        mcu = scope.low_level_drivers.microcontroller
+        scope.addons.piezo_stage = PiezoStage(
+            mcu,
+            {
+                "OBJECTIVE_PIEZO_HOME_UM": 20,
+                "OBJECTIVE_PIEZO_RANGE_UM": control._def.OBJECTIVE_PIEZO_RANGE_UM,
+                "OBJECTIVE_PIEZO_CONTROL_VOLTAGE_RANGE": 5,
+                "OBJECTIVE_PIEZO_FLIP_DIR": False,
+            },
+        )
+        scope.addons.piezo_stage.home()
+        tracker = Tracker()
+        mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tracker.callbacks())
+        mpc.liveController.set_trigger_mode(control._def.TriggerMode.HARDWARE)
+        mpc.scanCoordinates.add_single_fov_region(
+            "region_1",
+            center_x=mpc.stage.get_config().X_AXIS.MIN_POSITION + 1.0,
+            center_y=mpc.stage.get_config().Y_AXIS.MIN_POSITION + 1.0,
+            center_z=mpc.stage.get_config().Z_AXIS.MIN_POSITION + 1.0,
+        )
+        mpc.set_selected_configurations(selected_configurations_name=channels)
+        mpc.set_use_piezo(True)
+        mpc.set_NZ(NZ)
+        mpc.set_deltaZ(DZ_UM)
+        mpc.run_acquisition()
+        assert tracker.finished.wait(60), "acquisition did not finish"
+        return tracker, mcu.seq_status, scope.addons.piezo_stage.position
+    finally:
+        scope.close()
+
+
+def test_sequenced_and_software_sequenced_deliver_the_same_image_set(sequencing_setup, monkeypatch):
+    software, software_status, _ = run_acquisition(FLUORESCENCE, sequenced=False, monkeypatch=monkeypatch)
+    sequenced, status, piezo_um = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
+
+    expected_order = [(z, name) for z in range(NZ) for name in FLUORESCENCE]
+    assert [(z, name) for z, name, _, _ in software.images] == expected_order
+    assert [(z, name, file_id) for z, name, file_id, _ in sequenced.images] == [
+        (z, name, file_id) for z, name, file_id, _ in software.images
+    ]
+    # the piezo z recorded per image follows the stack, and the piezo is back where it started
+    assert [z_um for _, _, _, z_um in sequenced.images] == pytest.approx(
+        [20 + z * DZ_UM for z in range(NZ) for _ in FLUORESCENCE]
+    )
+    assert piezo_um == pytest.approx(20)
+
+    # and it really was the controller that ran the stack
+    assert status.state == SeqState.DONE and status.error == SeqError.NONE
+    assert status.frames_fired == NZ * len(FLUORESCENCE)
+    assert software_status.frames_fired == 0
+
+
+def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_setup, monkeypatch):
+    # An LED-matrix channel cannot be strobed from an MCU TTL port.
+    channels = ["BF LED matrix full", "Fluorescence 488 nm Ex"]
+    tracker, status, _ = run_acquisition(channels, sequenced=True, monkeypatch=monkeypatch)
+    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for z in range(NZ) for name in channels]
+    assert status.frames_fired == 0  # the controller's sequencer was never used
+
+
+def test_a_failed_burst_is_discarded_and_the_fov_retried_once(sequencing_setup, monkeypatch):
+    real = multi_point_worker.burst_failure_reason
+    calls = []
+
+    def fail_first(*args, **kwargs):
+        calls.append(1)
+        return "injected: a frame was dropped inside the burst" if len(calls) == 1 else real(*args, **kwargs)
+
+    monkeypatch.setattr(multi_point_worker, "burst_failure_reason", fail_first)
+    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
+
+    assert len(calls) == 2  # O1: retried once
+    # the discarded burst reached nobody: every image exactly once, in order
+    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for z in range(NZ) for name in FLUORESCENCE]
+    assert status.frames_fired == NZ * len(FLUORESCENCE)
+
+
+def test_a_second_failure_aborts_without_saving_anything(sequencing_setup, monkeypatch):
+    calls = []
+
+    def always_fail(*args, **kwargs):
+        calls.append(1)
+        return "injected: the camera delivered only 5 of 6 frames"
+
+    monkeypatch.setattr(multi_point_worker, "burst_failure_reason", always_fail)
+    tracker, _, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
+
+    assert len(calls) == 2  # one retry, then stop
+    assert tracker.images == []  # nothing of a failed burst is ever dispatched
