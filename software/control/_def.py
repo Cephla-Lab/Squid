@@ -1136,6 +1136,35 @@ class HardwareTriggerMode:
 
 HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
 
+# Opt-in: put the sensor into GLOBAL RESET mode while hardware triggering in LEVEL mode.
+#
+# In the default rolling-shutter model, rows start exposing one after another, so the host
+# waits a strobe delay (~rows x line interval) until the LAST row has started before firing
+# the illumination. In global reset every row starts exposing at the trigger, so that
+# per-frame wait collapses to the camera's fixed trigger latency. Readout is still rolling,
+# so the illumination must be strobed and OFF before readout begins.
+#
+# Only has an effect together with HARDWARE_TRIGGER_MODE = LEVEL and a camera in the
+# HARDWARE trigger acquisition mode. Drivers read the mode back from the camera and raise
+# rather than fall back to rolling timing, which would fire the strobe before the last rows
+# are exposing.
+HARDWARE_TRIGGER_GLOBAL_RESET = False
+
+# Opt-in: have the camera drive a "trigger ready" output the controller can gate the next
+# trigger on (Hamamatsu output trigger connector 1). Only configured while the camera is in
+# the HARDWARE trigger acquisition mode. The ToupCam driver already drives GPIO1 as a
+# trigger-ready output in EDGE mode and is not affected by this setting.
+CAMERA_TRIGGER_READY_OUTPUT = False
+
+
+def use_level_trigger_global_reset() -> bool:
+    """True when the opt-in LEVEL trigger + global reset exposure model is in effect.
+
+    Reads the live module globals, so it sees values loaded from the .ini (and any runtime
+    override) rather than a stale `from control._def import *` binding.
+    """
+    return bool(HARDWARE_TRIGGER_GLOBAL_RESET) and HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL
+
 
 def read_objectives_csv(file_path):
     objectives = {}
