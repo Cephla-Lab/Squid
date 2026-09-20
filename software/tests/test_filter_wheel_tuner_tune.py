@@ -128,6 +128,7 @@ def _tuner(mod, tmp_path, wheel, **kw):
         action="tune", out=str(tmp_path), transitions="auto", microsteps=8, vmax=6.0, accel=50.0, ramp="sshape",
         accel_list=[50, 100, 150, 200, 250, 300], pattern=list(mod.DEFAULT_PATTERN), laps=6, margin=0.8,
         max_attempts=4, lost_fullsteps=0.5, slip_fullsteps=2.0, write_ini=False, ini=None, window_deg=0.0,
+        plateau_ms=2.0,
     )  # fmt: skip
     for k, v in kw.items():
         setattr(a, k, v)
@@ -136,14 +137,17 @@ def _tuner(mod, tmp_path, wheel, **kw):
     t.log = lambda msg: None
     t.set_motion = lambda vmax, accel, ramp: None
     t.home = lambda: setattr(wheel, "homed", wheel.homed + 1)
+    t.parked = []
+    t.move_to_slot = lambda slot: (t.parked.append(slot), setattr(t, "slot", slot))
 
     def pattern(label, slots=None, settle_s=0.12):
         n = len(slots or a.pattern)
         edge = wheel.endurance_edge if n > len(a.pattern) else wheel.screen_edge
         lost = 0 if a.accel <= edge else 300
+        ms = max(76.0, 19000.0 / a.accel)  # faster with acceleration until the ramp is register-clamped at 250
         res = {
             "phase": "level", "label": label, "n_moves": n, "drift_usteps": lost,
-            "worst_move": {"lost_this_move": lost}, "by_distance_ms_median": {"1": 78.0}, "adjacent_ms_median": 78.0,
+            "worst_move": {"lost_this_move": lost}, "by_distance_ms_median": {"1": ms}, "adjacent_ms_median": ms,
         }  # fmt: skip
         wheel.levels.append((label, a.accel, n))
         t.summary["results"].append(res)
@@ -174,10 +178,18 @@ def test_a_level_that_passes_the_screen_but_fails_the_endurance_is_stepped_down(
     assert wheel.homed == 2
 
 
-def test_no_edge_inside_the_ladder_keeps_the_top(mod, tmp_path):
+def test_no_edge_takes_the_gentlest_level_that_is_as_fast_as_the_best(mod, tmp_path):
+    # bench 2026-09-20: 250, 300 and 400 rev/s2 all gave 76 ms (ramp register-clamped); 400 buys nothing over 250
     wheel = _Wheel(screen_edge=10_000, endurance_edge=10_000)
-    rec = _tuner(mod, tmp_path, wheel).tune()
-    assert rec["max_acceleration_w_mm"] == 300 and rec["stall_edge_found"] is False and wheel.homed == 0
+    rec = _tuner(mod, tmp_path, wheel, accel_list=[50, 100, 150, 200, 250, 300, 400]).tune()
+    assert rec["max_acceleration_w_mm"] == 250 and rec["stall_edge_found"] is False and wheel.homed == 0
+
+
+def test_gentlest_as_fast(mod):
+    levels = [(50, 210.0), (100, 134.0), (200, 87.0), (250, 76.0), (300, 76.0), (400, 75.0)]
+    assert mod.gentlest_as_fast(levels, 2.0) == 250
+    assert mod.gentlest_as_fast(levels, 0.0) == 400
+    assert mod.gentlest_as_fast(levels[:3], 2.0) == 200  # still getting faster: take the top
 
 
 def test_tune_reports_failure_when_nothing_is_clean(mod, tmp_path):
@@ -203,3 +215,16 @@ def test_verify_passes_and_fails_on_the_endurance_pattern(mod, tmp_path):
     assert ok.verify() is True and ok.summary["verify"]["moves"] == 96
     bad = _tuner(mod, tmp_path, _Wheel(200, 100), action="verify", accel=150.0)
     assert bad.verify() is False
+
+
+def test_the_pattern_starts_one_slot_before_its_first_target(mod, tmp_path):
+    # the encoder check leaves the wheel on slot 2, where the default pattern begins: that first move was a no-op
+    t = _tuner(mod, tmp_path, _Wheel(200, 200), action="verify", accel=150.0)
+    t.slot = 2
+    t.verify()
+    assert t.parked == [1]
+    t.parked.clear()
+    t.a.pattern = [1, 5, 2]
+    t.slot = 3
+    t.endurance("x")
+    assert t.parked == [8]  # one before slot 1 is the last slot, around the circle

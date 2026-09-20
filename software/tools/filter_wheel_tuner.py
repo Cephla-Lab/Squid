@@ -26,7 +26,8 @@ filters, how balanced), on the motor and on its temperature, so a profile qualif
 not a setting. `verify` runs the endurance pattern (--laps x the 16-move pattern, default 6 = 96 moves) at the
 settings the machine is configured with and fails on lost steps: run it after a filter change or a service visit.
 `tune` screens the acceleration ladder with the short pattern, takes the highest clean level, backs off by --margin
-when a stall edge was found (the edge is statistical: a level can pass 16 moves and slip in 96), confirms the result
+when a stall edge was found (the edge is statistical: a level can pass 16 moves and slip in 96), never asks for more
+acceleration than makes the wheel faster (--plateau-ms: above some level the jerk register clamps the ramp), confirms the result
 with the endurance pattern, steps down and repeats if that fails, and prints the ini keys. --write-ini puts them in
 the machine ini ([GENERAL]), after saving a timestamped backup next to it. Motor current is never changed.
 Options: --vmax rev/s  --accel rev/s^2  --ramp trapezoid|sshape  --microsteps 64  --flip auto|0|1
@@ -106,6 +107,15 @@ def choose_accel(highest_clean, edge_found, margin, quantum=10.0):
     if not edge_found:
         return float(highest_clean)
     return max(quantum, float(int(highest_clean * margin / quantum) * quantum))
+
+
+def gentlest_as_fast(clean_levels, tol_ms=2.0):
+    """From [(accel, adjacent_ms), ...] of clean levels: the LOWEST acceleration whose adjacent-slot time is within
+    `tol_ms` of the fastest. Above some acceleration the ramp stops getting faster - at 8 usteps/FS the S-shape jerk
+    register clamps it (bench 2026-09-20: 250, 300 and 400 rev/s2 all gave 76 ms) - and asking for more there buys
+    no time and gives margin away."""
+    best = min(ms for _, ms in clean_levels)
+    return min(a for a, ms in clean_levels if ms <= best + tol_ms)
 
 
 def update_ini_text(text, updates, comment):
@@ -616,8 +626,18 @@ class WheelTuner:
         res["drift_limit_usteps"], res["slip_limit_usteps"] = drift_limit, slip_limit
         return ok
 
+    def _to_pattern_start(self):
+        """Park one slot before the pattern's first target, so its first move is a real one. The encoder check
+        leaves the wheel on slot 2, which is where the default pattern begins: that move was a 5 ms no-op."""
+        first = self.a.pattern[0]
+        start = MIN_INDEX + (first - MIN_INDEX - 1) % SLOTS
+        if self.slot != start:
+            self.move_to_slot(start)
+            time.sleep(0.2)
+
     def endurance(self, label):
         """The bar for a setting: --laps times the move pattern (default 6 x 16 = 96 moves)."""
+        self._to_pattern_start()
         return self.pattern(label, slots=list(self.a.pattern) * self.a.laps)
 
     def _timing_text(self, res):
@@ -649,12 +669,20 @@ class WheelTuner:
             self.a.accel = accel
             self.set_motion(self.a.vmax, accel, self.a.ramp)
             try:
+                self._to_pattern_start()
                 res = self.pattern(f"screen a{accel:g}")
             except Exception as e:  # noqa: BLE001
                 res = {"phase": "level", "label": f"screen a{accel:g}", "error": str(e)}
                 self.summary["results"].append(res)
             ok = self._judge(res)
-            screened.append({"accel": accel, "pass": ok, "drift_usteps": res.get("drift_usteps")})
+            screened.append(
+                {
+                    "accel": accel,
+                    "pass": ok,
+                    "drift_usteps": res.get("drift_usteps"),
+                    "adjacent_ms": res.get("adjacent_ms_median"),
+                }
+            )
             if not ok:
                 edge = True
                 self.log(
@@ -669,14 +697,12 @@ class WheelTuner:
             )
             self.summary["tune"] = {"pass": False, "screened": screened}
             return None
-        cand = choose_accel(clean[-1], edge, self.a.margin)
+        plateau = gentlest_as_fast([(x["accel"], x["adjacent_ms"]) for x in screened if x["pass"]], self.a.plateau_ms)
+        cand = min(choose_accel(clean[-1], edge, self.a.margin), plateau)
         self.log(
             f"screen: highest clean a{clean[-1]:g}"
-            + (
-                f", stall edge above it -> margin {self.a.margin:g} -> a{cand:g}"
-                if edge
-                else ", no stall edge inside the ladder -> kept"
-            )
+            + (f", stall edge above it -> margin {self.a.margin:g}" if edge else ", no stall edge inside the ladder")
+            + f"; gentlest level within {self.a.plateau_ms:g} ms of the fastest is a{plateau:g} -> confirming a{cand:g}"
         )
         attempts, final, final_res = [], None, None
         while cand >= 10.0 and len(attempts) < self.a.max_attempts:
@@ -739,9 +765,14 @@ class WheelTuner:
             return None
         with open(path, "r", newline="") as f:
             text = f.read()
+        how = (
+            f"margin {rec['margin']:g} below the stall edge"
+            if rec["stall_edge_found"]
+            else "no stall edge inside the ladder; the gentlest level as fast as the fastest"
+        )
         comment = (
-            f"filter wheel profile from tools/filter_wheel_tuner.py tune, {rec['date']}: {rec['moves_confirmed']} moves clean, "
-            f"margin {rec['margin']:g}{'' if rec['stall_edge_found'] else ' (no stall edge inside the ladder)'}"
+            f"filter wheel profile from tools/filter_wheel_tuner.py tune, {rec['date']}: "
+            f"{rec['moves_confirmed']} moves clean, {how}"
         )
         new_text, changes = update_ini_text(text, {k: f"{rec[k]:g}" for k in INI_KEYS}, comment)
         backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
@@ -860,6 +891,12 @@ def main():
     ap.add_argument("--laps", type=int, default=6, help="verify/tune: endurance = laps x the pattern (6 x 16 = 96)")
     ap.add_argument("--margin", type=float, default=0.8, help="tune: factor applied below a found stall edge")
     ap.add_argument("--max-attempts", type=int, default=4, help="tune: endurance attempts before giving up")
+    ap.add_argument(
+        "--plateau-ms",
+        type=float,
+        default=2.0,
+        help="tune: prefer the lowest acceleration whose adjacent-slot time is within this of the fastest clean level",
+    )
     ap.add_argument("--lost-fullsteps", type=float, default=0.5, help="verify/tune: level drift that fails, full steps")
     ap.add_argument("--slip-fullsteps", type=float, default=2.0, help="verify/tune: single-move loss that fails")
     ap.add_argument("--write-ini", action="store_true", help="tune: write the result to the machine ini (backup first)")
