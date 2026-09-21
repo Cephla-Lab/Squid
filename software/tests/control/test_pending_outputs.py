@@ -5,7 +5,7 @@ import concurrent.futures
 import threading
 import time
 
-from control.core.pending_outputs import PendingOutputs
+from control.core.pending_outputs import PendingOutputs, TimepointReply
 
 
 def _done(exc=None):
@@ -125,3 +125,36 @@ def test_when_settled_fires_for_a_failed_writer_without_listing_it():
     p.when_settled(got.append)
     future.set_exception(OSError("disk full"))
     assert len(got) == 1 and got[0].outputs == () and got[0].complete is False
+
+
+# --- replies are bound to the run that asked ------------------------------------------------------
+
+
+def test_a_late_reply_reaches_the_run_that_asked_not_the_run_that_is_current():
+    """Run A ends still waiting for its timepoint-0 answer; run B starts and also expects timepoint 0.
+    A's answer arriving late must settle A and leave B waiting for its own."""
+    old_run, new_run = PendingOutputs(), PendingOutputs()
+    old_reply = old_run.expect(0)
+    new_reply = new_run.expect(0)
+    old_settled, new_settled = [], []
+    old_run.when_settled(old_settled.append)
+    new_run.when_settled(new_settled.append)
+
+    old_reply.nothing_to_write()
+    assert len(old_settled) == 1 and new_settled == [], "the new run still awaits its own answer"
+    assert new_run.wait(0, timeout_s=0.05).complete is False
+
+    future = concurrent.futures.Future()
+    new_reply.register(future, "/new/0/mosaic_view")
+    future.set_result(None)
+    assert len(new_settled) == 1 and new_settled[0].outputs == ((0, "/new/0/mosaic_view"),)
+    assert len(old_settled) == 1
+
+
+def test_a_reply_nobody_expected_is_harmless_and_carries_its_timepoint():
+    registry = PendingOutputs()
+    reply = TimepointReply(registry, 4)  # mode-off or headless-style run: nothing was expected
+    assert reply.time_point == 4
+    reply.nothing_to_write()
+    reply.register(_done(), "/exp/4/mosaic_view")
+    assert registry.wait(None, timeout_s=0.0).outputs == ((4, "/exp/4/mosaic_view"),)

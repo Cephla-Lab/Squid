@@ -34,7 +34,7 @@ def _one_fov(mpc):
     )
 
 
-def _run(tmp_path, monkeypatch, mode_on: bool, saving_option: FileSavingOption, nt: int = 2, writer=None):
+def _make_controller(tmp_path, monkeypatch, saving_option: FileSavingOption, writer=None):
     control._def.MERGE_CHANNELS = False
     monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", saving_option)
     monkeypatch.setattr(mpw, "FILE_SAVING_OPTION", saving_option)  # the worker binds the name at import
@@ -47,26 +47,38 @@ def _run(tmp_path, monkeypatch, mode_on: bool, saving_option: FileSavingOption, 
     callbacks = tt.get_callbacks()
     holder = {}
     if writer is not None:
-        # Stand-in for the GUI's mosaic view: answers every timepoint_finished from another thread.
-        callbacks = dataclasses.replace(callbacks, signal_timepoint_finished=lambda t: writer(holder["mpc"], t))
+        # Stand-in for the GUI's mosaic view: handed a reply bound to the run for every timepoint.
+        callbacks = dataclasses.replace(
+            callbacks, signal_timepoint_outputs_requested=lambda reply: writer(holder["mpc"], reply)
+        )
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=callbacks)
     holder["mpc"] = mpc
     if writer is not None:
         mpc.attach_timepoint_output_writer()
     mpc.set_base_path(str(tmp_path))
-    mpc.start_new_experiment("manifest_run", add_timestamp=False)
     _one_fov(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
-    mpc.set_Nt(nt)
     mpc.set_deltat(0.0)
-    mpc.set_large_acquisition_mode(mode_on)
+    return mpc, tt
 
+
+def _acquire(mpc, tt, tmp_path, name: str, mode_on: bool, nt: int):
+    tt.started_event.clear()
+    tt.finished_event.clear()
+    mpc.start_new_experiment(name, add_timestamp=False)
+    mpc.set_Nt(nt)
+    mpc.set_large_acquisition_mode(mode_on)
     mpc.run_acquisition()
     assert tt.started_event.wait(10)
     assert tt.finished_event.wait(120)
     mpc.thread.join(10)
     assert mpc.last_end_reason == "completed"
-    return tmp_path / "manifest_run", tt, mpc
+    return tmp_path / name
+
+
+def _run(tmp_path, monkeypatch, mode_on: bool, saving_option: FileSavingOption, nt: int = 2, writer=None):
+    mpc, tt = _make_controller(tmp_path, monkeypatch, saving_option, writer)
+    return _acquire(mpc, tt, tmp_path, "manifest_run", mode_on, nt), tt, mpc
 
 
 def test_mode_off_writes_no_manifest(tmp_path, monkeypatch):
@@ -134,8 +146,10 @@ def test_zarr_manifest_lists_each_timepoints_chunk_files(tmp_path, monkeypatch):
 def test_outputs_written_outside_the_worker_are_listed_per_timepoint_before_timepoint_done(tmp_path, monkeypatch):
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
-    def mosaic_like_writer(mpc, t):
-        def reply():  # like the GUI thread handling the queued signal a little later
+    def mosaic_like_writer(mpc, reply):
+        t = reply.time_point
+
+        def answer():  # like the GUI thread handling the queued signal a little later
             time.sleep(0.2)
             out = Path(mpc.base_path) / mpc.experiment_ID / _tp_dir(t) / "mosaic_view"
 
@@ -144,9 +158,9 @@ def test_outputs_written_outside_the_worker_are_listed_per_timepoint_before_time
                 out.mkdir(parents=True, exist_ok=True)
                 (out / "mosaic.yaml").write_text(f"t: {t}\n")
 
-            mpc.register_pending_output(t, pool.submit(save), str(out))
+            reply.register(pool.submit(save), str(out))
 
-        threading.Thread(target=reply, daemon=True).start()
+        threading.Thread(target=answer, daemon=True).start()
 
     exp, tt, mpc = _run(
         tmp_path,
@@ -171,13 +185,14 @@ def test_outputs_written_outside_the_worker_are_listed_per_timepoint_before_time
 def test_a_silent_writer_never_blocks_the_run_but_holds_back_the_markers_until_it_answers(tmp_path, monkeypatch):
     monkeypatch.setattr(mpw.MultiPointWorker, "_TIMEPOINT_OUTPUTS_TIMEOUT_S", 0.3)
     monkeypatch.setattr(mpw.MultiPointWorker, "_PENDING_OUTPUTS_TIMEOUT_S", 0.3)
+    replies = []
     exp, tt, mpc = _run(
         tmp_path,
         monkeypatch,
         mode_on=True,
         saving_option=FileSavingOption.INDIVIDUAL_IMAGES,
         nt=2,
-        writer=lambda m, t: None,
+        writer=lambda m, reply: replies.append(reply),
     )
     # The run itself completed; what is withheld is every claim that outputs are finished, so a mover
     # keeps to the listed files and never sweeps the rest while a save might still be coming.
@@ -185,9 +200,37 @@ def test_a_silent_writer_never_blocks_the_run_but_holds_back_the_markers_until_i
     assert "timepoint_done" not in events and "end" not in events
     assert events.count("complete") >= tt.image_count
 
-    for t in range(2):  # the writer finally answers
-        mpc.report_no_timepoint_output(t)
+    for reply in replies:  # the writer finally answers
+        reply.nothing_to_write()
     assert read_manifest(exp / MANIFEST_FILE_NAME)[-1]["event"] == "end"
+
+
+def test_a_late_answer_from_the_previous_run_cannot_finish_the_next_run(tmp_path, monkeypatch):
+    """Two acquisitions on one controller. The first run's writer answers only after the second run has
+    ended; each manifest must get its end from its own run's answers, in whatever order they arrive."""
+    monkeypatch.setattr(mpw.MultiPointWorker, "_TIMEPOINT_OUTPUTS_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(mpw.MultiPointWorker, "_PENDING_OUTPUTS_TIMEOUT_S", 0.3)
+    replies = []
+    mpc, tt = _make_controller(
+        tmp_path, monkeypatch, FileSavingOption.INDIVIDUAL_IMAGES, writer=lambda m, reply: replies.append(reply)
+    )
+
+    def ended(exp):
+        return any(r["event"] == "end" for r in read_manifest(exp / MANIFEST_FILE_NAME))
+
+    first = _acquire(mpc, tt, tmp_path, "first_run", mode_on=True, nt=1)
+    first_replies = list(replies)
+    second = _acquire(mpc, tt, tmp_path, "second_run", mode_on=True, nt=1)
+    second_replies = replies[len(first_replies) :]
+    assert len(first_replies) == 1 and len(second_replies) == 1
+    assert not ended(first) and not ended(second)
+
+    first_replies[0].nothing_to_write()  # the old run's answer arrives while the new run still waits
+    assert ended(first)
+    assert not ended(second), "the previous run's answer must not satisfy this run's expectation"
+
+    second_replies[0].nothing_to_write()
+    assert ended(second)
 
 
 def test_mode_off_never_expects_or_waits_for_outside_writers(tmp_path, monkeypatch):
@@ -199,7 +242,7 @@ def test_mode_off_never_expects_or_waits_for_outside_writers(tmp_path, monkeypat
         mode_on=False,
         saving_option=FileSavingOption.INDIVIDUAL_IMAGES,
         nt=2,
-        writer=lambda m, t: None,
+        writer=lambda m, reply: None,
     )
     assert not (exp / MANIFEST_FILE_NAME).exists()
     assert time.monotonic() - started < 45, "a silent writer must not slow a mode-off run"
@@ -215,7 +258,8 @@ def test_end_waits_for_a_writer_that_outlasts_the_run_and_lists_its_files_first(
     release = threading.Event()
     futures = []
 
-    def slow_writer(mpc, t):
+    def slow_writer(mpc, reply):
+        t = reply.time_point
         out = Path(mpc.base_path) / mpc.experiment_ID / _tp_dir(t) / "mosaic_view"
 
         def save():
@@ -225,7 +269,7 @@ def test_end_waits_for_a_writer_that_outlasts_the_run_and_lists_its_files_first(
 
         future = pool.submit(save)
         futures.append(future)
-        mpc.register_pending_output(t, future, str(out))
+        reply.register(future, str(out))
 
     exp, tt, mpc = _run(
         tmp_path, monkeypatch, mode_on=True, saving_option=FileSavingOption.INDIVIDUAL_IMAGES, nt=1, writer=slow_writer

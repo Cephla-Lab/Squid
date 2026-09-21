@@ -28,7 +28,7 @@ from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
 from control.core.memory_profiler import MemoryMonitor, log_memory
-from control.core.pending_outputs import FinishedOutputs, PendingOutputs
+from control.core.pending_outputs import PendingOutputs, TimepointReply
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
@@ -917,19 +917,28 @@ class MultiPointController:
                 self._timepoint_output_writer_attached and acquisition_params.large_acquisition_mode
             )
 
+            # This run's registry, captured here: replies, waits and the deferred end record must all reach
+            # it even if they happen after the next run has replaced self._pending_outputs.
+            pending_outputs = self._pending_outputs
+
             def timepoint_finished_fn(time_point: int):
-                # Record the expectation before the (queued) signal goes out, so the worker's wait can
+                self.callbacks.signal_timepoint_finished(time_point)
+                # Record the expectation before the (queued) request goes out, so the worker's wait can
                 # tell "the writer has not answered yet" from "there is nothing to wait for".
                 if expect_timepoint_outputs:
-                    self._pending_outputs.expect(time_point)
-                self.callbacks.signal_timepoint_finished(time_point)
+                    reply = pending_outputs.expect(time_point)
+                else:
+                    reply = TimepointReply(pending_outputs, time_point)
+                self.callbacks.signal_timepoint_outputs_requested(reply)
 
             updated_callbacks = dataclasses.replace(
                 self.callbacks,
                 signal_acquisition_finished=finish_fn,
                 signal_timepoint_finished=timepoint_finished_fn,
-                wait_for_pending_outputs=self._wait_for_pending_outputs,
-                when_pending_outputs_settle=self._pending_outputs.when_settled,
+                wait_for_pending_outputs=lambda time_point, timeout_s: pending_outputs.wait(
+                    time_point, timeout_s, abort_fn=lambda: self.abort_acqusition_requested
+                ),
+                when_pending_outputs_settle=pending_outputs.when_settled,
             )
 
             # Gather objective and camera info for YAML
@@ -1177,20 +1186,9 @@ class MultiPointController:
         self.abort_acqusition_requested = True
 
     def attach_timepoint_output_writer(self) -> None:
-        """Announce a writer that answers every timepoint_finished with register_pending_output() or
-        report_no_timepoint_output(). Large-acquisition runs then wait for that answer."""
+        """Announce a writer that answers every signal_timepoint_outputs_requested on the reply it is
+        handed (reply.register(...) or reply.nothing_to_write()). Large-acquisition runs then wait for it."""
         self._timepoint_output_writer_attached = True
-
-    def register_pending_output(self, time_point: int, future: concurrent.futures.Future, output_dir: str) -> None:
-        """The writer's answer for ``time_point``: an asynchronous save writing into ``output_dir``."""
-        self._pending_outputs.register(time_point, future, output_dir)
-
-    def report_no_timepoint_output(self, time_point: int) -> None:
-        """The writer's answer for ``time_point`` when it has nothing to save."""
-        self._pending_outputs.nothing_to_write(time_point)
-
-    def _wait_for_pending_outputs(self, time_point: Optional[int], timeout_s: float) -> FinishedOutputs:
-        return self._pending_outputs.wait(time_point, timeout_s, abort_fn=lambda: self.abort_acqusition_requested)
 
     def request_pause(self) -> bool:
         """Operator pause, honored at the worker's next FOV/timepoint checkpoint.
