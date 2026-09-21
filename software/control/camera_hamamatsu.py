@@ -507,10 +507,10 @@ class HamamatsuCamera(AbstractCamera):
             self._last_trigger_timestamp = time.time()
             self._trigger_sent.set()
 
-    def get_ready_for_trigger(self) -> bool:
-        # Not ready while streaming is stopped (e.g. inside _pause_streaming() during a
-        # sensor mode / ROI / pixel format change) - callers like LiveController skip
-        # and retry instead of triggering into a stopped stream.
+    def _get_ready_for_trigger_imp(self) -> bool:
+        # Not ready while streaming is stopped - callers skip and retry instead of
+        # triggering into a stopped stream. (A settings change in flight is already
+        # handled by AbstractCamera.get_ready_for_trigger before this runs.)
         if not self.get_is_streaming():
             return False
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):

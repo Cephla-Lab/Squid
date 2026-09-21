@@ -509,7 +509,7 @@ class AndorCamera(AbstractCamera):
             except Exception as e:
                 raise CameraError(f"Failed to send software trigger: {e}")
 
-    def get_ready_for_trigger(self) -> bool:
+    def _get_ready_for_trigger_imp(self) -> bool:
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()
