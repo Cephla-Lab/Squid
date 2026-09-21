@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 import squid.abc
-from control.core.job_processing import Job, JobRunner, JobResult, JobImage, CaptureInfo
+from control.core.job_processing import Job, JobRunner, JobResult, JobImage, CaptureInfo, SaveResult
 from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
 
 
@@ -81,6 +81,25 @@ class FailingJob(Job):
 
     def run(self):
         raise self.exception
+
+
+@dataclass
+class SaveResultJob(Job):
+    """A job that returns a SaveResult, like the real save jobs do."""
+
+    save_result: Optional[SaveResult] = None
+
+    def run(self):
+        return self.save_result
+
+
+def make_save_result_job(save_result: SaveResult) -> SaveResultJob:
+    """Create a SaveResultJob returning the given SaveResult."""
+    return SaveResultJob(
+        capture_info=make_test_capture_info(),
+        capture_image=make_test_job_image(),
+        save_result=save_result,
+    )
 
 
 def make_slow_job(duration_s: float = 0.1, result_value: str = "done") -> SlowJob:
@@ -301,3 +320,35 @@ class TestDispatchRollback:
             assert runner._pending_count.value == 2
         finally:
             runner.shutdown(timeout_s=0.1)
+
+
+class TestSaveResultRoundTrip:
+    """A SaveResult must survive the multiprocessing output queue unchanged."""
+
+    def test_save_result_round_trips_through_output_queue(self):
+        expected = SaveResult(
+            time_point=2,
+            region_id="A1",
+            fov=3,
+            z_index=1,
+            channel_idx=0,
+            immediate_paths=("/tmp/test/A1_3_1_BF.tiff",),
+            unit_paths=("/tmp/test/A1_3_stack.tiff",),
+            unit_kind="file",
+            bytes_written=1234,
+            unit_complete=True,
+        )
+
+        runner = JobRunner()
+        runner.daemon = True
+        runner.start()
+
+        try:
+            runner.dispatch(make_save_result_job(expected))
+
+            job_result = runner.output_queue().get(timeout=5.0)
+            assert job_result.exception is None
+            assert job_result.result == expected
+            assert isinstance(job_result.result, SaveResult)
+        finally:
+            runner.shutdown(timeout_s=1.0)

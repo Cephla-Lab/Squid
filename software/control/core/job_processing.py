@@ -114,6 +114,40 @@ class JobResult(Generic[T]):
     exception: Optional[Exception]
 
 
+@dataclass
+class SaveResult:
+    """What a save job wrote and which on-disk paths that write completes.
+
+    immediate_paths are final as soon as this result is seen (individual TIFFs). unit_paths are final
+    once every plane of the (time_point, region_id, fov) unit has been written (multi-page TIFF file,
+    OME-TIFF file, Zarr chunk directory). unit_complete, when not None, is the writer's own verdict
+    (OME-TIFF counts planes on disk) and overrides counting.
+    """
+
+    time_point: int
+    region_id: str
+    fov: int
+    z_index: int
+    channel_idx: int
+    immediate_paths: Tuple[str, ...] = ()
+    unit_paths: Tuple[str, ...] = ()
+    unit_kind: str = "file"  # "file" | "dir"
+    bytes_written: int = 0
+    unit_complete: Optional[bool] = None
+
+
+def make_save_result(info: CaptureInfo, **kwargs) -> SaveResult:
+    """Build a SaveResult whose identity fields describe the plane in info."""
+    return SaveResult(
+        time_point=info.time_point or 0,
+        region_id=str(info.region_id),
+        fov=info.fov,
+        z_index=info.z_index,
+        channel_idx=info.configuration_idx,
+        **kwargs,
+    )
+
+
 # Timeout in seconds for acquiring file locks during OME-TIFF writing
 FILE_LOCK_TIMEOUT_SECONDS = 10
 
@@ -145,7 +179,7 @@ def _acquire_file_lock(lock_path: str, context: str = ""):
 class SaveImageJob(Job):
     _log: ClassVar = squid.logging.get_logger("SaveImageJob")
 
-    def run(self) -> bool:
+    def run(self) -> SaveResult:
         from control.core.io_simulation import is_simulation_enabled, simulated_tiff_write
 
         image = self.image_array()
@@ -156,12 +190,13 @@ class SaveImageJob(Job):
             self._log.debug(
                 f"SaveImageJob {self.job_id}: simulated write of {bytes_written} bytes " f"(image shape={image.shape})"
             )
-            return True
+            # Nothing reached the disk, so there are no paths to report.
+            return make_save_result(self.capture_info, bytes_written=bytes_written)
 
         is_color = len(image.shape) > 2
         return self.save_image(image, self.capture_info, is_color)
 
-    def save_image(self, image: np.array, info: CaptureInfo, is_color: bool):
+    def save_image(self, image: np.array, info: CaptureInfo, is_color: bool) -> SaveResult:
         # NOTE(imo): We silently fall back to individual image saving here.  We should warn or do something.
         if _def.FILE_SAVING_OPTION == _def.FileSavingOption.MULTI_PAGE_TIFF:
             metadata = {
@@ -201,7 +236,19 @@ class SaveImageJob(Job):
                     description=description,
                     extratags=extratags,
                 )
+
+            # The stack file keeps growing until every plane of this FOV is appended.
+            return make_save_result(
+                info,
+                unit_paths=(os.path.abspath(output_path),),
+                unit_kind="file",
+                bytes_written=image.nbytes,
+            )
         else:
+            # Path must be computed from the ORIGINAL dtype, like utils_acquisition.save_image does.
+            saving_path = utils_acquisition.get_image_filepath(
+                info.save_directory, info.file_id, info.configuration.name, image.dtype
+            )
             saved_image = utils_acquisition.save_image(
                 image=image,
                 file_id=info.file_id,
@@ -214,7 +261,12 @@ class SaveImageJob(Job):
                 # TODO(imo): Add this back in
                 raise NotImplementedError("Image merging not supported yet")
 
-        return True
+            # One image per file: the file is final the moment this job returns.
+            return make_save_result(
+                info,
+                immediate_paths=(os.path.abspath(saving_path),),
+                bytes_written=os.path.getsize(saving_path),
+            )
 
 
 @dataclass
@@ -227,7 +279,7 @@ class SaveOMETiffJob(Job):
     _log: ClassVar = squid.logging.get_logger("SaveOMETiffJob")
     acquisition_info: Optional[AcquisitionInfo] = field(default=None)
 
-    def run(self) -> bool:
+    def run(self) -> SaveResult:
         if self.acquisition_info is None:
             raise ValueError(
                 "SaveOMETiffJob.run() requires acquisition_info but it is None. "
@@ -267,12 +319,25 @@ class SaveOMETiffJob(Job):
                 f"SaveOMETiffJob {self.job_id}: simulated write of {bytes_written} bytes "
                 f"(image shape={image.shape})"
             )
-            return True
+            # Nothing reached the disk, so there is no stack to hand to the transfer manifest.
+            return make_save_result(self.capture_info, bytes_written=bytes_written, unit_complete=False)
 
-        self._save_ome_tiff(image, self.capture_info)
-        return True
+        output_path, is_complete = self._save_ome_tiff(image, self.capture_info)
+        return make_save_result(
+            self.capture_info,
+            unit_paths=(os.path.abspath(output_path),),
+            unit_kind="file",
+            bytes_written=image.nbytes,
+            unit_complete=is_complete,
+        )
 
-    def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> None:
+    def _save_ome_tiff(self, image: np.ndarray, info: CaptureInfo) -> Tuple[str, bool]:
+        """Write one plane into the OME-TIFF stack.
+
+        Returns:
+            (output_path, is_complete) where is_complete is True once every expected plane of the
+            stack has been written to disk.
+        """
         # with reference to Talley's https://github.com/pymmcore-plus/pymmcore-plus/blob/main/src/pymmcore_plus/mda/handlers/_ome_tiff_writer.py and Christoph's https://forum.image.sc/t/how-to-create-an-image-series-ome-tiff-from-python/42730/7
         ome_tiff_writer.validate_capture_info(info, self.acquisition_info, image)
 
@@ -363,6 +428,8 @@ class SaveOMETiffJob(Job):
                 os.remove(lock_path)
         except OSError:
             pass  # Lock held by another process, already removed, or platform-specific issue
+
+        return output_path, is_complete
 
 
 @dataclass
@@ -463,13 +530,25 @@ class ZarrWriterInfo:
 
 @dataclass
 class ZarrWriteResult:
-    """Result from a SaveZarrJob, containing frame info for viewer notification."""
+    """Result from a SaveZarrJob, containing frame info for viewer notification.
+
+    The fields after region_idx mirror SaveResult: they tell the transfer manifest which on-disk
+    paths this write contributes to.  unit_paths (the timepoint's chunk directory) are final once
+    every plane of the (time_point, region_id, fov) unit has been written (for a 6D store that is the
+    FOV's own <store>/c/<fov>/<t> directory).
+    """
 
     fov: int
     time_point: int
     z_index: int
     channel_name: str
     region_idx: int = 0
+    region_id: str = ""
+    immediate_paths: Tuple[str, ...] = ()  # always empty for Zarr; keeps the result shape shared with SaveResult
+    unit_paths: Tuple[str, ...] = ()
+    unit_kind: str = "dir"
+    bytes_written: int = 0
+    unit_complete: Optional[bool] = None
 
 
 @dataclass
@@ -588,19 +667,33 @@ class SaveZarrJob(Job):
         fov = info.fov if info.fov is not None else 0
         output_path = self.zarr_writer_info.get_output_path(region_id, fov)
 
+        is_hcs = self.zarr_writer_info.is_hcs
+        use_6d_fov = self.zarr_writer_info.use_6d_fov
+        time_point = info.time_point or 0
+
         # Build result with frame info for viewer notification
         region_names = list(self.zarr_writer_info.region_fov_counts.keys())
+        # With the default chunk key encoding a chunk's key is its grid index, so for a 5D (T, C, Z, Y, X)
+        # store the chunks of timepoint t live under <store>/c/<t>, and for a non-HCS 6D (FOV, T, ...)
+        # store under <store>/c/<fov>/<t>. Chunk and shard extents are 1 along both FOV and T, so either
+        # directory is final once this FOV's Z x C planes for the timepoint are written.
+        if not is_hcs and use_6d_fov:
+            unit_paths = (os.path.join(output_path, "c", str(fov), str(time_point)),)
+        else:
+            unit_paths = (os.path.join(output_path, "c", str(time_point)),)
         result = ZarrWriteResult(
             fov=fov,
-            time_point=info.time_point or 0,
+            time_point=time_point,
             z_index=info.z_index,
             channel_name=info.configuration.name,
             region_idx=region_names.index(region_id) if region_id in region_names else 0,
+            region_id=region_id,
+            unit_paths=unit_paths,
+            unit_kind="dir",
+            bytes_written=image.nbytes,
         )
 
         # Determine shape based on acquisition mode
-        is_hcs = self.zarr_writer_info.is_hcs
-        use_6d_fov = self.zarr_writer_info.use_6d_fov
         if is_hcs or not use_6d_fov:
             # 5D shape: (T, C, Z, Y, X) - one writer per FOV
             shape = (
@@ -628,7 +721,7 @@ class SaveZarrJob(Job):
                 image=image,
                 stack_key=output_path,
                 shape=shape,
-                time_point=info.time_point or 0,
+                time_point=time_point,
                 z_index=info.z_index,
                 channel_index=info.configuration_idx,
             )
@@ -636,6 +729,8 @@ class SaveZarrJob(Job):
                 f"SaveZarrJob {self.job_id}: simulated write of {bytes_written} bytes "
                 f"to {output_path} (image shape={image.shape})"
             )
+            # Nothing reached the disk, so there is no chunk directory to hand to the transfer manifest.
+            result.unit_paths = ()
             return result
 
         self._save_zarr(image, info, output_path)

@@ -9,7 +9,7 @@ import math
 import os
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -811,19 +811,23 @@ class UnifiedMosaicWidget(QWidget):
         Cleared (None) on acquisitions without a known path."""
         self._acquisition_save_dir = experiment_path
 
-    def save_for_timepoint(self, time_point: int) -> None:
+    def save_for_timepoint(self, time_point: int) -> Optional[Tuple[Future, str]]:
         """Save the canvas under the worker's per-timepoint folder. The
         canvas is left intact: subsequent timepoints overwrite the same
-        positions, and the final view stays on screen after acquisition."""
+        positions, and the final view stays on screen after acquisition.
+
+        Returns the save's future and target directory (so the acquisition can
+        wait for it before closing its transfer manifest), or None if nothing
+        was dispatched."""
         if not (control._def.SAVE_DOWNSAMPLED_OVERVIEW or control._def.SAVE_DOWNSAMPLED_WELL_IMAGES):
-            return
+            return None
         if not self.layers_initialized:
-            return
+            return None
         if not self._acquisition_save_dir:
             self._log.warning("Per-timepoint save requested but no acquisition save dir is set; skipping.")
-            return
+            return None
         timepoint_dir = os.path.join(self._acquisition_save_dir, f"{time_point:0{FILE_ID_PADDING}}")
-        self._dispatch_save(os.path.join(timepoint_dir, "mosaic_view"))
+        return self._dispatch_save(os.path.join(timepoint_dir, "mosaic_view"))
 
     def _on_save_clicked(self) -> None:
         """Manual Save View button: always prompt for a save directory.
@@ -845,14 +849,15 @@ class UnifiedMosaicWidget(QWidget):
         target_dir = os.path.join(picked, f"mosaic_view_{int(time.time())}")
         self._dispatch_save(target_dir)
 
-    def _dispatch_save(self, target_dir: str) -> None:
+    def _dispatch_save(self, target_dir: str) -> Optional[Tuple[Future, str]]:
         """Snapshot the current canvases + metadata on the GUI thread, then hand
-        off the actual disk writes to the save executor."""
+        off the actual disk writes to the save executor. Returns the future and
+        the target directory, or None when there is nothing to save."""
         snapshot = self._snapshot_for_save()
         if snapshot is None:
-            return
+            return None
         self._log.info(f"Dispatching mosaic-view save → {target_dir}")
-        self._save_executor.submit(self._write_save_snapshot, target_dir, snapshot)
+        return self._save_executor.submit(self._write_save_snapshot, target_dir, snapshot), target_dir
 
     def _snapshot_for_save(self) -> Optional[dict]:
         """Bundle everything the worker thread needs. Copies the layer arrays
@@ -943,6 +948,9 @@ class UnifiedMosaicWidget(QWidget):
                 yaml.safe_dump(serialize_for_yaml(sidecar), f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
+            # Re-raise so the save's future fails: an acquisition waiting on it (large acquisition mode)
+            # must not list a partially written mosaic as complete. Nothing else consumes the future.
+            raise
 
     def _write_per_well_tiffs(self, target_dir: str, snapshot: dict, res_tag: str) -> None:
         """Plate-mode helper: crop each well's slot from the channel stack and

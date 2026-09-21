@@ -8,6 +8,7 @@ import time
 import yaml
 from datetime import datetime
 from enum import Enum
+import concurrent.futures
 from threading import Thread
 from typing import Optional, Tuple, Any
 
@@ -27,6 +28,7 @@ from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
 from control.core.objective_store import ObjectiveStore
 from control.core.memory_profiler import MemoryMonitor, log_memory
+from control.core.pending_outputs import PendingOutputs, TimepointReply
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from squid.abc import CameraFrame, AbstractCamera, AbstractStage
@@ -248,6 +250,11 @@ class MultiPointController:
         # Single pause control point of the running acquisition; exists only for runs in large
         # acquisition mode (operator pause + disk-space guard hold it), None otherwise.
         self._pause_gate: Optional[PauseGate] = None
+        # Output writers outside the worker (the GUI's per-timepoint mosaic saves) answer here so a
+        # large-acquisition run can list their files before timepoint_done / end. Nothing is expected
+        # until a writer attaches, so headless runs never wait.
+        self._pending_outputs = PendingOutputs()
+        self._timepoint_output_writer_attached = False
         self.xy_mode = "Current Position"
         self.widget_type = "wellplate"  # "wellplate" or "flexible"
         self.scan_size_mm = 0.0  # For wellplate mode: size of scan area per region
@@ -797,6 +804,8 @@ class MultiPointController:
             self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
 
             self.abort_acqusition_requested = False
+            # A fresh registry per run: a previous run whose end record is still deferred keeps its own.
+            self._pending_outputs = PendingOutputs()
 
             self.configuration_before_running_multipoint = self.liveController.currentConfiguration
             # stop live
@@ -899,11 +908,37 @@ class MultiPointController:
                 finally:
                     self._stop_per_acquisition_log()
 
-            updated_callbacks = dataclasses.replace(self.callbacks, signal_acquisition_finished=finish_fn)
-
             acquisition_params = self.build_params(
                 scan_position_information=scan_position_information,
                 region_laser_af_offsets=run_region_laser_af_offsets,
+            )
+
+            expect_timepoint_outputs = (
+                self._timepoint_output_writer_attached and acquisition_params.large_acquisition_mode
+            )
+
+            # This run's registry, captured here: replies, waits and the deferred end record must all reach
+            # it even if they happen after the next run has replaced self._pending_outputs.
+            pending_outputs = self._pending_outputs
+
+            def timepoint_finished_fn(time_point: int):
+                self.callbacks.signal_timepoint_finished(time_point)
+                # Record the expectation before the (queued) request goes out, so the worker's wait can
+                # tell "the writer has not answered yet" from "there is nothing to wait for".
+                if expect_timepoint_outputs:
+                    reply = pending_outputs.expect(time_point)
+                else:
+                    reply = TimepointReply(pending_outputs, time_point)
+                self.callbacks.signal_timepoint_outputs_requested(reply)
+
+            updated_callbacks = dataclasses.replace(
+                self.callbacks,
+                signal_acquisition_finished=finish_fn,
+                signal_timepoint_finished=timepoint_finished_fn,
+                wait_for_pending_outputs=lambda time_point, timeout_s: pending_outputs.wait(
+                    time_point, timeout_s, abort_fn=lambda: self.abort_acqusition_requested
+                ),
+                when_pending_outputs_settle=pending_outputs.when_settled,
             )
 
             # Gather objective and camera info for YAML
@@ -1149,6 +1184,11 @@ class MultiPointController:
 
     def request_abort_aquisition(self):
         self.abort_acqusition_requested = True
+
+    def attach_timepoint_output_writer(self) -> None:
+        """Announce a writer that answers every signal_timepoint_outputs_requested on the reply it is
+        handed (reply.register(...) or reply.nothing_to_write()). Large-acquisition runs then wait for it."""
+        self._timepoint_output_writer_attached = True
 
     def request_pause(self) -> bool:
         """Operator pause, honored at the worker's next FOV/timepoint checkpoint.
