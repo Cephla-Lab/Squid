@@ -49,11 +49,18 @@ class FakeDcam:
         self.cap_starts += 1
         return True
 
+    def cap_stop(self):
+        return True
+
+    def buf_release(self):
+        return True
+
 
 def make_camera(dcam):
     cam = object.__new__(camera_hamamatsu.HamamatsuCamera)
     cam._camera = dcam
     cam._log = squid.logging.get_logger("test_camera_hamamatsu_frame_id")
+    cam._capture_lock = threading.Lock()
     cam._frame_lock = threading.Lock()
     cam._current_frame = None
     cam._frame_id_base = 1
@@ -103,3 +110,57 @@ def test_ids_keep_increasing_when_capture_restarts_and_the_stamp_starts_over():
     assert cam.start_streaming()
     assert read_ids(cam, 2) == [3, 4]
     assert dcam.cap_starts == 2
+
+
+def test_a_frame_in_flight_across_a_capture_restart_never_moves_ids_backward_or_reuses_one():
+    """stop_streaming() leaves the read thread running. A frame it has copied out of DCAM but not yet
+    published was numbered against the NEXT capture's base: ids went 1, 3, 2, 3 across a restart (an
+    ROI, sensor-mode or trigger-mode change)."""
+    dcam = FakeDcam([0, 1])
+    cam = make_camera(dcam)
+    assert cam.start_streaming()
+    ids = read_ids(cam, 1)
+
+    # Park the read thread where the race lives: frame copied out of DCAM, not yet published.
+    copied, publish = threading.Event(), threading.Event()
+
+    def process_once_released(raw):
+        copied.set()
+        publish.wait(5)
+        return raw
+
+    def read_in_flight_frame():
+        frame = cam._read_newest_frame()
+        assert frame is not None
+        ids.append(frame.frame_id)
+
+    stopped = threading.Event()
+
+    def restart_capture():
+        cam.stop_streaming()
+        stopped.set()
+        dcam.script([0, 1])  # DCAM counts from 0 again
+        cam.start_streaming()
+
+    cam._process_raw_frame = process_once_released
+    reader = threading.Thread(target=read_in_flight_frame)
+    reader.start()
+    assert copied.wait(5)
+
+    restarter = threading.Thread(target=restart_capture)
+    restarter.start()
+    # An unsynchronized restart finishes while the frame is still in flight. A synchronized one waits
+    # for the frame, so stop waiting for it and let the frame through.
+    restarter.join(0.5)
+    stop_waited_for_the_frame = not stopped.is_set()
+    publish.set()
+    reader.join(5)
+    restarter.join(5)
+    assert not reader.is_alive() and not restarter.is_alive()
+    # The frame's pixel format is read from DCAM as it is published, so stop_streaming() must not
+    # return (and let the caller change that property) while the frame is still in flight.
+    assert stop_waited_for_the_frame
+
+    cam._process_raw_frame = lambda raw: raw
+    ids += read_ids(cam, 2)
+    assert ids == [1, 2, 3, 4]  # Preserve the in-flight frame and rebase on its published ID.
