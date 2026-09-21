@@ -32,7 +32,9 @@ with contextlib.ExitStack() as _stack:
 
 
 class FakeRing:
-    """DCAM's ring: frame n (counted from 0 at cap_start) lives in slot n % depth until overwritten."""
+    """DCAM's ring as the ORCA-Fusion BT showed it on the bench: frame n (counted from 0 at cap_start)
+    lives in slot n % depth until overwritten, cap_transferinfo() counts frames in 32 bits, and each
+    frame's framestamp is only the low 16 bits of n."""
 
     def __init__(self, trigger_source):
         self.trigger_source = trigger_source
@@ -65,14 +67,13 @@ class FakeRing:
 
     def buf_getframe(self, index):
         self.slot_reads.append(index)
-        if index == -1:
-            stamp = self.produced - 1
-        else:
-            # the newest frame whose number maps onto this slot
-            stamp = max(n for n in range(self.produced) if n % self.depth == index)
-            if index == self.corrupt_slot:
-                stamp += 1000
-        return types.SimpleNamespace(framestamp=stamp), np.full((4, 4), stamp % 60000, dtype=np.uint16)
+        newest = self.produced - 1
+        # the newest frame whose number maps onto this slot
+        number = newest if index == -1 else newest - ((newest - index) % self.depth)
+        stamp = number & 0xFFFF
+        if index == self.corrupt_slot:
+            stamp = (stamp + 1000) & 0xFFFF
+        return types.SimpleNamespace(framestamp=stamp), np.full((4, 4), number % 60000, dtype=np.uint16)
 
 
 def make_camera(ring):
@@ -84,6 +85,7 @@ def make_camera(ring):
     cam._current_frame = None
     cam._frame_id_base = 1
     cam._frames_read = 0
+    cam._last_frame_number = -1
     cam._ring_frames = 5
     cam._read_every_frame = False
     cam._trigger_sent = threading.Event()
@@ -164,10 +166,41 @@ def test_a_slot_that_does_not_hold_the_expected_frame_is_reported_and_skipped_ne
         frames = cam._read_frames()
     assert ids(frames) == [1, 3]  # frame 1 was verified; slot 1 was not what it should be; then the newest
     assert [int(frame.frame[0, 0]) for frame in frames] == [0, 2]  # and each still carries its own pixels
-    assert "expected frame" in caplog.text
+    assert "Ring slot 1 holds framestamp" in caplog.text
     ring.corrupt_slot = None
     ring.produce(1)
     assert ids(cam._read_frames()) == [4]  # and it carries on from there
+
+
+def after_many_frames(trigger_source, delivered):
+    """A capture that has already delivered `delivered` frames - the stream stays up across acquisitions."""
+    cam, ring = started(trigger_source)
+    ring.produced = delivered
+    cam._frames_read = delivered
+    cam._last_frame_number = delivered - 1
+    return cam, ring
+
+
+def test_every_frame_is_still_delivered_when_the_cameras_16_bit_stamp_wraps(caplog):
+    """Bench 2026-09-21: 72 acquisitions and 64,800 frames ran clean, then at frame 65,536 framestamp went
+    back to 0 while cap_transferinfo() counted on. The slot check compared the two directly, reported
+    "Ring slot 0 holds framestamp 0, expected frame 65536" for every frame, and ids started over at 1."""
+    cam, ring = after_many_frames(EXTERNAL, 65530)
+    ring.produce(10)  # 65530 .. 65539: across the wrap
+    with caplog.at_level(logging.ERROR):
+        frames = cam._read_frames()
+    assert ids(frames) == list(range(65531, 65541))  # ids keep counting
+    assert "Ring slot" not in caplog.text
+    ring.produce(3)
+    assert ids(cam._read_frames()) == [65541, 65542, 65543]
+
+
+def test_live_view_ids_also_keep_counting_across_the_wrap():
+    cam, ring = after_many_frames(INTERNAL, 65535)
+    ring.produce(1)
+    assert ids(cam._read_frames()) == [65536]
+    ring.produce(1)  # stamp 0
+    assert ids(cam._read_frames()) == [65537]
 
 
 def test_live_view_still_takes_only_the_newest_frame():
