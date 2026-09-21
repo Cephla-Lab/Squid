@@ -275,6 +275,34 @@ def test_a_complete_in_order_burst_passes():
             dict(status=status(error=SeqError.CANCELED, frames_fired=7), expected=20, received=7, first_gap=None),
             "CANCELED",
         ),
+        # The controller's error names say WHAT; for the ones a user can act on, the reason says what to check.
+        (
+            dict(
+                status=status(state=SeqState.FAILED, error=SeqError.READY_TIMEOUT, detail=0, frames_fired=1),
+                expected=20,
+                received=1,
+                first_gap=None,
+            ),
+            "never went busy",
+        ),
+        (
+            dict(
+                status=status(state=SeqState.FAILED, error=SeqError.WAIT_TIMEOUT, frames_fired=0),
+                expected=20,
+                received=0,
+                first_gap=None,
+            ),
+            "never became ready",
+        ),
+        (
+            dict(
+                status=status(state=SeqState.FAILED, error=SeqError.INTERLOCK_OPEN, frames_fired=0),
+                expected=20,
+                received=0,
+                first_gap=None,
+            ),
+            "laser interlock",
+        ),
         (dict(status=status(frames_fired=19), expected=20, received=19, first_gap=None), "fired 19"),
         (dict(status=status(), expected=20, received=19, first_gap=None), "received 19"),
         (dict(status=status(), expected=20, received=20, first_gap=(104, 105)), "frame id"),

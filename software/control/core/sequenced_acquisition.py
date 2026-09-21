@@ -249,6 +249,21 @@ def ineligibility_reason(
     return None
 
 
+# The controller's error names say WHAT happened. For the errors a user can act on, say what to check.
+_WHAT_TO_CHECK = {
+    SeqError.READY_TIMEOUT: (
+        "camera {detail}'s ready line read READY but never went busy after a trigger, which a working camera "
+        "always does: a stuck line. Check the ready cable, and that the camera's ready output is configured "
+        "(CAMERA_TRIGGER_READY_OUTPUT)"
+    ),
+    SeqError.WAIT_TIMEOUT: (
+        "the hardware never became ready for the next frame. With the camera-ready line in use, an unplugged "
+        "ready cable reads 'not ready'"
+    ),
+    SeqError.INTERLOCK_OPEN: "the laser interlock is open, so the controller refused to switch a laser port",
+}
+
+
 def burst_failure_reason(
     status: Optional[SequencerStatus], *, expected: int, received: int, first_gap: Optional[Tuple[int, int]]
 ) -> Optional[str]:
@@ -264,7 +279,9 @@ def burst_failure_reason(
     if status.state != SeqState.DONE or status.error != SeqError.NONE:
         error = status.error.name if isinstance(status.error, SeqError) else str(status.error)
         state = status.state.name if isinstance(status.state, SeqState) else str(status.state)
-        return f"the sequence ended {state}/{error} (detail {status.detail}) after {status.frames_fired} frames"
+        reason = f"the sequence ended {state}/{error} (detail {status.detail}) after {status.frames_fired} frames"
+        hint = _WHAT_TO_CHECK.get(status.error)
+        return f"{reason} - {hint.format(detail=status.detail)}" if hint else reason
     if status.frames_fired != expected:
         return f"the controller fired {status.frames_fired} of {expected} frames"
     if received != expected:

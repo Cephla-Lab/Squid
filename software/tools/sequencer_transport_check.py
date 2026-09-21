@@ -274,36 +274,52 @@ class Checker:
         return self.expect_status(SeqState.FAILED, SeqError.HOST_ABORT, lambda n: 0 < n < 120)
 
     def probe_ready_line(self) -> str:
-        """With nothing connected the ready input sits at ONE level. A run gated on that level must
-        complete; a run gated on the other must fire NOTHING, give up after wait_timeout_us and say
-        so. Both completing means the gate is not applied; neither, that the input is not steady."""
+        """With nothing connected the ready input sits at ONE level and never changes.
+
+        Gated on the OTHER level, the line never reads ready: the run must fire nothing, give up
+        after wait_timeout_us and say WAIT_TIMEOUT. Gated on the level it idles at, the line reads
+        ready but never goes BUSY after the first trigger - a stuck line - so the run must fire
+        exactly one frame and stop with READY_TIMEOUT naming camera 0 (the liveness check). A run
+        that completes means the firmware predates that check, or something IS driving the input.
+        """
         timeout_s = WAIT_TIMEOUT_US / 1e6
-        completed_with = []
+        stuck_at = []  # the polarity (active_high) under which the line read ready-and-stuck
         for active_high in (True, False):
+            level = "HIGH" if active_high else "LOW"
             self.mcu.seq_upload(make_program(self.stack_dac, 3, ready_line=0, ready_active_high=active_high))
             started = time.time()
             try:
                 self.run_and_wait(MID_RANGE, 10)
             except CommandAborted:
                 elapsed = time.time() - started
+                status = self.status()
+                if status is not None and status.error == SeqError.READY_TIMEOUT:
+                    problem = self.expect_status(SeqState.FAILED, SeqError.READY_TIMEOUT, lambda n: n == 1)
+                    if not problem and status.detail != 0:
+                        problem = f"READY_TIMEOUT names camera {status.detail}, expected camera 0"
+                    if problem:
+                        return f"gated on {level}: {problem}"
+                    stuck_at.append(active_high)
+                    continue
                 problem = self.expect_status(SeqState.FAILED, SeqError.WAIT_TIMEOUT, lambda n: n == 0)
                 if not problem and not timeout_s - 0.2 < elapsed < timeout_s + 0.5:
                     problem = f"gave up after {elapsed:.2f} s, expected about {timeout_s:.0f} s"
                 if problem:
-                    return f"gated on {'HIGH' if active_high else 'LOW'}: {problem}"
+                    return f"gated on {level}: {problem}"
                 continue
-            problem = self.expect_status(SeqState.DONE, SeqError.NONE, lambda n: n == 6)
-            if problem:
-                return f"gated on {'HIGH' if active_high else 'LOW'}: {problem}"
-            completed_with.append(active_high)
-        if len(completed_with) == 2:
-            return "the run completed gated on HIGH and gated on LOW: the ready-line gate is not applied"
-        if not completed_with:
-            return "the run timed out gated on HIGH and gated on LOW: the ready input is not at a steady level"
-        self.ready_idle_high = completed_with[0]
+            return (
+                f"gated on {level} the run COMPLETED: either this firmware has no ready-line liveness check "
+                "(rebuild and flash the current branch), or something is driving the ready input - unplug it"
+            )
+        if len(stuck_at) == 2:
+            return "READY_TIMEOUT gated on HIGH and gated on LOW: the ready input is not at a steady level"
+        if not stuck_at:
+            return "WAIT_TIMEOUT gated on HIGH and gated on LOW: the ready input is not at a steady level"
+        self.ready_idle_high = stuck_at[0]
+        idle = "HIGH" if self.ready_idle_high else "LOW"
         print(
-            f"         the unconnected ready input idles {'HIGH' if self.ready_idle_high else 'LOW'}; gated on the other "
-            f"level the run fired nothing and gave up after {timeout_s:.0f} s"
+            f"         the unconnected ready input idles {idle}; gated on {idle} the run fired one frame and stopped "
+            f"with READY_TIMEOUT (stuck line), gated on the other level it fired nothing and gave up after {timeout_s:.0f} s"
         )
         return ""
 
@@ -367,7 +383,8 @@ class Checker:
         )
         if self.ready_line_unconnected:
             self.check(
-                "ready-line gate: one level runs, the other gives WAIT_TIMEOUT with no frame", self.probe_ready_line
+                "ready-line gate: WAIT_TIMEOUT on one level, READY_TIMEOUT (stuck line) on the other",
+                self.probe_ready_line,
             )
             self.check(
                 "an unconnected ready input reads NOT READY to the acquisition", self.unconnected_ready_line_fails_safe
