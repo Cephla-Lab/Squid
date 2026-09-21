@@ -490,20 +490,15 @@ class LiveController(QObject):
         return self.is_live or self._is_snapping
 
     def _trigger_acquisition_timer_fn(self):
-        if self.trigger_acquisition():
-            if self.is_live:
-                self._start_new_timer()
+        triggered = self.trigger_acquisition()
+        if not self.is_live:
+            return
+        if triggered or self.microscope.low_level_drivers.microcontroller.is_busy():
+            # A busy MCU (a stage move) resolves on a 100 ms-to-seconds scale, and every
+            # re-check spins up a fresh Timer thread: poll at frame cadence, not every 10 ms.
+            self._start_new_timer()
         else:
-            if self.is_live:
-                # It failed, try again real soon
-                # Use a short period so we get back here fast and check again.
-                re_check_period_ms = 10
-                if self.microscope.low_level_drivers.microcontroller.is_busy():
-                    # A trigger held for a busy MCU (usually a stage move) resolves on a
-                    # 100ms-to-seconds scale, and every re-check spins up a fresh Timer
-                    # thread - poll at the normal frame cadence instead of every 10ms.
-                    re_check_period_ms = self.timer_trigger_interval
-                self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
+            self._start_new_timer(maybe_custom_interval_ms=10)  # camera not ready yet: retry soon
 
     # software trigger related
     def trigger_acquisition(self):

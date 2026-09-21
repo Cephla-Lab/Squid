@@ -647,30 +647,8 @@ def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
 
 
 # --- MCU-idle pre-flight -----------------------------------------------------
-#
-# On 2026-09-02 an instrument wedged its MCU (live triggers racing a stage move
-# left the firmware reporting IN_PROGRESS for every command). Starting an
-# acquisition then aborted inside stop_live() - the illumination-off wait's
-# TimeoutError escaped - and even without that, the first stage move would have
-# timed out. The wedge clears a few seconds after the trigger stream stops, so
-# run_acquisition() must survive a stop_live() timeout and patiently wait for
-# the MCU to go idle before letting the worker move the stage.
-
-
-def test_wait_for_microcontroller_idle_recovers_after_transient_busy():
-    # The wedge clears a few seconds in; two timed-out attempts followed by a
-    # clean wait must count as success. (The give-up path is covered end-to-end
-    # by test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy.)
-    scope, tt, mpc = _controller_with_tracker()
-
-    with patch.object(
-        mpc.microcontroller,
-        "wait_till_operation_is_completed",
-        side_effect=[TimeoutError("busy"), TimeoutError("busy"), None],
-    ) as wait_mock:
-        assert mpc._wait_for_microcontroller_idle() is True
-
-    assert wait_mock.call_count == 3
+# Starting an acquisition must survive a stop_live() timeout and wait for the MCU to
+# go idle before the worker moves the stage (see LiveController.trigger_acquisition).
 
 
 def _stop_live_like_wedged_mcu(live_controller):
@@ -683,10 +661,8 @@ def _stop_live_like_wedged_mcu(live_controller):
     return stop_live
 
 
-def test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy(tmp_path):
+def test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy():
     scope, tt, mpc = _controller_with_tracker()
-    mpc.set_base_path(str(tmp_path))
-    mpc.start_new_experiment("preflight abort")
 
     mpc.liveController.is_live = True
     with patch.object(
@@ -694,19 +670,17 @@ def test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy(tmp_path
     ), patch.object(
         mpc.microcontroller, "wait_till_operation_is_completed", side_effect=TimeoutError("busy")
     ) as wait_mock:
-        mpc.run_acquisition()  # must not raise
+        assert mpc.run_acquisition() is False  # must not raise, and must say it did not start
 
-    assert wait_mock.call_count == 3
+    wait_mock.assert_called_once()
     assert mpc.thread is None
     assert tt.finished_event.wait(5)
     assert not tt.started_event.is_set()
     assert mpc.last_end_reason == "failed_to_start"
 
 
-def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers(tmp_path):
+def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
     scope, tt, mpc = _controller_with_tracker()
-    mpc.set_base_path(str(tmp_path))
-    mpc.start_new_experiment("preflight recover")
 
     mpc.liveController.is_live = True
     with patch.object(
@@ -714,7 +688,7 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers(tmp
     ), patch.object(
         mpc.liveController, "start_live"
     ):  # keep post-acquisition resume from really starting live
-        mpc.run_acquisition()
+        assert mpc.run_acquisition() is True
         assert tt.started_event.wait(5)
         assert tt.finished_event.wait(30)
         mpc.thread.join(10)

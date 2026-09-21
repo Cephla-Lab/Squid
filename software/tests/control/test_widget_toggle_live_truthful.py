@@ -1,10 +1,6 @@
-"""The live toggle buttons must reflect what the LiveController actually did.
-
-stop_live() can raise after live is already stopped (a busy MCU timing out the
-illumination-off wait), and a button stuck on "Stop" invites more toggling that
-restarts the trigger stream against the busy MCU. Button text, checked state,
-and companion buttons must therefore derive from liveController.is_live in a
-finally block, not from the click.
+"""The live toggle buttons derive their state from liveController.is_live in a finally
+block, so a start_live()/stop_live() that raises cannot leave a button lying
+(see LiveController.trigger_acquisition for the MCU wedge this protects against).
 """
 
 from unittest.mock import MagicMock
@@ -21,8 +17,7 @@ def _widget_stub(is_live_after_call: bool) -> MagicMock:
     return stub
 
 
-# (widget class, button text while live, button text while idle,
-#  companion-button attribute that is enabled only while idle, or None)
+# (widget class, button text while live, button text while idle, companion button enabled only while idle)
 CASES = [
     (LiveControlWidget, "Stop", "Live", "btn_snap"),
     (LaserAutofocusSettingWidget, "Stop Live", "Start Live", "run_spot_detection_button"),
@@ -32,51 +27,28 @@ CASES = [
 def _assert_button_state(stub, is_live, live_text, idle_text, companion):
     stub.btn_live.setText.assert_called_with(live_text if is_live else idle_text)
     stub.btn_live.setChecked.assert_called_with(is_live)
-    if companion:
-        getattr(stub, companion).setEnabled.assert_called_with(not is_live)
+    getattr(stub, companion).setEnabled.assert_called_with(not is_live)
 
 
 @pytest.mark.parametrize("cls,live_text,idle_text,companion", CASES)
-def test_button_shows_idle_when_stop_live_raises(cls, live_text, idle_text, companion):
-    # Real stop_live() sets is_live = False before the raising illumination-off
-    # wait, so live is genuinely off when the exception escapes.
-    stub = _widget_stub(is_live_after_call=False)
-    stub.liveController.stop_live.side_effect = TimeoutError("mcu busy")
+@pytest.mark.parametrize("pressed", [True, False])
+def test_button_follows_is_live_when_the_controller_raises(cls, live_text, idle_text, companion, pressed):
+    # Real start_live()/stop_live() flip is_live before anything that can raise.
+    stub = _widget_stub(is_live_after_call=pressed)
+    getattr(stub.liveController, "start_live" if pressed else "stop_live").side_effect = TimeoutError("mcu busy")
 
     with pytest.raises(TimeoutError):
-        cls.toggle_live(stub, False)
+        cls.toggle_live(stub, pressed)
 
-    _assert_button_state(stub, False, live_text, idle_text, companion)
-
-
-@pytest.mark.parametrize("cls,live_text,idle_text,companion", CASES)
-def test_button_shows_live_when_start_live_raises(cls, live_text, idle_text, companion):
-    # Real start_live() sets is_live = True first, so a later exception leaves
-    # live running.
-    stub = _widget_stub(is_live_after_call=True)
-    stub.liveController.start_live.side_effect = TimeoutError("mcu busy")
-
-    with pytest.raises(TimeoutError):
-        cls.toggle_live(stub, True)
-
-    _assert_button_state(stub, True, live_text, idle_text, companion)
+    _assert_button_state(stub, pressed, live_text, idle_text, companion)
 
 
 @pytest.mark.parametrize("cls,live_text,idle_text,companion", CASES)
-def test_button_shows_live_after_normal_start(cls, live_text, idle_text, companion):
-    stub = _widget_stub(is_live_after_call=True)
+@pytest.mark.parametrize("pressed", [True, False])
+def test_button_follows_is_live_after_a_normal_toggle(cls, live_text, idle_text, companion, pressed):
+    stub = _widget_stub(is_live_after_call=pressed)
 
-    cls.toggle_live(stub, True)
+    cls.toggle_live(stub, pressed)
 
-    stub.liveController.start_live.assert_called_once()
-    _assert_button_state(stub, True, live_text, idle_text, companion)
-
-
-@pytest.mark.parametrize("cls,live_text,idle_text,companion", CASES)
-def test_button_shows_idle_after_normal_stop(cls, live_text, idle_text, companion):
-    stub = _widget_stub(is_live_after_call=False)
-
-    cls.toggle_live(stub, False)
-
-    stub.liveController.stop_live.assert_called_once()
-    _assert_button_state(stub, False, live_text, idle_text, companion)
+    getattr(stub.liveController, "start_live" if pressed else "stop_live").assert_called_once()
+    _assert_button_state(stub, pressed, live_text, idle_text, companion)

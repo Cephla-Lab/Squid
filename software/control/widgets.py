@@ -2823,22 +2823,15 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
-def _sync_live_button(widget, live_text, idle_text, *enabled_when_idle):
-    """Make a widget's live button reflect what the LiveController actually did.
-
-    Derived from liveController.is_live rather than from the click, because
-    stop_live() can raise on a busy MCU after live is already stopped - and a
-    button stuck on "Stop" invites more toggling that restarts the trigger
-    stream against the busy MCU. Also syncs the checked state so the next click
-    sends the right `pressed` (safe: these buttons connect via clicked, so
-    setChecked does not re-enter the handler), and re-enables companion buttons
-    that are meaningless while live.
+def _sync_live_button(widget, live_text, idle_text, companion):
+    """Derive the live button (and the companion that only makes sense while idle) from
+    liveController.is_live, not from the click: stop_live() can raise after live is already
+    off. setChecked is safe here because these buttons connect via clicked, not toggled.
     """
     is_live = widget.liveController.is_live
     widget.btn_live.setChecked(is_live)
     widget.btn_live.setText(live_text if is_live else idle_text)
-    for button in enabled_when_idle:
-        button.setEnabled(not is_live)
+    companion.setEnabled(not is_live)
 
 
 class LaserAutofocusSettingWidget(QWidget):
@@ -3062,7 +3055,6 @@ class LaserAutofocusSettingWidget(QWidget):
     def stop_live(self):
         """Used for stopping live when switching to other tabs"""
         self.toggle_live(False)
-        self.btn_live.setChecked(False)
 
     def toggle_characterization_mode(self, state):
         self.laserAutofocusController.characterization_mode = state

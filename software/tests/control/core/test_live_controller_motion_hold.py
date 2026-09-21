@@ -1,11 +1,6 @@
-"""LiveController must not fire triggers while the microcontroller is busy.
-
-Triggering while a MOVETO_* command is in flight corrupts the MCU's single
-command-status slot: the firmware keeps executing commands but reports
-IN_PROGRESS for everything, and every later wait times out until the trigger
-stream stops (observed on-instrument 2026-09-02 during focus-map navigation
-with live view running). See the guard in LiveController.trigger_acquisition.
-"""
+"""LiveController must not fire triggers while the microcontroller is busy: a trigger
+sent mid-move wedges the firmware's single command-status slot (see the guard in
+LiveController.trigger_acquisition)."""
 
 from unittest.mock import patch
 
@@ -43,7 +38,7 @@ def test_busy_hold_rechecks_at_frame_cadence_not_every_10ms():
     ) as start_new_timer:
         controller._trigger_acquisition_timer_fn()
 
-    start_new_timer.assert_called_once_with(maybe_custom_interval_ms=controller.timer_trigger_interval)
+    start_new_timer.assert_called_once_with()  # the default interval is the frame cadence, not the 10 ms retry
 
 
 def test_snap_refuses_when_microcontroller_stays_busy():

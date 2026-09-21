@@ -157,6 +157,13 @@ class TestRunAcquisitionFromYAML:
         with pytest.raises(ValueError, match="Invalid channels"):
             mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
 
+    def test_failed_start_is_reported_as_an_error(self, mock_server, yaml_file):
+        """A start aborted by the controller (busy MCU) must not come back as started: True."""
+        mock_server.multipoint_controller.run_acquisition.return_value = False
+
+        with pytest.raises(RuntimeError, match="did not start"):
+            mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file)
+
     def test_wells_override(self, mock_server, yaml_file):
         """Test that wells parameter overrides YAML regions."""
         result = mock_server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file, wells="A1:A2")
