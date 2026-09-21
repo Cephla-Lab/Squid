@@ -1,6 +1,7 @@
 # Fluidics protocol
 
-Status: engine and GUI implemented (phases 0–2); the flow-sensor tab is phase 3.
+Status: engine and GUI implemented (phases 0–2) and the Flow tab (phase 3); surfacing `warn` flow faults
+beyond the log (run card, manifest, Slack) is not done.
 Design: AI-docs `Squid/in-progress/2026-08-30-fluidics-protocol-design.md`.
 
 ## What a protocol is
@@ -57,6 +58,11 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
 
 **Fluidics display tab** (next to Live View): the instrument side and the Protocol editor.
 
+- The instrument side is a column with a draggable divider (`InstrumentColumn`): the instrument block
+  (Initialize, manual control, device status) over the Log / sensor tabs. In a window too short for both,
+  the block scrolls and the tabs keep 1.5× their minimum height, so the plots stay readable; with room for
+  both (≈1300 px) nothing scrolls. Once the divider is dragged the split is the operator's.
+
 - **Manual control** also has an inline **Prime / Clean** row (no pop-ups), the old widget's fields:
   the ports to prime (`1-4, 25`), the wash port the final volume is drawn from, that volume, a flow
   rate, and a repeat (Clean). It calls the library operation directly (`system.run_manual` →
@@ -66,9 +72,15 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
 - **Initialize** builds the `FluidicsSystem` from `machine_configs/fluidics_config.yaml` (path editable,
   remembered in `cache/fluidics_protocol.json`) off the GUI thread; on success the upstream manual-control
   widget (`fluidics.qt.manual_control`), device status, and — when the config lists a temperature
-  controller — the Temperature tab appear. Log | Temperature | Reagents live under the status panel;
-  Temperature embeds the fluidics module's own per-channel plot widgets (each with the standalone
-  software's Start Recording CSV), Reagents accumulates estimated µL per port.
+  controller / flow sensors that came up — the Temperature / Flow tabs appear. Log | Temperature | Flow |
+  Reagents live under the status panel; Temperature and Flow embed the fluidics module's own plot widgets
+  (each with the standalone software's Start Recording CSV), Reagents accumulates estimated µL per port.
+- **Flow** has one panel per sensor: reading, plot (invalid samples are gaps), and the **Draw protection**
+  combo (`off` / `warn` / `stop`), live during a run — a change applies from the next draw. `stop` halts the
+  draw and fails the sequence, so the run goes HELD with the flow fault as its message (and Slack hears it);
+  `warn` only logs (Log tab, `run.log`, the library's run report). Draw protection exists only for the
+  `Flow Cell` application: on any other, a configured `warn`/`stop` is switched off with a warning in the
+  log and the combo is disabled.
 - **Protocol editor**: rounds-grouped step list with include checkboxes and live validation, a field editor
   with "apply to all rows with this name", **Add rounds…** (template round × N with a port list),
   **+ Imaging** (folder auto-named, e.g. `R01_image`, editable per row), and per-imaging-row settings/coordinates
