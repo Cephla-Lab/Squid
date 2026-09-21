@@ -1529,9 +1529,7 @@ class PreferencesDialog(QDialog):
         self.wheel_window_spinbox.setSingleStep(0.5)
         self.wheel_window_spinbox.setSuffix(" \u00b0")
         self.wheel_window_spinbox.setSpecialValueText("Off (exact slot)")
-        self.wheel_window_spinbox.setValue(
-            self._get_config_float("GENERAL", "squid_filterwheel_completion_window_deg", 0.0)
-        )
+        self.wheel_window_spinbox.setValue(self._get_wheel_window_setting())
         self.wheel_window_spinbox.setToolTip(
             "Squid filter wheel, firmware 1.6 or later (ignored on older firmware).\n"
             "The wheel reports a filter change done once it is within this many degrees of the slot, while it\n"
@@ -1937,9 +1935,31 @@ class PreferencesDialog(QDialog):
 
     def _get_wheel_wrap_setting(self) -> str:
         """The ini's squid_filterwheel_wrap as one of "auto", "True", "False". A missing key is the default,
-        "auto". Anything unrecognised is returned as typed, so the change list shows it being replaced."""
-        raw = self._get_config_value("GENERAL", "squid_filterwheel_wrap", "auto").split("#")[0].strip()
-        return {"auto": "auto", "true": "True", "false": "False"}.get(raw.lower(), raw)
+        "auto". Anything the wheel controller refuses is returned as typed, so the change list shows it being
+        replaced.
+
+        Read with the SAME two functions the running software uses (the ini loader's typing, then the wheel
+        controller's own parser), not with a second opinion about what the text means: the controller accepts
+        `1` and `0`, and a dialog that showed those as Auto would turn an explicit Off into On at firmware 1.6 -
+        or an explicit On into Off at 1.4 / 1.5 - the first time anything else was saved."""
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        raw = self._get_config_value("GENERAL", "squid_filterwheel_wrap", "auto")
+        try:
+            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(raw))
+        except ValueError:
+            return raw.split("#")[0].strip()
+        return {"auto": "auto", True: "True", False: "False"}[parsed]
+
+    def _get_wheel_window_setting(self) -> float:
+        """The ini's squid_filterwheel_completion_window_deg as the running software reads it: through the ini
+        loader, which strips an inline comment. float() alone would make `5  # degrees` read as 0 here while the
+        wheel runs with 5, and saving anything else would then clear the window."""
+        raw = self._get_config_value("GENERAL", "squid_filterwheel_completion_window_deg", "0")
+        value = control._def.conf_attribute_reader(raw)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
 
     def _wheel_wrap_index(self, setting: str) -> int:
         values = [value for _, value in self._WHEEL_WRAP_CHOICES]
@@ -2400,7 +2420,7 @@ class PreferencesDialog(QDialog):
             names = {value: text for text, value in self._WHEEL_WRAP_CHOICES}
             changes.append(("Filter Wheel Shortest Path", names.get(old_val, old_val), names[new_val], True))
 
-        old_val = self._get_config_float("GENERAL", "squid_filterwheel_completion_window_deg", 0.0)
+        old_val = self._get_wheel_window_setting()
         new_val = self.wheel_window_spinbox.value()
         if not self._floats_equal(old_val, new_val):
             changes.append(("Filter Wheel Completion Window", f"{old_val:g} \u00b0", f"{new_val:g} \u00b0", True))
