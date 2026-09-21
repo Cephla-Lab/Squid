@@ -280,7 +280,7 @@ def test_a_complete_in_order_burst_passes():
         # The controller's error names say WHAT; for the ones a user can act on, the reason says what to check.
         (
             dict(
-                status=status(state=SeqState.FAILED, error=SeqError.READY_TIMEOUT, detail=0, frames_fired=1),
+                status=status(state=SeqState.FAILED, error=SeqError.READY_LINE_STUCK, detail=0, frames_fired=1),
                 expected=20,
                 received=1,
                 first_gap=None,

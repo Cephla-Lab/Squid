@@ -252,7 +252,7 @@ def ineligibility_reason(
 
 # The controller's error names say WHAT happened. For the errors a user can act on, say what to check.
 _WHAT_TO_CHECK = {
-    SeqError.READY_TIMEOUT: (
+    SeqError.READY_LINE_STUCK: (
         "camera {detail}'s ready line read READY but never went busy after a trigger, which a working camera "
         "always does: a stuck line. Check the ready cable, and that the camera's ready output is configured "
         "(CAMERA_TRIGGER_READY_OUTPUT)"
