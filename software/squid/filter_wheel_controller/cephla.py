@@ -51,7 +51,19 @@ _READABLE_WHEEL_CACHE_VERSIONS = (1, 2)
 # all - depends on: the arguments of Microcontroller.configure_squidfilter(), i.e. the driver's microstepping, RMS
 # and hold current, and the axis's maximum velocity and acceleration. Microstepping is the one that silently moves
 # every slot (_delta_to_usteps scales with it); the rest are here so a changed profile is not silently ignored either.
-MOTION_CONFIG_KEYS = ("microstepping", "current_ma", "i_hold", "max_velocity", "max_acceleration")
+MOTION_CONFIG_KEYS = (
+    "microstepping",
+    "current_ma",
+    "i_hold",
+    "max_velocity",
+    "max_acceleration",
+    # Geometry. The pitch is sent to the controller with the rest (configure_squidfilter); full steps per
+    # revolution and the movement sign are host-only, but every slot address and the turn count are computed from
+    # them, so a restart that finds them changed has to re-anchor just the same.
+    "screw_pitch_mm",
+    "fullsteps_per_rev",
+    "movement_sign",
+)
 
 
 def host_motion_config() -> Dict[str, float]:
@@ -67,6 +79,9 @@ def host_motion_config() -> Dict[str, float]:
         "i_hold": float(control._def.W_MOTOR_I_HOLD),
         "max_velocity": float(control._def.MAX_VELOCITY_W_mm),
         "max_acceleration": float(control._def.MAX_ACCELERATION_W_mm),
+        "screw_pitch_mm": float(control._def.SCREW_PITCH_W_MM),
+        "fullsteps_per_rev": float(control._def.FULLSTEPS_PER_REV_W),
+        "movement_sign": float(control._def.STAGE_MOVEMENT_SIGN_W),
     }
 
 
@@ -142,10 +157,11 @@ def load_cached_wheel_state(cache_path: Optional[str] = None) -> Dict[int, Wheel
         return {}
 
 
-def cache_wheel_state(state: Dict[int, Union[WheelRecord, Tuple[int, int]]], cache_path: Optional[str] = None) -> None:
+def cache_wheel_state(state: Dict[int, Union[WheelRecord, Tuple[int, int]]], cache_path: Optional[str] = None) -> bool:
     """Write {wheel_id: WheelRecord(slot, turns, config)} atomically; a plain (slot, turns) pair is accepted and
     records no configuration. Never raises: failing to write the record must not fail the filter change that was
-    just completed."""
+    just completed. Returns whether the record on disk now says what was asked - an UPDATE may be lost (moves are
+    absolute, a stale slot costs nothing), a WITHDRAWAL may not: see SquidFilterWheel._persist()."""
     cache_path = cache_path or _WHEEL_CACHE_PATH
     try:
         wheels = {}
@@ -157,8 +173,20 @@ def cache_wheel_state(state: Dict[int, Union[WheelRecord, Tuple[int, int]]], cac
         with open(tmp_path, "w") as f:
             json.dump({"version": _WHEEL_CACHE_VERSION, "wheels": wheels}, f)
         os.replace(tmp_path, cache_path)
+        return True
     except (OSError, TypeError, ValueError) as e:
         _log.warning(f"Could not write the filter wheel position cache '{cache_path}': {e}")
+        return False
+
+
+class WheelRecordError(RuntimeError):
+    """The position record could not be withdrawn: it still claims a slot the wheel is about to leave, and neither
+    rewriting nor deleting it worked. Going on would let a --skip-init restart believe it."""
+
+
+class WheelUnderDirectControl(RuntimeError):
+    """The wheel was released for direct control (the filter-wheel tuner is driving its axis) and has not been
+    handed back with reconfigure_driver(). Nothing else may move it meanwhile."""
 
 
 class SquidFilterWheel(AbstractFilterWheelController):
@@ -232,6 +260,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # What _configure_wheel() last sent this wheel's driver (host_motion_config()), or the recorded configuration
         # when a restart found it still in force. Goes into the record next to the position; see the note above.
         self._configured: Dict[int, Dict[str, float]] = {}
+        # True once THIS process has sent the configuration. A configuration taken from the record is hearsay
+        # about a controller this process has not configured: it may have been power-cycled since.
+        self._config_verified: Dict[int, bool] = {}
+        self._direct_control: set = set()  # wheels released to the tuner; see release_for_direct_control()
 
         for wheel_id, config in self._configs.items():
             _log.info(
@@ -268,6 +300,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 self._apply_completion_window(wheel_id)
                 if slot is not None:
                     self._configured[wheel_id] = dict(rec.config)
+                    self._config_verified[wheel_id] = False
                     self._positions[wheel_id] = slot
                     self._turns[wheel_id] = rec.turns
                     self._position_known[wheel_id] = True
@@ -341,18 +374,35 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._turns[wheel_id] = 0
         self._position_known[wheel_id] = False
         self._restored_unverified[wheel_id] = False
-        self._persist()
+        self._persist(withdrawn=wheel_id)
 
-    def _persist(self):
+    def _persist(self, withdrawn: Optional[int] = None):
         """Record the wheels whose position is known, with the motion configuration their driver is running. An
-        unknown wheel is left out, so a restart homes it."""
-        cache_wheel_state(
+        unknown wheel is left out, so a restart homes it.
+
+        `withdrawn` names a wheel whose claim this write exists to REMOVE (a home is starting, the tuner is taking
+        the axis). That has to be a fact, not a hope: if the write fails the file is deleted instead, and if that
+        fails too WheelRecordError is raised before anything moves."""
+        wrote = cache_wheel_state(
             {
                 i: WheelRecord(self._positions[i], self._turns.get(i, 0), self._configured.get(i))
                 for i in self._configs
                 if self._position_known.get(i)
             }
         )
+        if wrote or withdrawn is None:
+            return
+        try:
+            if os.path.exists(_WHEEL_CACHE_PATH):
+                os.remove(_WHEEL_CACHE_PATH)  # every wheel is then homed by the next restart: safe, merely slower
+        except OSError as e:
+            _log.error(f"Could not delete the filter wheel position cache '{_WHEEL_CACHE_PATH}': {e}")
+        if withdrawn in load_cached_wheel_state():
+            raise WheelRecordError(
+                f"Filter wheel {withdrawn}: the position record '{_WHEEL_CACHE_PATH}' could not be rewritten or deleted "
+                f"and still claims a slot. Make the cache directory writable (disk full? read-only?) and try again."
+            )
+        _log.warning(f"Filter wheel {withdrawn}: the position record could not be rewritten and was deleted instead")
 
     def _restart_with_a_changed_configuration(
         self,
@@ -451,6 +501,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self.microcontroller.configure_squidfilter(axis)
         time.sleep(0.5)
         self._configured[wheel_id] = sent
+        self._config_verified[wheel_id] = True
         self._apply_completion_window(wheel_id)
 
         # Common PID setup for both wheels (they share identical encoder settings)
@@ -471,8 +522,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
         The microstepping is read through control._def, not the star-import binding, so that it is the same value
         host_motion_config() reports and _configure_wheel() sends the driver even after a live change.
         """
+        # All through control._def at call time: the same values host_motion_config() records.
         microstepping = int(control._def.MICROSTEPPING_DEFAULT_W)
-        return int(STAGE_MOVEMENT_SIGN_W * delta_mm / (SCREW_PITCH_W_MM / (microstepping * FULLSTEPS_PER_REV_W)))
+        pitch, fullsteps = control._def.SCREW_PITCH_W_MM, control._def.FULLSTEPS_PER_REV_W
+        return int(control._def.STAGE_MOVEMENT_SIGN_W * delta_mm / (pitch / (microstepping * fullsteps)))
 
     # "auto" turns wrapping on from the firmware it was verified on; an explicit True needs only the
     # firmware that accepts a backward wrap's negative targets (before 1.4 xmin stays at the latch).
@@ -485,6 +538,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
         must not silently become 'on' (bool("off") is True)."""
         if isinstance(value, bool):
             return value
+        if isinstance(value, int) and value in (0, 1):  # `squid_filterwheel_wrap = 1` reads as an int
+            return bool(value)
         if isinstance(value, str) and value.strip().lower() == "auto":
             return "auto"
         raise ValueError(f"squid_filterwheel_wrap must be auto, True or False, not {value!r}")
@@ -594,6 +649,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
             TimeoutError or CommandAborted: If all attempts fail.
         """
         config = self._configs[wheel_id]
+        self._refuse_if_under_direct_control(wheel_id)
 
         if not self._position_known.get(wheel_id, False):
             _log.info(f"Filter wheel {wheel_id}: position unknown, homing before the move")
@@ -666,20 +722,25 @@ class SquidFilterWheel(AbstractFilterWheelController):
         wheel's position as unknown until a successful home completes.
         """
         config = self._configs[wheel_id]
-        if wheel_id not in self._configured:
-            # The driver's configuration is not known to be the host's: an earlier re-configuration failed, or
-            # the wheel was released for direct control and never handed back. Homing on it would anchor a
-            # coordinate whose microstep size the host may have wrong. Configure first; a failure raises and the
-            # wheel stays unknown.
-            _log.warning(f"Filter wheel {wheel_id}: driver configuration unknown - configuring before homing")
-            self._configure_wheel(wheel_id, config)
+        self._refuse_if_under_direct_control(wheel_id)
         _log.info(f"Homing filter wheel {wheel_id} (prev tracked={self._positions.get(wheel_id)})")
         home_start = time.monotonic()
         # Unknown until this home has fully succeeded; the record is withdrawn now, so a process that dies
         # during the home does not leave a restart believing the pre-home slot.
         self._position_known[wheel_id] = False
         self._restored_unverified[wheel_id] = False
-        self._persist()
+        self._persist(withdrawn=wheel_id)
+
+        # Only now, with nothing claimed any more: a configuration that times out must not leave a trusted position.
+        if wheel_id not in self._configured or not self._config_verified.get(wheel_id, False):
+            # The driver's configuration is not known to be the host's: an earlier re-configuration failed, or it
+            # was only READ FROM THE RECORD by a --skip-init start. The second case is the power cycle between two
+            # processes: the controller forgot INITFILTERWHEEL, refuses every wheel move, and this home is the
+            # recovery - which only works if it (re-)initialises the axis first. Homing on an unverified driver
+            # would also anchor a coordinate whose microstep size the host may have wrong. A failure raises and
+            # the wheel stays unknown.
+            _log.warning(f"Filter wheel {wheel_id}: driver configuration not verified - configuring before homing")
+            self._configure_wheel(wheel_id, config)
 
         try:
             self._mcu_method(wheel_id, "home")()
@@ -761,7 +822,8 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # the microstepping, and a position (or a record) that still claims to be valid would then be believed by
         # the next move, or by the next --skip-init start. release_for_direct_control() also forgets the driver
         # configuration, so that nothing moves this wheel again until a configuration has succeeded.
-        self.release_for_direct_control(wheel_id)
+        self._direct_control.discard(wheel_id)  # this IS the hand-back: from here the controller owns the axis
+        self._invalidate(wheel_id)
         self._configure_wheel(wheel_id, self._configs[wheel_id])
         self._home_wheel(wheel_id)
         if return_to_slot is not None:
@@ -772,9 +834,27 @@ class SquidFilterWheel(AbstractFilterWheelController):
         its position AND the configuration its driver runs. For code that is about to drive the wheel's axis
         directly (the filter-wheel tuner changes microstepping, current and ramp, and homes on its own), and the
         first step of reconfigure_driver(). Until reconfigure_driver() has succeeded the wheel is unknown and
-        unconfigured: a move homes first, and a home configures the driver first (_home_wheel)."""
+        unconfigured, and every move or home of it through this controller raises WheelUnderDirectControl: the
+        dialog's modality stops clicks, not a script, the Jupyter console or a timer-driven channel change."""
+        self._invalidate(wheel_id)  # raises WheelRecordError before the lock is taken if the record will not go
+        self._direct_control.add(wheel_id)
+
+    def _invalidate(self, wheel_id: int):
+        """Forget the wheel's position AND its driver configuration, in memory and in the record."""
         self._configured.pop(wheel_id, None)
+        self._config_verified[wheel_id] = False
         self._set_unknown(wheel_id)
+
+    def _refuse_if_under_direct_control(self, wheel_id: int):
+        if wheel_id in self._direct_control:
+            raise WheelUnderDirectControl(
+                f"Filter wheel {wheel_id} is being driven directly (filter wheel tuning is running); it cannot be "
+                f"moved or homed until that has finished and handed the wheel back."
+            )
+
+    def motor_axis(self, wheel_id: int) -> int:
+        """The controller axis (AXIS.W or AXIS.W2) that drives this wheel."""
+        return self._MOTOR_SLOT_TO_AXIS[self._configs[wheel_id].motor_slot_index]
 
     def wheel_ids(self) -> List[int]:
         """The wheels this controller drives. Their motor profile (control._def) is shared, so whoever changes it

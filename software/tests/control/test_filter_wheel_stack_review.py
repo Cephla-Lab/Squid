@@ -129,7 +129,7 @@ def test_a_home_configures_the_driver_first_when_its_configuration_is_unknown(ri
     # after a failed re-configuration (or a release for direct control) nothing may anchor a coordinate on a driver
     # whose microstepping the host is not sure of
     mc, wheel = rig
-    wheel.release_for_direct_control(1)
+    wheel._invalidate(1)  # what a failed re-configuration leaves behind
     mc.reset_mock()
     wheel.home(1)
     names = [c[0] for c in mc.method_calls]

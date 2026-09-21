@@ -244,7 +244,7 @@ def test_wrap_setting_against_firmware(monkeypatch, setting, fw, enabled):
     assert SquidFilterWheel(mc, _config(), skip_init=True)._wrap_enabled() is enabled
 
 
-@pytest.mark.parametrize("bad", ["off", "yes", 1, None])
+@pytest.mark.parametrize("bad", ["off", "yes", 2, 1.0, None])  # 1 and 0 are what an ini yields: accepted
 def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
     import control._def
 

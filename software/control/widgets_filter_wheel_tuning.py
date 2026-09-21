@@ -244,7 +244,7 @@ class FilterWheelTuningDialog(QDialog):
     def _start(self, action: str):
         if self._running():
             return
-        reason = refusal_reason(self.filter_wheel, self.microcontroller) or (
+        reason = refusal_reason(self.filter_wheel, self.microcontroller, wheel_id=self.wheel_id) or (
             self.busy_reason() if self.busy_reason else None
         )
         if reason:
@@ -262,6 +262,9 @@ class FilterWheelTuningDialog(QDialog):
             return
         self._set_running(True)
         self.button_apply.setEnabled(False)
+        # Apply cannot be interrupted (the ini is already written when the wheel starts to re-home), and Cancel
+        # would only reach the tuner of the PREVIOUS run.
+        self.button_cancel.setEnabled(False)
         self._start_worker(TuningWorker(self.session, "apply", apply_record=self.proposal, parent=self))
 
     def _start_worker(self, worker: TuningWorker):
@@ -350,6 +353,8 @@ class FilterWheelTuningDialog(QDialog):
         super().reject()
 
     def accept(self):
+        if not self._running():
+            self.session.log_fn = None
         if self._running():
             self._say("A run is in progress. Cancel it and wait for the wheel to be put back before closing.")
             return

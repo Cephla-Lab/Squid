@@ -33,8 +33,8 @@ _log = squid.logging.get_logger(__name__)
 FULLSTEPS = int(_def.FULLSTEPS_PER_REV_W)
 MICROSTEPS = int(_def.MICROSTEPPING_DEFAULT_W)
 USTEPS_PER_REV = MICROSTEPS * FULLSTEPS  # pitch is 1 "mm" per rev
-SLOTS = int(_def.SQUID_FILTERWHEEL_MAX_INDEX)
 MIN_INDEX = int(_def.SQUID_FILTERWHEEL_MIN_INDEX)
+SLOTS = int(_def.SQUID_FILTERWHEEL_MAX_INDEX) - MIN_INDEX + 1
 OFFSET_REV = float(_def.SQUID_FILTERWHEEL_OFFSET)
 TRANSITIONS = int(_def.SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION)
 SIGN = int(_def.STAGE_MOVEMENT_SIGN_W)
@@ -1200,7 +1200,7 @@ def tuner_params(action, out=None, **overrides) -> argparse.Namespace:
 
 
 # ---------------------------------------------------------------- running it on the application's own hardware
-def refusal_reason(filter_wheel, microcontroller, live=False, acquiring=False) -> Optional[str]:
+def refusal_reason(filter_wheel, microcontroller, live=False, acquiring=False, wheel_id=1) -> Optional[str]:
     """Why tuning must not start now, or None. The wheel is driven hard and out of the host's coordinate frame for
     minutes: it cannot share the instrument with an acquisition or a live view, it needs the encoder (which only a
     real controller running firmware >= 1.6 reports), and it only knows the Squid (Cephla) wheel."""
@@ -1210,6 +1210,11 @@ def refusal_reason(filter_wheel, microcontroller, live=False, acquiring=False) -
         return (
             "No Squid (Cephla) filter wheel is configured on this microscope. The tuner drives the controller's W "
             "axis directly and cannot tune a third-party wheel."
+        )
+    if filter_wheel.motor_axis(wheel_id) != AXIS.W:
+        return (
+            f"Filter wheel {wheel_id} is not on the controller's W axis. The tuner drives W only for now; tuning a "
+            f"second wheel is not supported yet."
         )
     if microcontroller is None:
         return "No microcontroller is available."
@@ -1275,6 +1280,11 @@ class WheelTuningSession:
 
     def run(self, action, **overrides) -> dict:
         """One verify or tune. Returns the run's summary; raises whatever the run raised, after restoring."""
+        axis = getattr(self.filter_wheel, "motor_axis", lambda _id: AXIS.W)(self.wheel_id)
+        if axis != AXIS.W:
+            # The tuner drives AXIS.W, whatever wheel_id says: releasing another wheel's claims while driving W
+            # would leave W's record trusted through the whole run.
+            raise ValueError(f"filter wheel {self.wheel_id} is not on the W axis; the tuner supports W only for now")
         slot = self.current_slot()
         self.log(f"{action}: starting; the wheel is on slot {slot if slot is not None else '(unknown)'}")
         params = tuner_params(action, out=self.out_dir, **overrides)
