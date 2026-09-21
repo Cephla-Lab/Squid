@@ -192,6 +192,73 @@ class TestConfigHelpers:
         assert result == 3.14
 
 
+class TestIniValuesWithInlineComments:
+    """The running software reads the ini with control._def.conf_attribute_reader, which strips an inline comment.
+    The dialog has to read the same text the same way: a value it misreads is shown as something the machine is not
+    running, and is written back as that the next time ANY setting is saved."""
+
+    def _dialog(self, qtbot, config, path):
+        dialog = control.widgets.PreferencesDialog(config, path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_the_helpers_read_a_commented_value_as_the_application_does(self, qtbot, sample_config, temp_config_file):
+        import control._def
+
+        sample_config.set("GENERAL", "max_velocity_x_mm", "30.0  # mm/s, this stage")
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "2\t# 2x2")
+        sample_config.set("GENERAL", "enable_flexible_multipoint", "True  # needed for the plate workflow")
+        sample_config.set("GENERAL", "enable_tracking", "false # off")
+        sample_config.set("GENERAL", "file_saving_option", "OME_TIFF  # not zarr yet")
+        sample_config.set("CAMERA_CONFIG", "flip_image", "None  # no flip")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._get_config_float("GENERAL", "max_velocity_x_mm", 1.0) == 30.0
+        assert dialog._get_config_int("CAMERA_CONFIG", "binning_factor_default", 1) == 2
+        assert dialog._get_config_bool("GENERAL", "enable_flexible_multipoint", False) is True
+        assert dialog._get_config_bool("GENERAL", "enable_tracking", True) is False
+        assert dialog._get_config_value("GENERAL", "file_saving_option", "") == "OME_TIFF"
+        assert dialog._get_config_value("CAMERA_CONFIG", "flip_image", "") == "None"
+        for section, option in (("GENERAL", "max_velocity_x_mm"), ("CAMERA_CONFIG", "binning_factor_default")):
+            raw = sample_config.get(section, option)
+            assert dialog._get_config_float(section, option, -1.0) == float(control._def.conf_attribute_reader(raw))
+
+    def test_text_that_only_looks_like_a_comment_is_kept(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "default_saving_path", "/data/run#3")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._get_config_value("GENERAL", "default_saving_path", "") == "/data/run#3"
+
+    def test_the_rows_show_the_commented_values_and_list_no_change(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "2  # 2x2")
+        sample_config.set("GENERAL", "enable_flexible_multipoint", "True  # plate workflow")
+        sample_config.set("GENERAL", "file_saving_option", "OME_TIFF  # not zarr yet")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.binning_spinbox.value() == 2
+        assert dialog.flexible_multipoint_checkbox.isChecked()
+        assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+
+    def test_saving_does_not_reset_a_commented_value_to_the_default(self, qtbot, sample_config, temp_config_file):
+        import control._def
+
+        # binning 4 with a comment: the old reader saw "4  # ..." as not-an-int, showed the default 2, and wrote 2
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "4  # this camera")
+        sample_config.set("GENERAL", "enable_flexible_multipoint", "False  # not on this machine")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert control._def.conf_attribute_reader(saved.get("CAMERA_CONFIG", "binning_factor_default")) == 4
+        assert control._def.conf_attribute_reader(saved.get("GENERAL", "enable_flexible_multipoint")) is False
+
+    def test_a_missing_key_and_an_unreadable_value_still_give_the_default(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "two")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._get_config_int("CAMERA_CONFIG", "binning_factor_default", 3) == 3
+        assert dialog._get_config_int("CAMERA_CONFIG", "no_such_key", 3) == 3
+        assert dialog._get_config_float("NO_SECTION", "x", 1.5) == 1.5
+        assert dialog._get_config_bool("GENERAL", "no_such_key", True) is True
+        assert dialog._get_config_int("CAMERA_CONFIG", "temperature_default", 0) == 20
+
+
 class TestFloatsEqual:
     """Test floating-point comparison helper."""
 
@@ -739,70 +806,3 @@ class TestClickToMoveSettings:
 
         assert control._def.LIVE_VIEW_Z_STEP_UM == pytest.approx(2.5)
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
-
-
-class TestIniValuesWithInlineComments:
-    """The running software reads the ini with control._def.conf_attribute_reader, which strips an inline comment.
-    The dialog has to read the same text the same way: a value it misreads is shown as something the machine is not
-    running, and is written back as that the next time ANY setting is saved."""
-
-    def _dialog(self, qtbot, config, path):
-        dialog = control.widgets.PreferencesDialog(config, path)
-        qtbot.addWidget(dialog)
-        return dialog
-
-    def test_the_helpers_read_a_commented_value_as_the_application_does(self, qtbot, sample_config, temp_config_file):
-        import control._def
-
-        sample_config.set("GENERAL", "max_velocity_x_mm", "30.0  # mm/s, this stage")
-        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "2\t# 2x2")
-        sample_config.set("GENERAL", "enable_flexible_multipoint", "True  # needed for the plate workflow")
-        sample_config.set("GENERAL", "enable_tracking", "false # off")
-        sample_config.set("GENERAL", "file_saving_option", "OME_TIFF  # not zarr yet")
-        sample_config.set("CAMERA_CONFIG", "flip_image", "None  # no flip")
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog._get_config_float("GENERAL", "max_velocity_x_mm", 1.0) == 30.0
-        assert dialog._get_config_int("CAMERA_CONFIG", "binning_factor_default", 1) == 2
-        assert dialog._get_config_bool("GENERAL", "enable_flexible_multipoint", False) is True
-        assert dialog._get_config_bool("GENERAL", "enable_tracking", True) is False
-        assert dialog._get_config_value("GENERAL", "file_saving_option", "") == "OME_TIFF"
-        assert dialog._get_config_value("CAMERA_CONFIG", "flip_image", "") == "None"
-        for section, option in (("GENERAL", "max_velocity_x_mm"), ("CAMERA_CONFIG", "binning_factor_default")):
-            raw = sample_config.get(section, option)
-            assert dialog._get_config_float(section, option, -1.0) == float(control._def.conf_attribute_reader(raw))
-
-    def test_text_that_only_looks_like_a_comment_is_kept(self, qtbot, sample_config, temp_config_file):
-        sample_config.set("GENERAL", "default_saving_path", "/data/run#3")
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog._get_config_value("GENERAL", "default_saving_path", "") == "/data/run#3"
-
-    def test_the_rows_show_the_commented_values_and_list_no_change(self, qtbot, sample_config, temp_config_file):
-        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "2  # 2x2")
-        sample_config.set("GENERAL", "enable_flexible_multipoint", "True  # plate workflow")
-        sample_config.set("GENERAL", "file_saving_option", "OME_TIFF  # not zarr yet")
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog.binning_spinbox.value() == 2
-        assert dialog.flexible_multipoint_checkbox.isChecked()
-        assert dialog.file_saving_combo.currentText() == "OME_TIFF"
-
-    def test_saving_does_not_reset_a_commented_value_to_the_default(self, qtbot, sample_config, temp_config_file):
-        import control._def
-
-        # binning 4 with a comment: the old reader saw "4  # ..." as not-an-int, showed the default 2, and wrote 2
-        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "4  # this camera")
-        sample_config.set("GENERAL", "enable_flexible_multipoint", "False  # not on this machine")
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog._apply_settings()
-        saved = ConfigParser()
-        saved.read(temp_config_file)
-        assert control._def.conf_attribute_reader(saved.get("CAMERA_CONFIG", "binning_factor_default")) == 4
-        assert control._def.conf_attribute_reader(saved.get("GENERAL", "enable_flexible_multipoint")) is False
-
-    def test_a_missing_key_and_an_unreadable_value_still_give_the_default(self, qtbot, sample_config, temp_config_file):
-        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "two")
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog._get_config_int("CAMERA_CONFIG", "binning_factor_default", 3) == 3
-        assert dialog._get_config_int("CAMERA_CONFIG", "no_such_key", 3) == 3
-        assert dialog._get_config_float("NO_SECTION", "x", 1.5) == 1.5
-        assert dialog._get_config_bool("GENERAL", "no_such_key", True) is True
-        assert dialog._get_config_int("CAMERA_CONFIG", "temperature_default", 0) == 20
