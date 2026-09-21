@@ -1343,9 +1343,11 @@ class MultiPointWorker:
                 self._wait_for_sequence(self._sequenced_burst_timeout_s())
             except (CommandAborted, TimeoutError) as e:
                 run_error = e
-            # The last frames may still be on their way over USB; the ready flag is set when the
-            # last expected frame was PAIRED, the idle flag when its sink call returned.
-            self._ready_for_next_trigger.wait(self._frame_wait_timeout_s())
+            # The last frames may still be on their way over USB. What can still arrive is bounded
+            # by what the controller FIRED, not by what was expected: a run it refused (interlock
+            # open, stack out of range) fired nothing, and waiting for "the last expected frame"
+            # of a burst that never started only burns the frame timeout.
+            self._wait_for_fired_frames(collected, expected=len(captures))
             self._image_callback_idle.wait(self._frame_wait_timeout_s())
         finally:
             self._frame_sink = self._dispatch_frame
@@ -1362,6 +1364,18 @@ class MultiPointWorker:
             self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
             return None, reason
         return collected, None
+
+    def _wait_for_fired_frames(self, collected: list, *, expected: int) -> None:
+        """Wait, up to the frame timeout, for the frames the controller says it fired."""
+        status = self.microcontroller.seq_status
+        fired = expected if status is None else min(status.frames_fired, expected)
+        if fired >= expected:
+            # The ready flag is set when the last expected frame was PAIRED.
+            self._ready_for_next_trigger.wait(self._frame_wait_timeout_s())
+            return
+        deadline = time.time() + self._frame_wait_timeout_s()
+        while len(collected) < fired and time.time() < deadline:
+            time.sleep(0.005)
 
     def _ask_user_to_intervene(self, message: str) -> None:
         """The acquisition cannot continue on its own, so the user decides what happens next.

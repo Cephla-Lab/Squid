@@ -194,6 +194,31 @@ def test_a_third_failure_stops_the_acquisition_and_asks_the_user_to_intervene(se
     assert "restart the acquisition" in message
 
 
+def test_a_run_the_controller_refuses_fails_at_once_not_after_the_frame_timeout(sequencing_setup, monkeypatch):
+    """First bench contact (2026-09-20): the laser interlock was open, the controller refused SEQ_RUN
+    with INTERLOCK_OPEN and fired nothing - and the host then waited ~10 s per attempt for the "last
+    expected frame" of a burst that had never started. What can still arrive is bounded by what the
+    controller FIRED, not by what was expected."""
+    import time
+
+    def refuse(sequencer, stack_start):
+        sequencer._fail(SeqError.INTERLOCK_OPEN, 0)  # as the firmware does: Failed, nothing triggered
+
+    monkeypatch.setattr(control.sequencer_sim.SimulatedSequencer, "_seq_run", refuse)
+
+    started = time.time()
+    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
+    elapsed = time.time() - started
+
+    assert tracker.images == []
+    assert len(tracker.interventions) == 1 and "INTERLOCK_OPEN" in tracker.interventions[0]
+    assert status.frames_fired == 0
+    # Three attempts. With the dead wait that is 3 x ~10 s on top of building the microscope.
+    assert (
+        elapsed < 20
+    ), f"three refused attempts took {elapsed:.0f} s: the burst waited for frames that were never fired"
+
+
 def test_the_qt_controller_forwards_the_intervention_message_to_the_gui_signal(qtbot):
     """The worker runs on its own thread; the GUI hears about an intervention through a Qt signal."""
     import tests.control.gui_test_stubs as gts
