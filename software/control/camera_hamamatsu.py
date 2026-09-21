@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Callable, Sequence, Tuple, Dict
+from typing import Optional, Callable, List, Sequence, Tuple, Dict
 import threading
 
 import pydantic
@@ -14,6 +14,15 @@ import control.utils
 
 class HamamatsuCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+
+
+# DCAM ring depth. Live view takes the newest frame and drops the rest, so five is plenty. In a triggered
+# mode every frame was asked for and none may be dropped: the ring has to cover the longest the read
+# thread can be held up. Bench 2026-09-21 (hardware-sequenced bursts, 41 ms per frame): worst 152 ms, while
+# the previous burst was being handed to the save jobs. The stall is a TIME, so faster frame rates need
+# more frames for the same stall: 32 frames is 1.3 s at 41 ms and 0.5 s at 16 ms.
+_LIVE_RING_FRAMES = 5
+_TRIGGERED_RING_FRAMES = 32
 
 
 class HamamatsuCamera(AbstractCamera):
@@ -94,6 +103,10 @@ class HamamatsuCamera(AbstractCamera):
         self._capture_lock = threading.Lock()
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
+        # How the read thread takes frames out of DCAM's ring; decided per capture in start_streaming().
+        self._read_every_frame = False  # triggered modes: every frame, in order. Live: the newest only.
+        self._ring_frames = _LIVE_RING_FRAMES
+        self._frames_read = 0  # frames of THIS capture already delivered (DCAM counts from 0 at cap_start)
         # frame_id = this base + the stamp DCAM counts from 0 at every cap_start (see _read_newest_frame).
         self._frame_id_base = 1
         self._last_trigger_timestamp = 0
@@ -158,18 +171,92 @@ class HamamatsuCamera(AbstractCamera):
                 return None
 
             frame_info, raw_frame = result
-            processed_frame = self._process_raw_frame(raw_frame)
-            with self._frame_lock:
-                camera_frame = CameraFrame(
-                    frame_id=self._frame_id_base + int(frame_info.framestamp),
-                    timestamp=time.time(),
-                    frame=processed_frame,
-                    frame_format=self.get_frame_format(),
-                    frame_pixel_format=self.get_pixel_format(),
-                )
+            return self._new_frame(frame_info, raw_frame)
 
-                self._current_frame = camera_frame
-            return camera_frame
+    def _new_frame(self, frame_info, raw_frame) -> CameraFrame:
+        # NOTE: The caller must hold _capture_lock.
+        processed_frame = self._process_raw_frame(raw_frame)
+        with self._frame_lock:
+            camera_frame = CameraFrame(
+                frame_id=self._frame_id_base + int(frame_info.framestamp),
+                timestamp=time.time(),
+                frame=processed_frame,
+                frame_format=self.get_frame_format(),
+                frame_pixel_format=self.get_pixel_format(),
+            )
+            self._current_frame = camera_frame
+        return camera_frame
+
+    def _read_frames(self) -> List[CameraFrame]:
+        """The frames to deliver for one FRAMEREADY wake-up, oldest first.
+
+        Live view: the newest frame only - dropping frames to stay current is the right policy there.
+
+        Triggered modes: EVERY frame since the last wake-up, in order. Each of them was asked for, and
+        the read thread can run late (bench 2026-09-21: up to 152 ms, 3.7 frame periods, while another
+        thread was busy); taking only the newest one then drops frames that are still sitting in the
+        ring. DCAM puts frame n (counted from 0 at cap_start, the same count as its framestamp) into
+        slot n % depth, and cap_transferinfo() says how many frames exist and which slot is the newest.
+
+        That ring layout could not be checked against hardware when this was written, so every slot is
+        verified: a slot whose framestamp is not the frame number expected is reported, and this
+        wake-up falls back to the newest frame. ids follow the camera's stamps either way, so a consumer
+        that needs every frame sees a hole rather than a wrong frame.
+        """
+        if not self._read_every_frame:
+            frame = self._read_newest_frame()
+            return [] if frame is None else [frame]
+
+        # Finish publishing in-flight frames before a restart can rebase their IDs.
+        with self._capture_lock:
+            info = self._camera.cap_transferinfo()
+            if isinstance(info, bool):
+                self._log.error(f"cap_transferinfo failed ({self._last_dcam_error_string()}); taking the newest frame.")
+                return self._newest_frame_only(total=None)
+
+            total = int(info.nFrameCount)
+            first = self._frames_read
+            if total <= first:
+                return []  # nothing new: a wake-up for a frame the previous pass already took
+            overwritten = total - first - self._ring_frames
+            if overwritten > 0:
+                self._log.error(
+                    f"{overwritten} frame(s) were overwritten in the camera's {self._ring_frames}-frame ring before "
+                    "they could be read: the read thread was held up for too long. Their ids will be missing."
+                )
+                first = total - self._ring_frames
+
+            frames = []
+            newest_slot = int(info.nNewestFrameIndex)
+            for number in range(first, total):
+                slot = (newest_slot - (total - 1 - number)) % self._ring_frames
+                result = self._camera.buf_getframe(slot)
+                if isinstance(result, bool):
+                    self._log.error(f"Reading ring slot {slot} failed ({self._last_dcam_error_string()}).")
+                    return frames + self._newest_frame_only(total)
+                frame_info, raw_frame = result
+                if int(frame_info.framestamp) != number:
+                    self._log.error(
+                        f"Ring slot {slot} holds framestamp {int(frame_info.framestamp)}, expected frame {number} "
+                        f"(newest slot {newest_slot}, {total} frames, ring of {self._ring_frames}): the ring is not "
+                        "laid out as assumed, or the slot was overwritten while it was read. Taking the newest frame."
+                    )
+                    return frames + self._newest_frame_only(total)
+                frames.append(self._new_frame(frame_info, raw_frame))
+            self._frames_read = total
+            self._trigger_sent.clear()
+            return frames
+
+    def _newest_frame_only(self, total: Optional[int]) -> List[CameraFrame]:
+        # NOTE: The caller must hold _capture_lock. The fall-back of _read_frames().
+        result = self._camera.buf_getframe(-1)
+        self._trigger_sent.clear()
+        if isinstance(result, bool):
+            self._log.error("Frame read resulted in boolean, must be an error.")
+            return []
+        frame_info, raw_frame = result
+        self._frames_read = int(frame_info.framestamp) + 1 if total is None else total
+        return [self._new_frame(frame_info, raw_frame)]
 
     def _read_frames_when_available(self):
         self._log.info("Starting Hamamatsu read thread.")
@@ -182,12 +269,9 @@ class HamamatsuCamera(AbstractCamera):
                 frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
 
                 if frame_ready:
-                    camera_frame = self._read_newest_frame()
-                    if camera_frame is None:
-                        continue
-
-                    # Send the local copy of the frame to all the callbacks so we are sure they get this frame
-                    self._propogate_frame(camera_frame)
+                    # Send the local copy of each frame to all the callbacks so we are sure they get it
+                    for camera_frame in self._read_frames():
+                        self._propogate_frame(camera_frame)
 
                 # NOTE(imo): I'm not sure if self._camera.wait_event actually yields to the python
                 # interpreter.
@@ -388,7 +472,11 @@ class HamamatsuCamera(AbstractCamera):
             return True
 
         with self._capture_lock:
-            if not self._allocate_read_buffers():
+            # Every mode change restarts the capture (_pause_streaming), so deciding here is deciding per mode.
+            self._read_every_frame = self.get_acquisition_mode() != CameraAcquisitionMode.CONTINUOUS
+            self._ring_frames = _TRIGGERED_RING_FRAMES if self._read_every_frame else _LIVE_RING_FRAMES
+            self._frames_read = 0
+            if not self._allocate_read_buffers(self._ring_frames):
                 self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
                 return False
             with self._frame_lock:
