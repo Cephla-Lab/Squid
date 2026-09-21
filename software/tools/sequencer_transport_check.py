@@ -314,7 +314,9 @@ class Checker:
             return (
                 "an unplugged or broken ready cable reads READY on this controller: the acquisition treats "
                 f"{'HIGH' if ACQUISITION_READY_ACTIVE_HIGH else 'LOW'} as ready and the input idles there. A gated run "
-                "would not time out; it would trigger without waiting for the camera"
+                "would not time out; it would trigger without waiting for the camera. FIRST make sure the input "
+                "really is unconnected: a camera output wired to it drives the line (an unconfigured Hamamatsu "
+                "output sits LOW) and this check then measures the camera, not the board - unplug it and rerun"
             )
         return ""
 
