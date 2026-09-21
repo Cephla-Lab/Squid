@@ -34,12 +34,15 @@ class InstrumentColumn(QSplitter):
     times their minimum height. Once the operator drags the divider the split is theirs (a window
     resize then scales both panes, as any splitter does)."""
 
-    # The tabs' minimum height is where their tallest page's plot is flat (all controls, no canvas);
-    # half as much again is a plot one can read. Relative, so it follows the font and the style.
+    # Stands in for the library's plot canvas declaring no minimum height of its own (were it to,
+    # the splitter would hold that floor natively and this goes). The tabs' minimum height is where
+    # their tallest page's plot is flat (all controls, no canvas); half as much again is a plot one
+    # can read. Dimensionless, so it follows the font and the style.
     TABS_ROOM = 1.5
 
     def __init__(self, instrument: QWidget, tabs: QWidget, parent=None):
         super().__init__(Qt.Vertical, parent)
+        self._instrument = instrument
         self._tabs = tabs
         self.instrument_scroll = QScrollArea()
         self.instrument_scroll.setWidgetResizable(True)
@@ -59,18 +62,18 @@ class InstrumentColumn(QSplitter):
         return round(self.TABS_ROOM * self._tabs.minimumSizeHint().height())
 
     def eventFilter(self, watched, event) -> bool:
-        # A pane's size hints are only fresh once its own LayoutRequest arrives (Qt propagates them
-        # up one posted event at a time), so that is when to look, not when a widget is added.
-        if event.type() == QEvent.LayoutRequest and watched in (self.instrument_scroll.widget(), self._tabs):
+        # Installed on the two panes only. A pane's size hints are fresh once its own LayoutRequest
+        # arrives (Qt propagates them up one posted event at a time), so that is when to look, not
+        # when a widget is added.
+        if event.type() == QEvent.LayoutRequest:
             self._content_changed()
         return super().eventFilter(watched, event)
 
     def _content_changed(self) -> None:
         """A pane gained or lost widgets (Initialize mounts manual control and the sensor tabs):
         never clip the block sideways, scroll bar included, and share the height again."""
-        instrument = self.instrument_scroll.widget()
         scroll_bar_width = self.instrument_scroll.verticalScrollBar().sizeHint().width()
-        self.instrument_scroll.setMinimumWidth(instrument.minimumSizeHint().width() + scroll_bar_width)
+        self.instrument_scroll.setMinimumWidth(self._instrument.minimumSizeHint().width() + scroll_bar_width)
         self._balance()
 
     def resizeEvent(self, event) -> None:
@@ -84,7 +87,7 @@ class InstrumentColumn(QSplitter):
         height = sum(self.sizes())
         if self._dragged or height == 0:  # 0: not laid out yet
             return
-        wanted = self.instrument_scroll.widget().sizeHint().height()
+        wanted = self._instrument.sizeHint().height()
         block = max(0, min(wanted, height - self.tabs_floor()))
         self.setSizes([block, height - block])
 
@@ -230,7 +233,7 @@ class FluidicsDisplayTab(QWidget):
                 from fluidics.qt.sensor_plots import TemperatureControlWidget
 
                 self.temperature_tab = TemperatureControlWidget(tc)
-                self.tabs.insertTab(1, self.temperature_tab, "Temperature")
+                self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.temperature_tab, "Temperature")
             except Exception:
                 self._log.exception("Could not build the Temperature tab")
 
