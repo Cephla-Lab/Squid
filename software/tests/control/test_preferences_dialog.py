@@ -755,7 +755,15 @@ class TestFilterWheelShortestPath:
 
     @pytest.mark.parametrize(
         "ini, data",
-        [("auto", "auto"), ("True", "True"), ("true", "True"), ("False", "False"), ("False  # why", "False")],
+        [
+            ("auto", "auto"),
+            ("True", "True"),
+            ("true", "True"),
+            ("False", "False"),
+            ("False  # why", "False"),
+            # whatever the wheel controller accepts, the dialog has to read the same way:
+            ("AUTO", "auto"),
+        ],
     )
     def test_the_ini_value_selects_the_item(self, qtbot, sample_config, temp_config_file, ini, data):
         sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
@@ -796,6 +804,26 @@ class TestFilterWheelCompletionWindow:
         assert preferences_dialog.wheel_window_spinbox.value() == 0.0
         assert preferences_dialog.wheel_window_spinbox.text() == "Off (exact slot)"
         assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_the_dialog_and_the_wheel_controller_read_every_accepted_value_alike(
+        self, qtbot, sample_config, temp_config_file
+    ):
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        shown = {"auto": "auto", True: "True", False: "False"}
+        for ini in ("auto", "Auto", "True", "true", "False", "false", "True  # on"):
+            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(ini))
+            assert dialog.wheel_wrap_combo.currentData() == shown[parsed], ini
+
+    def test_a_window_with_an_inline_comment_is_shown_not_cleared(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5  # degrees, 32 mm filters")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.wheel_window_spinbox.value() == 5.0  # float() alone read this as 0 and a save cleared it
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
 
     def test_the_ini_value_is_shown(self, qtbot, sample_config, temp_config_file):
         sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5")
