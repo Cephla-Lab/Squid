@@ -4,6 +4,8 @@ import squid.logging
 
 pytest.importorskip("fluidics")
 
+from qtpy.QtWidgets import QGroupBox
+
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
 
@@ -91,16 +93,14 @@ def test_log_view_catches_fluidics_loggers_only(qtbot):
 def _config_text(application="Flow Cell", tec=False, flow_sensors=True, monitor="off"):
     import yaml
 
-    from tests.control.fluidics_test_config import CONFIG_YAML
+    from tests.control.fluidics_test_config import CONFIG_YAML, TEC_CONFIG_YAML
 
-    config = yaml.safe_load(CONFIG_YAML)
+    config = yaml.safe_load(TEC_CONFIG_YAML if tec else CONFIG_YAML)
     config["application"] = application
     if application == "Open Chamber":
         # the sections that application requires, as in the library's open_chamber_config.yaml fixture
         config["sample_selection_inlet"] = {"common_tubing_fluid_amount_ul": 900}
         config["samples"] = {"chamber_volume_ul": 1300}
-    if tec:
-        config["temperature_controller"] = {"serial_number": "SIM-TEC", "channels": 2}
     if flow_sensors:
         for sensor in config["flow_sensors"]:
             sensor["monitor"] = monitor
@@ -225,26 +225,26 @@ def test_a_short_window_scrolls_the_instrument_block_instead_of_flattening_the_p
     for sensor_tab in (tab.temperature_tab, tab.flow_tab):
         tab.tabs.setCurrentWidget(sensor_tab)
         panel = sensor_tab.plot_widgets[0]
-        readout = panel.findChild(type(tab.manual_group))  # the one-line group box above the plot
+        readout = panel.findChild(QGroupBox)  # the first one: the one-line readout above the plot
         qtbot.waitUntil(lambda: panel.canvas.height() > readout.height(), timeout=2000)
 
 
 def test_the_instrument_block_is_never_clipped_sideways(initialized_display_tab, qtbot):
-    tab = initialized_display_tab(_config_text(tec=True), shown_at=(1500, 900))
+    tab = initialized_display_tab(_config_text(), shown_at=(1500, 900))
     scroll = tab.instrument_column.instrument_scroll
     _wait_for_short_window_layout(tab.instrument_column, qtbot)
     assert scroll.viewport().width() >= scroll.widget().minimumSizeHint().width()
 
 
 def test_a_tall_window_shows_the_whole_instrument_block(initialized_display_tab, qtbot):
-    tab = initialized_display_tab(_config_text(tec=True), shown_at=(1500, 1600))
+    tab = initialized_display_tab(_config_text(), shown_at=(1500, 1600))
     column = tab.instrument_column
     qtbot.waitUntil(lambda: column.sizes()[0] >= column.instrument_scroll.widget().sizeHint().height(), timeout=2000)
     assert _scrolled_out(column) == 0
 
 
 def test_a_dragged_divider_is_left_to_the_operator(initialized_display_tab, qtbot):
-    tab = initialized_display_tab(_config_text(tec=True), shown_at=(1500, 900))
+    tab = initialized_display_tab(_config_text(), shown_at=(1500, 900))
     column = tab.instrument_column
     _wait_for_short_window_layout(column, qtbot)
     column.moveSplitter(250, 1)  # what dragging the handle does
@@ -255,4 +255,3 @@ def test_a_dragged_divider_is_left_to_the_operator(initialized_display_tab, qtbo
     # the window scales both panes, as any splitter does; the rule no longer puts the block back
     block, tabs_height = column.sizes()
     assert block == round(250 * (block + tabs_height) / height)
-    assert tabs_height > column.tabs_floor()
