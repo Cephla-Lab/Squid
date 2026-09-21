@@ -283,16 +283,16 @@ class TestThetaPosition:
 class TestSequencerFailureReporting:
     def test_execution_error_carries_the_decoded_seq_error(self, mcu_and_serial):
         mcu, serial = mcu_and_serial
-        serial.theta = status_as_theta(sp.SeqState.FAILED, sp.SeqError.READY_TIMEOUT, detail=2, frames_fired=5)
+        serial.theta = status_as_theta(sp.SeqState.FAILED, sp.SeqError.READY_LINE_STUCK, detail=2, frames_fired=5)
         serial.status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
 
         mcu.seq_run(0)
         with pytest.raises(CommandAborted) as exc:
             mcu.wait_till_operation_is_completed()
 
-        assert "READY_TIMEOUT" in str(exc.value)
+        assert "READY_LINE_STUCK" in str(exc.value)
         assert "detail=2" in str(exc.value)
-        assert exc.value.seq_status.error == sp.SeqError.READY_TIMEOUT
+        assert exc.value.seq_status.error == sp.SeqError.READY_LINE_STUCK
         assert exc.value.seq_status.detail == 2
         assert exc.value.seq_status.frames_fired == 5
 

@@ -133,7 +133,7 @@ class SeqError(IntEnum):
     BAD_EXPOSURE = 6
     WAIT_TIMEOUT = 7
     MOVE_FAILED = 8
-    READY_TIMEOUT = 9
+    READY_LINE_STUCK = 9  # firmware SeqError::ReadyLineStuck (was READY_TIMEOUT; the wire value is unchanged)
     CANCELED = 10
     STACK_OUT_OF_RANGE = 11
     INTERLOCK_OPEN = 12

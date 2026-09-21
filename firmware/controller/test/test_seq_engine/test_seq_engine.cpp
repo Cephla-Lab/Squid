@@ -326,7 +326,7 @@ void test_ready_line_blocks_until_asserted(void) {
     TEST_ASSERT_TRUE(hal.plans[0].t_assert_us >= 30000);
 }
 
-// Liveness: a camera with a ready line is BUSY from its exposure until its readout ends. A line
+// Stuck ready-line check: a camera with a ready line is BUSY from its exposure until its readout ends. A line
 // that still reads "ready" and was never seen busy since the trigger is not a fast camera - it is
 // a stuck line (shorted cable, an output that was never configured): gating on it would fire the
 // next trigger without waiting. Bench 2026-09-20: an unconfigured Fusion BT output sits at the
@@ -354,7 +354,7 @@ void test_ready_line_stuck_at_ready_fails_after_the_first_frame(void) {
     TEST_ASSERT_TRUE(e.start(0, 5000000, 40000));
     run_until(e, hal, 200000);
     TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::ReadyTimeout, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::ReadyLineStuck, e.progress().abort_error);
     TEST_ASSERT_EQUAL_UINT8(0, e.progress().abort_detail);  // the camera whose line is stuck
     TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);  // the second trigger never fired
     TEST_ASSERT_EQUAL(1, (int)hal.plans.size());
@@ -371,7 +371,7 @@ void test_a_run_after_a_stuck_ready_line_starts_clean(void) {
     e.load(l, ch, cams, 1);
     TEST_ASSERT_TRUE(e.start(0, 5000000, 40000));
     run_until(e, hal, 200000);
-    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::ReadyTimeout, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::ReadyLineStuck, e.progress().abort_error);
     // the cable is fixed: the camera now goes busy as it should
     hal.model_camera_busy = true;
     hal.busy_latency_us = 50;
@@ -402,7 +402,7 @@ void test_ready_line_that_goes_busy_after_each_trigger_runs_to_done(void) {
     TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= hal.plans[0].t_deassert_us + 11000);
 }
 
-void test_ready_liveness_gives_a_slow_line_time_to_go_busy(void) {
+void test_a_slow_ready_line_gets_time_to_go_busy_before_it_is_called_stuck(void) {
     // A very short exposure and a line that only goes busy 500 us after the trigger: when the
     // exposure ends the line still reads ready. That is latency, not a stuck line.
     FakeHal hal;
@@ -986,7 +986,7 @@ int main(int, char**) {
     RUN_TEST(test_ready_line_stuck_at_ready_fails_after_the_first_frame);
     RUN_TEST(test_a_run_after_a_stuck_ready_line_starts_clean);
     RUN_TEST(test_ready_line_that_goes_busy_after_each_trigger_runs_to_done);
-    RUN_TEST(test_ready_liveness_gives_a_slow_line_time_to_go_busy);
+    RUN_TEST(test_a_slow_ready_line_gets_time_to_go_busy_before_it_is_called_stuck);
     RUN_TEST(test_wait_timeout_aborts_with_all_off);
     RUN_TEST(test_no_overlap_when_readout_unsafe);
     RUN_TEST(test_cancel_finishes_current_exposure_then_stops);
