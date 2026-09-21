@@ -32,11 +32,7 @@ class PendingOutputs:
         self._cond = threading.Condition()
         self._awaiting_reply: Set[int] = set()
         self._writers: Dict[int, List[Tuple[concurrent.futures.Future, str]]] = {}
-
-    def reset(self) -> None:
-        with self._cond:
-            self._awaiting_reply.clear()
-            self._writers.clear()
+        self._on_settled: Optional[Callable[[FinishedOutputs], None]] = None
 
     def expect(self, time_point: int) -> None:
         """A reply (register or nothing_to_write) will arrive for ``time_point``."""
@@ -48,11 +44,32 @@ class PendingOutputs:
             self._writers.setdefault(int(time_point), []).append((future, str(output_dir)))
             self._awaiting_reply.discard(int(time_point))
             self._cond.notify_all()
+        future.add_done_callback(lambda _f: self._fire_if_settled())
 
     def nothing_to_write(self, time_point: int) -> None:
         with self._cond:
             self._awaiting_reply.discard(int(time_point))
             self._cond.notify_all()
+        self._fire_if_settled()
+
+    def when_settled(self, fn: Callable[[FinishedOutputs], None]) -> None:
+        """Call ``fn`` once, with whatever is left to hand out, as soon as no reply is awaited and every
+        registered writer has finished (immediately if that is already so). It runs on whichever thread
+        settles things. Used to write the manifest's end record late instead of while a save is in flight."""
+        with self._cond:
+            self._on_settled = fn
+        self._fire_if_settled()
+
+    def _fire_if_settled(self) -> None:
+        with self._cond:
+            fn = self._on_settled
+            if fn is None or self._awaiting_reply:
+                return
+            if any(not f.done() for writers in self._writers.values() for f, _ in writers):
+                return
+            self._on_settled = None
+            finished = self._collect_locked(lambda t: True, complete=True)
+        fn(finished)
 
     def wait(
         self, time_point: Optional[int], timeout_s: float, abort_fn: Optional[Callable[[], bool]] = None
@@ -77,18 +94,25 @@ class PendingOutputs:
         while any(not f.done() for _, f, _ in candidates) and not expired():
             concurrent.futures.wait([f for _, f, _ in candidates if not f.done()], timeout=_POLL_S)
 
-        outputs: List[Tuple[int, str]] = []
         with self._cond:
-            for t, future, output_dir in candidates:
+            return self._collect_locked(in_scope, complete)
+
+    def _collect_locked(self, in_scope: Callable[[int], bool], complete: bool) -> FinishedOutputs:
+        """Hand out (and forget) the finished writers in scope; unfinished ones stay registered."""
+        outputs: List[Tuple[int, str]] = []
+        for t in [t for t in self._writers if in_scope(t)]:
+            remaining = []
+            for future, output_dir in self._writers[t]:
                 if not future.done():
                     complete = False
-                    continue
-                self._writers[t].remove((future, output_dir))
-                if not self._writers[t]:
-                    del self._writers[t]
-                if future.exception() is not None:
+                    remaining.append((future, output_dir))
+                elif future.exception() is not None:
                     _log.warning(f"Output writer for {output_dir} failed: {future.exception()}")
                     complete = False
-                    continue
-                outputs.append((t, output_dir))
+                else:
+                    outputs.append((t, output_dir))
+            if remaining:
+                self._writers[t] = remaining
+            else:
+                del self._writers[t]
         return FinishedOutputs(tuple(sorted(outputs)), complete)

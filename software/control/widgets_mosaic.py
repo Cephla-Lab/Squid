@@ -948,6 +948,9 @@ class UnifiedMosaicWidget(QWidget):
                 yaml.safe_dump(serialize_for_yaml(sidecar), f, sort_keys=False)
         except Exception:
             self._log.exception(f"Mosaic-view save failed for {target_dir}")
+            # Re-raise so the save's future fails: an acquisition waiting on it (large acquisition mode)
+            # must not list a partially written mosaic as complete. Nothing else consumes the future.
+            raise
 
     def _write_per_well_tiffs(self, target_dir: str, snapshot: dict, res_tag: str) -> None:
         """Plate-mode helper: crop each well's slot from the channel stack and

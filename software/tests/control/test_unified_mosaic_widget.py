@@ -188,3 +188,23 @@ def test_save_for_timepoint_returns_the_save_future_and_its_directory(mosaic_wid
     monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_OVERVIEW", False)
     monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_WELL_IMAGES", False)
     assert mosaic_widget.save_for_timepoint(4) is None
+
+
+def test_a_failed_mosaic_write_fails_its_future(mosaic_widget, tmp_path, monkeypatch):
+    import control._def
+    import control.widgets_mosaic as wm
+
+    widget, _ = mosaic_widget
+    monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_OVERVIEW", True)
+    widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0))
+    widget._acquisition_save_dir = str(tmp_path)
+
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(wm.tifffile, "imwrite", disk_full)
+    pending = widget.save_for_timepoint(0)
+    assert pending is not None
+    future, _target = pending
+    with pytest.raises(OSError):
+        future.result(timeout=10)

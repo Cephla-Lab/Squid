@@ -52,6 +52,11 @@ def _make_worker(manifest=None, tracker=None):
     w._completion_tracker = tracker
     w._large_acquisition_mode = tracker is not None
     w._abort_on_failed_job = True
+    w._outstanding_save_job_ids = set()
+    w.callbacks = SimpleNamespace(
+        wait_for_pending_outputs=lambda t, s: FinishedOutputs((), True),
+        when_pending_outputs_settle=lambda fn: fn(FinishedOutputs((), True)),
+    )
     w._run_state = SimpleNamespace(beat=lambda progress=None, force=False: None, set_status=lambda s: None)
     w._timepoint_fov_count = 0
     w.image_count = 0
@@ -175,50 +180,73 @@ def test_inline_results_are_drained_only_when_tracking_is_on():
     assert w2._summarize_runner_outputs().had_results is False, "mode off never touches the inline queue"
 
 
-def test_timepoint_drain_barrier_waits_for_pending_jobs_then_drains(monkeypatch):
-    import itertools
-
+def test_timepoint_drain_barrier_waits_until_every_save_result_has_been_drained():
     w = _make_worker(manifest=FakeManifest(), tracker=FakeTracker())
-    pending = itertools.chain([2, 1, 0], itertools.repeat(0))
-    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: next(pending))
     w._wait_for_outstanding_callback_images = lambda: None
     w.abort_requested_fn = lambda: False
     w._sleep = lambda s: None
+    w._outstanding_save_job_ids = {"a", "b"}
+    deliveries = [[], ["a"], [], ["b"]]  # results cross the multiprocessing queue late and one at a time
     drains = []
-    w._summarize_runner_outputs = lambda drain_all=False: (
-        drains.append(drain_all),
-        SimpleNamespace(none_failed=True, had_results=True),
-    )[1]
-    w._drain_results_for_timepoint(timeout_s=5.0)
-    assert drains == [True, True, True], "one drain per wait iteration plus the final one"
+
+    def summarize(drain_all=False):
+        drains.append(drain_all)
+        for job_id in deliveries.pop(0) if deliveries else []:
+            w._outstanding_save_job_ids.discard(job_id)
+        return SimpleNamespace(none_failed=True, had_results=True)
+
+    w._summarize_runner_outputs = summarize
+    assert w._drain_results_for_timepoint(timeout_s=5.0) is True
+    assert drains == [True] * 5, "four polls until both results arrived, plus the final drain"
 
 
 def test_timepoint_drain_barrier_is_bounded_and_abort_aware():
     w = _make_worker(manifest=FakeManifest(), tracker=FakeTracker())
-    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 99)
+    w._outstanding_save_job_ids = {"never-delivered"}
     w._wait_for_outstanding_callback_images = lambda: None
     w._sleep = lambda s: None
     w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=True, had_results=False)
     w.abort_requested_fn = lambda: True
-    w._drain_results_for_timepoint(timeout_s=5.0)  # returns immediately on abort
+    assert w._drain_results_for_timepoint(timeout_s=5.0) is False  # returns immediately on abort
 
     w.abort_requested_fn = lambda: False
     import time as _time
 
     started = _time.monotonic()
-    w._drain_results_for_timepoint(timeout_s=0.0)
+    assert w._drain_results_for_timepoint(timeout_s=0.0) is False
     assert _time.monotonic() - started < 1.0
+
+
+def test_a_result_still_in_the_queue_keeps_the_timepoint_open_even_with_no_pending_jobs():
+    """The subprocess drops its pending-job counter before the result has crossed the queue. Going
+    through the real summarizer: the barrier ends only once that result has actually been drained."""
+    tracker = FakeTracker()
+    w = _make_worker(manifest=FakeManifest(), tracker=tracker)
+    w._wait_for_outstanding_callback_images = lambda: None
+    w.abort_requested_fn = lambda: False
+    runner = _QueueRunner([])
+    w._job_runners = [(object, runner)]
+    w._outstanding_save_job_ids = {"s1"}
+    polls = []
+
+    def sleep(_s):  # the result shows up in the queue only after a few polls
+        polls.append(1)
+        if len(polls) == 3:
+            runner.output_queue().put(_ok("s1", "/exp/a"))
+
+    w._sleep = sleep
+    assert w._drain_results_for_timepoint(timeout_s=5.0) is True
+    assert [r.immediate_paths[0] for r in tracker.fed] == ["/exp/a"]
+    assert len(polls) >= 3
 
 
 def test_timepoint_drain_barrier_is_a_no_op_when_mode_is_off():
     w = _make_worker(manifest=None, tracker=None)
-    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: (_ for _ in ()).throw(AssertionError("must not run")))
     w._drain_results_for_timepoint()
 
 
 def test_timepoint_drain_applies_the_abort_on_failed_job_policy():
     w = _make_worker(manifest=FakeManifest(), tracker=FakeTracker())
-    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 0)
     w._wait_for_outstanding_callback_images = lambda: None
     w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=False, had_results=True)
     aborts = []
@@ -317,10 +345,9 @@ def test_timepoint_done_is_emitted_only_when_the_barrier_completed():
     w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=True, had_results=True)
     w.abort_requested_fn = lambda: False
 
-    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 0)
     assert w._drain_results_for_timepoint(timeout_s=1.0) is True
 
-    w._backpressure = SimpleNamespace(get_pending_jobs=lambda: 3)
+    w._outstanding_save_job_ids = {"x", "y", "z"}
     assert w._drain_results_for_timepoint(timeout_s=0.0) is False, "saves still pending: no marker"
 
     w2 = _make_worker(manifest=None, tracker=None)
@@ -352,12 +379,25 @@ def test_manifest_end_waits_for_leftover_outputs_and_lists_them_under_their_own_
     ], "outputs are listed before the end record, with the timepoint they belong to"
 
 
-def test_manifest_end_survives_a_failing_outputs_callback():
+def test_a_failing_outputs_callback_defers_end_and_never_raises():
+    def boom(*args):
+        raise RuntimeError("gui gone")
+
+    # The wait fails, so completion cannot be established: end goes through the deferred path.
     m = FakeManifest()
     w = _make_worker(manifest=m, tracker=FakeTracker())
-    w.callbacks = SimpleNamespace(wait_for_pending_outputs=lambda t, s: (_ for _ in ()).throw(RuntimeError("gui gone")))
+    w.callbacks = SimpleNamespace(
+        wait_for_pending_outputs=boom, when_pending_outputs_settle=lambda fn: fn(FinishedOutputs((), True))
+    )
     w._manifest_end("completed")
     assert m.calls == [("end", "completed")]
+
+    # If even that fails the manifest stays open: the mover then never sweeps unlisted files (safe side).
+    m2 = FakeManifest()
+    w2 = _make_worker(manifest=m2, tracker=FakeTracker())
+    w2.callbacks = SimpleNamespace(wait_for_pending_outputs=boom, when_pending_outputs_settle=boom)
+    w2._manifest_end("completed")
+    assert m2.calls == []
 
 
 def test_list_pending_outputs_reports_whether_the_timepoint_is_fully_listed(tmp_path):
@@ -378,3 +418,48 @@ def test_list_pending_outputs_reports_whether_the_timepoint_is_fully_listed(tmp_
         wait_for_pending_outputs=lambda t, s: (_ for _ in ()).throw(AssertionError("mode off must never wait"))
     )
     assert w_off._list_pending_outputs(1, 5.0) is False
+
+
+def test_end_is_deferred_while_an_outside_writer_is_still_running(tmp_path):
+    m = FakeManifest()
+    w = _make_worker(manifest=m, tracker=FakeTracker(incomplete=[]))
+    out = tmp_path / "3" / "mosaic_view"
+    deferred = []
+    w.callbacks = SimpleNamespace(
+        wait_for_pending_outputs=lambda t, s: FinishedOutputs((), False),  # the 60 s wait ran out
+        when_pending_outputs_settle=deferred.append,
+    )
+    w._manifest_end("completed")
+    assert m.calls == [], "no end record while a mosaic save may still be writing"
+    assert len(deferred) == 1
+
+    out.mkdir(parents=True)
+    (out / "mosaic.yaml").write_bytes(b"late\n")
+    deferred[0](FinishedOutputs(((3, str(out)),), True))  # the writer finally finished
+    assert m.calls == [
+        ("complete", str(out / "mosaic.yaml"), "file", 5, 3, None, None),
+        ("end", "completed"),
+    ]
+
+
+def test_pause_tick_lists_outputs_that_finished_late_without_blocking(tmp_path):
+    m = FakeManifest()
+    w = _make_worker(manifest=m, tracker=FakeTracker())
+    w._pause_gate = PauseGate()
+    w._disk_guard = None
+    w._last_disk_check_mono = time.monotonic()
+    w._summarize_runner_outputs = lambda drain_all=False: SimpleNamespace(none_failed=True, had_results=False)
+    w.abort_requested_fn = lambda: False
+    out = tmp_path / "0" / "mosaic_view"
+    out.mkdir(parents=True)
+    (out / "mosaic.yaml").write_bytes(b"ok\n")
+    asked = []
+
+    def wait_for_pending_outputs(time_point, timeout_s):
+        asked.append((time_point, timeout_s))
+        return FinishedOutputs(((0, str(out)),), True)
+
+    w.callbacks = SimpleNamespace(wait_for_pending_outputs=wait_for_pending_outputs)
+    w._pause_tick()
+    assert asked == [(None, 0.0)], "a non-blocking sweep of everything left"
+    assert m.calls == [("complete", str(out / "mosaic.yaml"), "file", 3, 0, None, None)]

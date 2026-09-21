@@ -168,3 +168,7 @@ class MultiPointControllerFunctions:
     wait_for_pending_outputs: Callable[[Optional[int], float], FinishedOutputs] = lambda *a, **kw: FinishedOutputs(
         (), True
     )
+    # Deferred finish: call fn(FinishedOutputs) once every such writer has finished, however late.
+    when_pending_outputs_settle: Callable[[Callable[[FinishedOutputs], None]], None] = lambda fn: fn(
+        FinishedOutputs((), True)
+    )

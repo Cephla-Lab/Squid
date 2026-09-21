@@ -804,7 +804,8 @@ class MultiPointController:
             self._log.info(f"region centers: {scan_position_information.scan_region_coords_mm}")
 
             self.abort_acqusition_requested = False
-            self._pending_outputs.reset()
+            # A fresh registry per run: a previous run whose end record is still deferred keeps its own.
+            self._pending_outputs = PendingOutputs()
 
             self.configuration_before_running_multipoint = self.liveController.currentConfiguration
             # stop live
@@ -928,6 +929,7 @@ class MultiPointController:
                 signal_acquisition_finished=finish_fn,
                 signal_timepoint_finished=timepoint_finished_fn,
                 wait_for_pending_outputs=self._wait_for_pending_outputs,
+                when_pending_outputs_settle=self._pending_outputs.when_settled,
             )
 
             # Gather objective and camera info for YAML

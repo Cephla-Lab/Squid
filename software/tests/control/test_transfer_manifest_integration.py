@@ -168,7 +168,7 @@ def test_outputs_written_outside_the_worker_are_listed_per_timepoint_before_time
         ), "nothing of a timepoint is listed after its timepoint_done"
 
 
-def test_a_writer_that_never_answers_costs_the_marker_not_the_run(tmp_path, monkeypatch):
+def test_a_silent_writer_never_blocks_the_run_but_holds_back_the_markers_until_it_answers(tmp_path, monkeypatch):
     monkeypatch.setattr(mpw.MultiPointWorker, "_TIMEPOINT_OUTPUTS_TIMEOUT_S", 0.3)
     monkeypatch.setattr(mpw.MultiPointWorker, "_PENDING_OUTPUTS_TIMEOUT_S", 0.3)
     exp, tt, mpc = _run(
@@ -179,9 +179,15 @@ def test_a_writer_that_never_answers_costs_the_marker_not_the_run(tmp_path, monk
         nt=2,
         writer=lambda m, t: None,
     )
+    # The run itself completed; what is withheld is every claim that outputs are finished, so a mover
+    # keeps to the listed files and never sweeps the rest while a save might still be coming.
     events = [r["event"] for r in read_manifest(exp / MANIFEST_FILE_NAME)]
-    assert "timepoint_done" not in events, "an unanswered writer means the timepoint is not claimed fully listed"
-    assert events[-1] == "end"
+    assert "timepoint_done" not in events and "end" not in events
+    assert events.count("complete") >= tt.image_count
+
+    for t in range(2):  # the writer finally answers
+        mpc.report_no_timepoint_output(t)
+    assert read_manifest(exp / MANIFEST_FILE_NAME)[-1]["event"] == "end"
 
 
 def test_mode_off_never_expects_or_waits_for_outside_writers(tmp_path, monkeypatch):
@@ -198,3 +204,43 @@ def test_mode_off_never_expects_or_waits_for_outside_writers(tmp_path, monkeypat
     assert not (exp / MANIFEST_FILE_NAME).exists()
     assert time.monotonic() - started < 45, "a silent writer must not slow a mode-off run"
     assert mpc._pending_outputs.wait(None, 0.0).complete
+
+
+def test_end_waits_for_a_writer_that_outlasts_the_run_and_lists_its_files_first(tmp_path, monkeypatch):
+    """A mosaic save still running when the run ends: end must not appear while it writes (the mover would
+    sweep a half-written file), and must appear, after the file is listed, once it has finished."""
+    monkeypatch.setattr(mpw.MultiPointWorker, "_TIMEPOINT_OUTPUTS_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(mpw.MultiPointWorker, "_PENDING_OUTPUTS_TIMEOUT_S", 0.2)
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    release = threading.Event()
+    futures = []
+
+    def slow_writer(mpc, t):
+        out = Path(mpc.base_path) / mpc.experiment_ID / _tp_dir(t) / "mosaic_view"
+
+        def save():
+            assert release.wait(60)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "mosaic.yaml").write_text(f"t: {t}\n")
+
+        future = pool.submit(save)
+        futures.append(future)
+        mpc.register_pending_output(t, future, str(out))
+
+    exp, tt, mpc = _run(
+        tmp_path, monkeypatch, mode_on=True, saving_option=FileSavingOption.INDIVIDUAL_IMAGES, nt=1, writer=slow_writer
+    )
+    events = [r["event"] for r in read_manifest(exp / MANIFEST_FILE_NAME)]
+    assert "end" not in events and "timepoint_done" not in events, "the writer is still running"
+
+    release.set()
+    concurrent.futures.wait(futures, timeout=30)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        records = read_manifest(exp / MANIFEST_FILE_NAME)
+        if records and records[-1]["event"] == "end":
+            break
+        time.sleep(0.05)
+    paths = [r.get("path") for r in records]
+    assert records[-1] == {**records[-1], "event": "end", "reason": "completed"}
+    assert paths.index(f"{_tp_dir(0)}/mosaic_view/mosaic.yaml") < len(records) - 1, "listed before the end record"

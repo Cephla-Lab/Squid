@@ -29,8 +29,8 @@ One JSON object per line, appended and flushed as the acquisition progresses.
 |---|---|---|
 | `start` | `schema`, `experiment_id`, `format`, `nt`, `ts` | the run began. `format` is the `FileSavingOption` (`INDIVIDUAL_IMAGES`, `MULTI_PAGE_TIFF`, `OME_TIFF`, `ZARR_V3`), `nt` the number of timepoints. |
 | `complete` | `path`, `kind`, `bytes`, `t`, `region`, `fov`, `ts` | **the only movable unit.** Squid will not write to this path again. |
-| `timepoint_done` | `t`, `ts` | timepoint `t` is fully listed: its images, its `coordinates.csv`, and the mosaic view the GUI saves under `<t>/mosaic_view/`. No later `complete` record names a file of that timepoint. Omitted (never wrong) when a save or the mosaic view was still outstanding at the timepoint boundary; those files are then listed later, at the latest before `end`. |
-| `end` | `reason` (`completed`, `completed_with_errors`, `user_abort`, `error`), `ts` | the acquisition is over. Anything still unlisted becomes movable after quiescence. |
+| `timepoint_done` | `t`, `ts` | timepoint `t` is fully listed: its images, its `coordinates.csv`, and the mosaic view the GUI saves under `<t>/mosaic_view/`. No later `complete` record names a file of that timepoint. Omitted (never wrong) when a save result or the mosaic view was still outstanding at the timepoint boundary; those files are then listed as soon as they finish (also while the run is paused), at the latest before `end`. A failed mosaic save is never listed. |
+| `end` | `reason` (`completed`, `completed_with_errors`, `user_abort`, `error`), `ts` | the acquisition is over **and nothing is being written any more**. Anything still unlisted becomes movable after quiescence. If a mosaic view save is still running when the run ends, `end` is written late, after that save has finished and its files are listed; if that can never be established (the GUI died), `end` never appears and unlisted files stay where they are. |
 
 ### `complete` fields
 
