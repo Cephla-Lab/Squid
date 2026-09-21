@@ -99,6 +99,32 @@ def make_program(
     )
 
 
+SOAK_LATE_MS = 100  # a run this much slower than the median counts as late
+SOAK_STALL_MS = 1000  # a run this much slower than the median fails the soak on its own
+SOAK_LATE_FRACTION = 0.001  # more late runs than this (and more than one) is a pattern, not a hiccup
+
+
+def soak_verdict(durations_ms: List[float]) -> str:
+    """'' when the spread of run times is healthy, else what is wrong with it.
+
+    The times are HOST wall times: a run the controller finished on time is still reported late when
+    the OS schedules the reader late or USB hiccups. Over a three-hour soak that happens now and then
+    (bench 2026-09-20, Windows: one 597 ms run among 24,000 at a 385 ms median). One of those is not
+    the controller stalling; a run that is a whole second late is, and so is a steady trickle of
+    late runs.
+    """
+    ordered = sorted(durations_ms)
+    median = ordered[len(ordered) // 2]
+    if ordered[-1] > median + SOAK_STALL_MS:
+        return f"slowest run took {ordered[-1]:.0f} ms against a median of {median:.0f} ms: something stalled"
+    late = sum(1 for d in ordered if d > median + SOAK_LATE_MS)
+    if late > max(1, int(len(ordered) * SOAK_LATE_FRACTION)):
+        return (
+            f"{late} of {len(ordered)} runs were more than {SOAK_LATE_MS} ms slower than the median ({median:.0f} ms)"
+        )
+    return ""
+
+
 class CorruptionCounter(logging.Handler):
     """Counts the driver's "Bad checksum" warnings: bytes on the protocol port that are not a packet.
 
@@ -346,13 +372,13 @@ class Checker:
                 return f"run {index + 1} of {self.soak_runs}: {problem}"
         durations_ms.sort()
         median = durations_ms[len(durations_ms) // 2]
+        late = sum(1 for d in durations_ms if d > median + SOAK_LATE_MS)
         print(
             f"         {self.soak_runs} runs: min {durations_ms[0]:.0f} / median {median:.0f} / "
-            f"max {durations_ms[-1]:.0f} ms (host wall time; status packets arrive every 10 ms)"
+            f"max {durations_ms[-1]:.0f} ms, {late} more than {SOAK_LATE_MS} ms late "
+            "(host wall time; status packets arrive every 10 ms)"
         )
-        if durations_ms[-1] > median + 100:
-            return f"slowest run took {durations_ms[-1]:.0f} ms against a median of {median:.0f} ms: something stalled"
-        return ""
+        return soak_verdict(durations_ms)
 
     def no_corrupted_packets(self) -> str:
         if self.corruption.count:
