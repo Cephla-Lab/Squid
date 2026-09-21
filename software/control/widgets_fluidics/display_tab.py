@@ -1,15 +1,17 @@
 """The wide Fluidics display tab: instrument on the left (Initialize, manual control, device status,
-Log | Temperature | Reagents), the Protocol editor on the right."""
+Log | Temperature | Flow | Reagents), the Protocol editor on the right."""
 
 from typing import Callable, Optional, Tuple
 
-from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -21,6 +23,70 @@ import squid.logging
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
+
+
+class InstrumentColumn(QSplitter):
+    """The display tab's left column: the instrument block over the Log / sensor tabs.
+
+    The block asks for more height than a short window has, and a matplotlib canvas accepts any
+    height down to nothing, so in a plain column the plots were squeezed to a sliver. Here the block
+    scrolls instead: it gets the height it asks for unless that leaves the tabs less than TABS_ROOM
+    times their minimum height. Once the operator drags the divider the split is theirs (a window
+    resize then scales both panes, as any splitter does)."""
+
+    # The tabs' minimum height is where their tallest page's plot is flat (all controls, no canvas);
+    # half as much again is a plot one can read. Relative, so it follows the font and the style.
+    TABS_ROOM = 1.5
+
+    def __init__(self, instrument: QWidget, tabs: QWidget, parent=None):
+        super().__init__(Qt.Vertical, parent)
+        self._tabs = tabs
+        self.instrument_scroll = QScrollArea()
+        self.instrument_scroll.setWidgetResizable(True)
+        self.instrument_scroll.setFrameShape(QFrame.NoFrame)
+        self.instrument_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.instrument_scroll.setWidget(instrument)
+        self.addWidget(self.instrument_scroll)
+        self.addWidget(tabs)
+        self.setChildrenCollapsible(False)
+        self._dragged = False
+        self.splitterMoved.connect(self._on_dragged)
+        for pane in (instrument, tabs):
+            pane.installEventFilter(self)
+        self._content_changed()
+
+    def tabs_floor(self) -> int:
+        return round(self.TABS_ROOM * self._tabs.minimumSizeHint().height())
+
+    def eventFilter(self, watched, event) -> bool:
+        # A pane's size hints are only fresh once its own LayoutRequest arrives (Qt propagates them
+        # up one posted event at a time), so that is when to look, not when a widget is added.
+        if event.type() == QEvent.LayoutRequest and watched in (self.instrument_scroll.widget(), self._tabs):
+            self._content_changed()
+        return super().eventFilter(watched, event)
+
+    def _content_changed(self) -> None:
+        """A pane gained or lost widgets (Initialize mounts manual control and the sensor tabs):
+        never clip the block sideways, scroll bar included, and share the height again."""
+        instrument = self.instrument_scroll.widget()
+        scroll_bar_width = self.instrument_scroll.verticalScrollBar().sizeHint().width()
+        self.instrument_scroll.setMinimumWidth(instrument.minimumSizeHint().width() + scroll_bar_width)
+        self._balance()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._balance()
+
+    def _on_dragged(self, _pos: int, _index: int) -> None:
+        self._dragged = True
+
+    def _balance(self) -> None:
+        height = sum(self.sizes())
+        if self._dragged or height == 0:  # 0: not laid out yet
+            return
+        wanted = self.instrument_scroll.widget().sizeHint().height()
+        block = max(0, min(wanted, height - self.tabs_floor()))
+        self.setSizes([block, height - block])
 
 
 class FluidicsDisplayTab(QWidget):
@@ -37,6 +103,7 @@ class FluidicsDisplayTab(QWidget):
         self.service = service
         self.fluidics_port = None
         self.temperature_tab = None
+        self.flow_tab = None
         self.run_line_provider: Callable[[], str] = lambda: "—"
 
         self.system_panel = SystemPanel(service)
@@ -111,18 +178,18 @@ class FluidicsDisplayTab(QWidget):
         self.tabs.addTab(self.log_view, "Log")
         self.tabs.addTab(self.reagents_table, "Reagents")
 
-        left = QWidget()
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(self.system_panel)
-        left_layout.addWidget(self.manual_group)
-        left_layout.addWidget(self.device_status)
-        left_layout.addWidget(self.tabs, 1)
-        left.setLayout(left_layout)
+        instrument = QWidget()
+        instrument_layout = QVBoxLayout()
+        instrument_layout.addWidget(self.system_panel)
+        instrument_layout.addWidget(self.manual_group)
+        instrument_layout.addWidget(self.device_status)
+        instrument.setLayout(instrument_layout)
+        self.instrument_column = InstrumentColumn(instrument, self.tabs)
 
         self.protocol_tab = ProtocolTab(service, current_source=current_source)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(self.instrument_column)
         splitter.addWidget(self.protocol_tab)
         # Content-driven so the instrument column (the temperature plots need real width)
         # is never clipped; the divider is draggable and both panes share resize space.
@@ -166,17 +233,45 @@ class FluidicsDisplayTab(QWidget):
                 self.tabs.insertTab(1, self.temperature_tab, "Temperature")
             except Exception:
                 self._log.exception("Could not build the Temperature tab")
+
+        sensors = self.service.system.devices.flow_sensors
+        if sensors:
+            try:
+                from fluidics.qt.sensor_plots import FlowSensorControlWidget
+
+                # Only the Flow Cell operations arm the sensors (the library's own GUI draws the same line).
+                draw_protection = self.service.config.application == "Flow Cell"
+                if not draw_protection:
+                    self._switch_off_inert_draw_protection(sensors)
+                self.flow_tab = FlowSensorControlWidget(sensors, draw_protection=draw_protection)
+                self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.flow_tab, "Flow")
+            except Exception:
+                self._log.exception("Could not build the Flow tab")
         for widget in self._quick_widgets:
             widget.setEnabled(True)
         self.system_ready.emit()
+
+    def _switch_off_inert_draw_protection(self, sensors) -> None:
+        """A warn/stop mode configured on an application that never arms the sensors would
+        leave the operator believing a draw is protected: switch it off and say so."""
+        configured = [sensor.name for sensor in sensors if sensor.monitor != "off"]
+        if not configured:
+            return
+        for sensor in sensors:
+            sensor.monitor = "off"
+        self._log.warning(
+            f"Draw protection is configured for {', '.join(configured)} but is only available for the "
+            "Flow Cell application. The sensors will read and plot; they will not stop a draw."
+        )
 
     def shutdown(self) -> None:
         """Exit/restart path: detach logging and close the plot widgets' open CSV
         recordings (an embedded tab gets no closeEvent, so the host must ask; see
         SensorTabWidget.close_recordings)."""
         self.log_view.disconnect_logging()
-        if self.temperature_tab is not None:
-            self.temperature_tab.close_recordings()
+        for sensor_tab in (self.temperature_tab, self.flow_tab):
+            if sensor_tab is not None:
+                sensor_tab.close_recordings()
 
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the instrument: manual control and TEC setpoints go
