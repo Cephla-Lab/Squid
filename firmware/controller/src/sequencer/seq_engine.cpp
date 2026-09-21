@@ -77,7 +77,9 @@ bool SeqEngine::start(uint32_t now_us, uint32_t wait_timeout_us, int32_t stack_a
     for (uint8_t i = 0; i < kMaxCameras; i++) {
         trigger_valid_[i] = false;
         readout_valid_[i] = false;
+        seen_busy_[i] = false;
     }
+    stuck_ready_cam_ = -1;
     overlap_hold_valid_ = false;
     step_ = 0;
     cancel_requested_ = false;
@@ -197,6 +199,13 @@ bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
         const SeqCameraConfig& cc = cams_[cam];
         if (cc.ready_line != kNone) {
             if (hal_.ready_line(cc.ready_line) != (bool)cc.ready_active_high) return false;
+            if (trigger_valid_[cam] && !seen_busy_[cam]) {
+                // Reads ready, but was never busy since its last trigger. Give a slow line
+                // kReadyLivenessMinUs to react before calling it stuck.
+                if ((uint32_t)(now_us - last_trigger_us_[cam]) < kReadyLivenessMinUs) return false;
+                stuck_ready_cam_ = (int8_t)cam;
+                return false;
+            }
         } else if (readout_valid_[cam] && !reached(now_us, readout_done_us_[cam])) {
             return false;
         }
@@ -234,6 +243,7 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
         hal_.schedule_exposure(p);
         last_trigger_us_[cam] = now_us;
         trigger_valid_[cam] = true;
+        seen_busy_[cam] = false;
         readout_done_us_[cam] = now_us + end_off + cc.readout_time_us;
         readout_valid_[cam] = true;
         if (end_off > max_end_off) max_end_off = end_off;
@@ -260,7 +270,16 @@ void SeqEngine::fail(SeqError e, uint8_t detail) {
     state_ = SeqState::Failed;
 }
 
+void SeqEngine::watch_ready_lines() {
+    for (uint8_t cam = 0; cam < n_cameras_; cam++) {
+        const SeqCameraConfig& cc = cams_[cam];
+        if (cc.ready_line == kNone || !trigger_valid_[cam] || seen_busy_[cam]) continue;
+        if (hal_.ready_line(cc.ready_line) != (bool)cc.ready_active_high) seen_busy_[cam] = true;
+    }
+}
+
 void SeqEngine::tick(uint32_t now_us) {
+    if (running()) watch_ready_lines();
     switch (state_) {
         case SeqState::WaitHw:
             // A cancel while waiting winds down at once: no further frame, and no waiting
@@ -271,6 +290,10 @@ void SeqEngine::tick(uint32_t now_us) {
             }
             if (hw_ready_for(step_, now_us)) {
                 schedule_exposures(step_, now_us);
+                break;
+            }
+            if (stuck_ready_cam_ >= 0) {
+                fail(SeqError::ReadyTimeout, (uint8_t)stuck_ready_cam_);
                 break;
             }
             if (reached(now_us, wait_deadline_us_)) fail(SeqError::WaitTimeout, 0);

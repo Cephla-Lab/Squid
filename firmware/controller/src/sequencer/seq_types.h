@@ -12,6 +12,9 @@ constexpr uint8_t kMaxChannels = 16;
 constexpr uint8_t kMaxCameras = 8;  // board v2 has 8 trigger channels (v1 has 4)
 constexpr uint8_t kNone = 0xFF;
 constexpr uint32_t kEdgePulseUs = 50;  // matches v1 TRIGGER_PULSE_LENGTH_us
+// Ready-line liveness: how long after a trigger a line may still read "ready" before a line that
+// never went busy is called stuck. Far above any camera's output latency, far below any readout.
+constexpr uint32_t kReadyLivenessMinUs = 1000;
 // Upper bound for every duration the engine handles (~17.9 min). Keeps any two engine
 // timestamps within 2^31 us of each other, which wrap-safe comparisons on the 32-bit
 // micros() timebase require.
