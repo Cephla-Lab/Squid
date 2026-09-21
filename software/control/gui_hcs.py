@@ -833,6 +833,14 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
+        # Utils: per-instrument procedures that drive the hardware, not settings.
+        utils_menu = menubar.addMenu("Utils")
+        if USE_EMISSION_FILTER_WHEEL:
+            filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
+            filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
+            filter_wheel_tuning_action.triggered.connect(self.openFilterWheelTuning)
+            utils_menu.addAction(filter_wheel_tuning_action)
+
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
@@ -2404,6 +2412,30 @@ class HighContentScreeningGui(QMainWindow):
         """Open the advanced channel hardware mapping dialog"""
         dialog = widgets.ControllerPortMappingDialog(self.microscope.config_repo, self)
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openFilterWheelTuning(self):
+        """Open Utils > Filter Wheel Tuning...: Verify / Tune the Squid filter wheel on this instrument.
+
+        The dialog runs on the microscope's existing controller and wheel (nothing is reset), refuses to start while
+        the instrument is busy, and puts the wheel back - re-configured, homed and on the slot the user was on -
+        however the run ends. See control/widgets_filter_wheel_tuning.py.
+        """
+        from control.widgets_filter_wheel_tuning import FilterWheelTuningDialog
+
+        def busy_reason():
+            if self.liveController is not None and self.liveController.is_live:
+                return "Live view is running. Stop it before tuning: the wheel moves continuously for minutes."
+            if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+                return "An acquisition is running. Tuning moves the filter wheel through hundreds of slot changes."
+            return None
+
+        dialog = FilterWheelTuningDialog(
+            self.microcontroller,
+            self.emission_filter_wheel,
+            busy_reason=busy_reason,
+            parent=self,
+        )
         dialog.exec_()
 
     def openFilterWheelConfigEditor(self):
