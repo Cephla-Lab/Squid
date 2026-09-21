@@ -117,8 +117,10 @@ class _Wheel:
     """Stands in for the wheel: a level loses steps when its acceleration exceeds what the 'motor' can do for the
     number of moves asked (the short screen survives more than the endurance, which is the whole point)."""
 
-    def __init__(self, screen_edge, endurance_edge):
+    def __init__(self, screen_edge, endurance_edge, vmax_ok=None):
         self.screen_edge, self.endurance_edge = screen_edge, endurance_edge
+        self.vmax_ok = vmax_ok  # above this top speed the wheel loses steps whatever the acceleration
+        self.edge_by_vmax = {}  # top speed -> the acceleration the wheel holds at that speed (both patterns)
         self.homed = 0
         self.levels = []
 
@@ -128,7 +130,7 @@ def _tuner(mod, tmp_path, wheel, **kw):
         action="tune", out=str(tmp_path), transitions="auto", microsteps=8, vmax=6.0, accel=50.0, ramp="sshape",
         accel_list=[50, 100, 150, 200, 250, 300], pattern=list(mod.DEFAULT_PATTERN), laps=6, margin=0.8,
         max_attempts=4, lost_fullsteps=0.5, slip_fullsteps=2.0, write_ini=False, ini=None, window_deg=0.0,
-        plateau_ms=2.0,
+        plateau_ms=2.0, refine_step=0.0, vmax_fallback=[],
     )  # fmt: skip
     for k, v in kw.items():
         setattr(a, k, v)
@@ -143,13 +145,17 @@ def _tuner(mod, tmp_path, wheel, **kw):
     def pattern(label, slots=None, settle_s=0.12):
         n = len(slots or a.pattern)
         edge = wheel.endurance_edge if n > len(a.pattern) else wheel.screen_edge
+        edge = wheel.edge_by_vmax.get(a.vmax, edge)
         lost = 0 if a.accel <= edge else 300
+        if wheel.vmax_ok is not None and a.vmax > wheel.vmax_ok:
+            lost = 300
         ms = max(76.0, 19000.0 / a.accel)  # faster with acceleration until the ramp is register-clamped at 250
         res = {
             "phase": "level", "label": label, "n_moves": n, "drift_usteps": lost,
             "worst_move": {"lost_this_move": lost}, "by_distance_ms_median": {"1": ms}, "adjacent_ms_median": ms,
         }  # fmt: skip
         wheel.levels.append((label, a.accel, n))
+        wheel.speeds = getattr(wheel, "speeds", []) + [a.vmax]
         t.summary["results"].append(res)
         return res
 
@@ -190,6 +196,89 @@ def test_a_step_down_is_always_strictly_lower_even_with_no_margin(mod, tmp_path)
     assert [e["accel"] for e in rec["endurance"]] == [140, 130, 120]
     assert [e["pass"] for e in rec["endurance"]] == [False, False, True]
     assert rec["max_acceleration_w_mm"] == 120
+
+
+def test_refine_midpoint_bisects_on_a_grid_and_stops_at_the_step(mod):
+    assert mod.refine_midpoint(50, 100, 10) == 70
+    assert mod.refine_midpoint(70, 100, 10) == 80
+    assert mod.refine_midpoint(80, 100, 10) == 90
+    assert mod.refine_midpoint(80, 90, 10) is None  # within one step: done
+    assert mod.refine_midpoint(0, 50, 10) == 20  # nothing clean yet: search BELOW the first ladder level
+    assert mod.refine_midpoint(0, 20, 10) == 10 and mod.refine_midpoint(0, 10, 10) is None
+    assert mod.refine_midpoint(50, 100, 0) is None  # refinement off
+
+
+def test_the_edge_is_refined_between_the_last_clean_and_the_first_failing_level(mod, tmp_path):
+    # bench 2026-09-20 at 600 mA: clean to 86 rev/s2, the 50-wide ladder gave a40; refined it must give 0.8 x 80 = 60
+    wheel = _Wheel(screen_edge=86, endurance_edge=86)
+    rec = _tuner(mod, tmp_path, wheel, refine_step=10.0).tune()
+    assert [lv[1] for lv in wheel.levels][:5] == [50, 100, 70, 80, 90]
+    assert rec["stall_edge_between"] == [80, 90] and rec["max_acceleration_w_mm"] == 60
+    assert [x["accel"] for x in rec["screened"] if x.get("refine")] == [70, 80, 90]
+    assert wheel.homed == 2  # after a100 and after a90
+
+
+def test_refinement_searches_below_the_ladder_when_its_first_level_already_fails(mod, tmp_path):
+    wheel = _Wheel(screen_edge=35, endurance_edge=35)
+    rec = _tuner(mod, tmp_path, wheel, refine_step=10.0).tune()
+    assert [lv[1] for lv in wheel.levels][:4] == [50, 20, 30, 40]
+    assert rec["max_acceleration_w_mm"] == 20  # 0.8 x 30, rounded down to the quantum
+
+
+def test_fallback_speeds(mod):
+    assert mod.fallback_speeds(6.0, [4.5, 3.19]) == [6.0, 4.5, 3.19]
+    assert mod.fallback_speeds(4.0, [4.5, 3.19, 3.19]) == [4.0, 3.19]  # only LOWER speeds, each once
+    assert mod.fallback_speeds(6.0, []) == [6.0] and mod.fallback_speeds(6.0, None) == [6.0]
+
+
+def test_the_top_speed_is_reduced_when_no_acceleration_holds(mod, tmp_path):
+    # a wheel that loses steps above 4 rev/s whatever the acceleration: 6 fails, 4.5 fails, 3.19 holds
+    wheel = _Wheel(screen_edge=200, endurance_edge=200, vmax_ok=4.0)
+    rec = _tuner(mod, tmp_path, wheel, refine_step=10.0, vmax_fallback=[4.5, 3.19]).tune()
+    assert rec["pass"] and rec["speed_reduced"] and rec["max_velocity_w_mm"] == 3.19
+    assert [(x["vmax"], x["pass"]) for x in rec["speeds_tried"]] == [(6.0, False), (4.5, False), (3.19, True)]
+    assert rec["max_acceleration_w_mm"] == 160
+    assert sorted(set(wheel.speeds), reverse=True) == [6.0, 4.5, 3.19]
+
+
+def test_with_a_stall_edge_the_lower_speeds_are_searched_and_the_fastest_profile_wins(mod, tmp_path):
+    # bench 2026-09-20 at 600 mA: 6 rev/s held a80 (-> a60, 189 ms), 4.5 rev/s held a90 and more (134 ms)
+    wheel = _Wheel(screen_edge=86, endurance_edge=86)
+    wheel.edge_by_vmax = {6.0: 86, 4.5: 135, 3.19: 100}
+    rec = _tuner(mod, tmp_path, wheel, refine_step=10.0, vmax_fallback=[4.5, 3.19]).tune()
+    got = [(x["vmax"], x["max_acceleration_w_mm"]) for x in rec["speeds_tried"]]
+    assert got == [(6.0, 60), (4.5, 100), (3.19, 80)]
+    assert rec["max_velocity_w_mm"] == 4.5 and rec["max_acceleration_w_mm"] == 100 and rec["speed_reduced"]
+
+
+def test_without_a_stall_edge_the_requested_speed_is_kept_and_nothing_else_is_searched(mod, tmp_path):
+    wheel = _Wheel(screen_edge=10_000, endurance_edge=10_000)
+    rec = _tuner(mod, tmp_path, wheel, refine_step=10.0, vmax_fallback=[4.5, 3.19]).tune()
+    assert set(wheel.speeds) == {6.0} and rec["speed_reduced"] is False and rec["max_velocity_w_mm"] == 6.0
+
+
+def test_choose_fastest_prefers_the_higher_speed_between_equals(mod):
+    r = lambda v, ms: {"max_velocity_w_mm": v, "adjacent_ms_median": ms}  # noqa: E731
+    assert mod.choose_fastest([r(6.0, 189.0), r(4.5, 134.0), r(3.19, 150.0)])["max_velocity_w_mm"] == 4.5
+    assert mod.choose_fastest([r(6.0, 135.5), r(4.5, 134.0)])["max_velocity_w_mm"] == 6.0  # within 2 ms
+    assert mod.choose_fastest([]) is None
+
+
+def test_the_top_speed_is_reduced_when_every_endurance_attempt_fails(mod, tmp_path):
+    class _W(_Wheel):
+        pass
+
+    wheel = _W(screen_edge=10_000, endurance_edge=0)  # screens pass, no 96-move run ever holds ...
+    t = _tuner(mod, tmp_path, wheel, vmax_fallback=[3.19], max_attempts=2)
+    assert t.tune() is None  # ... at any speed: reported as a failure, after trying both
+    assert [x["vmax"] for x in t.summary["tune"]["speeds_tried"]] == [6.0, 3.19]
+    assert t.summary["tune"]["pass"] is False
+
+
+def test_without_fallback_speeds_a_failure_is_final(mod, tmp_path):
+    wheel = _Wheel(screen_edge=200, endurance_edge=200, vmax_ok=4.0)
+    t = _tuner(mod, tmp_path, wheel, vmax_fallback=[])
+    assert t.tune() is None and set(wheel.speeds) == {6.0}
 
 
 def test_no_edge_takes_the_gentlest_level_that_is_as_fast_as_the_best(mod, tmp_path):

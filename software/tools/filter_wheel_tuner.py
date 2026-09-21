@@ -62,6 +62,9 @@ from squid.filter_wheel_tuning import (  # noqa: E402,F401
     bench_current_ma,
     choose_accel,
     step_down_accel,
+    refine_midpoint,
+    fallback_speeds,
+    choose_fastest,
     gentlest_as_fast,
     level_ok,
     lost_limits_usteps,
@@ -107,6 +110,19 @@ def main():
     ap.add_argument("--laps", type=int, default=6, help="verify/tune: endurance = laps x the pattern (6 x 16 = 96)")
     ap.add_argument("--margin", type=float, default=0.8, help="tune: factor applied below a found stall edge")
     ap.add_argument("--max-attempts", type=int, default=4, help="tune: endurance attempts before giving up")
+    ap.add_argument(
+        "--refine-step",
+        type=float,
+        default=10.0,
+        help="tune: bisect between the last clean and the first failing acceleration down to this (0 = ladder only)",
+    )
+    ap.add_argument(
+        "--vmax-fallback",
+        type=float,
+        nargs="*",
+        default=[4.5, 3.19],
+        help="tune: lower top speeds also searched when a stall edge is found (or nothing holds) at --vmax; the fastest confirmed profile wins (none = --vmax only)",
+    )
     ap.add_argument(
         "--plateau-ms",
         type=float,

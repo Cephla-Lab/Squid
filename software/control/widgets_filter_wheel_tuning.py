@@ -35,6 +35,29 @@ log = squid.logging.get_logger(__name__)
 TUNING_OUT_DIR = "cache/filter_wheel_tuning"
 
 
+def _search_note(rec) -> str:
+    """How the proposal was arrived at, for the line under it: where steps were first lost, and whether the top speed
+    had to come down."""
+    between = rec.get("stall_edge_between")
+    if rec.get("stall_edge_found") and between:
+        note = (
+            f"  (steps were lost above {between[0]:g} rev/s², first at {between[1]:g}; "
+            f"margin {rec.get('margin', 0):g} applied)"
+        )
+    elif rec.get("stall_edge_found"):
+        note = ""
+    else:
+        note = "  (no stall edge inside the ladder: the gentlest level as fast as the fastest)"
+    if rec.get("speed_reduced"):
+        others = "; ".join(
+            f"{x['vmax']:g} rev/s: "
+            + (f"{x['adjacent_ms_median']:.0f} ms per slot" if x.get("pass") else "nothing held")
+            for x in rec.get("speeds_tried", [])
+        )
+        note += f"  TOP SPEED REDUCED: the wheel is faster with a lower top speed ({others})."
+    return note
+
+
 class TuningWorker(QThread):
     """Runs one session call off the GUI thread. Never raises into Qt: the outcome, exception included, comes back
     through signal_finished."""
@@ -303,12 +326,7 @@ class FilterWheelTuningDialog(QDialog):
                 )
                 self.label_proposed.setText(_profile_text(rec))
                 self.label_proposed_timing.setText(
-                    f"{_timing_text(rec.get('by_distance_ms_median'))}"
-                    + (
-                        ""
-                        if rec.get("stall_edge_found")
-                        else "  (no stall edge inside the ladder: the gentlest level as fast as the fastest)"
-                    )
+                    f"{_timing_text(rec.get('by_distance_ms_median'))}" + _search_note(rec)
                 )
                 self.proposal_box.setVisible(True)
             else:

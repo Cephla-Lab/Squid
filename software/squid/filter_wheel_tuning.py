@@ -106,6 +106,37 @@ def choose_accel(highest_clean, edge_found, margin, quantum=10.0):
     return max(quantum, float(int(highest_clean * margin / quantum) * quantum))
 
 
+def refine_midpoint(lo, hi, step=10.0):
+    """The next acceleration to screen between the highest clean level `lo` (0 = none clean yet) and the lowest
+    failing level `hi`, or None when they are already within `step` of each other (or refinement is off, step <= 0).
+    A bisection on a grid of `step`: the ladder is 50 rev/s2 wide, which on the bench (2026-09-20, 600 mA) put the
+    result at 40 rev/s2 when the wheel was clean up to 86; three or four more 16-move screens recover that."""
+    if step <= 0 or hi - lo <= step:
+        return None
+    mid = float(int(((lo + hi) / 2.0) / step) * step)
+    mid = max(mid, lo + step, step)
+    return mid if mid < hi else None
+
+
+def fallback_speeds(vmax, fallback):
+    """The top speeds a tune tries, in order: the one asked for, then each lower fallback speed. A heavier wheel can
+    lose steps at speed, where the motor's torque has dropped, at any acceleration; lowering the acceleration does not
+    help there, lowering the speed does."""
+    lower = sorted({float(v) for v in (fallback or []) if 0 < float(v) < float(vmax) - 1e-9}, reverse=True)
+    return [float(vmax)] + lower
+
+
+def choose_fastest(results):
+    """The confirmed profile a tune keeps when several top speeds were searched: the lowest median time for an
+    adjacent slot change - what a multi-channel acquisition pays per channel - and, between equals (within 2 ms),
+    the higher top speed, which makes the long moves faster. None for an empty list."""
+    if not results:
+        return None
+    best_ms = min(r["adjacent_ms_median"] for r in results)
+    near = [r for r in results if r["adjacent_ms_median"] <= best_ms + 2.0]
+    return max(near, key=lambda r: r["max_velocity_w_mm"])
+
+
 def step_down_accel(failed, margin, quantum=10.0):
     """The next acceleration to confirm after `failed` lost steps over the endurance pattern: the margin applied
     again, and ALWAYS at least one quantum lower. With a margin near 1 choose_accel() rounds back onto the level that
@@ -492,6 +523,13 @@ class WheelTuner:
         """Verify sign and scale of the encoder against the step counter; fix the flip and the transitions/rev
         when allowed (--flip auto, --transitions auto), re-home and re-verify."""
         ratio = self.check()
+        if abs(ratio) < 0.2:
+            # bench 2026-09-20, 250 mA: the wheel stalled on the check move and the tool went on to blame the
+            # encoder's scale. A wheel that barely turns is not an encoder problem.
+            raise RuntimeError(
+                f"the wheel did not follow the check move (encoder saw {ratio:+.1%} of it): it is stalled, "
+                f"blocked or unplugged, the motor current is too low, or the encoder is not connected"
+            )
         if ratio < 0:
             if self.a.flip != "auto":
                 raise RuntimeError("encoder is inverted with the requested flip; use --flip auto or the other value")
@@ -790,53 +828,74 @@ class WheelTuner:
             self.log("The wheel lost steps at its configured profile: run `tune`, or lower max_acceleration_w_mm.")
         return ok
 
-    def tune(self):
-        """Screen the acceleration ladder, back off from the stall edge, confirm with the endurance pattern.
-        Returns the recommendation dict, or None when no level was clean."""
+    def _screen_level(self, accel):
+        """One 16-move screen at `accel`. Returns the entry for the `screened` list; re-homes after a failure."""
+        self.a.accel = accel
+        self.set_motion(self.a.vmax, accel, self.a.ramp)
+        try:
+            self._to_pattern_start()
+            res = self.pattern(f"screen a{accel:g}")
+        except TuningCancelled:
+            raise
+        except Exception as e:  # noqa: BLE001
+            res = {"phase": "level", "label": f"screen a{accel:g}", "error": str(e)}
+            self.summary["results"].append(res)
+        ok = self._judge(res)
+        if not ok:
+            self.log(f"screen: a{accel:g} lost steps ({res.get('drift_usteps', res.get('error'))})")
+            self.home()  # the counter no longer matches the wheel: re-anchor before going on
+        return {
+            "accel": accel,
+            "pass": ok,
+            "drift_usteps": res.get("drift_usteps"),
+            "adjacent_ms": res.get("adjacent_ms_median"),
+        }
+
+    def _tune_at_speed(self):
+        """The acceleration search at the current top speed (self.a.vmax): screen the ladder up to the first level
+        that loses steps, refine between the last clean and the first failing level, back off by the margin, confirm
+        with the endurance pattern and step down on a failure. Returns (result or None, what was tried)."""
         ladder = sorted(set(float(a) for a in self.a.accel_list))
-        screened, edge = [], False
+        screened, failing = [], None
         for accel in ladder:
-            self.a.accel = accel
-            self.set_motion(self.a.vmax, accel, self.a.ramp)
-            try:
-                self._to_pattern_start()
-                res = self.pattern(f"screen a{accel:g}")
-            except TuningCancelled:
-                raise
-            except Exception as e:  # noqa: BLE001
-                res = {"phase": "level", "label": f"screen a{accel:g}", "error": str(e)}
-                self.summary["results"].append(res)
-            ok = self._judge(res)
-            screened.append(
-                {
-                    "accel": accel,
-                    "pass": ok,
-                    "drift_usteps": res.get("drift_usteps"),
-                    "adjacent_ms": res.get("adjacent_ms_median"),
-                }
-            )
-            if not ok:
-                edge = True
-                self.log(
-                    f"screen: a{accel:g} lost steps ({res.get('drift_usteps', res.get('error'))}); stall edge found"
-                )
-                self.home()  # the counter no longer matches the wheel: re-anchor before going on
+            entry = self._screen_level(accel)
+            screened.append(entry)
+            if not entry["pass"]:
+                failing = accel
                 break
-        clean = [x["accel"] for x in screened if x["pass"]]
-        if not clean:
+        edge = failing is not None
+        if edge:
+            lo = max([x["accel"] for x in screened if x["pass"]], default=0.0)
+            step = float(getattr(self.a, "refine_step", 0.0) or 0.0)
             self.log(
-                f"TUNE FAIL: no clean level, not even a{ladder[0]:g} rev/s2. Check the wheel, the current and the encoder."
+                f"screen: stall edge between a{lo:g} and a{failing:g}"
+                + (f"; refining to {step:g} rev/s2" if refine_midpoint(lo, failing, step) is not None else "")
             )
-            self.summary["tune"] = {"pass": False, "screened": screened}
-            return None
-        plateau = gentlest_as_fast([(x["accel"], x["adjacent_ms"]) for x in screened if x["pass"]], self.a.plateau_ms)
+            while True:
+                mid = refine_midpoint(lo, failing, step)
+                if mid is None:
+                    break
+                entry = self._screen_level(mid)
+                entry["refine"] = True
+                screened.append(entry)
+                if entry["pass"]:
+                    lo = mid
+                else:
+                    failing = mid
+        tried = {"screened": screened, "endurance": []}
+        clean_levels = sorted((x for x in screened if x["pass"]), key=lambda x: x["accel"])
+        if not clean_levels:
+            self.log(f"no clean level at {self.a.vmax:g} rev/s, not even a{screened[-1]['accel']:g} rev/s2")
+            return None, tried
+        clean = [x["accel"] for x in clean_levels]
+        plateau = gentlest_as_fast([(x["accel"], x["adjacent_ms"]) for x in clean_levels], self.a.plateau_ms)
         cand = min(choose_accel(clean[-1], edge, self.a.margin), plateau)
         self.log(
             f"screen: highest clean a{clean[-1]:g}"
             + (f", stall edge above it -> margin {self.a.margin:g}" if edge else ", no stall edge inside the ladder")
             + f"; gentlest level within {self.a.plateau_ms:g} ms of the fastest is a{plateau:g} -> confirming a{cand:g}"
         )
-        attempts, final, final_res = [], None, None
+        attempts, final, final_res = tried["endurance"], None, None
         while cand >= 10.0 and len(attempts) < self.a.max_attempts:
             self.a.accel = cand
             self.set_motion(self.a.vmax, cand, self.a.ramp)
@@ -856,9 +915,8 @@ class WheelTuner:
             self.home()
             cand = step_down_accel(cand, self.a.margin)
         if final is None:
-            self.log("TUNE FAIL: no acceleration passed the endurance pattern.")
-            self.summary["tune"] = {"pass": False, "screened": screened, "endurance": attempts}
-            return None
+            self.log(f"no acceleration passed the endurance pattern at {self.a.vmax:g} rev/s")
+            return None, tried
         rec = {
             "pass": True,
             "microstepping_default_w": MICROSTEPS,
@@ -866,25 +924,94 @@ class WheelTuner:
             "max_acceleration_w_mm": final,
             "ramp": self.a.ramp,
             "stall_edge_found": edge,
+            "stall_edge_between": [clean[-1], failing] if edge else None,
             "margin": self.a.margin,
             "screened": screened,
             "endurance": attempts,
             "moves_confirmed": final_res["n_moves"],
             "by_distance_ms_median": final_res["by_distance_ms_median"],
             "adjacent_ms_median": final_res["adjacent_ms_median"],
+            "drift_usteps": final_res.get("drift_usteps"),
+            "timing_text": self._timing_text(final_res),
             "date": time.strftime("%Y-%m-%d %H:%M"),
         }
+        return rec, tried
+
+    def tune(self):
+        """Find this wheel's profile. The acceleration search of _tune_at_speed() runs at the requested top speed. If
+        it finds no stall edge the wheel has torque to spare and that is the answer. If it finds one - or nothing
+        holds at all - the search is repeated at each lower fallback speed and the FASTEST confirmed profile wins:
+        with torque short, a lower top speed holds a higher acceleration and the wheel ends up faster (bench
+        2026-09-20, 600 mA: 6 rev/s -> 60 rev/s2, 189 ms per slot; 4.5 rev/s -> 90 rev/s2, 134 ms per slot).
+        Returns the recommendation dict, or None."""
+        speeds = fallback_speeds(self.a.vmax, getattr(self.a, "vmax_fallback", None))
+        requested = speeds[0]
+        speeds_tried, found = [], []
+        for i, vmax in enumerate(speeds):
+            if i:
+                why = (
+                    f"a stall edge limits the wheel at {speeds[0]:g} rev/s"
+                    if found
+                    else f"nothing has held down to {speeds[i - 1]:g} rev/s"
+                )
+                self.log(f"speed search: {why} -> searching {vmax:g} rev/s; the fastest confirmed profile wins")
+            self.a.vmax = vmax
+            rec_v, tried = self._tune_at_speed()
+            speeds_tried.append(
+                {
+                    "vmax": vmax,
+                    "pass": rec_v is not None,
+                    "max_acceleration_w_mm": rec_v["max_acceleration_w_mm"] if rec_v else None,
+                    "adjacent_ms_median": rec_v["adjacent_ms_median"] if rec_v else None,
+                    **tried,
+                }
+            )
+            if rec_v is not None:
+                found.append(rec_v)
+                if i == 0 and not rec_v["stall_edge_found"]:
+                    break  # torque to spare at the requested speed: a lower speed can only be slower
+        rec = choose_fastest(found)
+        if rec is not None:
+            self.a.vmax = rec["max_velocity_w_mm"]
+            if len(found) > 1:
+                self.log(
+                    "speed search: "
+                    + "; ".join(
+                        f"{r['max_velocity_w_mm']:g} rev/s a{r['max_acceleration_w_mm']:g} -> {r['adjacent_ms_median']:.0f} ms/slot"
+                        for r in found
+                    )
+                    + f" -> keeping {rec['max_velocity_w_mm']:g} rev/s"
+                )
+        if rec is None:
+            self.log(
+                "TUNE FAIL: no clean profile at "
+                + ", ".join(f"{v:g}" for v in speeds)
+                + " rev/s. Check the wheel, the current and the encoder."
+            )
+            self.summary["tune"] = {
+                "pass": False,
+                "speeds_tried": speeds_tried,
+                "screened": speeds_tried[-1]["screened"],
+            }
+            return None
+        rec["speeds_tried"] = [
+            {k: x[k] for k in ("vmax", "pass", "max_acceleration_w_mm", "adjacent_ms_median")} for x in speeds_tried
+        ]
+        rec["speed_reduced"] = rec["max_velocity_w_mm"] < requested - 1e-9
         self.summary["tune"] = rec
+        final = rec["max_acceleration_w_mm"]
         self.log(
             f"TUNE RESULT: {MICROSTEPS} usteps/FS, {self.a.vmax:g} rev/s, {final:g} rev/s2, {self.a.ramp}; "
-            f"{final_res['n_moves']} moves, drift {final_res['drift_usteps']:+d} usteps; {self._timing_text(final_res)}"
+            f"{rec['moves_confirmed']} moves, drift {rec['drift_usteps']:+d} usteps; {rec['timing_text']}"
+            + (f"; TOP SPEED REDUCED from {requested:g} rev/s by the speed search" if rec["speed_reduced"] else "")
         )
         self.log("ini keys ([GENERAL]):")
         for k in INI_KEYS:
             self.log(f"    {k} = {rec[k]:g}")
         if self.a.ramp != "sshape":
             self.log(
-                "    NOTE: the host does not set the wheel's ramp profile; the firmware default is S-shape. Tune with --ramp sshape for a profile the GUI will actually run."
+                "    NOTE: the host does not set the wheel's ramp profile; the firmware default is S-shape. Tune with "
+                "--ramp sshape for a profile the GUI will actually run."
             )
         if getattr(self, "reduced_current", False):
             rec["reduced_current_ma"] = self.current_ma
@@ -1041,6 +1168,8 @@ def gui_defaults() -> dict:
         margin=0.8,
         max_attempts=4,
         plateau_ms=2.0,
+        refine_step=10.0,
+        vmax_fallback=[4.5, 3.19],
         lost_fullsteps=0.5,
         slip_fullsteps=2.0,
         lost_usteps=32,
