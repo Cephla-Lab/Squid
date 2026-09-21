@@ -42,10 +42,28 @@ struct FakeHal : seq::SeqHal {
     void set_dac(uint8_t dac, uint16_t v) override { calls.push_back({"dac", now_us, dac, v}); }
     void set_led_pattern(uint8_t p) override { calls.push_back({"led", now_us, p, 0}); }
     void schedule_exposure(const seq::ExposurePlan& p) override {
+        if (model_camera_busy) {
+            busy_valid[p.camera_id] = true;
+            busy_from_us[p.camera_id] = p.t_assert_us + busy_latency_us;
+            busy_until_us[p.camera_id] = p.t_deassert_us + busy_readout_us;
+        }
         calls.push_back({"expose", now_us, p.camera_id, (long)p.t_assert_us});
         plans.push_back(p);
     }
-    bool ready_line(uint8_t line) override { return ready_lines[line]; }
+    // Optional camera model: a real camera's ready line goes BUSY from shortly after the trigger
+    // until the end of its readout. Camera i drives ready line i; "busy" is the opposite of the
+    // level in ready_lines[i]. Off by default: the line is then whatever the test sets.
+    bool model_camera_busy = false;
+    uint32_t busy_latency_us = 0;   // trigger assert -> line goes busy
+    uint32_t busy_readout_us = 0;   // trigger deassert -> line ready again
+    bool busy_valid[10] = {};
+    uint32_t busy_from_us[10] = {};
+    uint32_t busy_until_us[10] = {};
+    bool ready_line(uint8_t line) override {
+        if (model_camera_busy && busy_valid[line] && now_us >= busy_from_us[line] && now_us < busy_until_us[line])
+            return !ready_lines[line];
+        return ready_lines[line];
+    }
     void all_off() override { calls.push_back({"all_off", now_us, 0, 0}); }
     void stop_motion() override { calls.push_back({"stop_motion", now_us, 0, 0}); }
 };

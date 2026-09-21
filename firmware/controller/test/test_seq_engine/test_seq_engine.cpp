@@ -326,6 +326,104 @@ void test_ready_line_blocks_until_asserted(void) {
     TEST_ASSERT_TRUE(hal.plans[0].t_assert_us >= 30000);
 }
 
+// Liveness: a camera with a ready line is BUSY from its exposure until its readout ends. A line
+// that still reads "ready" and was never seen busy since the trigger is not a fast camera - it is
+// a stuck line (shorted cable, an output that was never configured): gating on it would fire the
+// next trigger without waiting. Bench 2026-09-20: an unconfigured Fusion BT output sits at the
+// level that means READY.
+static void two_channel_ready_line_program(SeqLoop* l, SeqChannel* ch, SeqCameraConfig* cams) {
+    *l = good_loop();
+    l->n_layers = 1;
+    l->n_channels = 2;
+    l->z_settle_us = 0;
+    ch[0] = good_channel();
+    ch[1] = good_channel();
+    cams[0] = cam_level();
+    cams[0].ready_line = 0;
+    cams[0].ready_active_high = 1;
+}
+
+void test_ready_line_stuck_at_ready_fails_after_the_first_frame(void) {
+    FakeHal hal;  // ready_lines[0] stays true: never busy
+    SeqEngine e(hal);
+    SeqLoop l;
+    SeqChannel ch[2];
+    SeqCameraConfig cams[1];
+    two_channel_ready_line_program(&l, ch, cams);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(0, 5000000, 40000));
+    run_until(e, hal, 200000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Failed, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::ReadyTimeout, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT8(0, e.progress().abort_detail);  // the camera whose line is stuck
+    TEST_ASSERT_EQUAL_UINT32(1, e.progress().frames_fired);  // the second trigger never fired
+    TEST_ASSERT_EQUAL(1, (int)hal.plans.size());
+    TEST_ASSERT_TRUE(saw(hal, "all_off"));
+}
+
+void test_a_run_after_a_stuck_ready_line_starts_clean(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l;
+    SeqChannel ch[2];
+    SeqCameraConfig cams[1];
+    two_channel_ready_line_program(&l, ch, cams);
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(0, 5000000, 40000));
+    run_until(e, hal, 200000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::ReadyTimeout, e.progress().abort_error);
+    // the cable is fixed: the camera now goes busy as it should
+    hal.model_camera_busy = true;
+    hal.busy_latency_us = 50;
+    hal.busy_readout_us = 11000;
+    TEST_ASSERT_TRUE(e.start(hal.now_us, 5000000, 40000));
+    run_until(e, hal, 600000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(2, e.progress().frames_fired);
+}
+
+void test_ready_line_that_goes_busy_after_each_trigger_runs_to_done(void) {
+    FakeHal hal;
+    hal.model_camera_busy = true;
+    hal.busy_latency_us = 50;
+    hal.busy_readout_us = 11000;
+    SeqEngine e(hal);
+    SeqLoop l;
+    SeqChannel ch[2];
+    SeqCameraConfig cams[1];
+    two_channel_ready_line_program(&l, ch, cams);
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(0, 5000000, 40000));
+    run_until(e, hal, 400000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None, e.progress().abort_error);
+    TEST_ASSERT_EQUAL_UINT32(2, e.progress().frames_fired);
+    // the second trigger waited for the camera, not for a model
+    TEST_ASSERT_TRUE(hal.plans[1].t_assert_us >= hal.plans[0].t_deassert_us + 11000);
+}
+
+void test_ready_liveness_gives_a_slow_line_time_to_go_busy(void) {
+    // A very short exposure and a line that only goes busy 500 us after the trigger: when the
+    // exposure ends the line still reads ready. That is latency, not a stuck line.
+    FakeHal hal;
+    hal.model_camera_busy = true;
+    hal.busy_latency_us = 500;
+    hal.busy_readout_us = 5000;
+    SeqEngine e(hal);
+    SeqLoop l;
+    SeqChannel ch[2];
+    SeqCameraConfig cams[1];
+    two_channel_ready_line_program(&l, ch, cams);
+    ch[0].exposure_us = 100;
+    ch[1].exposure_us = 100;
+    cams[0].strobe_delay_us = 0;
+    e.load(l, ch, cams, 1);
+    TEST_ASSERT_TRUE(e.start(0, 5000000, 40000));
+    run_until(e, hal, 100000, /*step_us=*/20);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL_UINT32(2, e.progress().frames_fired);
+}
+
 void test_wait_timeout_aborts_with_all_off(void) {
     FakeHal hal;
     SeqEngine e(hal);
@@ -885,6 +983,10 @@ int main(int, char**) {
     RUN_TEST(test_edge_mode_pulse_and_modeled_exposure_end);
     RUN_TEST(test_two_cameras_simultaneous_exposure);
     RUN_TEST(test_ready_line_blocks_until_asserted);
+    RUN_TEST(test_ready_line_stuck_at_ready_fails_after_the_first_frame);
+    RUN_TEST(test_a_run_after_a_stuck_ready_line_starts_clean);
+    RUN_TEST(test_ready_line_that_goes_busy_after_each_trigger_runs_to_done);
+    RUN_TEST(test_ready_liveness_gives_a_slow_line_time_to_go_busy);
     RUN_TEST(test_wait_timeout_aborts_with_all_off);
     RUN_TEST(test_no_overlap_when_readout_unsafe);
     RUN_TEST(test_cancel_finishes_current_exposure_then_stops);
