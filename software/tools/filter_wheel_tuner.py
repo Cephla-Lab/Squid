@@ -61,6 +61,7 @@ from squid.filter_wheel_tuning import (  # noqa: E402,F401
     WheelTuner as _WheelTunerEngine,
     bench_current_ma,
     choose_accel,
+    step_down_accel,
     gentlest_as_fast,
     level_ok,
     lost_limits_usteps,

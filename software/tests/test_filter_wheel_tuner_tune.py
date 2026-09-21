@@ -178,6 +178,20 @@ def test_a_level_that_passes_the_screen_but_fails_the_endurance_is_stepped_down(
     assert wheel.homed == 2
 
 
+def test_a_step_down_is_always_strictly_lower_even_with_no_margin(mod, tmp_path):
+    # bench 2026-09-20: trapezoid, --margin 1.0: a140 passed the screen, lost 320 usteps over 96 moves, and the tool
+    # "stepped down" onto a140 again - twice - then accepted it when the third run happened to pass
+    assert mod.step_down_accel(140, 1.0) == 130
+    assert mod.step_down_accel(140, 0.97) == 130  # rounds back onto 140 without the rule
+    assert mod.step_down_accel(140, 0.8) == 110  # the margin still applies when it does go lower
+    assert mod.step_down_accel(10, 0.8) == 0  # nothing below one quantum: the loop ends in TUNE FAIL
+    wheel = _Wheel(screen_edge=10_000, endurance_edge=125)
+    rec = _tuner(mod, tmp_path, wheel, accel_list=[100, 110, 120, 130, 140], margin=1.0).tune()
+    assert [e["accel"] for e in rec["endurance"]] == [140, 130, 120]
+    assert [e["pass"] for e in rec["endurance"]] == [False, False, True]
+    assert rec["max_acceleration_w_mm"] == 120
+
+
 def test_no_edge_takes_the_gentlest_level_that_is_as_fast_as_the_best(mod, tmp_path):
     # bench 2026-09-20: 250, 300 and 400 rev/s2 all gave 76 ms (ramp register-clamped); 400 buys nothing over 250
     wheel = _Wheel(screen_edge=10_000, endurance_edge=10_000)

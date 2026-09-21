@@ -106,6 +106,17 @@ def choose_accel(highest_clean, edge_found, margin, quantum=10.0):
     return max(quantum, float(int(highest_clean * margin / quantum) * quantum))
 
 
+def step_down_accel(failed, margin, quantum=10.0):
+    """The next acceleration to confirm after `failed` lost steps over the endurance pattern: the margin applied
+    again, and ALWAYS at least one quantum lower. With a margin near 1 choose_accel() rounds back onto the level that
+    just failed (bench, 2026-09-20: a140 was re-run twice and accepted on a lucky third pass). A level that has lost
+    steps once is never offered again. Below one quantum there is nothing left to try: returns 0."""
+    nxt = choose_accel(failed, True, margin, quantum)
+    if nxt >= failed:
+        nxt = float(int(round(failed / quantum)) - 1) * quantum
+    return nxt if nxt >= quantum and nxt < failed else 0.0
+
+
 def bench_current_ma(requested, machine_ma):
     """The motor current a run uses. None = the machine's. A value is a BENCH device: running the wheel at a
     REDUCED current lowers the torque, which brings the stall edge into reach on a lightly loaded wheel so that the
@@ -843,7 +854,7 @@ class WheelTuner:
                 break
             self.log(f"endurance: a{cand:g} lost steps over {self.a.laps} laps; stepping down")
             self.home()
-            cand = choose_accel(cand, True, self.a.margin)
+            cand = step_down_accel(cand, self.a.margin)
         if final is None:
             self.log("TUNE FAIL: no acceleration passed the endurance pattern.")
             self.summary["tune"] = {"pass": False, "screened": screened, "endurance": attempts}
