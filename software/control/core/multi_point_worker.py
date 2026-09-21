@@ -1213,6 +1213,16 @@ class MultiPointWorker:
             )
         return plans
 
+    def _camera_gains_that_matter(self) -> list:
+        """The selected channels' analog gains - or nothing, for a camera that has no analog gain
+        (the Hamamatsu driver raises NotImplementedError): there the values in the channel configs
+        are never applied, so differing ones are no reason to give up hardware sequencing."""
+        try:
+            self.camera.get_gain_range()
+        except NotImplementedError:
+            return []
+        return [config.analog_gain for config in self.selected_configurations]
+
     def _prepare_sequenced_acquisition(self) -> None:
         """Decide ONCE per acquisition whether it is hardware-sequenced, and upload the program.
 
@@ -1234,7 +1244,7 @@ class MultiPointWorker:
             intensity_is_mcu_dac=self.microscope.illumination_controller.intensity_is_mcu_dac,
             shutter_is_mcu_ttl=self.microscope.illumination_controller.shutter_is_mcu_ttl,
             channels=plans,
-            camera_gains=[config.analog_gain for config in self.selected_configurations],
+            camera_gains=self._camera_gains_that_matter(),
             burst_bytes=self.NZ * len(plans) * width * height * 2,
             byte_budget=int(control._def.ACQUISITION_MAX_PENDING_MB * 1024 * 1024),
             use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,

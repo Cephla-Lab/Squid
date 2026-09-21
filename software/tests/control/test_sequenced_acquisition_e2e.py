@@ -132,6 +132,31 @@ def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_
     assert status.frames_fired == 0  # the controller's sequencer was never used
 
 
+def test_differing_channel_gains_do_not_matter_on_a_camera_without_analog_gain(sequencing_setup, monkeypatch):
+    """The ORCA-Fusion BT has no analog gain (its driver raises NotImplementedError); the gain values
+    in its channel configs mean nothing, so they must not push the acquisition to software sequencing."""
+
+    def no_gain(*args, **kwargs):
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
+
+    real_run = multi_point_worker.MultiPointWorker.run
+
+    def run_with_differing_gains(worker):
+        # After construction (the simulated camera sets its own gain while it is built).
+        for method in ("set_analog_gain", "get_analog_gain", "get_gain_range"):
+            setattr(worker.camera, method, no_gain)
+        for index, config in enumerate(worker.selected_configurations):
+            config.analog_gain = 5.0 + index
+        return real_run(worker)
+
+    monkeypatch.setattr(multi_point_worker.MultiPointWorker, "run", run_with_differing_gains)
+
+    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
+
+    assert status.frames_fired == NZ * len(FLUORESCENCE)  # it WAS sequenced
+    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for z in range(NZ) for name in FLUORESCENCE]
+
+
 def test_failed_bursts_are_discarded_and_the_fov_retried_until_the_third_attempt(sequencing_setup, monkeypatch):
     real = multi_point_worker.burst_failure_reason
     calls = []
