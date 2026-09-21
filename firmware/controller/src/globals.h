@@ -101,6 +101,11 @@ extern bool closed_loop_position_control;
 /***************************************************************************************************/
 extern volatile int counter_send_pos_update;
 extern volatile bool flag_send_pos_update;
+
+// Firmware 1.6 (see constants_protocol.h)
+extern uint8_t encoder_report_axis;                    // INTERNAL axis index being reported, 0xFF = off
+extern uint8_t encoder_report_mode;                    // ENCODER_REPORT_*
+extern int32_t completion_window_usteps[TOTAL_AXES];   // SET_COMPLETION_WINDOW: early COMPLETED when within this of the target; 0 = off
 extern elapsedMicros us_since_last_pos_update;
 extern elapsedMicros us_since_last_check_position;
 extern elapsedMicros us_since_last_joystick_update;

@@ -21,8 +21,19 @@
 //               An axis whose driver could not be identified is left
 //               unconfigured and rejects moves. No protocol change: command
 //               codes, packet layout and the host contract are untouched
+// Version 1.6 = filter-wheel speed and diagnostics. SET_RAMP_PROFILE (47) selects a
+//               trapezoidal or S-shaped ramp per axis (default S-shape, as before).
+//               SET_COMPLETION_WINDOW (49) lets an axis report a move complete once
+//               within a set distance of the target while the ramp finishes (filter
+//               wheels: start exposing while the last degrees travel; default 0 = off).
+//               SET_ENCODER_REPORTING (44) puts one axis's encoder into the status
+//               packet's unused theta field (the wheels have no position field, so
+//               this is the only way to see where a wheel is; default off: packet
+//               byte-identical to 1.5). For every axis: a status packet is sent the
+//               moment a command completes, and completion is checked every 1 ms
+//               (was 10 ms), so the host learns of completion up to ~20 ms sooner.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 6
 
 #include "def/def_v1.h"
 
@@ -120,7 +131,7 @@ const uint8_t DAC8050x_CONFIG_ADDR = 0x03;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 static const int TIMER_PERIOD = 500; // in us
 static const int interval_send_pos_update = 10000; // in us
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 1000;  // in us (was 10000: completion was detected up to 10 ms late)
 static const int interval_send_joystick_update = 30000; // in us
 static const int interval_check_limit = 20000; // in us
 
@@ -181,6 +192,22 @@ inline uint8_t protocol_axis_to_internal(int protocol_axis)
         case AXIS_W:  return w;
         case AXIS_W2: return w2;
         default:      return 0xFF;  // Invalid axis
+    }
+}
+
+// Inverse of protocol_axis_to_internal(): internal array index -> protocol axis id.
+// Used by the status packet's encoder-reporting flags. Returns 0xFF for an
+// index that is not a controlled axis.
+inline uint8_t internal_axis_to_protocol(uint8_t internal_axis)
+{
+    switch (internal_axis)
+    {
+        case x:  return AXIS_X;
+        case y:  return AXIS_Y;
+        case z:  return AXIS_Z;
+        case w:  return AXIS_W;
+        case w2: return AXIS_W2;
+        default: return 0xFF;
     }
 }
 

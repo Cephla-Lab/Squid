@@ -56,6 +56,9 @@ void init_callbacks()
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
     cmd_map[INITIALIZE] = &callback_initialize;
+    cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
+    cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
+    cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -171,6 +174,67 @@ void callback_enable_stage_pid()
 
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
+}
+
+// SET_ENCODER_REPORTING (44): [2] protocol axis, [3] ENCODER_REPORT_* mode.
+// Chooses which axis's encoder the status packet carries and how; see
+// send_position_update(). Reporting is a read-only diagnostic: it moves nothing.
+// The encoder must have been set up with CONFIGURE_STAGE_PID (scale and direction;
+// that command engages nothing) for the values to be in microsteps.
+void callback_set_encoder_reporting()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    uint8_t mode = buffer_rx[3];
+
+    // Leaving mode 2 must hand the position field back to XACTUAL for every axis.
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+
+    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        encoder_report_axis = 0xFF;
+        encoder_report_mode = ENCODER_REPORT_OFF;
+        return;
+    }
+    encoder_report_axis = axis;
+    encoder_report_mode = mode;
+    if (mode == ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        if (axis == x) X_use_encoder = true;
+        else if (axis == y) Y_use_encoder = true;
+        else if (axis == z) Z_use_encoder = true;
+    }
+}
+
+// SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
+// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
+// INITIALIZE (the host sets it once with the other motion parameters); RESET
+// returns every axis to the S-shape, applied by the next ramp setup.
+void callback_set_ramp_profile()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint8_t profile = buffer_rx[3];
+    if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
+    tmc4361[axis].ramp_profile = profile;
+    tmc4361A_sRampInit(&tmc4361[axis]);
+}
+
+// SET_COMPLETION_WINDOW (49): [2] protocol axis, [3..4] window in 0.1 um of travel. While a
+// move is inside the window the ramp is still finishing, but the host is told COMPLETED so an
+// exposure can start while the last part is travelled. Meant for the filter wheels, where the
+// filter's clear aperture covers the field for the last few degrees of a slot change (their
+// "mm" is one revolution, so 1e-4 rev = 0.036 deg per unit). 0 (default) = complete only at the
+// exact target with the ramp stopped, as before. Homing is not affected, and an axis whose
+// closed loop is enabled ignores the window (see within_completion_window()).
+void callback_set_completion_window()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint16_t units = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(units) / 10000.0f);
+    completion_window_usteps[axis] = v < 0 ? -v : v;
 }
 
 void callback_disable_stage_pid()
@@ -373,6 +437,14 @@ void callback_initialize()
 
     // reset trigger mode to normal
     trigger_mode = 0;
+
+    // Encoder reporting is a host-session diagnostic: a freshly initialised
+    // controller sends the shipping packet until a host asks otherwise.
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
 }
 
 void callback_reset()
@@ -401,4 +473,17 @@ void callback_reset()
     is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
+
+    // Firmware 1.6 settings go back to their defaults: a fresh host must see the
+    // shipping packet and the 1.5 move behaviour until it asks otherwise.
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+    for (uint8_t i = 0; i < TOTAL_AXES; i++)
+    {
+        completion_window_usteps[i] = 0;
+        tmc4361[i].ramp_profile = RAMP_PROFILE_SSHAPE;   // written by the next tmc4361A_sRampInit()
+    }
 }
