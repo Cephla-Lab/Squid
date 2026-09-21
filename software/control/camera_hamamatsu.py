@@ -109,6 +109,8 @@ class HamamatsuCamera(AbstractCamera):
         self._frames_read = 0  # frames of THIS capture already delivered (DCAM counts from 0 at cap_start)
         # frame_id = this base + the stamp DCAM counts from 0 at every cap_start (see _read_newest_frame).
         self._frame_id_base = 1
+        # The number (from 0 at cap_start) of the newest frame delivered in this capture; see _frame_number().
+        self._last_frame_number = -1
         self._last_trigger_timestamp = 0
         self._trigger_sent = threading.Event()
 
@@ -171,14 +173,15 @@ class HamamatsuCamera(AbstractCamera):
                 return None
 
             frame_info, raw_frame = result
-            return self._new_frame(frame_info, raw_frame)
+            return self._new_frame(self._frame_number(int(frame_info.framestamp)), raw_frame)
 
-    def _new_frame(self, frame_info, raw_frame) -> CameraFrame:
+    def _new_frame(self, number: int, raw_frame) -> CameraFrame:
+        """number: the frame's number since cap_start (NOT the camera's framestamp, which is only 16 bits)."""
         # NOTE: The caller must hold _capture_lock.
         processed_frame = self._process_raw_frame(raw_frame)
         with self._frame_lock:
             camera_frame = CameraFrame(
-                frame_id=self._frame_id_base + int(frame_info.framestamp),
+                frame_id=self._frame_id_base + number,
                 timestamp=time.time(),
                 frame=processed_frame,
                 frame_format=self.get_frame_format(),
@@ -212,7 +215,7 @@ class HamamatsuCamera(AbstractCamera):
             info = self._camera.cap_transferinfo()
             if isinstance(info, bool):
                 self._log.error(f"cap_transferinfo failed ({self._last_dcam_error_string()}); taking the newest frame.")
-                return self._newest_frame_only(total=None)
+                return self._newest_frame_only()
 
             total = int(info.nFrameCount)
             first = self._frames_read
@@ -233,21 +236,24 @@ class HamamatsuCamera(AbstractCamera):
                 result = self._camera.buf_getframe(slot)
                 if isinstance(result, bool):
                     self._log.error(f"Reading ring slot {slot} failed ({self._last_dcam_error_string()}).")
-                    return frames + self._newest_frame_only(total)
+                    return frames + self._newest_frame_only()
                 frame_info, raw_frame = result
-                if int(frame_info.framestamp) != number:
+                # framestamp is a 16-bit counter (it wraps every 65,536 frames); DCAM's frame count is not.
+                if (int(frame_info.framestamp) - number) & 0xFFFF:
                     self._log.error(
-                        f"Ring slot {slot} holds framestamp {int(frame_info.framestamp)}, expected frame {number} "
-                        f"(newest slot {newest_slot}, {total} frames, ring of {self._ring_frames}): the ring is not "
-                        "laid out as assumed, or the slot was overwritten while it was read. Taking the newest frame."
+                        f"Ring slot {slot} holds framestamp {int(frame_info.framestamp)}, expected {number & 0xFFFF} "
+                        f"(frame {number}; newest slot {newest_slot}, {total} frames, ring of {self._ring_frames}): the "
+                        "ring is not laid out as assumed, or the slot was overwritten while it was read. Taking the "
+                        "newest frame."
                     )
-                    return frames + self._newest_frame_only(total)
-                frames.append(self._new_frame(frame_info, raw_frame))
+                    return frames + self._newest_frame_only()
+                self._last_frame_number = number
+                frames.append(self._new_frame(number, raw_frame))
             self._frames_read = total
             self._trigger_sent.clear()
             return frames
 
-    def _newest_frame_only(self, total: Optional[int]) -> List[CameraFrame]:
+    def _newest_frame_only(self) -> List[CameraFrame]:
         # NOTE: The caller must hold _capture_lock. The fall-back of _read_frames().
         result = self._camera.buf_getframe(-1)
         self._trigger_sent.clear()
@@ -255,8 +261,22 @@ class HamamatsuCamera(AbstractCamera):
             self._log.error("Frame read resulted in boolean, must be an error.")
             return []
         frame_info, raw_frame = result
-        self._frames_read = int(frame_info.framestamp) + 1 if total is None else total
-        return [self._new_frame(frame_info, raw_frame)]
+        number = self._frame_number(int(frame_info.framestamp))
+        self._frames_read = number + 1  # carry on after the frame that was delivered
+        return [self._new_frame(number, raw_frame)]
+
+    def _frame_number(self, framestamp: int) -> int:
+        """The frame's number since cap_start, from the camera's framestamp.
+
+        The stamp is a 16-BIT counter on the ORCA-Fusion BT (bench 2026-09-21: 65535 -> 0 while DCAM's own
+        32-bit frame count went on to 65537), so it cannot be used as the number directly: after 65,536
+        frames in one capture - 45 minutes at 24 fps - ids would start over. Frames are read in order and
+        never more than a ring's worth apart, so the number is the last one plus the stamp's advance
+        modulo 2**16. An advance of 0 is the same frame read again, and keeps its number.
+        """
+        # NOTE: The caller must hold _frame_lock.
+        self._last_frame_number += (framestamp - self._last_frame_number) & 0xFFFF
+        return self._last_frame_number
 
     def _read_frames_when_available(self):
         self._log.info("Starting Hamamatsu read thread.")
@@ -482,6 +502,7 @@ class HamamatsuCamera(AbstractCamera):
             with self._frame_lock:
                 # DCAM's frame stamp starts over at 0; ids must not.
                 self._frame_id_base = self._current_frame.frame_id + 1 if self._current_frame else 1
+                self._last_frame_number = -1  # and the numbering of this capture starts over with it
             if not self._camera.cap_start():
                 self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
                 return False
