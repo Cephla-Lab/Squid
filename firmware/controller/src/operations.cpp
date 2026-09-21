@@ -552,8 +552,11 @@ void do_focus_control()
 // its completion has to wait for the encoder, which this rule knows nothing about.
 static inline bool within_completion_window(uint8_t axis, int32_t target)
 {
-  int32_t win = completion_window_usteps[axis];
-  if (win <= 0 || stage_PID_enabled[axis]) return false;
+  if (completion_window_units[axis] == 0 || stage_PID_enabled[axis]) return false;
+  // Converted with the axis's microstepping and pitch as they are NOW (see callback_set_completion_window).
+  int32_t win = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(completion_window_units[axis]) / 10000.0f);
+  if (win < 0) win = -win;
+  if (win == 0) return false;
   int32_t d = tmc4361A_currentPosition(&tmc4361[axis]) - target;
   return (d < 0 ? -d : d) <= win;
 }

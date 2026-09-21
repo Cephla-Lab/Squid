@@ -83,7 +83,8 @@ static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 
                                               // "mm" is one revolution, 1e-4 rev = 0.036 deg): a move reports COMPLETED as
                                               // soon as |XACTUAL - target| <= window while the ramp finishes. 0 = at the
                                               // exact target (default, unchanged behaviour). Not applied to homing, and
-                                              // not to an axis whose closed loop is enabled.
+                                              // not to an axis whose closed loop is enabled. Kept in these physical
+                                              // units: a later microstepping or pitch change does not alter its width.
 // (45, 46, 48 and 50 are reserved for the closed-loop commands of the Z encoder work.)
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
