@@ -40,6 +40,7 @@ class _BuildParamsStub:
         self.z_range = (0.0, 0.0)
         self.skip_saving = False
         self.large_acquisition_mode = False
+        self.split_ome_timepoints = False
         self.xy_mode = "Current Position"
 
     build_params = MultiPointController.build_params

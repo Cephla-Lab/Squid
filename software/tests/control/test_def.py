@@ -256,3 +256,5 @@ def test_large_acquisition_mode_defaults_off():
     assert "LARGE_ACQUISITION_MODE = False" in source
     assert "DISK_SPACE_RESERVE_GB = 10.0" in source
     assert "SIMULATED_DISK_CAPACITY_GB = 0.0" in source
+    # The OME-TIFF per-timepoint split is opt-in too: it changes the on-disk layout.
+    assert "OME_TIFF_SPLIT_TIMEPOINTS = False" in source

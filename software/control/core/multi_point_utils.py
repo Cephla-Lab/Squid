@@ -66,6 +66,9 @@ class AcquisitionParameters:
     # Effective large acquisition mode for this run (per-run opt-in OR the global setting), resolved
     # once by MultiPointController.build_params.
     large_acquisition_mode: bool = False
+    # Effective OME-TIFF per-timepoint split for this run (per-run opt-in OR the global setting),
+    # resolved once by MultiPointController.build_params. Ignored by the other file formats.
+    split_ome_timepoints: bool = False
 
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate

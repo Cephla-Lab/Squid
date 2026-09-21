@@ -871,6 +871,8 @@ LARGE_ACQUISITION_MODE = False
 DISK_SPACE_RESERVE_GB = 10.0  # Minimum free space to keep on the save disk before pausing
 DISK_SPACE_POLL_INTERVAL_S = 5.0  # How often to re-check free space while paused
 SIMULATED_DISK_CAPACITY_GB = 0.0  # Dev only: pretend the save disk has this capacity (0 = use the real disk)
+# Write one OME-TIFF per timepoint (<t>/ome_tiff/...) so timepoints can be offloaded during the run
+OME_TIFF_SPLIT_TIMEPOINTS = False
 
 CAMERA_SN = {"ch 1": "SN1", "ch 2": "SN2"}  # for multiple cameras, to be overwritten in the configuration file
 

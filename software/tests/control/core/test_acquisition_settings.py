@@ -166,6 +166,36 @@ def test_apply_sets_large_acquisition_mode_when_the_yaml_specifies_it():
     assert mpc.large_acquisition_mode is True
 
 
+def test_apply_sets_split_ome_timepoints_when_the_yaml_specifies_it():
+    scope, mpc = _controller()
+    data = AcquisitionYAMLData(
+        widget_type="wellplate",
+        channel_names=_channel_names(scope, mpc, 1),
+        wellplate_regions=[{"name": "A1", "fovs": _some_fovs(mpc)}],
+        ome_tiff_split_timepoints=True,
+    )
+
+    apply_acquisition_settings(mpc, mpc.scanCoordinates, scope, data)
+
+    assert mpc.split_ome_timepoints is True
+
+
+def test_apply_leaves_split_ome_timepoints_alone_when_the_yaml_omits_it():
+    """Absent means 'not specified' - the pre-flight dialog's opt-in must survive; the global
+    setting is folded in when the run's parameters are built, not here."""
+    scope, mpc = _controller()
+    mpc.set_split_ome_timepoints(True)
+    data = AcquisitionYAMLData(
+        widget_type="wellplate",
+        channel_names=_channel_names(scope, mpc, 1),
+        wellplate_regions=[{"name": "A1", "fovs": _some_fovs(mpc)}],
+    )
+
+    apply_acquisition_settings(mpc, mpc.scanCoordinates, scope, data)
+
+    assert mpc.split_ome_timepoints is True
+
+
 def test_apply_leaves_large_acquisition_mode_alone_when_the_yaml_omits_it():
     """Absent means 'not specified' - the pre-flight dialog's opt-in must survive; the global
     setting is folded in when the run's parameters are built, not here."""

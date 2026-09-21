@@ -51,6 +51,13 @@ class AcquisitionInfo:
         physical_size_z_um: Z step size in micrometers (for OME-XML).
         physical_size_x_um: Pixel size in X in micrometers (for OME-XML).
         physical_size_y_um: Pixel size in Y in micrometers (for OME-XML).
+        split_timepoints: When True, each timepoint is written to its own OME-TIFF file
+            (SizeT=1) under that timepoint's folder, so a finished timepoint can be handed to
+            the transfer manifest while the run continues. When False (the default), all
+            timepoints share one pre-allocated file per (region, FOV).
+        acquisition_start_time: Wall-clock start (time.time()) of the whole run, so that
+            per-timepoint files can express DeltaT relative to the acquisition start rather
+            than to their own first plane. Only used when split_timepoints is True.
     """
 
     total_time_points: int
@@ -62,6 +69,8 @@ class AcquisitionInfo:
     physical_size_z_um: Optional[float] = None
     physical_size_x_um: Optional[float] = None
     physical_size_y_um: Optional[float] = None
+    split_timepoints: bool = False
+    acquisition_start_time: Optional[float] = None
 
 
 # NOTE(imo): We want this to be fast.  But pydantic does not support numpy serialization natively, which means
@@ -297,10 +306,15 @@ class SaveOMETiffJob(Job):
             ome_folder = ome_tiff_writer.ome_output_folder(self.acquisition_info, self.capture_info)
             base_name = ome_tiff_writer.ome_base_name(self.capture_info)
             stack_key = os.path.join(ome_folder, base_name)
+            split = self.acquisition_info.split_timepoints
+            time_point = self.capture_info.time_point or 0
+            if split:
+                # One simulated stack per timepoint, mirroring the per-timepoint files on disk.
+                stack_key = f"{stack_key}:t{time_point}"
 
-            # Determine 5D shape (T, Z, C, Y, X)
+            # Determine 5D shape (T, Z, C, Y, X); a split stack holds a single timepoint.
             shape = (
-                self.acquisition_info.total_time_points,
+                1 if split else self.acquisition_info.total_time_points,
                 self.acquisition_info.total_z_levels,
                 self.acquisition_info.total_channels,
                 image.shape[0],
@@ -311,7 +325,7 @@ class SaveOMETiffJob(Job):
                 image=image,
                 stack_key=stack_key,
                 shape=shape,
-                time_point=self.capture_info.time_point or 0,
+                time_point=0 if split else time_point,
                 z_index=self.capture_info.z_index,
                 channel_index=self.capture_info.configuration_idx,
             )
@@ -374,7 +388,8 @@ class SaveOMETiffJob(Job):
             target_dtype = np.dtype(metadata[ome_tiff_writer.DTYPE_KEY])
             image_to_store = image if image.dtype == target_dtype else image.astype(target_dtype)
 
-            time_point = int(info.time_point)
+            # A split file holds a single timepoint, so its plane index along T is always 0.
+            time_point = 0 if self.acquisition_info.split_timepoints else int(info.time_point)
             z_index = int(info.z_index)
             channel_index = int(info.configuration_idx)
             shape = tuple(metadata[ome_tiff_writer.SHAPE_KEY])

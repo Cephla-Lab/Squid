@@ -84,6 +84,7 @@ def _save_acquisition_yaml(
             "xy_mode": params.xy_mode,
             "skip_saving": params.skip_saving,
             "large_acquisition_mode": params.large_acquisition_mode,
+            "ome_tiff_split_timepoints": params.split_ome_timepoints,
         },
         "objective": objective_info or {},
         "sample": {
@@ -247,6 +248,8 @@ class MultiPointController:
         self.skip_saving = False
         # Per-run opt-in for large acquisition mode (pre-flight dialog); reset when the run finishes.
         self.large_acquisition_mode = False
+        # Per-run opt-in for the OME-TIFF per-timepoint split (pre-flight dialog); reset when the run finishes.
+        self.split_ome_timepoints = False
         # Single pause control point of the running acquisition; exists only for runs in large
         # acquisition mode (operator pause + disk-space guard hold it), None otherwise.
         self._pause_gate: Optional[PauseGate] = None
@@ -466,6 +469,11 @@ class MultiPointController:
         """Opt this run into large acquisition mode (folded with the global setting in build_params)."""
         self.large_acquisition_mode = bool(enabled)
         self._log.info(f"Large acquisition mode for the next run: {self.large_acquisition_mode}")
+
+    def set_split_ome_timepoints(self, enabled: bool) -> None:
+        """Opt this run into one OME-TIFF per timepoint (folded with the global setting in build_params)."""
+        self.split_ome_timepoints = bool(enabled)
+        self._log.info(f"OME-TIFF per-timepoint split for the next run: {self.split_ome_timepoints}")
 
     def set_xy_mode(self, xy_mode):
         self.xy_mode = xy_mode
@@ -1109,6 +1117,7 @@ class MultiPointController:
             # Effective mode for this run: per-run opt-in (pre-flight dialog / YAML) or the global
             # setting. Recorded in acquisition.yaml so the run's behaviour is reproducible.
             large_acquisition_mode=self.large_acquisition_mode or control._def.LARGE_ACQUISITION_MODE,
+            split_ome_timepoints=self.split_ome_timepoints or control._def.OME_TIFF_SPLIT_TIMEPOINTS,
             plate_num_rows=plate_num_rows,
             plate_num_cols=plate_num_cols,
             xy_mode=self.xy_mode,
@@ -1122,6 +1131,7 @@ class MultiPointController:
         # A per-run opt-in (the pre-flight dialog) must not leak into the next run. Reset it first so a
         # failure further down this method cannot leave the flag set. The global setting is unaffected.
         self.large_acquisition_mode = False
+        self.split_ome_timepoints = False
         if self._pause_gate is not None:
             self._pause_gate.clear()
             self._pause_gate = None
