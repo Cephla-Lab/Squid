@@ -24,6 +24,11 @@ def test_create_simulated_microcontroller():
 
 
 def test_microcontroller_simulated_positions():
+    # The theta position (the 4th element) is always 0: from firmware 1.7 on, response
+    # bytes 14..17 carry the hardware sequencer's status, not a theta position -- see
+    # firmware/controller/src/sequencer/seq_wire.h. Firmware never wrote a theta position
+    # there, so this only ever looked different in simulation. The theta COMMANDS below
+    # still go on the wire and are still exercised.
     micro = get_test_micro()
 
     micro.move_x_to_usteps(1000)
@@ -35,19 +40,19 @@ def test_microcontroller_simulated_positions():
     micro.move_theta_usteps(4000)
     micro.wait_till_operation_is_completed()
 
-    assert_pos_almost_equal((1000, 2000, 3000, 4000), micro.get_pos())
+    assert_pos_almost_equal((1000, 2000, 3000, 0), micro.get_pos())
 
     micro.home_x()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 2000, 3000, 4000), micro.get_pos())
+    assert_pos_almost_equal((0, 2000, 3000, 0), micro.get_pos())
 
     micro.home_y()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 3000, 4000), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 3000, 0), micro.get_pos())
 
     micro.home_z()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 0, 4000), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 0, 0), micro.get_pos())
 
     micro.home_theta()
     micro.wait_till_operation_is_completed()
@@ -61,7 +66,7 @@ def test_microcontroller_simulated_positions():
     micro.wait_till_operation_is_completed()
     micro.move_theta_usteps(4000)
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((1000, 2000, 3000, 4000), micro.get_pos())
+    assert_pos_almost_equal((1000, 2000, 3000, 0), micro.get_pos())
 
     micro.move_x_usteps(1)
     micro.wait_till_operation_is_completed()
@@ -71,19 +76,19 @@ def test_microcontroller_simulated_positions():
     micro.wait_till_operation_is_completed()
     micro.move_theta_usteps(4)
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((1001, 2002, 3003, 4004), micro.get_pos())
+    assert_pos_almost_equal((1001, 2002, 3003, 0), micro.get_pos())
 
     micro.zero_x()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 2002, 3003, 4004), micro.get_pos())
+    assert_pos_almost_equal((0, 2002, 3003, 0), micro.get_pos())
 
     micro.zero_y()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 3003, 4004), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 3003, 0), micro.get_pos())
 
     micro.zero_z()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 0, 4004), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 0, 0), micro.get_pos())
 
     micro.zero_theta()
     micro.wait_till_operation_is_completed()

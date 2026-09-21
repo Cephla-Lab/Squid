@@ -75,6 +75,12 @@ static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and
 static const int SET_PIN_LEVEL = 41;
 static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
 static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter wheel
+// 44-50 are taken by the Z encoder / PID interface (firmware 1.6, PR #645) — do not reuse.
+// Hardware sequencer (firmware 1.7). Wire contract: src/sequencer/seq_wire.h.
+static const int SEQ_WRITE = 60;              // [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
+static const int SEQ_COMMIT = 61;             // [2..3]=byte length, [4..5]=CRC-16/CCITT-FALSE of the staged bytes; parse + validate
+static const int SEQ_RUN = 62;                // [2..5]=int32 stack start; stays IN_PROGRESS until the sequence is terminal
+static const int SEQ_CANCEL = 63;             // finish the current exposure, then wind down
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

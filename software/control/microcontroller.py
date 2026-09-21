@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, Optional
 
 import numpy as np
 import serial
@@ -13,6 +13,9 @@ from crc import CrcCalculator, Crc8
 from serial.serialutil import SerialException
 
 import squid.logging
+import control.sequencer_program as sequencer_program
+from control.sequencer_program import SequencerProgram, SequencerStatus
+from control.sequencer_sim import SimulatedSequencer
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -73,6 +76,11 @@ _CMD_NAMES = {
     CMD_SET.TURN_OFF_ALL_PORTS: "TURN_OFF_ALL_PORTS",
     CMD_SET.SET_WATCHDOG_TIMEOUT: "SET_WATCHDOG_TIMEOUT",
     CMD_SET.HEARTBEAT: "HEARTBEAT",
+    # Hardware sequencer (firmware v1.7+)
+    CMD_SET.SEQ_WRITE: "SEQ_WRITE",
+    CMD_SET.SEQ_COMMIT: "SEQ_COMMIT",
+    CMD_SET.SEQ_RUN: "SEQ_RUN",
+    CMD_SET.SEQ_CANCEL: "SEQ_CANCEL",
     CMD_SET.INITFILTERWHEEL: "INITFILTERWHEEL",
     CMD_SET.INITFILTERWHEEL_W2: "INITFILTERWHEEL_W2",
     CMD_SET.INITIALIZE: "INITIALIZE",
@@ -114,12 +122,25 @@ class CommandAborted(RuntimeError):
     moved, so a plain resend is safe. It is False for aborts where the motor
     state is uncertain (ack timeout / checksum failure after retries), which
     should be recovered by re-homing rather than blindly resending.
+
+    `seq_status` is the decoded sequencer status (SeqError + detail + frames_fired) that
+    came back with a failed SEQ_* command, and None for every other command.
     """
 
-    def __init__(self, command_id, reason, recoverable: bool = False):
+    def __init__(self, command_id, reason, recoverable: bool = False, seq_status: Optional[SequencerStatus] = None):
         super().__init__(reason)
         self.command_id = command_id
         self.recoverable = recoverable
+        self.seq_status = seq_status
+
+
+class SequencerNotSupportedError(RuntimeError):
+    """The connected firmware is older than the hardware sequencer contract.
+
+    Firmware below control.sequencer_program.MIN_FIRMWARE_VERSION routes unknown opcodes to
+    callback_default() and answers COMPLETED_WITHOUT_ERRORS, so a SEQ_RUN there would
+    "succeed" and the host would wait forever for frames that never come.  Every seq_*
+    method raises this instead of silently doing nothing (design S5, fail loud)."""
 
 
 # NOTE(imo): We'll want to pull this out into a common serial impl shared with serial_peripheral.py at some point, but
@@ -199,8 +220,10 @@ class SimSerial(AbstractCephlaMicroSerial):
     # v1.2: CMD_EXECUTION_ERROR reported on failed moves + MOVETO_W2 command
     # v1.3: strobe ISR latches illumination source at start (race fix for
     #       channel switch during live HW-triggered acquisition)
-    FIRMWARE_VERSION_MAJOR = 1
-    FIRMWARE_VERSION_MINOR = 3
+    # v1.7: hardware sequencer (SEQ_WRITE/COMMIT/RUN/CANCEL); bytes 14-17 of the response
+    #       become sequencer status instead of the theta position nothing ever wrote
+    FIRMWARE_VERSION_MAJOR = sequencer_program.MIN_FIRMWARE_VERSION[0]
+    FIRMWARE_VERSION_MINOR = sequencer_program.MIN_FIRMWARE_VERSION[1]
 
     @staticmethod
     def response_bytes_for(
@@ -212,7 +235,8 @@ class SimSerial(AbstractCephlaMicroSerial):
         - bytes 2-5: X pos (4 bytes)
         - bytes 6-9: Y pos (4 bytes)
         - bytes 10-13: Z pos (4 bytes)
-        - bytes 14-17: Theta (4 bytes)
+        - bytes 14-17: Theta on firmware < 1.7, sequencer status from 1.7 on (4 bytes).
+          Callers pass the packed status here as a big-endian int32.
         - byte 18: buttons and switches (1 byte)
         - bytes 19-21: reserved (3 bytes)
         - byte 22: firmware version, nibble-encoded (1 byte)
@@ -262,6 +286,11 @@ class SimSerial(AbstractCephlaMicroSerial):
 
         self._closed = False
 
+        # Hardware sequencer (firmware v1.7+). Point sequencer.on_hardware_trigger at a
+        # simulated camera to get real frames out of a simulated sequenced acquisition.
+        self._last_cmd_id = 0
+        self.sequencer = SimulatedSequencer(emit_status_packet=self._emit_status_packet)
+
     @staticmethod
     def unpack_position(pos_bytes):
         return Microcontroller._payload_to_int(pos_bytes, len(pos_bytes))
@@ -271,6 +300,14 @@ class SimSerial(AbstractCephlaMicroSerial):
         # CMD_SET handlers here.  Prefer this over adding checks for simulated mode in
         # the Microcontroller!
         command_byte = write_bytes[1]
+        # The sequencer sees every command first: it owns the SEQ_* opcodes, refuses
+        # anything not in the allow-table while a sequence runs, and owns the execution
+        # status byte for as long as a run is pending.
+        outcome = self.sequencer.dispatch(write_bytes)
+        self._last_cmd_id = write_bytes[0]
+        if outcome.handled:
+            self._queue_response(write_bytes[0], outcome.status)
+            return
         # If this is a position related command, these are our position bytes.
         position_bytes = write_bytes[2:6]
         if command_byte == CMD_SET.MOVE_X:
@@ -373,21 +410,39 @@ class SimSerial(AbstractCephlaMicroSerial):
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
 
+        self._queue_response(write_bytes[0], outcome.status)
+
+    def _queue_response(self, command_id, execution_status):
+        """Append one 24-byte status packet.  Assumes self._update_lock is held."""
+        # Bytes 14..17 carry the sequencer status on firmware >= 1.7, so theta never
+        # reaches the host any more (firmware has never written a theta position there).
+        status_bytes = bytes(self.sequencer.status_bytes())
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
-                write_bytes[0],
-                CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS,
+                command_id,
+                execution_status,
                 self.x,
                 self.y,
                 self.z,
-                self.theta,
+                int.from_bytes(status_bytes, "big", signed=True),
                 self.joystick_button,
                 self.switch,
                 firmware_version=(SimSerial.FIRMWARE_VERSION_MAJOR, SimSerial.FIRMWARE_VERSION_MINOR),
             )
         )
-
         self._update_internal_state()
+
+    def _emit_status_packet(self):
+        """The 10 ms broadcast, for as long as a sequence is running.
+
+        Called from the sequencer's run thread.  Like the firmware, the packet echoes the
+        id of the LAST command received (a heartbeat mid-run moves it) and the execution
+        status the sequencer currently reports.
+        """
+        with self._update_lock:
+            if self._closed:
+                return
+            self._queue_response(self._last_cmd_id, self.sequencer.execution_status())
 
     def _update_internal_state(self, clear_buffer: bool = False):
         if clear_buffer:
@@ -396,6 +451,9 @@ class SimSerial(AbstractCephlaMicroSerial):
         self._in_waiting = len(self.response_buffer)
 
     def close(self):
+        # Before the lock: close() joins the run thread, which calls back in here to emit
+        # packets and would deadlock against a held _update_lock.
+        self.sequencer.close()
         with self._update_lock:
             self._closed = True
             self._update_internal_state(clear_buffer=True)
@@ -657,6 +715,15 @@ class Microcontroller:
         # Firmware version (major, minor) - detected from response byte 22
         # (0, 0) indicates legacy firmware without version reporting
         self.firmware_version = (0, 0)
+
+        # Hardware sequencer progress, parsed from response bytes 14..17 by the read thread.
+        # None until a packet from firmware >= MIN_FIRMWARE_VERSION arrives; older firmware
+        # puts (an unwritten) theta position in those bytes instead.
+        self._seq_status: Optional[SequencerStatus] = None
+        # True between SEQ_RUN/SEQ_CANCEL and the completion (or failure) of the run they
+        # started. While it is set, ANY command failure is the run failing — TURN_OFF_ALL_PORTS
+        # and the serial watchdog abort through the engine, and there is only one status byte.
+        self._sequence_run_pending = False
 
         # Heartbeat thread for serial watchdog keepalive
         self._heartbeat_thread = None
@@ -1441,6 +1508,110 @@ class Microcontroller:
     def turn_off_AF_laser(self):
         self.set_pin_level(MCU_PINS.AF_LASER, 0)
 
+    # --- hardware sequencer (firmware >= 1.7) ---------------------------------------------
+    # Wire contract: control/sequencer_program.py, mirroring
+    # firmware/controller/src/sequencer/seq_wire.h.
+    #
+    # While a sequence runs the host must send NOTHING but HEARTBEAT, SEQ_CANCEL and
+    # TURN_OFF_ALL_PORTS: v1 tracks exactly one pending command, and SEQ_RUN is that command
+    # for the whole run (design S4, PR #461 lesson).
+
+    #: Per-command ack timeout while staging.  Each SEQ_WRITE/SEQ_COMMIT is a fast no-motion
+    #: command, so this only has to cover the serial round trip.
+    SEQ_STAGING_TIMEOUT_S = 2.0
+
+    def supports_hardware_sequencer(self) -> bool:
+        """True when the connected firmware implements the sequencer wire contract."""
+        return self.firmware_version >= sequencer_program.MIN_FIRMWARE_VERSION
+
+    def _require_sequencer_firmware(self, operation: str) -> None:
+        if not self.supports_hardware_sequencer():
+            required = "%d.%d" % sequencer_program.MIN_FIRMWARE_VERSION
+            current = "%d.%d" % self.firmware_version
+            raise SequencerNotSupportedError(
+                f"{operation} needs microcontroller firmware >= {required}, but the connected "
+                f"controller reports {current}. Older firmware answers unknown opcodes with "
+                f"COMPLETED_WITHOUT_ERRORS, so this cannot be attempted safely. Flash firmware "
+                f"{required} or use the software-sequenced acquisition path."
+            )
+
+    @property
+    def seq_status(self) -> Optional[SequencerStatus]:
+        """Latest sequencer progress from the 10 ms status packet, or None on old firmware.
+
+        This is how a run is observed: the host never sends a poll command, because that
+        would replace the pending SEQ_RUN.
+        """
+        return self._seq_status
+
+    def seq_upload(self, program: SequencerProgram) -> None:
+        """Stage a program word by word, then seal it with SEQ_COMMIT.
+
+        Blocking: every staged command is acked before the next goes out, because only one
+        command may be pending at a time.  Raises ProgramValidationError before touching the
+        wire if the program is one the firmware would reject, SequencerNotSupportedError on
+        old firmware, and CommandAborted (carrying the SeqError) if the firmware refuses the
+        commit.
+        """
+        self._require_sequencer_firmware("seq_upload")
+        staged = program.pack()  # validates first
+        words = sequencer_program.split_words(staged)
+        self.log.debug(f"[MCU] seq_upload: {len(staged)} bytes in {len(words)} words")
+
+        for index, data in words:
+            cmd = bytearray(self.tx_buffer_length)
+            cmd[1] = CMD_SET.SEQ_WRITE
+            cmd[2] = index
+            cmd[3:7] = data
+            self.send_command(cmd)
+            self.wait_till_operation_is_completed(Microcontroller.SEQ_STAGING_TIMEOUT_S)
+
+        length = len(staged)
+        crc = sequencer_program.crc16_ccitt_false(staged)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SEQ_COMMIT
+        cmd[2] = (length >> 8) & 0xFF
+        cmd[3] = length & 0xFF
+        cmd[4] = (crc >> 8) & 0xFF
+        cmd[5] = crc & 0xFF
+        self.send_command(cmd)
+        self.wait_till_operation_is_completed(Microcontroller.SEQ_STAGING_TIMEOUT_S)
+        self.log.debug(f"[MCU] seq_upload committed: length={length} crc=0x{crc:04X}")
+
+    def seq_run(self, stack_start: int) -> None:
+        """Start the committed program from this stack-axis position (usteps, or DAC LSB).
+
+        Non-blocking, like every other command here: SEQ_RUN stays IN_PROGRESS until the
+        engine is terminal, so the caller waits with
+        wait_till_operation_is_completed(timeout) sized for the whole burst.
+        """
+        self._require_sequencer_firmware("seq_run")
+        payload = self._int_to_payload(stack_start, 4)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SEQ_RUN
+        cmd[2] = payload >> 24
+        cmd[3] = (payload >> 16) & 0xFF
+        cmd[4] = (payload >> 8) & 0xFF
+        cmd[5] = payload & 0xFF
+        self.log.debug(f"[MCU] seq_run: stack_start={stack_start}")
+        self._sequence_run_pending = True
+        self.send_command(cmd)
+
+    def seq_cancel(self) -> None:
+        """Ask the engine to finish the current exposure and wind down.
+
+        Non-blocking.  SEQ_CANCEL becomes the pending command and completes when the engine
+        is terminal, which is the same moment the SEQ_RUN it replaced would have completed —
+        so a thread already inside wait_till_operation_is_completed() still returns on the
+        cancelled run.  Never truncates an exposure.
+        """
+        self._require_sequencer_firmware("seq_cancel")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SEQ_CANCEL
+        self.log.debug("[MCU] seq_cancel")
+        self._sequence_run_pending = True
+        self.send_command(cmd)
+
     def send_command(self, command):
         with self._cmd_lock:
             self._cmd_id = (self._cmd_id + 1) % 256
@@ -1463,7 +1634,7 @@ class Microcontroller:
 
             self._warn_if_reads_stale()
 
-    def abort_current_command(self, reason, recoverable: bool = False):
+    def abort_current_command(self, reason, recoverable: bool = False, seq_status: Optional[SequencerStatus] = None):
         """Mark the current MCU command as aborted.
 
         Args:
@@ -1473,6 +1644,9 @@ class Microcontroller:
                 surfaced on the CommandAborted exception so callers can resend
                 safely only in this case. If False (default), log at ERROR
                 (operator attention warranted) and the motor state is uncertain.
+            seq_status: The decoded sequencer status, when the failed command was a SEQ_*
+                one. Surfaced on the exception so callers see the SeqError, not just
+                "CMD_EXECUTION_ERROR".
         """
         msg = f"[MCU] Command {self._cmd_id} ({self._last_command_name()}) aborted: {reason}"
         if recoverable:
@@ -1480,9 +1654,10 @@ class Microcontroller:
         else:
             self.log.error(msg)
         self.last_command_aborted_error = CommandAborted(
-            reason=reason, command_id=self._cmd_id, recoverable=recoverable
+            reason=reason, command_id=self._cmd_id, recoverable=recoverable, seq_status=seq_status
         )
         self.mcu_cmd_execution_in_progress = False
+        self._sequence_run_pending = False
 
     def acknowledge_aborted_command(self):
         if self.last_command_aborted_error is None:
@@ -1576,11 +1751,28 @@ class Microcontroller:
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]
                 self._cmd_execution_status = msg[1]
+
+                # Firmware version from byte 22: high nibble = major, low nibble = minor.
+                # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0).
+                # Parsed here, before the command-status branches below, because on firmware
+                # >= 1.7 bytes 14..17 are the sequencer status and a failing SEQ_* command
+                # has to report the SeqError those bytes carry.
+                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
+                self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
+                if self.supports_hardware_sequencer():
+                    self._seq_status = SequencerStatus.from_response_bytes(
+                        msg[sequencer_program.STATUS_BYTE_STATE],
+                        msg[sequencer_program.STATUS_BYTE_DETAIL],
+                        msg[sequencer_program.STATUS_BYTE_FRAMES_HI],
+                        msg[sequencer_program.STATUS_BYTE_FRAMES_LO],
+                    )
+
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
                     if self.mcu_cmd_execution_in_progress:
                         self.mcu_cmd_execution_in_progress = False
+                        self._sequence_run_pending = False
                         elapsed_ms = (time.time() - self.last_command_send_timestamp) * 1000
                         self.log.debug(
                             f"[MCU] <<< command {self._cmd_id} ({self._last_command_name()}) complete"
@@ -1617,10 +1809,11 @@ class Microcontroller:
                 ):
                     # Fail fast so callers don't wait the full ack timeout
                     # for a completion the firmware says will never arrive.
-                    self.abort_current_command(
-                        reason="firmware reported CMD_EXECUTION_ERROR",
-                        recoverable=True,
-                    )
+                    seq_status = self._seq_status if self._sequencer_owns_pending_command() else None
+                    reason = "firmware reported CMD_EXECUTION_ERROR"
+                    if seq_status is not None:
+                        reason = f"{reason}: {seq_status}"
+                    self.abort_current_command(reason=reason, recoverable=True, seq_status=seq_status)
                 elif (
                     self.mcu_cmd_execution_in_progress
                     and self._cmd_id_mcu != self._cmd_id
@@ -1640,9 +1833,14 @@ class Microcontroller:
                 self.z_pos = self._payload_to_int(
                     msg[10:14], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
-                self.theta_pos = self._payload_to_int(
-                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
+                if self.supports_hardware_sequencer():
+                    # Bytes 14..17 are the sequencer status from firmware 1.7 on (seq_wire.h).
+                    # Firmware has never written a theta position there, so nothing is lost.
+                    self.theta_pos = 0
+                else:
+                    self.theta_pos = self._payload_to_int(
+                        msg[14:18], MicrocontrollerDef.N_BYTES_POS
+                    )  # unit: microstep or encoder resolution
 
                 self.button_and_switch_state = msg[18]
                 # joystick button
@@ -1662,11 +1860,6 @@ class Microcontroller:
                 # switch
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
-
-                # Firmware version from byte 22: high nibble = major, low nibble = minor
-                # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
-                version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
-                self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:
                     self._received_packet_cv.notify_all()
@@ -1732,6 +1925,17 @@ class Microcontroller:
     def _last_command_name(self) -> str:
         cmd_type = self.last_command[1] if self.last_command is not None else -1
         return _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
+
+    def _last_command_was_sequencer(self) -> bool:
+        return self.last_command is not None and self.last_command[1] in sequencer_program.SEQ_OPCODES
+
+    def _sequencer_owns_pending_command(self) -> bool:
+        """True when a command failure should be reported as a sequencer failure.
+
+        Either the pending command is a SEQ_* one, or a run started by SEQ_RUN/SEQ_CANCEL is
+        still in flight — in which case a failure on any command (TURN_OFF_ALL_PORTS, the
+        serial watchdog) IS that run aborting through the engine."""
+        return self._last_command_was_sequencer() or self._sequence_run_pending
 
     def _mcu_state(self) -> str:
         """Describe the last thing the mcu told us, for wait-timeout and stale-read messages."""
