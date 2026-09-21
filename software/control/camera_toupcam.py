@@ -24,9 +24,20 @@ from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
 
+# Mono format a sensor really delivers in the SDK's 16-bit mode, (unbinned, binned). Any mono format above
+# 8 bits selects that one mode, and the sensor decides the depth per resolution; the SDK cannot be asked (it
+# reports RAW16 throughout). Verified on the ITR3CMOS26000KMA (2026-09-15): unbinned frames are true
+# 16-bit, while 2x2 and 3x3 frames have their low four bits zero in every pixel (12-bit, left-aligned, so
+# a clipped pixel reads 65520). Add a model after checking the low bits of one of its binned frames;
+# unlisted models keep the requested label.
+_DELIVERED_PIXEL_FORMAT = {
+    ToupcamCameraModel.ITR3CMOS26000KMA: (CameraPixelFormat.MONO16, CameraPixelFormat.MONO12),
+}
+
 
 class ToupCamCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+    max_bit_depth: int  # the ADC depth; the SDK scales black level by it in 16-bit mode
     has_fan: bool
     has_TEC: bool
     has_low_noise_mode: bool
@@ -220,6 +231,7 @@ class ToupcamCamera(AbstractCamera):
         camera = toupcam.Toupcam.Open(devices[index].id)
         capabilities = ToupCamCapabilities(
             binning_to_resolution=binning_res,
+            max_bit_depth=camera.MaxBitDepth(),
             has_fan=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_FAN) > 0,
             has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
             has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
@@ -420,6 +432,8 @@ class ToupcamCamera(AbstractCamera):
         It might be called in a performance sensitive context, so you should make sure any updates here
         are as fast as they can be.
         """
+        self._refresh_pixel_format()
+
         # resize the buffer
         _, _, width, height = self._camera.get_Roi()
 
@@ -648,10 +662,37 @@ class ToupcamCamera(AbstractCamera):
         self._update_internal_settings()
 
     def get_pixel_format(self) -> CameraPixelFormat:
+        """The format the sensor delivers at the current binning (see _DELIVERED_PIXEL_FORMAT).
+
+        Setting a format picks the SDK mode, 8-bit or 16-bit container; requesting MONO16 on a sensor that
+        only fills 12 bits when binned yields MONO12, and the same request unbinned yields MONO16.
+        """
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        raise NotImplementedError("get_available_pixel_formats is not implemented for Toupcam")
+        """8-bit, plus what the sensor fills in the 16-bit mode at the current binning."""
+        if self._config.camera_model in _DELIVERED_PIXEL_FORMAT:
+            sixteen_bit_mode = [self._delivered_format(CameraPixelFormat.MONO16)]
+        else:  # unverified sensor: any of these labels may be what it delivers, so keep them all selectable
+            sixteen_bit_mode = [CameraPixelFormat.MONO12, CameraPixelFormat.MONO14, CameraPixelFormat.MONO16]
+        formats = [CameraPixelFormat.MONO8, *sixteen_bit_mode]
+        if self.get_frame_format() == CameraFrameFormat.RGB:
+            formats += [CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48]
+        return formats
+
+    def _delivered_format(self, requested: CameraPixelFormat) -> CameraPixelFormat:
+        depths = _DELIVERED_PIXEL_FORMAT.get(self._config.camera_model)
+        if depths is None or requested.bit_depth == 8 or CameraPixelFormat.is_color_format(requested):
+            return requested
+        return depths[0] if self._binning == (1, 1) else depths[1]
+
+    def _refresh_pixel_format(self):
+        delivered = self._delivered_format(self._pixel_format)
+        if delivered != self._pixel_format:
+            self._log.info(
+                f"Camera delivers {delivered.name} data at binning {self._binning} (was {self._pixel_format.name})"
+            )
+        self._pixel_format = delivered
 
     def set_auto_exposure(self, enabled: bool):
         try:
@@ -868,48 +909,18 @@ class ToupcamCamera(AbstractCamera):
         self._camera.AwbInit()
         return self.get_white_balance_gains()
 
-    _BLACK_LEVEL_MAPPING = {
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 16,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 64,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 256,
-        # TODO(imo): We didn't set a black level factor if outside of 1 of the 4 options above, but still used the factor.  Is the mapping below correct, or is black level ignored for RGB?
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 16,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 64,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 256,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 1,  # Bit depth of 8 -> same as MONO8
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 1,  # Bit depth of 8 -> same as MONO8
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 256,  # Bit depth of 16 -> same as MONO16
-    }
-
     def _get_black_level_factor(self):
-        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
-        if frame_and_format not in ToupcamCamera._BLACK_LEVEL_MAPPING:
-            raise ValueError(f"Unknown combo for black level: {frame_and_format=}")
+        """Black level is configured on the 8-bit scale; the SDK takes it on the ADC's scale in 16-bit mode
+        (measured on the ITR3CMOS26000KMA: applied in ADC units even when binned frames fill only 12 bits)."""
+        if self._pixel_format.bit_depth == 8:
+            return 1
+        return 2 ** (self._capabilities.max_bit_depth - 8)
 
-        return ToupcamCamera._BLACK_LEVEL_MAPPING[frame_and_format]
-
-    _PIXEL_SIZE_MAPPING = {
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO12): 2,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO14): 2,
-        (CameraFrameFormat.RAW, CameraPixelFormat.MONO16): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO8): 1,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO12): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO14): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.MONO16): 2,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB24): 3,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB32): 4,
-        (CameraFrameFormat.RGB, CameraPixelFormat.RGB48): 6,
-    }
+    _COLOR_CHANNELS = {CameraPixelFormat.RGB24: 3, CameraPixelFormat.RGB32: 4, CameraPixelFormat.RGB48: 3}
 
     def _get_pixel_size_in_bytes(self):
-        frame_and_format = (self.get_frame_format(), self.get_pixel_format())
-        if frame_and_format not in ToupcamCamera._PIXEL_SIZE_MAPPING:
-            raise ValueError(f"Unknown combo for pixel size: {frame_and_format=}")
-
-        return ToupcamCamera._PIXEL_SIZE_MAPPING[frame_and_format]
+        pixel_format = self._pixel_format
+        return ToupcamCamera._COLOR_CHANNELS.get(pixel_format, 1) * (1 if pixel_format.bit_depth == 8 else 2)
 
     def get_black_level(self) -> float:
         if not self._capabilities.has_black_level:
