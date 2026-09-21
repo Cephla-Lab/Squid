@@ -96,6 +96,8 @@ class HamamatsuCamera(AbstractCamera):
         self._current_frame: Optional[CameraFrame] = None
         # frame_id = this base + the stamp DCAM counts from 0 at every cap_start (see _read_newest_frame).
         self._frame_id_base = 1
+        # The number (from 0 at cap_start) of the newest frame delivered in this capture; see _frame_number().
+        self._last_frame_number = -1
         self._last_trigger_timestamp = 0
         self._trigger_sent = threading.Event()
 
@@ -161,7 +163,7 @@ class HamamatsuCamera(AbstractCamera):
             processed_frame = self._process_raw_frame(raw_frame)
             with self._frame_lock:
                 camera_frame = CameraFrame(
-                    frame_id=self._frame_id_base + int(frame_info.framestamp),
+                    frame_id=self._frame_id_base + self._frame_number(int(frame_info.framestamp)),
                     timestamp=time.time(),
                     frame=processed_frame,
                     frame_format=self.get_frame_format(),
@@ -170,6 +172,19 @@ class HamamatsuCamera(AbstractCamera):
 
                 self._current_frame = camera_frame
             return camera_frame
+
+    def _frame_number(self, framestamp: int) -> int:
+        """The frame's number since cap_start, from the camera's framestamp.
+
+        The stamp is a 16-BIT counter on the ORCA-Fusion BT (bench 2026-09-21: 65535 -> 0 while DCAM's own
+        32-bit frame count went on to 65537), so it cannot be used as the number directly: after 65,536
+        frames in one capture - 45 minutes at 24 fps - ids would start over. Frames are read in order and
+        never more than a ring's worth apart, so the number is the last one plus the stamp's advance
+        modulo 2**16. An advance of 0 is the same frame read again, and keeps its number.
+        """
+        # NOTE: The caller must hold _frame_lock.
+        self._last_frame_number += (framestamp - self._last_frame_number) & 0xFFFF
+        return self._last_frame_number
 
     def _read_frames_when_available(self):
         self._log.info("Starting Hamamatsu read thread.")
@@ -394,6 +409,7 @@ class HamamatsuCamera(AbstractCamera):
             with self._frame_lock:
                 # DCAM's frame stamp starts over at 0; ids must not.
                 self._frame_id_base = self._current_frame.frame_id + 1 if self._current_frame else 1
+                self._last_frame_number = -1  # and the numbering of this capture starts over with it
             if not self._camera.cap_start():
                 self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
                 return False

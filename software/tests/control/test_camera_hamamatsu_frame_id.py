@@ -64,6 +64,7 @@ def make_camera(dcam):
     cam._frame_lock = threading.Lock()
     cam._current_frame = None
     cam._frame_id_base = 1
+    cam._last_frame_number = -1
     cam._trigger_sent = threading.Event()
     cam._is_streaming = threading.Event()
     cam._ensure_read_thread_running = lambda: None  # no thread: the test drives the reads itself
@@ -97,6 +98,37 @@ def test_the_frame_carries_the_pixels_that_belong_to_its_id():
     frames = [cam._read_newest_frame() for _ in range(2)]
     assert [int(frame.frame[0, 0]) for frame in frames] == [0, 2]
     assert cam._current_frame is frames[-1]
+
+
+def late_in_a_long_capture(dcam):
+    """A camera that has already delivered frames 0..65533 of this capture (ids 1..65534)."""
+    cam = make_camera(dcam)
+    cam._last_frame_number = 65533
+    return cam
+
+
+def test_ids_keep_increasing_when_the_cameras_16_bit_stamp_wraps():
+    """Bench 2026-09-21, ORCA-Fusion BT: framestamp is a 16-bit counter. After 65,536 frames in one capture
+    (45 minutes at 24 fps) it went 65535 -> 0 while DCAM's own 32-bit frame count went on to 65537; ids
+    restarted at 1 and a hardware-sequenced burst was discarded as "a frame was dropped"."""
+    cam = late_in_a_long_capture(FakeDcam([65534, 65535, 0, 1]))
+    assert read_ids(cam, 4) == [65535, 65536, 65537, 65538]
+
+
+def test_a_frame_skipped_across_the_wrap_still_leaves_exactly_its_hole():
+    cam = late_in_a_long_capture(FakeDcam([65535, 1]))  # stamp 0 landed and was overtaken
+    assert read_ids(cam, 2) == [65536, 65538]
+
+
+def test_a_frame_read_twice_at_the_wrap_still_repeats_its_id():
+    cam = late_in_a_long_capture(FakeDcam([65535, 0, 0]))
+    assert read_ids(cam, 3) == [65536, 65537, 65537]
+
+
+def test_a_second_wrap_keeps_counting():
+    cam = late_in_a_long_capture(FakeDcam([65535, 0]))
+    cam._last_frame_number += 65536  # ...and another 65,536 frames later
+    assert read_ids(cam, 2) == [131072, 131073]
 
 
 def test_ids_keep_increasing_when_capture_restarts_and_the_stamp_starts_over():
