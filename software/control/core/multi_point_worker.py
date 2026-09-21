@@ -35,6 +35,7 @@ import squid.acquisition_state
 import squid.logging
 import control.core.job_processing
 from control.core.pending_captures import PendingCaptures
+from control.core.burst_dispatcher import BurstDispatcher
 from control.core.sequenced_acquisition import (
     BurstOutcome,
     ChannelPlan,
@@ -215,6 +216,8 @@ class MultiPointWorker:
         # The uploaded MCU program when this acquisition is hardware-sequenced, else None.
         # Decided once, in _prepare_sequenced_acquisition().
         self._sequenced_program: Optional[SequencerProgram] = None
+        # Hands validated bursts to the save jobs while the worker moves on (see burst_dispatcher.py).
+        self._burst_dispatcher: Optional[BurstDispatcher] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
@@ -569,6 +572,9 @@ class MultiPointWorker:
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
 
+            if self._burst_dispatcher is not None:
+                self._burst_dispatcher.stop()  # drained just above; this ends its thread
+                self._burst_dispatcher = None
             self._finish_jobs()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
@@ -647,7 +653,15 @@ class MultiPointWorker:
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
 
+    def _drain_validated_bursts(self) -> None:
+        """Validated bursts still being handed to the save jobs are outstanding frames too. A validated
+        burst is never dropped, on an abort either - as captured frames are saved in software mode."""
+        if self._burst_dispatcher is not None and not self._burst_dispatcher.drain(self._frame_wait_timeout_s() + 60):
+            self._log.warning("Timed out waiting for validated bursts to reach the save jobs!")
+
     def _wait_for_outstanding_callback_images(self):
+        self._drain_validated_bursts()
+
         # If there are outstanding frames, wait for them to come in.
         self._log.info("Waiting for any outstanding frames.")
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
@@ -763,6 +777,9 @@ class MultiPointWorker:
 
             with self._timing.get_timer("run_coordinate_acquisition"):
                 self.run_coordinate_acquisition(current_path)
+            # Bursts overlap across FOVs, not across time points: the image count, coordinates file and
+            # stats below belong to THIS time point, so all of its frames must have been handed over.
+            self._drain_validated_bursts()
 
             # finished region scan
             self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
@@ -1291,6 +1308,8 @@ class MultiPointWorker:
         self.wait_till_operation_is_completed()
         self.microcontroller.seq_upload(program)
         self._sequenced_program = program
+        self._burst_dispatcher = BurstDispatcher(self._dispatch_burst, on_error=lambda e: self._abort_due_to_error())
+        self._burst_dispatcher.start()
         self._log.info(
             f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position "
             f"({len(program.pack())} byte program uploaded)."
@@ -1377,6 +1396,20 @@ class MultiPointWorker:
         while len(collected) < fired and time.time() < deadline:
             time.sleep(0.005)
 
+    def _dispatch_burst(self, burst) -> None:
+        """Runs on the burst dispatcher's thread: one validated burst into the save / display pipeline."""
+        frames, first_index = burst
+        for index, (camera_frame, info) in enumerate(frames):
+            if self._backpressure.should_throttle():
+                if not self._backpressure.wait_for_capacity():
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                    )
+            self._dispatch_frame(camera_frame, info)
+            self.callbacks.signal_region_progress(
+                RegionProgressUpdate(current_fov=first_index + index + 1, region_fovs=self.total_scans)
+            )
+
     def _ask_user_to_intervene(self, message: str) -> None:
         """The acquisition cannot continue on its own, so the user decides what happens next.
 
@@ -1441,17 +1474,10 @@ class MultiPointWorker:
             self.handle_acquisition_abort(current_path)
             return
 
-        # The burst is validated: only now do its frames reach the save / display pipeline.
-        for index, (camera_frame, info) in enumerate(frames):
-            if self._backpressure.should_throttle():
-                if not self._backpressure.wait_for_capacity():
-                    self._log.error(
-                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
-                    )
-            self._dispatch_frame(camera_frame, info)
-            self.callbacks.signal_region_progress(
-                RegionProgressUpdate(current_fov=fov * self.NZ * len(configs) + index + 1, region_fovs=self.total_scans)
-            )
+        # The burst is validated: only now do its frames reach the save / display pipeline - on the
+        # dispatcher's thread, so the stage move, autofocus and the next burst do not wait for the
+        # save queue (it blocks: the pending-jobs cap is smaller than a burst).
+        self._burst_dispatcher.submit((frames, fov * self.NZ * len(configs)))
 
         for z_level in range(self.NZ):
             self.z_piezo_um = start_um + z_level * dz_um  # the coordinates table records the piezo z per level

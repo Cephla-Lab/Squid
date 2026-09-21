@@ -189,6 +189,8 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(camera_gains=[10.0, 12.0]), "gain"),
         (dict(channels=[plan(), plan(name="Fluorescence 638 nm Ex", source_code=13, z_offset_um=1.5)]), "z offset"),
         (dict(burst_bytes=3_000_000_000), "memory"),
+        # Two bursts can be in memory at once: one being handed to the save jobs, one just validated.
+        (dict(burst_bytes=1_200_000_000), "memory"),
         (dict(channels=[], camera_gains=[]), "no channels"),
     ],
 )

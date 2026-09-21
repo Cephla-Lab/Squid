@@ -219,6 +219,106 @@ def test_a_run_the_controller_refuses_fails_at_once_not_after_the_frame_timeout(
     ), f"three refused attempts took {elapsed:.0f} s: the burst waited for frames that were never fired"
 
 
+def test_the_next_burst_starts_while_the_previous_one_is_still_being_handed_to_the_save_jobs(
+    sequencing_setup, monkeypatch
+):
+    """Bench 2026-09-20: 0.36 s of every sequenced FOV was the worker blocked on the save queue
+    before it moved the stage. A validated burst is now handed over on its own thread; the worker
+    moves on. Order must survive a slow disk."""
+    import time
+
+    import control.microcontroller
+
+    events = []  # (kind, region, time)
+    real_dispatch = multi_point_worker.MultiPointWorker._dispatch_frame
+    real_seq_run = control.microcontroller.Microcontroller.seq_run
+
+    def slow_dispatch(worker, camera_frame, info):
+        time.sleep(0.05)  # a slow disk: 6 frames = 0.3 s per burst, far longer than a simulated burst
+        events.append(("dispatched", info.region_id, time.time()))
+        return real_dispatch(worker, camera_frame, info)
+
+    def seq_run(mcu, stack_start):
+        events.append(("burst", None, time.time()))
+        return real_seq_run(mcu, stack_start)
+
+    monkeypatch.setattr(multi_point_worker.MultiPointWorker, "_dispatch_frame", slow_dispatch)
+    monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", seq_run)
+
+    tracker, status, _ = run_acquisition(
+        FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, n_regions=3, binning=(4, 4)
+    )
+
+    bursts = [t for kind, _, t in events if kind == "burst"]
+    assert len(bursts) == 3
+    first_region_done = max(t for kind, region, t in events if kind == "dispatched" and region == "region_1")
+    assert bursts[1] < first_region_done, "the second burst waited for the first one's frames to be handed over"
+    # ...and nothing was reordered or lost by doing so
+    assert [(region, z, name) for _, region, _, z, name in tracker.full] == [
+        (f"region_{r}", z, name) for r in (1, 2, 3) for z in range(NZ) for name in FLUORESCENCE
+    ]
+    assert tracker.interventions == []
+
+
+def test_a_user_abort_still_saves_every_burst_that_was_already_validated(sequencing_setup, monkeypatch):
+    """A validated burst is good data. Aborting while it is being handed to the save jobs must not
+    drop the rest of it - software mode saves the frames it captured before an abort, too."""
+    import time
+
+    real_dispatch = multi_point_worker.MultiPointWorker._dispatch_frame
+    dispatched = []
+
+    def slow_dispatch_that_aborts_on_the_first_frame(worker, camera_frame, info):
+        if not dispatched:
+            worker.request_abort_fn()  # the user presses Abort while region_1 is being handed over
+        time.sleep(0.05)
+        dispatched.append((info.region_id, info.z_index, info.configuration.name))
+        return real_dispatch(worker, camera_frame, info)
+
+    monkeypatch.setattr(
+        multi_point_worker.MultiPointWorker, "_dispatch_frame", slow_dispatch_that_aborts_on_the_first_frame
+    )
+
+    tracker, _, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, n_regions=4, binning=(4, 4))
+
+    whole_burst = [("region_1", z, name) for z in range(NZ) for name in FLUORESCENCE]
+    assert dispatched[: len(whole_burst)] == whole_burst  # all six frames, not just the first
+    assert {region for region, _, _ in dispatched} < {"region_1", "region_2", "region_3", "region_4"}  # it DID abort
+    # whatever was validated before the abort took effect is complete, never a partial burst
+    assert len(dispatched) % len(whole_burst) == 0
+
+
+def test_a_time_point_is_completely_handed_over_before_the_next_one_begins(sequencing_setup, monkeypatch):
+    """Bursts overlap across FOVs, not across time points: a time point's image count, coordinates
+    file and stats are written when it ends, so every one of its frames must have been handed over."""
+    import time
+
+    import control.microcontroller
+
+    events = []
+    real_dispatch = multi_point_worker.MultiPointWorker._dispatch_frame
+    real_seq_run = control.microcontroller.Microcontroller.seq_run
+
+    def slow_dispatch(worker, camera_frame, info):
+        time.sleep(0.05)
+        events.append(("dispatched", info.time_point, time.time()))
+        return real_dispatch(worker, camera_frame, info)
+
+    def seq_run(mcu, stack_start):
+        events.append(("burst", None, time.time()))
+        return real_seq_run(mcu, stack_start)
+
+    monkeypatch.setattr(multi_point_worker.MultiPointWorker, "_dispatch_frame", slow_dispatch)
+    monkeypatch.setattr(control.microcontroller.Microcontroller, "seq_run", seq_run)
+
+    run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, n_regions=2, nt=2, binning=(4, 4))
+
+    bursts = [t for kind, _, t in events if kind == "burst"]
+    assert len(bursts) == 4  # 2 regions x 2 time points
+    last_of_first_time_point = max(t for kind, time_point, t in events if kind == "dispatched" and time_point == 0)
+    assert bursts[2] > last_of_first_time_point, "time point 1 began while time point 0 was still being handed over"
+
+
 def test_the_qt_controller_forwards_the_intervention_message_to_the_gui_signal(qtbot):
     """The worker runs on its own thread; the GUI hears about an intervention through a Qt signal."""
     import tests.control.gui_test_stubs as gts
