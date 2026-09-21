@@ -201,8 +201,8 @@ bool SeqEngine::hw_ready_for(uint32_t k, uint32_t now_us) {
             if (hal_.ready_line(cc.ready_line) != (bool)cc.ready_active_high) return false;
             if (trigger_valid_[cam] && !seen_busy_[cam]) {
                 // Reads ready, but was never busy since its last trigger. Give a slow line
-                // kReadyLivenessMinUs to react before calling it stuck.
-                if ((uint32_t)(now_us - last_trigger_us_[cam]) < kReadyLivenessMinUs) return false;
+                // kReadyStuckMinUs to react before calling it stuck.
+                if ((uint32_t)(now_us - last_trigger_us_[cam]) < kReadyStuckMinUs) return false;
                 stuck_ready_cam_ = (int8_t)cam;
                 return false;
             }
@@ -293,7 +293,7 @@ void SeqEngine::tick(uint32_t now_us) {
                 break;
             }
             if (stuck_ready_cam_ >= 0) {
-                fail(SeqError::ReadyTimeout, (uint8_t)stuck_ready_cam_);
+                fail(SeqError::ReadyLineStuck, (uint8_t)stuck_ready_cam_);
                 break;
             }
             if (reached(now_us, wait_deadline_us_)) fail(SeqError::WaitTimeout, 0);

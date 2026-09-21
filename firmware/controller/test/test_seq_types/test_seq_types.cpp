@@ -104,6 +104,17 @@ void test_channel_count_bounds(void) {
                             (uint8_t)validate(l, ch, cams, 1, 8, 8).error);
 }
 
+// SeqError travels in a status byte and is mirrored by number in software/control/sequencer_program.py:
+// an enumerator may be renamed (ReadyTimeout -> ReadyLineStuck, 2026-09-21), never moved.
+void test_error_codes_keep_their_wire_numbers(void) {
+    TEST_ASSERT_EQUAL_UINT8(0, (uint8_t)SeqError::None);
+    TEST_ASSERT_EQUAL_UINT8(7, (uint8_t)SeqError::WaitTimeout);
+    TEST_ASSERT_EQUAL_UINT8(9, (uint8_t)SeqError::ReadyLineStuck);
+    TEST_ASSERT_EQUAL_UINT8(10, (uint8_t)SeqError::Canceled);
+    TEST_ASSERT_EQUAL_UINT8(11, (uint8_t)SeqError::StackOutOfRange);
+    TEST_ASSERT_EQUAL_UINT8(12, (uint8_t)SeqError::InterlockOpen);
+}
+
 // The structs are wire format for the v1 shim (seq_wire.h) — sizes are frozen.
 void test_wire_struct_sizes_are_frozen(void) {
     TEST_ASSERT_EQUAL(15, (int)sizeof(seq::SeqLoop));
@@ -118,6 +129,7 @@ int main(int, char**) {
     RUN_TEST(test_camera_mask_beyond_configured_cameras_rejected);
     RUN_TEST(test_stepper_axis_out_of_range_rejected);
     RUN_TEST(test_channel_count_bounds);
+    RUN_TEST(test_error_codes_keep_their_wire_numbers);
     RUN_TEST(test_wire_struct_sizes_are_frozen);
     return UNITY_END();
 }
