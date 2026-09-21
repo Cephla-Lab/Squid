@@ -101,7 +101,7 @@ volatile bool flag_send_pos_update = false;
 
 uint8_t encoder_report_axis = 0xFF;
 uint8_t encoder_report_mode = ENCODER_REPORT_OFF;
-int32_t completion_window_usteps[TOTAL_AXES] = {0};
+uint16_t completion_window_units[TOTAL_AXES] = {0};
 elapsedMicros us_since_last_pos_update = 5000;
 elapsedMicros us_since_last_check_position = 3000;
 elapsedMicros us_since_last_joystick_update = 3000;

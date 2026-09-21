@@ -105,7 +105,9 @@ extern volatile bool flag_send_pos_update;
 // Firmware 1.6 (see constants_protocol.h)
 extern uint8_t encoder_report_axis;                    // INTERNAL axis index being reported, 0xFF = off
 extern uint8_t encoder_report_mode;                    // ENCODER_REPORT_*
-extern int32_t completion_window_usteps[TOTAL_AXES];   // SET_COMPLETION_WINDOW: early COMPLETED when within this of the target; 0 = off
+extern uint16_t completion_window_units[TOTAL_AXES];   // SET_COMPLETION_WINDOW, as received: 0.1 um of travel (wheels: 1e-4 rev); 0 = off.
+                                                        // Kept in PHYSICAL units and converted when it is checked: a later change of
+                                                        // microstepping or screw pitch must not change how wide the window is.
 extern elapsedMicros us_since_last_pos_update;
 extern elapsedMicros us_since_last_check_position;
 extern elapsedMicros us_since_last_joystick_update;

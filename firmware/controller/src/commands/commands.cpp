@@ -232,9 +232,10 @@ void callback_set_completion_window()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;
-    uint16_t units = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
-    int32_t v = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(units) / 10000.0f);
-    completion_window_usteps[axis] = v < 0 ? -v : v;
+    // Stored as received (0.1 um units), NOT as microsteps: the host changes an axis's microstepping with
+    // CONFIGURE_STEPPER_DRIVER whenever it likes, and a window converted here would silently become eight times
+    // wider when a wheel goes from 64 to 8 usteps/FS. within_completion_window() converts at the moment it checks.
+    completion_window_units[axis] = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
 }
 
 void callback_disable_stage_pid()
@@ -483,7 +484,7 @@ void callback_reset()
     Z_use_encoder = false;
     for (uint8_t i = 0; i < TOTAL_AXES; i++)
     {
-        completion_window_usteps[i] = 0;
+        completion_window_units[i] = 0;
         tmc4361[i].ramp_profile = RAMP_PROFILE_SSHAPE;   // written by the next tmc4361A_sRampInit()
     }
 }
