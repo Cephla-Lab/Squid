@@ -67,6 +67,7 @@ class SeqEngine {
     bool stack_settled(uint32_t now_us);  // in position (stepper) and z_settle_us elapsed
     void finish(uint32_t now_us);         // end of run or cancel: return move, then Done
     bool hw_ready_for(uint32_t k, uint32_t now_us);  // WAIT gate (design §5.2)
+    void watch_ready_lines();                        // liveness: note every camera seen BUSY
     void schedule_exposures(uint32_t k, uint32_t now_us);
     void fail(SeqError e, uint8_t detail);
 
@@ -93,6 +94,12 @@ class SeqEngine {
     bool trigger_valid_[kMaxCameras]{};
     uint32_t readout_done_us_[kMaxCameras]{};
     bool readout_valid_[kMaxCameras]{};
+    // Ready-line liveness. A camera is busy from its exposure until its readout ends, so between
+    // two of its triggers the line MUST have been seen busy. A line that reads ready and never
+    // went busy is stuck (shorted cable, an output nobody configured): hw_ready_for() reports it
+    // here and tick() fails with ReadyTimeout instead of triggering without waiting.
+    bool seen_busy_[kMaxCameras]{};
+    int8_t stuck_ready_cam_ = -1;
     bool cancel_requested_ = false;
     bool loaded_ = false;
     bool led_on_ = false;  // the engine lit the LED matrix and owes it an off
