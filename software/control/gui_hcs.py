@@ -209,6 +209,7 @@ class QtMultiPointController(MultiPointController, QObject):
     # Unified mosaic/plate view: single signal carrying full per-tile metadata.
     mosaic_tile_update = Signal(object)  # MosaicTileUpdate
     timepoint_finished = Signal(int)  # time_point index that just completed
+    timepoint_outputs_requested = Signal(object)  # TimepointReply: save this timepoint's outputs, answer on it
     # Slack notification signals (allows main thread to capture screenshot and maintain ordering)
     signal_slack_timepoint = Signal(object)  # TimepointStats
     signal_slack_acq_finished = Signal(object)  # AcquisitionStats
@@ -257,6 +258,7 @@ class QtMultiPointController(MultiPointController, QObject):
                 signal_region_progress=self._signal_region_progress_fn,
                 signal_plate_view_init=self._signal_plate_view_init_fn,
                 signal_timepoint_finished=self._signal_timepoint_finished_fn,
+                signal_timepoint_outputs_requested=self._signal_timepoint_outputs_requested_fn,
                 signal_slack_timepoint_notification=self._signal_slack_timepoint_notification_fn,
                 signal_slack_acquisition_finished=self._signal_slack_acquisition_finished_fn,
                 signal_zarr_frame_written=self._signal_zarr_frame_written_fn,
@@ -480,6 +482,9 @@ class QtMultiPointController(MultiPointController, QObject):
 
     def _signal_timepoint_finished_fn(self, time_point: int):
         self.timepoint_finished.emit(time_point)
+
+    def _signal_timepoint_outputs_requested_fn(self, reply):
+        self.timepoint_outputs_requested.emit(reply)
 
     def _signal_slack_timepoint_notification_fn(self, stats: TimepointStats):
         self.signal_slack_timepoint.emit(stats)
@@ -1539,9 +1544,9 @@ class HighContentScreeningGui(QMainWindow):
         # Unified mosaic widget save hooks: route the controller's start/finish
         # signals over here, where self.unifiedMosaicWidget is reachable.
         self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
-        self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
-        # _on_timepoint_finished answers every timepoint (a mosaic save or "nothing to save"), so
-        # large-acquisition runs may wait for that answer before listing the timepoint as complete.
+        self.multipointController.timepoint_outputs_requested.connect(self._on_timepoint_outputs_requested)
+        # The handler answers every request (a mosaic save or "nothing to save"), so large-acquisition
+        # runs may wait for that answer before listing the timepoint as complete.
         self.multipointController.attach_timepoint_output_writer()
 
         # Laser engine readiness gate — modal progress dialog while waiting at timepoint boundaries.
@@ -1921,20 +1926,21 @@ class HighContentScreeningGui(QMainWindow):
         if self.unifiedMosaicWidget is not None:
             self.unifiedMosaicWidget.set_acquisition_save_target(save_target)
 
-    def _on_timepoint_finished(self, time_point: int):
-        # Always answer the controller, even if the save raises (Qt swallows slot exceptions): a
-        # large-acquisition run waits for this answer before it lists the timepoint as complete.
+    def _on_timepoint_outputs_requested(self, reply):
+        # Always answer, even if the save raises (Qt swallows slot exceptions): a large-acquisition run
+        # waits for this answer before it lists the timepoint as complete. The reply is bound to the
+        # run that asked, so a late answer can never be taken for the next run's.
         pending = None
         try:
             if self.unifiedMosaicWidget is not None:
-                pending = self.unifiedMosaicWidget.save_for_timepoint(time_point)
+                pending = self.unifiedMosaicWidget.save_for_timepoint(reply.time_point)
         except Exception:
-            self.log.exception(f"Mosaic view save for timepoint {time_point} failed to start")
+            self.log.exception(f"Mosaic view save for timepoint {reply.time_point} failed to start")
         finally:
             if pending is None:
-                self.multipointController.report_no_timepoint_output(time_point)
+                reply.nothing_to_write()
             else:
-                self.multipointController.register_pending_output(time_point, *pending)
+                reply.register(*pending)
 
     def _on_live_controller_warning(self, message: str) -> None:
         """Non-modal warning from LiveController. 5s rate-limit; one popup max."""

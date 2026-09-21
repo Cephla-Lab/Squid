@@ -27,6 +27,26 @@ class FinishedOutputs:
     complete: bool  # every expected reply arrived and every writer in scope finished without error
 
 
+class TimepointReply:
+    """The writer's answer for one timepoint, bound to the run (registry) that asked.
+
+    Runs replace their registry, and an answer can arrive after the next run has started, so the
+    answer must never be routed through "whatever the controller's registry is now". Whoever is asked
+    to write outputs for a timepoint is handed this object and answers on it.
+    """
+
+    def __init__(self, registry: "PendingOutputs", time_point: int) -> None:
+        self._registry = registry
+        self.time_point = int(time_point)
+
+    def register(self, future: concurrent.futures.Future, output_dir: str) -> None:
+        """An asynchronous save writing into ``output_dir`` was started."""
+        self._registry.register(self.time_point, future, output_dir)
+
+    def nothing_to_write(self) -> None:
+        self._registry.nothing_to_write(self.time_point)
+
+
 class PendingOutputs:
     def __init__(self) -> None:
         self._cond = threading.Condition()
@@ -34,10 +54,11 @@ class PendingOutputs:
         self._writers: Dict[int, List[Tuple[concurrent.futures.Future, str]]] = {}
         self._on_settled: Optional[Callable[[FinishedOutputs], None]] = None
 
-    def expect(self, time_point: int) -> None:
-        """A reply (register or nothing_to_write) will arrive for ``time_point``."""
+    def expect(self, time_point: int) -> "TimepointReply":
+        """An answer will arrive for ``time_point``; returns the reply object that delivers it here."""
         with self._cond:
             self._awaiting_reply.add(int(time_point))
+        return TimepointReply(self, time_point)
 
     def register(self, time_point: int, future: concurrent.futures.Future, output_dir: str) -> None:
         with self._cond:
