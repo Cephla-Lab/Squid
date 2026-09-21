@@ -249,6 +249,38 @@ class TestIniValuesWithInlineComments:
         assert control._def.conf_attribute_reader(saved.get("CAMERA_CONFIG", "binning_factor_default")) == 4
         assert control._def.conf_attribute_reader(saved.get("GENERAL", "enable_flexible_multipoint")) is False
 
+    @pytest.mark.parametrize(
+        "ini_text, meaning",
+        [
+            ('"C:/data/run #3"', "C:/data/run #3"),  # review of d250c61a: became C:/data/run after any save
+            (r'"C:\\data\\run #3"', r"C:\data\run #3"),  # backslashes survive the JSON quoting
+            ("/data/run#3", "/data/run#3"),  # no whitespace before the #: never a comment, never quoted
+            ("/test/path", "/test/path"),
+            ('"2024"', "2024"),  # a folder named like a number stays text
+        ],
+    )
+    def test_free_text_means_the_same_after_a_save(self, qtbot, sample_config, temp_config_file, ini_text, meaning):
+        import control._def
+
+        sample_config.set("GENERAL", "default_saving_path", ini_text)
+        assert control._def.conf_attribute_reader(ini_text) == meaning  # what the application runs with
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.saving_path_edit.text() == meaning
+        dialog.binning_spinbox.setValue(3)  # the operator changes an UNRELATED setting
+        assert not [c for c in dialog._get_changes() if "Saving Path" in c[0]]
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert control._def.conf_attribute_reader(saved.get("GENERAL", "default_saving_path")) == meaning
+
+    def test_ordinary_text_is_written_unchanged(self, qtbot, sample_config, temp_config_file):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._ini_text("/test/path") == "/test/path"
+        assert dialog._ini_text("BF LED matrix full") == "BF LED matrix full"
+        assert dialog._ini_text("/data/run#3") == "/data/run#3"
+        assert dialog._ini_text("C:/data/run #3") == '"C:/data/run #3"'
+        assert dialog._ini_text("") == ""
+
     def test_a_missing_key_and_an_unreadable_value_still_give_the_default(self, qtbot, sample_config, temp_config_file):
         sample_config.set("CAMERA_CONFIG", "binning_factor_default", "two")
         dialog = self._dialog(qtbot, sample_config, temp_config_file)

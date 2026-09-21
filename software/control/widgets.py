@@ -1900,6 +1900,21 @@ class PreferencesDialog(QDialog):
         cuts = [raw.find(sep) for sep in (" #", "\t#") if sep in raw]
         return raw[: min(cuts)].rstrip() if cuts else raw.strip()
 
+    @staticmethod
+    def _ini_text(value: str) -> str:
+        """Free text as it has to be WRITTEN for the ini loader to read the same text back.
+
+        _get_config_value() hands the dialog the text as the loader decodes it, so `"C:/data/run #3"` (quoted in the
+        ini because of the " #") is shown as C:/data/run #3. Written back bare, the loader would take " #3" for a
+        comment and the path would silently become C:/data/run. Text that does not survive the round trip - an
+        inline-comment look-alike, or text the loader would type as a number, True or None - is written as a JSON
+        string, which the loader decodes. Everything else is written unchanged, so ordinary values are not touched."""
+        value = str(value)
+        if control._def.conf_attribute_reader(value) == value:
+            return value
+        quoted = json.dumps(value)
+        return quoted if control._def.conf_attribute_reader(quoted) == value else value
+
     def _get_config_bool(self, section, option, default=False):
         value = self._read_like_the_application(section, option)
         if value is self._MISSING:
@@ -1965,7 +1980,7 @@ class PreferencesDialog(QDialog):
         self.config.set(
             "GENERAL", "zarr_use_6d_fov_dimension", "true" if self.zarr_6d_fov_checkbox.isChecked() else "false"
         )
-        self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "default_saving_path", self._ini_text(self.saving_path_edit.text()))
         self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Click to Move
@@ -1978,7 +1993,7 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "live_view_z_step_fast_um", str(self.click_to_move_z_coarse_spinbox.value()))
 
         # Acquisition settings
-        self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
+        self.config.set("GENERAL", "multipoint_autofocus_channel", self._ini_text(self.autofocus_channel_edit.text()))
         self.config.set(
             "GENERAL",
             "enable_flexible_multipoint",
