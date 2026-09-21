@@ -88,10 +88,40 @@ def test_abort_ends_the_wait_early():
     assert result.complete is False and time.monotonic() - started < 1.0
 
 
-def test_reset_forgets_everything_and_unexpected_registrations_are_harmless():
+def test_unexpected_registrations_are_harmless():
     p = PendingOutputs()
     p.register(7, _done(), "/exp/7/mosaic_view")  # mode-off run: the GUI replies, nobody expected it
-    p.expect(8)
-    p.reset()
-    result = p.wait(None, timeout_s=0.0)
-    assert result.outputs == () and result.complete
+    assert p.wait(None, timeout_s=0.0).outputs == ((7, "/exp/7/mosaic_view"),)
+
+
+def test_when_settled_fires_immediately_if_nothing_is_outstanding():
+    p = PendingOutputs()
+    p.register(0, _done(), "/exp/0/mosaic_view")
+    got = []
+    p.when_settled(got.append)
+    assert len(got) == 1 and got[0].outputs == ((0, "/exp/0/mosaic_view"),)
+
+
+def test_when_settled_waits_for_the_reply_and_the_writer_then_fires_once():
+    p = PendingOutputs()
+    p.expect(2)
+    got = []
+    p.when_settled(got.append)
+    assert got == [], "a reply is still awaited"
+    future = concurrent.futures.Future()
+    p.register(2, future, "/exp/2/mosaic_view")
+    assert got == [], "the writer is still running"
+    future.set_result(None)
+    assert len(got) == 1 and got[0].outputs == ((2, "/exp/2/mosaic_view"),) and got[0].complete
+    p.nothing_to_write(2)
+    assert len(got) == 1
+
+
+def test_when_settled_fires_for_a_failed_writer_without_listing_it():
+    p = PendingOutputs()
+    future = concurrent.futures.Future()
+    p.register(0, future, "/exp/0/mosaic_view")
+    got = []
+    p.when_settled(got.append)
+    future.set_exception(OSError("disk full"))
+    assert len(got) == 1 and got[0].outputs == () and got[0].complete is False

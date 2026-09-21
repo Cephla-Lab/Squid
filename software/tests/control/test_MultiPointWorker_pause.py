@@ -78,6 +78,7 @@ def _make_worker(gate=None, disk_guard=None):
     # The pause tick drains job results in mode-on runs; give the bare worker an empty drain.
     w._job_runners = []
     w._completion_tracker = None
+    w._manifest = None
     w._inline_results = queue.SimpleQueue()
     w._abort_on_failed_job = True
     w._last_disk_check_mono = 0.0

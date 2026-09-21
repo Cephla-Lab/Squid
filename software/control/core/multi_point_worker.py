@@ -54,6 +54,7 @@ from control.core.mosaic_utils import (
 from control.core.backpressure import BackpressureController, BackpressureValues
 from control.core.disk_space import DiskSpaceGuard, DiskStatus
 from control.core.pause_gate import PauseGate, PauseState
+from control.core.pending_outputs import FinishedOutputs
 from control.core.transfer_manifest import CompletedUnit, CompletionTracker, TransferManifestWriter, UnitKey
 from squid.config import CameraPixelFormat
 
@@ -278,6 +279,9 @@ class MultiPointWorker:
         self._manifest: Optional[TransferManifestWriter] = None
         self._completion_tracker: Optional[CompletionTracker] = None
         self._inline_results: "queue.SimpleQueue[JobResult]" = queue.SimpleQueue()
+        # Ids of save jobs whose result has not been drained yet. The subprocess's pending-job counter
+        # cannot stand in for this: it drops before the result has crossed the multiprocessing queue.
+        self._outstanding_save_job_ids: set = set()
         if self._large_acquisition_mode and not self.skip_saving and self.experiment_path:
             self._manifest = TransferManifestWriter(self.experiment_path)
             self._completion_tracker = CompletionTracker(
@@ -517,7 +521,7 @@ class MultiPointWorker:
             return False
         self._wait_for_outstanding_callback_images()
         deadline = time.monotonic() + timeout_s
-        while self._backpressure.get_pending_jobs() > 0:
+        while self._outstanding_save_job_ids:
             if self.abort_requested_fn() or time.monotonic() > deadline:
                 self._drain_job_results()
                 self._log.warning(
@@ -527,7 +531,7 @@ class MultiPointWorker:
             self._drain_job_results()
             self._sleep(0.05)
         self._drain_job_results()
-        return True
+        return not self._outstanding_save_job_ids
 
     def _drain_job_results(self) -> bool:
         """Drain every queued job result (feeding the completion tracker) and apply the abort-on-failed-job
@@ -553,7 +557,28 @@ class MultiPointWorker:
                     f"{len(incomplete)} unit(s) never completed and are not listed in the transfer manifest "
                     f"(movable only after the end record): {incomplete[:5]}"
                 )
-        self._list_pending_outputs(None, self._PENDING_OUTPUTS_TIMEOUT_S)
+        # end tells the mover that nothing is being written any more, so it must not be claimed while an
+        # output writer outside the worker (a mosaic save) is still running: defer it until they finish.
+        if self._list_pending_outputs(None, self._PENDING_OUTPUTS_TIMEOUT_S):
+            self._write_manifest_end(reason)
+            return
+        self._log.warning(
+            "Outputs written outside the worker are still in flight; the transfer manifest's end record is "
+            "deferred until they finish, so the uploader does not sweep files that are still being written"
+        )
+        try:
+            self.callbacks.when_pending_outputs_settle(lambda finished: self._finish_manifest_late(finished, reason))
+        except Exception:
+            self._log.exception("Could not defer the transfer manifest end record; it stays open")
+
+    def _finish_manifest_late(self, finished: FinishedOutputs, reason: str) -> None:
+        try:
+            self._list_outputs(finished)
+        except Exception:
+            self._log.exception("Failed to list late outputs in the transfer manifest")
+        self._write_manifest_end(reason)
+
+    def _write_manifest_end(self, reason: str) -> None:
         try:
             self._manifest.end(reason)
         except Exception:
@@ -562,7 +587,7 @@ class MultiPointWorker:
     _TIMEPOINT_OUTPUTS_TIMEOUT_S = 30.0
     _PENDING_OUTPUTS_TIMEOUT_S = 60.0
 
-    def _list_pending_outputs(self, time_point: Optional[int], timeout_s: float) -> bool:
+    def _list_pending_outputs(self, time_point: Optional[int], timeout_s: float, quiet: bool = False) -> bool:
         """Wait for the output writers outside the worker (the GUI's mosaic saves) of ``time_point`` (None =
         whatever is left) and list what they wrote under the timepoint it belongs to. Returns True when
         nothing in scope is still outstanding. Large acquisition mode only."""
@@ -573,12 +598,15 @@ class MultiPointWorker:
         except Exception:
             self._log.exception("wait_for_pending_outputs callback failed; those outputs stay unlisted")
             return False
+        self._list_outputs(finished)
+        if not finished.complete and not quiet:
+            self._log.warning(f"Outputs written outside the worker are still outstanding (timepoint={time_point})")
+        return finished.complete
+
+    def _list_outputs(self, finished: FinishedOutputs) -> None:
         for output_time_point, output_dir in finished.outputs:
             for path in sorted(str(p) for p in Path(output_dir).rglob("*") if p.is_file()):
                 self._record_written_file(path, time_point=output_time_point)
-        if not finished.complete:
-            self._log.warning(f"Outputs written outside the worker are still outstanding (timepoint={time_point})")
-        return finished.complete
 
     def _feed_completion(self, result) -> None:
         """Route a save job's result into the completion tracker (no-op unless the manifest is on)."""
@@ -688,6 +716,9 @@ class MultiPointWorker:
             # flowing into the transfer manifest, or the offload tool can never free their space and a
             # disk-space pause would not resolve. Failed saves still abort under the usual policy.
             self._drain_job_results()
+            # The same goes for outputs written outside the worker (a mosaic save that outlasted its
+            # timepoint's wait): list them as soon as they finish, without blocking.
+            self._list_pending_outputs(None, 0.0, quiet=True)
         if self._disk_guard is None:
             return
         now = time.monotonic()
@@ -1063,6 +1094,7 @@ class MultiPointWorker:
             # outputs written outside the worker (the GUI's mosaic view). Omit it when either fell short.
             saves_listed = self._drain_results_for_timepoint()
             outputs_listed = self._list_pending_outputs(self.time_point, self._TIMEPOINT_OUTPUTS_TIMEOUT_S)
+            self._list_pending_outputs(None, 0.0, quiet=True)  # late finishers of earlier timepoints
             if saves_listed and outputs_listed:
                 self._manifest_timepoint_done()
             utils.create_done_file(current_path)
@@ -1184,6 +1216,7 @@ class MultiPointWorker:
         """
         Prints a summary, then returns True if the result was successful or False otherwise.
         """
+        self._outstanding_save_job_ids.discard(job_result.job_id)
         if job_result.exception is not None:
             self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
             self._acquisition_error_count += 1
@@ -1721,6 +1754,10 @@ class MultiPointWorker:
                         job = self._create_job(job_class, info, image)
                         if job is None:
                             continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
+                        if self._completion_tracker is not None and isinstance(
+                            job, (SaveImageJob, SaveOMETiffJob, SaveZarrJob)
+                        ):
+                            self._outstanding_save_job_ids.add(job.job_id)
                         if job_runner is not None:
                             if not job_runner.dispatch(job):
                                 self._log.error("Failed to dispatch multiprocessing job!")

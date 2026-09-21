@@ -46,7 +46,8 @@ def _start_tool(exp: Path, dest: Path) -> subprocess.Popen:
 
 PREFILL_MB = 120  # unlisted ballast inside the experiment folder: only the mover's work frees space
 CAPACITY_MB = 235  # headroom above the ballast: 115 MB. Frames are ~17 MB (8-bit sim camera), so the guard
-#                    needs 2 FOVs = 68 MB to run and 102 MB to resume; two 34 MB timepoints exhaust it.
+#                    needs 2 FOVs = 68 MB to run and 102 MB to resume. A timepoint writes ~17 MB (TIFF) or
+#                    ~16 MB (Zarr, lz4), so the run pauses around timepoint 3 of 10 with a wide margin.
 
 
 def _run_with_mover(tmp_path, monkeypatch, saving_option: FileSavingOption, nt: int):
@@ -115,7 +116,7 @@ def _assert_verified(dest_exp: Path):
 
 
 def test_individual_tiff_run_pauses_on_low_space_and_completes_while_the_mover_drains(tmp_path, monkeypatch):
-    exp, dest_exp, tt, mpc, out = _run_with_mover(tmp_path, monkeypatch, FileSavingOption.INDIVIDUAL_IMAGES, nt=6)
+    exp, dest_exp, tt, mpc, out = _run_with_mover(tmp_path, monkeypatch, FileSavingOption.INDIVIDUAL_IMAGES, nt=10)
 
     assert mpc.last_end_reason == "completed"
     assert tt.image_count == mpc.get_acquisition_image_count()
@@ -130,7 +131,7 @@ def test_individual_tiff_run_pauses_on_low_space_and_completes_while_the_mover_d
         p = dest_exp / Path(*r["path"].split("/"))
         assert p.is_file(), f"{r['path']} missing at the destination\n{out[-2000:]}"
         assert os.path.getsize(p) == r["bytes"]
-    images_at_dest = [p for t in range(6) for p in (dest_exp / _tp_dir(t)).iterdir() if p.suffix == ".tiff"]
+    images_at_dest = [p for t in range(10) for p in (dest_exp / _tp_dir(t)).iterdir() if p.suffix == ".tiff"]
     assert len(images_at_dest) == tt.image_count
     # Nothing image-like is left locally; the local tree may keep empty folders or be gone entirely.
     leftovers = [p for p in exp.rglob("*") if p.is_file()] if exp.exists() else []
@@ -143,7 +144,7 @@ def test_individual_tiff_run_pauses_on_low_space_and_completes_while_the_mover_d
 
 def test_zarr_run_moves_chunk_directories_and_reassembles_a_readable_store(tmp_path, monkeypatch):
     pytest.importorskip("tensorstore")
-    exp, dest_exp, tt, mpc, out = _run_with_mover(tmp_path, monkeypatch, FileSavingOption.ZARR_V3, nt=6)
+    exp, dest_exp, tt, mpc, out = _run_with_mover(tmp_path, monkeypatch, FileSavingOption.ZARR_V3, nt=10)
 
     assert mpc.last_end_reason == "completed"
     assert tt.image_count == mpc.get_acquisition_image_count()
@@ -157,7 +158,7 @@ def test_zarr_run_moves_chunk_directories_and_reassembles_a_readable_store(tmp_p
     store = dest_exp / next(iter(stores))
     assert (store / "zarr.json").is_file(), "array metadata moved after end"
     timepoints = {r["path"].split("/c/")[1].split("/")[0] for r in chunk_files}
-    assert timepoints == {str(t) for t in range(6)}
+    assert timepoints == {str(t) for t in range(10)}
     for r in chunk_files:
         p = dest_exp / Path(*r["path"].split("/"))
         assert p.is_file() and os.path.getsize(p) == r["bytes"], r
@@ -165,6 +166,6 @@ def test_zarr_run_moves_chunk_directories_and_reassembles_a_readable_store(tmp_p
     import tensorstore as ts_
 
     arr = ts_.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": str(store)}}, open=True).result()
-    assert arr.shape[0] == 6, "T axis intact after chunk directories were moved mid-run"
-    assert arr[5, 0, 0].read().result().any(), "last timepoint readable from the reassembled store"
+    assert arr.shape[0] == 10, "T axis intact after chunk directories were moved mid-run"
+    assert arr[9, 0, 0].read().result().any(), "last timepoint readable from the reassembled store"
     _assert_verified(dest_exp)
