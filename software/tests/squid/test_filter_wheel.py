@@ -10,10 +10,26 @@ from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 @pytest.fixture(autouse=True)
 def _wheel_cache_in_tmp(tmp_path, monkeypatch):
-    """The wheel records its position for a restart; keep that record out of the real cache/ folder."""
+    """The wheel records its position for a restart; keep that record out of the real cache/ folder.
+
+    The record starts out saying the driver is already configured the way this host would configure it, because the
+    tests below build the controller with skip_init=True only to avoid hardware init: a record whose motion
+    configuration is missing or different is what makes a skip_init start re-configure and re-home (see
+    test_filter_wheel_restart.py, which is about that and writes its own records).
+    """
     import squid.filter_wheel_controller.cephla as cephla
 
     monkeypatch.setattr(cephla, "_WHEEL_CACHE_PATH", str(tmp_path / "filter_wheel_position.json"))
+    _record_in_force()
+
+
+def _record_in_force(slot: int = 1, turns: int = 0, wheel_id: int = 1):
+    """Write a position record that says the wheel's driver is configured the way this host would configure it.
+    A skip_init=True start only leaves the hardware alone when it finds that: a record whose motion configuration
+    is missing or different means the driver was left by another profile, which costs a re-configure and a home."""
+    import squid.filter_wheel_controller.cephla as cephla
+
+    cephla.cache_wheel_state({wheel_id: cephla.WheelRecord(slot, turns, cephla.host_motion_config())})
 
 
 def _as_homed(wheel):
@@ -21,6 +37,7 @@ def _as_homed(wheel):
     wheel whose position is known. Mark it so, as a successful home by this process would."""
     for wheel_id in wheel._configs:
         wheel._position_known[wheel_id] = True
+        wheel._restored_unverified[wheel_id] = False  # established here, not restored: "already there" may be skipped
     return wheel
 
 
@@ -115,6 +132,7 @@ class TestSquidFilterWheelSkipInit:
 
     def test_skip_init_skips_mcu_initialization(self, mock_microcontroller, squid_config):
         """skip_init=True should skip init_filter_wheel and configure_squidfilter calls."""
+        _record_in_force()
         SquidFilterWheel(mock_microcontroller, squid_config, skip_init=True)
 
         mock_microcontroller.init_filter_wheel.assert_not_called()
@@ -123,6 +141,7 @@ class TestSquidFilterWheelSkipInit:
     @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
     def test_skip_init_skips_encoder_pid_config(self, mock_microcontroller, squid_config):
         """skip_init=True should skip encoder PID configuration when HAS_ENCODER_W=True."""
+        _record_in_force()
         SquidFilterWheel(mock_microcontroller, squid_config, skip_init=True)
 
         mock_microcontroller.set_pid_arguments.assert_not_called()

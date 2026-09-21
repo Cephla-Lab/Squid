@@ -13,6 +13,7 @@ from crc import CrcCalculator, Crc8
 from serial.serialutil import SerialException
 
 import squid.logging
+import control._def
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -696,6 +697,12 @@ class Microcontroller:
         # Detect firmware version early by sending a harmless command
         # This ensures supports_multi_port() returns accurate results immediately
         self._detect_firmware_version()
+
+    @property
+    def is_simulated(self) -> bool:
+        """True when this controller talks to SimSerial instead of a real one. Callers that need the hardware to
+        answer truthfully - the filter-wheel tuner needs the wheel's encoder - ask this before they start."""
+        return self._is_simulated
 
     def _warn_if_reads_stale(self):
         if self._is_simulated:
@@ -1451,6 +1458,11 @@ class Microcontroller:
     def configure_squidfilter(self, axis=AXIS.W):
         """Configure a filter wheel motor.
 
+        The microstepping, current and velocity/acceleration are read through control._def rather than from the
+        `from control._def import *` binding at the top of this module: that binding is taken at import time, so a
+        profile changed while the software runs (the filter-wheel tuner's "Apply and save") would be ignored here
+        while the host's slot arithmetic used the new value. They must be the same number.
+
         Args:
             axis: The axis to configure (AXIS.W or AXIS.W2). Defaults to AXIS.W.
         """
@@ -1458,9 +1470,14 @@ class Microcontroller:
             raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
         self.set_leadscrew_pitch(axis, SCREW_PITCH_W_MM)
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(axis, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            axis,
+            int(control._def.MICROSTEPPING_DEFAULT_W),
+            control._def.W_MOTOR_RMS_CURRENT_mA,
+            control._def.W_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(axis, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
+        self.set_max_velocity_acceleration(axis, control._def.MAX_VELOCITY_W_mm, control._def.MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):

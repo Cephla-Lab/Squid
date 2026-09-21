@@ -15,10 +15,16 @@ from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 @pytest.fixture(autouse=True)
 def _wheel_cache_in_tmp(tmp_path, monkeypatch):
-    """The wheel records its position for a restart; keep that record out of the real cache/ folder."""
+    """The wheel records its position for a restart; keep that record out of the real cache/ folder.
+
+    The record starts out saying the driver is already configured the way this host would configure it, so that the
+    skip_init=True construction below touches no hardware; a record that says otherwise makes a restart re-configure
+    and re-home, which is test_filter_wheel_restart.py's subject.
+    """
     import squid.filter_wheel_controller.cephla as cephla
 
     monkeypatch.setattr(cephla, "_WHEEL_CACHE_PATH", str(tmp_path / "filter_wheel_position.json"))
+    cephla.cache_wheel_state({1: cephla.WheelRecord(1, 0, cephla.host_motion_config())})
 
 
 def _as_homed(wheel):
@@ -26,6 +32,7 @@ def _as_homed(wheel):
     wheel whose position is known. Mark it so, as a successful home by this process would."""
     for wheel_id in wheel._configs:
         wheel._position_known[wheel_id] = True
+        wheel._restored_unverified[wheel_id] = False  # established here, not restored: "already there" may be skipped
     return wheel
 
 
