@@ -1873,30 +1873,52 @@ class PreferencesDialog(QDialog):
         checked_value = getattr(Qt.Checked, "value", Qt.Checked)
         self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
 
-    def _get_config_value(self, section, option, default=""):
+    # The four readers below go through control._def.conf_attribute_reader, the function the running software reads
+    # the same ini with. It strips an inline comment ("30.0  # mm/s"), which ConfigParser keeps as part of the value.
+    # Reading the raw text here instead made such a value look like the default (float("30.0  # mm/s") raises), so
+    # the dialog showed something the machine was not running, and saving ANY setting wrote that default back.
+    _MISSING = object()
+
+    def _read_like_the_application(self, section, option):
+        """The ini value typed as the running software types it, or _MISSING when the key is absent."""
         try:
-            return self.config.get(section, option)
+            raw = self.config.get(section, option)
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return self._MISSING
+        return control._def.conf_attribute_reader(raw)
+
+    def _get_config_value(self, section, option, default=""):
+        """The value as text, without an inline comment. Text that is not a comment ("my#tag", a path) is kept."""
+        try:
+            raw = str(self.config.get(section, option))
         except (configparser.NoSectionError, configparser.NoOptionError):
             return default
+        value = control._def.conf_attribute_reader(raw)
+        if isinstance(value, str):
+            return value  # the loader's own comment stripping, nothing else changed
+        # Typed by the loader (a number, True, None, JSON): keep the text as written, minus the comment.
+        cuts = [raw.find(sep) for sep in (" #", "\t#") if sep in raw]
+        return raw[: min(cuts)].rstrip() if cuts else raw.strip()
 
     def _get_config_bool(self, section, option, default=False):
-        try:
-            val = self.config.get(section, option)
-            return str(val).strip().lower() in ("true", "1", "yes", "on")
-        except (configparser.NoSectionError, configparser.NoOptionError):
+        value = self._read_like_the_application(section, option)
+        if value is self._MISSING:
             return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
 
     def _get_config_int(self, section, option, default=0):
-        try:
-            return int(self.config.get(section, option))
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        value = self._read_like_the_application(section, option)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
+        return int(value) if float(value).is_integer() else default
 
     def _get_config_float(self, section, option, default=0.0):
-        try:
-            return float(self.config.get(section, option))
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        value = self._read_like_the_application(section, option)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
+        return float(value)
 
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
