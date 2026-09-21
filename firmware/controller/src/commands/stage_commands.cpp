@@ -764,6 +764,13 @@ void callback_home_or_zero()
             }
             break;
         case AXIS_W:
+            if (enable_filterwheel != true) {
+                // Not initialised (no INITFILTERWHEEL since power-up): there is nothing to home. Say so, like
+                // every other wheel command, instead of doing nothing and claiming the command is running -
+                // the host's recovery from a power cycle is to see this, re-initialise and home again.
+                report_move_error();
+                return;
+            }
             if (enable_filterwheel == true) {
             if (stage_PID_enabled[w] == 1)
                 tmc4361A_set_PID(&tmc4361[w], PID_DISABLE);
@@ -808,6 +815,13 @@ void callback_home_or_zero()
             }
             break;
         case AXIS_W2:
+            if (enable_filterwheel_w2 != true) {
+                // Not initialised (no INITFILTERWHEEL since power-up): there is nothing to home. Say so, like
+                // every other wheel command, instead of doing nothing and claiming the command is running -
+                // the host's recovery from a power cycle is to see this, re-initialise and home again.
+                report_move_error();
+                return;
+            }
             if (enable_filterwheel_w2 == true) {
             if (stage_PID_enabled[w2] == 1)
                 tmc4361A_set_PID(&tmc4361[w2], PID_DISABLE);

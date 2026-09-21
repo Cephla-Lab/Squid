@@ -209,7 +209,9 @@ void callback_set_encoder_reporting()
 
 // SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
 // RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
-// INITIALIZE (the host sets it once with the other motion parameters); RESET
+// INITIALIZE (the host sets it once with the other motion parameters), but
+// INITFILTERWHEEL re-initialises the wheel's motion chip and with it the S-shape: set the
+// profile AFTER the wheel has been initialised. RESET
 // returns every axis to the S-shape, applied by the next ramp setup.
 void callback_set_ramp_profile()
 {
