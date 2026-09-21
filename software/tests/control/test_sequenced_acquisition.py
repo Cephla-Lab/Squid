@@ -159,6 +159,7 @@ def eligible_kwargs(**overrides):
         use_piezo=True,
         global_reset_active=True,
         intensity_is_mcu_dac=True,
+        shutter_is_mcu_ttl=True,
         channels=[plan(source_code=11), plan(source_code=12)],
         camera_gains=[10.0, 10.0],
         burst_bytes=400_000_000,
@@ -181,6 +182,8 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         (dict(use_piezo=False), "piezo"),
         (dict(global_reset_active=False), "global reset"),
         (dict(intensity_is_mcu_dac=False), "light source"),
+        # e.g. an LDI with ldi_shutter_mode = PC: the controller's TTL pulses would gate nothing
+        (dict(shutter_is_mcu_ttl=False), "TTL"),
         (dict(channels=[plan(name="BF LED matrix full", source_code=0)], camera_gains=[10.0]), "BF LED matrix full"),
         (dict(channels=[plan(name="Fluorescence 488 nm Ex RGB")], camera_gains=[10.0]), "RGB"),
         (dict(camera_gains=[10.0, 12.0]), "gain"),

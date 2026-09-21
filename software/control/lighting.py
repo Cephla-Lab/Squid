@@ -255,6 +255,12 @@ class IlluminationController:
         source's own software interface)."""
         return self.intensity_control_mode != IntensityControlMode.Software
 
+    @property
+    def shutter_is_mcu_ttl(self) -> bool:
+        """True when the light is switched by the controller's TTL outputs (not by a light source's
+        own software interface)."""
+        return self.shutter_control_mode == ShutterControlMode.TTL
+
     def resolve_mcu_illumination(self, channel, intensity) -> Tuple[int, float]:
         """(illumination source code, DAC percent 0-100) that set_intensity() sends to the
         controller for this channel, with the calibration LUT applied when one exists.

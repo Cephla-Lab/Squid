@@ -186,6 +186,7 @@ def ineligibility_reason(
     use_piezo: bool,
     global_reset_active: bool,
     intensity_is_mcu_dac: bool,
+    shutter_is_mcu_ttl: bool,
     channels: Sequence[ChannelPlan],
     camera_gains: Sequence[float],
     burst_bytes: int,
@@ -223,6 +224,10 @@ def ineligibility_reason(
         )
     if not intensity_is_mcu_dac:
         return "the light source's intensity is not set through the controller's DACs"
+    if not shutter_is_mcu_ttl:
+        # The burst switches light with TTL pulses only. A source shuttered by software would stay
+        # dark - or stay lit, which under global reset integrates into every row until it is read.
+        return "the light source is not switched by the controller's TTL outputs (its shutter is software-controlled)"
     if not channels:
         return "no channels are selected"
     for channel in channels:

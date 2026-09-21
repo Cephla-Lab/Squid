@@ -1232,6 +1232,7 @@ class MultiPointWorker:
             use_piezo=bool(self.use_piezo),
             global_reset_active=control._def.use_level_trigger_global_reset(),
             intensity_is_mcu_dac=self.microscope.illumination_controller.intensity_is_mcu_dac,
+            shutter_is_mcu_ttl=self.microscope.illumination_controller.shutter_is_mcu_ttl,
             channels=plans,
             camera_gains=[config.analog_gain for config in self.selected_configurations],
             burst_bytes=self.NZ * len(plans) * width * height * 2,
