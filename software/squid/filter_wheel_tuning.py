@@ -376,9 +376,12 @@ class WheelTuner:
                 f"results exercise the tool, they are not this machine's profile"
             )
         self.set_motion(self.a.vmax, self.a.accel, self.a.ramp)
+        # ALWAYS sent, zero included. The controller keeps a window as a microstep count: one the application set
+        # (5 deg at 64 usteps/FS) survives into this run and, at this run's 8 usteps/FS, is 40 deg wide - every
+        # timing the profile is chosen from would be measured against a COMPLETED that arrives far too early.
+        m.set_completion_window(AXIS.W, max(0.0, float(self.a.window_deg)) / 360.0)
+        self.wait()
         if self.a.window_deg > 0:
-            m.set_completion_window(AXIS.W, self.a.window_deg / 360.0)
-            self.wait()
             self.log(
                 f"completion window {self.a.window_deg:g} deg ({self.a.window_deg / 360 * USTEPS_PER_REV:.1f} usteps): "
                 f"COMPLETED is sent while the last degrees are travelled"
@@ -1085,19 +1088,21 @@ class WheelTuner:
             return
         steps = [
             ("reporting off", lambda: (self.mcu.set_encoder_reporting(AXIS.W, ENCODER_REPORTING.OFF), self.wait(5))),
-            (
-                "ini velocity restored",
-                lambda: (
-                    self.mcu.set_max_velocity_acceleration(AXIS.W, _def.MAX_VELOCITY_W_mm, _def.MAX_ACCELERATION_W_mm),
-                    self.wait(5),
-                ),
-            ),
+            # The driver first: the controller converts velocity, acceleration and the completion window to
+            # microsteps when it receives them, so they have to arrive after the microstepping they belong to.
             (
                 "driver restored to the machine's microstepping and current",
                 lambda: (
                     self.mcu.configure_motor_driver(
                         AXIS.W, int(_def.MICROSTEPPING_DEFAULT_W), _def.W_MOTOR_RMS_CURRENT_mA, _def.W_MOTOR_I_HOLD
                     ),
+                    self.wait(5),
+                ),
+            ),
+            (
+                "ini velocity restored",
+                lambda: (
+                    self.mcu.set_max_velocity_acceleration(AXIS.W, _def.MAX_VELOCITY_W_mm, _def.MAX_ACCELERATION_W_mm),
                     self.wait(5),
                 ),
             ),
@@ -1276,6 +1281,10 @@ class WheelTuningSession:
         self.tuner = WheelTuner(params, mcu=self.mcu, log_fn=self.log)
         if self._cancelled:
             self.tuner.cancel()
+        # From here the tuner drives the axis itself: other microstepping, its own homes. The wheel controller's
+        # position and driver-configuration claims are withdrawn first, in memory and in the record, so that a run
+        # that is interrupted (a crash, a power cut) cannot leave a --skip-init start believing either of them.
+        self.filter_wheel.release_for_direct_control(self.wheel_id)
         try:
             self.tuner.run()  # restores the controller's own settings in its finally
         finally:
@@ -1305,6 +1314,10 @@ class WheelTuningSession:
         if not path or not os.path.exists(path):
             raise FileNotFoundError(f"machine ini not found ({path!r}); nothing was written")
         slot = self.current_slot()
+        # The motor profile is ONE set of values for every Squid wheel (control._def, W and W2 alike), so every
+        # wheel's driver has to follow it - not only the one that was tuned. Where each wheel is, before anything
+        # changes:
+        wheels = self._all_wheel_slots()
         written = write_profile_ini(rec, path)
         self.log(f"ini updated: {written['path']} (backup {written['backup']})")
         for k, (old, new) in written["changes"].items():
@@ -1314,6 +1327,44 @@ class WheelTuningSession:
         # The driver must now be told the new profile and the wheel re-homed: a microstep is not the same length
         # any more, so the driver's coordinate - and the turn count on it - mean nothing until the flag re-anchors
         # them. reconfigure_driver() also updates the position record, which is what makes the next restart safe.
-        self.filter_wheel.reconfigure_driver(self.wheel_id, return_to_slot=slot)
-        self.log(f"the wheel now runs the new profile and is on slot {slot if slot is not None else 1}")
+        failed = []
+        for wheel_id, wheel_slot in wheels.items():
+            try:
+                self.filter_wheel.reconfigure_driver(wheel_id, return_to_slot=wheel_slot)
+                self.log(
+                    f"wheel {wheel_id} now runs the new profile and is on slot {wheel_slot if wheel_slot is not None else 1}"
+                )
+            except Exception as e:  # noqa: BLE001 - go on: the other wheels must not be left on the old microstepping
+                _log.error(f"Filter wheel {wheel_id}: re-configuring with the applied profile failed", exc_info=True)
+                failed.append((wheel_id, e))
+        others = [w for w in wheels if w != self.wheel_id]
+        if others:
+            self.log(
+                f"NOTE: wheel(s) {', '.join(str(w) for w in others)} share this profile but were not tuned or verified "
+                f"with it - the profile was measured on wheel {self.wheel_id} only."
+            )
+        if failed:
+            raise RuntimeError(
+                "the profile was saved, but re-configuring failed for "
+                + "; ".join(f"wheel {w}: {e}" for w, e in failed)
+                + ". Their position is unknown; they are configured and homed before their next move."
+            )
         return written
+
+    def _all_wheel_slots(self) -> dict:
+        """{wheel_id: slot or None} for every wheel the controller drives, the tuned wheel first."""
+        try:
+            ids = list(self.filter_wheel.wheel_ids())
+        except Exception:  # noqa: BLE001
+            ids = [self.wheel_id]
+        ids = [self.wheel_id] + [w for w in ids if w != self.wheel_id]
+        slots = {}
+        for wheel_id in ids:
+            slot = None
+            try:
+                if self.filter_wheel.position_is_known(wheel_id):
+                    slot = self.filter_wheel.get_filter_wheel_position().get(wheel_id)
+            except Exception:  # noqa: BLE001
+                _log.warning(f"Could not read filter wheel {wheel_id}'s position before applying", exc_info=True)
+            slots[wheel_id] = slot
+        return slots

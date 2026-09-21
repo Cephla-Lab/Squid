@@ -666,6 +666,13 @@ class SquidFilterWheel(AbstractFilterWheelController):
         wheel's position as unknown until a successful home completes.
         """
         config = self._configs[wheel_id]
+        if wheel_id not in self._configured:
+            # The driver's configuration is not known to be the host's: an earlier re-configuration failed, or
+            # the wheel was released for direct control and never handed back. Homing on it would anchor a
+            # coordinate whose microstep size the host may have wrong. Configure first; a failure raises and the
+            # wheel stays unknown.
+            _log.warning(f"Filter wheel {wheel_id}: driver configuration unknown - configuring before homing")
+            self._configure_wheel(wheel_id, config)
         _log.info(f"Homing filter wheel {wheel_id} (prev tracked={self._positions.get(wheel_id)})")
         home_start = time.monotonic()
         # Unknown until this home has fully succeeded; the record is withdrawn now, so a process that dies
@@ -750,11 +757,29 @@ class SquidFilterWheel(AbstractFilterWheelController):
         restart path and by the filter-wheel tuner's "Apply and save", which changes the profile while the GUI runs.
         On failure the position is left unknown rather than claimed, and the exception propagates.
         """
+        # Invalidate BEFORE the first command: a configuration that times out half way may already have changed
+        # the microstepping, and a position (or a record) that still claims to be valid would then be believed by
+        # the next move, or by the next --skip-init start. release_for_direct_control() also forgets the driver
+        # configuration, so that nothing moves this wheel again until a configuration has succeeded.
+        self.release_for_direct_control(wheel_id)
         self._configure_wheel(wheel_id, self._configs[wheel_id])
-        self._set_unknown(wheel_id)
         self._home_wheel(wheel_id)
         if return_to_slot is not None:
             self._move_to_position(wheel_id, return_to_slot)
+
+    def release_for_direct_control(self, wheel_id: int):
+        """Withdraw everything this controller claims about a wheel, in memory and in the record a restart reads:
+        its position AND the configuration its driver runs. For code that is about to drive the wheel's axis
+        directly (the filter-wheel tuner changes microstepping, current and ramp, and homes on its own), and the
+        first step of reconfigure_driver(). Until reconfigure_driver() has succeeded the wheel is unknown and
+        unconfigured: a move homes first, and a home configures the driver first (_home_wheel)."""
+        self._configured.pop(wheel_id, None)
+        self._set_unknown(wheel_id)
+
+    def wheel_ids(self) -> List[int]:
+        """The wheels this controller drives. Their motor profile (control._def) is shared, so whoever changes it
+        has to re-configure every one of them."""
+        return sorted(self._configs)
 
     def home(self, index: Optional[int] = None):
         """Home filter wheel(s).

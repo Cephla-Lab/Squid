@@ -339,6 +339,22 @@ class FilterWheelTuningDialog(QDialog):
         self.worker = None
 
     # ---------------------------------------------------------------- Qt
+    def reject(self):
+        # Escape (and any other route to QDialog.reject) does NOT go through closeEvent. While a run owns the
+        # hardware the dialog must stay modal: released, the main window would let the user move a wheel - or start
+        # an acquisition - that the tuner is driving.
+        if self._running():
+            self._say("A run is in progress. Cancel it and wait for the wheel to be put back before closing.")
+            return
+        self.session.log_fn = None
+        super().reject()
+
+    def accept(self):
+        if self._running():
+            self._say("A run is in progress. Cancel it and wait for the wheel to be put back before closing.")
+            return
+        super().accept()
+
     def closeEvent(self, event):
         if self._running():
             # Closing now would leave the wheel mid-run, outside the host's coordinate frame and with its position
