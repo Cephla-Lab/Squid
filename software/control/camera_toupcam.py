@@ -550,6 +550,7 @@ class ToupcamCamera(AbstractCamera):
     def stop_streaming(self):
         self._camera.Stop()
         self._raw_camera_stream_started = False
+        self._trigger_sent = False  # a frame in flight is lost with the stream; don't wait out its timeout
 
     def get_is_streaming(self):
         return self._raw_camera_stream_started
@@ -812,9 +813,10 @@ class ToupcamCamera(AbstractCamera):
         self._last_trigger_timestamp = time.time()
         self._trigger_sent = True
 
-    def get_ready_for_trigger(self) -> bool:
+    def _get_ready_for_trigger_imp(self) -> bool:
         # TODO(imo): Should we pass in the timeout?  This might be fine since it's calculated based on the exposure time.
-        trigger_timeout_s = 1.5 * self._get_raw_exposure_time() / 1000 * 1.02 + 4
+        # The stored exposure time, not the SDK's: this runs on the live trigger thread and must not touch the SDK.
+        trigger_timeout_s = 1.5 * self._exposure_time / 1000 * 1.02 + 4
         trigger_age = time.time() - self._last_trigger_timestamp
         trigger_too_old = trigger_age > trigger_timeout_s
         trigger_sent = self._trigger_sent
