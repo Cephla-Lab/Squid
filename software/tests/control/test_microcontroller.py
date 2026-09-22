@@ -322,3 +322,19 @@ def test_wait_timeout_error_includes_mcu_state():
             micro.wait_till_operation_is_completed(0.05)
     finally:
         micro.close()
+
+
+def test_set_completion_window_encoding():
+    """SET_COMPLETION_WINDOW (49, firmware >= 1.6): axis in byte 2, the window in 0.1 um big-endian in bytes 3-4.
+    For a wheel one "mm" is one revolution, so 5 degrees is 139 x 1e-4 rev."""
+    micro = get_test_micro()
+    micro.set_completion_window(control._def.AXIS.W, 5.0 / 360.0)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_COMPLETION_WINDOW == 49
+    assert micro.last_command[2] == control._def.AXIS.W
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 139
+    micro.set_completion_window(control._def.AXIS.W2, 0.0)
+    assert micro.last_command[2] == control._def.AXIS.W2
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 0
+    for bad in (-0.001, 6.6):
+        with pytest.raises(ValueError):
+            micro.set_completion_window(control._def.AXIS.W, bad)

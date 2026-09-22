@@ -8,6 +8,22 @@ from squid.config import FilterWheelConfig, FilterWheelControllerVariant, SquidF
 from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 
+@pytest.fixture(autouse=True)
+def _wheel_cache_in_tmp(tmp_path, monkeypatch):
+    """The wheel records its position for a restart; keep that record out of the real cache/ folder."""
+    import squid.filter_wheel_controller.cephla as cephla
+
+    monkeypatch.setattr(cephla, "_WHEEL_CACHE_PATH", str(tmp_path / "filter_wheel_position.json"))
+
+
+def _as_homed(wheel):
+    """These tests build the controller with skip_init=True only to avoid hardware init, and then exercise a
+    wheel whose position is known. Mark it so, as a successful home by this process would."""
+    for wheel_id in wheel._configs:
+        wheel._position_known[wheel_id] = True
+    return wheel
+
+
 def _make_squid_config(motor_slot: int = 3) -> SquidFilterWheelConfig:
     """Default 8-slot SquidFilterWheelConfig used across the test module."""
     return SquidFilterWheelConfig(
@@ -157,12 +173,12 @@ class TestSquidFilterWheelAbsoluteMove:
     def _build_wheel(motor_slot):
         config = _make_squid_config(motor_slot=motor_slot)
         mc = _make_mock_mc()
-        return SquidFilterWheel(mc, config, skip_init=True), mc, config
+        return _as_homed(SquidFilterWheel(mc, config, skip_init=True)), mc, config
 
     @pytest.fixture
     def wheel(self, w_config):
         mc = _make_mock_mc()
-        return SquidFilterWheel(mc, w_config, skip_init=True), mc
+        return _as_homed(SquidFilterWheel(mc, w_config, skip_init=True)), mc
 
     def test_move_to_position_uses_absolute_moveto_for_w(self, wheel, w_config):
         """Moving slot 1 → slot 5 issues MOVETO_W with absolute target usteps."""

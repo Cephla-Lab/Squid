@@ -739,3 +739,113 @@ class TestClickToMoveSettings:
 
         assert control._def.LIVE_VIEW_Z_STEP_UM == pytest.approx(2.5)
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
+
+
+class TestFilterWheelShortestPath:
+    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_wrap (auto / True / False)."""
+
+    def _dialog(self, qtbot, config, path):
+        dialog = control.widgets.PreferencesDialog(config, path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_missing_key_shows_auto_and_is_not_a_change(self, preferences_dialog):
+        assert preferences_dialog.wheel_wrap_combo.currentData() == "auto"
+        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+
+    @pytest.mark.parametrize(
+        "ini, data",
+        [
+            ("auto", "auto"),
+            ("True", "True"),
+            ("true", "True"),
+            ("False", "False"),
+            ("False  # why", "False"),
+            # whatever the wheel controller accepts, the dialog has to read the same way:
+            ("AUTO", "auto"),
+        ],
+    )
+    def test_the_ini_value_selects_the_item(self, qtbot, sample_config, temp_config_file, ini, data):
+        sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.wheel_wrap_combo.currentData() == data
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+
+    def test_a_change_needs_a_restart_and_is_shown_in_words(self, preferences_dialog):
+        preferences_dialog.wheel_wrap_combo.setCurrentIndex(2)
+        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+        assert change == [("Filter Wheel Shortest Path", "Auto (on from firmware 1.6)", "Off", True)]
+
+    def test_it_is_saved_as_the_value_the_wheel_controller_parses(self, preferences_dialog, temp_config_file):
+        import control._def
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        for index, expected in [(1, True), (2, False), (0, "auto")]:
+            preferences_dialog.wheel_wrap_combo.setCurrentIndex(index)
+            assert preferences_dialog._apply_settings()
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            text = saved.get("GENERAL", "squid_filterwheel_wrap")
+            # the same two steps the application takes at startup: the ini reader, then the wheel controller
+            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) == expected
+
+    def test_an_unrecognised_ini_value_is_shown_as_being_replaced(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_wrap", "off")  # a typo the wheel controller refuses
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.wheel_wrap_combo.currentData() == "auto"
+        change = [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+        assert change == [("Filter Wheel Shortest Path", "off", "Auto (on from firmware 1.6)", True)]
+
+
+class TestFilterWheelCompletionWindow:
+    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_completion_window_deg."""
+
+    def test_missing_key_shows_off_and_is_not_a_change(self, preferences_dialog):
+        assert preferences_dialog.wheel_window_spinbox.value() == 0.0
+        assert preferences_dialog.wheel_window_spinbox.text() == "Off (exact slot)"
+        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_the_dialog_and_the_wheel_controller_read_every_accepted_value_alike(
+        self, qtbot, sample_config, temp_config_file
+    ):
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        shown = {"auto": "auto", True: "True", False: "False"}
+        for ini in ("auto", "Auto", "True", "true", "False", "false", "True  # on"):
+            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(ini))
+            assert dialog.wheel_wrap_combo.currentData() == shown[parsed], ini
+
+    def test_a_window_with_an_inline_comment_is_shown_not_cleared(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5  # degrees, 32 mm filters")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.wheel_window_spinbox.value() == 5.0  # float() alone read this as 0 and a save cleared it
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_the_ini_value_is_shown(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.wheel_window_spinbox.value() == 5.0
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_a_change_needs_a_restart_and_is_saved_as_a_number_the_config_reader_parses(
+        self, preferences_dialog, temp_config_file
+    ):
+        import control._def
+
+        preferences_dialog.wheel_window_spinbox.setValue(5.0)
+        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+        assert change == [("Filter Wheel Completion Window", "0 \u00b0", "5 \u00b0", True)]
+        assert preferences_dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        text = saved.get("GENERAL", "squid_filterwheel_completion_window_deg")
+        assert control._def.conf_attribute_reader(text) == 5
+
+    def test_the_range_stops_at_ten_degrees(self, preferences_dialog):
+        preferences_dialog.wheel_window_spinbox.setValue(45.0)  # a whole slot: never a sensible window
+        assert preferences_dialog.wheel_window_spinbox.value() == 10.0

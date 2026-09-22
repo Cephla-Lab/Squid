@@ -1508,6 +1508,38 @@ class PreferencesDialog(QDialog):
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
 
+        # Squid filter wheel: shortest path between slots (squid_filterwheel_wrap). The ini values are the
+        # item data; the text is what an operator reads.
+        self.wheel_wrap_combo = QComboBox()
+        for text, value in self._WHEEL_WRAP_CHOICES:
+            self.wheel_wrap_combo.addItem(text, value)
+        self.wheel_wrap_combo.setCurrentIndex(self._wheel_wrap_index(self._get_wheel_wrap_setting()))
+        self.wheel_wrap_combo.setToolTip(
+            "Squid filter wheel only. With the shortest path on, a slot change takes the shorter way round\n"
+            "and may cross the wheel's index flag: 8 -> 1 is one slot instead of seven.\n"
+            "Auto turns it on when the controller runs firmware 1.6 or later, where crossing the flag was verified.\n"
+            "On forces it from firmware 1.4: use it only after checking that a 1 -> 8 change completes.\n"
+            "Off always takes the flag-free way round."
+        )
+        hw_layout.addRow("Filter Wheel Shortest Path *:", self.wheel_wrap_combo)
+
+        self.wheel_window_spinbox = QDoubleSpinBox()
+        self.wheel_window_spinbox.setRange(0.0, 10.0)
+        self.wheel_window_spinbox.setDecimals(1)
+        self.wheel_window_spinbox.setSingleStep(0.5)
+        self.wheel_window_spinbox.setSuffix(" \u00b0")
+        self.wheel_window_spinbox.setSpecialValueText("Off (exact slot)")
+        self.wheel_window_spinbox.setValue(self._get_wheel_window_setting())
+        self.wheel_window_spinbox.setToolTip(
+            "Squid filter wheel, firmware 1.6 or later (ignored on older firmware).\n"
+            "The wheel reports a filter change done once it is within this many degrees of the slot, while it\n"
+            "finishes the last degrees, so the exposure can start about 20 ms earlier.\n"
+            "Size it from the optics: (filter clear aperture - image field diameter) / 2 / filter pitch radius,\n"
+            "in degrees, minus margin. 32 mm filters on a 22 mm field allow about 6\u00b0 (5\u00b0 was used on the bench);\n"
+            "25 mm filters allow about 1.9\u00b0. Off completes at the exact slot with the wheel stopped."
+        )
+        hw_layout.addRow("Filter Wheel Completion Window *:", self.wheel_window_spinbox)
+
         self.led_r_factor = QDoubleSpinBox()
         self.led_r_factor.setRange(0.0, 1.0)
         self.led_r_factor.setSingleStep(0.1)
@@ -1898,6 +1930,41 @@ class PreferencesDialog(QDialog):
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
             return default
 
+    # squid_filterwheel_wrap: (what the operator reads, what goes in the ini)
+    _WHEEL_WRAP_CHOICES = (("Auto (on from firmware 1.6)", "auto"), ("On", "True"), ("Off", "False"))
+
+    def _get_wheel_wrap_setting(self) -> str:
+        """The ini's squid_filterwheel_wrap as one of "auto", "True", "False". A missing key is the default,
+        "auto". Anything the wheel controller refuses is returned as typed, so the change list shows it being
+        replaced.
+
+        Read with the SAME two functions the running software uses (the ini loader's typing, then the wheel
+        controller's own parser), not with a second opinion about what the text means: the controller accepts
+        `1` and `0`, and a dialog that showed those as Auto would turn an explicit Off into On at firmware 1.6 -
+        or an explicit On into Off at 1.4 / 1.5 - the first time anything else was saved."""
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        raw = self._get_config_value("GENERAL", "squid_filterwheel_wrap", "auto")
+        try:
+            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(raw))
+        except ValueError:
+            return raw.split("#")[0].strip()
+        return {"auto": "auto", True: "True", False: "False"}[parsed]
+
+    def _get_wheel_window_setting(self) -> float:
+        """The ini's squid_filterwheel_completion_window_deg as the running software reads it: through the ini
+        loader, which strips an inline comment. float() alone would make `5  # degrees` read as 0 here while the
+        wheel runs with 5, and saving anything else would then clear the window."""
+        raw = self._get_config_value("GENERAL", "squid_filterwheel_completion_window_deg", "0")
+        value = control._def.conf_attribute_reader(raw)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
+
+    def _wheel_wrap_index(self, setting: str) -> int:
+        values = [value for _, value in self._WHEEL_WRAP_CHOICES]
+        return values.index(setting) if setting in values else 0
+
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
         return abs(a - b) < epsilon
@@ -1995,6 +2062,8 @@ class PreferencesDialog(QDialog):
             "enable_spinning_disk_confocal",
             "true" if self.spinning_disk_checkbox.isChecked() else "false",
         )
+        self.config.set("GENERAL", "squid_filterwheel_wrap", self.wheel_wrap_combo.currentData())
+        self.config.set("GENERAL", "squid_filterwheel_completion_window_deg", f"{self.wheel_window_spinbox.value():g}")
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
@@ -2344,6 +2413,17 @@ class PreferencesDialog(QDialog):
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Spinning Disk", str(old_val), str(new_val), True))
+
+        old_val = self._get_wheel_wrap_setting()
+        new_val = self.wheel_wrap_combo.currentData()
+        if old_val != new_val:
+            names = {value: text for text, value in self._WHEEL_WRAP_CHOICES}
+            changes.append(("Filter Wheel Shortest Path", names.get(old_val, old_val), names[new_val], True))
+
+        old_val = self._get_wheel_window_setting()
+        new_val = self.wheel_window_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Filter Wheel Completion Window", f"{old_val:g} \u00b0", f"{new_val:g} \u00b0", True))
 
         # LED matrix factors (live update)
         old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)
@@ -5743,33 +5823,33 @@ class FilterControllerWidget(QFrame):
 
     def _go_to_next_position(self, wheel_id: int):
         """Move to the next position."""
-        try:
-            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
-            wheel_info = self.filterController.get_filter_wheel_info(wheel_id)
-            max_pos = wheel_info.number_of_slots
-
-            if current_pos < max_pos:
-                new_pos = current_pos + 1
-                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
-                combo_box = self._combo_boxes.get(wheel_id)
-                if combo_box:
-                    combo_box.setCurrentIndex(new_pos - 1)
-        except Exception as e:
-            self._log.error(f"Error moving wheel {wheel_id} to next position: {e}")
+        self._step_position(wheel_id, +1)
 
     def _go_to_previous_position(self, wheel_id: int):
         """Move to the previous position."""
-        try:
-            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
+        self._step_position(wheel_id, -1)
 
-            if current_pos > 1:
-                new_pos = current_pos - 1
-                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
-                combo_box = self._combo_boxes.get(wheel_id)
-                if combo_box:
-                    combo_box.setCurrentIndex(new_pos - 1)
+    def _step_position(self, wheel_id: int, direction: int):
+        """One slot forward or back. The controller decides what a step means at an end - a rotary wheel allowed
+        to cross its index flag continues round, the others stop - and the selection is then read back from it, so
+        the panel never has an arithmetic of its own."""
+        try:
+            if direction > 0:
+                self.filterController.next_position(wheel_id)
+            else:
+                self.filterController.previous_position(wheel_id)
+            new_pos = self.filterController.get_filter_wheel_position().get(wheel_id)
         except Exception as e:
-            self._log.error(f"Error moving wheel {wheel_id} to previous position: {e}")
+            self._log.error(
+                f"Error moving wheel {wheel_id} to the {'next' if direction > 0 else 'previous'} position: {e}"
+            )
+            return
+        combo_box = self._combo_boxes.get(wheel_id)
+        if combo_box and new_pos is not None:
+            # the move has been made: moving the selection must not send it a second time
+            combo_box.blockSignals(True)
+            combo_box.setCurrentIndex(new_pos - 1)
+            combo_box.blockSignals(False)
 
     def disable_movement_by_switching_channels(self, state):
         """Enable/disable automatic filter wheel movement when changing channels."""
