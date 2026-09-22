@@ -259,18 +259,47 @@ def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
     "setting, fw, wraps",
     [("auto", (1, 6), True), ("auto", (1, 4), False), (True, (1, 4), True), (False, (1, 6), False)],
 )
-def test_wraps_around_is_what_the_gui_buttons_ask(monkeypatch, setting, fw, wraps):
+def test_next_at_the_last_slot_follows_the_setting_and_the_firmware(monkeypatch, setting, fw, wraps):
+    """What the GUI's Next button gets at the last slot: one slot across the flag, or nothing."""
     import control._def
 
     monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", setting)
     mc = MagicMock()
     mc.firmware_version = fw
-    assert SquidFilterWheel(mc, _config(), skip_init=True).wraps_around(1) is wraps
+    w = _as_homed(SquidFilterWheel(mc, _config(), skip_init=True))
+    w._positions[1] = 8
+    mc.move_w_to_usteps.reset_mock()
+    w.next_position(1)
+    assert mc.move_w_to_usteps.called is wraps
+    assert w.get_filter_wheel_position()[1] == (1 if wraps else 8)
+
+
+def test_wrap_is_parsed_on_assignment_and_a_typo_is_refused_there():
+    w, mc, cfg = _wheel(wrap="auto")
+    assert w.wrap == "auto"
+    w.wrap = True
+    assert w.wrap is True
+    with pytest.raises(ValueError, match="squid_filterwheel_wrap"):
+        w.wrap = "off"
+    assert w.wrap is True  # unchanged by the refused assignment
+
+
+def test_an_explicit_true_below_firmware_1_4_is_warned_about(caplog):
+    import control._def
+    import logging
+
+    with pytest.MonkeyPatch.context() as m:
+        m.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", True)
+        mc = MagicMock()
+        mc.firmware_version = (1, 3)
+        with caplog.at_level(logging.WARNING):
+            w = SquidFilterWheel(mc, _config(), skip_init=True)
+    assert w._wrap_enabled() is False
+    assert any("squid_filterwheel_wrap = True needs firmware" in r.getMessage() for r in caplog.records)
 
 
 def test_controllers_without_a_rotary_wrap_keep_their_ends():
     from squid.abc import AbstractFilterWheelController
 
-    assert AbstractFilterWheelController.wraps_around(MagicMock()) is False
-    assert AbstractFilterWheelController.wraps_around(MagicMock(), 1) is False
     assert AbstractFilterWheelController.position_is_known(MagicMock(), 1) is True
+    assert not hasattr(AbstractFilterWheelController, "wraps_around")  # the buttons ask next/previous instead

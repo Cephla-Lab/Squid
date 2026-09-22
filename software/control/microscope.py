@@ -93,6 +93,23 @@ def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
     return bool(component_override)
 
 
+def _home_filter_wheels(wheel, index):
+    """Home one wheel (or all, index None) without letting a failure abort the start-up: the wheel controller
+    marks a wheel whose home failed as position-unknown, so it is homed again before its next use, and the
+    operator can re-home from the GUI. The rest of the microscope comes up regardless."""
+    try:
+        if index is None:
+            wheel.home()  # the call shape every controller has always seen
+        else:
+            wheel.home(index)
+    except Exception:
+        _log.error(
+            "Filter wheel homing failed during startup; continuing with the filter wheel position unknown. "
+            "Re-home from the GUI before relying on filter selection.",
+            exc_info=True,
+        )
+
+
 class MicroscopeAddons:
     @staticmethod
     def build_from_global_config(
@@ -271,28 +288,11 @@ class MicroscopeAddons:
             # record. A wheel that cannot say where it is gets homed (slot 1 for certain beats an unknown slot),
             # and ONLY that wheel: homing the others would throw away the channel they were restored on.
             if not skip_init:
-                wheels_to_home = [None]  # None = every configured wheel, as a normal start always did
+                _home_filter_wheels(self.emission_filter_wheel, None)  # every configured wheel, as always
             else:
-                wheels_to_home = [i for i in fw_config.indices if not self.emission_filter_wheel.position_is_known(i)]
-            for wheel_index in wheels_to_home:
-                try:
-                    if wheel_index is None:
-                        self.emission_filter_wheel.home()
-                    else:
-                        self.emission_filter_wheel.home(wheel_index)
-                except Exception:
-                    # A filter-wheel homing failure must not brick the whole
-                    # microscope: the wheel controller leaves its tracked
-                    # position unchanged (and possibly stale) on failure, so
-                    # treat the position as unknown, come up anyway, and let the
-                    # operator re-home from the GUI rather than aborting startup
-                    # before the window even opens.
-                    _log.error(
-                        "Filter wheel homing failed during startup; continuing with the "
-                        "filter wheel position unknown. Re-home from the GUI before relying "
-                        "on filter selection.",
-                        exc_info=True,
-                    )
+                for wheel_index in fw_config.indices:
+                    if not self.emission_filter_wheel.position_is_known(wheel_index):
+                        _home_filter_wheels(self.emission_filter_wheel, wheel_index)
         if self.piezo_stage and not skip_init:
             self.piezo_stage.home()
         if self.squid_laser_engine:
