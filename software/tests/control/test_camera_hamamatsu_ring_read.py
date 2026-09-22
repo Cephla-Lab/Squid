@@ -28,24 +28,38 @@ with contextlib.ExitStack() as _stack:
     if hasattr(ctypes, "windll"):
         _stack.enter_context(mock.patch.object(ctypes.windll, "LoadLibrary", return_value=mock.MagicMock()))
     import control.camera_hamamatsu as camera_hamamatsu
-    from control.dcamapi4 import DCAM_IDPROP, DCAMPROP
+    from control.dcamapi4 import DCAM_IDPROP, DCAMERR, DCAMPROP
 
 
 class FakeRing:
-    """DCAM's ring as the ORCA-Fusion BT showed it on the bench: frame n (counted from 0 at cap_start)
-    lives in slot n % depth until overwritten, cap_transferinfo() counts frames in 32 bits, and each
-    frame's framestamp is only the low 16 bits of n."""
+    """DCAM's ring as the ORCA-Fusion BT showed it on the bench: the frame with TRANSFER index n (counted from
+    0 at cap_start, in the order frames reached host memory) lives in slot n % depth until overwritten,
+    cap_transferinfo() counts transfers in 32 bits, and each frame's framestamp is the low 16 bits of the
+    CAMERA's capture count - which runs ahead of the transfer count by every frame lost between the camera
+    and host memory (bench 2026-09-21 21:02: a ~460 ms USB stall, 7 captured, 1 transferred)."""
 
     def __init__(self, trigger_source):
         self.trigger_source = trigger_source
         self.depth = None
-        self.produced = 0
+        self.stamps = []  # stamps[n] = framestamp of the frame with transfer index n
+        self.captured = 0  # frames the camera has captured: transfers + frames lost at the link
         self.transferinfo_calls = 0
+        self.fail_next_transferinfo = False
         self.slot_reads = []
-        self.corrupt_slot = None  # a slot that reports the wrong stamp, to model a wrong ring assumption
+        self.corrupt_slot = None  # a slot that holds a frame from the PAST: what a wrong ring layout looks like
+
+    @property
+    def produced(self):
+        return len(self.stamps)
 
     def produce(self, count):
-        self.produced += count
+        for _ in range(count):
+            self.stamps.append(self.captured & 0xFFFF)
+            self.captured += 1
+
+    def lose_at_link(self, count):
+        """The camera captures `count` frames that never reach host memory."""
+        self.captured += count
 
     # --- the DCAM calls the driver makes ---
     def prop_getvalue(self, idprop):
@@ -56,23 +70,30 @@ class FakeRing:
         self.depth = count
         return True
 
+    def lasterr(self):
+        return DCAMERR.INVALIDHANDLE  # a real DCAMERR, as the SDK returns
+
     def cap_start(self):
-        self.produced = 0
+        self.stamps = []
+        self.captured = 0
         return True
 
     def cap_transferinfo(self):
         self.transferinfo_calls += 1
+        if self.fail_next_transferinfo:
+            self.fail_next_transferinfo = False
+            return False
         newest = (self.produced - 1) % self.depth if self.produced else -1
         return types.SimpleNamespace(nFrameCount=self.produced, nNewestFrameIndex=newest)
 
     def buf_getframe(self, index):
         self.slot_reads.append(index)
         newest = self.produced - 1
-        # the newest frame whose number maps onto this slot
+        # the newest frame whose transfer index maps onto this slot
         number = newest if index == -1 else newest - ((newest - index) % self.depth)
-        stamp = number & 0xFFFF
+        stamp = self.stamps[number]
         if index == self.corrupt_slot:
-            stamp = (stamp + 1000) & 0xFFFF
+            stamp = (stamp - 1000) & 0xFFFF
         return types.SimpleNamespace(framestamp=stamp), np.full((4, 4), number % 60000, dtype=np.uint16)
 
 
@@ -86,6 +107,7 @@ def make_camera(ring):
     cam._frame_id_base = 1
     cam._frames_read = 0
     cam._last_frame_number = -1
+    cam._link_lost = 0
     cam._ring_frames = 5
     cam._read_every_frame = False
     cam._trigger_sent = threading.Event()
@@ -175,7 +197,8 @@ def test_a_slot_that_does_not_hold_the_expected_frame_is_reported_and_skipped_ne
 def after_many_frames(trigger_source, delivered):
     """A capture that has already delivered `delivered` frames - the stream stays up across acquisitions."""
     cam, ring = started(trigger_source)
-    ring.produced = delivered
+    ring.stamps = [n & 0xFFFF for n in range(delivered)]
+    ring.captured = delivered
     cam._frames_read = delivered
     cam._last_frame_number = delivered - 1
     return cam, ring
@@ -201,6 +224,56 @@ def test_live_view_ids_also_keep_counting_across_the_wrap():
     assert ids(cam._read_frames()) == [65536]
     ring.produce(1)  # stamp 0
     assert ids(cam._read_frames()) == [65537]
+
+
+def test_frames_lost_between_the_camera_and_the_host_leave_a_hole_and_are_reported(caplog):
+    """Bench 2026-09-21 21:02, after 69,300 clean frames: a ~460 ms USB stall (the controller's acks
+    stopped at the same moment). The camera captured 7 frames, DCAM transferred 1: six never reached
+    host memory. The ring layout was right (slot == frame % 32 in every line), but the camera's stamp
+    now ran 6 ahead of the transfer count for good."""
+    cam, ring = started(EXTERNAL)
+    ring.produce(3)
+    assert ids(cam._read_frames()) == [1, 2, 3]
+    ring.lose_at_link(6)
+    ring.produce(2)
+    with caplog.at_level(logging.ERROR):
+        frames = cam._read_frames()
+    assert ids(frames) == [10, 11]  # ids follow the camera: the six lost frames are the hole 4..9
+    assert "6 frame" in caplog.text and "never reached" in caplog.text
+    assert "Ring slot" not in caplog.text  # the layout is not in question
+
+
+def test_after_frames_are_lost_at_the_link_every_later_frame_is_still_delivered(caplog):
+    """The bench saw the opposite: after the loss the read fell back to the newest frame, the fall-back
+    left the reader 6 frames 'ahead' of DCAM, and exactly one frame in seven arrived for the rest of the
+    capture - 'the camera delivered only 3 of 20 frames', three attempts, acquisition stopped."""
+    cam, ring = started(EXTERNAL)
+    ring.produce(3)
+    cam._read_frames()
+    ring.lose_at_link(6)
+    ring.produce(1)
+    with caplog.at_level(logging.ERROR):
+        cam._read_frames()
+    ring.produce(7)
+    frames = cam._read_frames()
+    assert ids(frames) == list(range(11, 18))  # all seven, not one
+    ring.produce(7)
+    assert ids(cam._read_frames()) == list(range(18, 25))
+
+
+def test_the_newest_frame_fall_back_leaves_the_reader_in_step_with_dcam(caplog):
+    """_frames_read is DCAM's transfer count, never a stamp-derived number: with frames lost at the link
+    the two differ, and a reader set from the stamp saw 'nothing new' for six wake-ups."""
+    cam, ring = started(EXTERNAL)
+    ring.produce(3)
+    ring.lose_at_link(6)
+    ring.produce(2)
+    ring.fail_next_transferinfo = True  # forces the newest-frame fall-back
+    with caplog.at_level(logging.ERROR):
+        frames = cam._read_frames()
+    assert ids(frames) == [11]
+    ring.produce(2)
+    assert ids(cam._read_frames()) == [12, 13]  # was: [] until the count had caught up with the stamp
 
 
 def test_live_view_still_takes_only_the_newest_frame():

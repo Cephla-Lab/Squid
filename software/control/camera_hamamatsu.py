@@ -108,6 +108,9 @@ class HamamatsuCamera(AbstractCamera):
         self._read_every_frame = False  # triggered modes: every frame, in order. Live: the newest only.
         self._ring_frames = _LIVE_RING_FRAMES
         self._frames_read = 0  # frames of THIS capture already delivered (DCAM counts from 0 at cap_start)
+        # How far the camera's capture count (its framestamp) runs ahead of DCAM's transfer count: every
+        # frame the camera captured that never reached host memory (a USB stall). See _read_frames().
+        self._link_lost = 0
         # frame_id = this base + the stamp DCAM counts from 0 at every cap_start (see _read_newest_frame).
         self._frame_id_base = 1
         # The number (from 0 at cap_start) of the newest frame delivered in this capture; see _frame_number().
@@ -239,7 +242,7 @@ class HamamatsuCamera(AbstractCamera):
             info = self._camera.cap_transferinfo()
             if isinstance(info, bool):
                 self._log.error(f"cap_transferinfo failed ({self._last_dcam_error_string()}); taking the newest frame.")
-                return self._newest_frame_only()
+                return self._newest_frame_only(total=None)
 
             total = int(info.nFrameCount)
             first = self._frames_read
@@ -255,39 +258,74 @@ class HamamatsuCamera(AbstractCamera):
 
             frames = []
             newest_slot = int(info.nNewestFrameIndex)
-            for number in range(first, total):
+            for number in range(first, total):  # transfer indices: they say which slot, and what has been read
                 slot = (newest_slot - (total - 1 - number)) % self._ring_frames
                 result = self._camera.buf_getframe(slot)
                 if isinstance(result, bool):
                     self._log.error(f"Reading ring slot {slot} failed ({self._last_dcam_error_string()}).")
-                    return frames + self._newest_frame_only()
+                    return frames + self._newest_frame_only(total)
                 frame_info, raw_frame = result
-                # framestamp is a 16-bit counter (it wraps every 65,536 frames); DCAM's frame count is not.
-                if (int(frame_info.framestamp) - number) & 0xFFFF:
+                stamp = int(frame_info.framestamp)
+                # The camera's stamp counts CAPTURED frames (16 bits); DCAM's count counts TRANSFERRED ones.
+                # They agree until a frame is lost between the camera and host memory, after which the stamp
+                # runs ahead by that many for the rest of the capture. The offset can only grow.
+                lost_now = self._link_loss_change(stamp, number)
+                if lost_now < 0:
                     self._log.error(
-                        f"Ring slot {slot} holds framestamp {int(frame_info.framestamp)}, expected {number & 0xFFFF} "
+                        f"Ring slot {slot} holds framestamp {stamp}, expected {(number + self._link_lost) & 0xFFFF} "
                         f"(frame {number}; newest slot {newest_slot}, {total} frames, ring of {self._ring_frames}): the "
                         "ring is not laid out as assumed, or the slot was overwritten while it was read. Taking the "
                         "newest frame."
                     )
-                    return frames + self._newest_frame_only()
-                self._last_frame_number = number
-                frames.append(self._new_frame(number, raw_frame))
+                    return frames + self._newest_frame_only(total)
+                if lost_now:
+                    self._note_link_loss(lost_now, f"ring slot {slot}, frame {number}")
+                frames.append(self._new_frame(self._frame_number(stamp), raw_frame))
             self._frames_read = total
             self._trigger_sent.clear()
             return frames
 
-    def _newest_frame_only(self) -> List[CameraFrame]:
-        # NOTE: The caller must hold _capture_lock. The fall-back of _read_frames().
+    def _link_loss_change(self, stamp: int, number: int) -> int:
+        """By how many frames the camera's stamp has run further ahead of DCAM's transfer count since the
+        last frame: 0 normally, > 0 when frames were lost at the link, < 0 only if the ring is not laid out
+        as assumed (a frame cannot be transferred before it is captured). Signed, 16-bit wrap-safe."""
+        offset = (stamp - number) & 0xFFFF
+        return ((offset - self._link_lost + 0x8000) & 0xFFFF) - 0x8000
+
+    def _note_link_loss(self, lost_now: int, where: str) -> None:
+        self._link_lost = (self._link_lost + lost_now) & 0xFFFF
+        self._log.error(
+            f"{lost_now} frame(s) the camera captured never reached host memory (lost between the camera and the "
+            f"host, e.g. a USB stall; noticed at {where}). Their ids will be missing."
+        )
+
+    def _newest_frame_only(self, total: Optional[int]) -> List[CameraFrame]:
+        """The fall-back of _read_frames(): the newest frame, with the reader left IN STEP WITH DCAM.
+
+        total is DCAM's transfer count when known. _frames_read must come from it and never from the
+        camera's stamp: with frames lost at the link the two differ, and a reader set from the stamp saw
+        "nothing new" for as many wake-ups (bench 2026-09-21: one frame in seven for the rest of the capture).
+        """
+        # NOTE: The caller must hold _capture_lock.
         result = self._camera.buf_getframe(-1)
         self._trigger_sent.clear()
         if isinstance(result, bool):
             self._log.error("Frame read resulted in boolean, must be an error.")
             return []
         frame_info, raw_frame = result
-        number = self._frame_number(int(frame_info.framestamp))
-        self._frames_read = number + 1  # carry on after the frame that was delivered
-        return [self._new_frame(number, raw_frame)]
+        stamp = int(frame_info.framestamp)
+        if total is None:  # cap_transferinfo() failed on the way in; ask once more, now that a frame was read
+            info = self._camera.cap_transferinfo()
+            total = None if isinstance(info, bool) else int(info.nFrameCount)
+        if total is not None:
+            lost_now = self._link_loss_change(stamp, total - 1)
+            if lost_now > 0:
+                self._note_link_loss(lost_now, "the newest frame")
+            elif lost_now < 0:
+                self._link_lost = (stamp - (total - 1)) & 0xFFFF  # resynchronise on the newest frame
+            self._frames_read = total
+        # else: leave _frames_read; the next wake-up resynchronises through the overwritten-frames path.
+        return [self._new_frame(self._frame_number(stamp), raw_frame)]
 
     def _frame_number(self, framestamp: int) -> int:
         """The frame's number since cap_start, from the camera's framestamp.
@@ -611,6 +649,7 @@ class HamamatsuCamera(AbstractCamera):
             self._read_every_frame = self.get_acquisition_mode() != CameraAcquisitionMode.CONTINUOUS
             self._ring_frames = _TRIGGERED_RING_FRAMES if self._read_every_frame else _LIVE_RING_FRAMES
             self._frames_read = 0
+            self._link_lost = 0
             if not self._allocate_read_buffers(self._ring_frames):
                 self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
                 return False
