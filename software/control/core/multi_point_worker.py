@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import os
 import queue
@@ -25,7 +26,7 @@ from control.core.multi_point_utils import (
     PlateViewInit,
 )
 from control.core.objective_store import ObjectiveStore
-from control.microcontroller import Microcontroller
+from control.microcontroller import CommandAborted, Microcontroller
 from control.microscope import Microscope
 from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
@@ -33,6 +34,20 @@ from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
 import squid.logging
 import control.core.job_processing
+from control.core.pending_captures import PendingCaptures
+from control.core.burst_dispatcher import BurstDispatcher
+from control.core.sequenced_acquisition import (
+    BurstOutcome,
+    ChannelPlan,
+    build_program,
+    burst_failure_reason,
+    camera_record,
+    ineligibility_reason,
+    intervention_message,
+    outcome_after_failed_burst,
+    piezo_um_to_dac,
+)
+from control.sequencer_program import SequencerProgram
 from control.core.job_processing import ZarrWriteResult
 from control.core.job_processing import (
     CaptureInfo,
@@ -192,7 +207,17 @@ class MultiPointWorker:
         self._image_callback_idle = threading.Event()
         self._image_callback_idle.set()
         # This is protected by the threading event above (aka set after clear, take copy before set)
-        self._current_capture_info: Optional[CaptureInfo] = None
+        # The captures whose frames are still to arrive, in order: one for an ordinary capture, N
+        # for a hardware-sequenced burst. Invariant: empty <=> _ready_for_next_trigger is set.
+        self._pending_captures: PendingCaptures[CaptureInfo] = PendingCaptures()
+        # Where a paired frame goes. Ordinary captures dispatch immediately; a hardware-sequenced
+        # burst swaps in a collecting sink for its duration (frames are validated before saving).
+        self._frame_sink: Callable[[CameraFrame, CaptureInfo], None] = self._dispatch_frame
+        # The uploaded MCU program when this acquisition is hardware-sequenced, else None.
+        # Decided once, in _prepare_sequenced_acquisition().
+        self._sequenced_program: Optional[SequencerProgram] = None
+        # Hands validated bursts to the save jobs while the worker moves on (see burst_dispatcher.py).
+        self._burst_dispatcher: Optional[BurstDispatcher] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
 
@@ -463,6 +488,7 @@ class MultiPointWorker:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
             this_image_callback_id = self.camera.add_frame_callback(self._image_callback)
+            self._prepare_sequenced_acquisition()
             sleep_time = min(self.dt / 20.0, 0.5)
 
             # Send Slack acquisition start notification
@@ -546,6 +572,9 @@ class MultiPointWorker:
             if this_image_callback_id:
                 self.camera.remove_frame_callback(this_image_callback_id)
 
+            if self._burst_dispatcher is not None:
+                self._burst_dispatcher.stop()  # drained just above; this ends its thread
+                self._burst_dispatcher = None
             self._finish_jobs()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
@@ -624,7 +653,15 @@ class MultiPointWorker:
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
 
+    def _drain_validated_bursts(self) -> None:
+        """Validated bursts still being handed to the save jobs are outstanding frames too. A validated
+        burst is never dropped, on an abort either - as captured frames are saved in software mode."""
+        if self._burst_dispatcher is not None and not self._burst_dispatcher.drain(self._frame_wait_timeout_s() + 60):
+            self._log.warning("Timed out waiting for validated bursts to reach the save jobs!")
+
     def _wait_for_outstanding_callback_images(self):
+        self._drain_validated_bursts()
+
         # If there are outstanding frames, wait for them to come in.
         self._log.info("Waiting for any outstanding frames.")
         if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
@@ -633,7 +670,11 @@ class MultiPointWorker:
         if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
             self._log.warning("Timed out waiting for the last image to process!")
 
-        # No matter what, set the flags so things can continue
+        # No matter what, set the flags so things can continue. Captures whose frames never
+        # came are dropped with them, so the queue and the flag cannot disagree.
+        never_arrived = self._pending_captures.drop_remaining()
+        if never_arrived:
+            self._log.warning(f"{len(never_arrived)} expected frame(s) never arrived at end of acquisition.")
         self._ready_for_next_trigger.set()
         self._image_callback_idle.set()
 
@@ -736,6 +777,9 @@ class MultiPointWorker:
 
             with self._timing.get_timer("run_coordinate_acquisition"):
                 self.run_coordinate_acquisition(current_path)
+            # Bursts overlap across FOVs, not across time points: the image count, coordinates file and
+            # stats below belong to THIS time point, so all of its frames must have been handed over.
+            self._drain_validated_bursts()
 
             # finished region scan
             self.coordinates_pd.to_csv(os.path.join(current_path, "coordinates.csv"), index=False, header=True)
@@ -1088,6 +1132,12 @@ class MultiPointWorker:
         if self.use_piezo:
             self.z_piezo_um = self.piezo.position
 
+        if self._sequenced_program is not None:
+            # The microcontroller runs the whole z x channel block (and returns the piezo).
+            self._acquire_sequenced_stack(region_id, current_path, fov)
+            self._timepoint_fov_count += 1
+            return
+
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
 
@@ -1158,6 +1208,286 @@ class MultiPointWorker:
 
         # Increment FOV counter for Slack notification stats
         self._timepoint_fov_count += 1
+
+    # ------------------------------------------------------------------------------------------
+    # Hardware-sequenced acquisition (opt-in, controller firmware >= 1.7). Pure logic lives in
+    # control/core/sequenced_acquisition.py; this is the part that touches hardware and frames.
+    # ------------------------------------------------------------------------------------------
+
+    def _channel_plans(self) -> List[ChannelPlan]:
+        plans = []
+        for config in self.selected_configurations:
+            source_code, dac_percent = self.liveController.resolve_mcu_illumination(config)
+            z_offset_um = config.z_offset_um
+            plans.append(
+                ChannelPlan(
+                    name=config.name,
+                    exposure_ms=config.exposure_time,
+                    source_code=source_code,
+                    dac_percent=float(dac_percent),
+                    z_offset_um=z_offset_um if (z_offset_um is not None and math.isfinite(z_offset_um)) else 0.0,
+                )
+            )
+        return plans
+
+    def _camera_gains_that_matter(self) -> list:
+        """The selected channels' analog gains - or nothing, for a camera that has no analog gain
+        (the Hamamatsu driver raises NotImplementedError): there the values in the channel configs
+        are never applied, so differing ones are no reason to give up hardware sequencing."""
+        try:
+            self.camera.get_gain_range()
+        except NotImplementedError:
+            return []
+        return [config.analog_gain for config in self.selected_configurations]
+
+    def _prepare_sequenced_acquisition(self) -> None:
+        """Decide ONCE per acquisition whether it is hardware-sequenced, and upload the program.
+
+        An ineligible acquisition runs software-sequenced exactly as before; the log says why.
+        Asking for the feature on firmware that cannot do it raises (it would answer the
+        sequencer commands with success and do nothing).
+        """
+        self._sequenced_program = None
+        if not control._def.USE_HARDWARE_SEQUENCED_ACQUISITION:
+            return
+
+        plans = self._channel_plans()
+        width, height = self.camera.get_resolution()
+        reason = ineligibility_reason(
+            firmware_supports_sequencer=self.microcontroller.supports_hardware_sequencer(),
+            trigger_is_hardware=self.liveController.trigger_mode == TriggerMode.HARDWARE,
+            use_piezo=bool(self.use_piezo),
+            global_reset_active=control._def.use_level_trigger_global_reset(),
+            intensity_is_mcu_dac=self.microscope.illumination_controller.intensity_is_mcu_dac,
+            shutter_is_mcu_ttl=self.microscope.illumination_controller.shutter_is_mcu_ttl,
+            channels=plans,
+            camera_gains=self._camera_gains_that_matter(),
+            burst_bytes=self.NZ * len(plans) * width * height * 2,
+            byte_budget=int(control._def.ACQUISITION_MAX_PENDING_MB * 1024 * 1024),
+            use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
+            camera_drives_ready_line=control._def.CAMERA_TRIGGER_READY_OUTPUT,
+        )
+        if (
+            reason is None
+            and self.laser_auto_focus_controller
+            and self.laser_auto_focus_controller.characterization_mode
+        ):
+            reason = "laser autofocus characterization mode saves an extra image per z level"
+        if reason is not None:
+            self._log.warning(
+                f"Hardware-sequenced acquisition is enabled, but this acquisition runs software-sequenced: {reason}."
+            )
+            return
+
+        # No camera register write is possible between the frames of a burst: the pulse width
+        # sets each channel's exposure (LEVEL trigger), and the gain is the same for all
+        # channels (an eligibility condition). The longest exposure is set once so the
+        # camera-side timeouts cover every frame.
+        self.camera.set_exposure_time(max(plan.exposure_ms for plan in plans))
+        try:
+            self.camera.set_analog_gain(self.selected_configurations[0].analog_gain)
+        except NotImplementedError:
+            pass
+
+        camera_spec = camera_record(
+            use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
+            strobe_delay_ms=self.camera.get_strobe_time(),
+            readout_ms=control._def.SEQUENCER_CAMERA_READOUT_MS,
+        )
+        program = build_program(
+            plans,
+            n_layers=self.NZ,
+            dz_um=self.deltaZ * 1000,
+            piezo_range_um=self.piezo.range_um,
+            piezo_flip=control._def.OBJECTIVE_PIEZO_FLIP_DIR,
+            z_settle_ms=control._def.MULTIPOINT_PIEZO_DELAY_MS,
+            intensity_factor=control._def.ILLUMINATION_INTENSITY_FACTOR,
+            camera=camera_spec,
+            wait_timeout_s=control._def.SEQUENCER_WAIT_TIMEOUT_S,
+        )
+        self.wait_till_operation_is_completed()
+        self.microcontroller.seq_upload(program)
+        self._sequenced_program = program
+        self._burst_dispatcher = BurstDispatcher(self._dispatch_burst, on_error=lambda e: self._abort_due_to_error())
+        self._burst_dispatcher.start()
+        self._log.info(
+            f"Hardware-sequenced acquisition: {self.NZ} layers x {len(plans)} channels per position "
+            f"({len(program.pack())} byte program uploaded)."
+        )
+
+    def _sequenced_burst_timeout_s(self) -> float:
+        """Upper bound for one burst: every step at its worst-case wait, plus the return move."""
+        program = self._sequenced_program
+        steps = program.loop.n_layers * len(program.channels)
+        exposure_s = sum(channel.exposure_us for channel in program.channels) * program.loop.n_layers / 1e6
+        return exposure_s + (steps + 1) * (program.wait_timeout_us / 1e6) + 5.0
+
+    def _wait_for_sequence(self, timeout_s: float) -> None:
+        """Wait for the pending SEQ_RUN. A user abort cancels the run (the controller finishes
+        the exposure in progress, never truncates it) and the wait continues until it ends."""
+        deadline = time.time() + timeout_s
+        cancel_sent = False
+        while self.microcontroller.is_busy():
+            if not cancel_sent and self.abort_requested_fn():
+                self._log.info("Abort requested: cancelling the running hardware sequence.")
+                self.microcontroller.seq_cancel()
+                cancel_sent = True
+            if time.time() > deadline:
+                raise TimeoutError(f"The hardware sequence did not finish within {timeout_s:.1f} s.")
+            self._sleep(0.005)
+        # Surfaces CommandAborted (with the decoded sequencer error) if the run failed.
+        self.microcontroller.wait_till_operation_is_completed()
+
+    def _run_sequenced_burst(
+        self, captures: List[CaptureInfo], stack_start: int
+    ) -> Tuple[Optional[List[Tuple[CameraFrame, CaptureInfo]]], Optional[str]]:
+        """Run one burst. Returns (frames, None) only if the burst is provably complete and in
+        order; otherwise (None, why), and NOTHING of it has reached a save job."""
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            return None, "a frame from before the hardware sequence never arrived"
+
+        collected: List[Tuple[CameraFrame, CaptureInfo]] = []
+
+        def collect(camera_frame: CameraFrame, info: CaptureInfo):
+            collected.append((camera_frame, dataclasses.replace(info, capture_time=time.time())))
+
+        run_error: Optional[Exception] = None
+        first_gap = None
+        self._frame_sink = collect
+        try:
+            self._pending_captures.expect(captures)
+            self._ready_for_next_trigger.clear()
+            try:
+                self.microcontroller.seq_run(stack_start)
+                self._wait_for_sequence(self._sequenced_burst_timeout_s())
+            except (CommandAborted, TimeoutError) as e:
+                run_error = e
+            # The last frames may still be on their way over USB. What can still arrive is bounded
+            # by what the controller FIRED, not by what was expected: a run it refused (interlock
+            # open, stack out of range) fired nothing, and waiting for "the last expected frame"
+            # of a burst that never started only burns the frame timeout.
+            self._wait_for_fired_frames(collected, expected=len(captures))
+            self._image_callback_idle.wait(self._frame_wait_timeout_s())
+        finally:
+            self._frame_sink = self._dispatch_frame
+            first_gap = self._pending_captures.first_gap
+            self._pending_captures.drop_remaining()
+            self._ready_for_next_trigger.set()
+
+        reason = burst_failure_reason(
+            self.microcontroller.seq_status, expected=len(captures), received=len(collected), first_gap=first_gap
+        )
+        if reason is None and run_error is not None:
+            reason = f"the controller reported an error: {run_error}"
+        if reason is not None:
+            self._log.warning(f"Hardware-sequenced burst failed and was discarded (nothing saved): {reason}.")
+            return None, reason
+        return collected, None
+
+    def _wait_for_fired_frames(self, collected: list, *, expected: int) -> None:
+        """Wait, up to the frame timeout, for the frames the controller says it fired."""
+        status = self.microcontroller.seq_status
+        fired = expected if status is None else min(status.frames_fired, expected)
+        if fired >= expected:
+            # The ready flag is set when the last expected frame was PAIRED.
+            self._ready_for_next_trigger.wait(self._frame_wait_timeout_s())
+            return
+        deadline = time.time() + self._frame_wait_timeout_s()
+        while len(collected) < fired and time.time() < deadline:
+            time.sleep(0.005)
+
+    def _dispatch_burst(self, burst) -> None:
+        """Runs on the burst dispatcher's thread: one validated burst into the save / display pipeline."""
+        frames, first_index = burst
+        for index, (camera_frame, info) in enumerate(frames):
+            if self._backpressure.should_throttle():
+                if not self._backpressure.wait_for_capacity():
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                    )
+            self._dispatch_frame(camera_frame, info)
+            self.callbacks.signal_region_progress(
+                RegionProgressUpdate(current_fov=first_index + index + 1, region_fovs=self.total_scans)
+            )
+
+    def _ask_user_to_intervene(self, message: str) -> None:
+        """The acquisition cannot continue on its own, so the user decides what happens next.
+
+        Pausing an acquisition is not supported yet, so the run is failed (end reason "error")
+        and the user is told what happened and what to check - in the log, in the GUI, and on
+        Slack when configured. When pause / resume lands, this is the place to pause instead.
+        """
+        self._log.error(message)
+        if self._slack_notifier is not None:
+            try:
+                self._slack_notifier.notify_error(message, {"time_point": self.time_point})
+            except Exception as e:
+                self._log.warning(f"Failed to send Slack error notification: {e}")
+        self.callbacks.signal_user_intervention_needed(message)
+        self._abort_due_to_error()
+
+    def _acquire_sequenced_stack(self, region_id, current_path, fov) -> None:
+        configs = self.selected_configurations
+        start_um = self.z_piezo_um
+        dz_um = self.deltaZ * 1000
+        stack_start = piezo_um_to_dac(start_um, self.piezo.range_um, control._def.OBJECTIVE_PIEZO_FLIP_DIR)
+        acquire_pos = self.stage.get_pos()
+        if (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+            self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
+
+        def captures() -> List[CaptureInfo]:
+            return [
+                CaptureInfo(
+                    position=acquire_pos,
+                    z_index=z_level,
+                    capture_time=time.time(),
+                    z_piezo_um=start_um + z_level * dz_um,
+                    configuration=config,
+                    save_directory=current_path,
+                    file_id=f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}",
+                    region_id=region_id,
+                    fov=fov,
+                    configuration_idx=config_idx,
+                    time_point=self.time_point,
+                )
+                for z_level in range(self.NZ)
+                for config_idx, config in enumerate(configs)
+            ]
+
+        frames = None
+        attempt = 0
+        while frames is None:
+            attempt += 1
+            self._log.info(f"Hardware sequence: region {region_id} fov {fov}, attempt {attempt}.")
+            frames, reason = self._run_sequenced_burst(captures(), stack_start)
+            if frames is not None or self.abort_requested_fn():
+                break
+            # O1 (Hongquan, 2026-09-20): retry, retry again, then ask the user to intervene.
+            if outcome_after_failed_burst(attempt) == BurstOutcome.ASK_USER:
+                self._ask_user_to_intervene(
+                    intervention_message(region_id=region_id, fov=fov, attempts=attempt, last_reason=reason)
+                )
+                return
+            self._log.warning(f"Retrying region {region_id} fov {fov} (hardware-sequenced), attempt {attempt + 1}.")
+
+        if frames is None:  # user abort during the burst
+            self.handle_acquisition_abort(current_path)
+            return
+
+        # The burst is validated: only now do its frames reach the save / display pipeline - on the
+        # dispatcher's thread, so the stage move, autofocus and the next burst do not wait for the
+        # save queue (it blocks: the pending-jobs cap is smaller than a burst).
+        self._burst_dispatcher.submit((frames, fov * self.NZ * len(configs)))
+
+        for z_level in range(self.NZ):
+            self.z_piezo_um = start_um + z_level * dz_um  # the coordinates table records the piezo z per level
+            self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
+            self.af_fov_count = self.af_fov_count + 1
+        self.z_piezo_um = start_um  # the controller returned the piezo to the start of the stack
+        self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
+
+        if self.abort_requested_fn():
+            self.handle_acquisition_abort(current_path)
 
     def _select_config(self, config: AcquisitionChannel):
         self.callbacks.signal_current_configuration(config)
@@ -1364,10 +1694,12 @@ class MultiPointWorker:
             self._image_callback_idle.clear()
             with self._timing.get_timer("_image_callback"):
                 self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._current_capture_info
-                self._current_capture_info = None
+                info = self._pending_captures.take(camera_frame.frame_id)
 
-                self._ready_for_next_trigger.set()
+                # Ready for the next trigger once every expected frame arrived: the one frame of
+                # an ordinary capture, or all N of a hardware-sequenced burst.
+                if self._pending_captures.empty:
+                    self._ready_for_next_trigger.set()
                 if not info:
                     self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
                     self._abort_due_to_error()
@@ -1379,60 +1711,67 @@ class MultiPointWorker:
                     self._abort_due_to_error()
                     return
 
-                # Increment image counter for Slack notification stats
-                self._timepoint_image_count += 1
-                self.image_count += 1
-                self._run_state_beat()
-
-                with self._timing.get_timer("job creation and dispatch"):
-                    # Wait for subprocess to be ready before first dispatch
-                    if not self._first_job_dispatched:
-                        for job_class, job_runner in self._job_runners:
-                            if job_runner is not None:
-                                t_wait_start = time.perf_counter()
-                                if job_runner.wait_ready(timeout_s=10.0):
-                                    t_wait_end = time.perf_counter()
-                                    wait_ms = (t_wait_end - t_wait_start) * 1000
-                                    if wait_ms > 10:  # Only log if we actually had to wait
-                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
-                                else:
-                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
-                        self._first_job_dispatched = True
-
-                    for job_class, job_runner in self._job_runners:
-                        job = self._create_job(job_class, info, image)
-                        if job is None:
-                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self._abort_due_to_error()
-                                return
-                        else:
-                            try:
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self._abort_due_to_error()
-                                return
-
-                height, width = image.shape[:2]
-                # with self._timing.get_timer("crop_image"):
-                #     image_to_display = utils.crop_image(
-                #         image,
-                #         round(width * self.display_resolution_scaling),
-                #         round(height * self.display_resolution_scaling),
-                #     )
-                # Emit plate layout once on the first image so the unified mosaic
-                # widget can lay out the plate grid before tiles start arriving.
-                self._emit_plate_layout(image)
-                with self._timing.get_timer("image_to_display*.emit"):
-                    self.callbacks.signal_new_image(camera_frame, info)
+                # One sink per frame: an ordinary capture dispatches at once; a hardware-sequenced
+                # burst collects, so nothing is saved until the whole burst is validated.
+                self._frame_sink(camera_frame, info)
 
         finally:
             self._image_callback_idle.set()
+
+    def _dispatch_frame(self, camera_frame: CameraFrame, info: CaptureInfo):
+        """Hand one paired frame to the save / display pipeline (the default frame sink)."""
+        image = camera_frame.frame
+        # Increment image counter for Slack notification stats
+        self._timepoint_image_count += 1
+        self.image_count += 1
+        self._run_state_beat()
+
+        with self._timing.get_timer("job creation and dispatch"):
+            # Wait for subprocess to be ready before first dispatch
+            if not self._first_job_dispatched:
+                for job_class, job_runner in self._job_runners:
+                    if job_runner is not None:
+                        t_wait_start = time.perf_counter()
+                        if job_runner.wait_ready(timeout_s=10.0):
+                            t_wait_end = time.perf_counter()
+                            wait_ms = (t_wait_end - t_wait_start) * 1000
+                            if wait_ms > 10:  # Only log if we actually had to wait
+                                self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
+                        else:
+                            self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
+                self._first_job_dispatched = True
+
+            for job_class, job_runner in self._job_runners:
+                job = self._create_job(job_class, info, image)
+                if job is None:
+                    continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
+                if job_runner is not None:
+                    if not job_runner.dispatch(job):
+                        self._log.error("Failed to dispatch multiprocessing job!")
+                        self._abort_due_to_error()
+                        return
+                else:
+                    try:
+                        # NOTE(imo): We don't have any way of people using results, so for now just
+                        # grab and ignore it.
+                        result = job.run()
+                    except Exception:
+                        self._log.exception("Failed to execute job, abandoning acquisition!")
+                        self._abort_due_to_error()
+                        return
+
+        height, width = image.shape[:2]
+        # with self._timing.get_timer("crop_image"):
+        #     image_to_display = utils.crop_image(
+        #         image,
+        #         round(width * self.display_resolution_scaling),
+        #         round(height * self.display_resolution_scaling),
+        #     )
+        # Emit plate layout once on the first image so the unified mosaic
+        # widget can lay out the plate grid before tiles start arriving.
+        self._emit_plate_layout(image)
+        with self._timing.get_timer("image_to_display*.emit"):
+            self.callbacks.signal_new_image(camera_frame, info)
 
     def _frame_wait_timeout_s(self):
         return (self.camera.get_total_frame_time() / 1e3) + 10
@@ -1496,7 +1835,7 @@ class MultiPointWorker:
                 configuration_idx=config_idx,
                 time_point=self.time_point,
             )
-            self._current_capture_info = current_capture_info
+            self._pending_captures.expect([current_capture_info])
         with self._timing.get_timer("send_trigger"):
             self.camera.send_trigger(illumination_time=camera_illumination_time)
 

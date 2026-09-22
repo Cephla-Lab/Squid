@@ -1532,6 +1532,64 @@ class PreferencesDialog(QDialog):
         self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
         hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
 
+        self.hardware_trigger_global_reset_checkbox = QCheckBox()
+        self.hardware_trigger_global_reset_checkbox.setChecked(
+            self._get_config_bool(
+                "GENERAL", "hardware_trigger_global_reset", control._def.HARDWARE_TRIGGER_GLOBAL_RESET
+            )
+        )
+        self.hardware_trigger_global_reset_checkbox.setToolTip(
+            "Put the sensor in GLOBAL RESET mode while hardware triggering.\n"
+            "Every row starts exposing at the trigger, so the per-frame wait for the last\n"
+            "row to start (rows x line interval) disappears. Readout is still rolling, so\n"
+            "the illumination must be off before readout starts.\n\n"
+            "Only has an effect when hardware_trigger_mode = LEVEL in the .ini file.\n"
+            "If the camera does not report the mode back, acquisition fails loudly rather\n"
+            "than falling back to rolling timing."
+        )
+        hw_layout.addRow("Hardware Trigger Global Reset *:", self.hardware_trigger_global_reset_checkbox)
+
+        self.camera_trigger_ready_output_checkbox = QCheckBox()
+        self.camera_trigger_ready_output_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "camera_trigger_ready_output", control._def.CAMERA_TRIGGER_READY_OUTPUT)
+        )
+        self.camera_trigger_ready_output_checkbox.setToolTip(
+            "Configure the camera's trigger-ready output while hardware triggering, so the\n"
+            "controller can gate the next trigger on the camera being ready.\n"
+            "Hamamatsu: output trigger 1. ToupCam: GPIO1. Active low on both, so an\n"
+            "unplugged cable reads as not ready."
+        )
+        hw_layout.addRow("Camera Trigger Ready Output *:", self.camera_trigger_ready_output_checkbox)
+
+        self.hardware_sequenced_acquisition_checkbox = QCheckBox()
+        self.hardware_sequenced_acquisition_checkbox.setChecked(
+            self._get_config_bool(
+                "GENERAL", "use_hardware_sequenced_acquisition", control._def.USE_HARDWARE_SEQUENCED_ACQUISITION
+            )
+        )
+        self.hardware_sequenced_acquisition_checkbox.setToolTip(
+            "Let the controller run each multichannel piezo z-stack from one uploaded program\n"
+            "instead of the software commanding every z move, illumination switch and trigger.\n"
+            "Needs controller firmware 1.7+, hardware trigger, LEVEL trigger + global reset, a\n"
+            "piezo z-stack and laser channels on the controller's TTL ports. An acquisition that\n"
+            "does not qualify runs as before, and the log says why."
+        )
+        hw_layout.addRow("Hardware-Sequenced Acquisition *:", self.hardware_sequenced_acquisition_checkbox)
+
+        self.sequencer_camera_ready_line_checkbox = QCheckBox()
+        self.sequencer_camera_ready_line_checkbox.setChecked(
+            self._get_config_bool(
+                "GENERAL", "sequencer_use_camera_ready_line", control._def.SEQUENCER_USE_CAMERA_READY_LINE
+            )
+        )
+        self.sequencer_camera_ready_line_checkbox.setToolTip(
+            "Hardware-sequenced acquisition: fire each trigger only when the camera's trigger-ready\n"
+            "output says it is ready (new controller, Teensy pin 18). Off: the controller models\n"
+            "readiness from a fixed readout time instead. Only turn this on if the line is wired -\n"
+            "otherwise every run times out."
+        )
+        hw_layout.addRow("Sequencer Uses Camera Ready Line *:", self.sequencer_camera_ready_line_checkbox)
+
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
@@ -1999,6 +2057,26 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
+        self.config.set(
+            "GENERAL",
+            "hardware_trigger_global_reset",
+            "true" if self.hardware_trigger_global_reset_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "GENERAL",
+            "camera_trigger_ready_output",
+            "true" if self.camera_trigger_ready_output_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "GENERAL",
+            "use_hardware_sequenced_acquisition",
+            "true" if self.hardware_sequenced_acquisition_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "GENERAL",
+            "sequencer_use_camera_ready_line",
+            "true" if self.sequencer_camera_ready_line_checkbox.isChecked() else "false",
+        )
 
         # Advanced - Development Settings
         self.config.set(

@@ -31,6 +31,27 @@ jobs:
         run: pio run -e teensy41
         working-directory: ./firmware/controller
 
+      - name: Build controller firmware (Teensy 4.1, new controller profile)
+        run: pio run -e teensy41_newctrl
+        working-directory: ./firmware/controller
+
+      - name: Build the sequencer bench self-test (compile only — never uploaded or shipped)
+        run: pio run -e teensy41_newctrl
+        working-directory: ./firmware/controller
+        env:
+          PLATFORMIO_BUILD_FLAGS: -D SEQ_SELFTEST -D SEQ_SELFTEST_STACK_DAC=6 -D SEQ_SELFTEST_READY_LINE
+
+      - name: No library may print on the protocol serial port
+        # The USB serial port carries the binary host protocol; text from a library's logging
+        # (FastLED >= 3.10 does this by default) corrupts the packet stream. Fail the build if
+        # FastLED's log strings are linked into the controller firmware again.
+        run: |
+          if strings .pio/build/teensy41/firmware.elf | grep -q "completed channels"; then
+            echo "::error::FastLED logging is compiled into the firmware (FASTLED_LOG_VERBOSITY must be 0)"
+            exit 1
+          fi
+        working-directory: ./firmware/controller
+
       - name: Build joystick firmware (Teensy LC)
         run: pio run -e teensyLC
         working-directory: ./firmware/joystick

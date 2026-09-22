@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import List, Optional, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from qtpy.QtCore import QObject, Signal
 
@@ -89,6 +89,24 @@ class LiveController(QObject):
         if not ill_config:
             return None
         return self.currentConfiguration.get_illumination_wavelength(ill_config)
+
+    def resolve_mcu_illumination(self, channel_config: "AcquisitionChannel") -> Tuple[int, float]:
+        """(illumination source code, DAC percent) update_illumination() would send to the
+        controller for this channel: the intensity cap, then the calibration LUT, then the
+        wavelength -> TTL port mapping.
+
+        A channel that is not a wavelength-addressed source (LED matrix, no illumination
+        config) comes back as (its source code, 0.0); the source code tells the caller it is
+        not an MCU TTL port. Used by the hardware sequencer to resolve a burst up front.
+        """
+        ill_config = self._get_illumination_config()
+        if not ill_config:
+            return 0, 0.0
+        wavelength = channel_config.get_illumination_wavelength(ill_config)
+        if not wavelength:
+            return channel_config.get_illumination_source_code(ill_config), 0.0
+        intensity = min(channel_config.illumination_intensity, self.get_intensity_cap_percent(channel_config))
+        return self.microscope.illumination_controller.resolve_mcu_illumination(wavelength, intensity)
 
     def _is_led_matrix(self) -> bool:
         """Check if current configuration is LED matrix (source code 0-9)."""

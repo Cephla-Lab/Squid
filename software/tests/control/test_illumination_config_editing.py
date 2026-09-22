@@ -174,3 +174,48 @@ def test_simulated_microscope_shares_config_repo_with_illumination_controller():
         assert scope.illumination_controller.config_repo is replacement
     finally:
         scope.close()
+
+
+# --- resolve_mcu_illumination: the one place a channel becomes (source code, DAC percent) --------
+# The hardware sequencer resolves every channel up front; it must get exactly what the per-frame
+# path sends, or a sequenced and a software-sequenced acquisition would differ in brightness.
+
+
+def test_set_intensity_sends_exactly_what_resolve_mcu_illumination_returns(repo, monkeypatch):
+    micro = get_test_microcontroller()
+    controller = IlluminationController(micro, config_repo=repo)
+    sent = []
+    monkeypatch.setattr(micro, "set_illumination", lambda source, intensity: sent.append((source, intensity)))
+
+    resolved = controller.resolve_mcu_illumination(405, 37.5)
+    controller.set_intensity(405, 37.5)
+
+    assert sent == [resolved]
+    assert resolved[0] == controller.channel_mappings_TTL[405]
+
+
+def test_resolve_mcu_illumination_applies_the_calibration_lut(repo):
+    import numpy as np
+
+    controller = IlluminationController(get_test_microcontroller(), config_repo=repo)
+    controller.intensity_luts[405] = {"power_percent": np.array([0.0, 100.0]), "dac_percent": np.array([0.0, 50.0])}
+    source, dac_percent = controller.resolve_mcu_illumination(405, 40)
+    assert source == controller.channel_mappings_TTL[405]
+    assert dac_percent == pytest.approx(20.0)
+
+    del controller.intensity_luts[405]
+    assert controller.resolve_mcu_illumination(405, 40)[1] == 40  # no calibration: percent passes through
+
+
+def test_software_intensity_control_is_not_an_mcu_dac_light_source(repo):
+    import control.lighting
+
+    micro = get_test_microcontroller()
+    assert IlluminationController(micro, config_repo=repo).intensity_is_mcu_dac
+    software = IlluminationController(
+        micro,
+        intensity_control_mode=control.lighting.IntensityControlMode.Software,
+        shutter_control_mode=control.lighting.ShutterControlMode.Software,
+        config_repo=repo,
+    )
+    assert not software.intensity_is_mcu_dac

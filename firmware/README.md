@@ -47,6 +47,21 @@ pio device list
 ```
 If multiple devices appear, disconnect the extras before uploading. The upload tool may not warn you and could flash the wrong board.
 
+### Choosing the controller at upload time
+
+Camera trigger wiring differs between controller generations, so the pin map is selected when
+you flash:
+
+| Controller | Command | Camera trigger | Trigger-ready input |
+|---|---|---|---|
+| Previous controllers (default) | `pio run -e teensy41 -t upload` | pins 29–32 through an inverting stage — the firmware drives the pin LOW to assert | none |
+| New controller | `pio run -e teensy41_newctrl -t upload` | pin 19, wired directly to the GPIO — the firmware drives the pin HIGH to assert | pin 18 (3.3 V max) |
+
+Both present an **active-high** trigger at the camera connector. Flashing the wrong profile is
+not subtle: the camera receives no trigger (wrong pins) and acquisitions time out.
+Arduino IDE: for the new controller add `#define SQUID_CONTROLLER_NEWCTRL` at the top of
+`src/controller_profile.h`.
+
 ### Common Commands
 
 | Command | Description |
@@ -347,7 +362,9 @@ controller/
 │   ├── test_command_layout/        # Command dispatch + driver fail-safe guards
 │   ├── test_driver_math/           # Current/microstep math, both drivers
 │   ├── test_driver_regs/           # Register datagram builders
-│   └── test_driver_sequence/       # Pinned SPI register sequences + probe
+│   ├── test_driver_sequence/       # Pinned SPI register sequences + probe
+│   ├── test_seq_types/             # Sequencer program structs + validation
+│   └── test_seq_engine/            # Sequencer engine timing tests (virtual clock)
 └── src/
     ├── commands/                    # Command handlers
     │   ├── commands.cpp/h          # General commands
@@ -355,6 +372,12 @@ controller/
     │   └── stage_commands.cpp/h    # Motion control
     ├── def/
     │   └── def_v1.h                # Hardware configuration
+    ├── sequencer/                   # Hardware-sequenced acquisition engine (pure C++,
+    │   │                           #   natively tested; NOT yet wired to hardware)
+    │   ├── seq_types.cpp/h         # Acquisition program structs + validation
+    │   ├── seq_hal.h               # Hardware interface the engine drives
+    │   └── seq_engine.cpp/h        # Timing state machine (readout overlap, trigger-
+    │                               #   ready gating, cancel/abort semantics)
     ├── tmc/                         # TMC4361A motion controller library
     │   └── drivers/                # Power-stage seam (TMC2660 / TMC2240)
     │       ├── stepper_driver.h    # Dispatch contract + driver_type
@@ -371,6 +394,74 @@ controller/
     ├── globals.cpp/h                # Global state variables
     └── constants.h                  # Constants and pin definitions
 ```
+
+### Sequencer engine (`src/sequencer/`)
+
+Runs a whole multichannel z-stack from one program: per step it moves the stack axis (and
+filter wheel) during the previous frame's readout, waits for settle + camera ready, then
+schedules the trigger and illumination edges. Pure C++11 with no Arduino dependencies — it
+drives hardware only through `SeqHal`, so it is tested natively against a virtual clock
+(`test/test_seq_engine/`).
+
+- `load(loop, channels, cams, n_cameras)` once per acquisition; `start(now_us,
+  wait_timeout_us, stack_axis_start)` once per FOV. `start()` works from `Idle`, `Done` or
+  `Failed`, and refuses the whole run (`StackOutOfRange`) before the first move if any stack
+  target leaves the axis range (piezo: DAC codes 0–65535).
+- States: `WaitHw` → `Exposing` → … → `Returning` → `Done`, or `Failed`. With
+  `return_to_start`, `Done` is reported only after the stack axis is back and settled.
+- `cancel()` never truncates an exposure; while waiting it winds down at once. `abort(err)` is
+  for the laser interlock, the serial watchdog and `TURN_OFF_ALL_PORTS`: terminal immediately.
+  Every failure calls `SeqHal::all_off()` **and** `SeqHal::stop_motion()`.
+- Time is the 32-bit `micros()` counter, which wraps every 71.6 min. Timestamps are compared
+  only through `reached()` (signed difference), never with `<` / `>`; `validate()` bounds
+  every duration to `kMaxDurationUs` so that comparison is always valid.
+- `SeqError` and `SeqState` values are wire format — append only.
+
+**Hardware binding** (`src/sequencer/seq_bind.*`, `src/timing/event_timer.*`): `seq_tick()` runs
+every `loop()` pass. Exposure edges (trigger assert/release, TTL illumination on/off) are
+executed by a one-shot timer whose ISR only pops due edges from a time-sorted queue and writes
+GPIO — no SPI, no FastLED, no waits; the laser interlock is checked on the illumination-ON
+edge. It is separate from the v1 strobe ISR on purpose. An open interlock, the serial watchdog
+and `TURN_OFF_ALL_PORTS` abort a running sequence *through the engine*, so the run fails
+visibly instead of completing with dark frames. `seq_load()` rejects anything the flashed
+controller profile cannot do (camera beyond the trigger count, a ready line the controller
+lacks, a TTL port that does not exist).
+
+**Serial transport** (firmware 1.7; `src/commands/sequence_commands.*`, `src/sequencer/seq_staging.*`,
+wire contract in `src/sequencer/seq_wire.h`). A v1 command carries 5 payload bytes and the
+protocol tracks ONE pending command, which shapes everything:
+
+| Opcode | Payload | |
+|---|---|---|
+| `SEQ_WRITE` 60 | `[2]` word index, `[3..6]` 4 bytes | absolute write into the staging buffer — a blind v1 resend is idempotent |
+| `SEQ_COMMIT` 61 | `[2..3]` length, `[4..5]` CRC-16/CCITT-FALSE | catches a lost chunk, then parses + validates against the flashed controller profile |
+| `SEQ_RUN` 62 | `[2..5]` int32 stack start | stays `IN_PROGRESS` until the sequence is terminal, so the host's normal wait works; failure = `CMD_EXECUTION_ERROR` |
+| `SEQ_CANCEL` 63 | — | completes when the run is terminal; never truncates an exposure |
+
+The host never polls during a run. Status rides bytes 14–17 of the 10 ms status packet:
+`[14]` = state (3 b) · `SeqError` (5 b), `[15]` = detail, `[16..17]` = frames fired. While a
+sequence runs the dispatcher refuses every opcode except `HEARTBEAT`, `SEQ_CANCEL`,
+`TURN_OFF_ALL_PORTS` and `RESET` (one allow-table, natively tested), and the joystick / focus
+wheel are ignored. `TURN_OFF_ALL_PORTS` and `RESET` abort the run through the engine; the
+shutdown command itself still reports success. Opcodes 44–50 and status bytes 19–21 are left
+to the Z encoder interface (firmware 1.6). **Firmware older than 1.7 answers these opcodes
+with success and does nothing — the host must gate on the version.**
+
+**Bench self-test** (`src/sequencer/seq_selftest.*`, never shipped): runs a canned 3-layer ×
+2-channel program every 2 s with no host, to put trigger / illumination / stack-axis timing
+on a scope. You must say which DAC channel is stepped as the stack axis — the build refuses
+to guess, and **7 is the real objective piezo, which will move** (~1 µm per layer around
+mid-range). No light by default.
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-D SEQ_SELFTEST -D SEQ_SELFTEST_STACK_DAC=7" \
+    pio run -e teensy41_newctrl -t upload
+# optional: -D SEQ_SELFTEST_TTL_MASK=0x01   strobe TTL port D1 (lasers disconnected or safe!)
+#           -D SEQ_SELFTEST_READY_LINE      gate on the camera trigger-ready input (pin 18)
+```
+Expect on the scope: trigger HIGH for 20.3 ms then 50.3 ms (strobe delay + exposure), repeating
+per layer; the stack DAC stepping right after the 50 ms exposure ends, i.e. inside that
+frame's readout window; the next trigger no sooner than 20 ms (settle) after the step.
 
 ## Joystick
 

@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Callable, Sequence, Tuple, Dict
+from typing import Optional, Callable, List, Sequence, Tuple, Dict
 import threading
 
 import pydantic
@@ -9,11 +9,21 @@ from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
 from control.dcam import Dcam, Dcamapi
 from control.dcamapi4 import *
+import control._def
 import control.utils
 
 
 class HamamatsuCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+
+
+# DCAM ring depth. Live view takes the newest frame and drops the rest, so five is plenty. In a triggered
+# mode every frame was asked for and none may be dropped: the ring has to cover the longest the read
+# thread can be held up. Bench 2026-09-21 (hardware-sequenced bursts, 41 ms per frame): worst 152 ms, while
+# the previous burst was being handed to the save jobs. The stall is a TIME, so faster frame rates need
+# more frames for the same stall: 32 frames is 1.3 s at 41 ms and 0.5 s at 16 ms.
+_LIVE_RING_FRAMES = 5
+_TRIGGERED_RING_FRAMES = 32
 
 
 class HamamatsuCamera(AbstractCamera):
@@ -87,8 +97,24 @@ class HamamatsuCamera(AbstractCamera):
         self._read_thread_running = threading.Event()
         self._read_thread_running.clear()
 
+        # Held across every capture transition (stop_streaming, start_streaming) and by the read thread
+        # from its DCAM read through frame publication, so a read never straddles two captures.
+        # stop_streaming() leaves the read thread running, so nothing else keeps them apart.
+        # Taken after _trigger_lock, before _frame_lock.
+        self._capture_lock = threading.Lock()
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
+        # How the read thread takes frames out of DCAM's ring; decided per capture in start_streaming().
+        self._read_every_frame = False  # triggered modes: every frame, in order. Live: the newest only.
+        self._ring_frames = _LIVE_RING_FRAMES
+        self._frames_read = 0  # frames of THIS capture already delivered (DCAM counts from 0 at cap_start)
+        # How far the camera's capture count (its framestamp) runs ahead of DCAM's transfer count: every
+        # frame the camera captured that never reached host memory (a USB stall). See _read_frames().
+        self._link_lost = 0
+        # frame_id = this base + the stamp DCAM counts from 0 at every cap_start (see _read_newest_frame).
+        self._frame_id_base = 1
+        # The number (from 0 at cap_start) of the newest frame delivered in this capture; see _frame_number().
+        self._last_frame_number = -1
         self._last_trigger_timestamp = 0
         self._trigger_sent = threading.Event()
 
@@ -119,12 +145,200 @@ class HamamatsuCamera(AbstractCamera):
             return False
         return True
 
+    def _set_prop_or_raise(self, dcam_prop, prop_value, prop_name: str):
+        """Set a mode property and confirm the camera actually took the value.
+
+        DCAM reports success for a set that it then clips or substitutes, so the write
+        alone proves nothing about the mode the sensor is in. Every property that changes
+        how the exposure is timed goes through here.
+        """
+        # NOTE: lasterr() directly, like _set_prop above, rather than
+        # _last_dcam_error_string() -- that helper's membership test is inverted and it
+        # raises KeyError for any code that is not a known DCAMERR. Fixing it belongs in
+        # its own change; this path must not turn a camera failure into a KeyError.
+        if not self._camera.prop_setvalue(dcam_prop, prop_value):
+            raise CameraError(f"Failed to set {prop_name} to {prop_value}: {self._camera.lasterr()}")
+
+        read_back = self._camera.prop_getvalue(dcam_prop)
+        if isinstance(read_back, bool):
+            raise CameraError(f"Failed to read {prop_name} back from the camera after setting it to {prop_value}.")
+        if int(read_back) != int(prop_value):
+            raise CameraError(
+                f"Camera reports {prop_name}={int(read_back)} after it was set to {int(prop_value)}; "
+                "refusing to acquire with a mode the camera did not accept."
+            )
+
     def _allocate_read_buffers(self, count=5):
         # NOTE: The caller must hold the camera lock!
         if not self._camera.buf_alloc(count):
             self._log.error(f"Failed to allocate {count} buffers.")
             return False
         return True
+
+    def _read_newest_frame(self) -> Optional[CameraFrame]:
+        """The newest frame in DCAM's ring buffer, numbered by the CAMERA's frame stamp.
+
+        The read loop takes the newest frame only. When two frames land between two reads the older
+        one is never seen, and when a frame lands between the wake-up and this read the newer one is
+        read twice. A host-side counter numbers both 1, 2, 3... as if nothing had happened; ids that
+        follow the camera's stamp leave a hole for the first and repeat for the second, so a consumer
+        that needs every frame in order (a hardware-sequenced burst) can tell.
+
+        DCAM counts the stamp from 0 at every cap_start; _frame_id_base keeps ids increasing across
+        restarts, and the very first id is still 1.
+        """
+        # Finish publishing an in-flight frame before a restart can rebase its IDs.
+        with self._capture_lock:
+            # The dcam driver handles setting the correct width and height, so we can use the
+            # np frame directly. buf_getframe(-1) is what buf_getlastframedata() calls; it also
+            # returns the DCAMBUF_FRAME that carries the stamp.
+            result = self._camera.buf_getframe(-1)
+            self._trigger_sent.clear()
+
+            if isinstance(result, bool):
+                self._log.error("Frame read resulted in boolean, must be an error.")
+                return None
+
+            frame_info, raw_frame = result
+            return self._new_frame(self._frame_number(int(frame_info.framestamp)), raw_frame)
+
+    def _new_frame(self, number: int, raw_frame) -> CameraFrame:
+        """number: the frame's number since cap_start (NOT the camera's framestamp, which is only 16 bits)."""
+        # NOTE: The caller must hold _capture_lock.
+        processed_frame = self._process_raw_frame(raw_frame)
+        with self._frame_lock:
+            camera_frame = CameraFrame(
+                frame_id=self._frame_id_base + number,
+                timestamp=time.time(),
+                frame=processed_frame,
+                frame_format=self.get_frame_format(),
+                frame_pixel_format=self.get_pixel_format(),
+            )
+            self._current_frame = camera_frame
+        return camera_frame
+
+    def _read_frames(self) -> List[CameraFrame]:
+        """The frames to deliver for one FRAMEREADY wake-up, oldest first.
+
+        Live view: the newest frame only - dropping frames to stay current is the right policy there.
+
+        Triggered modes: EVERY frame since the last wake-up, in order. Each of them was asked for, and
+        the read thread can run late (bench 2026-09-21: up to 152 ms, 3.7 frame periods, while another
+        thread was busy); taking only the newest one then drops frames that are still sitting in the
+        ring. DCAM puts frame n (counted from 0 at cap_start, the same count as its framestamp) into
+        slot n % depth, and cap_transferinfo() says how many frames exist and which slot is the newest.
+
+        That ring layout could not be checked against hardware when this was written, so every slot is
+        verified: a slot whose framestamp is not the frame number expected is reported, and this
+        wake-up falls back to the newest frame. ids follow the camera's stamps either way, so a consumer
+        that needs every frame sees a hole rather than a wrong frame.
+        """
+        if not self._read_every_frame:
+            frame = self._read_newest_frame()
+            return [] if frame is None else [frame]
+
+        # Finish publishing in-flight frames before a restart can rebase their IDs.
+        with self._capture_lock:
+            info = self._camera.cap_transferinfo()
+            if isinstance(info, bool):
+                self._log.error(f"cap_transferinfo failed ({self._last_dcam_error_string()}); taking the newest frame.")
+                return self._newest_frame_only(total=None)
+
+            total = int(info.nFrameCount)
+            first = self._frames_read
+            if total <= first:
+                return []  # nothing new: a wake-up for a frame the previous pass already took
+            overwritten = total - first - self._ring_frames
+            if overwritten > 0:
+                self._log.error(
+                    f"{overwritten} frame(s) were overwritten in the camera's {self._ring_frames}-frame ring before "
+                    "they could be read: the read thread was held up for too long. Their ids will be missing."
+                )
+                first = total - self._ring_frames
+
+            frames = []
+            newest_slot = int(info.nNewestFrameIndex)
+            for number in range(first, total):  # transfer indices: they say which slot, and what has been read
+                slot = (newest_slot - (total - 1 - number)) % self._ring_frames
+                result = self._camera.buf_getframe(slot)
+                if isinstance(result, bool):
+                    self._log.error(f"Reading ring slot {slot} failed ({self._last_dcam_error_string()}).")
+                    return frames + self._newest_frame_only(total)
+                frame_info, raw_frame = result
+                stamp = int(frame_info.framestamp)
+                # The camera's stamp counts CAPTURED frames (16 bits); DCAM's count counts TRANSFERRED ones.
+                # They agree until a frame is lost between the camera and host memory, after which the stamp
+                # runs ahead by that many for the rest of the capture. The offset can only grow.
+                lost_now = self._link_loss_change(stamp, number)
+                if lost_now < 0:
+                    self._log.error(
+                        f"Ring slot {slot} holds framestamp {stamp}, expected {(number + self._link_lost) & 0xFFFF} "
+                        f"(frame {number}; newest slot {newest_slot}, {total} frames, ring of {self._ring_frames}): the "
+                        "ring is not laid out as assumed, or the slot was overwritten while it was read. Taking the "
+                        "newest frame."
+                    )
+                    return frames + self._newest_frame_only(total)
+                if lost_now:
+                    self._note_link_loss(lost_now, f"ring slot {slot}, frame {number}")
+                frames.append(self._new_frame(self._frame_number(stamp), raw_frame))
+            self._frames_read = total
+            self._trigger_sent.clear()
+            return frames
+
+    def _link_loss_change(self, stamp: int, number: int) -> int:
+        """By how many frames the camera's stamp has run further ahead of DCAM's transfer count since the
+        last frame: 0 normally, > 0 when frames were lost at the link, < 0 only if the ring is not laid out
+        as assumed (a frame cannot be transferred before it is captured). Signed, 16-bit wrap-safe."""
+        offset = (stamp - number) & 0xFFFF
+        return ((offset - self._link_lost + 0x8000) & 0xFFFF) - 0x8000
+
+    def _note_link_loss(self, lost_now: int, where: str) -> None:
+        self._link_lost = (self._link_lost + lost_now) & 0xFFFF
+        self._log.error(
+            f"{lost_now} frame(s) the camera captured never reached host memory (lost between the camera and the "
+            f"host, e.g. a USB stall; noticed at {where}). Their ids will be missing."
+        )
+
+    def _newest_frame_only(self, total: Optional[int]) -> List[CameraFrame]:
+        """The fall-back of _read_frames(): the newest frame, with the reader left IN STEP WITH DCAM.
+
+        total is DCAM's transfer count when known. _frames_read must come from it and never from the
+        camera's stamp: with frames lost at the link the two differ, and a reader set from the stamp saw
+        "nothing new" for as many wake-ups (bench 2026-09-21: one frame in seven for the rest of the capture).
+        """
+        # NOTE: The caller must hold _capture_lock.
+        result = self._camera.buf_getframe(-1)
+        self._trigger_sent.clear()
+        if isinstance(result, bool):
+            self._log.error("Frame read resulted in boolean, must be an error.")
+            return []
+        frame_info, raw_frame = result
+        stamp = int(frame_info.framestamp)
+        if total is None:  # cap_transferinfo() failed on the way in; ask once more, now that a frame was read
+            info = self._camera.cap_transferinfo()
+            total = None if isinstance(info, bool) else int(info.nFrameCount)
+        if total is not None:
+            lost_now = self._link_loss_change(stamp, total - 1)
+            if lost_now > 0:
+                self._note_link_loss(lost_now, "the newest frame")
+            elif lost_now < 0:
+                self._link_lost = (stamp - (total - 1)) & 0xFFFF  # resynchronise on the newest frame
+            self._frames_read = total
+        # else: leave _frames_read; the next wake-up resynchronises through the overwritten-frames path.
+        return [self._new_frame(self._frame_number(stamp), raw_frame)]
+
+    def _frame_number(self, framestamp: int) -> int:
+        """The frame's number since cap_start, from the camera's framestamp.
+
+        The stamp is a 16-BIT counter on the ORCA-Fusion BT (bench 2026-09-21: 65535 -> 0 while DCAM's own
+        32-bit frame count went on to 65537), so it cannot be used as the number directly: after 65,536
+        frames in one capture - 45 minutes at 24 fps - ids would start over. Frames are read in order and
+        never more than a ring's worth apart, so the number is the last one plus the stamp's advance
+        modulo 2**16. An advance of 0 is the same frame read again, and keeps its number.
+        """
+        # NOTE: The caller must hold _frame_lock.
+        self._last_frame_number += (framestamp - self._last_frame_number) & 0xFFFF
+        return self._last_frame_number
 
     def _read_frames_when_available(self):
         self._log.info("Starting Hamamatsu read thread.")
@@ -137,29 +351,9 @@ class HamamatsuCamera(AbstractCamera):
                 frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
 
                 if frame_ready:
-                    # The dcam driver handles setting the correct width and height, so we can use the
-                    # np frame directly.
-                    raw_frame = self._camera.buf_getlastframedata()
-                    self._trigger_sent.clear()
-
-                    if isinstance(raw_frame, bool):
-                        self._log.error("Frame read resulted in boolean, must be an error.")
-                        continue
-
-                    processed_frame = self._process_raw_frame(raw_frame)
-                    with self._frame_lock:
-                        camera_frame = CameraFrame(
-                            frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
-                            timestamp=time.time(),
-                            frame=processed_frame,
-                            frame_format=self.get_frame_format(),
-                            frame_pixel_format=self.get_pixel_format(),
-                        )
-
-                        self._current_frame = camera_frame
-
-                    # Send the local copy of the frame to all the callbacks so we are sure they get this frame
-                    self._propogate_frame(camera_frame)
+                    # Send the local copy of each frame to all the callbacks so we are sure they get it
+                    for camera_frame in self._read_frames():
+                        self._propogate_frame(camera_frame)
 
                 # NOTE(imo): I'm not sure if self._camera.wait_event actually yields to the python
                 # interpreter.
@@ -205,6 +399,91 @@ class HamamatsuCamera(AbstractCamera):
         exposure_attr = self._camera.prop_getattr(DCAM_IDPROP.EXPOSURETIME)
         return exposure_attr.valuemin * 1000.0, exposure_attr.valuemax * 1000.0  # in ms
 
+    def _global_reset_active(self) -> bool:
+        """True when this camera is actually running LEVEL trigger + global reset.
+
+        Short-circuits on the opt-in setting, so with the setting off this costs no DCAM
+        call at all and the driver behaves exactly as it does today.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return False
+        return self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER
+
+    def _apply_level_trigger_global_reset(self):
+        """Put the sensor in LEVEL trigger + global reset mode, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, after
+        TRIGGERSOURCE is EXTERNAL, and a no-op unless the HARDWARE_TRIGGER_GLOBAL_RESET
+        opt-in is on AND the trigger mode is LEVEL.
+
+        In LEVEL the camera's exposure is the width of the trigger pulse (the
+        microcontroller holds it for strobe delay + illumination on time); with global
+        reset every row starts exposing at the trigger, so the rows x line-interval wait
+        in get_strobe_time() disappears. There is deliberately no fallback: acquiring with
+        rolling timing against a global-reset sensor (or the reverse) puts the strobe in
+        the wrong place, which silently ruins the images.
+        """
+        if not control._def.use_level_trigger_global_reset():
+            return
+
+        global_reset = int(DCAMPROP.TRIGGER_GLOBALEXPOSURE.GLOBALRESET)
+
+        # Check support before writing, so an unsupported camera gets a clear message
+        # instead of a bare "failed to set property".
+        global_exposure_attr = self._camera.prop_getattr(DCAM_IDPROP.TRIGGER_GLOBALEXPOSURE)
+        if global_exposure_attr is False:
+            raise CameraError(
+                "This camera does not support TRIGGER_GLOBALEXPOSURE, so it cannot run in "
+                "global reset mode. Turn off HARDWARE_TRIGGER_GLOBAL_RESET."
+            )
+        if not (global_exposure_attr.valuemin <= global_reset <= global_exposure_attr.valuemax):
+            raise CameraError(
+                f"This camera does not support TRIGGER_GLOBALEXPOSURE = GLOBALRESET ({global_reset}); "
+                f"its supported range is [{global_exposure_attr.valuemin}, {global_exposure_attr.valuemax}]. "
+                "Turn off HARDWARE_TRIGGER_GLOBAL_RESET."
+            )
+
+        # TRIGGERACTIVE first: global exposure refines how the LEVEL exposure is started,
+        # so the active mode has to be in effect for it to be meaningful.
+        self._set_prop_or_raise(DCAM_IDPROP.TRIGGERACTIVE, DCAMPROP.TRIGGERACTIVE.LEVEL, "TRIGGERACTIVE")
+        self._set_prop_or_raise(DCAM_IDPROP.TRIGGER_GLOBALEXPOSURE, global_reset, "TRIGGER_GLOBALEXPOSURE")
+
+        self._log.info("Camera is in LEVEL trigger + global reset mode.")
+
+    def _apply_trigger_ready_output(self):
+        """Drive output trigger connector 1 as TRIGGER READY, or raise.
+
+        Called only from the HARDWARE_TRIGGER branch of _set_acquisition_mode_imp, and a
+        no-op unless the CAMERA_TRIGGER_READY_OUTPUT opt-in is on. The controller gates
+        the next trigger on this line, so a connector that is configured as something
+        else (or not at all) would either stall the sequence or let it fire blind --
+        neither may be discovered silently.
+
+        ACTIVE LOW (NEGATIVE polarity): the controller's ready input is pulled up on the
+        board (measured on the new controller: about 4.7 k to 3.3 V), so an unplugged or
+        broken cable reads HIGH. HIGH therefore has to mean NOT ready -- the run then times
+        out before the first frame instead of triggering without waiting for the camera.
+
+        The property ids below address connector 1 (array index 0). DCAM addresses the
+        Nth connector as <id> + N * DCAM_IDPROP._OUTPUTTRIGGER; only connector 1 is used
+        here, so no offset is applied.
+        """
+        if not control._def.CAMERA_TRIGGER_READY_OUTPUT:
+            return
+
+        self._set_prop_or_raise(
+            DCAM_IDPROP.OUTPUTTRIGGER_KIND,
+            DCAMPROP.OUTPUTTRIGGER_KIND.TRIGGERREADY,
+            "OUTPUTTRIGGER_KIND[0]",
+        )
+        self._set_prop_or_raise(
+            DCAM_IDPROP.OUTPUTTRIGGER_POLARITY,
+            DCAMPROP.OUTPUTTRIGGER_POLARITY.NEGATIVE,
+            "OUTPUTTRIGGER_POLARITY[0]",
+        )
+
+        self._log.info("Camera output trigger 1 is configured as TRIGGER READY, active low.")
+
     def get_strobe_time(self) -> float:
         resolution = self.get_resolution()
         line_interval_s = self._camera.prop_getvalue(DCAM_IDPROP.INTERNAL_LINEINTERVAL) * resolution[1]
@@ -212,6 +491,12 @@ class HamamatsuCamera(AbstractCamera):
 
         if isinstance(line_interval_s, bool) or isinstance(trigger_delay_s, bool):
             raise CameraError("Failed to get strobe delay properties from camera")
+
+        if self._global_reset_active():
+            # In global reset every row starts exposing at the trigger, so the
+            # rows x line-interval wait for the last row to start is gone; what is left
+            # is the trigger delay the camera itself imposes.
+            return trigger_delay_s * 1000.0
 
         return (line_interval_s + trigger_delay_s) * 1000.0
 
@@ -359,12 +644,22 @@ class HamamatsuCamera(AbstractCamera):
             self._log.debug("Already streaming, start_streaming is noop")
             return True
 
-        if not self._allocate_read_buffers():
-            self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
-            return False
-        if not self._camera.cap_start():
-            self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
-            return False
+        with self._capture_lock:
+            # Every mode change restarts the capture (_pause_streaming), so deciding here is deciding per mode.
+            self._read_every_frame = self.get_acquisition_mode() != CameraAcquisitionMode.CONTINUOUS
+            self._ring_frames = _TRIGGERED_RING_FRAMES if self._read_every_frame else _LIVE_RING_FRAMES
+            self._frames_read = 0
+            self._link_lost = 0
+            if not self._allocate_read_buffers(self._ring_frames):
+                self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
+                return False
+            with self._frame_lock:
+                # DCAM's frame stamp starts over at 0; ids must not.
+                self._frame_id_base = self._current_frame.frame_id + 1 if self._current_frame else 1
+                self._last_frame_number = -1  # and the numbering of this capture starts over with it
+            if not self._camera.cap_start():
+                self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
+                return False
 
         self._trigger_sent.clear()
         self._is_streaming.set()
@@ -393,13 +688,14 @@ class HamamatsuCamera(AbstractCamera):
         # reports not-ready for the whole teardown, not just after it.
         self._is_streaming.clear()
         success = True
-        if not self._camera.cap_stop():
-            self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
-            success = False
+        with self._capture_lock:
+            if not self._camera.cap_stop():
+                self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
+                success = False
 
-        if not self._camera.buf_release():
-            self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
-            success = False
+            if not self._camera.buf_release():
+                self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
+                success = False
 
         self._log.debug(f"Stopped with {success=}")
         self._trigger_sent.clear()
@@ -467,6 +763,14 @@ class HamamatsuCamera(AbstractCamera):
             if not self._set_prop(DCAM_IDPROP.TRIGGERSOURCE, dcam_trigger_source):
                 self._log.error(f"Failed to set acquisition mode to {acquisition_mode=}")
                 return False
+
+            if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                # Both are no-ops unless their opt-in setting is on, and both run before
+                # the exposure/strobe refresh below so the strobe delay pushed to the
+                # microcontroller matches the exposure mode the sensor is actually in.
+                self._apply_level_trigger_global_reset()
+                self._apply_trigger_ready_output()
+
             self.set_exposure_time(self._exposure_time_ms)
         return True
 

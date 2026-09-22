@@ -204,6 +204,13 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    # 44-50 are taken by the Z encoder / PID interface (firmware 1.6, PR #645) - do not reuse.
+    # Hardware sequencer (firmware 1.7). Wire contract: control/sequencer_program.py, mirroring
+    # firmware/controller/src/sequencer/seq_wire.h.
+    SEQ_WRITE = 60  # [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
+    SEQ_COMMIT = 61  # [2..3]=byte length BE, [4..5]=CRC-16/CCITT-FALSE BE; parse + validate
+    SEQ_RUN = 62  # [2..5]=int32 stack start BE; stays IN_PROGRESS until the sequence is terminal
+    SEQ_CANCEL = 63  # finish the current exposure, then wind down
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -1128,6 +1135,37 @@ class HardwareTriggerMode:
 
 HARDWARE_TRIGGER_MODE = HardwareTriggerMode.EDGE
 
+# Opt-in: put the sensor into GLOBAL RESET mode while hardware triggering in LEVEL mode.
+#
+# In the default rolling-shutter model, rows start exposing one after another, so the host
+# waits a strobe delay (~rows x line interval) until the LAST row has started before firing
+# the illumination. In global reset every row starts exposing at the trigger, so that
+# per-frame wait collapses to the camera's fixed trigger latency. Readout is still rolling,
+# so the illumination must be strobed and OFF before readout begins.
+#
+# Only has an effect together with HARDWARE_TRIGGER_MODE = LEVEL and a camera in the
+# HARDWARE trigger acquisition mode. Drivers read the mode back from the camera and raise
+# rather than fall back to rolling timing, which would fire the strobe before the last rows
+# are exposing.
+HARDWARE_TRIGGER_GLOBAL_RESET = False
+
+# Opt-in: have the camera drive a "trigger ready" output the controller can gate the next
+# trigger on (Hamamatsu: output trigger connector 1; ToupCam: GPIO1, "Frame Trigger Wait").
+# Only configured while the camera is in the HARDWARE trigger acquisition mode.
+# ACTIVE LOW on both: the controller's ready input is pulled up, so an unplugged cable reads
+# HIGH, and HIGH has to mean NOT ready. With the setting off nothing changes -- the ToupCam
+# driver keeps driving GPIO1 (active high) in EDGE mode only, as it always has.
+CAMERA_TRIGGER_READY_OUTPUT = False
+
+
+def use_level_trigger_global_reset() -> bool:
+    """True when the opt-in LEVEL trigger + global reset exposure model is in effect.
+
+    Reads the live module globals, so it sees values loaded from the .ini (and any runtime
+    override) rather than a stale `from control._def import *` binding.
+    """
+    return bool(HARDWARE_TRIGGER_GLOBAL_RESET) and HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL
+
 
 def read_objectives_csv(file_path):
     objectives = {}
@@ -1324,6 +1362,18 @@ OBJECTIVE_PIEZO_HOME_UM = 20
 OBJECTIVE_PIEZO_FLIP_DIR = False
 
 MULTIPOINT_PIEZO_DELAY_MS = 20
+
+# Opt-in: hardware-sequenced acquisition (controller firmware >= 1.7). The microcontroller runs a
+# whole multichannel piezo z-stack at each position from one uploaded program instead of the host
+# commanding every z move, illumination switch and trigger. Decided once per acquisition; when an
+# acquisition is not eligible it runs software-sequenced exactly as before and the log says why.
+USE_HARDWARE_SEQUENCED_ACQUISITION = False
+# Gate each trigger on the camera's trigger-ready output (new controller: Teensy pin 18). Off =
+# the controller models readiness from SEQUENCER_CAMERA_READOUT_MS after each exposure instead.
+SEQUENCER_USE_CAMERA_READY_LINE = False
+SEQUENCER_CAMERA_READOUT_MS = 50.0
+# The controller fails a run when a step waits this long (stack settle, camera ready).
+SEQUENCER_WAIT_TIMEOUT_S = 5.0
 MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
 USE_TERMINAL_CONSOLE = False
