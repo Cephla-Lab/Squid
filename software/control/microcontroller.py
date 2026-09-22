@@ -639,6 +639,11 @@ class Microcontroller:
         self.z_pos = 0  # unit: microstep or encoder resolution
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
+        # Encoder reporting (firmware >= 1.6, set_encoder_reporting). Updated only by packets whose
+        # byte 19 has ENC_FLAG.REPORTING set; they keep their last values otherwise.
+        self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
+        self.encoder_deviation = 0  # int16 ENC_POS - XACTUAL of that axis, microsteps, clipped
+        self.encoder_flags = 0  # raw status byte 19 while reporting, else 0
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -1057,6 +1062,45 @@ class Microcontroller:
         cmd[2] = int(axis)
         cmd[3] = (u >> 8) & 0xFF
         cmd[4] = u & 0xFF
+        self.send_command(cmd)
+
+    def set_encoder_reporting(self, axis, mode=ENCODER_REPORTING.ENC_IN_THETA):
+        """Put `axis`'s encoder into the status packet (firmware >= 1.6; callers gate on the version).
+
+        A read-only diagnostic: it moves nothing. The encoder must have been set up with
+        configure_stage_pid() (scale and direction; that engages nothing) for the values to be in
+        microsteps. Afterwards encoder_pos / encoder_deviation / encoder_flags update every packet.
+        ENCODER_REPORTING.OFF restores the shipping packet; RESET and INITIALIZE do too.
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ENCODER_REPORTING
+        cmd[2] = int(axis)
+        cmd[3] = int(mode)
+        self.send_command(cmd)
+
+    def get_encoder_state(self):
+        """The last reported encoder reading: reporting / pid_enabled / axis (from byte 19),
+        encoder_pos and deviation (ENC_POS - XACTUAL) in microsteps. `reporting` is False when the
+        last packet carried no encoder; the two values are then the last ones seen."""
+        flags = self.encoder_flags
+        return {
+            "reporting": bool(flags & (1 << ENC_FLAG.REPORTING)),
+            "pid_enabled": bool(flags & (1 << ENC_FLAG.PID_ENABLED)),
+            "axis": (flags >> ENC_FLAG.AXIS_SHIFT) & 0x07,
+            "encoder_pos": self.encoder_pos,
+            "deviation": self.encoder_deviation,
+        }
+
+    def set_ramp_profile(self, axis, profile):
+        """S-shaped (RAMP_PROFILE.SSHAPE, the firmware default) or trapezoidal ramp for `axis`
+        (firmware >= 1.6; callers gate on the version). Takes effect at once; a RESET returns
+        every axis to the S-shape."""
+        if profile not in (RAMP_PROFILE.TRAPEZOID, RAMP_PROFILE.SSHAPE):
+            raise ValueError("ramp profile must be RAMP_PROFILE.TRAPEZOID or RAMP_PROFILE.SSHAPE")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_RAMP_PROFILE
+        cmd[2] = int(axis)
+        cmd[3] = int(profile)
         self.send_command(cmd)
 
     def set_trigger_mode(self, mode):
@@ -1659,6 +1703,15 @@ class Microcontroller:
                 self.theta_pos = self._payload_to_int(
                     msg[14:18], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
+                # Firmware >= 1.6 with encoder reporting on: the theta field is the reported axis's
+                # ENC_POS, byte 19 its flags and bytes 20-21 the clipped ENC_POS - XACTUAL. With
+                # reporting off (and on older firmware) byte 19 bit 0 is clear.
+                if msg[19] & (1 << ENC_FLAG.REPORTING):
+                    self.encoder_flags = msg[19]
+                    self.encoder_pos = self.theta_pos
+                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                else:
+                    self.encoder_flags = 0
 
                 self.button_and_switch_state = msg[18]
                 # joystick button

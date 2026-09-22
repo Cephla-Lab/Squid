@@ -204,8 +204,9 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
-    # Firmware >= 1.6 only. The firmware side arrives with PR #645 and is not in this tree's
-    # constants_protocol.h yet; the host never sends it to older firmware (see SquidFilterWheel).
+    # Firmware >= 1.6 only; the host never sends these to older firmware (callers gate on the version).
+    SET_ENCODER_REPORTING = 44  # One axis's encoder in the status packet (see ENCODER_REPORTING)
+    SET_RAMP_PROFILE = 47  # S-shaped or trapezoidal ramp per axis (see RAMP_PROFILE)
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
@@ -222,6 +223,36 @@ class CMD_SET2:
 
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
+
+
+class ENCODER_REPORTING:
+    """Modes for CMD_SET.SET_ENCODER_REPORTING (firmware >= 1.6).
+
+    OFF: shipping packet. ENC_IN_THETA: the status packet's theta field (bytes 14-17) carries the
+    selected axis's ENC_POS in microsteps, byte 19 carries ENC_FLAG bits and bytes 20-21 the clipped
+    int16 ENC_POS - XACTUAL (positive = encoder ahead of the step counter). ENC_AS_POSITION: as
+    ENC_IN_THETA, and the axis's own position field carries ENC_POS instead of XACTUAL (X/Y/Z only).
+    The filter wheels have no position field in the packet, so this is the only way to see one.
+    """
+
+    OFF = 0
+    ENC_IN_THETA = 1
+    ENC_AS_POSITION = 2
+
+
+class ENC_FLAG:
+    """Bit positions in status byte 19, valid only while encoder reporting is on."""
+
+    REPORTING = 0
+    PID_ENABLED = 1
+    AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
+
+
+class RAMP_PROFILE:
+    """Values for CMD_SET.SET_RAMP_PROFILE (firmware >= 1.6). S-shape is the firmware default."""
+
+    TRAPEZOID = 1
+    SSHAPE = 2
 
 
 class HOME_OR_ZERO:
@@ -993,9 +1024,10 @@ NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 6
 LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
+USE_NAPARI_FOR_LIVE_VIEW = False
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
-
-# Live view only (no acquisition tabs)
+USE_NAPARI_WELL_SELECTION = False
+USE_NAPARI_FOR_LIVE_CONTROL = False
 LIVE_ONLY_MODE = False
 
 # NDViewer integration

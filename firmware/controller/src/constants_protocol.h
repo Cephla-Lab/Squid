@@ -75,6 +75,28 @@ static const int SET_WATCHDOG_TIMEOUT = 40;   // Set serial watchdog timeout and
 static const int SET_PIN_LEVEL = 41;
 static const int HEARTBEAT = 42;              // No-op keepalive for watchdog
 static const int MOVETO_W2 = 43;              // Absolute move on the W2 filter wheel
+// Firmware 1.6. All three are OFF / at the 1.5 behaviour by default and after RESET, so the
+// status packet and every move are unchanged unless a host asks.
+static const int SET_ENCODER_REPORTING = 44;  // [2]=axis, [3]=ENCODER_REPORT_* mode
+static const int SET_RAMP_PROFILE = 47;       // [2]=axis, [3]=RAMP_PROFILE_* : S-shaped (bow-limited) or trapezoidal ramp
+static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 um of travel (for the wheels, whose
+                                              // "mm" is one revolution, 1e-4 rev = 0.036 deg): a move reports COMPLETED as
+                                              // soon as |XACTUAL - target| <= window while the ramp finishes. 0 = at the
+                                              // exact target (default, unchanged behaviour). Not applied to homing, and
+                                              // not to an axis whose closed loop is enabled. Kept in these physical
+                                              // units: a later microstepping or pitch change does not alter its width.
+// (45, 46, 48 and 50 are reserved for the closed-loop commands of the Z encoder work.)
+static const int RAMP_PROFILE_TRAPEZOID = 1;
+static const int RAMP_PROFILE_SSHAPE = 2;
+// SET_ENCODER_REPORTING modes
+static const int ENCODER_REPORT_OFF = 0;
+static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,
+                                                     // bytes 20-21 = int16 ENC_POS_DEV (ENC_POS - XACTUAL, clipped)
+static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own position field (X/Y/Z) carries ENC_POS
+// byte 19 flag bits, valid only while reporting is active
+static const int ENC_FLAG_REPORTING = 0;     // reporting active
+static const int ENC_FLAG_PID_ENABLED = 1;   // closed loop enabled on the reported axis
+static const int ENC_FLAG_AXIS_SHIFT = 4;    // bits 4-6: protocol axis id being reported
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

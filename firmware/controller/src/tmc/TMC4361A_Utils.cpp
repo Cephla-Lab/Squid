@@ -967,7 +967,10 @@ void tmc4361A_moveToExtreme(TMC4361ATypeDef *tmc4361A, int32_t vel, int8_t dir) 
   -----------------------------------------------------------------------------
 */
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
-  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | TMC4361A_RAMP_SSHAPE); // positioning mode, s-shaped ramp
+  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request).
+  // Clear the two profile bits first: a plain setBits cannot change SSHAPE (2) into TRAPEZ (1).
+  tmc4361A_rstBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
+  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE));
   tmc4361A_rstBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_USE_ASTART_AND_VSTART_MASK); // keep astart, vstart = 0
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW1, tmc4361A->rampParam[BOW1_IDX]); // determines the value which increases the absolute acceleration value.
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW2, tmc4361A->rampParam[BOW2_IDX]); // determines the value which decreases the absolute acceleration value.
@@ -1645,9 +1648,13 @@ void tmc4361A_init_ABN_encoder(TMC4361ATypeDef *tmc4361A, uint32_t enc_res, uint
   datagram = uint32_t(filter_wait_time) + ((uint32_t(filter_exponent) << TMC4361A_ENC_VMEAN_FILTER_SHIFT)&TMC4361A_ENC_VMEAN_FILTER_MASK) + ((uint32_t(filter_vmean) << TMC4361A_ENC_VMEAN_INT_SHIFT)&TMC4361A_ENC_VMEAN_INT_MASK);
   tmc4361A_writeInt(tmc4361A, TMC4361A_ENC_VMEAN_FILTER_WR, datagram);
 
-  // set whether or not to invert
+  // set whether or not to invert. Clear the bit explicitly when not inverting:
+  // a re-configuration with invert = false after one with invert = true must
+  // actually un-invert, and a chip reset is the only other thing that clears it.
   if (invert) {
     tmc4361A_setBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_INVERT_ENC_DIR_MASK);
+  } else {
+    tmc4361A_rstBits(tmc4361A, TMC4361A_ENC_IN_CONF, TMC4361A_INVERT_ENC_DIR_MASK);
   }
 
   return;

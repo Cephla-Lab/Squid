@@ -545,35 +545,51 @@ void do_focus_control()
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
 }
 
+// SET_COMPLETION_WINDOW: a commanded move counts as complete once XACTUAL is within the
+// axis's window of the target, while the ramp is still finishing. Off (0) for every axis
+// unless the host sets it; the filter wheels use it so an exposure can start while the
+// last degrees are travelled. An axis whose closed loop is enabled ignores the window:
+// its completion has to wait for the encoder, which this rule knows nothing about.
+static inline bool within_completion_window(uint8_t axis, int32_t target)
+{
+  if (completion_window_units[axis] == 0 || stage_PID_enabled[axis]) return false;
+  // Converted with the axis's microstepping and pitch as they are NOW (see callback_set_completion_window).
+  int32_t win = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(completion_window_units[axis]) / 10000.0f);
+  if (win < 0) win = -win;
+  if (win == 0) return false;
+  int32_t d = tmc4361A_currentPosition(&tmc4361[axis]) - target;
+  return (d < 0 ? -d : d) <= win;
+}
+
 void check_position()
 {
   if(us_since_last_check_position > interval_check_position) {
     us_since_last_check_position = 0;
     // check if commanded position has been reached
-    if (X_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[x]) == X_commanded_target_position && !is_homing_X && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) // homing is handled separately
+    if (X_commanded_movement_in_progress && !is_homing_X && ((tmc4361A_currentPosition(&tmc4361[x]) == X_commanded_target_position && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) || within_completion_window(x, X_commanded_target_position))) // homing is handled separately
     {
       X_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
-    if (Y_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !is_homing_Y && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y]))
+    if (Y_commanded_movement_in_progress && !is_homing_Y && ((tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y])) || within_completion_window(y, Y_commanded_target_position)))
     {
       Y_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
-    if (Z_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !is_homing_Z && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z]))
+    if (Z_commanded_movement_in_progress && !is_homing_Z && ((tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z])) || within_completion_window(z, Z_commanded_target_position)))
     {
       Z_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
     if (enable_filterwheel == true) {
-      if (W_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !is_homing_W && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w]))
+      if (W_commanded_movement_in_progress && !is_homing_W && ((tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w])) || within_completion_window(w, W_commanded_target_position)))
       {
         W_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W2_commanded_movement_in_progress;
       }
     }
     if (enable_filterwheel_w2 == true) {
-      if (W2_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w2]) == W2_commanded_target_position && !is_homing_W2 && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2]))
+      if (W2_commanded_movement_in_progress && !is_homing_W2 && ((tmc4361A_currentPosition(&tmc4361[w2]) == W2_commanded_target_position && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2])) || within_completion_window(w2, W2_commanded_target_position)))
       {
         W2_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;

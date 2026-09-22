@@ -338,3 +338,76 @@ def test_set_completion_window_encoding():
     for bad in (-0.001, 6.6):
         with pytest.raises(ValueError):
             micro.set_completion_window(control._def.AXIS.W, bad)
+
+
+def test_set_encoder_reporting_and_ramp_profile_encoding():
+    """SET_ENCODER_REPORTING (44) and SET_RAMP_PROFILE (47), firmware >= 1.6: axis in byte 2, mode in byte 3."""
+    micro = get_test_micro()
+    try:
+        micro.set_encoder_reporting(control._def.AXIS.W)
+        assert micro.last_command[1] == control._def.CMD_SET.SET_ENCODER_REPORTING == 44
+        assert micro.last_command[2] == control._def.AXIS.W
+        assert micro.last_command[3] == control._def.ENCODER_REPORTING.ENC_IN_THETA == 1
+        micro.set_encoder_reporting(control._def.AXIS.W, control._def.ENCODER_REPORTING.OFF)
+        assert micro.last_command[3] == 0
+
+        micro.set_ramp_profile(control._def.AXIS.W, control._def.RAMP_PROFILE.TRAPEZOID)
+        assert micro.last_command[1] == control._def.CMD_SET.SET_RAMP_PROFILE == 47
+        assert micro.last_command[2] == control._def.AXIS.W
+        assert micro.last_command[3] == 1
+        micro.set_ramp_profile(control._def.AXIS.W2, control._def.RAMP_PROFILE.SSHAPE)
+        assert (micro.last_command[2], micro.last_command[3]) == (control._def.AXIS.W2, 2)
+        with pytest.raises(ValueError):
+            micro.set_ramp_profile(control._def.AXIS.W, 3)
+    finally:
+        micro.close()
+
+
+def _status_packet(theta, byte19, dev):
+    from crc import CrcCalculator, Crc8
+
+    msg = bytearray(control.microcontroller.SimSerial.response_bytes_for(0, 0, 0, 0, 0, theta, False, False))
+    msg[19] = byte19
+    msg[20:22] = int(dev).to_bytes(2, "big", signed=True)
+    msg[-1] = CrcCalculator(Crc8.CCITT, table_based=True).calculate_checksum(bytes(msg[:-1]))
+    return bytes(msg)
+
+
+def _wait_for(predicate, timeout_s=2.0):
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_status_packet_with_encoder_reporting_is_decoded():
+    """Firmware >= 1.6 with reporting on: theta field = ENC_POS, byte 19 = flags (bit 0 reporting, bits 4-6 the
+    axis), bytes 20-21 = int16 ENC_POS - XACTUAL. A packet without the reporting bit clears the flags and
+    keeps the last reading."""
+    micro = get_test_micro()
+    try:
+        serial = micro._serial
+        flags = (1 << control._def.ENC_FLAG.REPORTING) | (control._def.AXIS.W << control._def.ENC_FLAG.AXIS_SHIFT)
+        with serial._update_lock:
+            serial.response_buffer.extend(_status_packet(-12345, flags, -7))
+            serial._in_waiting = len(serial.response_buffer)
+        assert _wait_for(lambda: micro.get_encoder_state()["reporting"])
+        state = micro.get_encoder_state()
+        assert state == {
+            "reporting": True,
+            "pid_enabled": False,
+            "axis": control._def.AXIS.W,
+            "encoder_pos": -12345,
+            "deviation": -7,
+        }
+
+        with serial._update_lock:
+            serial.response_buffer.extend(_status_packet(0, 0, 0))
+            serial._in_waiting = len(serial.response_buffer)
+        assert _wait_for(lambda: not micro.get_encoder_state()["reporting"])
+        state = micro.get_encoder_state()
+        assert (state["encoder_pos"], state["deviation"]) == (-12345, -7)
+    finally:
+        micro.close()
