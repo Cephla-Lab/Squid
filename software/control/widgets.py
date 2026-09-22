@@ -5827,36 +5827,29 @@ class FilterControllerWidget(QFrame):
 
     def _go_to_next_position(self, wheel_id: int):
         """Move to the next position."""
-        try:
-            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
-            wheel_info = self.filterController.get_filter_wheel_info(wheel_id)
-            max_pos = wheel_info.number_of_slots
-
-            self._step_position(wheel_id, current_pos, +1, max_pos)
-        except Exception as e:
-            self._log.error(f"Error moving wheel {wheel_id} to next position: {e}")
+        self._step_position(wheel_id, +1)
 
     def _go_to_previous_position(self, wheel_id: int):
         """Move to the previous position."""
-        try:
-            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
-            max_pos = self.filterController.get_filter_wheel_info(wheel_id).number_of_slots
-            self._step_position(wheel_id, current_pos, -1, max_pos)
-        except Exception as e:
-            self._log.error(f"Error moving wheel {wheel_id} to previous position: {e}")
+        self._step_position(wheel_id, -1)
 
-    def _step_position(self, wheel_id: int, current_pos: int, direction: int, max_pos: int):
-        """One slot forward or back. At an end the step continues round the wheel when the controller says its
-        wheel wraps (a rotary wheel allowed to cross its index flag: last -> first is then ONE slot, which the
-        controller takes the short way); otherwise the ends stay ends, as they always were."""
-        new_pos = current_pos + direction
-        if not 1 <= new_pos <= max_pos:
-            if not self.filterController.wraps_around(wheel_id):
-                return
-            new_pos = 1 + (new_pos - 1) % max_pos
-        self.filterController.set_filter_wheel_position({wheel_id: new_pos})
+    def _step_position(self, wheel_id: int, direction: int):
+        """One slot forward or back. The controller decides what a step means at an end - a rotary wheel allowed
+        to cross its index flag continues round, the others stop - and the selection is then read back from it, so
+        the panel never has an arithmetic of its own."""
+        try:
+            if direction > 0:
+                self.filterController.next_position(wheel_id)
+            else:
+                self.filterController.previous_position(wheel_id)
+            new_pos = self.filterController.get_filter_wheel_position().get(wheel_id)
+        except Exception as e:
+            self._log.error(
+                f"Error moving wheel {wheel_id} to the {'next' if direction > 0 else 'previous'} position: {e}"
+            )
+            return
         combo_box = self._combo_boxes.get(wheel_id)
-        if combo_box:
+        if combo_box and new_pos is not None:
             # the move has been made: moving the selection must not send it a second time
             combo_box.blockSignals(True)
             combo_box.setCurrentIndex(new_pos - 1)
