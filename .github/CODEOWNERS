@@ -1,0 +1,8 @@
+# Review routing. GitHub requests a review from the owner of every changed path.
+# Default: the maintainer of master reviews and merges software changes.
+*                                           @Alpaca233
+
+# Firmware and the host <-> MCU protocol: Hongquan reviews.
+/firmware/                                  @hongquanli
+/software/control/microcontroller.py        @hongquanli
+/software/control/firmware_sim_serial.py    @hongquanli
