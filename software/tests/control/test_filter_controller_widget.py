@@ -14,14 +14,21 @@ from squid.config import SquidFilterWheelConfig
 from squid.filter_wheel_controller.cephla import SquidFilterWheel
 
 
-def _controller(position, wraps, slots=8):
+def _controller(position, lands_on, slots=8):
+    """A controller whose next_position / previous_position leave the wheel on `lands_on` (None = it did not move)."""
     c = MagicMock()
     c.available_filter_wheels = [1]
     c.get_filter_wheel_position.return_value = {1: position}
     c.get_filter_wheel_info.return_value = types.SimpleNamespace(
         index=1, number_of_slots=slots, slot_names=[str(i) for i in range(1, slots + 1)]
     )
-    c.wraps_around.return_value = wraps
+
+    def step(wheel_id=1):
+        if lands_on is not None:
+            c.get_filter_wheel_position.return_value = {1: lands_on}
+
+    c.next_position.side_effect = step
+    c.previous_position.side_effect = step
     return c
 
 
@@ -33,26 +40,71 @@ def _widget(qtbot, controller):
 
 
 @pytest.mark.parametrize(
-    "position, button, wraps, expected",
+    "position, button, lands_on",
     [
-        (8, "next", True, 1),  # the finding: Next at the last slot sent nothing
-        (1, "prev", True, 8),  # and Previous at the first
-        (8, "next", False, None),  # a controller that does not wrap keeps its ends
-        (1, "prev", False, None),
-        (3, "next", True, 4),
-        (3, "prev", False, 2),
+        (8, "next", 1),  # the finding: Next at the last slot sent nothing; now the controller decides
+        (1, "prev", 8),
+        (8, "next", None),  # a controller that keeps its ends: the selection stays where it was
+        (1, "prev", None),
+        (3, "next", 4),
+        (3, "prev", 2),
     ],
 )
-def test_next_and_previous(qtbot, position, button, wraps, expected):
-    controller = _controller(position, wraps)
+def test_next_and_previous_ask_the_controller_and_read_the_result_back(qtbot, position, button, lands_on):
+    controller = _controller(position, lands_on)
     w = _widget(qtbot, controller)
     (w._next_buttons if button == "next" else w._prev_buttons)[1].click()
-    if expected is None:
-        controller.set_filter_wheel_position.assert_not_called()
-    else:
-        # exactly one move: updating the selection afterwards must not send it again
-        controller.set_filter_wheel_position.assert_called_once_with({1: expected})
-        assert w._combo_boxes[1].currentIndex() == expected - 1
+    (controller.next_position if button == "next" else controller.previous_position).assert_called_once_with(1)
+    # the panel has no arithmetic of its own: it never sends a position itself
+    controller.set_filter_wheel_position.assert_not_called()
+    assert w._combo_boxes[1].currentIndex() == (lands_on if lands_on is not None else position) - 1
+
+
+def test_a_controller_without_a_rotary_wrap_keeps_its_ends_by_default():
+    """The ABC's own next_position / previous_position, as Optospin and Zaber inherit them."""
+    from squid.abc import AbstractFilterWheelController, FilterWheelInfo
+
+    class Stub(AbstractFilterWheelController):
+        def __init__(self):
+            self.position = {1: 8}
+            self.sent = []
+
+        def initialize(self, *a, **k): ...
+        def close(self): ...
+        def home(self, index=None): ...
+        def get_filter_wheel_info(self, index):
+            return FilterWheelInfo(index=index, number_of_slots=8, slot_names=[str(i) for i in range(1, 9)])
+
+        def get_filter_wheel_position(self):
+            return dict(self.position)
+
+        def set_filter_wheel_position(self, positions):
+            self.sent.append(dict(positions))
+            self.position.update(positions)
+
+        @property
+        def available_filter_wheels(self):
+            return [1]
+
+        def get_delay_ms(self, *a, **k):
+            return 0
+
+        def get_delay_offset_ms(self, *a, **k):
+            return 0
+
+        def set_delay_ms(self, *a, **k): ...
+        def set_delay_offset_ms(self, *a, **k): ...
+
+    s = Stub()
+    s.next_position(1)
+    assert s.sent == [] and s.position == {1: 8}  # the end stays an end
+    s.previous_position(1)
+    assert s.sent == [{1: 7}]
+    s.position = {1: 1}
+    s.previous_position(1)
+    assert s.sent == [{1: 7}]
+    with pytest.raises(ValueError):
+        s.next_position(2)
 
 
 def test_next_at_the_last_slot_is_one_slot_across_the_flag_on_a_real_controller(qtbot, tmp_path, monkeypatch):

@@ -112,7 +112,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         # Read through the module rather than the `from control._def import *` binding above:
         # that binding is taken at import time and would not see an ini override.
-        self.wrap = self._parse_wrap(control._def.SQUID_FILTERWHEEL_WRAP)
+        self.wrap = (
+            control._def.SQUID_FILTERWHEEL_WRAP
+        )  # parsed by the setter: a typo fails here, not at the first move
 
         # Fail loudly on a host/firmware version mismatch before any moves
         # are issued — runs unconditionally (including the skip_init restart
@@ -128,6 +130,11 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 f"MOVETO targets would land at the wrong slot; the W2 MOVETO "
                 f"command also does not exist on older firmware. Re-flash "
                 f"firmware from firmware/controller."
+            )
+        if self._wrap is True and tuple(fw) < self._WRAP_MIN_FIRMWARE:
+            _log.warning(
+                f"squid_filterwheel_wrap = True needs firmware >= {self._WRAP_MIN_FIRMWARE[0]}.{self._WRAP_MIN_FIRMWARE[1]} "
+                f"(this controller runs {fw[0]}.{fw[1]}); slot changes take the long way round"
             )
 
         # Convert single config to dict format for uniform handling
@@ -224,8 +231,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
     # crossing its flag there. The host cannot see which driver chip a controller carries, and does not need
     # to: the flag is the TMC4361A's business, not the driver's, and firmware 1.6 ships on the TMC2240
     # controllers only.
-    wrap = "auto"
-
     # Ceiling on the net turn count before the wheel is re-homed. Shortest-path slot changes
     # that net to a full turn (1 -> 4 -> 7 -> 1 on an 8-slot wheel) add one turn per cycle, and
     # _plan_move's absolute target grows with it, so the driver coordinate would drift for as
@@ -280,11 +285,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self.microcontroller.wait_till_operation_is_completed()
         _log.info(f"Filter wheel {wheel_id}: completion window {window_deg:g} deg")
 
-    def wraps_around(self, wheel_id: Optional[int] = None) -> bool:
-        """Next from the last slot is the first and Previous from the first is the last, when shortest-path slot
-        changes are enabled (see `wrap`). The GUI's Next / Previous buttons ask this."""
-        return self._wrap_enabled()
-
     def _configure_wheel(self, wheel_id: int, config: SquidFilterWheelConfig):
         """Configure a single filter wheel motor."""
         motor_slot = config.motor_slot_index
@@ -332,8 +332,18 @@ class SquidFilterWheel(AbstractFilterWheelController):
             return "auto"
         raise ValueError(f"squid_filterwheel_wrap must be auto, True or False, not {value!r}")
 
+    @property
+    def wrap(self):
+        """The shortest-path setting as parsed: "auto", True or False. Assigning re-parses, so a bench script can
+        switch it at run time and an invalid value is refused at the assignment."""
+        return self._wrap
+
+    @wrap.setter
+    def wrap(self, value):
+        self._wrap = self._parse_wrap(value)
+
     def _wrap_enabled(self) -> bool:
-        wrap = self._parse_wrap(self.wrap)
+        wrap = self._wrap
         if wrap is False:
             return False
         minimum = self._WRAP_AUTO_MIN_FIRMWARE if wrap == "auto" else self._WRAP_MIN_FIRMWARE
