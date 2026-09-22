@@ -1905,30 +1905,67 @@ class PreferencesDialog(QDialog):
         checked_value = getattr(Qt.Checked, "value", Qt.Checked)
         self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
 
-    def _get_config_value(self, section, option, default=""):
+    # The four readers below go through control._def.conf_attribute_reader, the function the running software reads
+    # the same ini with. It strips an inline comment ("30.0  # mm/s"), which ConfigParser keeps as part of the value.
+    # Reading the raw text here instead made such a value look like the default (float("30.0  # mm/s") raises), so
+    # the dialog showed something the machine was not running, and saving ANY setting wrote that default back.
+    _MISSING = object()
+
+    def _read_like_the_application(self, section, option):
+        """The ini value typed as the running software types it, or _MISSING when the key is absent."""
         try:
-            return self.config.get(section, option)
+            raw = self.config.get(section, option)
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return self._MISSING
+        return control._def.conf_attribute_reader(raw)
+
+    def _get_config_value(self, section, option, default=""):
+        """The value as text, without an inline comment. Text that is not a comment ("my#tag", a path) is kept."""
+        try:
+            raw = str(self.config.get(section, option))
         except (configparser.NoSectionError, configparser.NoOptionError):
             return default
+        value = control._def.conf_attribute_reader(raw)
+        if isinstance(value, str):
+            return value  # the loader's own comment stripping, nothing else changed
+        # Typed by the loader (a number, True, None, JSON): keep the text as written, minus the comment.
+        cuts = [raw.find(sep) for sep in (" #", "\t#") if sep in raw]
+        return raw[: min(cuts)].rstrip() if cuts else raw.strip()
+
+    @staticmethod
+    def _ini_text(value: str) -> str:
+        """Free text as it has to be WRITTEN for the ini loader to read the same text back.
+
+        _get_config_value() hands the dialog the text as the loader decodes it, so `"C:/data/run #3"` (quoted in the
+        ini because of the " #") is shown as C:/data/run #3. Written back bare, the loader would take " #3" for a
+        comment and the path would silently become C:/data/run. Text that does not survive the round trip - an
+        inline-comment look-alike, or text the loader would type as a number, True or None - is written as a JSON
+        string, which the loader decodes. Everything else is written unchanged, so ordinary values are not touched."""
+        value = str(value)
+        if control._def.conf_attribute_reader(value) == value:
+            return value
+        quoted = json.dumps(value)
+        return quoted if control._def.conf_attribute_reader(quoted) == value else value
 
     def _get_config_bool(self, section, option, default=False):
-        try:
-            val = self.config.get(section, option)
-            return str(val).strip().lower() in ("true", "1", "yes", "on")
-        except (configparser.NoSectionError, configparser.NoOptionError):
+        value = self._read_like_the_application(section, option)
+        if value is self._MISSING:
             return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
 
     def _get_config_int(self, section, option, default=0):
-        try:
-            return int(self.config.get(section, option))
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        value = self._read_like_the_application(section, option)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
+        return int(value) if float(value).is_integer() else default
 
     def _get_config_float(self, section, option, default=0.0):
-        try:
-            return float(self.config.get(section, option))
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        value = self._read_like_the_application(section, option)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
+        return float(value)
 
     # squid_filterwheel_wrap: (what the operator reads, what goes in the ini)
     _WHEEL_WRAP_CHOICES = (("Auto (on from firmware 1.6)", "auto"), ("On", "True"), ("Off", "False"))
@@ -2010,7 +2047,7 @@ class PreferencesDialog(QDialog):
         self.config.set(
             "GENERAL", "zarr_use_6d_fov_dimension", "true" if self.zarr_6d_fov_checkbox.isChecked() else "false"
         )
-        self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "default_saving_path", self._ini_text(self.saving_path_edit.text()))
         self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Click to Move
@@ -2023,7 +2060,7 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "live_view_z_step_fast_um", str(self.click_to_move_z_coarse_spinbox.value()))
 
         # Acquisition settings
-        self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
+        self.config.set("GENERAL", "multipoint_autofocus_channel", self._ini_text(self.autofocus_channel_edit.text()))
         self.config.set(
             "GENERAL",
             "enable_flexible_multipoint",
