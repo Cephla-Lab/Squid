@@ -65,7 +65,6 @@ class QtStreamHandler(QObject):
 
     def __init__(
         self,
-        display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
         force_display_fn: Callable[[], bool] = lambda: False,
     ):
@@ -78,9 +77,7 @@ class QtStreamHandler(QObject):
             accept_new_frame=accept_new_frame_fn,
             force_display=force_display_fn,
         )
-        self._handler = StreamHandler(
-            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
-        )
+        self._handler = StreamHandler(handler_functions=functions)
 
     def get_frame_callback(self) -> Callable[[CameraFrame], None]:
         return self._handler.on_new_frame
@@ -96,9 +93,6 @@ class QtStreamHandler(QObject):
 
     def set_save_fps(self, fps):
         self._handler.set_save_fps(fps)
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
 log = squid.logging.get_logger(__name__)
@@ -503,7 +497,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
         self.base_path = None
@@ -677,7 +670,6 @@ class TrackingWorker(QObject):
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
         self.base_path = self.trackingController.base_path
@@ -771,13 +763,7 @@ class TrackingWorker(QObject):
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
                 image_ = np.squeeze(image_)
-                # display image
-                image_to_display_ = utils.crop_image(
-                    image_,
-                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
-                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
-                )
-                self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
+                self.image_to_display_multi.emit(image_, config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
                     if camera_frame.is_color():
@@ -843,6 +829,26 @@ class TrackingWorker(QObject):
         self.finished.emit()
 
 
+MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+# One green pixel, stretched over the live image and multiplied into it: keeps only the green channel
+GREEN_TINT_PIXEL = np.array([[[0, 255, 0]]], dtype=np.uint8)
+# Mask overlay: 0 = see-through, 1 = red
+OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
+# Stacking order above the live image (z = 0): tint multiplies, reference adds, the red mask covers both
+Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE, Z_FRAME = 1, 2, 3, 4
+
+
+def _overexposure_mask(image: np.ndarray, saturation: float) -> np.ndarray:
+    """1 where any channel is at or above ``saturation``, else 0."""
+    intensity = image if image.ndim == 2 else image.max(axis=2)
+    return (intensity >= saturation).view(np.uint8)
+
+
+def _dtype_range(dtype):
+    """np.iinfo / np.finfo for the dtype, whichever applies."""
+    return np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
+
+
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
@@ -884,6 +890,17 @@ class ImageDisplayWindow(QMainWindow):
         self.preview_line = None
         self.start_point_marker = None
 
+        # Last frame as received (before any on-screen marking), for registration
+        self._current_image: Optional[np.ndarray] = None
+
+        # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
+        self.alignment_reference_item: Optional[pg.ImageItem] = None
+        self.live_tint_item: Optional[pg.ImageItem] = (
+            None  # green multiply over the live image while a reference is shown
+        )
+        self.overexposure_item: Optional[pg.ImageItem] = None
+        self._overexposure_source = None  # (frame id, saturation) the current mask was computed from
+
         # Create main layout
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -912,6 +929,11 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
+        self.btn_overexposure = QPushButton("Over-exposed Pixels")
+        self.btn_overexposure.setCheckable(True)
+        self.btn_overexposure.setToolTip("Highlight pixels at the camera's maximum value in red")
+        self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
+
         # Add well selector toggle button
         self.btn_well_selector = QPushButton("Show Well Selector")
         self.btn_well_selector.setCheckable(False)
@@ -926,6 +948,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
+        status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_overexposure)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
 
@@ -957,15 +981,21 @@ class ImageDisplayWindow(QMainWindow):
         if self.show_LUT:
             self.graphics_widget.view = pg.ImageView()
             self.graphics_widget.img = self.graphics_widget.view.getImageItem()
-            self.graphics_widget.img.setBorder("w")
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
+            self.LUTWidget.item.sigLevelsChanged.connect(self._update_overlays)
         else:
-            self.graphics_widget.img = pg.ImageItem(border="w")
+            self.graphics_widget.img = pg.ImageItem()
             self.graphics_widget.view.addItem(self.graphics_widget.img)
+
+        # White frame around the live image, above every overlay so tints and masks never recolor it
+        self.frame_item = QGraphicsRectItem()
+        self.frame_item.setPen(pg.mkPen("w"))
+        self.frame_item.setZValue(Z_FRAME)
+        self._active_view().addItem(self.frame_item)
 
         ## Create ROI
         self.roi_pos = (500, 500)
@@ -1087,6 +1117,82 @@ class ImageDisplayWindow(QMainWindow):
         # Stop the timer when the window is closed
         self.update_timer.stop()
         super().closeEvent(event)
+
+    def set_overexposure_indicator(self, enabled: bool):
+        """Overlay pixels at the camera's maximum value in red, whatever the contrast setting."""
+        if enabled and self.overexposure_item is None:
+            self.overexposure_item = self._add_overlay_item(Z_OVEREXPOSURE, lut=OVEREXPOSURE_LUT)
+            self._update_overlays()
+        elif not enabled and self.overexposure_item is not None:
+            self._active_view().removeItem(self.overexposure_item)
+            self.overexposure_item = None
+            self._overexposure_source = None
+
+    def current_image(self) -> Optional[np.ndarray]:
+        """The most recently received frame, unmodified (None before the first one or after invalidation)."""
+        return self._current_image
+
+    def invalidate_current_image(self):
+        """Forget the last frame, e.g. after a stage move it no longer shows what is under the objective."""
+        self._current_image = None
+
+    def show_alignment_reference(self, image: np.ndarray):
+        """Overlay a reference image in additive magenta on a green live view.
+
+        Misalignment shows as magenta and green fringes; where the two line up the colors add to white.
+        The live image item itself (levels, lookup table, histogram) is left untouched.
+        """
+        if self.alignment_reference_item is None:
+            self.live_tint_item = self._add_overlay_item(Z_LIVE_TINT, QPainter.CompositionMode_Multiply)
+            self.live_tint_item.setImage(GREEN_TINT_PIXEL, levels=(0, 255))
+            self.alignment_reference_item = self._add_overlay_item(
+                Z_ALIGNMENT_REFERENCE, QPainter.CompositionMode_Plus, lut=MAGENTA_COLORMAP.getLookupTable(nPts=256)
+            )
+        # lookup tables do not apply to H x W x 3 data
+        self.alignment_reference_item.setImage(utils.to_grayscale(image), autoLevels=False)
+        self._update_overlays()
+
+    def hide_alignment_reference(self):
+        if self.alignment_reference_item is not None:
+            self._active_view().removeItem(self.alignment_reference_item)
+            self._active_view().removeItem(self.live_tint_item)
+            self.alignment_reference_item = self.live_tint_item = None
+
+    def _add_overlay_item(self, z: int, composition_mode=None, lut: Optional[np.ndarray] = None) -> pg.ImageItem:
+        item = pg.ImageItem()
+        item.setZValue(z)
+        if lut is not None:
+            item.setLookupTable(lut)
+        if composition_mode is not None:
+            item.setCompositionMode(composition_mode)
+        self._active_view().addItem(item)
+        return item
+
+    def _update_overlays(self, *_):
+        """Keep the overlays in step with the live image and its contrast range."""
+        image_rect = self.graphics_widget.img.boundingRect()
+        self.frame_item.setRect(image_rect)
+        if self.live_tint_item is not None:
+            self.live_tint_item.setRect(image_rect)
+        levels = self.graphics_widget.img.getLevels()
+        if levels is None:
+            return
+        reference = self.alignment_reference_item
+        if reference is not None and not np.array_equal(reference.getLevels(), levels):
+            reference.setLevels(levels)
+        if self.overexposure_item is not None and self._current_image is not None:
+            saturation = self._saturation_level(self._current_image)
+            source = (id(self._current_image), saturation)
+            if source != self._overexposure_source:
+                self._overexposure_source = source
+                mask = _overexposure_mask(self._current_image, saturation)
+                self.overexposure_item.setImage(mask, autoLevels=False, levels=(0, 1))
+
+    def _saturation_level(self, image: np.ndarray) -> float:
+        """The camera's maximum pixel value; the dtype's full range when no camera is attached."""
+        if self.liveController is None or not np.issubdtype(image.dtype, np.integer):
+            return _dtype_range(image.dtype).max
+        return self.liveController.camera.get_pixel_format().max_value(image.dtype)
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
@@ -1399,6 +1505,7 @@ class ImageDisplayWindow(QMainWindow):
         if self.first_image:
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
+        self._current_image = image
 
         if ENABLE_TRACKING:
             image = np.copy(image)
@@ -1407,7 +1514,7 @@ class ImageDisplayWindow(QMainWindow):
                 cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
-        info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
+        info = _dtype_range(image.dtype)
         min_val, max_val = info.min, info.max
 
         if self.liveController is not None and self.contrastManager is not None:
@@ -1428,6 +1535,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
+        self._update_overlays()
 
         # Update pixel value based on last valid position
         if self.has_valid_position:
@@ -1598,7 +1706,13 @@ class NavigationViewer(QFrame):
         """Set the alignment widget to be displayed in the navigation viewer."""
         self.alignment_widget = alignment_widget
         self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.installEventFilter(self)  # it grows/shrinks as its Auto button toggles
         self.alignment_widget.adjustSize()
+
+    def eventFilter(self, obj, event):
+        if obj is self.alignment_widget and event.type() == QEvent.Resize:
+            self._position_button()
+        return super().eventFilter(obj, event)
         self._position_button()
 
     def resizeEvent(self, event):
