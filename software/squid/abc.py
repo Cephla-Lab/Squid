@@ -608,7 +608,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_available_pixel_formats(self) -> Sequence[squid.config.CameraPixelFormat]:
         """
-        Returns the list of pixel formats supported by the camera.
+        Returns the pixel formats available at the camera's current settings. Some cameras deliver a
+        different depth per binning or frame format, so re-query after set_binning / set_frame_format.
         """
         pass
 
@@ -813,14 +814,15 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def set_black_level(self, black_level: float):
         """
-        Sets the black level of captured images.
+        Sets the black level of captured images, in counts on the 8-bit scale (0-255) whatever the pixel
+        format; drivers convert to their SDK's units.
         """
         pass
 
     @abc.abstractmethod
     def get_black_level(self) -> float:
         """
-        Gets the black level set on the camera.
+        Gets the black level set on the camera, in counts on the 8-bit scale.
         """
         pass
 
@@ -920,13 +922,28 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abc.abstractmethod
     def get_ready_for_trigger(self) -> bool:
         """
         Returns true if the camera is ready for another trigger, false otherwise.  Calling
-        send_trigger when this is False will result in an exception from send_trigger,
-        unless a streaming-pausing settings change is in flight, in which case
-        send_trigger drops the trigger silently instead (see send_trigger).
+        send_trigger when this is False will result in an exception from send_trigger.
+
+        Never true while a streaming-pausing settings change is in flight (the operation holds
+        self._trigger_lock, see _pause_streaming): the driver's own check is not even consulted,
+        so it cannot race the reconfiguration with SDK calls from the trigger thread. Callers
+        such as LiveController skip the trigger and re-check.
+        """
+        if not self._trigger_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._get_ready_for_trigger_imp()
+        finally:
+            self._trigger_lock.release()
+
+    @abc.abstractmethod
+    def _get_ready_for_trigger_imp(self) -> bool:
+        """
+        Driver-specific part of get_ready_for_trigger, called with no settings change in flight:
+        typically "the previous trigger has been consumed (or timed out)".  Must not block.
         """
         pass
 

@@ -7,7 +7,15 @@ by the autouse fixture in tests/conftest.py.
 
 import pytest
 
+from control.core.core import ImageDisplayWindow
 from control.firmware_sim_serial import FirmwareSimSerial
+
+
+@pytest.fixture
+def image_display_window(qtbot):
+    win = ImageDisplayWindow()
+    qtbot.addWidget(win)
+    return win
 
 
 @pytest.fixture

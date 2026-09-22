@@ -706,7 +706,10 @@ class MultiPointController:
 
         return mosaic_width * mosaic_height * bytes_per_pixel * num_channels
 
-    def run_acquisition(self, acquire_current_fov=False):
+    _MCU_IDLE_WAIT_S = 15  # a wedged MCU clears a few seconds after live triggers stop
+
+    def run_acquisition(self, acquire_current_fov=False) -> bool:
+        """Start the acquisition worker; returns True once it is running, False if the start was aborted."""
         # Consume the per-region laser-AF offsets for THIS run and clear the sticky controller
         # copy up-front. Any early return below — or a prior GUI abort that pushed offsets but
         # never reached run_acquisition (e.g. aborted on the disk/RAM dialog) — then cannot leak
@@ -723,7 +726,7 @@ class MultiPointController:
             # emit acquisition finished signal to re-enable the UI
             self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
-            return
+            return False
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -789,9 +792,28 @@ class MultiPointController:
             # stop live
             if self.liveController.is_live:
                 self.liveController_was_live_before_multipoint = True
-                self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                try:
+                    self.liveController.stop_live()  # @@@ to do: also uncheck the live button
+                except TimeoutError:
+                    # Live is already stopped and its trigger timer cancelled by this
+                    # point; the idle wait below is the recovery, so don't abort here.
+                    self._log.warning(
+                        "Stopping live timed out waiting for the microcontroller; "
+                        "waiting for it to go idle before starting the acquisition."
+                    )
             else:
                 self.liveController_was_live_before_multipoint = False
+
+            # A wedged MCU (see LiveController.trigger_acquisition) clears once live
+            # triggers stop; wait it out rather than timing out the first stage move.
+            try:
+                self.microcontroller.wait_till_operation_is_completed(timeout_limit_s=self._MCU_IDLE_WAIT_S)
+            except TimeoutError:
+                self._log.error(
+                    f"Microcontroller still busy after {self._MCU_IDLE_WAIT_S} s - home the stage or "
+                    "power-cycle the controller. Aborting the acquisition start."
+                )
+                return False
 
             self.camera_callback_was_enabled_before_multipoint = self.camera.get_callbacks_enabled()
             # We need callbacks, because we trigger and then use callbacks for image processing.  This
@@ -816,7 +838,7 @@ class MultiPointController:
                 self._log.info("Generating autofocus plane for multipoint grid")
                 bounds = self.scanCoordinates.get_scan_bounds()
                 if not bounds:
-                    return
+                    return False
                 x_min, x_max = bounds["x"]
                 y_min, y_max = bounds["y"]
 
@@ -877,7 +899,7 @@ class MultiPointController:
 
                 except ValueError:
                     self._log.exception("Invalid coordinates for autofocus plane, aborting.")
-                    return
+                    return False
 
             def finish_fn():
                 try:
@@ -1013,6 +1035,7 @@ class MultiPointController:
                     self.callbacks.signal_acquisition_finished()
                 except Exception:
                     self._log.exception("acquisition_finished callback failed after a failed acquisition start")
+        return thread_started
 
     def build_params(
         self, scan_position_information: ScanPositionInformation, region_laser_af_offsets: Optional[dict] = None

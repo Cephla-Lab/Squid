@@ -220,6 +220,12 @@ def schema_method(func: Callable) -> Callable:
     return wrapper
 
 
+_ACQUISITION_NOT_STARTED = (
+    "Acquisition did not start: the microcontroller stayed busy (home the stage or power-cycle the "
+    "controller) or the run was aborted before its worker launched; see the microscope log."
+)
+
+
 class MicroscopeControlServer:
     """
     TCP server that exposes microscope control functions to external clients.
@@ -788,7 +794,8 @@ class MicroscopeControlServer:
             total_images = total_fovs * len(channels)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            self.multipoint_controller.run_acquisition()
+            if not self.multipoint_controller.run_acquisition():
+                raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             return {
                 "started": True,
@@ -1071,7 +1078,9 @@ class MicroscopeControlServer:
             self._set_gui_acquisition_state(yaml_data, is_running=True)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            self.multipoint_controller.run_acquisition()
+            if not self.multipoint_controller.run_acquisition():
+                self._set_gui_acquisition_state(yaml_data, is_running=False)
+                raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "
