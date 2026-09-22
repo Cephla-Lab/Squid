@@ -111,7 +111,9 @@ def test_next_at_the_last_slot_is_one_slot_across_the_flag_on_a_real_controller(
     import squid.filter_wheel_controller.cephla as cephla
 
     monkeypatch.setattr(cephla, "_WHEEL_CACHE_PATH", str(tmp_path / "w.json"))
-    cephla.cache_wheel_state({1: (8, 0)})
+    # The record also says how the driver was configured; matching what this host would configure now is what lets
+    # the restart leave the wheel where it is instead of re-configuring and re-homing it.
+    cephla.cache_wheel_state({1: cephla.WheelRecord(8, 0, cephla.host_motion_config())})
     mc = MagicMock()
     mc.firmware_version = (1, 6)
     cfg = SquidFilterWheelConfig(
