@@ -27,6 +27,7 @@ import pytest
 
 import control._def as _def
 import control.utils
+from control.core.acquisition_settings import parse_wells
 from control.core.plate_transform import WellplateSettings
 from control.core.scan_coordinates import ScanCoordinates, ScanCoordinatesSiLA2
 from control.microscope_control_server import MicroscopeControlServer
@@ -143,13 +144,16 @@ def test_sila2_honours_the_offset_suppression_rule(monkeypatch):
     assert tuple(sc.region_centers["A1"]) == (nominal["a1_x_mm"] + 3.0, nominal["a1_y_mm"] + 3.0)
 
 
-# ---- site 3: MicroscopeControlServer._parse_wells (MCP/remote) ----
+# ---- site 3: acquisition_settings.parse_wells (MCP/remote + fluidics protocol runner) ----
+# master moved the server's _parse_wells into control.core.acquisition_settings (shared with the
+# fluidics protocol runner) while this series was open; the fix and its oracle moved with it, and
+# the server keeps a thin delegate.
 
 
 @pytest.mark.parametrize("off", OFFSETS, ids=["offset0", "offsetXY"])
 @pytest.mark.parametrize("format_", PLATE_FORMATS)
 def test_server_parse_wells_applies_offset(monkeypatch, format_, off):
-    """EXPECTATION FLIPPED by the server-fix commit: _parse_wells now resolves
+    """EXPECTATION FLIPPED by the server-fix commit: parse_wells now resolves
     through plate_transform_for, so it applies WELLPLATE_OFFSET like every
     other site instead of omitting it (and no longer invents a1=0/spacing=9
     fallbacks for missing keys - unknown formats raise instead)."""
@@ -157,12 +161,14 @@ def test_server_parse_wells_applies_offset(monkeypatch, format_, off):
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", off[1])
 
     s = _def.WELLPLATE_FORMAT_SETTINGS[format_]
-    coords = MicroscopeControlServer._parse_wells(None, range_string(s), format_)
+    coords = parse_wells(range_string(s), format_)
 
     assert len(coords) == s["rows"] * s["cols"]
     for row, col in all_wells(s):
         well_id = index_to_row_label(row) + str(col + 1)
         assert coords[well_id] == expected_xy(s, row, col, off[0], off[1]), (format_, well_id)
+    # The server delegates to the same function with the same signature.
+    assert MicroscopeControlServer._parse_wells(None, range_string(s), format_) == coords
 
 
 def test_server_parse_wells_rejects_unknown_format():

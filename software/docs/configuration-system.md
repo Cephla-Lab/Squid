@@ -14,6 +14,7 @@ software/
 │   ├── filter_wheels.yaml                # Optional: standalone filter wheels
 │   ├── hardware_bindings.yaml            # Optional: camera→wheel mappings
 │   ├── confocal_config.yaml              # Optional: confocal settings + wheels
+│   ├── fluidics_config.yaml              # Optional: Squid-Fluidics FluidicsConfig (see docs/fluidics-protocol.md)
 │   └── intensity_calibrations/           # Optional: power calibration CSVs
 │
 └── user_profiles/                      # User preferences (per profile)

@@ -69,11 +69,12 @@ pio test -e native
 
 **Example output:**
 ```
-test_crc8:      test_crc8_empty_data           [PASSED]
-test_crc8:      test_crc8_single_byte_zero     [PASSED]
-test_protocol:  test_command_ids_are_unique    [PASSED]
+test_crc8:          test_crc8_empty_data           [PASSED]
+test_crc8:          test_crc8_single_byte_zero     [PASSED]
+test_protocol:      test_command_ids_are_unique    [PASSED]
+test_driver_math:   test_tmc2660_shipped_xy        [PASSED]
 ...
-================= 11 test cases: 11 succeeded =================
+================ 134 test cases: 134 succeeded ================
 ```
 
 Tests are located in `controller/test/` and use the [Unity](https://github.com/ThrowTheSwitch/Unity) test framework.
@@ -122,10 +123,175 @@ If you prefer Arduino IDE:
 ## Controller
 
 The main motion controller firmware for Teensy 4.1. Handles:
-- XYZ stage motion control (TMC4361A + TMC2660 drivers)
+- XYZ stage motion control (TMC4361A motion controller + TMC2660 or TMC2240 power stage)
 - Illumination control (lasers and LED matrix)
 - Camera triggering
 - Serial communication with host software
+
+### Stepper driver auto-detection
+
+Firmware 1.5 and later runs on boards populated with either a TMC2660 or a
+TMC2240 behind the TMC4361A. One image serves both: the TMC4361A is the motion
+controller in either case, and only five operations differ between the power
+stages (init, run/hold current, microstepping, enable, StallGuard). They are
+dispatched through a seam in `src/tmc/drivers/`. Ramp generation, limit
+switches, the encoder, PID and homing are unchanged and driver-agnostic.
+
+There is **no protocol change** — command codes, packet layout and the host
+contract are identical to 1.4, so this firmware runs against existing host
+software with no changes.
+
+#### How an axis is identified
+
+Each axis is probed at initialisation by reading the TMC2240's `IOIN.VERSION`
+through the TMC4361A's cover-datagram passthrough:
+
+| Read | Verdict |
+|------|---------|
+| `0x40` in bits [31:24] | TMC2240 |
+| A live response that is not `0x40` | TMC2660 |
+| All-zeros or all-ones (nothing answering) | `DRIVER_UNKNOWN` |
+
+Cover reads are unreliable by construction, so the probe reads three times and
+takes the verdict a strict majority agrees on. Three reads that disagree mean a
+flaky bus, and the result is `DRIVER_UNKNOWN`.
+
+A TMC2660 has no ID register, so it cannot be positively identified — "something
+answered, and it was not a 2240" is the only evidence available. This detects an
+unpopulated axis, a dead chip or a stuck SPI bus. It does **not** detect a chip
+that answers like a TMC2660 but is a different part.
+
+The result is printed once at boot, per axis, on the USB serial link:
+
+```
+[TMC] X: TMC2240 probe_raw=0x40000000
+[TMC] Y: TMC2660 probe_raw=0x00004000
+[TMC] Z: UNKNOWN probe_raw=0x00000000
+```
+
+`probe_raw` is the raw word of the **last** of the three reads, not a summary,
+and it is emitted only for axes that were actually probed.
+
+#### What happens to an unidentified axis
+
+An axis left at `DRIVER_UNKNOWN` has its **driver chip** left alone — the driver
+dispatcher has no `DRIVER_UNKNOWN` arm, and configuring registers on a chip that
+may not be there would be writing into the dark — so its power stage stays at its
+reset/strapped state and unenergised. (Its TMC4361A is still configured: ramp,
+limit switches and homing settings are written as usual. Those are motion-
+controller registers and command nothing on their own.)
+
+Because its current scaling, and therefore its torque, is unknown, **every path
+that can put the motor in motion rejects it**. There are four such paths, and
+they are enumerated rather than asserted:
+
+1. **Host move commands** — `MOVE_X/Y/Z/W/W2`, `MOVETO_X/Y/Z/W/W2`, and the
+   homing branch of `HOME_OR_ZERO`. Return `CMD_EXECUTION_ERROR`. Zeroing is not
+   gated: it sets the current position and commands no motion.
+2. **`ENABLE_STAGE_PID` (command 26)** — writing
+   `ENC_IN_CONF.REGULATION_MODUS = PID_BPG0` hands the axis to the TMC4361A's
+   closed loop, which then drives continuously to null the encoder error with no
+   further command. Returns `CMD_EXECUTION_ERROR`. `DISABLE_STAGE_PID` and
+   `CONFIGURE_STAGE_PID` are not gated — the first stops regulation, the second
+   writes coefficients and encoder configuration but never `REGULATION_MODUS`.
+3. **Joystick X and Y**, and **4. the focus-wheel Z path** — these reject
+   **silently**: they are not host commands, so there is no command to report an
+   error against.
+
+The `PID_BPG0` re-enables inside `finalize_homing_*` are covered transitively:
+they run only while `is_homing_*` is set, which only a guarded `HOME_OR_ZERO`
+can set, and only when `stage_PID_enabled[axis]` is set, which only the guarded
+`ENABLE_STAGE_PID` writes.
+
+That is 14 guarded sites in total (10 in `src/commands/stage_commands.cpp`,
+1 in `src/commands/commands.cpp`, 3 in `src/operations.cpp`), pinned by a
+source-scan test in `test/test_command_layout/` so that deleting a guard fails
+the suite.
+
+Guarding the joystick and focus wheel is not incidental. Rejecting a host move
+leaves `*_commanded_movement_in_progress` false, which is exactly the condition
+that opens the joystick gate — without these guards the operator could drive the
+very axis the firmware had just locked out, at unknown current.
+
+#### Recovering from a failed probe
+
+- **X / Y / Z** — send `INITIALIZE`. It re-probes only the axes currently at
+  `DRIVER_UNKNOWN`, then re-initialises and re-applies current, ramp, limits and
+  homing configuration. Axes that were identified successfully keep their verdict
+  and see no extra SPI traffic. No power cycle is needed.
+- **W / W2** — `INITFILTERWHEEL` always re-probes, because it re-runs
+  `tmc4361A_init()` which resets the cached verdict.
+
+#### Motor current and StallGuard
+
+Motor current is requested in mA by the host (`CONFIGURE_STEPPER_DRIVER`, command
+21) and converted per driver by the pure, Arduino-free math in
+`src/tmc/drivers/driver_math.h`, which is unit-tested on the host.
+
+The TMC2660 conversion is deliberately unchanged: it reproduces pre-1.5 firmware
+bit-identically for every shipped sense-resistor value, so **no fielded machine's
+motor current moves as a side effect of this feature**. That formula is known to
+run 4–7% low (it assumes `V_FS = 0.325 V` where `DRVCONF` selects `0.310 V`, and
+divides by 31 rather than `(CS+1)/32`), but correcting it would change current on
+every existing machine, so it is left for a separate change with its own bench
+thermal check. Do not "fix" it here.
+
+The one behavioural change on that path: a current too large for the 5-bit `CS`
+field is now refused, leaving the axis at its previous current, instead of
+wrapping. Pre-1.5, 1100 mA on X wrapped to `CS = 0`, i.e. *minimum* current.
+`CONFIGURE_STEPPER_DRIVER` reports no status either way, so an out-of-range
+request is still silent from the host's point of view — check the axis actually
+moves as expected after changing current in the INI.
+
+**Hold current means the same thing on both drivers.** `*_MOTOR_I_HOLD` (e.g.
+`Z_MOTOR_I_HOLD = 0.5`) is applied in exactly one place — the TMC4361A's
+`SCALE_VALUES.HOLD_SCALE_VAL` — for a TMC2660 axis and for a TMC2240 axis alike.
+The TMC2240 has a second attenuator available in its own `IHOLD` field and this
+firmware deliberately does **not** use it: `IHOLD` is written equal to `IRUN`.
+Using both would make hold current `hold_ratio²` (25% where a TMC2660 gives 50%),
+and under the family's direct-mode rule that the coil current is scaled by
+`IHOLD`, it would cut *run* current too. The cross-driver invariant is pinned by
+`test_hold_ratio_attenuates_exactly_once_on_both_drivers` in
+`test/test_driver_sequence/`. **Bench:** confirm on a TMC2240 axis that the
+standstill/running coil-current ratio is `hold_ratio`, not 1.0 and not
+`hold_ratio²`.
+
+StallGuard on the TMC2240 is **StallGuard2** — `COOLCONF.SGT` for the threshold
+and `COOLCONF.SFILT` (bit 24) for the filter — not StallGuard4/`SG4_THRS`, which
+only operates under StealthChop. This firmware selects SpreadCycle, and
+StallGuard2's flag is also the only one the TMC4361A's `STOP_ON_STALL` can
+consume. The two parts share the threshold *field name* but not its scale, so a
+TMC2240 board needs its own `SGT` value; the TMC2660's is not transferable.
+
+#### Bench gate before deploying to a TMC2660 board
+
+> **STOP — this firmware must not go onto a TMC2660 board for general use until
+> the bench gate below has passed.**
+>
+> The probe's liveness rule rests on an assumption that **could not be verified
+> in software**: that a live TMC2660 never returns all-zeros. The reasoning is
+> that the 2660 is a 20-bit shift register, so past bit 20 of a 40-bit frame it
+> shifts our own transmitted address byte back out, making a zero word
+> impossible. The *alignment* half of that is confirmed from the reference
+> implementation. The *pass-through* half — that SDO keeps shifting rather than
+> tri-stating or holding after bit 20 — is confirmed nowhere: no datasheet text,
+> and the reference implementation is no evidence either way because its probe
+> has no liveness test at all.
+>
+> **If the assumption is wrong, every TMC2660 axis on every existing board reads
+> `DRIVER_UNKNOWN` and refuses to move on first boot.** Whole installed base.
+>
+> The gate is step 0 of section 10 of the design doc
+> (`AI-docs Squid/.../2026-08-12-tmc2240-driver-support-design.md`). Capture
+> `probe_raw` from a known-TMC2660 axis on **both** probe paths — cold boot
+> (`RDSEL = 0`) and a warm filter-wheel re-init (`SDOFF = 1`, `RDSEL = 2`, where
+> SG and SE are both zero at standstill, the case most likely to read
+> all-zeros). Read the *verdict* alongside the word: `probe_raw` is the last of
+> three reads, so a zero word beside a `TMC2660` verdict is one flaky read, not
+> the failure. The assumption has failed only when the verdict itself is
+> `DRIVER_UNKNOWN`. If it has, the remedy is to drop the all-zeros half of the
+> liveness test and keep only all-ones — **not** to fall back on
+> `COVER_DRV_HIGH_RD`, whose bits are the ones most likely to be zero anyway.
 
 ### Configuration
 
@@ -147,6 +313,28 @@ PLATFORMIO_BUILD_FLAGS="-DDISABLE_LASER_INTERLOCK" pio run -e teensy41 -t upload
 
 > **WARNING:** Only use this flag for systems without lasers installed. Disabling the interlock removes laser safety protection.
 
+**Log the driver probe (bench builds only):**
+
+The stepper-driver probe report — each probed slot's verdict and raw probe word
+as ASCII on the USB link, at boot and when a filter wheel is initialised via
+`INITFILTERWHEEL` — is compiled out by default and enabled with:
+
+```bash
+PLATFORMIO_BUILD_FLAGS="-DTMC_PROBE_REPORT" pio run -e teensy41 -t upload
+```
+
+> **WARNING: never ship an image built with this flag.** The report is ASCII on
+> the same USB link that carries the 24-byte status packets. The host accepts
+> any 24-byte window whose last byte is zero; the packets contain zero bytes and
+> this text contains none, so a misaligned window is reliably accepted and the
+> host reports a **garbage stage position as if it were real** — a wild position
+> jump in the GUI and the logs, plus an ack for a command nobody sent. That
+> holds mid-session and at boot alike: a host reconnecting while the controller
+> starts reads the boot lines ahead of the first status packet.
+>
+> Build it only to capture the probe words for the bench gate above; the warm
+> filter-wheel path is only reachable at runtime.
+
 ### Source Structure
 
 ```
@@ -155,7 +343,11 @@ controller/
 ├── platformio.ini                   # PlatformIO config
 ├── test/                            # Unit tests (run with pio test -e native)
 │   ├── test_crc8/                  # CRC8 checksum tests
-│   └── test_protocol/              # Protocol/command ID tests
+│   ├── test_protocol/              # Protocol/command ID tests
+│   ├── test_command_layout/        # Command dispatch + driver fail-safe guards
+│   ├── test_driver_math/           # Current/microstep math, both drivers
+│   ├── test_driver_regs/           # Register datagram builders
+│   └── test_driver_sequence/       # Pinned SPI register sequences + probe
 └── src/
     ├── commands/                    # Command handlers
     │   ├── commands.cpp/h          # General commands
@@ -163,7 +355,13 @@ controller/
     │   └── stage_commands.cpp/h    # Motion control
     ├── def/
     │   └── def_v1.h                # Hardware configuration
-    ├── tmc/                         # TMC stepper driver library
+    ├── tmc/                         # TMC4361A motion controller library
+    │   └── drivers/                # Power-stage seam (TMC2660 / TMC2240)
+    │       ├── stepper_driver.h    # Dispatch contract + driver_type
+    │       ├── driver_probe.cpp/h  # Runtime per-axis driver identification
+    │       ├── driver_math.h       # Pure current/microstep math (host-tested)
+    │       ├── tmc2660.cpp/h       # TMC2660 implementation
+    │       └── tmc2240.cpp/h       # TMC2240 implementation
     ├── utils/
     │   └── crc8.cpp/h              # CRC calculation
     ├── init.cpp/h                   # Initialization routines

@@ -10,7 +10,15 @@ import shutil
 
 import pytest
 
+from control.core.core import ImageDisplayWindow
 from control.firmware_sim_serial import FirmwareSimSerial
+
+
+@pytest.fixture
+def image_display_window(qtbot):
+    win = ImageDisplayWindow()
+    qtbot.addWidget(win)
+    return win
 
 
 @pytest.fixture
@@ -77,3 +85,13 @@ def design_travel_limits(monkeypatch):
     monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_POSITIVE", 76.0)
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
+
+
+@pytest.fixture(scope="session")
+def fluidics_config_path(tmp_path_factory) -> str:
+    """A simulated-instrument FluidicsConfig written once per session."""
+    from tests.control.fluidics_test_config import CONFIG_YAML
+
+    path = tmp_path_factory.mktemp("fluidics_config") / "fluidics_config.yaml"
+    path.write_text(CONFIG_YAML, encoding="utf-8")
+    return str(path)

@@ -6,7 +6,7 @@ import yaml
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import psutil
 
@@ -1516,6 +1516,38 @@ class PreferencesDialog(QDialog):
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
 
+        # Squid filter wheel: shortest path between slots (squid_filterwheel_wrap). The ini values are the
+        # item data; the text is what an operator reads.
+        self.wheel_wrap_combo = QComboBox()
+        for text, value in self._WHEEL_WRAP_CHOICES:
+            self.wheel_wrap_combo.addItem(text, value)
+        self.wheel_wrap_combo.setCurrentIndex(self._wheel_wrap_index(self._get_wheel_wrap_setting()))
+        self.wheel_wrap_combo.setToolTip(
+            "Squid filter wheel only. With the shortest path on, a slot change takes the shorter way round\n"
+            "and may cross the wheel's index flag: 8 -> 1 is one slot instead of seven.\n"
+            "Auto turns it on when the controller runs firmware 1.6 or later, where crossing the flag was verified.\n"
+            "On forces it from firmware 1.4: use it only after checking that a 1 -> 8 change completes.\n"
+            "Off always takes the flag-free way round."
+        )
+        hw_layout.addRow("Filter Wheel Shortest Path *:", self.wheel_wrap_combo)
+
+        self.wheel_window_spinbox = QDoubleSpinBox()
+        self.wheel_window_spinbox.setRange(0.0, 10.0)
+        self.wheel_window_spinbox.setDecimals(1)
+        self.wheel_window_spinbox.setSingleStep(0.5)
+        self.wheel_window_spinbox.setSuffix(" \u00b0")
+        self.wheel_window_spinbox.setSpecialValueText("Off (exact slot)")
+        self.wheel_window_spinbox.setValue(self._get_wheel_window_setting())
+        self.wheel_window_spinbox.setToolTip(
+            "Squid filter wheel, firmware 1.6 or later (ignored on older firmware).\n"
+            "The wheel reports a filter change done once it is within this many degrees of the slot, while it\n"
+            "finishes the last degrees, so the exposure can start about 20 ms earlier.\n"
+            "Size it from the optics: (filter clear aperture - image field diameter) / 2 / filter pitch radius,\n"
+            "in degrees, minus margin. 32 mm filters on a 22 mm field allow about 6\u00b0 (5\u00b0 was used on the bench);\n"
+            "25 mm filters allow about 1.9\u00b0. Off completes at the exact slot with the wheel stopped."
+        )
+        hw_layout.addRow("Filter Wheel Completion Window *:", self.wheel_window_spinbox)
+
         self.led_r_factor = QDoubleSpinBox()
         self.led_r_factor.setRange(0.0, 1.0)
         self.led_r_factor.setSingleStep(0.1)
@@ -1881,30 +1913,102 @@ class PreferencesDialog(QDialog):
         checked_value = getattr(Qt.Checked, "value", Qt.Checked)
         self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
 
-    def _get_config_value(self, section, option, default=""):
+    # The four readers below go through control._def.conf_attribute_reader, the function the running software reads
+    # the same ini with. It strips an inline comment ("30.0  # mm/s"), which ConfigParser keeps as part of the value.
+    # Reading the raw text here instead made such a value look like the default (float("30.0  # mm/s") raises), so
+    # the dialog showed something the machine was not running, and saving ANY setting wrote that default back.
+    _MISSING = object()
+
+    def _read_like_the_application(self, section, option):
+        """The ini value typed as the running software types it, or _MISSING when the key is absent."""
         try:
-            return self.config.get(section, option)
+            raw = self.config.get(section, option)
+        except (configparser.NoSectionError, configparser.NoOptionError):
+            return self._MISSING
+        return control._def.conf_attribute_reader(raw)
+
+    def _get_config_value(self, section, option, default=""):
+        """The value as text, without an inline comment. Text that is not a comment ("my#tag", a path) is kept."""
+        try:
+            raw = str(self.config.get(section, option))
         except (configparser.NoSectionError, configparser.NoOptionError):
             return default
+        value = control._def.conf_attribute_reader(raw)
+        if isinstance(value, str):
+            return value  # the loader's own comment stripping, nothing else changed
+        # Typed by the loader (a number, True, None, JSON): keep the text as written, minus the comment.
+        cuts = [raw.find(sep) for sep in (" #", "\t#") if sep in raw]
+        return raw[: min(cuts)].rstrip() if cuts else raw.strip()
+
+    @staticmethod
+    def _ini_text(value: str) -> str:
+        """Free text as it has to be WRITTEN for the ini loader to read the same text back.
+
+        _get_config_value() hands the dialog the text as the loader decodes it, so `"C:/data/run #3"` (quoted in the
+        ini because of the " #") is shown as C:/data/run #3. Written back bare, the loader would take " #3" for a
+        comment and the path would silently become C:/data/run. Text that does not survive the round trip - an
+        inline-comment look-alike, or text the loader would type as a number, True or None - is written as a JSON
+        string, which the loader decodes. Everything else is written unchanged, so ordinary values are not touched."""
+        value = str(value)
+        if control._def.conf_attribute_reader(value) == value:
+            return value
+        quoted = json.dumps(value)
+        return quoted if control._def.conf_attribute_reader(quoted) == value else value
 
     def _get_config_bool(self, section, option, default=False):
-        try:
-            val = self.config.get(section, option)
-            return str(val).strip().lower() in ("true", "1", "yes", "on")
-        except (configparser.NoSectionError, configparser.NoOptionError):
+        value = self._read_like_the_application(section, option)
+        if value is self._MISSING:
             return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
 
     def _get_config_int(self, section, option, default=0):
-        try:
-            return int(self.config.get(section, option))
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        value = self._read_like_the_application(section, option)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
+        return int(value) if float(value).is_integer() else default
 
     def _get_config_float(self, section, option, default=0.0):
-        try:
-            return float(self.config.get(section, option))
-        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+        value = self._read_like_the_application(section, option)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return default
+        return float(value)
+
+    # squid_filterwheel_wrap: (what the operator reads, what goes in the ini)
+    _WHEEL_WRAP_CHOICES = (("Auto (on from firmware 1.6)", "auto"), ("On", "True"), ("Off", "False"))
+
+    def _get_wheel_wrap_setting(self) -> str:
+        """The ini's squid_filterwheel_wrap as one of "auto", "True", "False". A missing key is the default,
+        "auto". Anything the wheel controller refuses is returned as typed, so the change list shows it being
+        replaced.
+
+        Read with the SAME two functions the running software uses (the ini loader's typing, then the wheel
+        controller's own parser), not with a second opinion about what the text means: the controller accepts
+        `1` and `0`, and a dialog that showed those as Auto would turn an explicit Off into On at firmware 1.6 -
+        or an explicit On into Off at 1.4 / 1.5 - the first time anything else was saved."""
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        raw = self._get_config_value("GENERAL", "squid_filterwheel_wrap", "auto")
+        try:
+            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(raw))
+        except ValueError:
+            return raw.split("#")[0].strip()
+        return {"auto": "auto", True: "True", False: "False"}[parsed]
+
+    def _get_wheel_window_setting(self) -> float:
+        """The ini's squid_filterwheel_completion_window_deg as the running software reads it: through the ini
+        loader, which strips an inline comment. float() alone would make `5  # degrees` read as 0 here while the
+        wheel runs with 5, and saving anything else would then clear the window."""
+        raw = self._get_config_value("GENERAL", "squid_filterwheel_completion_window_deg", "0")
+        value = control._def.conf_attribute_reader(raw)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return 0.0
+        return float(value)
+
+    def _wheel_wrap_index(self, setting: str) -> int:
+        values = [value for _, value in self._WHEEL_WRAP_CHOICES]
+        return values.index(setting) if setting in values else 0
 
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
@@ -1951,7 +2055,7 @@ class PreferencesDialog(QDialog):
         self.config.set(
             "GENERAL", "zarr_use_6d_fov_dimension", "true" if self.zarr_6d_fov_checkbox.isChecked() else "false"
         )
-        self.config.set("GENERAL", "default_saving_path", self.saving_path_edit.text())
+        self.config.set("GENERAL", "default_saving_path", self._ini_text(self.saving_path_edit.text()))
         self.config.set("GENERAL", "show_dev_tab", "true" if self.show_dev_tab_checkbox.isChecked() else "false")
 
         # Click to Move
@@ -1964,7 +2068,7 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "live_view_z_step_fast_um", str(self.click_to_move_z_coarse_spinbox.value()))
 
         # Acquisition settings
-        self.config.set("GENERAL", "multipoint_autofocus_channel", self.autofocus_channel_edit.text())
+        self.config.set("GENERAL", "multipoint_autofocus_channel", self._ini_text(self.autofocus_channel_edit.text()))
         self.config.set(
             "GENERAL",
             "enable_flexible_multipoint",
@@ -2003,6 +2107,8 @@ class PreferencesDialog(QDialog):
             "enable_spinning_disk_confocal",
             "true" if self.spinning_disk_checkbox.isChecked() else "false",
         )
+        self.config.set("GENERAL", "squid_filterwheel_wrap", self.wheel_wrap_combo.currentData())
+        self.config.set("GENERAL", "squid_filterwheel_completion_window_deg", f"{self.wheel_window_spinbox.value():g}")
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
@@ -2352,6 +2458,17 @@ class PreferencesDialog(QDialog):
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Spinning Disk", str(old_val), str(new_val), True))
+
+        old_val = self._get_wheel_wrap_setting()
+        new_val = self.wheel_wrap_combo.currentData()
+        if old_val != new_val:
+            names = {value: text for text, value in self._WHEEL_WRAP_CHOICES}
+            changes.append(("Filter Wheel Shortest Path", names.get(old_val, old_val), names[new_val], True))
+
+        old_val = self._get_wheel_window_setting()
+        new_val = self.wheel_window_spinbox.value()
+        if not self._floats_equal(old_val, new_val):
+            changes.append(("Filter Wheel Completion Window", f"{old_val:g} \u00b0", f"{new_val:g} \u00b0", True))
 
         # LED matrix factors (live update)
         old_val = self._get_config_float("GENERAL", "led_matrix_r_factor", 1.0)
@@ -2831,6 +2948,17 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
+def _sync_live_button(widget, live_text, idle_text, companion):
+    """Derive the live button (and the companion that only makes sense while idle) from
+    liveController.is_live, not from the click: stop_live() can raise after live is already
+    off. setChecked is safe here because these buttons connect via clicked, not toggled.
+    """
+    is_live = widget.liveController.is_live
+    widget.btn_live.setChecked(is_live)
+    widget.btn_live.setText(live_text if is_live else idle_text)
+    companion.setEnabled(not is_live)
+
+
 class LaserAutofocusSettingWidget(QWidget):
 
     signal_newExposureTime = Signal(float)
@@ -3041,19 +3169,17 @@ class LaserAutofocusSettingWidget(QWidget):
         self.spinboxes[property_name] = spinbox
 
     def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
-            self.run_spot_detection_button.setEnabled(False)
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
-            self.run_spot_detection_button.setEnabled(True)
+        try:
+            if pressed:
+                self.liveController.start_live()
+            else:
+                self.liveController.stop_live()
+        finally:
+            _sync_live_button(self, "Stop Live", "Start Live", self.run_spot_detection_button)
 
     def stop_live(self):
         """Used for stopping live when switching to other tabs"""
         self.toggle_live(False)
-        self.btn_live.setChecked(False)
 
     def toggle_characterization_mode(self, state):
         self.laserAutofocusController.characterization_mode = state
@@ -3697,7 +3823,11 @@ class ObjectivesWidget(QWidget):
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
         self.init_ui()
+        # Show the store's current objective without driving the changer: nothing is
+        # connected yet and the hardware already sits there.
+        self.dropdown.blockSignals(True)
         self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+        self.dropdown.blockSignals(False)
 
     def init_ui(self):
         self.dropdown = QComboBox(self)
@@ -3711,22 +3841,43 @@ class ObjectivesWidget(QWidget):
         self.setLayout(layout)
 
     def on_objective_changed(self, objective_name):
-        if self.objective_changer is not None:
-            try:
-                self.objective_changer.move_to_objective(objective_name)
-            except KeyError as e:
-                QMessageBox.warning(
-                    self,
-                    "Objective Not Available",
-                    f"Objective '{objective_name}' is not configured for the objective changer:\n{e}",
-                )
-                # Revert the dropdown so it matches the store / actual changer state.
-                self.dropdown.blockSignals(True)
-                self.dropdown.setCurrentText(self.objectiveStore.current_objective)
-                self.dropdown.blockSignals(False)
-                return
-        self.objectiveStore.set_current_objective(objective_name)
-        self.signal_objective_changed.emit()
+        if self.objective_changer is None:
+            self.objectiveStore.set_current_objective(objective_name)
+            self.signal_objective_changed.emit()
+            return
+        # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
+        # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
+        self.dropdown.setEnabled(False)
+
+        def on_finished(success, error_msg):
+            QMetaObject.invokeMethod(
+                self,
+                "_on_objective_move_finished",
+                Qt.QueuedConnection,
+                Q_ARG(bool, success),
+                Q_ARG(str, error_msg or ""),
+            )
+
+        utils.threaded_operation_helper(
+            self.objective_changer.move_to_objective, on_finished, objective_name=objective_name
+        )
+
+    @Slot(bool, str)
+    def _on_objective_move_finished(self, success, error_msg):
+        objective_name = self.dropdown.currentText()  # unchanged since the move started: disabled meanwhile
+        if success:
+            self.objectiveStore.set_current_objective(objective_name)
+            self.signal_objective_changed.emit()
+        else:
+            QMessageBox.warning(
+                self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
+            )
+            # Revert the dropdown so it matches the store / actual changer state.
+            self.dropdown.blockSignals(True)
+            self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+            self.dropdown.blockSignals(False)
+        # Re-enable only after the modal warning, which spins a nested event loop.
+        self.dropdown.setEnabled(True)
 
 
 def set_spinbox_range_from_exposure_limits(camera: AbstractCamera, spinbox: QDoubleSpinBox):
@@ -3787,18 +3938,10 @@ class CameraSettingsWidget(QFrame):
             self.entry_analogGain.setEnabled(False)
 
         self.dropdown_pixelFormat = QComboBox()
-        try:
-            pixel_formats = self.camera.get_available_pixel_formats()
-            pixel_formats = [pf.name for pf in pixel_formats]
-        except NotImplementedError:
-            pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
-        self.dropdown_pixelFormat.addItems(pixel_formats)
-        if self.camera.get_pixel_format() is not None:
-            self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
-        else:
+        if self.camera.get_pixel_format() is None:
             print("setting camera's default pixel format")
             self.camera.set_pixel_format(CameraPixelFormat.from_string(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT))
-            self.dropdown_pixelFormat.setCurrentText(CAMERA_CONFIG.PIXEL_FORMAT_DEFAULT)
+        self.refresh_pixel_format_options()
         self.dropdown_pixelFormat.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
         # to do: load and save pixel format in configurations
 
@@ -3844,9 +3987,7 @@ class CameraSettingsWidget(QFrame):
         # connection
         self.entry_exposureTime.valueChanged.connect(self.camera.set_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.set_analog_gain_if_supported)
-        self.dropdown_pixelFormat.currentTextChanged.connect(
-            lambda s: self.camera.set_pixel_format(CameraPixelFormat.from_string(s))
-        )
+        self.dropdown_pixelFormat.currentTextChanged.connect(self.set_pixel_format)
         self.entry_ROI_offset_x.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_offset_y.valueChanged.connect(self.set_ROI_offset)
         self.entry_ROI_height.valueChanged.connect(self.set_Height)
@@ -4070,12 +4211,54 @@ class CameraSettingsWidget(QFrame):
     def update_measured_temperature(self, temperature):
         self.label_temperature_measured.setNum(temperature)
 
+    def set_pixel_format(self, name: str):
+        self.camera.set_pixel_format(CameraPixelFormat.from_string(name))
+        self.refresh_pixel_format_options()  # the camera may deliver a narrower format than the one asked for
+
+    def restore_pixel_format(self, name: str) -> bool:
+        """Apply a cached pixel format; the dropdown then shows what the camera delivers for it.
+
+        Returns True if the camera accepted the request.
+        """
+        try:
+            self.set_pixel_format(name)
+        except (KeyError, ValueError) as e:
+            self._log.warning(f"Cannot restore pixel format {name!r}: {e}")
+            return False
+        return True
+
+    def restore_binning(self, binning: Tuple[int, int]) -> bool:
+        """Apply a cached binning by driving the dropdown, reusing set_binning's dependent refreshes.
+
+        Returns True if the camera ends up at the requested binning. An unsupported binning is not in the
+        item list, so the selection and the camera stay unchanged.
+        """
+        self.dropdown_binning.setCurrentText(f"{binning[0]}x{binning[1]}")
+        try:
+            return tuple(self.camera.get_binning()) == tuple(binning)
+        except (AttributeError, CameraError):
+            self._log.exception("Failed to read back binning after restore.")
+            return False
+
+    def refresh_pixel_format_options(self):
+        """List the formats the camera offers at its current settings and select the one it delivers."""
+        try:
+            pixel_formats = [pf.name for pf in self.camera.get_available_pixel_formats()]
+        except NotImplementedError:
+            pixel_formats = ["MONO8", "MONO12", "MONO14", "MONO16", "BAYER_RG8", "BAYER_RG12"]
+        self.dropdown_pixelFormat.blockSignals(True)
+        self.dropdown_pixelFormat.clear()
+        self.dropdown_pixelFormat.addItems(pixel_formats)
+        self.dropdown_pixelFormat.setCurrentText(self.camera.get_pixel_format().name)
+        self.dropdown_pixelFormat.blockSignals(False)
+
     def set_binning(self, binning_text):
         binning_parts = binning_text.split("x")
         binning_x = int(binning_parts[0])
         binning_y = int(binning_parts[1])
 
         self.camera.set_binning(binning_x, binning_y)
+        self.refresh_pixel_format_options()  # the sensor may fill a different depth at this binning
 
         self.entry_ROI_offset_x.blockSignals(True)
         self.entry_ROI_offset_y.blockSignals(True)
@@ -4231,6 +4414,35 @@ class CappedSlider(QSlider):
         painter.end()
 
 
+class SingleSlotButtonRow(QWidget):
+    """Buttons in a row that together advertise the footprint of a single button.
+
+    Lets several buttons take over a layout slot one button used to occupy
+    without adding to the panel's minimum or preferred width: the row's size
+    hints report one button's width, the buttons split the slot evenly and may
+    compress below their individual size hints when the panel is squeezed.
+    """
+
+    def __init__(self, *buttons, parent=None):
+        super().__init__(parent)
+        self._buttons = buttons
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        slot_width = max(b.sizeHint().width() for b in buttons)
+        for b in buttons:
+            b.setMinimumWidth(max(1, slot_width // len(buttons) - row.spacing()))
+            row.addWidget(b, 1)
+
+    def sizeHint(self):
+        return QSize(
+            max(b.sizeHint().width() for b in self._buttons),
+            max(b.sizeHint().height() for b in self._buttons),
+        )
+
+    minimumSizeHint = sizeHint
+
+
 class LiveControlWidget(QFrame):
 
     signal_newExposureTime = Signal(float)
@@ -4248,7 +4460,6 @@ class LiveControlWidget(QFrame):
         liveController,
         objectiveStore,
         show_trigger_options=True,
-        show_display_options=False,
         show_autolevel=False,
         autolevel=False,
         stretch=True,
@@ -4274,7 +4485,7 @@ class LiveControlWidget(QFrame):
         else:
             self.currentConfiguration = channels[0]
 
-        self.add_components(show_trigger_options, show_display_options, show_autolevel, autolevel, stretch)
+        self.add_components(show_trigger_options, show_autolevel, autolevel, stretch)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
         if self.currentConfiguration:
             self.liveController.set_microscope_mode(self.currentConfiguration)
@@ -4304,7 +4515,7 @@ class LiveControlWidget(QFrame):
         self._live_current_z_offset_um: float = 0.0
         self.checkbox_applyOnChannelSwitch.toggled.connect(self._on_apply_in_live_toggled)
 
-    def add_components(self, show_trigger_options, show_display_options, show_autolevel, autolevel, stretch):
+    def add_components(self, show_trigger_options, show_autolevel, autolevel, stretch):
         # line 0: trigger mode
         self.dropdown_triggerManu = QComboBox()
         trigger_modes = [TriggerMode.SOFTWARE, TriggerMode.HARDWARE]
@@ -4330,7 +4541,7 @@ class LiveControlWidget(QFrame):
         self.dropdown_modeSelection.setCurrentText(self.currentConfiguration.name)
         self.dropdown_modeSelection.setSizePolicy(sizePolicy)
 
-        self.btn_live = QPushButton("Start")
+        self.btn_live = QPushButton("Live")
         self.btn_live.setCheckable(True)
         self.btn_live.setChecked(False)
         self.btn_live.setDefault(False)
@@ -4340,16 +4551,14 @@ class LiveControlWidget(QFrame):
 
         # Single-frame capture, for light sensitive samples where a free-running
         # live stream would bleach or damage the sample while settings are dialed in.
+        # Illumination is on for that one exposure only in software/hardware trigger
+        # mode; in continuous mode it stays on for up to two exposures.
         self.btn_snap = QPushButton("Snap")
         self.btn_snap.setCheckable(False)
         self.btn_snap.setDefault(False)
         self.btn_snap.setStyleSheet("background-color: #C2C2FF")
         self.btn_snap.setSizePolicy(sizePolicy)
-        self.btn_snap.setToolTip(
-            "Acquire a single frame with the current Live Configuration. "
-            "In software/hardware trigger mode the illumination is on for that one "
-            "exposure only; in continuous mode it stays on for up to two exposures."
-        )
+        self.btn_snap.setToolTip("View a single frame with the current Live Configuration, to reduce photobleaching.")
 
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
@@ -4392,43 +4601,13 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.setSuffix("%")
         self.entry_illuminationIntensity.setValue(100)
 
-        # line 4: display fps and resolution scaling
-        self.entry_displayFPS = QDoubleSpinBox()
-        self.entry_displayFPS.setKeyboardTracking(False)
-        self.entry_displayFPS.setMinimum(1)
-        self.entry_displayFPS.setMaximum(240)
-        self.entry_displayFPS.setSingleStep(1)
-        self.entry_displayFPS.setDecimals(0)
-        self.entry_displayFPS.setValue(self.fps_display)
-
-        self.slider_resolutionScaling = QSlider(Qt.Horizontal)
-        self.slider_resolutionScaling.setTickPosition(QSlider.TicksBelow)
-        self.slider_resolutionScaling.setMinimum(10)
-        self.slider_resolutionScaling.setMaximum(100)
-        self.slider_resolutionScaling.setValue(100)
-        self.slider_resolutionScaling.setSingleStep(10)
-
-        self.label_resolutionScaling = QSpinBox()
-        self.label_resolutionScaling.setKeyboardTracking(False)
-        self.label_resolutionScaling.setMinimum(10)
-        self.label_resolutionScaling.setMaximum(100)
-        self.label_resolutionScaling.setValue(self.slider_resolutionScaling.value())
-        self.label_resolutionScaling.setSuffix(" %")
-        self.slider_resolutionScaling.setSingleStep(5)
-
-        self.slider_resolutionScaling.valueChanged.connect(lambda v: self.label_resolutionScaling.setValue(round(v)))
-        self.label_resolutionScaling.valueChanged.connect(lambda v: self.slider_resolutionScaling.setValue(round(v)))
-
         # autolevel
         self.btn_autolevel = QPushButton("Autolevel")
         self.btn_autolevel.setCheckable(True)
         self.btn_autolevel.setChecked(autolevel)
 
         # Determine the maximum width needed
-        # Keep the illumination entry aligned with the Start/Snap pair above it.
-        self.entry_illuminationIntensity.setMinimumWidth(
-            self.btn_live.sizeHint().width() + self.btn_snap.sizeHint().width()
-        )
+        self.entry_illuminationIntensity.setMinimumWidth(self.btn_live.sizeHint().width())
         self.btn_autolevel.setMinimumWidth(self.btn_autolevel.sizeHint().width())
 
         max_width = max(self.btn_autolevel.minimumWidth(), self.entry_illuminationIntensity.minimumWidth())
@@ -4439,9 +4618,6 @@ class LiveControlWidget(QFrame):
 
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-        self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
-        self.slider_resolutionScaling.valueChanged.connect(self.streamHandler.set_display_resolution_scaling)
-        self.slider_resolutionScaling.valueChanged.connect(self.liveController.set_display_resolution_scaling)
         self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
@@ -4459,12 +4635,10 @@ class LiveControlWidget(QFrame):
         grid_line1 = QHBoxLayout()
         grid_line1.addWidget(QLabel("Live Configuration"))
         grid_line1.addWidget(self.dropdown_modeSelection, 2)
-        # Start and Snap share the space the single live button used to occupy.
-        live_buttons = QHBoxLayout()
-        live_buttons.setContentsMargins(0, 0, 0, 0)
-        live_buttons.addWidget(self.btn_live, 1)
-        live_buttons.addWidget(self.btn_snap, 1)
-        grid_line1.addLayout(live_buttons, 1)
+        # Live and Snap share the slot the single live button used to occupy,
+        # advertising one button's width so the pair does not widen the panel.
+        self.live_snap_row = SingleSlotButtonRow(self.btn_live, self.btn_snap)
+        grid_line1.addWidget(self.live_snap_row, 1)
 
         grid_line2 = QHBoxLayout()
         grid_line2.addWidget(QLabel("Exposure Time"))
@@ -4487,19 +4661,6 @@ class LiveControlWidget(QFrame):
             grid_line0.addWidget(self.dropdown_triggerManu)
             grid_line0.addWidget(QLabel("Trigger FPS"))
             grid_line0.addWidget(self.entry_triggerFPS)
-
-        grid_line05 = QHBoxLayout()
-        show_dislpay_fps = False
-        if show_display_options:
-            resolution_label = QLabel("Display Resolution")
-            resolution_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            grid_line05.addWidget(resolution_label)
-            grid_line05.addWidget(self.slider_resolutionScaling)
-            if show_dislpay_fps:
-                grid_line05.addWidget(QLabel("Display FPS"))
-                grid_line05.addWidget(self.entry_displayFPS)
-            else:
-                grid_line05.addWidget(self.label_resolutionScaling)
 
         # Z-offset row (hidden by default; toggled by checkbox_showZOffset)
         self.checkbox_showZOffset = QCheckBox("Show Z-offset controls")
@@ -4563,8 +4724,6 @@ class LiveControlWidget(QFrame):
         self.grid.addLayout(grid_line1)
         self.grid.addLayout(grid_line2)
         self.grid.addLayout(grid_line4)
-        if show_display_options:
-            self.grid.addLayout(grid_line05)
         self.grid.addWidget(self.checkbox_showZOffset)
         self.grid.addWidget(self.widget_zOffsetRow)
         if not stretch:
@@ -4572,15 +4731,16 @@ class LiveControlWidget(QFrame):
         self.setLayout(self.grid)
 
     def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop")
-            self.signal_start_live.emit()
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Start")
-        # Snapping while live is meaningless - the sample is already being exposed.
-        self.btn_snap.setEnabled(not pressed)
+        try:
+            if pressed:
+                self.liveController.start_live()
+                self.signal_start_live.emit()
+            else:
+                self.liveController.stop_live()
+        finally:
+            # Snap is the companion here: snapping while live is meaningless - the
+            # sample is already being exposed.
+            _sync_live_button(self, "Stop", "Live", self.btn_snap)
 
     def snap(self):
         """Acquire and display one frame with the current live configuration."""
@@ -5708,33 +5868,33 @@ class FilterControllerWidget(QFrame):
 
     def _go_to_next_position(self, wheel_id: int):
         """Move to the next position."""
-        try:
-            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
-            wheel_info = self.filterController.get_filter_wheel_info(wheel_id)
-            max_pos = wheel_info.number_of_slots
-
-            if current_pos < max_pos:
-                new_pos = current_pos + 1
-                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
-                combo_box = self._combo_boxes.get(wheel_id)
-                if combo_box:
-                    combo_box.setCurrentIndex(new_pos - 1)
-        except Exception as e:
-            self._log.error(f"Error moving wheel {wheel_id} to next position: {e}")
+        self._step_position(wheel_id, +1)
 
     def _go_to_previous_position(self, wheel_id: int):
         """Move to the previous position."""
-        try:
-            current_pos = self.filterController.get_filter_wheel_position().get(wheel_id, 1)
+        self._step_position(wheel_id, -1)
 
-            if current_pos > 1:
-                new_pos = current_pos - 1
-                self.filterController.set_filter_wheel_position({wheel_id: new_pos})
-                combo_box = self._combo_boxes.get(wheel_id)
-                if combo_box:
-                    combo_box.setCurrentIndex(new_pos - 1)
+    def _step_position(self, wheel_id: int, direction: int):
+        """One slot forward or back. The controller decides what a step means at an end - a rotary wheel allowed
+        to cross its index flag continues round, the others stop - and the selection is then read back from it, so
+        the panel never has an arithmetic of its own."""
+        try:
+            if direction > 0:
+                self.filterController.next_position(wheel_id)
+            else:
+                self.filterController.previous_position(wheel_id)
+            new_pos = self.filterController.get_filter_wheel_position().get(wheel_id)
         except Exception as e:
-            self._log.error(f"Error moving wheel {wheel_id} to previous position: {e}")
+            self._log.error(
+                f"Error moving wheel {wheel_id} to the {'next' if direction > 0 else 'previous'} position: {e}"
+            )
+            return
+        combo_box = self._combo_boxes.get(wheel_id)
+        if combo_box and new_pos is not None:
+            # the move has been made: moving the selection must not send it a second time
+            combo_box.blockSignals(True)
+            combo_box.setCurrentIndex(new_pos - 1)
+            combo_box.blockSignals(False)
 
     def disable_movement_by_switching_channels(self, state):
         """Enable/disable automatic filter wheel movement when changing channels."""
@@ -6760,6 +6920,43 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         """Refresh the channel list after configuration changes."""
         self.channel_sequence.refresh()
 
+    def configure_controller_from_ui(self) -> Optional[str]:
+        """Push every acquisition setting shown in this tab onto the MultiPointController.
+
+        No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
+        "Apply current settings" share this. Returns None, or a reason nothing further should happen.
+        """
+        if self.checkbox_set_z_range.isChecked():
+            # Set Z-range (convert from μm to mm)
+            minZ = self.entry_minZ.value() / 1000
+            maxZ = self.entry_maxZ.value() / 1000
+            self.multipointController.set_z_range(minZ, maxZ)
+        else:
+            z = self.stage.get_pos().z_mm
+            dz = self.entry_deltaZ.value()
+            Nz = self.entry_NZ.value()
+            self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
+
+        if self.checkbox_useFocusMap.isChecked():
+            self.focusMapWidget.fit_surface()
+            self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+        else:
+            self.multipointController.set_focus_map(None)
+
+        # Set acquisition parameters
+        self.multipointController.set_deltaZ(self.entry_deltaZ.value())
+        self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_deltat(self.entry_dt.value())
+        self.multipointController.set_Nt(self.entry_Nt.value())
+        self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
+        self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_base_path(self.lineEdit_savingDir.text())
+        self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+        self.multipointController.set_widget_type("flexible")
+        self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+        return None
+
     def toggle_acquisition(self, pressed):
         self._log.debug(f"FlexibleMultiPointWidget.toggle_acquisition, {pressed=}")
         if self.base_path_is_set == False:
@@ -6781,36 +6978,11 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.add_location()
                 self.acquisition_in_place = True
 
-            if self.checkbox_set_z_range.isChecked():
-                # Set Z-range (convert from μm to mm)
-                minZ = self.entry_minZ.value() / 1000
-                maxZ = self.entry_maxZ.value() / 1000
-                self.multipointController.set_z_range(minZ, maxZ)
-            else:
-                z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
-                Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz / 1000 * (Nz - 1))
-
-            if self.checkbox_useFocusMap.isChecked():
-                self.focusMapWidget.fit_surface()
-                self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-            else:
-                self.multipointController.set_focus_map(None)
-
-            # Set acquisition parameters
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_deltat(self.entry_dt.value())
-            self.multipointController.set_Nt(self.entry_Nt.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
-            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_use_fluidics(False)
-            self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
-            self.multipointController.set_widget_type("flexible")
-            self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+            problem = self.configure_controller_from_ui()
+            if problem:
+                error_dialog(problem)
+                self.btn_startAcquisition.setChecked(False)
+                return
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -6827,16 +6999,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            # @@@ to do: add a widgetManger to enable and disable widget
-            # @@@ to do: emit signal to widgetManager to disable other widgets
-            self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
-            self.btn_startAcquisition.setText("Stop\n Acquisition ")
-            self.setEnabled_all(False)
-
-            # emit signals
-            self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
-            self.emit_selected_channels()
+            # Update UI to show acquisition is running
+            self._set_ui_acquisition_running(self.entry_NZ.value(), self.entry_deltaZ.value())
 
             # Push per-region laser-AF offsets only now that all pre-flight checks have passed,
             # so a disk/RAM abort above cannot strand them on the shared controller for a later run.
@@ -7253,7 +7417,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.multipointController.set_use_piezo(False)
         self.multipointController.set_af_flag(False)
         self.multipointController.set_reflection_af_flag(False)
-        self.multipointController.set_use_fluidics(False)
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
@@ -7261,6 +7424,33 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Start the acquisition process for the single FOV
         self.multipointController.start_new_experiment("snapped images" + self.lineEdit_experimentID.text())
         self.multipointController.run_acquisition(acquire_current_fov=True)
+
+    def _set_ui_acquisition_running(self, nz: int, delta_z_um: float, set_button_checked: bool = False):
+        """Update UI to reflect that acquisition is running (mirrors WellplateMultiPointWidget)."""
+        self.is_current_acquisition_widget = True  # keep track of what widget started the acquisition
+        self.setEnabled_all(False)
+        if set_button_checked:
+            self.btn_startAcquisition.setChecked(True)
+        self.btn_startAcquisition.setText("Stop\n Acquisition ")
+        # emit signals
+        self.signal_acquisition_started.emit(True)
+        self.signal_acquisition_shape.emit(nz, delta_z_um)
+        self.emit_selected_channels()
+
+    @Slot(bool, int, float)
+    def set_acquisition_running_state(self, is_running: bool, nz: int = 1, delta_z_um: float = 1.0) -> None:
+        """Set the widget's acquisition state (called from the TCP server via QMetaObject.invokeMethod).
+
+        Exceptions in slots called via BlockingQueuedConnection are silently swallowed by Qt, so log them here.
+        """
+        self._log.debug(f"set_acquisition_running_state: is_running={is_running}, nz={nz}, delta_z_um={delta_z_um}")
+        try:
+            if is_running:
+                self._set_ui_acquisition_running(nz, delta_z_um, set_button_checked=True)
+            else:
+                self.acquisition_is_finished()
+        except Exception as e:
+            self._log.error(f"Exception in set_acquisition_running_state: {e}", exc_info=True)
 
     def acquisition_is_finished(self):
         self._log.debug(
@@ -7340,6 +7530,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             "Flexible multipoint YAML drag-and-drop is not supported yet.",
         )
         event.acceptProposedAction()
+
+    @Slot(str)
+    def load_acquisition_yaml_slot(self, file_path: str) -> None:
+        """Queued entry point for non-Qt threads (TCP server): load a saved acquisition.yaml into this tab."""
+        try:
+            self._load_acquisition_yaml(file_path)
+        except Exception as e:
+            self._log.error(f"Failed to load acquisition YAML {file_path}: {e}", exc_info=True)
 
     def _get_expected_widget_type(self) -> str:
         """Return the expected widget_type for this widget."""
@@ -9138,6 +9336,56 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self._last_x_mm = x_mm
         self._last_y_mm = y_mm
 
+    def configure_controller_from_ui(self) -> Optional[str]:
+        """Push every acquisition setting shown in this tab onto the MultiPointController.
+
+        No dialogs, no start_new_experiment, no run - the Start button and the fluidics protocol's
+        "Apply current settings" share this. Returns None, or a reason nothing further should happen.
+        """
+        # if XY is not checked, use current position
+        if not self.checkbox_xy.isChecked():
+            self.set_coordinates_to_current_position()
+
+        self.scanCoordinates.sort_coordinates()
+
+        if self.combobox_z_mode.currentText() == "Set Range":
+            # Set Z-range (convert from μm to mm)
+            minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
+            maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
+            self.multipointController.set_z_range(minZ, maxZ)
+            self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
+        else:
+            z = self.stage.get_pos().z_mm
+            dz = self.entry_deltaZ.value()
+            Nz = self.entry_NZ.value()
+            self.multipointController.set_z_range(z, z + dz * (Nz - 1))
+
+        if self.checkbox_useFocusMap.isChecked():
+            # Try to fit the surface; on success set the surface fitter in the controller
+            if self.focusMapWidget.fit_surface():
+                self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
+            else:
+                return "Failed to fit focus surface"
+        else:
+            # If checkbox not checked, set surface fitter to None
+            self.multipointController.set_focus_map(None)
+
+        self.multipointController.set_deltaZ(self.entry_deltaZ.value())
+        self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_deltat(self.entry_dt.value())
+        self.multipointController.set_Nt(self.entry_Nt.value())
+        self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
+        self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
+        self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
+        self.multipointController.set_base_path(self.lineEdit_savingDir.text())
+        self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
+        self.multipointController.set_widget_type("wellplate")
+        self.multipointController.set_scan_size(self.entry_scan_size.value())
+        self.multipointController.set_overlap_percent(self.entry_overlap.value())
+        self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
+        self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+        return None
+
     def toggle_acquisition(self, pressed):
         self._log.debug(f"WellplateMultiPointWidget.toggle_acquisition, {pressed=}")
         if not self.base_path_is_set:
@@ -9156,52 +9404,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self.btn_startAcquisition.setChecked(False)
                 return
 
-            # if XY is not checked, use current position
-            if not self.checkbox_xy.isChecked():
-                self.set_coordinates_to_current_position()
-
-            self.scanCoordinates.sort_coordinates()
-
-            if self.combobox_z_mode.currentText() == "Set Range":
-                # Set Z-range (convert from μm to mm)
-                minZ = self.entry_minZ.value() / 1000  # Convert from μm to mm
-                maxZ = self.entry_maxZ.value() / 1000  # Convert from μm to mm
-                self.multipointController.set_z_range(minZ, maxZ)
-                self._log.debug(f"Set z-range: ({minZ}, {maxZ})")
-            else:
-                z = self.stage.get_pos().z_mm
-                dz = self.entry_deltaZ.value()
-                Nz = self.entry_NZ.value()
-                self.multipointController.set_z_range(z, z + dz * (Nz - 1))
-
-            if self.checkbox_useFocusMap.isChecked():
-                # Try to fit the surface
-                if self.focusMapWidget.fit_surface():
-                    # If fit successful, set the surface fitter in controller
-                    self.multipointController.set_focus_map(self.focusMapWidget.focusMap)
-                else:
-                    QMessageBox.warning(self, "Warning", "Failed to fit focus surface")
-                    self.btn_startAcquisition.setChecked(False)
-                    return
-            else:
-                # If checkbox not checked, set surface fitter to None
-                self.multipointController.set_focus_map(None)
-
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_deltat(self.entry_dt.value())
-            self.multipointController.set_Nt(self.entry_Nt.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_af_flag(self.checkbox_withAutofocus.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
-            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_use_fluidics(False)
-            self.multipointController.set_skip_saving(self.checkbox_skipSaving.isChecked())
-            self.multipointController.set_widget_type("wellplate")
-            self.multipointController.set_scan_size(self.entry_scan_size.value())
-            self.multipointController.set_overlap_percent(self.entry_overlap.value())
-            self.multipointController.set_xy_mode(self.combobox_xy_mode.currentText())
-            self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
+            problem = self.configure_controller_from_ui()
+            if problem:
+                QMessageBox.warning(self, "Warning", problem)
+                self.btn_startAcquisition.setChecked(False)
+                return
             self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
 
             if self.checkbox_skipSaving.isChecked():
@@ -9359,7 +9566,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.multipointController.set_use_piezo(False)
         self.multipointController.set_af_flag(False)
         self.multipointController.set_reflection_af_flag(False)
-        self.multipointController.set_use_fluidics(False)
 
         z = self.stage.get_pos().z_mm
         self.multipointController.set_z_range(z, z)
@@ -9504,6 +9710,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
     # ========== Drag-and-Drop for Loading Acquisition YAML ==========
     # Uses AcquisitionYAMLDropMixin for drag-drop handling
+
+    @Slot(str)
+    def load_acquisition_yaml_slot(self, file_path: str) -> None:
+        """Queued entry point for non-Qt threads (TCP server): load a saved acquisition.yaml into this tab."""
+        try:
+            self._load_acquisition_yaml(file_path)
+        except Exception as e:
+            self._log.error(f"Failed to load acquisition YAML {file_path}: {e}", exc_info=True)
 
     def _get_expected_widget_type(self) -> str:
         """Return the expected widget_type for this widget."""
@@ -9653,1013 +9867,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         col = int(col_str) - 1  # Convert to 0-based index
 
         return row, col
-
-
-class MultiPointWithFluidicsWidget(_ApplyChannelOffsetMixin, QFrame):
-    """A simplified version of WellplateMultiPointWidget for use with fluidics"""
-
-    signal_acquisition_started = Signal(bool)
-    signal_acquisition_channels = Signal(list)
-    signal_acquisition_shape = Signal(int, float)  # acquisition Nz, dz
-
-    def __init__(
-        self,
-        stage: AbstractStage,
-        navigationViewer,
-        multipointController,
-        objectiveStore,
-        scanCoordinates,
-        napariMosaicWidget=None,
-        *args,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.stage = stage
-        self.navigationViewer = navigationViewer
-        self.multipointController = multipointController
-        self.objectiveStore = objectiveStore
-        self.scanCoordinates = scanCoordinates
-        self.napariMosaicWidget = napariMosaicWidget
-        self.performance_mode = False
-
-        self.base_path_is_set = False
-        self.acquisition_start_time = None
-        self.eta_seconds = 0
-        self.nRound = 0
-        self.is_current_acquisition_widget = False
-
-        self.add_components()
-        self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-
-    def set_performance_mode(self, enabled):
-        self.performance_mode = enabled
-
-    def add_components(self):
-        self.btn_setSavingDir = QPushButton("Browse")
-        self.btn_setSavingDir.setDefault(False)
-        self.btn_setSavingDir.setIcon(QIcon("icon/folder.png"))
-
-        self.lineEdit_savingDir = QLineEdit()
-        self.lineEdit_savingDir.setText(DEFAULT_SAVING_PATH)
-        self.multipointController.set_base_path(DEFAULT_SAVING_PATH)
-        self.base_path_is_set = True
-
-        self.lineEdit_experimentID = QLineEdit()
-
-        # Z-stack controls
-        self.entry_deltaZ = QDoubleSpinBox()
-        self.entry_deltaZ.setKeyboardTracking(False)
-        self.entry_deltaZ.setMinimum(0)
-        self.entry_deltaZ.setMaximum(1000)
-        self.entry_deltaZ.setSingleStep(0.1)
-        self.entry_deltaZ.setValue(Acquisition.DZ)
-        self.entry_deltaZ.setDecimals(3)
-        self.entry_deltaZ.setSuffix(" μm")
-        self.entry_deltaZ.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-        self.entry_NZ = QSpinBox()
-        self.entry_NZ.setMinimum(1)
-        self.entry_NZ.setMaximum(2000)
-        self.entry_NZ.setSingleStep(1)
-        self.entry_NZ.setValue(1)
-
-        # Channel configurations
-        self.list_configurations = QListWidget()
-        self.channel_sequence = enable_channel_sequence(
-            self.list_configurations,
-            lambda: [
-                ch.name
-                for ch in self.multipointController.liveController.get_channels(self.objectiveStore.current_objective)
-            ],
-            cache_key="fluidics",
-        )
-
-        # Reflection AF checkbox
-        self.checkbox_withReflectionAutofocus = QCheckBox("Reflection AF")
-        self.checkbox_withReflectionAutofocus.setChecked(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
-        self.multipointController.set_reflection_af_flag(MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT)
-
-        self._create_apply_channel_offset_checkbox()
-
-        # Piezo checkbox
-        self.checkbox_usePiezo = QCheckBox("Piezo Z-Stack")
-        self.checkbox_usePiezo.setChecked(MULTIPOINT_USE_PIEZO_FOR_ZSTACKS)
-
-        # Start acquisition button
-        self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
-        self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
-        self.btn_startAcquisition.setCheckable(True)
-        self.btn_startAcquisition.setChecked(False)
-        self.btn_startAcquisition.setEnabled(False)
-
-        # Progress indicators
-        self.progress_label = QLabel("Round -/-")
-        self.progress_bar = QProgressBar()
-        self.eta_label = QLabel("--:--:--")
-        self.progress_bar.setVisible(False)
-        self.progress_label.setVisible(False)
-        self.eta_label.setVisible(False)
-        self.eta_timer = QTimer()
-
-        # Layout setup
-        main_layout = QVBoxLayout()
-        self.setLayout(main_layout)
-
-        # Saving Path
-        saving_path_layout = QHBoxLayout()
-        saving_path_layout.addWidget(QLabel("Saving Path"))
-        saving_path_layout.addWidget(self.lineEdit_savingDir)
-        saving_path_layout.addWidget(self.btn_setSavingDir)
-        main_layout.addLayout(saving_path_layout)
-
-        # Experiment ID
-        exp_id_layout = QHBoxLayout()
-        exp_id_layout.addWidget(QLabel("Experiment ID"))
-        exp_id_layout.addWidget(self.lineEdit_experimentID)
-
-        self.btn_load_coordinates = QPushButton("Load Coordinates")
-        exp_id_layout.addWidget(self.btn_load_coordinates)
-
-        self.btn_init_fluidics = QPushButton("Init Fluidics")
-        # exp_id_layout.addWidget(self.btn_init_fluidics)
-
-        main_layout.addLayout(exp_id_layout)
-
-        # Z-stack controls
-        z_stack_layout = QHBoxLayout()
-        z_stack_layout.addWidget(QLabel("dz"))
-        z_stack_layout.addWidget(self.entry_deltaZ)
-        z_stack_layout.addWidget(QLabel("Nz"))
-        z_stack_layout.addWidget(self.entry_NZ)
-
-        # Rounds input
-        z_stack_layout.addWidget(QLabel("Fluidics Rounds:"))
-        self.entry_rounds = QLineEdit()
-        z_stack_layout.addWidget(self.entry_rounds)
-
-        main_layout.addLayout(z_stack_layout)
-
-        # Grid layout for channel list and options
-        grid = QGridLayout()
-
-        # Channel configurations on left
-        grid.addWidget(self.list_configurations, 0, 0)
-
-        # Options layout
-        options_layout = QVBoxLayout()
-        if SUPPORT_LASER_AUTOFOCUS:
-            options_layout.addWidget(self.checkbox_withReflectionAutofocus)
-            options_layout.addWidget(self.checkbox_applyChannelOffset)
-        if HAS_OBJECTIVE_PIEZO:
-            options_layout.addWidget(self.checkbox_usePiezo)
-            if IS_PIEZO_ONLY:
-                self.checkbox_usePiezo.setChecked(True)
-                self.checkbox_usePiezo.setVisible(False)
-
-        grid.addLayout(options_layout, 0, 2)
-
-        # Start button on far right
-        grid.addWidget(self.btn_startAcquisition, 0, 4)
-
-        # Add spacers between columns
-        spacer_widget1 = QWidget()
-        spacer_widget1.setFixedWidth(2)
-        grid.addWidget(spacer_widget1, 0, 1)
-
-        spacer_widget2 = QWidget()
-        spacer_widget2.setFixedWidth(2)
-        grid.addWidget(spacer_widget2, 0, 3)
-
-        # Set column stretches
-        grid.setColumnStretch(0, 2)  # Channel list - half width
-        grid.setColumnStretch(1, 0)  # First spacer
-        grid.setColumnStretch(2, 1)  # Options
-        grid.setColumnStretch(3, 0)  # Second spacer
-        grid.setColumnStretch(4, 1)  # Start button
-
-        main_layout.addLayout(grid)
-
-        # Progress bar layout
-        progress_layout = QHBoxLayout()
-        progress_layout.addWidget(self.progress_label)
-        progress_layout.addWidget(self.progress_bar)
-        progress_layout.addWidget(self.eta_label)
-        main_layout.addLayout(progress_layout)
-
-        # Connect signals
-        self.btn_setSavingDir.clicked.connect(self.set_saving_dir)
-        self.btn_startAcquisition.clicked.connect(self.toggle_acquisition)
-        self.btn_load_coordinates.clicked.connect(self.on_load_coordinates_clicked)
-        # self.btn_init_fluidics.clicked.connect(self.init_fluidics)
-        self.entry_deltaZ.valueChanged.connect(self.set_deltaZ)
-        self.entry_NZ.valueChanged.connect(self.multipointController.set_NZ)
-        self.checkbox_withReflectionAutofocus.toggled.connect(self.multipointController.set_reflection_af_flag)
-        self.checkbox_withReflectionAutofocus.toggled.connect(self._update_apply_channel_offset_enable_state)
-        self.checkbox_usePiezo.toggled.connect(self.multipointController.set_use_piezo)
-        self.list_configurations.itemSelectionChanged.connect(self.emit_selected_channels)
-        self.multipointController.acquisition_finished.connect(self.acquisition_is_finished)
-        self.multipointController.signal_acquisition_progress.connect(self.update_acquisition_progress)
-        self.multipointController.signal_region_progress.connect(self.update_region_progress)
-        self.signal_acquisition_started.connect(self.display_progress_bar)
-        self.eta_timer.timeout.connect(self.update_eta_display)
-
-        self._update_apply_channel_offset_enable_state(self.checkbox_withReflectionAutofocus.isChecked())
-
-    # The following methods are copied from WellplateMultiPointWidget with minimal modifications
-    def toggle_acquisition(self, pressed):
-        rounds = self.get_rounds()
-        if pressed:
-            if not self.base_path_is_set:
-                self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please choose base saving directory first")
-                return
-
-            if not self.list_configurations.selectedItems():
-                self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please select at least one imaging channel")
-                return
-
-            if self.multipointController.acquisition_in_progress():
-                self._log.warning("Acquisition in progress or aborting, cannot start another yet.")
-                self.btn_startAcquisition.setChecked(False)
-                return
-
-            if not rounds:
-                self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please enter valid round numbers (1-24)")
-                return
-
-            num_fovs = sum(len(coords) for coords in self.scanCoordinates.region_fov_coordinates.values())
-            if num_fovs <= 0:
-                self.btn_startAcquisition.setChecked(False)
-                QMessageBox.warning(self, "Warning", "Please load coordinates first")
-                return
-
-            msg = (
-                f"About to start acquisition with:\n"
-                f"- Regions: {len(self.scanCoordinates.region_fov_coordinates)}\n"
-                f"- FOVs: {num_fovs}\n"
-                f"- Rounds: {len(rounds)}\n\n"
-                f"Continue?"
-            )
-            reply = QMessageBox.question(
-                self,
-                "Confirm Acquisition",
-                msg,
-                QMessageBox.Ok | QMessageBox.Cancel,
-                QMessageBox.Cancel,
-            )
-            if reply != QMessageBox.Ok:
-                self.btn_startAcquisition.setChecked(False)
-                return
-
-            self.setEnabled_all(False)
-            self.is_current_acquisition_widget = True
-            self.btn_startAcquisition.setText("Stop\n Acquisition ")
-
-            self.multipointController.set_deltaZ(self.entry_deltaZ.value())
-            self.multipointController.set_NZ(self.entry_NZ.value())
-            self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
-            self.multipointController.set_reflection_af_flag(self.checkbox_withReflectionAutofocus.isChecked())
-            self.multipointController.set_base_path(self.lineEdit_savingDir.text())
-            self.multipointController.set_use_fluidics(True)  # may be set to False from other widgets
-            self.multipointController.set_selected_configurations(self.channel_sequence.ordered_selected_names())
-            self.multipointController.set_Nt(len(rounds))
-            self.multipointController.fluidics.set_rounds(rounds)
-            self.multipointController.start_new_experiment(self.lineEdit_experimentID.text())
-
-            # Emit signals
-            self.signal_acquisition_started.emit(True)
-            self.signal_acquisition_shape.emit(self.entry_NZ.value(), self.entry_deltaZ.value())
-            self.emit_selected_channels()
-
-            # Start acquisition
-            self.multipointController.run_acquisition()
-        else:
-            self.multipointController.request_abort_aquisition()
-            # Also stop fluidics operations
-            if self.multipointController.fluidics:
-                self.multipointController.fluidics.emergency_stop()
-
-    def set_saving_dir(self):
-        """Open dialog to set saving directory"""
-        dialog = QFileDialog()
-        save_dir_base = dialog.getExistingDirectory(None, "Select Folder")
-        self.multipointController.set_base_path(save_dir_base)
-        self.lineEdit_savingDir.setText(save_dir_base)
-        self.base_path_is_set = True
-
-    def update_dz(self):
-        z_min = self.entry_minZ.value()
-        z_max = self.entry_maxZ.value()
-        nz = self.entry_NZ.value()
-        dz = (z_max - z_min) / (nz - 1) if nz > 1 else 0
-        self.entry_deltaZ.setValue(dz)
-
-    def update_Nz(self):
-        z_min = self.entry_minZ.value()
-        z_max = self.entry_maxZ.value()
-        dz = self.entry_deltaZ.value()
-        nz = math.ceil((z_max - z_min) / dz) + 1
-        self.entry_NZ.setValue(nz)
-
-    def set_deltaZ(self, value):
-        """Set Z-stack step size, adjusting for piezo if needed"""
-        if self.checkbox_usePiezo.isChecked():
-            deltaZ = value
-        else:
-            mm_per_ustep = 1.0 / self.stage.get_config().Z_AXIS.convert_real_units_to_ustep(1.0)
-            deltaZ = round(value / 1000 / mm_per_ustep) * mm_per_ustep * 1000
-        self.entry_deltaZ.setValue(deltaZ)
-        self.multipointController.set_deltaZ(deltaZ)
-
-    def emit_selected_channels(self):
-        """Emit signal with list of selected channel names"""
-        self.signal_acquisition_channels.emit(self.channel_sequence.ordered_selected_names())
-
-    def refresh_channel_list(self):
-        """Refresh the channel list after configuration changes."""
-        self.channel_sequence.refresh()
-
-    def acquisition_is_finished(self):
-        """Handle acquisition completion"""
-        self._log.debug(
-            f"In MultiPointWithFluidicsWidget, got acquisition_is_finished with {self.is_current_acquisition_widget=}"
-        )
-        if not self.is_current_acquisition_widget:
-            return  # Skip if this wasn't the widget that started acquisition
-
-        self.signal_acquisition_started.emit(False)
-        self.is_current_acquisition_widget = False
-        self.btn_startAcquisition.setChecked(False)
-        self.btn_startAcquisition.setText("Start\n Acquisition ")
-        self.setEnabled_all(True)
-
-    def setEnabled_all(self, enabled):
-        """Enable/disable all widget controls"""
-        for widget in self.findChildren(QWidget):
-            if (
-                widget != self.btn_startAcquisition
-                and widget != self.progress_bar
-                and widget != self.progress_label
-                and widget != self.eta_label
-            ):
-                widget.setEnabled(enabled)
-
-    def disable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(False)
-
-    def enable_the_start_aquisition_button(self):
-        self.btn_startAcquisition.setEnabled(True)
-
-    def update_region_progress(self, current_fov, num_fovs):
-        self.progress_bar.setMaximum(num_fovs)
-        self.progress_bar.setValue(current_fov)
-
-        if self.acquisition_start_time is not None and current_fov > 0:
-            elapsed_time = time.time() - self.acquisition_start_time
-            Nt = self.nRound
-
-            # Calculate total processed FOVs and total FOVs
-            processed_fovs = (
-                (self.current_region - 1) * num_fovs
-                + current_fov
-                + self.current_time_point * self.num_regions * num_fovs
-            )
-            total_fovs = self.num_regions * num_fovs * Nt
-            remaining_fovs = total_fovs - processed_fovs
-
-            # Calculate ETA
-            fov_per_second = processed_fovs / elapsed_time
-            self.eta_seconds = remaining_fovs / fov_per_second if fov_per_second > 0 else 0
-            self.update_eta_display()
-
-            # Start or restart the timer
-            self.eta_timer.start(1000)  # Update every 1000 ms (1 second)
-
-    def update_acquisition_progress(self, current_region, num_regions, current_time_point):
-        self.current_region = current_region
-        self.current_time_point = current_time_point
-
-        if self.current_region == 1 and self.current_time_point == 0:  # First region
-            self.acquisition_start_time = time.time()
-            self.num_regions = num_regions
-
-        progress_parts = []
-        # Update timepoint progress if there are multiple timepoints and the timepoint has changed
-        if self.nRound > 1:
-            progress_parts.append(f"Round {current_time_point + 1}/{self.nRound}")
-
-        # Update region progress if there are multiple regions
-        if num_regions > 1:
-            progress_parts.append(f"Region {current_region}/{num_regions}")
-
-        # Set the progress label text, ensuring it's not empty
-        progress_text = "  ".join(progress_parts)
-        self.progress_label.setText(progress_text if progress_text else "Progress")
-        self.progress_bar.setValue(0)
-
-    def update_eta_display(self):
-        """Update the estimated time remaining display"""
-        if self.eta_seconds > 0:
-            self.eta_seconds -= 1  # Decrease by 1 second
-            hours, remainder = divmod(int(self.eta_seconds), 3600)
-            minutes, seconds = divmod(remainder, 60)
-            if hours > 0:
-                eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-            else:
-                eta_str = f"{minutes:02d}:{seconds:02d}"
-            self.eta_label.setText(f"{eta_str}")
-        else:
-            self.eta_timer.stop()
-            self.eta_label.setText("00:00")
-
-    def display_progress_bar(self, show):
-        """Show/hide progress tracking widgets"""
-        self.progress_label.setVisible(show)
-        self.progress_bar.setVisible(show)
-        self.eta_label.setVisible(show)
-        if show:
-            self.progress_bar.setValue(0)
-            self.progress_label.setText("Round 0/0")
-            self.eta_label.setText("--:--")
-            self.acquisition_start_time = None
-        else:
-            self.eta_timer.stop()
-
-    def on_load_coordinates_clicked(self):
-        """Open file dialog and load coordinates from selected CSV file"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Scan Coordinates", "", "CSV Files (*.csv);;All Files (*)"
-        )
-
-        if file_path:
-            self._log.info(f"Loading coordinates from {file_path}")
-            self.load_coordinates(file_path)
-
-    def load_coordinates(self, file_path: str):
-        """Load scan coordinates from a CSV file.
-
-        Args:
-            file_path: Path to CSV file containing coordinates
-        """
-        try:
-            # Stamped or legacy-unstamped read; the shared loader owns column
-            # validation and the optional per-FOV z column.
-            df, stamp = read_scan_coordinates_csv(file_path)
-            region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
-
-            _register_loaded_fovs(self, region_fov_coords, z_dropped)
-
-            self._log.info(f"Loaded {len(df)} coordinates from {file_path}")
-
-            # The file stores ABSOLUTE stage positions: warn (but still load) if
-            # the placement changed since it was saved.
-            _warn_if_coordinates_stale(self, stamp)
-
-        except Exception as e:
-            self._log.error(f"Failed to load coordinates: {str(e)}")
-            QMessageBox.warning(self, "Load Error", f"Failed to load coordinates from {file_path}\nError: {str(e)}")
-
-    def init_fluidics(self):
-        """Initialize the fluidics system"""
-        # self.multipointController.fluidics.initialize()
-        self.btn_startAcquisition.setEnabled(True)
-
-    def get_rounds(self) -> list:
-        """Parse rounds input string into a list of round numbers.
-
-        Accepts formats like:
-        - Single numbers: "1,3,5"
-        - Ranges: "1-3,5,7-10"
-
-        Returns:
-            List of integers representing rounds, sorted without duplicates.
-            Empty list if input is invalid.
-        """
-        try:
-            rounds_str = self.entry_rounds.text().strip()
-            if not rounds_str:
-                return []
-
-            rounds = []
-
-            # Split by comma and process each part
-            for part in rounds_str.split(","):
-                part = part.strip()
-                if "-" in part:
-                    # Handle range (e.g., "1-3")
-                    start, end = map(int, part.split("-"))
-                    if start < 1 or end > 24 or start > end:
-                        raise ValueError(
-                            f"Invalid range {part}: Numbers must be between 1 and 24, and start must be <= end"
-                        )
-                    rounds.extend(range(start, end + 1))
-                else:
-                    # Handle single number
-                    num = int(part)
-                    if num < 1 or num > 24:
-                        raise ValueError(f"Invalid number {num}: Must be between 1 and 24")
-                    rounds.append(num)
-
-            self.nRound = len(rounds)
-
-            return rounds
-
-        except ValueError as e:
-            QMessageBox.warning(self, "Invalid Input", str(e))
-            return []
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid round numbers (e.g., '1-3,5,7-10')")
-            return []
-
-
-class FluidicsWidget(QWidget):
-
-    log_message_signal = Signal(str)
-    fluidics_initialized_signal = Signal()
-
-    def __init__(self, fluidics, parent=None):
-        super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-
-        # Initialize data structures
-        self.fluidics = fluidics
-        self.fluidics.log_callback = self.log_message_signal.emit
-        self.set_sequence_callbacks()
-
-        # Set up the UI
-        self.setup_ui()
-        self.log_message_signal.connect(self.log_status)
-
-    def setup_ui(self):
-        # Main layout
-        main_layout = QHBoxLayout()
-        self.setLayout(main_layout)
-
-        # Left side - Control panels
-        left_panel = QVBoxLayout()
-
-        # Fluidics Control panel
-        fluidics_control_group = QGroupBox("Fluidics Control")
-        fluidics_control_layout = QVBoxLayout()
-
-        # First row - Initialize and Load Sequences
-        init_row = QHBoxLayout()
-        self.btn_initialize = QPushButton("Initialize")
-        self.btn_load_sequences = QPushButton("Load Sequences")
-        init_row.addWidget(self.btn_initialize)
-        init_row.addWidget(self.btn_load_sequences)
-        fluidics_control_layout.addLayout(init_row)
-
-        # Second row - Prime Ports
-        prime_row = QHBoxLayout()
-        prime_row.addWidget(QLabel("Prime Ports:"))
-        prime_row.addWidget(QLabel("Ports"))
-        self.txt_prime_ports = QLineEdit()
-        prime_row.addWidget(self.txt_prime_ports)
-        prime_row.addWidget(QLabel("Fill Tubing With"))
-        self.prime_fill_combo = QComboBox()
-        self.prime_fill_combo.addItems(self.fluidics.available_port_names)
-        self.prime_fill_combo.setCurrentIndex(25 - 1)  # Usually Port 25 should be the common wash buffer port
-        prime_row.addWidget(self.prime_fill_combo)
-        prime_row.addWidget(QLabel("Volume (µL)"))
-        self.txt_prime_volume = QLineEdit()
-        self.txt_prime_volume.setText("2000")
-        prime_row.addWidget(self.txt_prime_volume)
-        self.btn_prime_start = QPushButton("Start")
-        prime_row.addWidget(self.btn_prime_start)
-        fluidics_control_layout.addLayout(prime_row)
-
-        # Third row - Clean Up
-        cleanup_row = QHBoxLayout()
-        cleanup_row.addWidget(QLabel("Clean Up:"))
-        cleanup_row.addWidget(QLabel("Ports"))
-        self.txt_cleanup_ports = QLineEdit()
-        cleanup_row.addWidget(self.txt_cleanup_ports)
-        cleanup_row.addWidget(QLabel("Fill Tubing With"))
-        self.cleanup_fill_combo = QComboBox()
-        self.cleanup_fill_combo.addItems(self.fluidics.available_port_names)
-        self.cleanup_fill_combo.setCurrentIndex(25 - 1)
-        cleanup_row.addWidget(self.cleanup_fill_combo)
-        cleanup_row.addWidget(QLabel("Volume (µL)"))
-        self.txt_cleanup_volume = QLineEdit()
-        self.txt_cleanup_volume.setText("2000")
-        cleanup_row.addWidget(self.txt_cleanup_volume)
-        cleanup_row.addWidget(QLabel("Repeat"))
-        self.txt_cleanup_repeat = QLineEdit()
-        self.txt_cleanup_repeat.setText("3")
-        cleanup_row.addWidget(self.txt_cleanup_repeat)
-        self.btn_cleanup_start = QPushButton("Start")
-        cleanup_row.addWidget(self.btn_cleanup_start)
-        fluidics_control_layout.addLayout(cleanup_row)
-
-        fluidics_control_group.setLayout(fluidics_control_layout)
-        left_panel.addWidget(fluidics_control_group)
-
-        # Manual Control panel (MERFISH only, not for Open Chamber)
-        self.is_open_chamber = self.fluidics.config.get("application") == "Open Chamber"
-        if not self.is_open_chamber:
-            manual_control_group = QGroupBox("Manual Control")
-            manual_control_layout = QVBoxLayout()
-
-            # First row - Port, Flow Rate, Volume, Flow button
-            manual_row1 = QHBoxLayout()
-            manual_row1.addWidget(QLabel("Port"))
-            self.manual_port_combo = QComboBox()
-            self.manual_port_combo.addItems(self.fluidics.available_port_names)
-            manual_row1.addWidget(self.manual_port_combo)
-            manual_row1.addWidget(QLabel("Flow Rate (µL/min)"))
-            self.txt_manual_flow_rate = QLineEdit()
-            self.txt_manual_flow_rate.setText("500")
-            manual_row1.addWidget(self.txt_manual_flow_rate)
-            manual_row1.addWidget(QLabel("Volume (µL)"))
-            self.txt_manual_volume = QLineEdit()
-            manual_row1.addWidget(self.txt_manual_volume)
-            self.btn_manual_flow = QPushButton("Flow")
-            manual_row1.addWidget(self.btn_manual_flow)
-            manual_control_layout.addLayout(manual_row1)
-
-            # Second row - Empty Syringe Pump button
-            manual_row2 = QHBoxLayout()
-            self.btn_empty_syringe_pump = QPushButton("Empty Syringe Pump To Waste")
-            manual_row2.addWidget(self.btn_empty_syringe_pump)
-            manual_control_layout.addLayout(manual_row2)
-
-            manual_control_group.setLayout(manual_control_layout)
-            left_panel.addWidget(manual_control_group)
-
-        # Status panel
-        status_group = QGroupBox("Status")
-        status_layout = QVBoxLayout()
-
-        self.status_text = QTextEdit()
-        self.status_text.setReadOnly(True)
-        status_layout.addWidget(self.status_text)
-
-        self.btn_save_log = QPushButton("Save Log")
-        status_layout.addWidget(self.btn_save_log)
-
-        status_group.setLayout(status_layout)
-        left_panel.addWidget(status_group)
-
-        # Add left panel to main layout
-        main_layout.addLayout(left_panel, 1)
-
-        # Right side - Sequences panel
-        right_panel = QVBoxLayout()
-
-        sequences_group = QGroupBox("Sequences")
-        sequences_layout = QVBoxLayout()
-
-        # Table for sequences
-        self.sequences_table = QTableView()
-        sequences_layout.addWidget(self.sequences_table)
-
-        # Emergency Stop button
-        self.btn_emergency_stop = QPushButton("Emergency Stop")
-        self.btn_emergency_stop.setStyleSheet("background-color: red; color: white; font-weight: bold;")
-        sequences_layout.addWidget(self.btn_emergency_stop)
-
-        sequences_group.setLayout(sequences_layout)
-        right_panel.addWidget(sequences_group)
-
-        # Add right panel to main layout
-        main_layout.addLayout(right_panel, 1)
-
-        # Connect signals
-        self.btn_initialize.clicked.connect(self.initialize_fluidics)
-        self.btn_load_sequences.clicked.connect(self.load_sequences)
-        self.btn_prime_start.clicked.connect(self.start_prime)
-        self.btn_cleanup_start.clicked.connect(self.start_cleanup)
-        if not self.is_open_chamber:
-            self.btn_manual_flow.clicked.connect(self.start_manual_flow)
-            self.btn_empty_syringe_pump.clicked.connect(self.empty_syringe_pump)
-        self.btn_emergency_stop.clicked.connect(self.emergency_stop)
-        self.btn_save_log.clicked.connect(self.save_log)
-
-        self.enable_controls(False)
-        self.btn_emergency_stop.setEnabled(False)
-
-    def initialize_fluidics(self):
-        """Initialize the fluidics system"""
-        self.log_status("Initializing fluidics system...")
-        self.fluidics.initialize()
-        self.btn_initialize.setEnabled(False)
-        self.enable_controls(True)
-        self.btn_emergency_stop.setEnabled(True)
-        self.fluidics_initialized_signal.emit()
-
-    def set_sequence_callbacks(self):
-        callbacks = {
-            "on_finished": self.on_finish,
-            "on_error": self.on_finish,
-            "on_estimate": self.on_estimate,
-            "update_progress": self.update_progress,
-        }
-        self.fluidics.worker_callbacks = callbacks
-
-    def set_manual_control_callbacks(self):
-        # TODO: use better logging description
-        callbacks = {
-            "on_finished": lambda: self.on_finish("Operation completed"),
-            "on_error": self.on_finish,
-            "on_estimate": None,
-            "update_progress": None,
-        }
-        self.fluidics.worker_callbacks = callbacks
-
-    def load_sequences(self):
-        """Open file dialog to load sequences from CSV"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Load Fluidics Sequences", "", "CSV Files (*.csv);;All Files (*)"
-        )
-
-        if file_path:
-            self.log_status(f"Loading sequences from {file_path}")
-            try:
-                self.fluidics.load_sequences(file_path)
-                model = PandasTableModel(self.fluidics.sequences, self.fluidics.available_port_names)
-                self.sequences_table.setModel(model)
-                # Hide the "include" column
-                if "include" in self.fluidics.sequences.columns:
-                    self.sequences_table.hideColumn(self.fluidics.sequences.columns.get_loc("include"))
-                self.sequences_table.resizeColumnsToContents()
-                self.sequences_table.horizontalHeader().setStretchLastSection(True)
-                self.log_status(f"Loaded {len(self.fluidics.sequences)} sequences")
-            except Exception as e:
-                self.log_status(f"Error loading sequences: {str(e)}")
-
-    def start_prime(self):
-        self.set_manual_control_callbacks()
-        ports = self.get_port_list(self.txt_prime_ports.text())
-        fill_port = self.prime_fill_combo.currentIndex() + 1
-        volume = int(self.txt_prime_volume.text())
-
-        if not ports or not fill_port or not volume:
-            return
-
-        self.log_status(f"Starting prime: Ports {ports}, Fill with {fill_port}, Volume {volume}µL")
-        self.fluidics.priming(ports, fill_port, volume)
-        self.enable_controls(False)
-        self.set_sequence_callbacks()
-
-    def start_cleanup(self):
-        self.set_manual_control_callbacks()
-        ports = self.get_port_list(self.txt_cleanup_ports.text())
-        fill_port = self.cleanup_fill_combo.currentIndex() + 1
-        volume = int(self.txt_cleanup_volume.text())
-        repeat = int(self.txt_cleanup_repeat.text())
-
-        if not ports or not fill_port or not volume or not repeat:
-            return
-
-        self.log_status(f"Starting cleanup: Ports {ports}, Fill with {fill_port}, Volume {volume}µL, Repeat {repeat}x")
-        self.fluidics.clean_up(ports, fill_port, volume, repeat)
-        self.enable_controls(False)
-        self.set_sequence_callbacks()
-
-    def start_manual_flow(self):
-        self.set_manual_control_callbacks()
-        port = self.manual_port_combo.currentIndex() + 1
-        flow_rate = int(self.txt_manual_flow_rate.text())
-        volume = int(self.txt_manual_volume.text())
-
-        if not port or not flow_rate or not volume:
-            return
-
-        self.log_status(f"Flow reagent: Port {port}, Flow rate {flow_rate}µL/min, Volume {volume}µL")
-        self.fluidics.manual_flow(port, flow_rate, volume)
-        self.enable_controls(False)
-        self.set_sequence_callbacks()
-
-    def empty_syringe_pump(self):
-        self.log_status("Empty syringe pump to waste")
-        self.enable_controls(False)
-        self.fluidics.empty_syringe_pump()
-        self.log_status("Operation completed")
-        self.enable_controls(True)
-
-    def emergency_stop(self):
-        self.fluidics.emergency_stop()
-
-    def get_port_list(self, text: str) -> list:
-        """Parse ports input string into a list of numbers.
-
-        Accepts formats like:
-        - Single numbers: "1,3,5"
-        - Ranges: "1-3,5,7-10"
-
-        Returns:
-            List of integers representing rounds, sorted without duplicates.
-            Empty list if input is invalid.
-        """
-        try:
-            ports_str = text.strip()
-            if not ports_str:
-                return [i for i in range(1, len(self.fluidics.available_port_names) + 1)]
-
-            port_list = []
-
-            # Split by comma and process each part
-            for part in ports_str.split(","):
-                part = part.strip()
-                if "-" in part:
-                    # Handle range (e.g., "1-3")
-                    start, end = map(int, part.split("-"))
-                    if start < 1 or end > 28 or start > end:
-                        raise ValueError(
-                            f"Invalid range {part}: Numbers must be between 1 and 28, and start must be <= end"
-                        )
-                    port_list.extend(range(start, end + 1))
-                else:
-                    # Handle single number
-                    num = int(part)
-                    if num < 1 or num > 28:
-                        raise ValueError(f"Invalid number {num}: Must be between 1 and 28")
-                    port_list.append(num)
-
-            return port_list
-
-        except ValueError as e:
-            QMessageBox.warning(self, "Invalid Input", str(e))
-            return []
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid Input", "Please enter valid port numbers (e.g., '1-3,5,7-10')")
-            return []
-
-    def update_progress(self, idx, seq_num, status):
-        self.sequences_table.model().set_current_row(idx)
-        self.log_message_signal.emit(f"Sequence {self.fluidics.sequences.iloc[idx]['sequence_name']} {status}")
-
-    def on_finish(self, status=None):
-        self.enable_controls(True)
-        model = self.sequences_table.model()
-        if model is not None:
-            model.set_current_row(-1)
-        if status is None:
-            status = "Sequence section completed"
-        self.fluidics.reset_abort()
-        self.log_message_signal.emit(status)
-
-    def on_estimate(self, time, n):
-        self.log_message_signal.emit(f"Estimated time: {time}s, Sequences: {n}")
-
-    def enable_controls(self, enabled: bool):
-        self.btn_load_sequences.setEnabled(enabled)
-        self.btn_prime_start.setEnabled(enabled)
-        self.btn_cleanup_start.setEnabled(enabled)
-        if not self.is_open_chamber:
-            self.btn_manual_flow.setEnabled(enabled)
-            self.btn_empty_syringe_pump.setEnabled(enabled)
-        # Enable/disable sequence table editing
-        model = self.sequences_table.model()
-        if model and hasattr(model, "set_editable"):
-            model.set_editable(enabled)
-
-    def set_acquisition_running(self, running: bool):
-        """Disable table editing when acquisition is running."""
-        model = self.sequences_table.model()
-        if model and hasattr(model, "set_editable"):
-            model.set_editable(not running)
-
-    def log_status(self, message):
-        current_time = QDateTime.currentDateTime().toString("hh:mm:ss")
-        self.status_text.append(f"[{current_time}] {message}")
-        # Scroll to bottom
-        scrollbar = self.status_text.verticalScrollBar()
-        scrollbar.setValue(scrollbar.maximum())
-        # Also log to console
-        self._log.info(message)
-
-    def save_log(self):
-        """Save the log content to a file"""
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Fluidics Log", "", "Text Files (*.txt);;All Files (*)")
-        if file_path:
-            try:
-                with open(file_path, "w") as f:
-                    f.write(self.status_text.toPlainText())
-                self.log_status(f"Log saved to {file_path}")
-            except Exception as e:
-                QMessageBox.warning(self, "Error", f"Failed to save log: {str(e)}")
-
-
-class PandasTableModel(QAbstractTableModel):
-    """Model for displaying and editing pandas DataFrame in a QTableView"""
-
-    def __init__(self, data, port_names=None):
-        super().__init__()
-        self._data = data
-        self._current_row = -1
-        self._port_names = port_names or []
-        self._column_name_map = {
-            "sequence_name": "Sequence Name",
-            "fluidic_port": "Fluidic Port",
-            "fill_tubing_with": "Fill Tubing With",
-            "flow_rate": "Flow Rate (µL/min)",
-            "volume": "Volume (µL)",
-            "incubation_time": "Incubation (min)",
-            "repeat": "Repeat",
-        }
-        self._editable_columns = ["flow_rate", "volume", "incubation_time", "repeat"]
-        self._editable = True  # Can be disabled during acquisition
-
-    def rowCount(self, parent=None):
-        return len(self._data)
-
-    def columnCount(self, parent=None):
-        return len(self._data.columns)
-
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid():
-            return None
-
-        if role == Qt.BackgroundRole:
-            color = QColor(173, 216, 230) if index.row() == self._current_row else QColor(255, 255, 255)
-            return QBrush(color)
-
-        if role not in (Qt.DisplayRole, Qt.EditRole):
-            return None
-
-        value = self._data.iloc[index.row(), index.column()]
-        if pd.isna(value):
-            return "" if role == Qt.DisplayRole else None
-
-        column_name = self._data.columns[index.column()]
-
-        if role == Qt.EditRole:
-            return int(value) if column_name in self._editable_columns else str(value)
-
-        # DisplayRole: map port numbers to names for port columns
-        if column_name in ["fluidic_port", "fill_tubing_with"] and self._port_names:
-            port_name = self._get_port_name(value)
-            if port_name:
-                return port_name
-
-        return str(value)
-
-    def _get_port_name(self, value) -> str:
-        """Return port name for a port number, or empty string if invalid."""
-        try:
-            port_num = int(value)
-            if 1 <= port_num <= len(self._port_names):
-                return self._port_names[port_num - 1]
-        except (ValueError, TypeError):
-            pass
-        return ""
-
-    def headerData(self, section, orientation, role=Qt.DisplayRole):
-        if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            original_name = str(self._data.columns[section])
-            return self._column_name_map.get(original_name, original_name)
-        if orientation == Qt.Vertical and role == Qt.DisplayRole:
-            return str(section + 1)
-        return None
-
-    def set_current_row(self, row_index):
-        self._current_row = row_index
-        self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount() - 1, self.columnCount() - 1))
-
-    def flags(self, index):
-        base_flags = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        if not self._editable:
-            return base_flags
-        column_name = self._data.columns[index.column()]
-        # Skip Imaging rows for editing
-        if self._data.iloc[index.row()]["sequence_name"] == "Imaging":
-            return base_flags
-        if column_name in self._editable_columns:
-            return base_flags | Qt.ItemIsEditable
-        return base_flags
-
-    def set_editable(self, editable):
-        """Enable or disable editing of the table."""
-        self._editable = editable
-
-    def setData(self, index, value, role=Qt.EditRole):
-        if role != Qt.EditRole or not self._editable:
-            return False
-        column_name = self._data.columns[index.column()]
-        if column_name not in self._editable_columns:
-            return False
-        try:
-            int_value = int(value)
-            if not self._is_valid_column_value(column_name, int_value):
-                return False
-            self._data.iloc[index.row(), index.column()] = int_value
-            self.dataChanged.emit(index, index)
-            return True
-        except (ValueError, TypeError):
-            return False
-
-    def _is_valid_column_value(self, column_name: str, value: int) -> bool:
-        """Check if the value is valid for the given column."""
-        if column_name in ["flow_rate", "volume"]:
-            return value > 0
-        if column_name in ["incubation_time", "repeat"]:
-            return value >= 0
-        return True
 
 
 class FocusMapWidget(QFrame):
@@ -11335,39 +10542,42 @@ class AlignmentWidget(QWidget):
     Allows users to align current sample position with a previous acquisition by:
     1. Loading a past acquisition folder
     2. Moving stage to a reference FOV position
-    3. Displaying reference image as translucent overlay
-    4. Calculating X/Y offset after manual alignment
+    3. Displaying reference image as a magenta overlay on the green-tinted live view
+    4. Calculating X/Y offset after manual or automatic alignment
     5. Applying offset to future scan coordinates
 
-    The widget manages its own state and napari layers, communicating with
-    external components (stage, live controller) via signals.
+    The widget manages its own state and the reference overlay on the live display,
+    communicating with external components (stage, registration) via signals.
     """
 
     signal_move_to_position = Signal(float, float)  # x_mm, y_mm
     signal_offset_set = Signal(float, float)  # offset_x_mm, offset_y_mm
     signal_offset_cleared = Signal()
     signal_request_current_position = Signal()  # Response via set_current_position()
+    signal_auto_align_requested = Signal(object)  # reference image to register the live view against
 
     # Button states
     STATE_ALIGN = "align"
     STATE_CONFIRM = "confirm"
     STATE_CLEAR = "clear"
+    _BUTTON_TEXT = {STATE_ALIGN: "Align", STATE_CONFIRM: "Confirm Offset", STATE_CLEAR: "Clear Offset"}
+    _BUTTON_TOOLTIP = {
+        STATE_ALIGN: "Load a previous acquisition to align to",
+        STATE_CONFIRM: "Line up the two images, then record the offset",
+        STATE_CLEAR: "Remove the alignment offset",
+    }
+    _DISABLED_TOOLTIP = "Start Live first"
 
-    # Napari layer name
-    REFERENCE_LAYER_NAME = "Alignment Reference"
-
-    def __init__(self, napari_viewer, parent=None):
+    def __init__(self, display, parent=None):
         """
-        Initialize alignment widget.
-
         Args:
-            napari_viewer: The napari viewer instance for layer management
+            display: Live image display providing show_alignment_reference(image) / hide_alignment_reference()
             parent: Parent widget
         """
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
-        self.viewer = napari_viewer
+        self._display = display
         self.state = self.STATE_ALIGN
 
         # Alignment state
@@ -11375,9 +10585,8 @@ class AlignmentWidget(QWidget):
         self._offset_y_mm = 0.0
         self._has_offset = False
         self._reference_fov_position = None  # (x_mm, y_mm)
+        self._reference_image = None
         self._current_folder = None
-        self._original_live_opacity = 1.0
-        self._original_live_blending = "additive"
         self._pending_position_request = False
 
         self._setup_ui()
@@ -11386,6 +10595,7 @@ class AlignmentWidget(QWidget):
         """Setup the button UI."""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSizeConstraint(QLayout.SetFixedSize)  # shrink/grow as the Auto button is shown/hidden
 
         self.btn_align = QPushButton("Align")
         self.btn_align.setCursor(Qt.PointingHandCursor)
@@ -11394,10 +10604,25 @@ class AlignmentWidget(QWidget):
         self.btn_align.clicked.connect(self._on_button_clicked)
         layout.addWidget(self.btn_align)
 
+        self.btn_auto = QPushButton("Auto")
+        self.btn_auto.setCursor(Qt.PointingHandCursor)
+        self.btn_auto.setToolTip("Move the stage to match the reference (needs Live)")
+        self.btn_auto.clicked.connect(lambda: self.signal_auto_align_requested.emit(self._reference_image))
+        layout.addWidget(self.btn_auto)
+        self._set_state(self.STATE_ALIGN)
+
+    def _set_state(self, state: str):
+        """Derive the button label, tooltip and Auto visibility from the workflow state."""
+        self.state = state
+        self.btn_align.setText(self._BUTTON_TEXT[state])
+        enabled = self.btn_align.isEnabled()
+        self.btn_align.setToolTip(self._BUTTON_TOOLTIP[state] if enabled else self._DISABLED_TOOLTIP)
+        self.btn_auto.setVisible(state == self.STATE_CONFIRM)  # only while a reference is loaded
+
     def enable(self):
-        """Enable the alignment button if currently disabled. Call when live view starts."""
-        if not self.btn_align.isEnabled():
-            self.btn_align.setEnabled(True)
+        """Call when live view starts."""
+        self.btn_align.setEnabled(True)
+        self._set_state(self.state)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Public API
@@ -11434,14 +10659,13 @@ class AlignmentWidget(QWidget):
 
     def reset(self):
         """Reset widget to initial state."""
-        self.state = self.STATE_ALIGN
-        self.btn_align.setText("Align")
         self._current_folder = None
         self._reference_fov_position = None
         self._has_offset = False
         self._offset_x_mm = 0.0
         self._offset_y_mm = 0.0
-        self._remove_reference_layer()
+        self._hide_reference()
+        self._set_state(self.STATE_ALIGN)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Button Click Handler
@@ -11473,15 +10697,7 @@ class AlignmentWidget(QWidget):
 
     def _handle_clear_click(self):
         """Handle click in CLEAR state - clear offset."""
-        self._offset_x_mm = 0.0
-        self._offset_y_mm = 0.0
-        self._has_offset = False
-        self._reference_fov_position = None
-        self._current_folder = None
-
-        self.state = self.STATE_ALIGN
-        self.btn_align.setText("Align")
-
+        self.reset()
         self.signal_offset_cleared.emit()
         self._log.info("Alignment offset cleared")
 
@@ -11497,11 +10713,9 @@ class AlignmentWidget(QWidget):
             ref_x, ref_y = info["center_fov_position"]
             self._reference_fov_position = (ref_x, ref_y)
 
-            self.state = self.STATE_CONFIRM
-            self.btn_align.setText("Confirm Offset")
-
             self.signal_move_to_position.emit(ref_x, ref_y)
             self._load_reference_image(info["image_path"])
+            self._set_state(self.STATE_CONFIRM)
             self._log.info(f"Alignment started: ref_pos=({ref_x:.4f}, {ref_y:.4f})")
 
         except Exception as e:
@@ -11524,10 +10738,8 @@ class AlignmentWidget(QWidget):
         self._offset_y_mm = offset_y
         self._has_offset = True
 
-        self._remove_reference_layer()
-
-        self.state = self.STATE_CLEAR
-        self.btn_align.setText("Clear Offset")
+        self._hide_reference()
+        self._set_state(self.STATE_CLEAR)
 
         self.signal_offset_set.emit(offset_x, offset_y)
         self._log.info(f"Alignment confirmed: offset=({offset_x:.4f}, {offset_y:.4f})mm")
@@ -11617,11 +10829,11 @@ class AlignmentWidget(QWidget):
         )
 
     # ─────────────────────────────────────────────────────────────────────────
-    # Napari Layer Management
+    # Reference Overlay
     # ─────────────────────────────────────────────────────────────────────────
 
     def _load_reference_image(self, image_path: str):
-        """Load reference image and add to napari viewer."""
+        """Load reference image and overlay it on the live view."""
         import tifffile
 
         if image_path.endswith((".tiff", ".tif", ".ome.tiff", ".ome.tif")):
@@ -11634,643 +10846,15 @@ class AlignmentWidget(QWidget):
             ref_image = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
             if ref_image is None:
                 raise ValueError(f"Failed to read image: {image_path}")
-
-        self._add_reference_layer(ref_image)
-
-    def _add_reference_layer(self, image: np.ndarray):
-        """Add reference image as a napari layer with magenta/green overlay."""
-        self._modified_live_view = False
-        self._contrast_connected = False
-        if "Live View" in self.viewer.layers:
-            live_layer = self.viewer.layers["Live View"]
-            self._original_live_opacity = live_layer.opacity
-            self._original_live_blending = live_layer.blending
-            self._original_live_colormap = live_layer.colormap
-            live_layer.opacity = 1.0
-            live_layer.blending = "additive"
-            live_layer.colormap = "green"
-            live_layer.events.contrast_limits.connect(self._sync_contrast_limits)
-            self._contrast_connected = True
-            self._modified_live_view = True
-        else:
-            self._log.warning("Live View layer not found - reference image will be shown alone")
-
-        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers[self.REFERENCE_LAYER_NAME].data = image
-        else:
-            self.viewer.add_image(
-                image,
-                name=self.REFERENCE_LAYER_NAME,
-                visible=True,
-                opacity=1.0,
-                colormap="magenta",
-                blending="additive",
-            )
-        # Sync initial contrast limits from Live View
-        if self._contrast_connected and self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            ref_layer = self.viewer.layers[self.REFERENCE_LAYER_NAME]
-            ref_layer.contrast_limits = live_layer.contrast_limits
-        self._log.debug("Reference layer added to napari viewer")
-
-    def _sync_contrast_limits(self, event):
-        """Sync contrast limits from Live View to reference layer."""
-        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers[self.REFERENCE_LAYER_NAME].contrast_limits = event.value
-
-    def _remove_reference_layer(self):
-        """Remove reference layer and restore live view settings."""
-        if self.REFERENCE_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers.remove(self.REFERENCE_LAYER_NAME)
-            self._log.debug("Reference layer removed from napari viewer")
-
-        if getattr(self, "_modified_live_view", False) and "Live View" in self.viewer.layers:
-            live_layer = self.viewer.layers["Live View"]
-            if getattr(self, "_contrast_connected", False):
-                live_layer.events.contrast_limits.disconnect(self._sync_contrast_limits)
-                self._contrast_connected = False
-            live_layer.opacity = self._original_live_opacity
-            live_layer.blending = self._original_live_blending
-            live_layer.colormap = self._original_live_colormap
-            self._modified_live_view = False
-
-
-class NapariLiveWidget(QWidget):
-    signal_coordinates_clicked = Signal(int, int, int, int)
-    signal_newExposureTime = Signal(float)
-    signal_newAnalogGain = Signal(float)
-    signal_autoLevelSetting = Signal(bool)
-
-    def __init__(
-        self,
-        streamHandler,
-        liveController,
-        stage: AbstractStage,
-        objectiveStore,
-        contrastManager,
-        wellSelectionWidget=None,
-        show_trigger_options=True,
-        show_display_options=True,
-        show_autolevel=False,
-        autolevel=False,
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.streamHandler = streamHandler
-        self.liveController: LiveController = liveController
-        self.stage = stage
-        self.objectiveStore = objectiveStore
-        self.wellSelectionWidget = wellSelectionWidget
-        self.live_configuration = self.liveController.currentConfiguration
-        self.image_width = 0
-        self.image_height = 0
-        self.dtype = np.uint8
-        self.channels = set()
-        self.init_live = False
-        self.init_live_rgb = False
-        self.init_scale = False
-        self.previous_scale = None
-        self.previous_center = None
-        self.last_was_autofocus = False
-        self.fps_trigger = 10
-        self.fps_display = 10
-        self.contrastManager = contrastManager
-        self.is_switching_mode = False  # Guard to prevent duplicate MCU commands during mode switch
-
-        self.initNapariViewer()
-        self.addNapariGrayclipColormap()
-        self.initControlWidgets(show_trigger_options, show_display_options, show_autolevel, autolevel)
-        self.update_ui_for_mode(self.live_configuration)
-
-    def initNapariViewer(self):
-        self.viewer = napari.Viewer(show=False)
-        self.viewerWidget = self.viewer.window._qt_window
-        self.viewer.dims.axis_labels = ["Y-axis", "X-axis"]
-        self.layout = QVBoxLayout()
-        self.layout.addWidget(self.viewerWidget)
-        self.setLayout(self.layout)
-        self.customizeViewer()
-
-    def customizeViewer(self):
-        # # Hide the status bar (which includes the activity button)
-        # if hasattr(self.viewer.window, "_status_bar"):
-        #     self.viewer.window._status_bar.hide()
-
-        # Disable napari's native menu bar so it doesn't take over macOS global menu bar
-        if sys.platform == "darwin":
-            self.viewer.window.main_menu.setNativeMenuBar(False)
-        self.viewer.window.main_menu.hide()
-
-        # Hide the layer buttons
-        if hasattr(self.viewer.window._qt_viewer, "layerButtons"):
-            self.viewer.window._qt_viewer.layerButtons.hide()
-
-    def updateHistogram(self, layer):
-        if self.histogram_widget is not None and layer.data is not None:
-            self.pg_image_item.setImage(layer.data, autoLevels=False)
-            self.histogram_widget.setLevels(*layer.contrast_limits)
-            self.histogram_widget.setHistogramRange(layer.data.min(), layer.data.max())
-
-            # Set the histogram widget's region to match the layer's contrast limits
-            self.histogram_widget.region.setRegion(layer.contrast_limits)
-
-            # Update colormap only if it has changed
-            if hasattr(self, "last_colormap") and self.last_colormap != layer.colormap.name:
-                self.histogram_widget.gradient.setColorMap(self.createColorMap(layer.colormap))
-            self.last_colormap = layer.colormap.name
-
-    def createColorMap(self, colormap):
-        colors = colormap.colors
-        positions = np.linspace(0, 1, len(colors))
-        return pg.ColorMap(positions, colors)
-
-    def initControlWidgets(self, show_trigger_options, show_display_options, show_autolevel, autolevel):
-        # Initialize histogram widget
-        self.pg_image_item = pg.ImageItem()
-        self.histogram_widget = pg.HistogramLUTWidget(image=self.pg_image_item)
-        self.histogram_widget.setFixedWidth(100)
-        self.histogram_dock = self.viewer.window.add_dock_widget(self.histogram_widget, area="right", name="hist")
-        self.histogram_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
-        self.histogram_dock.setTitleBarWidget(QWidget())
-        self.histogram_widget.region.sigRegionChanged.connect(self.on_histogram_region_changed)
-        self.histogram_widget.region.sigRegionChangeFinished.connect(self.on_histogram_region_changed)
-
-        # Microscope Configuration (only enabled channels)
-        self.dropdown_modeSelection = QComboBox()
-        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
-            self.dropdown_modeSelection.addItem(config.name)
-        self.dropdown_modeSelection.setCurrentText(self.live_configuration.name)
-        self.dropdown_modeSelection.activated.connect(self.select_new_microscope_mode_by_name)
-
-        # Live button
-        self.btn_live = QPushButton("Start Live")
-        self.btn_live.setCheckable(True)
-        gradient_style = """
-            QPushButton {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #D6D6FF, stop:1 #C2C2FF);
-                border-radius: 5px;
-                color: black;
-                border: 1px solid #A0A0A0;
-            }
-            QPushButton:checked {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #FFD6D6, stop:1 #FFC2C2);
-                border: 1px solid #A0A0A0;
-            }
-            QPushButton:hover {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #E0E0FF, stop:1 #D0D0FF);
-            }
-            QPushButton:pressed {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1,
-                                                  stop:0 #9090C0, stop:1 #8080B0);
-            }
-        """
-        self.btn_live.setStyleSheet(gradient_style)
-        # self.btn_live.setStyleSheet("font-weight: bold; background-color: #7676F7") #6666D3
-        current_height = self.btn_live.sizeHint().height()
-        self.btn_live.setFixedHeight(int(current_height * 1.5))
-        self.btn_live.clicked.connect(self.toggle_live)
-
-        # Exposure Time
-        self.entry_exposureTime = QDoubleSpinBox()
-        self.entry_exposureTime.setRange(*self.liveController.camera.get_exposure_limits())
-        self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-        self.entry_exposureTime.setSuffix(" ms")
-        self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
-
-        # Analog Gain
-        self.entry_analogGain = QDoubleSpinBox()
-        self.entry_analogGain.setRange(0, 24)
-        self.entry_analogGain.setSingleStep(0.1)
-        self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-        # self.entry_analogGain.setSuffix('x')
-        self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
-
-        # Illumination Intensity
-        self.slider_illuminationIntensity = CappedSlider(Qt.Horizontal)
-        self.slider_illuminationIntensity.setRange(0, 100)
-        self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
-        self.slider_illuminationIntensity.setTickPosition(QSlider.TicksBelow)
-        self.slider_illuminationIntensity.setTickInterval(10)
-        self.slider_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
-        self.label_illuminationIntensity = QLabel(str(self.slider_illuminationIntensity.value()) + "%")
-        self.slider_illuminationIntensity.valueChanged.connect(
-            lambda v: self.label_illuminationIntensity.setText(str(v) + "%")
-        )
-
-        # Trigger mode
-        self.dropdown_triggerMode = QComboBox()
-        trigger_modes = [
-            ("Software", TriggerMode.SOFTWARE),
-            ("Hardware", TriggerMode.HARDWARE),
-            ("Continuous", TriggerMode.CONTINUOUS),
-        ]
-        for display_name, mode in trigger_modes:
-            self.dropdown_triggerMode.addItem(display_name, mode)
-        self.dropdown_triggerMode.currentIndexChanged.connect(self.on_trigger_mode_changed)
-
-        # Trigger FPS
-        self.entry_triggerFPS = QDoubleSpinBox()
-        self.entry_triggerFPS.setRange(0.02, 1000)
-        self.entry_triggerFPS.setValue(self.fps_trigger)
-        # self.entry_triggerFPS.setSuffix(" fps")
-        self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-
-        # Display FPS
-        self.entry_displayFPS = QDoubleSpinBox()
-        self.entry_displayFPS.setRange(1, 240)
-        self.entry_displayFPS.setValue(self.fps_display)
-        # self.entry_displayFPS.setSuffix(" fps")
-        self.entry_displayFPS.valueChanged.connect(self.streamHandler.set_display_fps)
-
-        # Resolution Scaling
-        self.slider_resolutionScaling = QSlider(Qt.Horizontal)
-        self.slider_resolutionScaling.setRange(10, 100)
-        self.slider_resolutionScaling.setValue(100)
-        self.slider_resolutionScaling.setTickPosition(QSlider.TicksBelow)
-        self.slider_resolutionScaling.setTickInterval(10)
-        self.slider_resolutionScaling.valueChanged.connect(self.update_resolution_scaling)
-        self.label_resolutionScaling = QLabel(str(self.slider_resolutionScaling.value()) + "%")
-        self.slider_resolutionScaling.valueChanged.connect(lambda v: self.label_resolutionScaling.setText(str(v) + "%"))
-
-        # Autolevel
-        self.btn_autolevel = QPushButton("Autolevel")
-        self.btn_autolevel.setCheckable(True)
-        self.btn_autolevel.setChecked(autolevel)
-        self.btn_autolevel.clicked.connect(self.signal_autoLevelSetting.emit)
-
-        def make_row(label_widget, entry_widget, value_label=None):
-            row = QHBoxLayout()
-            row.addWidget(label_widget)
-            row.addWidget(entry_widget)
-            if value_label:
-                row.addWidget(value_label)
-            return row
-
-        control_layout = QVBoxLayout()
-
-        # Add widgets to layout
-        control_layout.addWidget(self.dropdown_modeSelection)
-        control_layout.addWidget(self.btn_live)
-        control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        row1 = make_row(QLabel("Exposure Time"), self.entry_exposureTime)
-        control_layout.addLayout(row1)
-
-        row2 = make_row(QLabel("Illumination"), self.slider_illuminationIntensity, self.label_illuminationIntensity)
-        control_layout.addLayout(row2)
-
-        row3 = make_row((QLabel("Analog Gain")), self.entry_analogGain)
-        control_layout.addLayout(row3)
-        control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        if show_trigger_options:
-            row0 = make_row(QLabel("Trigger Mode"), self.dropdown_triggerMode)
-            control_layout.addLayout(row0)
-            row00 = make_row(QLabel("Trigger FPS"), self.entry_triggerFPS)
-            control_layout.addLayout(row00)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        if show_display_options:
-            row4 = make_row((QLabel("Display FPS")), self.entry_displayFPS)
-            control_layout.addLayout(row4)
-            row5 = make_row(QLabel("Display Resolution"), self.slider_resolutionScaling, self.label_resolutionScaling)
-            control_layout.addLayout(row5)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        if show_autolevel:
-            control_layout.addWidget(self.btn_autolevel)
-            control_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
-
-        control_layout.addStretch(1)
-
-        add_live_controls = False
-        if USE_NAPARI_FOR_LIVE_CONTROL or add_live_controls:
-            live_controls_widget = QWidget()
-            live_controls_widget.setLayout(control_layout)
-            # layer_list_widget.setFixedWidth(270)
-
-            layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
-            layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
-
-            self.viewer.window._qt_viewer.layerButtons.hide()
-            self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
-            self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
-
-            # Add the actual dock widgets
-            self.dock_layer_controls = self.viewer.window.add_dock_widget(
-                layer_controls_widget, area="left", name="layer controls", tabify=True
-            )
-            self.dock_layer_list = self.viewer.window.add_dock_widget(
-                layer_list_widget, area="left", name="layer list", tabify=True
-            )
-            self.dock_live_controls = self.viewer.window.add_dock_widget(
-                live_controls_widget, area="left", name="live controls", tabify=True
-            )
-
-            self.viewer.window.window_menu.addAction(self.dock_live_controls.toggleViewAction())
-
-        if USE_NAPARI_WELL_SELECTION:
-            well_selector_layout = QVBoxLayout()
-            # title_label = QLabel("Well Selector")
-            # title_label.setAlignment(Qt.AlignCenter)  # Center the title
-            # title_label.setStyleSheet("font-weight: bold;")  # Optional: style the title
-            # well_selector_layout.addWidget(title_label)
-
-            well_selector_row = QHBoxLayout()
-            well_selector_row.addStretch(1)
-            well_selector_row.addWidget(self.wellSelectionWidget)
-            well_selector_row.addStretch(1)
-            well_selector_layout.addLayout(well_selector_row)
-            well_selector_layout.addStretch()
-
-            well_selector_dock_widget = QWidget()
-            well_selector_dock_widget.setLayout(well_selector_layout)
-            self.dock_well_selector = self.viewer.window.add_dock_widget(
-                well_selector_dock_widget, area="bottom", name="well selector"
-            )
-            self.dock_well_selector.setFixedHeight(self.dock_well_selector.minimumSizeHint().height())
-
-        layer_controls_widget = self.viewer.window._qt_viewer.dockLayerControls.widget()
-        layer_list_widget = self.viewer.window._qt_viewer.dockLayerList.widget()
-
-        self.viewer.window._qt_viewer.layerButtons.hide()
-        self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerControls)
-        self.viewer.window.remove_dock_widget(self.viewer.window._qt_viewer.dockLayerList)
-        self.print_window_menu_items()
-
-    def print_window_menu_items(self):
-        print("Items in window_menu:")
-        for action in self.viewer.window.window_menu.actions():
-            print(action.text())
-
-    def on_histogram_region_changed(self):
-        if self.live_configuration.name:
-            min_val, max_val = self.histogram_widget.region.getRegion()
-            self.updateContrastLimits(self.live_configuration.name, min_val, max_val)
-
-    def toggle_live(self, pressed):
-        if pressed:
-            self.liveController.start_live()
-            self.btn_live.setText("Stop Live")
-        else:
-            self.liveController.stop_live()
-            self.btn_live.setText("Start Live")
-
-    def toggle_live_controls(self, show):
-        if show:
-            self.dock_live_controls.show()
-        else:
-            self.dock_live_controls.hide()
-
-    def toggle_well_selector(self, show):
-        if show:
-            self.dock_well_selector.show()
-        else:
-            self.dock_well_selector.hide()
-
-    def replace_well_selector(self, wellSelector):
-        self.viewer.window.remove_dock_widget(self.dock_well_selector)
-        self.wellSelectionWidget = wellSelector
-        well_selector_layout = QHBoxLayout()
-        well_selector_layout.addStretch(1)  # Add stretch on the left
-        well_selector_layout.addWidget(self.wellSelectionWidget)
-        well_selector_layout.addStretch(1)  # Add stretch on the right
-        well_selector_dock_widget = QWidget()
-        well_selector_dock_widget.setLayout(well_selector_layout)
-        self.dock_well_selector = self.viewer.window.add_dock_widget(
-            well_selector_dock_widget, area="bottom", name="well selector", tabify=True
-        )
-
-    def select_new_microscope_mode_by_name(self, config_index):
-        config_name = self.dropdown_modeSelection.itemText(config_index)
-        maybe_new_config = self.liveController.get_channel_by_name(self.objectiveStore.current_objective, config_name)
-
-        if not maybe_new_config:
-            self._log.error(f"User attempted to select config named '{config_name}' but it does not exist!")
-            return
-
-        self.liveController.set_microscope_mode(maybe_new_config)
-        self.update_ui_for_mode(maybe_new_config)
-
-    def update_ui_for_mode(self, config):
-        try:
-            self.is_switching_mode = True
-            self.live_configuration = config
-            self.dropdown_modeSelection.setCurrentText(config.name if config else "Unknown")
-            if self.live_configuration:
-                self.entry_exposureTime.setValue(self.live_configuration.exposure_time)
-                self.entry_analogGain.setValue(self.live_configuration.analog_gain)
-                # Cap the intensity slider at the illumination channel's max output
-                self.slider_illuminationIntensity.set_cap(
-                    self.liveController.get_intensity_cap_percent(self.live_configuration)
-                )
-                self.slider_illuminationIntensity.setValue(int(self.live_configuration.illumination_intensity))
-        finally:
-            self.is_switching_mode = False
-
-    def update_config_exposure_time(self, new_value):
-        if self.is_switching_mode:
-            return
-        self.live_configuration.exposure_time = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.live_configuration.name,
-            "ExposureTime",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        self.signal_newExposureTime.emit(new_value)
-
-    def update_config_analog_gain(self, new_value):
-        if self.is_switching_mode:
-            return
-        self.live_configuration.analog_gain = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.live_configuration.name,
-            "AnalogGain",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        self.signal_newAnalogGain.emit(new_value)
-
-    def update_config_illumination_intensity(self, new_value):
-        if self.is_switching_mode:
-            return
-        self.live_configuration.illumination_intensity = new_value
-        self.liveController.microscope.config_repo.update_channel_setting(
-            self.objectiveStore.current_objective,
-            self.live_configuration.name,
-            "IlluminationIntensity",
-            new_value,
-            confocal_mode=self.liveController.is_confocal_mode(),
-        )
-        self.liveController.update_illumination()
-
-    def update_resolution_scaling(self, value):
-        self.streamHandler.set_display_resolution_scaling(value)
-        self.liveController.set_display_resolution_scaling(value)
-
-    def refresh_mode_list(self):
-        """Refresh the mode selection dropdown (only show enabled channels)"""
-        self.dropdown_modeSelection.blockSignals(True)
-        self.dropdown_modeSelection.clear()
-        first_config = None
-        for config in self.liveController.get_channels(self.objectiveStore.current_objective):
-            if not first_config:
-                first_config = config
-            self.dropdown_modeSelection.addItem(config.name)
-        self.dropdown_modeSelection.blockSignals(False)
-
-        if self.dropdown_modeSelection.count() > 0 and first_config:
-            self.update_ui_for_mode(first_config)
-            self.liveController.set_microscope_mode(first_config)
-
-    def on_trigger_mode_changed(self, index):
-        # Get the actual value using user data
-        actual_value = self.dropdown_triggerMode.itemData(index)
-        print(f"Selected: {self.dropdown_triggerMode.currentText()} (actual value: {actual_value})")
-
-    def addNapariGrayclipColormap(self):
-        if hasattr(napari.utils.colormaps.AVAILABLE_COLORMAPS, "grayclip"):
-            return
-        grayclip = []
-        for i in range(255):
-            grayclip.append([i / 255, i / 255, i / 255])
-        grayclip.append([1, 0, 0])
-        napari.utils.colormaps.AVAILABLE_COLORMAPS["grayclip"] = napari.utils.Colormap(name="grayclip", colors=grayclip)
-
-    def initLiveLayer(self, channel, image_height, image_width, image_dtype, rgb=False):
-        """Initializes the full canvas for each channel based on the acquisition parameters."""
-        self.viewer.layers.clear()
-        self.image_width = image_width
-        self.image_height = image_height
-        if self.dtype != np.dtype(image_dtype):
-
-            self.contrastManager.scale_contrast_limits(
-                np.dtype(image_dtype)
-            )  # Fix This to scale existing contrast limits to new dtype range
-            self.dtype = image_dtype
-
-        self.channels.add(channel)
-        self.live_configuration.name = channel
-
-        if rgb:
-            canvas = np.zeros((image_height, image_width, 3), dtype=self.dtype)
-        else:
-            canvas = np.zeros((image_height, image_width), dtype=self.dtype)
-        limits = self.getContrastLimits(self.dtype)
-        layer = self.viewer.add_image(
-            canvas,
-            name="Live View",
-            visible=True,
-            rgb=rgb,
-            colormap="grayclip",
-            contrast_limits=limits,
-            blending="additive",
-        )
-        layer.contrast_limits = self.contrastManager.get_limits(self.live_configuration.name, self.dtype)
-        layer.mouse_double_click_callbacks.append(self.onDoubleClick)
-        layer.events.contrast_limits.connect(self.signalContrastLimits)
-        self.updateHistogram(layer)
-
-        if not self.init_scale:
-            self.resetView()
-            self.previous_scale = self.viewer.camera.zoom
-            self.previous_center = self.viewer.camera.center
-        else:
-            self.viewer.camera.zoom = self.previous_scale
-            self.viewer.camera.center = self.previous_center
-
-    def updateLiveLayer(self, image, from_autofocus=False):
-        """Updates the canvas with the new image data."""
-        if self.dtype != np.dtype(image.dtype):
-            self.contrastManager.scale_contrast_limits(np.dtype(image.dtype))
-            self.dtype = np.dtype(image.dtype)
-            self.init_live = False
-            self.init_live_rgb = False
-
-        if not self.live_configuration.name:
-            self.live_configuration.name = self.liveController.currentConfiguration.name
-        rgb = len(image.shape) >= 3
-
-        if not rgb and not self.init_live or "Live View" not in self.viewer.layers:
-            self.initLiveLayer(self.live_configuration.name, image.shape[0], image.shape[1], image.dtype, rgb)
-            self.init_live = True
-            self.init_live_rgb = False
-            print("init live")
-        elif rgb and not self.init_live_rgb:
-            self.initLiveLayer(self.live_configuration.name, image.shape[0], image.shape[1], image.dtype, rgb)
-            self.init_live_rgb = True
-            self.init_live = False
-            print("init live rgb")
-
-        layer = self.viewer.layers["Live View"]
-        layer.data = image
-        layer.contrast_limits = self.contrastManager.get_limits(self.live_configuration.name)
-        self.updateHistogram(layer)
-
-        if from_autofocus:
-            # save viewer scale
-            if not self.last_was_autofocus:
-                self.previous_scale = self.viewer.camera.zoom
-                self.previous_center = self.viewer.camera.center
-            # resize to cropped view
-            self.resetView()
-            self.last_was_autofocus = True
-        else:
-            if not self.init_scale:
-                # init viewer scale
-                self.resetView()
-                self.previous_scale = self.viewer.camera.zoom
-                self.previous_center = self.viewer.camera.center
-                self.init_scale = True
-            elif self.last_was_autofocus:
-                # return to to original view
-                self.viewer.camera.zoom = self.previous_scale
-                self.viewer.camera.center = self.previous_center
-            # save viewer scale
-            self.previous_scale = self.viewer.camera.zoom
-            self.previous_center = self.viewer.camera.center
-            self.last_was_autofocus = False
-        layer.refresh()
-
-    def onDoubleClick(self, layer, event):
-        """Handle double-click events and emit centered coordinates if within the data range."""
-        coords = layer.world_to_data(event.position)
-        layer_shape = layer.data.shape[0:2] if len(layer.data.shape) >= 3 else layer.data.shape
-
-        if coords is not None and (0 <= int(coords[-1]) < layer_shape[-1] and (0 <= int(coords[-2]) < layer_shape[-2])):
-            x_centered = int(coords[-1] - layer_shape[-1] / 2)
-            y_centered = int(coords[-2] - layer_shape[-2] / 2)
-            # Emit the centered coordinates and dimensions of the layer's data array
-            self.signal_coordinates_clicked.emit(x_centered, y_centered, layer_shape[-1], layer_shape[-2])
-
-    def set_live_configuration(self, live_configuration):
-        self.live_configuration = live_configuration
-
-    def updateContrastLimits(self, channel, min_val, max_val):
-        self.contrastManager.update_limits(channel, min_val, max_val)
-        if "Live View" in self.viewer.layers:
-            self.viewer.layers["Live View"].contrast_limits = (min_val, max_val)
-
-    def signalContrastLimits(self, event):
-        layer = event.source
-        min_val, max_val = map(float, layer.contrast_limits)
-        self.contrastManager.update_limits(self.live_configuration.name, min_val, max_val)
-
-    def getContrastLimits(self, dtype):
-        return self.contrastManager.get_default_limits()
-
-    def resetView(self):
-        self.viewer.reset_view()
-
-    def activate(self):
-        print("ACTIVATING NAPARI LIVE WIDGET")
-        self.viewer.window.activate()
+            if ref_image.ndim == 3:
+                ref_image = cv2.cvtColor(ref_image, cv2.COLOR_BGR2RGB)  # live frames are RGB
+
+        self._reference_image = ref_image
+        self._display.show_alignment_reference(ref_image)
+
+    def _hide_reference(self):
+        self._reference_image = None
+        self._display.hide_alignment_reference()
 
 
 class NapariMultiChannelWidget(QWidget):
@@ -12365,7 +10949,7 @@ class NapariMultiChannelWidget(QWidget):
         else:
             self.viewer.layers.clear()
             self.acquisition_initialized = True
-            if self.dtype != np.dtype(image_dtype) and not USE_NAPARI_FOR_LIVE_VIEW:
+            if self.dtype != np.dtype(image_dtype):
                 self.contrastManager.scale_contrast_limits(image_dtype)
 
         self.image_width = image_width
@@ -13621,17 +12205,12 @@ class WellplateCalibration(QDialog):
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
 
     def viewerClicked(self, x, y, width, height):
-        pixel_size_um = (
-            self.navigationViewer.objectiveStore.get_pixel_size_factor()
-            * self.liveController.microscope.camera.get_pixel_size_binned_um()
-        )
+        pixel_size_um = self.liveController.microscope.get_image_pixel_size_um()
+        if pixel_size_um is None:
+            self._log.warning("Calibration click: pixel size unavailable, ignoring click")
+            return
 
-        pixel_sign_x = 1
-        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-
-        delta_x = pixel_sign_x * pixel_size_um * x / 1000.0
-        delta_y = pixel_sign_y * pixel_size_um * y / 1000.0
-
+        delta_x, delta_y = utils.image_delta_to_stage_delta_mm(x, y, pixel_size_um)
         self.stage.move_x(delta_x)
         self.stage.move_y(delta_y)
 

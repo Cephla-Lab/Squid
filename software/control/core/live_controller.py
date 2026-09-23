@@ -59,8 +59,6 @@ class LiveController(QObject):
         self.counter = 0
         self.timestamp_last = 0
 
-        self.display_resolution_scaling = 1
-
         self.enable_channel_auto_filter_switching: bool = True
 
         # Confocal mode state - when True, use confocal_override from acquisition configs
@@ -424,6 +422,14 @@ class LiveController(QObject):
             self._log.debug("snap() called while live is running, ignoring.")
             return False
 
+        # Same wedge-avoidance as trigger_acquisition(): never fire a trigger while
+        # the MCU is mid-command. A stage move finishes well within this wait.
+        try:
+            self.microscope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+        except TimeoutError:
+            self._log.warning("Microcontroller still busy; not snapping.")
+            return False
+
         self._check_laser_engine_warn_only()
 
         was_streaming = self.camera.get_is_streaming()
@@ -484,18 +490,26 @@ class LiveController(QObject):
         return self.is_live or self._is_snapping
 
     def _trigger_acquisition_timer_fn(self):
-        if self.trigger_acquisition():
-            if self.is_live:
-                self._start_new_timer()
+        triggered = self.trigger_acquisition()
+        if not self.is_live:
+            return
+        if triggered or self.microscope.low_level_drivers.microcontroller.is_busy():
+            # A busy MCU (a stage move) resolves on a 100 ms-to-seconds scale, and every
+            # re-check spins up a fresh Timer thread: poll at frame cadence, not every 10 ms.
+            self._start_new_timer()
         else:
-            if self.is_live:
-                # It failed, try again real soon
-                # Use a short period so we get back here fast and check again.
-                re_check_period_ms = 10
-                self._start_new_timer(maybe_custom_interval_ms=re_check_period_ms)
+            self._start_new_timer(maybe_custom_interval_ms=10)  # camera not ready yet: retry soon
 
     # software trigger related
     def trigger_acquisition(self):
+        if self.microscope.low_level_drivers.microcontroller.is_busy():
+            # Don't trigger while the MCU executes a command (usually a stage move):
+            # triggering mid-command corrupts the firmware's single command-status
+            # slot and wedges it - the firmware keeps executing commands but reports
+            # IN_PROGRESS for everything until the trigger stream stops for a few
+            # seconds. Callers must treat False as "not triggered"; the live trigger
+            # timer re-checks on its own schedule, so live resumes after the move.
+            return False
         if not self.camera.get_ready_for_trigger():
             # TODO(imo): Before, send_trigger would pass silently for this case.  Now
             # we do the same here.  Should this warn?  I didn't add a warning because it seems like
@@ -635,6 +649,3 @@ class LiveController(QObject):
         if self.fps_trigger <= 5:
             if self.control_illumination and self.illumination_on == True:
                 self.turn_off_illumination()
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100

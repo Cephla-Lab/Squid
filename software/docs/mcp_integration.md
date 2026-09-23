@@ -152,7 +152,7 @@ The `python_exec` command is disabled by default for security. To enable it:
 | `get_acquisition_status` | - | Check acquisition progress |
 | `abort_acquisition` | - | Stop running acquisition |
 
-> **Note:** `run_acquisition_from_yaml` only supports wellplate mode. For scripted automation, see [Automation](automation.md).
+> For scripted automation, see [Automation](automation.md).
 
 ### Performance
 

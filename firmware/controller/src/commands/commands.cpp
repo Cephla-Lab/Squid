@@ -1,5 +1,9 @@
 #include "commands.h"
 
+#include "../init.h"                     // report_driver_probe()
+#include "../tmc/drivers/driver_probe.h"
+#include "../tmc/drivers/stepper_driver.h"
+
 CommandCallback cmd_map[256] = {0};
 
 void init_callbacks()
@@ -52,6 +56,9 @@ void init_callbacks()
     cmd_map[SET_TRIGGER_MODE] = &callback_set_trigger_mode;
 
     cmd_map[INITIALIZE] = &callback_initialize;
+    cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
+    cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
+    cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -145,8 +152,92 @@ void callback_enable_stage_pid()
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;  // Invalid axis
 
+    /*
+      This is an actuator path, not a configuration write. PID_BPG0 sets
+      ENC_IN_CONF.REGULATION_MODUS, which hands the axis to the TMC4361A's
+      closed loop: from that write on the controller drives the motor
+      continuously to null the encoder error, with no further command from the
+      host. On an axis the probe could not identify, the current scaling — and
+      therefore the torque — is unknown, so this is gated exactly like a move.
+
+      It reports the rejection rather than dropping it silently: ENABLE_STAGE_PID
+      is a host command, so the host is owed an answer. That is the same split
+      the rest of the branch makes — host commands report through
+      axis_driver_ready, the joystick and focus-wheel paths in operations.cpp
+      reject silently because there is no command to attribute a failure to.
+
+      Note this also gates the PID_BPG0 re-enables in finalize_homing_* : they
+      fire only when stage_PID_enabled[axis] is set, and this is the only writer
+      that sets it.
+    */
+    if (!axis_driver_ready(axis)) return;
+
     tmc4361A_set_PID(&tmc4361[axis], PID_BPG0);
     stage_PID_enabled[axis] = 1;
+}
+
+// SET_ENCODER_REPORTING (44): [2] protocol axis, [3] ENCODER_REPORT_* mode.
+// Chooses which axis's encoder the status packet carries and how; see
+// send_position_update(). Reporting is a read-only diagnostic: it moves nothing.
+// The encoder must have been set up with CONFIGURE_STAGE_PID (scale and direction;
+// that command engages nothing) for the values to be in microsteps.
+void callback_set_encoder_reporting()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    uint8_t mode = buffer_rx[3];
+
+    // Leaving mode 2 must hand the position field back to XACTUAL for every axis.
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+
+    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        encoder_report_axis = 0xFF;
+        encoder_report_mode = ENCODER_REPORT_OFF;
+        return;
+    }
+    encoder_report_axis = axis;
+    encoder_report_mode = mode;
+    if (mode == ENCODER_REPORT_ENC_AS_POSITION)
+    {
+        if (axis == x) X_use_encoder = true;
+        else if (axis == y) Y_use_encoder = true;
+        else if (axis == z) Z_use_encoder = true;
+    }
+}
+
+// SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
+// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
+// INITIALIZE (the host sets it once with the other motion parameters), but
+// INITFILTERWHEEL re-initialises the wheel's motion chip and with it the S-shape: set the
+// profile AFTER the wheel has been initialised. RESET
+// returns every axis to the S-shape, applied by the next ramp setup.
+void callback_set_ramp_profile()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    uint8_t profile = buffer_rx[3];
+    if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
+    tmc4361[axis].ramp_profile = profile;
+    tmc4361A_sRampInit(&tmc4361[axis]);
+}
+
+// SET_COMPLETION_WINDOW (49): [2] protocol axis, [3..4] window in 0.1 um of travel. While a
+// move is inside the window the ramp is still finishing, but the host is told COMPLETED so an
+// exposure can start while the last part is travelled. Meant for the filter wheels, where the
+// filter's clear aperture covers the field for the last few degrees of a slot change (their
+// "mm" is one revolution, so 1e-4 rev = 0.036 deg per unit). 0 (default) = complete only at the
+// exact target with the ramp stopped, as before. Homing is not affected, and an axis whose
+// closed loop is enabled ignores the window (see within_completion_window()).
+void callback_set_completion_window()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis == 0xFF) return;
+    // Stored as received (0.1 um units), NOT as microsteps: the host changes an axis's microstepping with
+    // CONFIGURE_STEPPER_DRIVER whenever it likes, and a window converted here would silently become eight times
+    // wider when a wheel goes from 64 to 8 usteps/FS. within_completion_window() converts at the moment it checks.
+    completion_window_units[axis] = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
 }
 
 void callback_disable_stage_pid()
@@ -165,8 +256,38 @@ static void init_filterwheel_axis(uint8_t axis)
     pinMode(pin_TMC4361_CS[axis], OUTPUT);
     digitalWrite(pin_TMC4361_CS[axis], HIGH);
 
-    tmc4361A_tmc2660_config(&tmc4361[axis], (W_MOTOR_RMS_CURRENT_mA / 1000)*R_sense_w / 0.2298, W_MOTOR_I_HOLD, 1, 1, 1, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W);
-    tmc4361A_tmc2660_init(&tmc4361[axis], clk_Hz_TMC4361);
+    // Per-axis driver parameters, re-set on every run: tmc4361A_init() above
+    // zeroes r_sense, and a TMC2660 wheel asked for current with r_sense = 0
+    // encodes CS = 0, i.e. minimum current.
+    tmc4361[axis].r_sense = R_sense_w;
+    tmc4361[axis].current_range = CURRENT_RANGE_W;
+
+    // Probe EVERY time this runs, not only on the first INITFILTERWHEEL.
+    // tmc4361A_init() on the first line of this function resets driver_type to
+    // DRIVER_UNKNOWN, so a cached boot-time verdict does not survive to here;
+    // skipping the probe would leave the wheel at DRIVER_UNKNOWN and rejecting
+    // every move. This is also the design's second gate path: it re-probes an
+    // already-configured TMC2660 (SDOFF = 1, RDSEL = 2), which cold boot never
+    // exercises.
+    tmc_driver_probe(&tmc4361[axis]);
+    tmc_driver_init(&tmc4361[axis], clk_Hz_TMC4361);
+#ifdef TMC_PROBE_REPORT
+    // BENCH BUILDS ONLY. ASCII on the status link: the host accepts any 24-byte
+    // window ending in a zero byte and reports a garbage stage position as real
+    // (see report_driver_probe() in init.cpp). Design section 10 step 0 needs the
+    // raw word from THIS path too: it re-probes an already-configured TMC2660 at
+    // SDOFF = 1 / RDSEL = 2, where SG and SE are both zero at standstill.
+    report_driver_probe(axis);
+#endif
+    // False means the driver refused the current: unencodable for this part and
+    // R_sense, or no identified driver on this axis at all. Either way the wheel
+    // is not at the current the globals claim, so the host has to hear about it.
+    // Only mcu_cmd_execution_status, never mcu_cmd_execution_in_progress -
+    // INITFILTERWHEEL never claims in_progress, and clearing it here would
+    // unwind an unrelated motion still running on another axis. Same contract as
+    // report_move_error() in stage_commands.cpp.
+    if (!tmc4361A_motor_config(&tmc4361[axis], W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD, SCREW_PITCH_W_MM, FULLSTEPS_PER_REV_W, MICROSTEPPING_W))
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
     tmc4361A_enableLimitSwitch(&tmc4361[axis], lft_sw_pol[axis], LEFT_SW, false);
 
     // Calculate velocity and acceleration (ensures values are set for both W and W2)
@@ -205,10 +326,10 @@ void callback_set_axis_disable_enable()
 
     int status = buffer_rx[3];
     if (status == 0) {
-        tmc4361A_tmc2660_disable_driver(&tmc4361[axis]);
+        tmc_driver_enable(&tmc4361[axis], false);
     }
     else {
-        tmc4361A_tmc2660_enable_driver(&tmc4361[axis]);
+        tmc_driver_enable(&tmc4361[axis], true);
     }
 }
 
@@ -223,9 +344,62 @@ void callback_initialize()
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
     first_packet_from_joystick_panel = true;
-    // initilize TMC4361 and TMC2660
+    // Re-initialise the TMC4361A and its power stage on each stage axis.
+    //
+    // This path does NOT call tmc4361A_init(), so driver_type still holds the
+    // verdict the boot probe cached — and an axis the boot probe could not
+    // identify would otherwise stay move-rejecting until someone power-cycles
+    // the instrument, since W/W2 are the only axes with a runtime re-probe.
+    // INITIALIZE is an explicit re-initialisation command, so it is the right
+    // place to give the operator a second look at a dead axis.
+    //
+    // Only DRIVER_UNKNOWN axes are re-probed. An axis that WAS identified keeps
+    // its verdict untouched, which matters for two reasons. It preserves M5 —
+    // a probed TMC2660 sees exactly master's SPI traffic on this path, with no
+    // probe datagrams inserted ahead of the init. And it keeps the healthy
+    // axes away from a read the design has not yet closed: re-probing an
+    // already-configured TMC2660 reads it at SDOFF = 1 / RDSEL = 2, where SG
+    // and SE are both zero at standstill, and whether that can come back
+    // all-zeros is exactly the open question design section 10 step 0 goes to
+    // the bench to answer (see TMC4361A.h on driver_probe_raw). If it can, an
+    // unconditional re-probe here would let INITIALIZE turn a working stage
+    // axis into a rejected one — the opposite of the recovery this is for.
     for (int i = 0; i < STAGE_AXES; i++)
-        tmc4361A_tmc2660_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+    {
+        if (tmc4361[i].driver_type == DRIVER_UNKNOWN)
+            tmc_driver_probe(&tmc4361[i]);
+        tmc_driver_init(&tmc4361[i], clk_Hz_TMC4361); // set up ICs with SPI control and other parameters
+    }
+
+    // Re-apply run current. Master got this for free: tmc4361A_tmc2660_init()
+    // ended in tmc4361A_cScaleInit(), which rewrote SGCSCONF from the retained
+    // cscaleParam. tmc2240_driver_init() deliberately does the opposite - it
+    // seeds IHOLD_IRUN to zero so a 2240 is never energised at an unknown
+    // current - and leaves the real value to the caller, so a 2240 axis that
+    // was only INITIALIZEd would sit at IRUN = 0 and produce no torque. The
+    // host does follow INITIALIZE with cmd 21 today, but that is its ordering,
+    // not an invariant of this firmware.
+    //
+    // On a TMC2660 axis this repeats the cScaleInit the init above just did,
+    // from the same struct fields, so the registers land on the same values.
+    //
+    // All three run before the verdict is read - one dead axis must not stop
+    // the other two being re-energised. False means the driver refused the
+    // current: unencodable for this part and R_sense, or no identified driver
+    // on this axis at all (that one is now reachable here, because the boot
+    // probe's failures are exactly what the re-probe above is for). The stage
+    // is then not at the current the globals claim, and INITIALIZE has one
+    // status for the whole command, so any refusal fails it.
+    //
+    // Only mcu_cmd_execution_status, never mcu_cmd_execution_in_progress -
+    // INITIALIZE never claims in_progress, and clearing it here would unwind an
+    // unrelated motion still running on another axis. Same contract as
+    // report_move_error() in stage_commands.cpp.
+    bool x_current_ok = tmc_driver_set_current(&tmc4361[x], X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD);
+    bool y_current_ok = tmc_driver_set_current(&tmc4361[y], Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD);
+    bool z_current_ok = tmc_driver_set_current(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD);
+    if (!(x_current_ok && y_current_ok && z_current_ok))
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 
     // enable limit switch reading
     tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);
@@ -266,6 +440,14 @@ void callback_initialize()
 
     // reset trigger mode to normal
     trigger_mode = 0;
+
+    // Encoder reporting is a host-session diagnostic: a freshly initialised
+    // controller sends the shipping packet until a host asks otherwise.
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
 }
 
 void callback_reset()
@@ -294,4 +476,17 @@ void callback_reset()
     is_preparing_for_homing_W2 = false;
     cmd_id = 0;
     trigger_mode = 0;
+
+    // Firmware 1.6 settings go back to their defaults: a fresh host must see the
+    // shipping packet and the 1.5 move behaviour until it asks otherwise.
+    encoder_report_axis = 0xFF;
+    encoder_report_mode = ENCODER_REPORT_OFF;
+    X_use_encoder = false;
+    Y_use_encoder = false;
+    Z_use_encoder = false;
+    for (uint8_t i = 0; i < TOTAL_AXES; i++)
+    {
+        completion_window_units[i] = 0;
+        tmc4361[i].ramp_profile = RAMP_PROFILE_SSHAPE;   // written by the next tmc4361A_sRampInit()
+    }
 }

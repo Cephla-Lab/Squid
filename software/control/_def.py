@@ -204,6 +204,10 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    # Firmware >= 1.6 only; the host never sends these to older firmware (callers gate on the version).
+    SET_ENCODER_REPORTING = 44  # One axis's encoder in the status packet (see ENCODER_REPORTING)
+    SET_RAMP_PROFILE = 47  # S-shaped or trapezoidal ramp per axis (see RAMP_PROFILE)
+    SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -219,6 +223,36 @@ class CMD_SET2:
 
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
+
+
+class ENCODER_REPORTING:
+    """Modes for CMD_SET.SET_ENCODER_REPORTING (firmware >= 1.6).
+
+    OFF: shipping packet. ENC_IN_THETA: the status packet's theta field (bytes 14-17) carries the
+    selected axis's ENC_POS in microsteps, byte 19 carries ENC_FLAG bits and bytes 20-21 the clipped
+    int16 ENC_POS - XACTUAL (positive = encoder ahead of the step counter). ENC_AS_POSITION: as
+    ENC_IN_THETA, and the axis's own position field carries ENC_POS instead of XACTUAL (X/Y/Z only).
+    The filter wheels have no position field in the packet, so this is the only way to see one.
+    """
+
+    OFF = 0
+    ENC_IN_THETA = 1
+    ENC_AS_POSITION = 2
+
+
+class ENC_FLAG:
+    """Bit positions in status byte 19, valid only while encoder reporting is on."""
+
+    REPORTING = 0
+    PID_ENABLED = 1
+    AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
+
+
+class RAMP_PROFILE:
+    """Values for CMD_SET.SET_RAMP_PROFILE (firmware >= 1.6). S-shape is the firmware default."""
+
+    TRAPEZOID = 1
+    SSHAPE = 2
 
 
 class HOME_OR_ZERO:
@@ -856,6 +890,7 @@ SIMULATE_SPINNING_DISK = False  # XLight/Dragonfly
 SIMULATE_FILTER_WHEEL = False
 SIMULATE_OBJECTIVE_CHANGER = False
 SIMULATE_LASER_AF_CAMERA = False  # Laser autofocus camera
+SIMULATE_FLUIDICS = False  # Fluidics system (syringe pump, valves, TEC, flow sensors); built on Initialize
 
 # Acquisition Backpressure Settings
 # Prevents RAM exhaustion when acquisition speed exceeds disk write speed
@@ -1070,6 +1105,18 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
+# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven).
+#   "auto"  on when the controller runs firmware >= 1.6 (where crossing the flag was verified), off below
+#   True    on from firmware 1.4: set it in the machine ini after checking that a 1 -> 8 move completes
+#   False   always the flag-free arc
+SQUID_FILTERWHEEL_WRAP = "auto"
+# > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the last
+# degrees are still travelled, so the exposure can start earlier (firmware >= 1.6, SET_COMPLETION_WINDOW; ignored
+# with a warning on older firmware). 0 = complete at the exact slot with the wheel stopped. Size it from the optics:
+# (filter clear aperture - image field diameter) / 2 / filter pitch radius, in degrees, minus margin. 32 mm filters
+# on a 22 mm field and a ~46 mm pitch radius allow about 6 deg (5 was used on the bench: 58 instead of 78 ms per
+# slot, wheel 2.7 deg from the slot when COMPLETED arrived); 25 mm filters allow about 1.9 deg.
+SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG = 0.0
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)
@@ -1481,11 +1528,31 @@ OBJECTIVE_TURRET_SLAVE_ID = 1
 OBJECTIVE_TURRET_BAUDRATE = 115200
 # Objective name -> turret slot index (1..4). Override per machine in .ini.
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
-# Global pulse offset added to every turret slot target, shifting the whole slot
-# frame relative to the homing switch (pulse 0). Corrects units whose limit switch
-# does not sit exactly at slot 1. 0 on all normal units; set per machine (may be
-# negative).
+# Pulse offset of slot 1 from the homing zero (the origin sensor's trigger edge);
+# the other slots follow at exactly 90-degree spacing. 0 on all normal units; set
+# per machine (may be negative). Software homing (2026-07) moved the zero slightly
+# vs the old driver homing — re-measure after upgrading a machine with an old value.
 OBJECTIVE_TURRET_OFFSET_PULSES = 0
+# Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
+# slot change first overshoots below the target by this angle and then approaches
+# it from below, so the final approach direction is always the same and gear
+# backlash cancels out.
+OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
+# Set True for turret motor models wired with the opposite phase order (same
+# commands spin the other way). The controller then negates move targets, jog
+# signs and the homing-sweep direction bit, and flips position readbacks, so
+# slot mapping, offset and backlash logic keep working in the same logical
+# coordinate system — OBJECTIVE_TURRET_OFFSET_PULSES is always logical-coordinate
+# pulses. After toggling on an existing machine, re-home and re-measure the
+# offset: the physical zero moves with the sweep direction.
+OBJECTIVE_TURRET_DIRECTION_INVERTED = False
+# Set True for objective changers whose origin-switch sensor triggers on the
+# opposite logic level (port of SingleMotor's "原点开关极性取反" option, 2026-08-12).
+# Software homing / distance search then invert the DI1 trigger verdict, so the
+# homing direction and the sweep-backoff-fine-search state machine stay unchanged.
+# Toggling on an existing machine requires re-homing: the sensor edge found by
+# fine search (and thus the physical zero) sits on the other side of the window.
+OBJECTIVE_TURRET_DI_INVERT = False
 
 
 def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> None:
@@ -1497,7 +1564,7 @@ def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> Non
 
 # fluidics
 RUN_FLUIDICS = False
-FLUIDICS_CONFIG_PATH = "./merfish_config/MERFISH_config.json"
+FLUIDICS_CONFIG_PATH = "machine_configs/fluidics_config.yaml"  # the library's FluidicsConfig YAML
 
 USE_TEMPLATE_MULTIPOINT = False
 
@@ -1766,5 +1833,8 @@ if CACHED_CONFIG_FILE_PATH and os.path.exists(CACHED_CONFIG_FILE_PATH):
             if _sim_config.has_option("SIMULATION", "simulate_laser_af_camera"):
                 SIMULATE_LASER_AF_CAMERA = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_laser_af_camera"))
                 log.info(f"Loaded SIMULATE_LASER_AF_CAMERA={SIMULATE_LASER_AF_CAMERA} from config")
+            if _sim_config.has_option("SIMULATION", "simulate_fluidics"):
+                SIMULATE_FLUIDICS = _parse_sim_setting(_sim_config.get("SIMULATION", "simulate_fluidics"))
+                log.info(f"Loaded SIMULATE_FLUIDICS={SIMULATE_FLUIDICS} from config")
     except Exception as e:
         log.warning(f"Failed to load SIMULATION settings from config: {e}")

@@ -61,9 +61,9 @@ class ObjectiveChangerProtocol(Protocol):
 
 
 if control._def.RUN_FLUIDICS:
-    from control.fluidics import Fluidics
+    from control.fluidics_system import FluidicsService
 else:
-    Fluidics = None
+    FluidicsService = None
 
 if control._def.ENABLE_NL5:
     import control.NL5 as NL5
@@ -93,6 +93,23 @@ def _should_simulate(global_simulated: bool, component_override: bool) -> bool:
     return bool(component_override)
 
 
+def _home_filter_wheels(wheel, index):
+    """Home one wheel (or all, index None) without letting a failure abort the start-up: the wheel controller
+    marks a wheel whose home failed as position-unknown, so it is homed again before its next use, and the
+    operator can re-home from the GUI. The rest of the microscope comes up regardless."""
+    try:
+        if index is None:
+            wheel.home()  # the call shape every controller has always seen
+        else:
+            wheel.home(index)
+    except Exception:
+        _log.error(
+            "Filter wheel homing failed during startup; continuing with the filter wheel position unknown. "
+            "Re-home from the GUI before relying on filter selection.",
+            exc_info=True,
+        )
+
+
 class MicroscopeAddons:
     @staticmethod
     def build_from_global_config(
@@ -103,6 +120,7 @@ class MicroscopeAddons:
         filter_wheel_simulated = _should_simulate(simulated, control._def.SIMULATE_FILTER_WHEEL)
         objective_changer_simulated = _should_simulate(simulated, control._def.SIMULATE_OBJECTIVE_CHANGER)
         laser_af_camera_simulated = _should_simulate(simulated, control._def.SIMULATE_LASER_AF_CAMERA)
+        fluidics_simulated = _should_simulate(simulated, control._def.SIMULATE_FLUIDICS)
 
         xlight = None
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL and not control._def.USE_DRAGONFLY:
@@ -158,6 +176,9 @@ class MicroscopeAddons:
                 baudrate=control._def.OBJECTIVE_TURRET_BAUDRATE,
                 positions=control._def.OBJECTIVE_TURRET_POSITIONS,
                 offset_pulses=control._def.OBJECTIVE_TURRET_OFFSET_PULSES,
+                backlash_deg=control._def.OBJECTIVE_TURRET_BACKLASH_DEG,
+                direction_inverted=control._def.OBJECTIVE_TURRET_DIRECTION_INVERTED,
+                di_invert=control._def.OBJECTIVE_TURRET_DI_INVERT,
                 stage=stage,
             )
             objective_changer = (
@@ -174,7 +195,11 @@ class MicroscopeAddons:
 
         fluidics = None
         if control._def.RUN_FLUIDICS:
-            fluidics = Fluidics(config_path=control._def.FLUIDICS_CONFIG_PATH, simulation=simulated)
+            # Uninitialized on purpose: the Fluidics tab's Initialize button loads the config and brings the
+            # system up (blocking, off the GUI thread). See control/fluidics_system.py.
+            fluidics = FluidicsService(
+                default_config_path=control._def.FLUIDICS_CONFIG_PATH, simulated=fluidics_simulated
+            )
 
         piezo_stage = None
         if control._def.HAS_OBJECTIVE_PIEZO:
@@ -231,7 +256,7 @@ class MicroscopeAddons:
         emission_filter_wheel: Optional[AbstractFilterWheelController] = None,
         objective_changer: Optional[ObjectiveChangerProtocol] = None,
         camera_focus: Optional[AbstractCamera] = None,
-        fluidics: Optional[Fluidics] = None,
+        fluidics: Optional["FluidicsService"] = None,
         piezo_stage: Optional[PiezoStage] = None,
         sci_microscopy_led_array: Optional[SciMicroscopyLEDArray] = None,
         squid_laser_engine: Optional["squid_laser_engine.SquidLaserEngineBase"] = None,
@@ -243,7 +268,7 @@ class MicroscopeAddons:
         self.emission_filter_wheel = emission_filter_wheel
         self.objective_changer = objective_changer
         self.camera_focus: Optional[AbstractCamera] = camera_focus
-        self.fluidics = fluidics
+        self.fluidics: Optional["FluidicsService"] = fluidics
         self.piezo_stage = piezo_stage
         self.sci_microscopy_led_array = sci_microscopy_led_array
         self.squid_laser_engine = squid_laser_engine
@@ -258,22 +283,16 @@ class MicroscopeAddons:
         if self.emission_filter_wheel:
             fw_config = squid.config.get_filter_wheel_config()
             self.emission_filter_wheel.initialize(fw_config.indices)
+            # A restart skips homing so the system stays on the same channel. That holds per wheel, for a wheel
+            # whose position is known - read back from the hardware, or restored from the previous process's
+            # record. A wheel that cannot say where it is gets homed (slot 1 for certain beats an unknown slot),
+            # and ONLY that wheel: homing the others would throw away the channel they were restored on.
             if not skip_init:
-                try:
-                    self.emission_filter_wheel.home()
-                except Exception:
-                    # A filter-wheel homing failure must not brick the whole
-                    # microscope: the wheel controller leaves its tracked
-                    # position unchanged (and possibly stale) on failure, so
-                    # treat the position as unknown, come up anyway, and let the
-                    # operator re-home from the GUI rather than aborting startup
-                    # before the window even opens.
-                    _log.error(
-                        "Filter wheel homing failed during startup; continuing with the "
-                        "filter wheel position unknown. Re-home from the GUI before relying "
-                        "on filter selection.",
-                        exc_info=True,
-                    )
+                _home_filter_wheels(self.emission_filter_wheel, None)  # every configured wheel, as always
+            else:
+                for wheel_index in fw_config.indices:
+                    if not self.emission_filter_wheel.position_is_known(wheel_index):
+                        _home_filter_wheels(self.emission_filter_wheel, wheel_index)
         if self.piezo_stage and not skip_init:
             self.piezo_stage.home()
         if self.squid_laser_engine:
@@ -1099,6 +1118,12 @@ class Microscope:
                 self.addons.squid_laser_engine.close()
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
+
+        if self.addons.fluidics is not None:
+            try:
+                self.addons.fluidics.close()
+            except Exception as e:
+                self._log.warning(f"Error closing fluidics: {e}")
 
         try:
             self.camera.close()

@@ -77,6 +77,31 @@ class AbstractFilterWheelController(ABC):
         """Home the filter wheel with the given index. If index is None, home all filter wheels."""
         pass
 
+    def position_is_known(self, wheel_id: Optional[int] = None) -> bool:
+        """False when the controller cannot vouch for where a wheel is (with no argument: any of its wheels).
+        Controllers that read their position back from the hardware keep this default; one that only tracks its
+        own commands (the Squid wheel, which has no position readback) overrides it, and a wheel it answers False
+        for is homed before use."""
+        return True
+
+    def next_position(self, wheel_id: int = 1):
+        """One slot forward. The default stops at the last slot; a rotary wheel that may cross its index flag
+        overrides this and continues at the first. The GUI's Next button calls this and then reads
+        get_filter_wheel_position() back, so the arithmetic lives in one place."""
+        self._step_to_neighbour(wheel_id, +1)
+
+    def previous_position(self, wheel_id: int = 1):
+        """One slot back; see next_position()."""
+        self._step_to_neighbour(wheel_id, -1)
+
+    def _step_to_neighbour(self, wheel_id: int, direction: int):
+        current = self.get_filter_wheel_position().get(wheel_id)
+        if current is None:
+            raise ValueError(f"Filter wheel index {wheel_id} not found")
+        target = current + direction
+        if 1 <= target <= self.get_filter_wheel_info(wheel_id).number_of_slots:
+            self.set_filter_wheel_position({wheel_id: target})
+
     @abstractmethod
     def set_filter_wheel_position(self, positions: Dict[int, int]):
         """
@@ -583,7 +608,8 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def get_available_pixel_formats(self) -> Sequence[squid.config.CameraPixelFormat]:
         """
-        Returns the list of pixel formats supported by the camera.
+        Returns the pixel formats available at the camera's current settings. Some cameras deliver a
+        different depth per binning or frame format, so re-query after set_binning / set_frame_format.
         """
         pass
 
@@ -788,14 +814,15 @@ class AbstractCamera(metaclass=abc.ABCMeta):
     @abc.abstractmethod
     def set_black_level(self, black_level: float):
         """
-        Sets the black level of captured images.
+        Sets the black level of captured images, in counts on the 8-bit scale (0-255) whatever the pixel
+        format; drivers convert to their SDK's units.
         """
         pass
 
     @abc.abstractmethod
     def get_black_level(self) -> float:
         """
-        Gets the black level set on the camera.
+        Gets the black level set on the camera, in counts on the 8-bit scale.
         """
         pass
 
@@ -895,13 +922,28 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         """
         pass
 
-    @abc.abstractmethod
     def get_ready_for_trigger(self) -> bool:
         """
         Returns true if the camera is ready for another trigger, false otherwise.  Calling
-        send_trigger when this is False will result in an exception from send_trigger,
-        unless a streaming-pausing settings change is in flight, in which case
-        send_trigger drops the trigger silently instead (see send_trigger).
+        send_trigger when this is False will result in an exception from send_trigger.
+
+        Never true while a streaming-pausing settings change is in flight (the operation holds
+        self._trigger_lock, see _pause_streaming): the driver's own check is not even consulted,
+        so it cannot race the reconfiguration with SDK calls from the trigger thread. Callers
+        such as LiveController skip the trigger and re-check.
+        """
+        if not self._trigger_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._get_ready_for_trigger_imp()
+        finally:
+            self._trigger_lock.release()
+
+    @abc.abstractmethod
+    def _get_ready_for_trigger_imp(self) -> bool:
+        """
+        Driver-specific part of get_ready_for_trigger, called with no settings change in flight:
+        typically "the previous trigger has been consumed (or timed out)".  Must not block.
         """
         pass
 

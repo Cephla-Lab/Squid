@@ -1,4 +1,4 @@
-"""Tests for HighContentScreeningGui's cached sensor mode restore.
+"""Tests for HighContentScreeningGui's cached camera settings restore.
 
 The gui-level helper is thin glue over CameraSettingsWidget.restore_sensor_mode, so it
 is exercised unbound with a real widget and simulated camera instead of constructing
@@ -94,3 +94,47 @@ class TestRestoreSensorMode:
 
         assert restored is True
         assert camera.get_sensor_mode() == "standard"
+
+
+class TestRestoreBinning:
+    def test_applies_binning_and_syncs_dropdown(self, qtbot):
+        camera = get_test_camera()
+        gui = _make_gui_stub(camera, qtbot)
+
+        restored = HighContentScreeningGui._restore_binning(gui, (2, 2))
+
+        assert restored
+        assert tuple(camera.get_binning()) == (2, 2)
+        assert gui.cameraSettingWidget.dropdown_binning.currentText() == "2x2"
+        assert gui.cameraSettingWidget.dropdown_pixelFormat.currentText() == camera.get_pixel_format().name
+
+    def test_unsupported_binning_is_rejected_and_camera_unchanged(self, qtbot):
+        camera = get_test_camera()
+        gui = _make_gui_stub(camera, qtbot)
+        before = tuple(camera.get_binning())
+
+        restored = HighContentScreeningGui._restore_binning(gui, (7, 7))
+
+        assert not restored
+        assert tuple(camera.get_binning()) == before
+
+
+class TestRestorePixelFormat:
+    def test_applies_format_and_shows_what_the_camera_delivers(self, qtbot):
+        camera = get_test_camera()
+        gui = _make_gui_stub(camera, qtbot)
+
+        restored = HighContentScreeningGui._restore_pixel_format(gui, "MONO8")
+
+        assert restored
+        assert camera.get_pixel_format().name == "MONO8"
+        assert gui.cameraSettingWidget.dropdown_pixelFormat.currentText() == "MONO8"
+
+    def test_unknown_or_empty_format_is_rejected(self, qtbot):
+        camera = get_test_camera()
+        gui = _make_gui_stub(camera, qtbot)
+        before = camera.get_pixel_format()
+
+        assert not HighContentScreeningGui._restore_pixel_format(gui, "BOGUS")
+        assert not HighContentScreeningGui._restore_pixel_format(gui, None)
+        assert camera.get_pixel_format() == before

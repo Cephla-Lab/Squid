@@ -104,9 +104,6 @@ if SUPPORT_LASER_AUTOFOCUS:
 if USE_JUPYTER_CONSOLE:
     from control.console import JupyterWidget
 
-if RUN_FLUIDICS:
-    from control.fluidics import Fluidics
-
 # Import the custom widget
 from control.custom_multipoint_widget import TemplateMultiPointWidget
 
@@ -239,7 +236,6 @@ class QtMultiPointController(MultiPointController, QObject):
         objective_store: ObjectiveStore,
         scan_coordinates: Optional[ScanCoordinates] = None,
         laser_autofocus_controller: Optional[LaserAutofocusController] = None,
-        fluidics: Optional[Any] = None,
         alignment_widget=None,
     ):
         MultiPointController.__init__(
@@ -603,6 +599,7 @@ class QtMultiPointController(MultiPointController, QObject):
 class HighContentScreeningGui(QMainWindow):
     fps_software_trigger = 100
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
+    FLUIDICS_TAB_NAME = "Fluidics"
     signal_performance_mode_changed = Signal(bool)
 
     def __init__(
@@ -633,7 +630,7 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.objective_changer: Optional[Any] = microscope.addons.objective_changer
         self.camera_focus: Optional[AbstractCamera] = microscope.addons.camera_focus
-        self.fluidics: Optional[Fluidics] = microscope.addons.fluidics
+        self.fluidics: Optional[Any] = microscope.addons.fluidics  # FluidicsService (uninitialized) or None
         self.piezo: Optional[PiezoStage] = microscope.addons.piezo_stage
 
         self.contrastManager: ContrastManager = microscope.contrast_manager
@@ -674,7 +671,7 @@ class HighContentScreeningGui(QMainWindow):
         self.is_live_scan_grid_on = False
         self.live_scan_grid_was_on = None
         self.performance_mode = False
-        self.napari_connections = {}
+        self.napari_connections = []
         self.well_selector_visible = False  # Add this line to track well selector visibility
 
         self.multipointController: QtMultiPointController = None
@@ -723,14 +720,11 @@ class HighContentScreeningGui(QMainWindow):
         self.waveformDisplay: Optional[widgets.WaveformDisplay] = None
         self.displacementMeasurementWidget: Optional[widgets.DisplacementMeasurementWidget] = None
         self.laserAutofocusControlWidget: Optional[widgets.LaserAutofocusControlWidget] = None
-        self.fluidicsWidget: Optional[widgets.FluidicsWidget] = None
         self.flexibleMultiPointWidget: Optional[widgets.FlexibleMultiPointWidget] = None
         self.wellplateMultiPointWidget: Optional[widgets.WellplateMultiPointWidget] = None
         self.templateMultiPointWidget: Optional[TemplateMultiPointWidget] = None
-        self.multiPointWithFluidicsWidget: Optional[widgets.MultiPointWithFluidicsWidget] = None
         self.sampleSettingsWidget: Optional[widgets.SampleSettingsWidget] = None
         self.trackingControlWidget: Optional[widgets.TrackingControllerWidget] = None
-        self.napariLiveWidget: Optional[widgets.NapariLiveWidget] = None
         self.alignmentWidget: Optional[widgets.AlignmentWidget] = None
         self.imageDisplayWindow: Optional[core.ImageDisplayWindow] = None
         self.imageDisplayWindow_focus: Optional[core.ImageDisplayWindow] = None
@@ -738,6 +732,10 @@ class HighContentScreeningGui(QMainWindow):
         self.zPlotWidget: Optional[widgets.SurfacePlotWidget] = None
         self.ramMonitorWidget: Optional[widgets.RAMMonitorWidget] = None
         self.backpressureMonitorWidget: Optional[widgets.BackpressureMonitorWidget] = None
+        self.fluidicsDisplayTab = None  # widgets_fluidics.FluidicsDisplayTab when RUN_FLUIDICS
+        self.fluidicsProtocolWidget = None  # widgets_fluidics.FluidicsProtocolWidget when RUN_FLUIDICS
+        self.qtImagingPort = None
+        self._fluidics_protocol_active = False
 
         self.recordTabWidget: QTabWidget = QTabWidget()
         self.cameraTabWidget: QTabWidget = QTabWidget()
@@ -834,6 +832,14 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
+        # Utils: per-instrument procedures that drive the hardware, not settings.
+        utils_menu = menubar.addMenu("Utils")
+        if USE_EMISSION_FILTER_WHEEL:
+            filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
+            filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
+            filter_wheel_tuning_action.triggered.connect(self.openFilterWheelTuning)
+            utils_menu.addAction(filter_wheel_tuning_action)
+
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
             self.namespace = {
@@ -892,7 +898,6 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             scan_coordinates=self.scanCoordinates,
             laser_autofocus_controller=self.laserAutofocusController,
-            fluidics=self.fluidics,
         )
 
     def setup_hardware(self):
@@ -947,7 +952,6 @@ class HighContentScreeningGui(QMainWindow):
             self.streamHandler,
             self.liveController,
             self.objectiveStore,
-            show_display_options=False,
             show_autolevel=True,
             autolevel=True,
         )
@@ -1012,7 +1016,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.liveController_focus_camera,
                 self.laserAutofocusController,
                 stretch=False,
-            )  # ,show_display_options=True)
+            )
             self.waveformDisplay = widgets.WaveformDisplay(N=1000, include_x=True, include_y=False)
             self.displacementMeasurementWidget = widgets.DisplacementMeasurementWidget(
                 self.displacementMeasurementController, self.waveformDisplay
@@ -1024,25 +1028,13 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.imageDisplayWindow_focus = core.ImageDisplayWindow(liveController=self.liveController)
 
-        if RUN_FLUIDICS:
-            self.fluidicsWidget = widgets.FluidicsWidget(self.fluidics)
-
-        self.imageDisplayTabs = QTabWidget(parent=self)
+        self.imageDisplayWindow = self._create_live_image_display()
         if self.live_only_mode:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
             self.imageDisplayTabs = self.imageDisplayWindow.widget
             self.unifiedMosaicWidget = None
         else:
+            self.imageDisplayTabs = QTabWidget(parent=self)
             self.setupImageDisplayTabs()
-
-        # Setup alignment widget if using napari for live view
-        if USE_NAPARI_FOR_LIVE_VIEW and self.napariLiveWidget is not None:
             self._setup_alignment_widget()
 
         self.flexibleMultiPointWidget = widgets.FlexibleMultiPointWidget(
@@ -1075,14 +1067,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.scanCoordinates,
                 self.focusMapWidget,
             )
-        self.multiPointWithFluidicsWidget = widgets.MultiPointWithFluidicsWidget(
-            self.stage,
-            self.navigationViewer,
-            self.multipointController,
-            self.objectiveStore,
-            self.scanCoordinates,
-            self.unifiedMosaicWidget,
-        )
         self.sampleSettingsWidget = widgets.SampleSettingsWidget(self.objectivesWidget, self.wellplateFormatWidget)
 
         if ENABLE_TRACKING:
@@ -1091,6 +1075,9 @@ class HighContentScreeningGui(QMainWindow):
                 self.objectiveStore,
                 show_configurations=TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS,
             )
+
+        if self.fluidics is not None:
+            self._setup_fluidics_widgets()
 
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
@@ -1122,20 +1109,10 @@ class HighContentScreeningGui(QMainWindow):
 
         Returns True if successfully applied, False otherwise.
         """
-        try:
-            self.camera.set_binning(*binning)
-        except ValueError as e:
-            self.log.warning(f"Cannot restore binning {binning} - not supported by camera: {e}")
-            return False
-        except (AttributeError, RuntimeError) as e:
-            self.log.error(f"Camera error while restoring binning settings: {e}")
-            return False
-
-        binning_text = f"{binning[0]}x{binning[1]}"
-        self.cameraSettingWidget.dropdown_binning.blockSignals(True)
-        self.cameraSettingWidget.dropdown_binning.setCurrentText(binning_text)
-        self.cameraSettingWidget.dropdown_binning.blockSignals(False)
-        return True
+        restored = self.cameraSettingWidget.restore_binning(binning)
+        if not restored:
+            self.log.warning(f"Cannot restore binning {binning} - not supported by the camera")
+        return restored
 
     def _restore_pixel_format(self, pixel_format_str: Optional[str]) -> bool:
         """Apply pixel format setting to camera and sync UI dropdown.
@@ -1145,25 +1122,7 @@ class HighContentScreeningGui(QMainWindow):
         if not pixel_format_str:
             return False
 
-        try:
-            pixel_format = squid.config.CameraPixelFormat.from_string(pixel_format_str)
-        except KeyError:
-            self.log.warning(f"Cached pixel format '{pixel_format_str}' is not recognized")
-            return False
-
-        try:
-            self.camera.set_pixel_format(pixel_format)
-        except ValueError as e:
-            self.log.warning(f"Cannot restore pixel format {pixel_format_str} - not supported by this camera: {e}")
-            return False
-        except (AttributeError, RuntimeError) as e:
-            self.log.error(f"Camera error while restoring pixel format settings: {e}")
-            return False
-
-        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(True)
-        self.cameraSettingWidget.dropdown_pixelFormat.setCurrentText(pixel_format_str)
-        self.cameraSettingWidget.dropdown_pixelFormat.blockSignals(False)
-        return True
+        return self.cameraSettingWidget.restore_pixel_format(pixel_format_str)
 
     def _restore_sensor_mode(self, sensor_mode: Optional[str]) -> bool:
         """Apply cached sensor mode via the camera settings widget.
@@ -1180,26 +1139,15 @@ class HighContentScreeningGui(QMainWindow):
             )
         return restored
 
+    def _create_live_image_display(self) -> core.ImageDisplayWindow:
+        if ENABLE_TRACKING:
+            window = core.ImageDisplayWindow(self.liveController, self.contrastManager)
+            window.show_ROI_selector()
+            return window
+        return core.ImageDisplayWindow(self.liveController, self.contrastManager, show_LUT=True, autoLevels=True)
+
     def setupImageDisplayTabs(self):
-        if USE_NAPARI_FOR_LIVE_VIEW:
-            self.napariLiveWidget = widgets.NapariLiveWidget(
-                self.streamHandler,
-                self.liveController,
-                self.stage,
-                self.objectiveStore,
-                self.contrastManager,
-                self.wellSelectionWidget,
-            )
-            self.imageDisplayTabs.addTab(self.napariLiveWidget, "Live View")
-        else:
-            if ENABLE_TRACKING:
-                self.imageDisplayWindow = core.ImageDisplayWindow(self.liveController, self.contrastManager)
-                self.imageDisplayWindow.show_ROI_selector()
-            else:
-                self.imageDisplayWindow = core.ImageDisplayWindow(
-                    self.liveController, self.contrastManager, show_LUT=True, autoLevels=True
-                )
-            self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
+        self.imageDisplayTabs.addTab(self.imageDisplayWindow.widget, "Live View")
 
         if not self.live_only_mode:
             self.napariMultiChannelWidget = widgets.NapariMultiChannelWidget(
@@ -1286,9 +1234,6 @@ class HighContentScreeningGui(QMainWindow):
 
             self.imageDisplayTabs.addTab(laserfocus_dockArea, self.LASER_BASED_FOCUS_TAB_NAME)
 
-        if RUN_FLUIDICS:
-            self.imageDisplayTabs.addTab(self.fluidicsWidget, "Fluidics")
-
     def setupRecordTabWidget(self):
         if ENABLE_WELLPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(self.wellplateMultiPointWidget, "Wellplate Multipoint")
@@ -1296,8 +1241,8 @@ class HighContentScreeningGui(QMainWindow):
             self.recordTabWidget.addTab(self.flexibleMultiPointWidget, "Flexible Multipoint")
         if USE_TEMPLATE_MULTIPOINT:
             self.recordTabWidget.addTab(self.templateMultiPointWidget, "Template Multipoint")
-        if RUN_FLUIDICS:
-            self.recordTabWidget.addTab(self.multiPointWithFluidicsWidget, "Multipoint with Fluidics")
+        if self.fluidicsProtocolWidget is not None:
+            self.recordTabWidget.addTab(self.fluidicsProtocolWidget, "Fluidics Protocol")
         if ENABLE_TRACKING:
             self.recordTabWidget.addTab(self.trackingControlWidget, "Tracking")
         if ENABLE_RECORDING:
@@ -1307,17 +1252,11 @@ class HighContentScreeningGui(QMainWindow):
 
     def _setup_alignment_widget(self):
         """Setup alignment widget and connect to navigation viewer and multipoint controller."""
-        if self.napariLiveWidget is None:
-            self.log.warning("Cannot setup alignment widget: napariLiveWidget not available")
-            return
-
-        self.alignmentWidget = widgets.AlignmentWidget(
-            napari_viewer=self.napariLiveWidget.viewer,
-            parent=None,
-        )
+        self.alignmentWidget = widgets.AlignmentWidget(self.imageDisplayWindow)
 
         self.alignmentWidget.signal_move_to_position.connect(self._alignment_move_to)
         self.alignmentWidget.signal_request_current_position.connect(self._alignment_provide_position)
+        self.alignmentWidget.signal_auto_align_requested.connect(self._alignment_auto_align)
         self.alignmentWidget.signal_offset_set.connect(
             lambda x, y: self.log.info(f"Alignment offset active: ({x:.4f}, {y:.4f})mm")
         )
@@ -1331,15 +1270,37 @@ class HighContentScreeningGui(QMainWindow):
         """Handle alignment widget request to move stage."""
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
+        self.imageDisplayWindow.invalidate_current_image()
 
     def _alignment_provide_position(self):
         """Provide current stage position to alignment widget."""
         pos = self.stage.get_pos()
         self.alignmentWidget.set_current_position(pos.x_mm, pos.y_mm)
 
+    def _alignment_auto_align(self, reference_image: np.ndarray):
+        """Register the live view against the reference image and move the stage to cancel the displacement."""
+        live_image = self.imageDisplayWindow.current_image()
+        pixel_size_um = self.microscope.get_image_pixel_size_um()
+        if not self.liveController.is_live or pixel_size_um is None:
+            QMessageBox.warning(self, "Alignment Error", "Auto align needs a running live view and a known pixel size.")
+            return
+        if live_image is None:
+            QMessageBox.warning(self, "Alignment Error", "No live frame since the last stage move yet; try again.")
+            return
+
+        dx_px, dy_px = control.utils.measure_translation_px(reference_image, live_image)
+        self.log.info(f"Auto align: live view displaced by ({dx_px:.1f}, {dy_px:.1f}) px")
+        self._move_stage_by_image_delta(dx_px, dy_px, pixel_size_um)
+
+    def _move_stage_by_image_delta(self, delta_x_px: float, delta_y_px: float, pixel_size_um: float):
+        """Shift the displayed image content by (-delta_x_px, -delta_y_px)."""
+        delta_x_mm, delta_y_mm = control.utils.image_delta_to_stage_delta_mm(delta_x_px, delta_y_px, pixel_size_um)
+        self.stage.move_x(delta_x_mm, blocking=False)
+        self.stage.move_y(delta_y_mm, blocking=True)
+        self.imageDisplayWindow.invalidate_current_image()  # the frame on screen predates this move
+
     def setupCameraTabWidget(self):
-        if not USE_NAPARI_FOR_LIVE_CONTROL or self.live_only_mode:
-            self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
+        self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
@@ -1387,11 +1348,8 @@ class HighContentScreeningGui(QMainWindow):
             simulated_io_banner.setAlignment(Qt.AlignCenter)
             layout.addWidget(simulated_io_banner)
 
-        if USE_NAPARI_FOR_LIVE_CONTROL and not self.live_only_mode:
-            layout.addWidget(self.navigationWidget)
-        else:
-            layout.addWidget(self.profileWidget)
-            layout.addWidget(self.liveControlWidget)
+        layout.addWidget(self.profileWidget)
+        layout.addWidget(self.liveControlWidget)
 
         layout.addWidget(self.cameraTabWidget)
 
@@ -1470,10 +1428,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.dock_wellSelection = dock.Dock("Well Selector", autoOrientation=False)
         self.dock_wellSelection.showTitleBar()
-        if not USE_NAPARI_WELL_SELECTION or self.live_only_mode:
-            self.dock_wellSelection.addWidget(self.wellSelectionWidget)
-            self.dock_wellSelection.setFixedHeight(self.dock_wellSelection.minimumSizeHint().height())
-            main_dockArea.addDock(self.dock_wellSelection, "bottom")
+        self.dock_wellSelection.addWidget(self.wellSelectionWidget)
+        self.dock_wellSelection.setFixedHeight(self.dock_wellSelection.minimumSizeHint().height())
+        main_dockArea.addDock(self.dock_wellSelection, "bottom")
 
         dock_controlPanel = dock.Dock("Controls", autoOrientation=False)
         dock_controlPanel.addWidget(self.centralWidget)
@@ -1499,13 +1456,14 @@ class HighContentScreeningGui(QMainWindow):
             self.wellplateMultiPointWidget.signal_toggle_live_scan_grid.connect(self.toggle_live_scan_grid)
             self.signal_performance_mode_changed.connect(self.wellplateMultiPointWidget.set_performance_mode)
 
-        if RUN_FLUIDICS:
-            self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
-            self.multiPointWithFluidicsWidget.signal_acquisition_started.connect(
-                self.fluidicsWidget.set_acquisition_running
+        if self.fluidicsProtocolWidget is not None:
+            # widget-to-widget wiring lives in wire_fluidics; only GUI-owned objects here
+            self.fluidicsProtocolWidget.signal_acquisition_started.connect(self.toggleAcquisitionStart)
+            self.fluidicsProtocolWidget.signal_acquisition_started.connect(self._set_fluidics_protocol_active)
+            self.fluidicsProtocolWidget.signal_show_fluidics_tab.connect(
+                lambda: self.imageDisplayTabs.setCurrentWidget(self.fluidicsDisplayTab)
             )
-            self.fluidicsWidget.fluidics_initialized_signal.connect(self.multiPointWithFluidicsWidget.init_fluidics)
-            self.signal_performance_mode_changed.connect(self.multiPointWithFluidicsWidget.set_performance_mode)
+            self.fluidicsProtocolWidget.signal_run_notification.connect(self._handle_fluidics_notification)
 
         self.profileWidget.signal_profile_changed.connect(self.liveControlWidget.refresh_mode_list)
 
@@ -1572,32 +1530,13 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
 
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.update_ui_for_mode)
-            self.autofocusController.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True)
-            )
-            self.streamHandler.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-            )
-            self.multipointController.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-            )
-            self.napariLiveWidget.signal_coordinates_clicked.connect(self.move_from_click_image)
-            self.liveControlWidget.signal_live_configuration.connect(self.napariLiveWidget.set_live_configuration)
-
-            if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napariLiveWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
-                self.napariLiveWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
-                self.napariLiveWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-        else:
-            self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
-            self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-            self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
-            self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
+        self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
+        self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
+        self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
+        self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
 
         self.makeNapariConnections()
 
@@ -1729,168 +1668,100 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer.start()
 
     def makeNapariConnections(self):
-        """Initialize all Napari connections in one place"""
-        self.napari_connections = {
-            "napariLiveWidget": [],
-            "napariMultiChannelWidget": [],
-            "unifiedMosaicWidget": [],
-        }
-
-        # Setup live view connections
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.napari_connections["napariLiveWidget"] = [
-                (self.multipointController.signal_current_configuration, self.napariLiveWidget.update_ui_for_mode),
-                (
-                    self.autofocusController.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True),
-                ),
-                (
-                    self.streamHandler.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                ),
-                (
-                    self.multipointController.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                ),
-                (self.napariLiveWidget.signal_coordinates_clicked, self.move_from_click_image),
-                (self.liveControlWidget.signal_live_configuration, self.napariLiveWidget.set_live_configuration),
-            ]
-
-            if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napari_connections["napariLiveWidget"].extend(
-                    [
-                        (self.napariLiveWidget.signal_newExposureTime, self.cameraSettingWidget.set_exposure_time),
-                        (self.napariLiveWidget.signal_newAnalogGain, self.cameraSettingWidget.set_analog_gain),
-                        (self.napariLiveWidget.signal_autoLevelSetting, self.imageDisplayWindow.set_autolevel),
-                    ]
-                )
-        # Non-Napari display connections are wired in make_connections() — wiring them
-        # here again under the same condition would double every click/scroll signal.
+        """Collect the (signal, slot[, connection_type]) pairs that feed the napari display widgets."""
+        self.napari_connections = []
 
         if not self.live_only_mode:
-            # Setup multichannel widget connections
-            self.napari_connections["napariMultiChannelWidget"] = [
+            self.napari_connections += [
                 (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
                 (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
             ]
 
             if ENABLE_FLEXIBLE_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"].extend(
-                    [
-                        (
-                            self.flexibleMultiPointWidget.signal_acquisition_channels,
-                            self.napariMultiChannelWidget.initChannels,
-                        ),
-                        (
-                            self.flexibleMultiPointWidget.signal_acquisition_shape,
-                            self.napariMultiChannelWidget.initLayersShape,
-                        ),
-                    ]
-                )
+                self.napari_connections += [
+                    (
+                        self.flexibleMultiPointWidget.signal_acquisition_channels,
+                        self.napariMultiChannelWidget.initChannels,
+                    ),
+                    (
+                        self.flexibleMultiPointWidget.signal_acquisition_shape,
+                        self.napariMultiChannelWidget.initLayersShape,
+                    ),
+                ]
 
             if ENABLE_WELLPLATE_MULTIPOINT:
-                self.napari_connections["napariMultiChannelWidget"].extend(
-                    [
-                        (
-                            self.wellplateMultiPointWidget.signal_acquisition_channels,
-                            self.napariMultiChannelWidget.initChannels,
-                        ),
-                        (
-                            self.wellplateMultiPointWidget.signal_acquisition_shape,
-                            self.napariMultiChannelWidget.initLayersShape,
-                        ),
-                    ]
-                )
-            if RUN_FLUIDICS:
-                self.napari_connections["napariMultiChannelWidget"].extend(
-                    [
-                        (
-                            self.multiPointWithFluidicsWidget.signal_acquisition_channels,
-                            self.napariMultiChannelWidget.initChannels,
-                        ),
-                        (
-                            self.multiPointWithFluidicsWidget.signal_acquisition_shape,
-                            self.napariMultiChannelWidget.initLayersShape,
-                        ),
-                    ]
-                )
+                self.napari_connections += [
+                    (
+                        self.wellplateMultiPointWidget.signal_acquisition_channels,
+                        self.napariMultiChannelWidget.initChannels,
+                    ),
+                    (
+                        self.wellplateMultiPointWidget.signal_acquisition_shape,
+                        self.napariMultiChannelWidget.initLayersShape,
+                    ),
+                ]
+            if self.qtImagingPort is not None:
+                self.napari_connections += [
+                    (
+                        self.qtImagingPort.signal_acquisition_channels,
+                        self.napariMultiChannelWidget.initChannels,
+                    ),
+                    (
+                        self.qtImagingPort.signal_acquisition_shape,
+                        self.napariMultiChannelWidget.initLayersShape,
+                    ),
+                ]
 
             # Unified mosaic/plate view connections.
             # plate_view_init uses Qt.QueuedConnection because it can be emitted from
             # the acquisition worker thread; the slot needs to run on the main thread.
             if self.unifiedMosaicWidget is not None:
-                self.napari_connections["unifiedMosaicWidget"] = [
+                self.napari_connections += [
                     (self.multipointController.mosaic_tile_update, self.unifiedMosaicWidget.updateTile),
                     (self.unifiedMosaicWidget.signal_coordinates_clicked, self.move_from_click_mm),
                     (self.unifiedMosaicWidget.signal_clear_viewer, self.navigationViewer.clear_slide),
-                ]
-                self.napari_connections["unifiedMosaicWidget"].append(
                     (
                         self.multipointController.plate_view_init,
                         self.unifiedMosaicWidget.setPlateLayout,
                         Qt.QueuedConnection,
-                    )
-                )
+                    ),
+                ]
 
                 # ROI shape drawing in mosaic mode (wellplate flow only).
                 if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.napari_connections["unifiedMosaicWidget"].extend(
-                        [
-                            (
-                                self.wellplateMultiPointWidget.signal_manual_shape_mode,
-                                self.unifiedMosaicWidget.enable_shape_drawing,
-                            ),
-                            (
-                                self.unifiedMosaicWidget.signal_shape_drawn,
-                                self.wellplateMultiPointWidget.update_manual_shape,
-                            ),
-                        ]
-                    )
+                    self.napari_connections += [
+                        (
+                            self.wellplateMultiPointWidget.signal_manual_shape_mode,
+                            self.unifiedMosaicWidget.enable_shape_drawing,
+                        ),
+                        (
+                            self.unifiedMosaicWidget.signal_shape_drawn,
+                            self.wellplateMultiPointWidget.update_manual_shape,
+                        ),
+                    ]
 
             # Make initial connections
             self.updateNapariConnections()
 
     def updateNapariConnections(self):
-        # Update Napari connections based on performance mode. Live widget connections are preserved
-        # Connection tuples can be:
-        #   (signal, slot) - uses default Qt.AutoConnection
-        #   (signal, slot, connection_type) - uses specified connection type (e.g., Qt.QueuedConnection)
-        for widget_name, connections in self.napari_connections.items():
-            if widget_name != "napariLiveWidget":  # Always keep the live widget connected
-                widget = getattr(self, widget_name, None)
-                if widget:
-                    for conn in connections:
-                        signal = conn[0]
-                        slot = conn[1]
-                        connection_type = conn[2] if len(conn) > 2 else None
-                        if self.performance_mode:
-                            try:
-                                signal.disconnect(slot)
-                            except TypeError:
-                                # Connection might not exist, which is fine
-                                pass
-                        else:
-                            try:
-                                if connection_type is not None:
-                                    signal.connect(slot, connection_type)
-                                else:
-                                    signal.connect(slot)
-                            except TypeError:
-                                # Connection might already exist, which is fine
-                                pass
+        """Performance mode disconnects the napari display widgets; leaving it reconnects them."""
+        for signal, slot, *connection_type in self.napari_connections:
+            try:
+                if self.performance_mode:
+                    signal.disconnect(slot)
+                else:
+                    signal.connect(slot, *connection_type)
+            except TypeError:
+                pass  # not connected / already connected
 
     def toggleNapariTabs(self):
         # Enable/disable Napari tabs based on performance mode
         for i in range(1, self.imageDisplayTabs.count()):
-            if self.imageDisplayTabs.tabText(i) != self.LASER_BASED_FOCUS_TAB_NAME:
+            if self.imageDisplayTabs.tabText(i) not in (self.LASER_BASED_FOCUS_TAB_NAME, self.FLUIDICS_TAB_NAME):
                 self.imageDisplayTabs.setTabEnabled(i, not self.performance_mode)
 
         if self.performance_mode:
-            # Switch to the NapariLiveWidget tab if it exists
-            for i in range(self.imageDisplayTabs.count()):
-                if isinstance(self.imageDisplayTabs.widget(i), widgets.NapariLiveWidget):
-                    self.imageDisplayTabs.setCurrentIndex(i)
-                    break
+            self.imageDisplayTabs.setCurrentIndex(0)  # Live View
 
     def togglePerformanceMode(self):
         self.performance_mode = self.performanceModeToggle.isChecked()
@@ -1989,6 +1860,8 @@ class HighContentScreeningGui(QMainWindow):
         self._laser_engine_dialog_engine = None
 
     def setAcquisitionDisplayTabs(self, selected_configurations, Nz, xy_mode=None):
+        if self._fluidics_protocol_active:
+            return  # the display stays on the Fluidics tab for the whole protocol run
         if self.performance_mode:
             self.imageDisplayTabs.setCurrentIndex(0)
             return
@@ -2068,6 +1941,84 @@ class HighContentScreeningGui(QMainWindow):
                 self.slackNotifier.notify_acquisition_finished(stats)
         except Exception as e:
             self.log.warning(f"Failed to send Slack acquisition finished notification: {e}")
+
+    def _setup_fluidics_widgets(self):
+        from control.core.acquisition_settings import export_acquisition_settings
+        from control.widgets_fluidics import wire_fluidics
+        from control.widgets_fluidics.display_tab import FluidicsDisplayTab
+        from control.widgets_fluidics.protocol_widget import FluidicsProtocolWidget
+        from control.widgets_fluidics.qt_imaging_port import QtImagingPort
+
+        self.qtImagingPort = QtImagingPort(self.multipointController, self.scanCoordinates, self.microscope)
+
+        def current_imaging_source():
+            problem = self.wellplateMultiPointWidget.configure_controller_from_ui()
+            if problem:
+                return problem, {}, {}
+            settings, coordinates = export_acquisition_settings(
+                self.multipointController, self.scanCoordinates, self.objectiveStore, self.camera
+            )
+            return None, settings, coordinates
+
+        def fluidics_busy_check():
+            if self.multipointController.acquisition_in_progress():
+                return "an acquisition is already in progress"
+            if self.workflowRunner is not None and self.workflowRunner.is_running():
+                return "a workflow is running"
+            if self.fluidicsDisplayTab is not None and self.fluidicsDisplayTab.quick_op_active():
+                return "a manual fluidics operation is running"
+            return None
+
+        self.fluidicsDisplayTab = FluidicsDisplayTab(self.fluidics, current_source=current_imaging_source)
+        if isinstance(self.imageDisplayTabs, QTabWidget):  # absent in live-only mode
+            self.imageDisplayTabs.addTab(self.fluidicsDisplayTab, self.FLUIDICS_TAB_NAME)
+        self.fluidicsProtocolWidget = FluidicsProtocolWidget(
+            self.fluidics,
+            self.fluidicsDisplayTab.protocol_tab,
+            imaging_port=self.qtImagingPort,
+            busy_check=fluidics_busy_check,
+        )
+        wire_fluidics(self.fluidicsDisplayTab, self.fluidicsProtocolWidget)
+
+    def _confirm_end_fluidics_run(self, action: str) -> bool:
+        """True when no fluidics run is active, or the user confirmed; the run is ended
+        only after that consent (ending it is irreversible)."""
+        widget = self.fluidicsProtocolWidget
+        if widget is None or not widget.is_run_active():
+            return True
+        reply = QMessageBox.question(
+            self,
+            "Fluidics protocol running",
+            f"A fluidics protocol run is in progress. End it and {action}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.No:
+            return False
+        if not widget.end_run_for_exit(15):
+            # Tearing hardware out from under a still-unwinding run is worse than staying open:
+            # an abort on real hardware can legitimately take longer than the wait.
+            QMessageBox.warning(
+                self,
+                "Fluidics protocol still ending",
+                f"The protocol run did not end within 15 s; not {action}ing yet — try again in a moment.",
+            )
+            return False
+        return True
+
+    def _set_fluidics_protocol_active(self, active: bool):
+        self._fluidics_protocol_active = active
+        if self.fluidicsDisplayTab is not None:
+            self.fluidicsDisplayTab.set_run_active(active)
+            if active and isinstance(self.imageDisplayTabs, QTabWidget):
+                self.imageDisplayTabs.setCurrentWidget(self.fluidicsDisplayTab)
+
+    def _handle_fluidics_notification(self, text: str):
+        try:
+            if self.slackNotifier is not None:
+                self.slackNotifier.send_message(text)  # no-op unless notifications are enabled
+        except Exception as e:
+            self.log.warning(f"Failed to send the fluidics Slack notification: {e}")
 
     def openSlackSettings(self):
         """Open the Slack notifications settings dialog."""
@@ -2338,6 +2289,30 @@ class HighContentScreeningGui(QMainWindow):
         dialog.signal_mappings_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
+    def openFilterWheelTuning(self):
+        """Open Utils > Filter Wheel Tuning...: Verify / Tune the Squid filter wheel on this instrument.
+
+        The dialog runs on the microscope's existing controller and wheel (nothing is reset), refuses to start while
+        the instrument is busy, and puts the wheel back - re-configured, homed and on the slot the user was on -
+        however the run ends. See control/widgets_filter_wheel_tuning.py.
+        """
+        from control.widgets_filter_wheel_tuning import FilterWheelTuningDialog
+
+        def busy_reason():
+            if self.liveController is not None and self.liveController.is_live:
+                return "Live view is running. Stop it before tuning: the wheel moves continuously for minutes."
+            if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+                return "An acquisition is running. Tuning moves the filter wheel through hundreds of slot changes."
+            return None
+
+        dialog = FilterWheelTuningDialog(
+            self.microcontroller,
+            self.emission_filter_wheel,
+            busy_reason=busy_reason,
+            parent=self,
+        )
+        dialog.exec_()
+
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
@@ -2348,16 +2323,16 @@ class HighContentScreeningGui(QMainWindow):
         """Refresh channel lists in all widgets after channel configuration changes"""
         if self.liveControlWidget:
             self.liveControlWidget.refresh_mode_list()
-        if self.napariLiveWidget:
-            self.napariLiveWidget.refresh_mode_list()
         if self.flexibleMultiPointWidget:
             self.flexibleMultiPointWidget.refresh_channel_list()
         if self.wellplateMultiPointWidget:
             self.wellplateMultiPointWidget.refresh_channel_list()
-        if self.multiPointWithFluidicsWidget:
-            self.multiPointWithFluidicsWidget.refresh_channel_list()
 
     def onTabChanged(self, index):
+        if self.fluidicsProtocolWidget is not None and index == self.recordTabWidget.indexOf(
+            self.fluidicsProtocolWidget
+        ):
+            return  # switching to the protocol tab must not clear captured scan regions
         is_flexible_acquisition = (
             (index == self.recordTabWidget.indexOf(self.flexibleMultiPointWidget))
             if ENABLE_FLEXIBLE_MULTIPOINT
@@ -2467,10 +2442,6 @@ class HighContentScreeningGui(QMainWindow):
             self.stageUtils.signal_loading_position_reached.connect(
                 self.wellplateMultiPointWidget.disable_the_start_aquisition_button
             )
-        if RUN_FLUIDICS:
-            self.stageUtils.signal_loading_position_reached.connect(
-                self.multiPointWithFluidicsWidget.disable_the_start_aquisition_button
-            )
 
         if ENABLE_FLEXIBLE_MULTIPOINT:
             self.stageUtils.signal_scanning_position_reached.connect(
@@ -2480,10 +2451,6 @@ class HighContentScreeningGui(QMainWindow):
             self.stageUtils.signal_scanning_position_reached.connect(
                 self.wellplateMultiPointWidget.enable_the_start_aquisition_button
             )
-        if RUN_FLUIDICS:
-            self.stageUtils.signal_scanning_position_reached.connect(
-                self.multiPointWithFluidicsWidget.enable_the_start_aquisition_button
-            )
 
         self.stageUtils.signal_scanning_position_reached.connect(self.navigationViewer.clear_slide)
 
@@ -2492,10 +2459,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellSelectionWidget.deleteLater()
         self.wellSelectionWidget = new_widget
         self.scanCoordinates.add_well_selector(self.wellSelectionWidget)
-        if USE_NAPARI_WELL_SELECTION and not self.performance_mode and not self.live_only_mode:
-            self.napariLiveWidget.replace_well_selector(self.wellSelectionWidget)
-        else:
-            self.dock_wellSelection.addWidget(self.wellSelectionWidget)
+        self.dock_wellSelection.addWidget(self.wellSelectionWidget)
 
     def connectWellSelectionWidget(self):
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)
@@ -2708,12 +2672,7 @@ class HighContentScreeningGui(QMainWindow):
             self.log.warning("Click to move: pixel size unavailable, ignoring click")
             return
 
-        pixel_sign_y = 1 if INVERTED_OBJECTIVE else -1
-        delta_x_mm = pixel_size_um * click_x / 1000.0
-        delta_y_mm = pixel_sign_y * pixel_size_um * click_y / 1000.0
-
-        self.stage.move_x(delta_x_mm, blocking=False)
-        self.stage.move_y(delta_y_mm, blocking=True)
+        self._move_stage_by_image_delta(click_x, click_y, pixel_size_um)
 
     def move_z_from_scroll(self, delta_um: float):
         if not self.navigationWidget.get_click_to_move_enabled():
@@ -2775,6 +2734,9 @@ class HighContentScreeningGui(QMainWindow):
         then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
         """
+        if not self._confirm_end_fluidics_run("restart"):
+            return
+
         self.log.info("Restarting application with --skip-init...")
 
         # Build new args list, preserving original arguments but adding --skip-init
@@ -2858,7 +2820,6 @@ class HighContentScreeningGui(QMainWindow):
 
         # Close napari viewers — they run background threads that prevent clean exit.
         for widget_name in [
-            "napariLiveWidget",
             "napariMultiChannelWidget",
             "unifiedMosaicWidget",
         ]:
@@ -2973,8 +2934,14 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
-        # Close fluidics
-        if RUN_FLUIDICS:
+        if self.fluidicsDisplayTab is not None:
+            try:
+                self.fluidicsDisplayTab.shutdown()  # detaches logging, flushes open recordings
+            except Exception:
+                self.log.exception(f"Error shutting down the fluidics display tab during {context}")
+
+        # Close fluidics (a no-op unless Initialize was pressed; Microscope.close() would also do it)
+        if self.fluidics is not None:
             try:
                 self.fluidics.close()
             except Exception:
@@ -3018,18 +2985,22 @@ class HighContentScreeningGui(QMainWindow):
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
-        # Show confirmation dialog
-        reply = QMessageBox.question(
-            self,
-            "Confirm Exit",
-            "Are you sure you want to exit the software?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-
-        if reply == QMessageBox.No:
-            event.ignore()
-            return
+        if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
+            # The fluidics question doubles as the exit confirmation.
+            if not self._confirm_end_fluidics_run("exit"):
+                event.ignore()
+                return
+        else:
+            reply = QMessageBox.question(
+                self,
+                "Confirm Exit",
+                "Are you sure you want to exit the software?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                event.ignore()
+                return
 
         self._cleanup_common(for_restart=False)
 

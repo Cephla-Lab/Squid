@@ -1,4 +1,6 @@
 import enum
+
+import numpy as np
 import math
 from typing import Dict, Optional, Tuple, Union
 
@@ -448,6 +450,21 @@ class CameraPixelFormat(enum.Enum):
     BAYER_RG8 = "BAYER_RG8"
     BAYER_RG12 = "BAYER_RG12"
 
+    @property
+    def bit_depth(self) -> int:
+        """Bits per channel the camera digitizes in this format."""
+        return _PIXEL_FORMAT_BIT_DEPTH[self]
+
+    def max_value(self, dtype) -> int:
+        """Value of a clipped pixel in an array of ``dtype``.
+
+        Drivers left-align depths narrower than the container (12-bit data fills the top of a uint16), so this
+        is the format's maximum shifted up to the container width: 65535 for MONO16, 65520 for MONO12, 255
+        for MONO8.
+        """
+        shift = max(np.iinfo(dtype).bits - self.bit_depth, 0)
+        return ((1 << self.bit_depth) - 1) << shift
+
     @staticmethod
     def is_color_format(pixel_format):
         return pixel_format in (
@@ -461,6 +478,20 @@ class CameraPixelFormat(enum.Enum):
     @staticmethod
     def from_string(pixel_format_string):
         return CameraPixelFormat[pixel_format_string]
+
+
+_PIXEL_FORMAT_BIT_DEPTH = {
+    CameraPixelFormat.MONO8: 8,
+    CameraPixelFormat.MONO10: 10,
+    CameraPixelFormat.MONO12: 12,
+    CameraPixelFormat.MONO14: 14,
+    CameraPixelFormat.MONO16: 16,
+    CameraPixelFormat.RGB24: 8,
+    CameraPixelFormat.RGB32: 8,
+    CameraPixelFormat.RGB48: 16,
+    CameraPixelFormat.BAYER_RG8: 8,
+    CameraPixelFormat.BAYER_RG12: 12,
+}
 
 
 class RGBValue(pydantic.BaseModel):

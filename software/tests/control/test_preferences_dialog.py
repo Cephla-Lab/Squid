@@ -192,6 +192,105 @@ class TestConfigHelpers:
         assert result == 3.14
 
 
+class TestIniValuesWithInlineComments:
+    """The running software reads the ini with control._def.conf_attribute_reader, which strips an inline comment.
+    The dialog has to read the same text the same way: a value it misreads is shown as something the machine is not
+    running, and is written back as that the next time ANY setting is saved."""
+
+    def _dialog(self, qtbot, config, path):
+        dialog = control.widgets.PreferencesDialog(config, path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_the_helpers_read_a_commented_value_as_the_application_does(self, qtbot, sample_config, temp_config_file):
+        import control._def
+
+        sample_config.set("GENERAL", "max_velocity_x_mm", "30.0  # mm/s, this stage")
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "2\t# 2x2")
+        sample_config.set("GENERAL", "enable_flexible_multipoint", "True  # needed for the plate workflow")
+        sample_config.set("GENERAL", "enable_tracking", "false # off")
+        sample_config.set("GENERAL", "file_saving_option", "OME_TIFF  # not zarr yet")
+        sample_config.set("CAMERA_CONFIG", "flip_image", "None  # no flip")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._get_config_float("GENERAL", "max_velocity_x_mm", 1.0) == 30.0
+        assert dialog._get_config_int("CAMERA_CONFIG", "binning_factor_default", 1) == 2
+        assert dialog._get_config_bool("GENERAL", "enable_flexible_multipoint", False) is True
+        assert dialog._get_config_bool("GENERAL", "enable_tracking", True) is False
+        assert dialog._get_config_value("GENERAL", "file_saving_option", "") == "OME_TIFF"
+        assert dialog._get_config_value("CAMERA_CONFIG", "flip_image", "") == "None"
+        for section, option in (("GENERAL", "max_velocity_x_mm"), ("CAMERA_CONFIG", "binning_factor_default")):
+            raw = sample_config.get(section, option)
+            assert dialog._get_config_float(section, option, -1.0) == float(control._def.conf_attribute_reader(raw))
+
+    def test_text_that_only_looks_like_a_comment_is_kept(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "default_saving_path", "/data/run#3")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._get_config_value("GENERAL", "default_saving_path", "") == "/data/run#3"
+
+    def test_the_rows_show_the_commented_values_and_list_no_change(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "2  # 2x2")
+        sample_config.set("GENERAL", "enable_flexible_multipoint", "True  # plate workflow")
+        sample_config.set("GENERAL", "file_saving_option", "OME_TIFF  # not zarr yet")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.binning_spinbox.value() == 2
+        assert dialog.flexible_multipoint_checkbox.isChecked()
+        assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+
+    def test_saving_does_not_reset_a_commented_value_to_the_default(self, qtbot, sample_config, temp_config_file):
+        import control._def
+
+        # binning 4 with a comment: the old reader saw "4  # ..." as not-an-int, showed the default 2, and wrote 2
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "4  # this camera")
+        sample_config.set("GENERAL", "enable_flexible_multipoint", "False  # not on this machine")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert control._def.conf_attribute_reader(saved.get("CAMERA_CONFIG", "binning_factor_default")) == 4
+        assert control._def.conf_attribute_reader(saved.get("GENERAL", "enable_flexible_multipoint")) is False
+
+    @pytest.mark.parametrize(
+        "ini_text, meaning",
+        [
+            ('"C:/data/run #3"', "C:/data/run #3"),  # review of d250c61a: became C:/data/run after any save
+            (r'"C:\\data\\run #3"', r"C:\data\run #3"),  # backslashes survive the JSON quoting
+            ("/data/run#3", "/data/run#3"),  # no whitespace before the #: never a comment, never quoted
+            ("/test/path", "/test/path"),
+            ('"2024"', "2024"),  # a folder named like a number stays text
+        ],
+    )
+    def test_free_text_means_the_same_after_a_save(self, qtbot, sample_config, temp_config_file, ini_text, meaning):
+        import control._def
+
+        sample_config.set("GENERAL", "default_saving_path", ini_text)
+        assert control._def.conf_attribute_reader(ini_text) == meaning  # what the application runs with
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.saving_path_edit.text() == meaning
+        dialog.binning_spinbox.setValue(3)  # the operator changes an UNRELATED setting
+        assert not [c for c in dialog._get_changes() if "Saving Path" in c[0]]
+        assert dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert control._def.conf_attribute_reader(saved.get("GENERAL", "default_saving_path")) == meaning
+
+    def test_ordinary_text_is_written_unchanged(self, qtbot, sample_config, temp_config_file):
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._ini_text("/test/path") == "/test/path"
+        assert dialog._ini_text("BF LED matrix full") == "BF LED matrix full"
+        assert dialog._ini_text("/data/run#3") == "/data/run#3"
+        assert dialog._ini_text("C:/data/run #3") == '"C:/data/run #3"'
+        assert dialog._ini_text("") == ""
+
+    def test_a_missing_key_and_an_unreadable_value_still_give_the_default(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("CAMERA_CONFIG", "binning_factor_default", "two")
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog._get_config_int("CAMERA_CONFIG", "binning_factor_default", 3) == 3
+        assert dialog._get_config_int("CAMERA_CONFIG", "no_such_key", 3) == 3
+        assert dialog._get_config_float("NO_SECTION", "x", 1.5) == 1.5
+        assert dialog._get_config_bool("GENERAL", "no_such_key", True) is True
+        assert dialog._get_config_int("CAMERA_CONFIG", "temperature_default", 0) == 20
+
+
 class TestFloatsEqual:
     """Test floating-point comparison helper."""
 
@@ -739,3 +838,137 @@ class TestClickToMoveSettings:
 
         assert control._def.LIVE_VIEW_Z_STEP_UM == pytest.approx(2.5)
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
+
+
+class TestFilterWheelShortestPath:
+    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_wrap (auto / True / False)."""
+
+    def _dialog(self, qtbot, config, path):
+        dialog = control.widgets.PreferencesDialog(config, path)
+        qtbot.addWidget(dialog)
+        return dialog
+
+    def test_missing_key_shows_auto_and_is_not_a_change(self, preferences_dialog):
+        assert preferences_dialog.wheel_wrap_combo.currentData() == "auto"
+        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+
+    @pytest.mark.parametrize(
+        "ini, data",
+        [
+            ("auto", "auto"),
+            ("True", "True"),
+            ("true", "True"),
+            ("False", "False"),
+            ("False  # why", "False"),
+            # whatever the wheel controller accepts, the dialog has to read the same way:
+            ("AUTO", "auto"),
+            # 1 and 0 are accepted by the wheel controller from #664 on; shown as Auto they were replaced on a save
+            ("1", "True"),
+            ("0", "False"),
+            ("0  # off on this machine", "False"),
+        ],
+    )
+    def test_the_ini_value_selects_the_item(self, qtbot, sample_config, temp_config_file, ini, data):
+        sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.wheel_wrap_combo.currentData() == data
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+
+    def test_a_change_needs_a_restart_and_is_shown_in_words(self, preferences_dialog):
+        preferences_dialog.wheel_wrap_combo.setCurrentIndex(2)
+        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+        assert change == [("Filter Wheel Shortest Path", "Auto (on from firmware 1.6)", "Off", True)]
+
+    def test_it_is_saved_as_the_value_the_wheel_controller_parses(self, preferences_dialog, temp_config_file):
+        import control._def
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        for index, expected in [(1, True), (2, False), (0, "auto")]:
+            preferences_dialog.wheel_wrap_combo.setCurrentIndex(index)
+            assert preferences_dialog._apply_settings()
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            text = saved.get("GENERAL", "squid_filterwheel_wrap")
+            # the same two steps the application takes at startup: the ini reader, then the wheel controller
+            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) == expected
+
+    def test_an_unrecognised_ini_value_is_shown_as_being_replaced(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_wrap", "off")  # a typo the wheel controller refuses
+        dialog = self._dialog(qtbot, sample_config, temp_config_file)
+        assert dialog.wheel_wrap_combo.currentData() == "auto"
+        change = [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+        assert change == [("Filter Wheel Shortest Path", "off", "Auto (on from firmware 1.6)", True)]
+
+
+class TestFilterWheelCompletionWindow:
+    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_completion_window_deg."""
+
+    def test_missing_key_shows_off_and_is_not_a_change(self, preferences_dialog):
+        assert preferences_dialog.wheel_window_spinbox.value() == 0.0
+        assert preferences_dialog.wheel_window_spinbox.text() == "Off (exact slot)"
+        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_the_dialog_and_the_wheel_controller_read_every_accepted_value_alike(
+        self, qtbot, sample_config, temp_config_file
+    ):
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        shown = {"auto": "auto", True: "True", False: "False"}
+        for ini in ("auto", "Auto", "True", "true", "False", "false", "True  # on", "1", "0", "1  # on"):
+            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(ini))
+            assert dialog.wheel_wrap_combo.currentData() == shown[parsed], ini
+
+    def test_saving_something_else_does_not_change_what_a_numeric_wrap_setting_means(
+        self, qtbot, sample_config, temp_config_file
+    ):
+        # review of ad437815: `0` showed as Auto, and saving any other setting wrote "auto" - shortest path ON at
+        # firmware 1.6 on a machine that had it explicitly off (and `1` -> OFF at 1.4 / 1.5)
+        import control._def
+        from squid.filter_wheel_controller.cephla import SquidFilterWheel
+
+        for ini, meaning in (("0", False), ("1", True)):
+            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+            dialog.wheel_window_spinbox.setValue(5.0)  # the operator changes a DIFFERENT setting
+            assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
+            assert dialog._apply_settings()
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            text = saved.get("GENERAL", "squid_filterwheel_wrap")
+            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) is meaning, (ini, text)
+
+    def test_a_window_with_an_inline_comment_is_shown_not_cleared(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5  # degrees, 32 mm filters")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.wheel_window_spinbox.value() == 5.0  # float() alone read this as 0 and a save cleared it
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_the_ini_value_is_shown(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+        assert dialog.wheel_window_spinbox.value() == 5.0
+        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+
+    def test_a_change_needs_a_restart_and_is_saved_as_a_number_the_config_reader_parses(
+        self, preferences_dialog, temp_config_file
+    ):
+        import control._def
+
+        preferences_dialog.wheel_window_spinbox.setValue(5.0)
+        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
+        assert change == [("Filter Wheel Completion Window", "0 \u00b0", "5 \u00b0", True)]
+        assert preferences_dialog._apply_settings()
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        text = saved.get("GENERAL", "squid_filterwheel_completion_window_deg")
+        assert control._def.conf_attribute_reader(text) == 5
+
+    def test_the_range_stops_at_ten_degrees(self, preferences_dialog):
+        preferences_dialog.wheel_window_spinbox.setValue(45.0)  # a whole slot: never a sensible window
+        assert preferences_dialog.wheel_window_spinbox.value() == 10.0

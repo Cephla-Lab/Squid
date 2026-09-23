@@ -13,6 +13,7 @@ from crc import CrcCalculator, Crc8
 from serial.serialutil import SerialException
 
 import squid.logging
+import control._def
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -639,6 +640,11 @@ class Microcontroller:
         self.z_pos = 0  # unit: microstep or encoder resolution
         self.w_pos = 0  # unit: microstep or encoder resolution
         self.theta_pos = 0  # unit: microstep or encoder resolution
+        # Encoder reporting (firmware >= 1.6, set_encoder_reporting). Updated only by packets whose
+        # byte 19 has ENC_FLAG.REPORTING set; they keep their last values otherwise.
+        self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
+        self.encoder_deviation = 0  # int16 ENC_POS - XACTUAL of that axis, microsteps, clipped
+        self.encoder_flags = 0  # raw status byte 19 while reporting, else 0
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -691,6 +697,12 @@ class Microcontroller:
         # Detect firmware version early by sending a harmless command
         # This ensures supports_multi_port() returns accurate results immediately
         self._detect_firmware_version()
+
+    @property
+    def is_simulated(self) -> bool:
+        """True when this controller talks to SimSerial instead of a real one. Callers that need the hardware to
+        answer truthfully - the filter-wheel tuner needs the wheel's encoder - ask this before they start."""
+        return self._is_simulated
 
     def _warn_if_reads_stale(self):
         if self._is_simulated:
@@ -1043,6 +1055,61 @@ class Microcontroller:
         cmd[3] = status
         self.send_command(cmd)
 
+    def set_completion_window(self, axis, window_mm):
+        """Report a move on `axis` complete once |position - target| <= window_mm, while the ramp is still
+        finishing (firmware >= 1.6; older firmware does not know the command, so callers gate on the version).
+        0 restores completion at the exact target with the ramp stopped. Encoded in 0.1 um, range 0 .. 6.5535 mm.
+        For the filter wheels one "mm" is one revolution: pass degrees / 360.
+        """
+        u = int(round(window_mm * 10000))
+        if not (0 <= u <= 0xFFFF):
+            raise ValueError("completion window must be 0 .. 6.5535 mm (or rev)")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_COMPLETION_WINDOW
+        cmd[2] = int(axis)
+        cmd[3] = (u >> 8) & 0xFF
+        cmd[4] = u & 0xFF
+        self.send_command(cmd)
+
+    def set_encoder_reporting(self, axis, mode=ENCODER_REPORTING.ENC_IN_THETA):
+        """Put `axis`'s encoder into the status packet (firmware >= 1.6; callers gate on the version).
+
+        A read-only diagnostic: it moves nothing. The encoder must have been set up with
+        configure_stage_pid() (scale and direction; that engages nothing) for the values to be in
+        microsteps. Afterwards encoder_pos / encoder_deviation / encoder_flags update every packet.
+        ENCODER_REPORTING.OFF restores the shipping packet; RESET and INITIALIZE do too.
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_ENCODER_REPORTING
+        cmd[2] = int(axis)
+        cmd[3] = int(mode)
+        self.send_command(cmd)
+
+    def get_encoder_state(self):
+        """The last reported encoder reading: reporting / pid_enabled / axis (from byte 19),
+        encoder_pos and deviation (ENC_POS - XACTUAL) in microsteps. `reporting` is False when the
+        last packet carried no encoder; the two values are then the last ones seen."""
+        flags = self.encoder_flags
+        return {
+            "reporting": bool(flags & (1 << ENC_FLAG.REPORTING)),
+            "pid_enabled": bool(flags & (1 << ENC_FLAG.PID_ENABLED)),
+            "axis": (flags >> ENC_FLAG.AXIS_SHIFT) & 0x07,
+            "encoder_pos": self.encoder_pos,
+            "deviation": self.encoder_deviation,
+        }
+
+    def set_ramp_profile(self, axis, profile):
+        """S-shaped (RAMP_PROFILE.SSHAPE, the firmware default) or trapezoidal ramp for `axis`
+        (firmware >= 1.6; callers gate on the version). Takes effect at once; a RESET returns
+        every axis to the S-shape."""
+        if profile not in (RAMP_PROFILE.TRAPEZOID, RAMP_PROFILE.SSHAPE):
+            raise ValueError("ramp profile must be RAMP_PROFILE.TRAPEZOID or RAMP_PROFILE.SSHAPE")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_RAMP_PROFILE
+        cmd[2] = int(axis)
+        cmd[3] = int(profile)
+        self.send_command(cmd)
+
     def set_trigger_mode(self, mode):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_TRIGGER_MODE
@@ -1391,6 +1458,11 @@ class Microcontroller:
     def configure_squidfilter(self, axis=AXIS.W):
         """Configure a filter wheel motor.
 
+        The microstepping, current and velocity/acceleration are read through control._def rather than from the
+        `from control._def import *` binding at the top of this module: that binding is taken at import time, so a
+        profile changed while the software runs (the filter-wheel tuner's "Apply and save") would be ignored here
+        while the host's slot arithmetic used the new value. They must be the same number.
+
         Args:
             axis: The axis to configure (AXIS.W or AXIS.W2). Defaults to AXIS.W.
         """
@@ -1398,9 +1470,14 @@ class Microcontroller:
             raise ValueError(f"Unsupported filter wheel axis: {axis}. Expected AXIS.W or AXIS.W2.")
         self.set_leadscrew_pitch(axis, SCREW_PITCH_W_MM)
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(axis, MICROSTEPPING_DEFAULT_W, W_MOTOR_RMS_CURRENT_mA, W_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            axis,
+            int(control._def.MICROSTEPPING_DEFAULT_W),
+            control._def.W_MOTOR_RMS_CURRENT_mA,
+            control._def.W_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(axis, MAX_VELOCITY_W_mm, MAX_ACCELERATION_W_mm)
+        self.set_max_velocity_acceleration(axis, control._def.MAX_VELOCITY_W_mm, control._def.MAX_ACCELERATION_W_mm)
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):
@@ -1643,6 +1720,15 @@ class Microcontroller:
                 self.theta_pos = self._payload_to_int(
                     msg[14:18], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
+                # Firmware >= 1.6 with encoder reporting on: the theta field is the reported axis's
+                # ENC_POS, byte 19 its flags and bytes 20-21 the clipped ENC_POS - XACTUAL. With
+                # reporting off (and on older firmware) byte 19 bit 0 is clear.
+                if msg[19] & (1 << ENC_FLAG.REPORTING):
+                    self.encoder_flags = msg[19]
+                    self.encoder_pos = self.theta_pos
+                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                else:
+                    self.encoder_flags = 0
 
                 self.button_and_switch_state = msg[18]
                 # joystick button
