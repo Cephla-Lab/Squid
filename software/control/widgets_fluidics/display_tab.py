@@ -28,19 +28,15 @@ from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
 class InstrumentColumn(QSplitter):
     """The display tab's left column: the instrument block over the Log / sensor tabs.
 
-    The block asks for more height than a short window has, so in a plain column it squeezed the
-    tabs, plots first. Here the block scrolls instead: it gets the height it asks for unless that
-    leaves the tabs less than their minimum -- which the plots' canvases declare from the height
-    their labels need (Squid-Fluidics#57), so it holds a readable plot. A plot page's height only
-    counts once that page has been shown (Qt lays out no hidden page), so on a screen too short for
-    both the divider moves up the first time a plot tab is opened, and then stays. Once the operator
-    drags the divider the split is theirs (a window resize then scales both panes, as any splitter
-    does)."""
+    The block gets the height it asks for and scrolls when the window is short; the splitter holds
+    the tabs at their minimum, which the plots' canvases set from the height their labels need. A
+    hidden page's layouts are not activated, so on a short screen the divider moves up the first
+    time a plot tab is opened, then stays. Once the operator drags it the split is theirs (a window
+    resize then scales both panes, as any splitter does)."""
 
     def __init__(self, instrument: QWidget, tabs: QWidget, parent=None):
         super().__init__(Qt.Vertical, parent)
         self._instrument = instrument
-        self._tabs = tabs
         self.instrument_scroll = QScrollArea()
         self.instrument_scroll.setWidgetResizable(True)
         self.instrument_scroll.setFrameShape(QFrame.NoFrame)
@@ -81,9 +77,9 @@ class InstrumentColumn(QSplitter):
         height = sum(self.sizes())
         if self._dragged or height == 0:  # 0: not laid out yet
             return
+        # setSizes clamps: a negative or too-small size becomes that pane's minimum.
         wanted = self._instrument.sizeHint().height()
-        block = max(0, min(wanted, height - self._tabs.minimumSizeHint().height()))
-        self.setSizes([block, height - block])
+        self.setSizes([wanted, height - wanted])
 
 
 class FluidicsDisplayTab(QWidget):
@@ -237,8 +233,7 @@ class FluidicsDisplayTab(QWidget):
                 from fluidics.devices import draw_protection_available
                 from fluidics.qt.sensor_plots import FlowSensorControlWidget
 
-                # Only the Flow Cell operations arm the sensors. A configured mode nothing will act
-                # on was switched off and reported at bring-up (service.issues); here it only greys out.
+                # a mode nothing acts on was already switched off and reported at bring-up (service.issues)
                 self.flow_tab = FlowSensorControlWidget(
                     sensors, draw_protection=draw_protection_available(self.service.config)
                 )
