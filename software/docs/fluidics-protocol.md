@@ -60,7 +60,9 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
 
 - The instrument side is a column with a draggable divider (`InstrumentColumn`): the instrument block
   (Initialize, manual control, device status) over the Log / sensor tabs. In a window too short for both,
-  the block scrolls and the tabs keep 1.5× their minimum height, so the plots stay readable; with room for
+  the block scrolls and the tabs keep their minimum height — the plots' canvases declare the height their
+  labels need (Squid-Fluidics#57) — so the plots stay readable (on a short screen the divider moves up the
+  first time a plot tab is opened, when that page's height first counts); with room for
   both (≈1300 px) nothing scrolls. Once the divider is dragged the split is the operator's.
 
 - **Manual control** also has an inline **Prime / Clean** row (no pop-ups), the old widget's fields:
@@ -79,8 +81,8 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   combo (`off` / `warn` / `stop`), live during a run — a change applies from the next draw. `stop` halts the
   draw and fails the sequence, so the run goes HELD with the flow fault as its message (and Slack hears it);
   `warn` only logs (Log tab, `run.log`, the library's run report). Draw protection exists only for the
-  `Flow Cell` application: on any other, a configured `warn`/`stop` is switched off with a warning in the
-  log and the combo is disabled.
+  `Flow Cell` application: on any other, the library's bring-up switches a configured `warn`/`stop` off
+  and reports it as a bring-up issue (status line, log); the combo is disabled.
 - **Protocol editor**: rounds-grouped step list with include checkboxes and live validation, a field editor
   with "apply to all rows with this name", **Add rounds…** (template round × N with a port list),
   **+ Imaging** (folder auto-named, e.g. `R01_image`, editable per row), and per-imaging-row settings/coordinates

@@ -28,17 +28,14 @@ from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
 class InstrumentColumn(QSplitter):
     """The display tab's left column: the instrument block over the Log / sensor tabs.
 
-    The block asks for more height than a short window has, and a matplotlib canvas accepts any
-    height down to nothing, so in a plain column the plots were squeezed to a sliver. Here the block
-    scrolls instead: it gets the height it asks for unless that leaves the tabs less than TABS_ROOM
-    times their minimum height. Once the operator drags the divider the split is theirs (a window
-    resize then scales both panes, as any splitter does)."""
-
-    # Stands in for the library's plot canvas declaring no minimum height of its own (were it to,
-    # the splitter would hold that floor natively and this goes). The tabs' minimum height is where
-    # their tallest page's plot is flat (all controls, no canvas); half as much again is a plot one
-    # can read. Dimensionless, so it follows the font and the style.
-    TABS_ROOM = 1.5
+    The block asks for more height than a short window has, so in a plain column it squeezed the
+    tabs, plots first. Here the block scrolls instead: it gets the height it asks for unless that
+    leaves the tabs less than their minimum -- which the plots' canvases declare from the height
+    their labels need (Squid-Fluidics#57), so it holds a readable plot. A plot page's height only
+    counts once that page has been shown (Qt lays out no hidden page), so on a screen too short for
+    both the divider moves up the first time a plot tab is opened, and then stays. Once the operator
+    drags the divider the split is theirs (a window resize then scales both panes, as any splitter
+    does)."""
 
     def __init__(self, instrument: QWidget, tabs: QWidget, parent=None):
         super().__init__(Qt.Vertical, parent)
@@ -57,9 +54,6 @@ class InstrumentColumn(QSplitter):
         for pane in (instrument, tabs):
             pane.installEventFilter(self)
         self._content_changed()
-
-    def tabs_floor(self) -> int:
-        return round(self.TABS_ROOM * self._tabs.minimumSizeHint().height())
 
     def eventFilter(self, watched, event) -> bool:
         # Installed on the two panes only. A pane's size hints are fresh once its own LayoutRequest
@@ -88,7 +82,7 @@ class InstrumentColumn(QSplitter):
         if self._dragged or height == 0:  # 0: not laid out yet
             return
         wanted = self._instrument.sizeHint().height()
-        block = max(0, min(wanted, height - self.tabs_floor()))
+        block = max(0, min(wanted, height - self._tabs.minimumSizeHint().height()))
         self.setSizes([block, height - block])
 
 
@@ -240,32 +234,20 @@ class FluidicsDisplayTab(QWidget):
         sensors = self.service.system.devices.flow_sensors
         if sensors:
             try:
+                from fluidics.devices import draw_protection_available
                 from fluidics.qt.sensor_plots import FlowSensorControlWidget
 
-                # Only the Flow Cell operations arm the sensors (the library's own GUI draws the same line).
-                draw_protection = self.service.config.application == "Flow Cell"
-                if not draw_protection:
-                    self._switch_off_inert_draw_protection(sensors)
-                self.flow_tab = FlowSensorControlWidget(sensors, draw_protection=draw_protection)
+                # Only the Flow Cell operations arm the sensors. A configured mode nothing will act
+                # on was switched off and reported at bring-up (service.issues); here it only greys out.
+                self.flow_tab = FlowSensorControlWidget(
+                    sensors, draw_protection=draw_protection_available(self.service.config)
+                )
                 self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.flow_tab, "Flow")
             except Exception:
                 self._log.exception("Could not build the Flow tab")
         for widget in self._quick_widgets:
             widget.setEnabled(True)
         self.system_ready.emit()
-
-    def _switch_off_inert_draw_protection(self, sensors) -> None:
-        """A warn/stop mode configured on an application that never arms the sensors would
-        leave the operator believing a draw is protected: switch it off and say so."""
-        configured = [sensor.name for sensor in sensors if sensor.monitor != "off"]
-        if not configured:
-            return
-        for sensor in sensors:
-            sensor.monitor = "off"
-        self._log.warning(
-            f"Draw protection is configured for {', '.join(configured)} but is only available for the "
-            "Flow Cell application. The sensors will read and plot; they will not stop a draw."
-        )
 
     def shutdown(self) -> None:
         """Exit/restart path: detach logging and close the plot widgets' open CSV
