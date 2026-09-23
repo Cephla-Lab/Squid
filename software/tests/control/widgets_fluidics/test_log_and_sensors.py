@@ -4,8 +4,6 @@ import squid.logging
 
 pytest.importorskip("fluidics")
 
-from qtpy.QtWidgets import QGroupBox
-
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 
 
@@ -179,18 +177,15 @@ def test_draw_protection_is_switchable_on_a_flow_cell(initialized_display_tab):
 
 
 def test_inert_draw_protection_is_switched_off_and_said_so(initialized_display_tab, qtbot):
-    # Only the Flow Cell operations arm the sensors: a warn/stop asked of any other
-    # application would be a safety switch wired to nothing. The library's bring-up
-    # switches it off and reports it as an issue; Squid shows the issue and greys the combo.
+    # Only Flow Cell arms the sensors; the library's bring-up switches an inert mode off and
+    # reports it as an issue. What is Squid's: the issue is shown, and the combo greys out.
     from fluidics.devices import ISSUE_DRAW_PROTECTION
 
     tab = initialized_display_tab(_config_text(application="Open Chamber", monitor="stop"))
     (panel,) = tab.flow_tab.plot_widgets
-    assert panel.sensor.monitor == "off"
     assert not panel.monitor_combo.isEnabled() and panel.monitor_combo.currentText() == "off"
     ((kind, message),) = tab.service.issues
     assert kind == ISSUE_DRAW_PROTECTION and "syringe_draw" in message
-    qtbot.waitUntil(lambda: "only available for the Flow Cell" in tab.log_view.text_edit.toPlainText(), timeout=3000)
     assert "bring-up issue" in tab.system_panel.status_label.text()
 
 
@@ -215,8 +210,7 @@ def _scrolled_out(column):
 
 def _wait_for_short_window_layout(column, qtbot):
     """Initialize's widgets arrive over a few layout passes; settled, a window too short for both
-    panes leaves the tabs exactly the minimum Qt reports for them (a plot page's own counts only
-    once it has been shown) and scrolls the block for the rest."""
+    panes leaves the tabs exactly their minimum and scrolls the block for the rest."""
     tabs = column.widget(1)
     qtbot.waitUntil(
         lambda: column.sizes()[1] == tabs.minimumSizeHint().height() and _scrolled_out(column) > 0, timeout=2000
@@ -231,22 +225,9 @@ def test_a_short_window_scrolls_the_instrument_block_instead_of_flattening_the_p
     _wait_for_short_window_layout(column, qtbot)
     for sensor_tab in (tab.temperature_tab, tab.flow_tab):
         tab.tabs.setCurrentWidget(sensor_tab)
-        panel = sensor_tab.plot_widgets[0]
-        readout = panel.findChild(QGroupBox)  # the first one: the one-line readout above the plot
-        qtbot.waitUntil(lambda: panel.canvas.height() > readout.height(), timeout=2000)
-        # and that plot's declared height, which is what keeps the tabs from being squeezed
-        assert panel.canvas.minimumSizeHint().height() > 0
-        assert panel.canvas.height() >= panel.canvas.minimumSizeHint().height()
-
-
-def test_the_column_has_no_floor_of_its_own(initialized_display_tab, qtbot):
-    """The plots' canvases declare the height their labels need (Squid-Fluidics#57), so the
-    column keeps no stand-in factor over the tabs' minimum: with one, the block would scroll even
-    on a screen tall enough for both."""
-    tab = initialized_display_tab(_config_text(tec=True), shown_at=(1500, 1300))
-    column = tab.instrument_column
-    qtbot.waitUntil(lambda: column.sizes()[0] >= column.widget(0).widget().sizeHint().height(), timeout=2000)
-    assert _scrolled_out(column) == 0
+        canvas = sensor_tab.plot_widgets[0].canvas
+        # the plot's declared height is what keeps the tabs from being squeezed
+        qtbot.waitUntil(lambda: canvas.height() >= canvas.minimumSizeHint().height() > 0, timeout=2000)
 
 
 def test_the_instrument_block_is_never_clipped_sideways(initialized_display_tab, qtbot):
@@ -257,8 +238,11 @@ def test_the_instrument_block_is_never_clipped_sideways(initialized_display_tab,
 
 
 def test_a_tall_window_shows_the_whole_instrument_block(initialized_display_tab, qtbot):
-    tab = initialized_display_tab(_config_text(), shown_at=(1500, 1600))
+    # ~1300 px is where both panes fit. With the Flow page shown its plot's height counts, so a
+    # floor of the column's own over the tabs' minimum would scroll the block here.
+    tab = initialized_display_tab(_config_text(), shown_at=(1500, 1300))
     column = tab.instrument_column
+    tab.tabs.setCurrentWidget(tab.flow_tab)
     qtbot.waitUntil(lambda: column.sizes()[0] >= column.instrument_scroll.widget().sizeHint().height(), timeout=2000)
     assert _scrolled_out(column) == 0
 

@@ -60,10 +60,9 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
 
 - The instrument side is a column with a draggable divider (`InstrumentColumn`): the instrument block
   (Initialize, manual control, device status) over the Log / sensor tabs. In a window too short for both,
-  the block scrolls and the tabs keep their minimum height — the plots' canvases declare the height their
-  labels need (Squid-Fluidics#57) — so the plots stay readable (on a short screen the divider moves up the
-  first time a plot tab is opened, when that page's height first counts); with room for
-  both (≈1300 px) nothing scrolls. Once the divider is dragged the split is the operator's.
+  the block scrolls and the tabs keep the height their plots need (on a short screen the divider moves up
+  the first time a plot tab is opened); with room for both (≈1300 px) nothing scrolls. Once the divider is
+  dragged the split is the operator's.
 
 - **Manual control** also has an inline **Prime / Clean** row (no pop-ups), the old widget's fields:
   the ports to prime (`1-4, 25`), the wash port the final volume is drawn from, that volume, a flow
