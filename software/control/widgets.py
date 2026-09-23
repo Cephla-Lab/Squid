@@ -1227,9 +1227,23 @@ class PreferencesDialog(QDialog):
         # File Saving Format
         self.file_saving_combo = QComboBox()
         self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
+        current_value = self._get_file_saving_option()
         self.file_saving_combo.setCurrentText(current_value)
         layout.addRow("File Saving Format:", self.file_saving_combo)
+
+        # TIFF Compression (only visible for the TIFF formats that support it)
+        self.tiff_compression_spinbox = QSpinBox()
+        self.tiff_compression_spinbox.setRange(0, 9)
+        self.tiff_compression_spinbox.setToolTip(
+            "zlib (deflate) compression with the horizontal predictor, lossless.\n"
+            "0: No compression, maximum write speed (default)\n"
+            "1: Fastest compression\n"
+            "9: Smallest files, slowest\n"
+            "Does not apply to OME-TIFF, which is written through a memory map."
+        )
+        self.tiff_compression_spinbox.setValue(self._get_tiff_compression_level())
+        self.tiff_compression_label = QLabel("TIFF Compression Level:")
+        layout.addRow(self.tiff_compression_label, self.tiff_compression_spinbox)
 
         # Zarr Compression (only visible when ZARR_V3 is selected)
         self.zarr_compression_combo = QComboBox()
@@ -1245,9 +1259,9 @@ class PreferencesDialog(QDialog):
         self.zarr_compression_label = QLabel("Zarr Compression:")
         layout.addRow(self.zarr_compression_label, self.zarr_compression_combo)
 
-        # Show/hide zarr options based on file saving format selection
-        self._update_zarr_options_visibility()
-        self.file_saving_combo.currentTextChanged.connect(self._update_zarr_options_visibility)
+        # Show/hide the per-format options based on file saving format selection
+        self._update_file_format_options_visibility()
+        self.file_saving_combo.currentTextChanged.connect(self._update_file_format_options_visibility)
 
         # Default Saving Path
         path_widget = QWidget()
@@ -2002,6 +2016,21 @@ class PreferencesDialog(QDialog):
         values = [value for _, value in self._WHEEL_WRAP_CHOICES]
         return values.index(setting) if setting in values else 0
 
+    def _get_file_saving_option(self):
+        """The file saving format currently in effect, as a FileSavingOption name.
+
+        The config file usually has no file_saving_option key, so the fallback has to be the value
+        the software is actually running with (control._def, which the dialog itself updates live)
+        rather than a hardcoded format.  Otherwise the combo box displays a format that isn't in
+        use, _get_changes() can't detect a change away from it, and _apply_settings() persists that
+        wrong format into the machine config file.
+        """
+        return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
+
+    def _get_tiff_compression_level(self):
+        """The TIFF compression level currently in effect, falling back to the running value."""
+        return self._get_config_int("GENERAL", "tiff_compression_level", control._def.TIFF_COMPRESSION_LEVEL)
+
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
         return abs(a - b) < epsilon
@@ -2023,11 +2052,18 @@ class PreferencesDialog(QDialog):
             else:
                 QMessageBox.warning(self, "Invalid Path", f"The selected directory is not writable:\n{path}")
 
-    def _update_zarr_options_visibility(self):
-        """Show/hide zarr options based on file saving format."""
-        is_zarr = self.file_saving_combo.currentText() == "ZARR_V3"
+    def _update_file_format_options_visibility(self):
+        """Show/hide format specific options based on file saving format."""
+        current_format = self.file_saving_combo.currentText()
+
+        is_zarr = current_format == "ZARR_V3"
         self.zarr_compression_label.setVisible(is_zarr)
         self.zarr_compression_combo.setVisible(is_zarr)
+
+        # OME-TIFF stacks are written through a memory map, which requires an uncompressed file.
+        supports_tiff_compression = current_format in ("INDIVIDUAL_IMAGES", "MULTI_PAGE_TIFF")
+        self.tiff_compression_label.setVisible(supports_tiff_compression)
+        self.tiff_compression_spinbox.setVisible(supports_tiff_compression)
 
     def _ensure_section(self, section):
         """Ensure a config section exists, creating it if necessary."""
@@ -2042,6 +2078,7 @@ class PreferencesDialog(QDialog):
 
         # General settings
         self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "tiff_compression_level", str(self.tiff_compression_spinbox.value()))
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
         self.config.set(
@@ -2225,6 +2262,9 @@ class PreferencesDialog(QDialog):
             self.file_saving_combo.currentText()
         )
 
+        # TIFF compression level (only applicable when saving individual or multi page TIFFs)
+        control._def.TIFF_COMPRESSION_LEVEL = self.tiff_compression_spinbox.value()
+
         # Zarr compression (only applicable when using ZARR_V3)
         control._def.ZARR_COMPRESSION = control._def.ZarrCompression.convert_to_enum(
             self.zarr_compression_combo.currentText()
@@ -2305,10 +2345,17 @@ class PreferencesDialog(QDialog):
         changes = []
 
         # General settings (live update)
-        old_val = self._get_config_value("GENERAL", "file_saving_option", "OME_TIFF")
+        old_val = self._get_file_saving_option()
         new_val = self.file_saving_combo.currentText()
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))
+
+        # A setting missing here is silently not saved: _save_and_close() returns before
+        # _apply_settings() when it is the only thing the user changed.
+        old_val = self._get_tiff_compression_level()
+        new_val = self.tiff_compression_spinbox.value()
+        if old_val != new_val:
+            changes.append(("TIFF Compression Level", str(old_val), str(new_val), False))
 
         old_val = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
         new_val = self.zarr_6d_fov_checkbox.isChecked()

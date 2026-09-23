@@ -41,6 +41,20 @@ def get_image_filepath(save_directory: str, file_id: str, config_name: str, dtyp
     return os.path.join(save_directory, f"{file_id}_{channel_name_safe}.{extension}")
 
 
+def tiff_compression_kwargs() -> dict:
+    """Write keyword arguments implementing control._def.TIFF_COMPRESSION_LEVEL.
+
+    Accepted by both tifffile's writers and imageio's tiff plugin.  Zlib (deflate) with the
+    horizontal predictor is lossless and widely readable; the predictor is what makes it worthwhile
+    on 16 bit camera frames.  Read the level through the module so that a change made in
+    Preferences applies without a restart.
+    """
+    level = int(control._def.TIFF_COMPRESSION_LEVEL)
+    if level <= 0:
+        return {}
+    return {"compression": "zlib", "compressionargs": {"level": level}, "predictor": True}
+
+
 def save_image(
     image: np.array, file_id: str, save_directory: str, config: AcquisitionChannel, is_color: bool
 ) -> np.array:
@@ -56,7 +70,10 @@ def save_image(
     if control._def.SAVE_IN_PSEUDO_COLOR:
         image = return_pseudo_colored_image(image, config)
 
-    imageio.imwrite(saving_path, image)
+    # Compression only applies to TIFFs; get_image_filepath() falls back to IMAGE_FORMAT (bmp by
+    # default) for anything that isn't 16 bit, and those plugins reject these arguments.
+    is_tiff = os.path.splitext(saving_path)[1].lower() in (".tif", ".tiff")
+    imageio.imwrite(saving_path, image, **(tiff_compression_kwargs() if is_tiff else {}))
 
     return image
 
