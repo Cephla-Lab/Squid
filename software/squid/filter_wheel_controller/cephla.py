@@ -481,6 +481,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
                     f"(this controller runs {tuple(self.microcontroller.firmware_version)}); ignored"
                 )
             return
+        if window_deg > 0 and control._def.HAS_ENCODER_W and control._def.ENABLE_PID_W:
+            # The firmware ignores the window on an axis whose closed loop is enabled (its completion has to wait
+            # for the encoder), and _configure_wheel() enables the wheel's loop when both keys are on.
+            _log.warning(
+                f"Filter wheel {wheel_id}: completion window {window_deg:g} deg has no effect while the wheel's "
+                f"closed loop is enabled (has_encoder_w and enable_pid_w are both on): slot changes complete at "
+                f"the exact slot"
+            )
         axis = self._MOTOR_SLOT_TO_AXIS[self._configs[wheel_id].motor_slot_index]
         self.microcontroller.set_completion_window(axis, window_deg / 360.0)
         self.microcontroller.wait_till_operation_is_completed()
