@@ -1564,6 +1564,35 @@ class PreferencesDialog(QDialog):
         self.illumination_factor.setValue(self._get_config_float("GENERAL", "illumination_intensity_factor", 0.6))
         hw_layout.addRow("Illumination Intensity Factor:", self.illumination_factor)
 
+        self.hardware_trigger_global_reset_checkbox = QCheckBox()
+        self.hardware_trigger_global_reset_checkbox.setChecked(
+            self._get_config_bool(
+                "GENERAL", "hardware_trigger_global_reset", control._def.HARDWARE_TRIGGER_GLOBAL_RESET
+            )
+        )
+        self.hardware_trigger_global_reset_checkbox.setToolTip(
+            "Put the sensor in GLOBAL RESET mode while hardware triggering.\n"
+            "Every row starts exposing at the trigger, so the per-frame wait for the last\n"
+            "row to start (rows x line interval) disappears. Readout is still rolling, so\n"
+            "the illumination must be off before readout starts.\n\n"
+            "Only has an effect when hardware_trigger_mode = LEVEL in the .ini file.\n"
+            "If the camera does not report the mode back, acquisition fails loudly rather\n"
+            "than falling back to rolling timing."
+        )
+        hw_layout.addRow("Hardware Trigger Global Reset *:", self.hardware_trigger_global_reset_checkbox)
+
+        self.camera_trigger_ready_output_checkbox = QCheckBox()
+        self.camera_trigger_ready_output_checkbox.setChecked(
+            self._get_config_bool("GENERAL", "camera_trigger_ready_output", control._def.CAMERA_TRIGGER_READY_OUTPUT)
+        )
+        self.camera_trigger_ready_output_checkbox.setToolTip(
+            "Configure the camera's trigger-ready output while hardware triggering, so the\n"
+            "controller can gate the next trigger on the camera being ready.\n"
+            "Hamamatsu: output trigger 1. ToupCam: GPIO1. Active low on both, so an\n"
+            "unplugged cable reads as not ready."
+        )
+        hw_layout.addRow("Camera Trigger Ready Output *:", self.camera_trigger_ready_output_checkbox)
+
         hw_group.content.addLayout(hw_layout)
         layout.addWidget(hw_group)
 
@@ -2105,6 +2134,16 @@ class PreferencesDialog(QDialog):
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
         self.config.set("GENERAL", "led_matrix_b_factor", str(self.led_b_factor.value()))
         self.config.set("GENERAL", "illumination_intensity_factor", str(self.illumination_factor.value()))
+        self.config.set(
+            "GENERAL",
+            "hardware_trigger_global_reset",
+            "true" if self.hardware_trigger_global_reset_checkbox.isChecked() else "false",
+        )
+        self.config.set(
+            "GENERAL",
+            "camera_trigger_ready_output",
+            "true" if self.camera_trigger_ready_output_checkbox.isChecked() else "false",
+        )
 
         # Advanced - Development Settings
         self.config.set(
