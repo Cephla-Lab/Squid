@@ -238,7 +238,7 @@ void callback_set_ramp_profile()
     if (axis == 0xFF) return;
     uint8_t profile = buffer_rx[3];
     if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
-    // tmc4361A_sRampInit() writes the chip through a config pointer that is null until the chip
+    // The ramp init below writes the chip through a config pointer that is null until the chip
     // has been initialised (the wheels only by INITFILTERWHEEL): gated like a move.
     if (!axis_driver_ready(axis)) return;
     tmc4361[axis].ramp_profile = profile;
