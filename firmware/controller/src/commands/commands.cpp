@@ -153,6 +153,17 @@ void callback_enable_stage_pid()
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;  // Invalid axis
 
+    // Closed loop on the filter wheels is not supported (decided 2026-09-24). A wheel is a rotary
+    // axis with no travel limit, and this firmware has no watchdog or clamp on the chip's controller:
+    // a wrong encoder sign would run it away with nothing to stop it. The wheel's encoder is read
+    // (SET_ENCODER_REPORTING) and never closed into a loop. Refused like a bad move, so a host or a
+    // bench tool that asks anyway gets CMD_EXECUTION_ERROR instead of silence.
+    if (axis == w || axis == w2)
+    {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
+
     /*
       This is an actuator path, not a configuration write. PID_BPG0 sets
       ENC_IN_CONF.REGULATION_MODUS, which hands the axis to the TMC4361A's

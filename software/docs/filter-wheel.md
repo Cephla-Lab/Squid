@@ -14,7 +14,8 @@ Firmware 1.6 is flashed on TMC2240 controllers only for now. A machine on firmwa
 the Preferences rows; the other features stay off until it is flashed.
 
 The wheel runs open loop. Its encoder (`has_encoder_w`) is read by the tuner and by encoder reporting; closed loop
-on the wheel is not supported and the former `enable_pid_w` key is ignored with a warning.
+on the wheel is not supported: the former `enable_pid_w` key is ignored with a warning, and the firmware refuses
+the enable command on the wheel axes.
 
 ## 1. Prerequisites
 

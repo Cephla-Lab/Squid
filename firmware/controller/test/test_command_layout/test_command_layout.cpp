@@ -479,6 +479,10 @@ void test_commands_guards_the_pid_actuator_path(void)
 
     assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
                                  "axis_driver_ready(", "tmc4361A_set_PID(");
+    // Closed loop on the filter wheels is refused outright (2026-09-24): the wheel refusal must
+    // sit in the same function, before the loop is engaged.
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
+                                 "axis == w || axis == w2", "tmc4361A_set_PID(");
     assert_guard_precedes_motion(src, "commands.cpp", "void callback_set_ramp_profile()",
                                  "axis_driver_ready(", "tmc4361A_sRampInit(");
     assert_guard_precedes_motion(src, "commands.cpp", "void callback_set_encoder_reporting()",
