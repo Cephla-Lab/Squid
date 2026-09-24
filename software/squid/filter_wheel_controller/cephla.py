@@ -231,6 +231,7 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # path) because firmware could have been re-flashed between launches.
         fw = self.microcontroller.firmware_version
         _log.info(f"SquidFilterWheel.__init__: firmware v{fw[0]}.{fw[1]}, skip_init={skip_init}")
+        self._warn_if_ini_asks_for_wheel_pid()
         if fw < self._MIN_FIRMWARE_VERSION:
             min_major, min_minor = self._MIN_FIRMWARE_VERSION
             raise RuntimeError(
@@ -481,14 +482,6 @@ class SquidFilterWheel(AbstractFilterWheelController):
                     f"(this controller runs {tuple(self.microcontroller.firmware_version)}); ignored"
                 )
             return
-        if window_deg > 0 and control._def.HAS_ENCODER_W and control._def.ENABLE_PID_W:
-            # The firmware ignores the window on an axis whose closed loop is enabled (its completion has to wait
-            # for the encoder), and _configure_wheel() enables the wheel's loop when both keys are on.
-            _log.warning(
-                f"Filter wheel {wheel_id}: completion window {window_deg:g} deg has no effect while the wheel's "
-                f"closed loop is enabled (has_encoder_w and enable_pid_w are both on): slot changes complete at "
-                f"the exact slot"
-            )
         axis = self._MOTOR_SLOT_TO_AXIS[self._configs[wheel_id].motor_slot_index]
         self.microcontroller.set_completion_window(axis, window_deg / 360.0)
         self.microcontroller.wait_till_operation_is_completed()
@@ -512,13 +505,15 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._config_verified[wheel_id] = True
         self._apply_completion_window(wheel_id)
 
-        # Common PID setup for both wheels (they share identical encoder settings)
+        # Encoder scale and direction, when the wheel has one (both wheels share the settings). The encoder is
+        # read - by SET_ENCODER_REPORTING, for the tuner - and never closed into a loop: the firmware on master has
+        # no watchdog or clamp for the chip's controller, a wrong encoder sign would run a rotary axis away with
+        # nothing to stop it, the completion window is ignored on a closed-loop axis, and the open-loop wheel loses
+        # no steps. Decided 2026-09-24; the enable_pid_w key was removed with it.
         # Use protocol axis (AXIS.W / AXIS.W2), not motor_slot index (3 / 4),
         # because the firmware's protocol_axis_to_internal() handles mapping.
         if HAS_ENCODER_W:
-            self.microcontroller.set_pid_arguments(axis, PID_P_W, PID_I_W, PID_D_W)
             self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
-            self.microcontroller.turn_on_stage_pid(axis, ENABLE_PID_W)
 
     @staticmethod
     def _delta_to_usteps(delta_mm: float) -> int:
@@ -551,6 +546,28 @@ class SquidFilterWheel(AbstractFilterWheelController):
         if isinstance(value, str) and value.strip().lower() == "auto":
             return "auto"
         raise ValueError(f"squid_filterwheel_wrap must be auto, True or False, not {value!r}")
+
+    @staticmethod
+    def _warn_if_ini_asks_for_wheel_pid():
+        """The enable_pid_w key was removed on 2026-09-24 (closed loop on the wheel is not supported). The ini loader
+        ignores keys it no longer knows, so a machine ini that still carries `enable_pid_w = True` would be obeyed by
+        nobody and say nothing. Say something."""
+        path = getattr(control._def, "CACHED_CONFIG_FILE_PATH", None)
+        if not path:
+            return
+        try:
+            import configparser
+
+            cfp = configparser.ConfigParser()
+            cfp.read(path)
+            raw = cfp.get("GENERAL", "enable_pid_w", fallback=None)
+        except Exception:  # noqa: BLE001 - a diagnostic must never stop the start
+            return
+        if raw is not None and control._def.conf_attribute_reader(raw) is True:
+            _log.warning(
+                f"{path}: enable_pid_w = True is ignored. Closed loop on the Squid filter wheel is not supported "
+                f"(the wheel runs open loop; its encoder is only read). Remove the key."
+            )
 
     @property
     def wrap(self):

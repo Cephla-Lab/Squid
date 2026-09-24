@@ -298,24 +298,6 @@ def test_an_explicit_true_below_firmware_1_4_is_warned_about(caplog):
     assert any("squid_filterwheel_wrap = True needs firmware" in r.getMessage() for r in caplog.records)
 
 
-def test_a_window_that_the_wheels_closed_loop_would_swallow_is_warned_about(caplog):
-    """The firmware ignores the completion window on a closed-loop axis; the host enables the wheel's loop when
-    has_encoder_w and enable_pid_w are both on. Both default to off, so this is latent, but it must not be silent."""
-    import control._def
-    import logging
-
-    with pytest.MonkeyPatch.context() as m:
-        m.setattr(control._def, "SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG", 5.0)
-        m.setattr(control._def, "HAS_ENCODER_W", True)
-        m.setattr(control._def, "ENABLE_PID_W", True)
-        mc = MagicMock()
-        mc.firmware_version = (1, 6)
-        with caplog.at_level(logging.WARNING):
-            SquidFilterWheel(mc, _config(), skip_init=True)
-    assert any("completion window 5 deg has no effect" in r.getMessage() for r in caplog.records)
-    mc.set_completion_window.assert_called()  # still sent: harmless, and in force the moment the loop is off
-
-
 def test_controllers_without_a_rotary_wrap_keep_their_ends():
     from squid.abc import AbstractFilterWheelController
 

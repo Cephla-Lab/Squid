@@ -156,13 +156,34 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.configure_squidfilter.assert_called_once()
 
     @patch("squid.filter_wheel_controller.cephla.HAS_ENCODER_W", True)
-    def test_normal_init_configures_encoder_pid(self, mock_microcontroller, squid_config):
-        """skip_init=False with HAS_ENCODER_W=True should configure encoder PID."""
+    def test_normal_init_configures_the_encoder_but_never_closes_the_loop(self, mock_microcontroller, squid_config):
+        """skip_init=False with HAS_ENCODER_W=True sets the encoder's scale and direction, for reporting and the
+        tuner. Closed loop on the wheel is not supported (decided 2026-09-24): no PID arguments, no enable."""
         SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
 
-        mock_microcontroller.set_pid_arguments.assert_called_once()
         mock_microcontroller.configure_stage_pid.assert_called_once()
-        mock_microcontroller.turn_on_stage_pid.assert_called_once()
+        mock_microcontroller.set_pid_arguments.assert_not_called()
+        mock_microcontroller.turn_on_stage_pid.assert_not_called()
+
+    def test_a_stale_enable_pid_w_key_in_the_ini_is_warned_about(
+        self, mock_microcontroller, squid_config, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        import control._def
+
+        ini = tmp_path / "configuration_test.ini"
+        ini.write_text("[GENERAL]\nenable_pid_w = True\n")
+        monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(ini))
+        with caplog.at_level(logging.WARNING):
+            SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
+        assert any("enable_pid_w = True is ignored" in r.getMessage() for r in caplog.records)
+        mock_microcontroller.turn_on_stage_pid.assert_not_called()
+
+        ini.write_text("[GENERAL]\nenable_pid_w = False\n")
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
+        assert not any("enable_pid_w" in r.getMessage() for r in caplog.records)
 
 
 class TestSquidFilterWheelAbsoluteMove:

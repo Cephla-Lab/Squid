@@ -698,13 +698,12 @@ MAX_ACCELERATION_W_mm = 300
 HAS_ENCODER_X = False
 HAS_ENCODER_Y = False
 HAS_ENCODER_Z = False
-HAS_ENCODER_W = False
+HAS_ENCODER_W = False  # the wheel's encoder is for reporting and the tuner; closed loop on the wheel is not supported
 
 # enable PID control
 ENABLE_PID_X = False
 ENABLE_PID_Y = False
 ENABLE_PID_Z = False
-ENABLE_PID_W = False
 
 # PID arguments
 PID_P_X = int(1 << 12)
@@ -718,10 +717,6 @@ PID_D_Y = int(0)
 PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
 PID_D_Z = int(1)
-
-PID_P_W = int(1 << 12)
-PID_I_W = int(1)
-PID_D_W = int(1)
 
 # flip direction True or False
 ENCODER_FLIP_DIR_X = True
