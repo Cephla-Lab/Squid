@@ -3,6 +3,7 @@
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
+#include "../trigger_pins.h"
 
 CommandCallback cmd_map[256] = {0};
 
@@ -89,28 +90,37 @@ void callback_set_dac80508_defdiv_gain()
 
 void callback_set_strobe_delay()
 {
+    if (!controller::trigger_channel_valid(controller::kActive, buffer_rx[2])) {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
     strobe_delay[buffer_rx[2]] = uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]);
 }
 
 void callback_send_hardware_trigger()
 {
+    int camera_channel = buffer_rx[2] & 0x0f;
+    if (!controller::trigger_channel_valid(controller::kActive, camera_channel)) {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
+
     // Some (all?) the arrays used by the trigger timer interrupt use data types that don't have
     // atomic writes, so we need to disable interrupts here to make sure the timer interrupt
     // doesn't get partially written values.
     noInterrupts();
-    int camera_channel = buffer_rx[2] & 0x0f;
 
     // For level trigger mode, ignore new triggers while one is already active
-    if (trigger_mode != 0 && trigger_output_level[camera_channel] == LOW) {
+    if (trigger_mode != 0 && trigger_asserted[camera_channel]) {
         interrupts();
         return;
     }
 
     control_strobe[camera_channel] = buffer_rx[2] >> 7;
     illumination_on_time[camera_channel] = uint32_t(buffer_rx[3]) << 24 | uint32_t(buffer_rx[4]) << 16 | uint32_t(buffer_rx[5]) << 8 | uint32_t(buffer_rx[6]);
-    digitalWrite(camera_trigger_pins[camera_channel], LOW);
+    trigger_assert(camera_channel);
     timestamp_trigger_rising_edge[camera_channel] = micros();
-    trigger_output_level[camera_channel] = LOW;
+    trigger_asserted[camera_channel] = true;
     interrupts();
 }
 
