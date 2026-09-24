@@ -535,6 +535,23 @@ class TestExtendedLoader:
         with pytest.raises(ValueError):
             read_coordinates_csv(str(csv_path))
 
+    def test_read_coordinates_csv_skips_a_provenance_stamp(self, tmp_path):
+        """A file written by "Save Coordinates" carries a one-line JSON stamp above the header;
+        it must read the same as an unstamped acquisition coordinates.csv."""
+        import pandas as pd
+
+        from control.acquisition_yaml_loader import read_coordinates_csv
+        from control.core.coordinate_provenance import STAMP_PREFIX, write_scan_coordinates_csv
+
+        csv_path = tmp_path / "saved.csv"
+        df = pd.DataFrame(
+            [["A1", 1.0, 2.0, 3.0], ["A1", 1.5, 2.0, 3.1]], columns=["region", "x (mm)", "y (mm)", "z (mm)"]
+        )
+        write_scan_coordinates_csv(str(csv_path), df, "96 well plate")
+        assert csv_path.read_text().startswith(STAMP_PREFIX)
+
+        assert read_coordinates_csv(str(csv_path)) == [{"name": "A1", "fovs": [[1.0, 2.0, 3.0], [1.5, 2.0, 3.1]]}]
+
     def test_parse_folder_tolerates_a_bad_coordinates_csv(self, tmp_path):
         from control.acquisition_yaml_loader import parse_acquisition_yaml
 

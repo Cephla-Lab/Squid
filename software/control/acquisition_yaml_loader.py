@@ -187,9 +187,16 @@ def read_coordinates_csv(path: str) -> List[dict]:
     """Read a Squid coordinates.csv into [{"name": region, "fovs": [[x, y(, z)], ...]}, ...] in file order.
 
     The z column is used only when present and filled for every row (matching
-    control.widgets.load_coordinate_regions_from_dataframe). Raises ValueError on missing columns.
+    control.widgets.load_coordinate_regions_from_dataframe). A provenance stamp line written by
+    "Save Coordinates" (control.core.coordinate_provenance) is skipped, so a saved-coordinates file
+    can stand in for coordinates.csv. Raises ValueError on missing columns.
     """
+    from control.core.coordinate_provenance import STAMP_PREFIX
+
     with open(path, newline="", encoding="utf-8") as f:
+        first = f.readline()
+        if not first.startswith(STAMP_PREFIX):
+            f.seek(0)
         rows = list(csv.DictReader(f))
     required = ("region", "x (mm)", "y (mm)")
     fieldnames = rows[0].keys() if rows else ()

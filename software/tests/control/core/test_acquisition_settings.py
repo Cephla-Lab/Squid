@@ -127,15 +127,31 @@ def test_export_then_apply_round_trips():
     assert mpc2.scanCoordinates.region_fov_coordinates["A1"] == mpc.scanCoordinates.region_fov_coordinates["A1"]
 
 
-def test_parse_wells_range_and_list():
-    settings = {"a1_x_mm": 10.0, "a1_y_mm": 20.0, "well_spacing_mm": 9.0}
-    assert parse_wells("A1:B2", settings) == {
-        "A1": (10.0, 20.0),
-        "A2": (19.0, 20.0),
-        "B1": (10.0, 29.0),
-        "B2": (19.0, 29.0),
+def test_parse_wells_range_and_list(monkeypatch):
+    # Resolved through plate_transform_for, so the legacy WELLPLATE_OFFSET applies like at every
+    # other well->stage site (the MCP path used to omit it - see test_plate_geometry_oracle).
+    monkeypatch.setattr(control._def, "WELLPLATE_OFFSET_X_mm", 1.375)
+    monkeypatch.setattr(control._def, "WELLPLATE_OFFSET_Y_mm", -0.625)
+    s = control._def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]
+
+    def xy(row, col):
+        return (
+            s["a1_x_mm"] + col * s["well_spacing_mm"] + 1.375,
+            s["a1_y_mm"] + row * s["well_spacing_mm"] - 0.625,
+        )
+
+    assert parse_wells("A1:B2", "96 well plate") == {
+        "A1": xy(0, 0),
+        "A2": xy(0, 1),
+        "B1": xy(1, 0),
+        "B2": xy(1, 1),
     }
-    assert parse_wells("A1,C3", settings) == {"A1": (10.0, 20.0), "C3": (28.0, 38.0)}
+    assert parse_wells("A1,C3", "96 well plate") == {"A1": xy(0, 0), "C3": xy(2, 2)}
+
+
+def test_parse_wells_rejects_unknown_format():
+    with pytest.raises(ValueError):
+        parse_wells("A1", "no such plate")
 
 
 def test_apply_rejects_an_unknown_z_stacking_config_before_touching_regions():
