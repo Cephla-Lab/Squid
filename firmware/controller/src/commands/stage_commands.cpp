@@ -771,7 +771,6 @@ void callback_home_or_zero()
                 report_move_error();
                 return;
             }
-            if (enable_filterwheel == true) {
             if (stage_PID_enabled[w] == 1)
                 tmc4361A_set_PID(&tmc4361[w], PID_DISABLE);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[w], -1);
@@ -812,7 +811,6 @@ void callback_home_or_zero()
                 tmc4361A_setSpeed(&tmc4361[w], tmc4361A_vmmToMicrosteps( &tmc4361[w], LEFT_DIR * HOMING_VELOCITY_W ));
                 }
             }
-            }
             break;
         case AXIS_W2:
             if (enable_filterwheel_w2 != true) {
@@ -822,7 +820,6 @@ void callback_home_or_zero()
                 report_move_error();
                 return;
             }
-            if (enable_filterwheel_w2 == true) {
             if (stage_PID_enabled[w2] == 1)
                 tmc4361A_set_PID(&tmc4361[w2], PID_DISABLE);
             tmc4361A_disableVirtualLimitSwitch(&tmc4361[w2], -1);
@@ -862,7 +859,6 @@ void callback_home_or_zero()
                 tmc4361A_readInt(&tmc4361[w2], TMC4361A_EVENTS);
                 tmc4361A_setSpeed(&tmc4361[w2], tmc4361A_vmmToMicrosteps( &tmc4361[w2], LEFT_DIR * HOMING_VELOCITY_W ));
                 }
-            }
             }
             break;
         case AXES_XY:

@@ -698,13 +698,12 @@ MAX_ACCELERATION_W_mm = 300
 HAS_ENCODER_X = False
 HAS_ENCODER_Y = False
 HAS_ENCODER_Z = False
-HAS_ENCODER_W = False
+HAS_ENCODER_W = False  # the wheel's encoder is for reporting and the tuner; closed loop on the wheel is not supported
 
 # enable PID control
 ENABLE_PID_X = False
 ENABLE_PID_Y = False
 ENABLE_PID_Z = False
-ENABLE_PID_W = False
 
 # PID arguments
 PID_P_X = int(1 << 12)
@@ -718,10 +717,6 @@ PID_D_Y = int(0)
 PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
 PID_D_Z = int(1)
-
-PID_P_W = int(1 << 12)
-PID_I_W = int(1)
-PID_D_W = int(1)
 
 # flip direction True or False
 ENCODER_FLIP_DIR_X = True
@@ -1024,10 +1019,9 @@ NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 6
 LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
-USE_NAPARI_FOR_LIVE_VIEW = False
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
-USE_NAPARI_WELL_SELECTION = False
-USE_NAPARI_FOR_LIVE_CONTROL = False
+
+# Live view only (no acquisition tabs)
 LIVE_ONLY_MODE = False
 
 # NDViewer integration

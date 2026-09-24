@@ -359,6 +359,8 @@ def test_set_encoder_reporting_and_ramp_profile_encoding():
         assert (micro.last_command[2], micro.last_command[3]) == (control._def.AXIS.W2, 2)
         with pytest.raises(ValueError):
             micro.set_ramp_profile(control._def.AXIS.W, 3)
+        with pytest.raises(ValueError):
+            micro.set_encoder_reporting(control._def.AXIS.W, 3)  # validated like its sibling
     finally:
         micro.close()
 
@@ -394,6 +396,7 @@ def test_status_packet_with_encoder_reporting_is_decoded():
             serial.response_buffer.extend(_status_packet(-12345, flags, -7))
             serial._in_waiting = len(serial.response_buffer)
         assert _wait_for(lambda: micro.get_encoder_state()["reporting"])
+        assert micro.get_pos()[3] == 0  # the theta field carries the encoder: theta itself is unchanged
         state = micro.get_encoder_state()
         assert state == {
             "reporting": True,

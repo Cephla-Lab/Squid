@@ -470,13 +470,23 @@ void test_commands_guards_the_pid_actuator_path(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(src, "could not open src/commands/commands.cpp from any "
                                       "candidate working directory");
 
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "axis_driver_ready("),
-        "commands.cpp must hold exactly one axis_driver_ready call site: "
-        "callback_enable_stage_pid. Losing it lets ENABLE_STAGE_PID drive a "
-        "DRIVER_UNKNOWN axis continuously at unknown current");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, count_occurrences(src, "axis_driver_ready("),
+        "commands.cpp must hold exactly three axis_driver_ready call sites: "
+        "callback_enable_stage_pid (a DRIVER_UNKNOWN axis would otherwise be driven "
+        "continuously at unknown current), callback_set_ramp_profile and "
+        "callback_set_encoder_reporting (both touch the chip through a config pointer "
+        "that is null until INITFILTERWHEEL on a wheel axis: a hard fault until power cycle)");
 
     assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
                                  "axis_driver_ready(", "tmc4361A_set_PID(");
+    // Closed loop on the filter wheels is refused outright (2026-09-24): the wheel refusal must
+    // sit in the same function, before the loop is engaged.
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
+                                 "axis == w || axis == w2", "tmc4361A_set_PID(");
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_set_ramp_profile()",
+                                 "axis_driver_ready(", "tmc4361A_sRampInit(");
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_set_encoder_reporting()",
+                                 "axis_driver_ready(", "encoder_report_axis = axis;");
 }
 
 int main(int argc, char **argv) {

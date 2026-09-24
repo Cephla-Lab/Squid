@@ -13,6 +13,10 @@ Cephla (Squid) filter wheel driven by the controller's W axis. Third-party wheel
 Firmware 1.6 is flashed on TMC2240 controllers only for now. A machine on firmware 1.5 gets the position record and
 the Preferences rows; the other features stay off until it is flashed.
 
+The wheel runs open loop. Its encoder (`has_encoder_w`) is read by the tuner and by encoder reporting; closed loop
+on the wheel is not supported: the former `enable_pid_w` key is ignored with a warning, and the firmware refuses
+the enable command on the wheel axes.
+
 ## 1. Prerequisites
 
 In the machine ini (`configuration_<machine>.ini`, section `[GENERAL]`), the wheel has to be enabled as before:
