@@ -60,6 +60,9 @@ class AcquisitionParameters:
 
     apply_channel_offset: bool = True
     skip_saving: bool = False
+    # Dry run: every real hardware step (stage, autofocus, camera, disk) runs, but the
+    # illumination is never opened.  See MultiPointWorker._illumination_on_for_frame().
+    dry_run: bool = False
 
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate
