@@ -87,8 +87,17 @@ class HamamatsuCamera(AbstractCamera):
         self._read_thread_running = threading.Event()
         self._read_thread_running.clear()
 
+        # Held across every capture transition (stop_streaming, start_streaming) and by the read thread
+        # from its DCAM read through frame publication, so a read never straddles two captures.
+        # stop_streaming() leaves the read thread running, so nothing else keeps them apart.
+        # Taken after _trigger_lock, before _frame_lock.
+        self._capture_lock = threading.Lock()
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
+        # frame_id = this base + the stamp DCAM counts from 0 at every cap_start (see _read_newest_frame).
+        self._frame_id_base = 1
+        # The number (from 0 at cap_start) of the newest frame delivered in this capture; see _frame_number().
+        self._last_frame_number = -1
         self._last_trigger_timestamp = 0
         self._trigger_sent = threading.Event()
 
@@ -126,6 +135,57 @@ class HamamatsuCamera(AbstractCamera):
             return False
         return True
 
+    def _read_newest_frame(self) -> Optional[CameraFrame]:
+        """The newest frame in DCAM's ring buffer, numbered by the CAMERA's frame stamp.
+
+        The read loop takes the newest frame only. When two frames land between two reads the older
+        one is never seen, and when a frame lands between the wake-up and this read the newer one is
+        read twice. A host-side counter numbers both 1, 2, 3... as if nothing had happened; ids that
+        follow the camera's stamp leave a hole for the first and repeat for the second, so a consumer
+        that needs every frame in order (a hardware-sequenced burst) can tell.
+
+        DCAM counts the stamp from 0 at every cap_start; _frame_id_base keeps ids increasing across
+        restarts, and the very first id is still 1.
+        """
+        # Finish publishing an in-flight frame before a restart can rebase its IDs.
+        with self._capture_lock:
+            # The dcam driver handles setting the correct width and height, so we can use the
+            # np frame directly. buf_getframe(-1) is what buf_getlastframedata() calls; it also
+            # returns the DCAMBUF_FRAME that carries the stamp.
+            result = self._camera.buf_getframe(-1)
+            self._trigger_sent.clear()
+
+            if isinstance(result, bool):
+                self._log.error("Frame read resulted in boolean, must be an error.")
+                return None
+
+            frame_info, raw_frame = result
+            processed_frame = self._process_raw_frame(raw_frame)
+            with self._frame_lock:
+                camera_frame = CameraFrame(
+                    frame_id=self._frame_id_base + self._frame_number(int(frame_info.framestamp)),
+                    timestamp=time.time(),
+                    frame=processed_frame,
+                    frame_format=self.get_frame_format(),
+                    frame_pixel_format=self.get_pixel_format(),
+                )
+
+                self._current_frame = camera_frame
+            return camera_frame
+
+    def _frame_number(self, framestamp: int) -> int:
+        """The frame's number since cap_start, from the camera's framestamp.
+
+        The stamp is a 16-BIT counter on the ORCA-Fusion BT (bench 2026-09-21: 65535 -> 0 while DCAM's own
+        32-bit frame count went on to 65537), so it cannot be used as the number directly: after 65,536
+        frames in one capture - 45 minutes at 24 fps - ids would start over. Frames are read in order and
+        never more than a ring's worth apart, so the number is the last one plus the stamp's advance
+        modulo 2**16. An advance of 0 is the same frame read again, and keeps its number.
+        """
+        # NOTE: The caller must hold _frame_lock.
+        self._last_frame_number += (framestamp - self._last_frame_number) & 0xFFFF
+        return self._last_frame_number
+
     def _read_frames_when_available(self):
         self._log.info("Starting Hamamatsu read thread.")
         self._read_thread_running.set()
@@ -137,26 +197,9 @@ class HamamatsuCamera(AbstractCamera):
                 frame_ready = self._camera.wait_event(DCAMWAIT_CAPEVENT.FRAMEREADY, wait_time)
 
                 if frame_ready:
-                    # The dcam driver handles setting the correct width and height, so we can use the
-                    # np frame directly.
-                    raw_frame = self._camera.buf_getlastframedata()
-                    self._trigger_sent.clear()
-
-                    if isinstance(raw_frame, bool):
-                        self._log.error("Frame read resulted in boolean, must be an error.")
+                    camera_frame = self._read_newest_frame()
+                    if camera_frame is None:
                         continue
-
-                    processed_frame = self._process_raw_frame(raw_frame)
-                    with self._frame_lock:
-                        camera_frame = CameraFrame(
-                            frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
-                            timestamp=time.time(),
-                            frame=processed_frame,
-                            frame_format=self.get_frame_format(),
-                            frame_pixel_format=self.get_pixel_format(),
-                        )
-
-                        self._current_frame = camera_frame
 
                     # Send the local copy of the frame to all the callbacks so we are sure they get this frame
                     self._propogate_frame(camera_frame)
@@ -359,12 +402,17 @@ class HamamatsuCamera(AbstractCamera):
             self._log.debug("Already streaming, start_streaming is noop")
             return True
 
-        if not self._allocate_read_buffers():
-            self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
-            return False
-        if not self._camera.cap_start():
-            self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
-            return False
+        with self._capture_lock:
+            if not self._allocate_read_buffers():
+                self._log.error(f"Couldn't allocate read buffers for streaming: {self._last_dcam_error_string()}")
+                return False
+            with self._frame_lock:
+                # DCAM's frame stamp starts over at 0; ids must not.
+                self._frame_id_base = self._current_frame.frame_id + 1 if self._current_frame else 1
+                self._last_frame_number = -1  # and the numbering of this capture starts over with it
+            if not self._camera.cap_start():
+                self._log.error(f"Failed to start streaming: {self._last_dcam_error_string()}")
+                return False
 
         self._trigger_sent.clear()
         self._is_streaming.set()
@@ -393,13 +441,14 @@ class HamamatsuCamera(AbstractCamera):
         # reports not-ready for the whole teardown, not just after it.
         self._is_streaming.clear()
         success = True
-        if not self._camera.cap_stop():
-            self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
-            success = False
+        with self._capture_lock:
+            if not self._camera.cap_stop():
+                self._log.error(f"Failed to stop camera streaming: {self._last_dcam_error_string()}")
+                success = False
 
-        if not self._camera.buf_release():
-            self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
-            success = False
+            if not self._camera.buf_release():
+                self._log.error(f"Failed to release camera buffers: {self._last_dcam_error_string()}")
+                success = False
 
         self._log.debug(f"Stopped with {success=}")
         self._trigger_sent.clear()
