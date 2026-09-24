@@ -1,5 +1,5 @@
 #include "commands.h"
-#include "stage_commands.h"           // axis_driver_ready()
+#include "stage_commands.h"           // the readiness gate the move commands use
 
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
