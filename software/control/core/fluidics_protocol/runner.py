@@ -81,9 +81,11 @@ class ProtocolRunner:
         manifest: Optional[RunManifest] = None,
         heartbeat_s: float = 5.0,
         poll_s: float = 0.05,
+        disable_tec_at_end: bool = False,
     ):
         self._log = squid.logging.get_logger(__name__)
         self._resolved = resolved
+        self._disable_tec_at_end = disable_tec_at_end
         self._steps = resolved.steps
         self.run_dir = Path(run_dir)
         self._imaging = imaging
@@ -245,6 +247,8 @@ class ProtocolRunner:
         self._log.info(f"Protocol run '{self._manifest.run_name}' started: {len(self._steps)} steps in {self.run_dir}")
 
     def _close_run(self, outcome: str) -> None:
+        if self._disable_tec_at_end:  # the operator asked for the TEC to power down when the run ends
+            self._safe(self._fluidics.disable_tec, "turning off the TEC at the end of the run")
         with self._lock:
             self._outcome = outcome
             self._manifest.status = outcome

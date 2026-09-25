@@ -129,3 +129,10 @@ class LibraryFluidicsPort:
         for channel, (target, on) in enumerate(zip(state.targets, state.output_enabled), start=1):
             tc.set_target_temperature(channel, target)
             tc.set_output_enabled(channel, on)
+
+    def disable_tec(self) -> None:
+        tc = self._system.devices.temperature_controller
+        if tc is None:
+            return
+        for channel in range(1, tc.channels + 1):
+            tc.set_output_enabled(channel, False)
