@@ -1,4 +1,5 @@
 #include "functions.h"
+#include "operations.h"   // joystick_x_to_rest / joystick_y_to_rest for the panel lock-out
 
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
@@ -612,9 +613,24 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 
   joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );
   joystick_delta_y = JOYSTICK_SIGN_Y * int16_t( uint16_t(buffer[6]) * 256 + uint16_t(buffer[7]) );
-  // locked out: an undeflected joystick, so that check_joystick() brings an axis it was driving to rest
-  // (it already leaves the axis of the commanded move itself alone)
-  if (panel_locked_out()) { joystick_delta_x = 0; joystick_delta_y = 0; }
+  // locked out: an undeflected joystick, and an axis it is driving is brought to rest NOW rather than at
+  // check_joystick()'s next 30 ms tick, which a short command can end before (the deltas that tick would
+  // have applied are discarded in between, and the first live packet after the command would keep the
+  // jog running). Once per lock-out; check_joystick() leaves the axis of the commanded move itself alone.
+  static bool stopped_for_lockout = false;
+  if (panel_locked_out())
+  {
+    bool deflected = joystick_delta_x != 0 || joystick_delta_y != 0;
+    joystick_delta_x = 0; joystick_delta_y = 0;
+    if (!stopped_for_lockout && deflected)
+    {
+      joystick_x_apply();
+      joystick_y_apply();
+      stopped_for_lockout = true;
+    }
+  }
+  else
+    stopped_for_lockout = false;
   btns = buffer[8];
 
   // temporary

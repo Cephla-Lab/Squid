@@ -327,6 +327,13 @@ static const char *load_source(const char *relative_path)
 
         g_source[n] = '\0';
 
+        /* A checkout with core.autocrlf reads "\r\n": the function-body scan wants "\n}\n", so drop every '\r'. */
+        size_t w = 0;
+        for (size_t r = 0; r < n; r++)
+            if (g_source[r] != '\r')
+                g_source[w++] = g_source[r];
+        g_source[w] = '\0';
+
         /* A truncated read would silently undercount the guards. */
         TEST_ASSERT_FALSE_MESSAGE(truncated, "g_source is too small for the file being scanned");
         return g_source;
@@ -474,7 +481,11 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
         "(The needle carries the ` =` so the prose above the gates, which names "
         "the variable, does not trip this.)");
 
-    assert_guard_precedes_motion(src, "operations.cpp", "void check_joystick()",
+    /* The per-axis joystick blocks live in joystick_x_apply() / joystick_y_apply(), which check_joystick()
+       calls on its tick and the panel lock-out calls at once (functions.cpp). */
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_x_apply()",
+                                 "tmc_driver_ready(", "tmc4361A_setSpeed(");
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_y_apply()",
                                  "tmc_driver_ready(", "tmc4361A_setSpeed(");
     assert_guard_precedes_motion(src, "operations.cpp", "void do_focus_control()",
                                  "tmc_driver_ready(", "tmc4361A_moveTo(");
@@ -495,7 +506,11 @@ void test_functions_locks_the_panel_out_during_commanded_moves(void)
                                        "working directory");
 
     assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!panel_locked_out() &&", "focusPosition = focusPosition +");
-    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "if (panel_locked_out()) { joystick_delta_x = 0; joystick_delta_y = 0; }", "flag_read_joystick = true;");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_delta_x = 0; joystick_delta_y = 0;", "flag_read_joystick = true;");
+    /* An axis the joystick is driving is brought to rest at the lock-out itself, not at check_joystick()'s
+       next tick: a command shorter than the tick would otherwise end with the jog still running. */
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_x_apply();", "flag_read_joystick = true;");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_y_apply();", "flag_read_joystick = true;");
 }
 
 /*

@@ -482,6 +482,51 @@ void do_camera_trigger()
   }
 }
 
+// Apply the joystick's current deltas to an axis it may drive: the jog speed, or at rest the offset
+// velocity if that is enabled, else a stop. Called by check_joystick() on its tick and by the panel
+// lock-out (functions.cpp) with the deltas zeroed, which must bring a jogging axis to rest the moment a
+// command begins: check_joystick() applies the deltas only every interval_send_joystick_update and
+// discards the samples in between, so a command shorter than that would end with the jog still
+// running and the next live packet keeping it.
+void joystick_x_apply()
+{
+  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
+  // an axis that is never commanded to move has nothing for the else-branch
+  // stop to halt, and a stop is itself a write to an unconfigured driver.
+  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
+  {
+    // joystick at motion position
+    if (abs(joystick_delta_x) > 0)
+  	  tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x + (joystick_delta_x / 32768.0)*MAX_VELOCITY_X_mm ) );
+    // joystick at rest position
+    else
+    {
+  	  if (enable_offset_velocity)
+  	    tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x ) );
+  	  else
+	    tmc4361A_stop(&tmc4361[x]); // tmc4361A_setSpeed( &tmc4361[x], 0 ) causes problems for zeroing
+    }
+  }
+}
+
+void joystick_y_apply()
+{
+  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
+  {
+    // joystick at motion position
+    if (abs(joystick_delta_y) > 0)
+  	  tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y + (joystick_delta_y / 32768.0)*MAX_VELOCITY_Y_mm ) );
+    // joystick at rest position
+    else
+    {
+  	  if (enable_offset_velocity)
+  	    tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y ) );
+  	  else
+  	    tmc4361A_stop(&tmc4361[y]); // tmc4361A_setSpeed( &tmc4361[y], 0 ) causes problems for zeroing
+    }
+  }
+}
+
 void check_joystick()
 {
   if (flag_read_joystick)
@@ -489,41 +534,8 @@ void check_joystick()
 	if (us_since_last_joystick_update > interval_send_joystick_update)
 	{
 	  us_since_last_joystick_update = 0;
-
-	  // read x joystick
-	  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
-	  // an axis that is never commanded to move has nothing for the else-branch
-	  // stop to halt, and a stop is itself a write to an unconfigured driver.
-	  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
-	  {
-	    // joystick at motion position
-	    if (abs(joystick_delta_x) > 0)
-	  	  tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x + (joystick_delta_x / 32768.0)*MAX_VELOCITY_X_mm ) );
-	    // joystick at rest position
-	    else
-	    {
-	  	  if (enable_offset_velocity)
-	  	    tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x ) );
-	  	  else
-		    tmc4361A_stop(&tmc4361[x]); // tmc4361A_setSpeed( &tmc4361[x], 0 ) causes problems for zeroing
-	      }
-	  }
-
-	  // read y joystick
-	  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
-	  {
-	    // joystick at motion position
-	    if (abs(joystick_delta_y) > 0)
-	  	  tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y + (joystick_delta_y / 32768.0)*MAX_VELOCITY_Y_mm ) );
-	    // joystick at rest position
-	    else
-	    {
-	  	  if (enable_offset_velocity)
-	  	    tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y ) );
-	  	  else
-	  	    tmc4361A_stop(&tmc4361[y]); // tmc4361A_setSpeed( &tmc4361[y], 0 ) causes problems for zeroing
-	    }
-	  }
+	  joystick_x_apply();   // read x joystick
+	  joystick_y_apply();   // read y joystick
 	}
 
     // set the read joystick flag to false
