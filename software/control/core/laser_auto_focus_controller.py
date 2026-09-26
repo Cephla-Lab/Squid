@@ -611,18 +611,10 @@ class LaserAutofocusController(QObject):
                     image = cv2.morphologyEx(image, cv2.MORPH_TOPHAT, kernel)
 
                 # calculate centroid
-                spot_detection_params = {
-                    "y_window": self.laser_af_properties.y_window,
-                    "x_window": self.laser_af_properties.x_window,
-                    "min_peak_width": self.laser_af_properties.min_peak_width,
-                    "min_peak_distance": self.laser_af_properties.min_peak_distance,
-                    "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
-                    "spot_spacing": self.laser_af_properties.spot_spacing,
-                }
                 result = utils.find_spot_location(
                     image,
                     mode=self.laser_af_properties.get_spot_detection_mode(),
-                    params=spot_detection_params,
+                    params=self.laser_af_properties.spot_detection_params(),
                     filter_sigma=self.laser_af_properties.filter_sigma,
                 )
                 if result is None:

@@ -5,6 +5,7 @@ import json
 import yaml
 import logging
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -19,6 +20,7 @@ import squid.logging
 from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
+from control.core import laser_af_closed_loop
 from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
 from control.microcontroller import Microcontroller
@@ -11601,6 +11603,8 @@ class DisplacementMeasurementWidget(QFrame):
 
 
 class LaserAutofocusControlWidget(QFrame):
+    signal_loop_test_done = Signal(str)  # message for the operator, emitted from the loop test's worker thread
+
     def __init__(
         self,
         laserAutofocusController,
@@ -11667,6 +11671,30 @@ class LaserAutofocusControlWidget(QFrame):
         self.grid.addWidget(QLabel("Target (um)"), 2, 0)
         self.grid.addWidget(self.entry_target, 2, 1)
         self.grid.addWidget(self.btn_move_to_target, 2, 2, 1, 2)
+
+        # Loop test: z vs t with the AF laser kept on, open loop (drift only) or closed loop through the piezo
+        self.combo_loop_mode = QComboBox()
+        self.combo_loop_mode.addItems(["Open loop", "Closed loop"])
+        self.entry_loop_duration = QDoubleSpinBox()
+        self.entry_loop_duration.setRange(1, 600)
+        self.entry_loop_duration.setDecimals(0)
+        self.entry_loop_duration.setValue(60)
+        self.entry_loop_duration.setSuffix(" s")
+        self.entry_loop_gain = QDoubleSpinBox()
+        self.entry_loop_gain.setRange(0.01, 2.0)
+        self.entry_loop_gain.setSingleStep(0.05)
+        self.entry_loop_gain.setValue(0.5)
+        self.entry_loop_gain.setPrefix("gain ")
+        self.entry_loop_gain.setEnabled(False)  # open loop is selected first
+        self.btn_loop_test = QPushButton("Run Loop Test")
+        self.btn_loop_test.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
+        self.loop_test_row = QWidget()
+        loop_test_layout = QHBoxLayout(self.loop_test_row)
+        loop_test_layout.setContentsMargins(0, 0, 0, 0)
+        for widget in (self.combo_loop_mode, self.entry_loop_duration, self.entry_loop_gain, self.btn_loop_test):
+            loop_test_layout.addWidget(widget)
+        self.loop_test_row.setVisible(self.laserAutofocusController.piezo is not None)
+        self.grid.addWidget(self.loop_test_row, 3, 0, 1, 4)
         self.setLayout(self.grid)
 
         # make connections
@@ -11674,11 +11702,61 @@ class LaserAutofocusControlWidget(QFrame):
         self.btn_measure_displacement.clicked.connect(self.on_measure_displacement_clicked)
         self.btn_move_to_target.clicked.connect(self.move_to_target)
         self.laserAutofocusController.signal_displacement_um.connect(self.label_displacement.setNum)
+        self.combo_loop_mode.currentIndexChanged.connect(lambda index: self.entry_loop_gain.setEnabled(index == 1))
+        self.btn_loop_test.clicked.connect(self.run_loop_test)
+        self.signal_loop_test_done.connect(self._on_loop_test_done)
 
     def update_init_state(self):
         self.btn_set_reference.setEnabled(self.laserAutofocusController.is_initialized)
         self.btn_measure_displacement.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
         self.btn_move_to_target.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
+        self.btn_loop_test.setEnabled(self.laserAutofocusController.laser_af_properties.has_reference)
+
+    def run_loop_test(self):
+        self._loop_test_was_live = self.liveController.is_live
+        if self._loop_test_was_live:
+            self.liveController.stop_live()
+        self.setEnabled(False)  # nothing else here may use the focus camera or the MCU while the loop runs
+        threading.Thread(
+            target=self._run_loop_test,
+            args=(
+                self.combo_loop_mode.currentIndex() == 1,
+                self.entry_loop_duration.value(),
+                self.entry_loop_gain.value(),
+            ),
+            name="laser_af_loop_test",
+            daemon=True,
+        ).start()
+
+    def _run_loop_test(self, closed_loop: bool, duration_s: float, gain: float):
+        laf = self.laserAutofocusController
+        try:
+            laf.camera.enable_callbacks(False)  # as laser AF does: the loop's frames stay out of the live stream
+            samples = laser_af_closed_loop.run(
+                get_frame=laf.get_new_frame,
+                config=laf.laser_af_properties,
+                microcontroller=laf.microcontroller,
+                piezo=laf.piezo,
+                duration_s=duration_s,
+                closed_loop=closed_loop,
+                gain=gain,
+                display_fn=laf.image_to_display.emit,
+            )
+            folder = laser_af_closed_loop.save(
+                samples, control._def.DEFAULT_SAVING_PATH, laf.objectiveStore.current_objective, closed_loop, gain
+            )
+            message = f"{laser_af_closed_loop.summarize(samples)}\n\nSaved to {folder}"
+        except Exception as e:
+            self._log.exception("Laser AF loop test failed")
+            message = f"Loop test failed: {e}"
+        self.signal_loop_test_done.emit(message)
+
+    def _on_loop_test_done(self, message: str):
+        self.setEnabled(True)
+        self.laserAutofocusController.signal_piezo_position_update.emit()
+        if self._loop_test_was_live:
+            self.liveController.start_live()
+        QMessageBox.information(self, "Laser AF Loop Test", message)
 
     def move_to_target(self):
         was_live = self.liveController.is_live
@@ -11737,6 +11815,7 @@ class LaserAutofocusControlWidget(QFrame):
         if success:
             self.btn_measure_displacement.setEnabled(True)
             self.btn_move_to_target.setEnabled(True)
+            self.btn_loop_test.setEnabled(True)
         if was_live:
             self.liveController.start_live()
 

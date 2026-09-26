@@ -112,6 +112,17 @@ class LaserAFConfig(BaseModel):
         """Get the SpotDetectionMode enum value."""
         return self.spot_detection_mode
 
+    def spot_detection_params(self) -> dict:
+        """The params dict laser autofocus passes to utils.find_spot_location."""
+        return {
+            "y_window": self.y_window,
+            "x_window": self.x_window,
+            "min_peak_width": self.min_peak_width,
+            "min_peak_distance": self.min_peak_distance,
+            "min_peak_prominence": self.min_peak_prominence,
+            "spot_spacing": self.spot_spacing,
+        }
+
     def set_spot_detection_mode(self, mode: SpotDetectionMode) -> None:
         """Set the spot detection mode from enum."""
         self.spot_detection_mode = mode
