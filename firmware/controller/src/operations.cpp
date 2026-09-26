@@ -541,7 +541,16 @@ void do_focus_control()
   // the focus wheel (functions.cpp, onJoystickPacketReceived) whether or not Z
   // can be driven, and letting it drift outside the limits would hand Z a wild
   // target the moment the axis is recovered. Only the move is gated.
-  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  //
+  // Not while a commanded Z move is in progress either. This runs every loop, so a wheel ramp
+  // issued before the command's acknowledgement rewrites the ramp target: the counter ends beside
+  // the command's target, check_position() never sees it there and the command stays IN_PROGRESS
+  // for ever (bench 2026-09-20, reproduced on open loop and on the chip PID). The command owns the
+  // axis until check_position() says so: the panel's input is dropped meanwhile (panel_locked_out(),
+  // functions.cpp), and this clause keeps the every-loop re-issue itself off the ramp for the
+  // command's duration, whatever focusPosition holds.
+  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false
+      && !Z_commanded_movement_in_progress)
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
 }
 
