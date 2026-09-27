@@ -16,6 +16,7 @@ import pytest
 import squid.abc
 from control._def import ZarrChunkMode, ZarrCompression
 from control.core.job_processing import (
+    SaveSettings,
     CaptureInfo,
     JobImage,
     JobRunner,
@@ -2054,3 +2055,29 @@ class TestZarrPathConsistency:
         for well_id, expected in test_cases:
             result = parse_well_id(well_id)
             assert result == expected, f"Failed for {well_id}: got {result}, expected {expected}"
+
+
+def test_save_zarr_job_uses_the_settings_it_carries(tmp_path, monkeypatch):
+    """The job runs in a subprocess whose control._def can predate a change made in Preferences."""
+    import control._def
+
+    monkeypatch.setattr(control._def, "ZARR_CHUNK_MODE", ZarrChunkMode.FULL_FRAME)
+    monkeypatch.setattr(control._def, "ZARR_COMPRESSION", ZarrCompression.FAST)
+    SaveZarrJob.clear_writers()
+
+    job = SaveZarrJob(
+        capture_info=make_test_capture_info(),
+        capture_image=JobImage(image_array=np.ones((512, 512), dtype=np.uint16)),
+        save_settings=SaveSettings(zarr_chunk_mode=ZarrChunkMode.TILED_256, zarr_compression=ZarrCompression.BEST),
+    )
+    job.zarr_writer_info = ZarrWriterInfo(
+        base_path=str(tmp_path), t_size=1, c_size=1, z_size=1, channel_names=["BF"], pixel_size_um=1.0
+    )
+    try:
+        job.run()
+
+        (writer,) = SaveZarrJob._zarr_writers.values()
+        assert writer.config.chunk_mode == ZarrChunkMode.TILED_256
+        assert writer.config.compression == ZarrCompression.BEST
+    finally:
+        SaveZarrJob.clear_writers()

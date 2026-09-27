@@ -38,6 +38,7 @@ from control.core.job_processing import (
     CaptureInfo,
     SaveImageJob,
     SaveOMETiffJob,
+    SaveSettings,
     SaveZarrJob,
     ZarrWriterInfo,
     AcquisitionInfo,
@@ -206,9 +207,9 @@ class MultiPointWorker:
         self._current_round_images = {}
 
         self.skip_saving = acquisition_parameters.skip_saving
-        # Read through control._def, not the bare star-imported name (which is a copy bound at
-        # import time), so that changing the format in Preferences applies to this acquisition.
-        file_saving_option = control._def.FILE_SAVING_OPTION
+        # The settings in effect now, for the whole acquisition.
+        self._save_settings = SaveSettings()
+        file_saving_option = self._save_settings.file_saving_option
         use_ome_tiff = file_saving_option == FileSavingOption.OME_TIFF
         use_zarr_v3 = file_saving_option == FileSavingOption.ZARR_V3
         job_classes = [] if self.skip_saving else save_job_classes_for_format(file_saving_option)
@@ -909,7 +910,9 @@ class MultiPointWorker:
 
         Returns None if the job should be skipped.
         """
-        return job_class(capture_info=info, capture_image=JobImage(image_array=image))
+        return job_class(
+            capture_info=info, capture_image=JobImage(image_array=image), save_settings=self._save_settings
+        )
 
     def _emit_plate_layout(self, image: np.ndarray) -> None:
         """Emit plate_view_init for the unified mosaic widget on the first image.
