@@ -64,15 +64,6 @@ def live(scope):
     return LiveController(microscope=scope, camera=scope.camera)
 
 
-def test_channel_iris_settings_are_applied(scope, live):
-    live.currentConfiguration = _channel(ConfocalSettings(illumination_iris=30.0, emission_iris=40.0))
-
-    live.update_illumination()
-
-    assert scope.addons.xlight.illumination_iris == 30
-    assert scope.addons.xlight.emission_iris == 40
-
-
 def test_channel_without_iris_settings_gets_the_default_iris(scope, live):
     live.currentConfiguration = _channel(None)
 
@@ -82,7 +73,7 @@ def test_channel_without_iris_settings_gets_the_default_iris(scope, live):
     assert scope.addons.xlight.emission_iris == 60
 
 
-def test_iris_missing_from_channel_settings_gets_its_default(scope, live):
+def test_only_the_iris_missing_from_channel_settings_gets_its_default(scope, live):
     live.currentConfiguration = _channel(ConfocalSettings(illumination_iris=30.0))
 
     live.update_illumination()

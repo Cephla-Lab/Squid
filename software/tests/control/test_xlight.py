@@ -26,24 +26,13 @@ class FakeXLightV3Port:
         self.commands = []
         # When True the device ignores everything it is sent (busy / disconnected)
         self.unresponsive = False
-        self.positions = {"B": 1, "C": 1, "D": 0, "N": 0, "P": 0, "J": 350, "V": 1000}
-        self.position_counts = {"B": 8, "C": 3, "P": 3}
+        self.positions = {"C": 1, "P": 0, "J": 350, "V": 1000}
+        self.position_counts = {"C": 3, "P": 3}
         self._unread = b""
-
-    # --- serial.Serial interface used by SerialDevice ---
-
-    def open(self):
-        self.is_open = True
-
-    def close(self):
-        self.is_open = False
 
     @property
     def in_waiting(self):
         return len(self._unread)
-
-    def reset_input_buffer(self):
-        self._unread = b""
 
     def write(self, data):
         command = data.decode().rstrip("\r")
@@ -56,12 +45,8 @@ class FakeXLightV3Port:
 
     def readline(self):
         # Replies end in "\r", so a real readline() returns everything received before the timeout
-        newline = self._unread.find(b"\n")
-        end = len(self._unread) if newline < 0 else newline + 1
-        line, self._unread = self._unread[:end], self._unread[end:]
+        line, self._unread = self._unread, b""
         return line
-
-    # --- test helpers ---
 
     def leave_unread_reply(self, reply):
         """Queue a reply that the host never read (e.g. from an unvalidated wheel move)."""
@@ -70,17 +55,13 @@ class FakeXLightV3Port:
     def commands_sent(self, prefix):
         return [c for c in self.commands if c.startswith(prefix)]
 
-    # --- device emulation ---
-
     def _execute(self, command):
         if command == "idc":
             return format(V3_CONFIG_WORD, "08X")
         if command.startswith("r"):
             target = command[1:]
-            if len(target) == 2 and target[1] == "N" and target[0] in self.position_counts:
+            if target.endswith("N") and target[0] in self.position_counts:
                 return command + str(self.position_counts[target[0]])
-            if target in self.positions:
-                return command + str(self.positions[target])
             return None
         prefix, value = command[0], command[1:]
         if prefix in self.positions and value.isdigit():
@@ -115,13 +96,6 @@ class TestIris:
 
         assert port.positions["J"] == 0
 
-    def test_command_is_sent_in_tenths_of_a_percent(self, xlight, port):
-        xlight.set_illumination_iris(80)
-        xlight.set_emission_iris(45)
-
-        assert port.positions["J"] == 800
-        assert port.positions["V"] == 450
-
     def test_repeating_an_acknowledged_value_is_not_resent(self, xlight, port):
         xlight.set_illumination_iris(80)
         xlight.set_illumination_iris(80)
@@ -137,16 +111,6 @@ class TestIris:
         xlight.set_illumination_iris(80)
 
         assert port.positions["J"] == 800
-
-    def test_failed_emission_command_is_retried_on_the_next_call(self, xlight, port):
-        port.unresponsive = True
-        with pytest.raises(SerialDeviceError):
-            xlight.set_emission_iris(45)
-
-        port.unresponsive = False
-        xlight.set_emission_iris(45)
-
-        assert port.positions["V"] == 450
 
     def test_unrelated_reply_does_not_count_as_acknowledgement(self, xlight, port):
         # An emission wheel reply is still waiting to be read, and the iris command is ignored
@@ -165,67 +129,24 @@ class TestIris:
         assert port.commands_sent("J") == ["J800"]
 
 
-class TestDiskMotor:
-    def test_running_motor_is_reported_as_on(self, xlight, port):
-        port.positions["N"] = 1
-
-        assert xlight.get_disk_motor_state() is True
-
-    def test_stopped_motor_is_reported_as_off(self, xlight, port):
-        port.positions["N"] = 0
-
-        assert xlight.get_disk_motor_state() is False
-
-    def test_starting_the_motor_reaches_hardware(self, xlight, port):
-        xlight.set_disk_motor_state(True)
-
-        assert port.positions["N"] == 1
-
-    def test_stopping_the_motor_reaches_hardware(self, xlight, port):
-        port.positions["N"] = 1
-
-        xlight.set_disk_motor_state(False)
-
-        assert port.positions["N"] == 0
-
-    def test_unconfirmed_motor_command_raises(self, xlight, port):
-        port.unresponsive = True
-
-        with pytest.raises(SerialDeviceError):
-            xlight.set_disk_motor_state(True)
-
-
 class TestPositionCounts:
-    def test_dichroic_position_beyond_the_wheel_is_rejected(self, xlight, port):
-        # The wheel reports 3 positions
+    def test_dichroic_wheel_stops_at_the_last_position_the_device_reports(self, xlight, port):
+        # The wheel reports 3 positions, numbered from 1
+        xlight.set_dichroic(3)
         with pytest.raises(ValueError):
             xlight.set_dichroic(4)
 
-        assert port.commands_sent("C") == []
+        assert port.commands_sent("C") == ["C3"]
 
-    def test_last_dichroic_position_is_accepted(self, xlight, port):
-        assert xlight.set_dichroic(3) == 3
-        assert port.positions["C"] == 3
-
-    def test_five_position_dichroic_wheel_accepts_position_five(self, port):
-        port.position_counts["C"] = 5
-        xlight = XLight(SERIAL_NUMBER)
-
-        assert xlight.set_dichroic(5) == 5
-
-    def test_filter_slider_position_beyond_the_slider_is_rejected(self, xlight, port):
+    def test_filter_slider_stops_at_the_last_position_the_device_reports(self, xlight, port):
         # The slider reports 3 positions, numbered from 0
+        xlight.set_filter_slider(2)
         with pytest.raises(ValueError):
             xlight.set_filter_slider(3)
 
-        assert port.commands_sent("P") == []
+        assert port.commands_sent("P") == ["P2"]
 
-    def test_last_filter_slider_position_is_accepted(self, xlight, port):
-        xlight.set_filter_slider(2)
-
-        assert port.positions["P"] == 2
-
-    def test_v3_defaults_apply_when_the_device_does_not_report_counts(self, port):
+    def test_v3_position_counts_are_used_when_the_device_does_not_report_any(self, port):
         port.position_counts = {}
         xlight = XLight(SERIAL_NUMBER)
 

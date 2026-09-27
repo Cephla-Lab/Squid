@@ -174,8 +174,8 @@ class XLight_Simulation:
         self.illumination_iris = 0
         self.emission_iris = 0
         self.slider_position = 0
-        self.dichroic_positions = XLIGHT_V3_DICHROIC_POSITIONS
-        self.filter_slider_positions = XLIGHT_V3_FILTER_SLIDER_POSITIONS
+        self.dichroic_positions = XLight.V3_DICHROIC_POSITIONS
+        self.filter_slider_positions = XLight.V3_FILTER_SLIDER_POSITIONS
 
     def set_emission_filter(self, position, extraction=False, validate=False):
         self.emission_wheel_pos = position
@@ -246,6 +246,11 @@ class XLight:
     Supports V1, V2, V3, and Cicero with automatic protocol detection.
     """
 
+    # Number of positions. V3 units are asked for theirs; these are used when they don't answer.
+    V2_DICHROIC_POSITIONS = 5
+    V3_DICHROIC_POSITIONS = 3
+    V3_FILTER_SLIDER_POSITIONS = 3
+
     def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=False):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -266,8 +271,8 @@ class XLight:
         self.emission_iris = None
         self.emission_wheel_pos = None
         self._emission_wheel_extracted = False
-        self.dichroic_positions = XLIGHT_V2_DICHROIC_POSITIONS
-        self.filter_slider_positions = XLIGHT_V3_FILTER_SLIDER_POSITIONS
+        self.dichroic_positions = self.V2_DICHROIC_POSITIONS
+        self.filter_slider_positions = self.V3_FILTER_SLIDER_POSITIONS
 
         # Auto-detect protocol: try V3 (115200) first, then V1/V2 (9600)
         self.protocol_version = self._connect_and_detect(SN)
@@ -283,9 +288,9 @@ class XLight:
             # V3/Cicero: use idc command for config
             self.parse_idc_response(self.serial_connection.write_and_read("idc\r"))
             if self.has_dichroic_filters_wheel:
-                self.dichroic_positions = self._query_position_count("C", XLIGHT_V3_DICHROIC_POSITIONS)
+                self.dichroic_positions = self._query_position_count("C", self.V3_DICHROIC_POSITIONS)
             if self.has_dichroic_filter_slider:
-                self.filter_slider_positions = self._query_position_count("P", XLIGHT_V3_FILTER_SLIDER_POSITIONS)
+                self.filter_slider_positions = self._query_position_count("P", self.V3_FILTER_SLIDER_POSITIONS)
 
         self.print_config()
 
