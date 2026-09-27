@@ -30,7 +30,7 @@ class StuckIlluminationIrisXLight(XLight_Simulation):
     """An X-Light whose illumination iris does not acknowledge commands."""
 
     def set_illumination_iris(self, value):
-        raise SerialDeviceError("X-Light did not acknowledge 'J800'")
+        raise SerialDeviceError("Max attempts reached without receiving expected response.")
 
 
 def _channel(confocal_hardware_settings):

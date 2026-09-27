@@ -343,26 +343,20 @@ class LiveController(QObject):
             # is what the confocal widget shows for it.
             hw_settings = self.currentConfiguration.confocal_hardware_settings
             xlight = self.microscope.addons.xlight
-            for has_iris, iris_val, default, set_iris in (
-                (
-                    xlight.has_illumination_iris_diaphragm,
-                    getattr(hw_settings, "illumination_iris", None),
-                    XLIGHT_ILLUMINATION_IRIS_DEFAULT,
-                    xlight.set_illumination_iris,
-                ),
-                (
-                    xlight.has_emission_iris_diaphragm,
-                    getattr(hw_settings, "emission_iris", None),
-                    XLIGHT_EMISSION_IRIS_DEFAULT,
-                    xlight.set_emission_iris,
-                ),
-            ):
-                if not has_iris:
-                    continue
+            if xlight.has_illumination_iris_diaphragm:
+                iris_val = getattr(hw_settings, "illumination_iris", None)
                 try:
-                    set_iris(int(iris_val) if iris_val is not None else int(default))
+                    xlight.set_illumination_iris(
+                        int(iris_val if iris_val is not None else XLIGHT_ILLUMINATION_IRIS_DEFAULT)
+                    )
                 except (OSError, ValueError, SerialDeviceError) as e:
-                    self._log.error(f"Not setting iris value: {e}")
+                    self._log.error(f"Not setting illumination iris: {e}")
+            if xlight.has_emission_iris_diaphragm:
+                iris_val = getattr(hw_settings, "emission_iris", None)
+                try:
+                    xlight.set_emission_iris(int(iris_val if iris_val is not None else XLIGHT_EMISSION_IRIS_DEFAULT))
+                except (OSError, ValueError, SerialDeviceError) as e:
+                    self._log.error(f"Not setting emission iris: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:
                 self.microscope.addons.dragonfly.set_emission_filter(

@@ -92,6 +92,7 @@ class SerialDevice:
         attempt_delay=1,
         check_prefix=True,
         print_response=False,
+        match_anywhere=False,
     ):
         # Write a command and check the response
         for attempt in range(max_attempts):
@@ -117,6 +118,10 @@ class SerialDevice:
             if check_prefix:
                 if response.startswith(expected_response):
                     return response
+
+            # the expected response may follow the unread reply to an earlier command
+            if match_anywhere and expected_response in response.split():
+                return response
 
             # Log mismatch for debugging (response didn't match exactly or by prefix)
             if response:
@@ -344,18 +349,15 @@ class XLight:
         self.log.info(f"X-Light reported {count} positions for '{query}'")
         return count
 
-    def _send_iris_command(self, command, max_attempts=3):
+    def _send_iris_command(self, command):
         """Send an iris command and confirm that the device acknowledged it.
 
         The acknowledgement can follow the unread reply of an earlier unvalidated command
-        (e.g. "B1\\rJ800" after an emission wheel move), so look for it anywhere in the response.
+        (e.g. "B1\\rJ800" after an emission wheel move), so it is accepted anywhere in the response.
         """
-        for _ in range(max_attempts):
-            response = self.serial_connection.write_and_read(command + "\r", read_delay=2)
-            if command in response.split():
-                return
-            self.log.warning(f"X-Light did not acknowledge '{command}', got '{response}'")
-        raise SerialDeviceError(f"X-Light did not acknowledge '{command}'")
+        self.serial_connection.write_and_check(
+            command + "\r", command, read_delay=2, max_attempts=3, check_prefix=False, match_anywhere=True
+        )
 
     def print_config(self):
         self.log.info(

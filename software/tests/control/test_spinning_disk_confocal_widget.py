@@ -17,7 +17,7 @@ class UnresponsiveXLight(XLight_Simulation):
         raise SerialDeviceError("Max attempts reached without receiving expected response.")
 
     def set_illumination_iris(self, value):
-        raise SerialDeviceError("X-Light did not acknowledge 'J800'")
+        raise SerialDeviceError("Max attempts reached without receiving expected response.")
 
 
 def make_widget(qtbot, xlight):
