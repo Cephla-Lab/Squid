@@ -1502,6 +1502,25 @@ int32_t tmc4361A_stop_here(TMC4361ATypeDef *tmc4361A) {
 }
 
 /*
+  tmc4361A_rebase_position(): give the counter a new number for the position the axis is RESTING at
+  - XACTUAL = XTARGET = position - without a step on the outputs. Move-and-settle (move_settle.cpp)
+  ends every move with it: its corrections are real ramp moves, so they count in XACTUAL, and this
+  takes them out again so that XACTUAL stays the host's frame (the chip's PID had that property for
+  free: its correction pulses are not counted).
+  Unlike tmc4361A_setCurrentPosition() it does NOT shift xmin / xmax / xhome and does not leave the
+  axis in velocity mode: the travel range is a set of numbers in the host's frame, which is the
+  frame being restored, not moved. VMAX = 0 brackets the two writes because in positioning mode the
+  ramp generator starts toward XTARGET the instant XACTUAL differs from it, and the two registers
+  cannot be written together. Only call with the ramp idle and the axis in positioning mode.
+*/
+void tmc4361A_rebase_position(TMC4361ATypeDef *tmc4361A, int32_t position) {
+  tmc4361A_writeInt(tmc4361A, TMC4361A_VMAX, 0);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_XACTUAL, position);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_X_TARGET, position);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_VMAX, tmc4361A->rampParam[VMAX_IDX]);
+}
+
+/*
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_isRunning() checks whether the motor is moving and returns either true or false
 

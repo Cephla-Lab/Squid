@@ -5,6 +5,7 @@
 #include "../tmc/drivers/stepper_driver.h"
 #include "../pid_clamp.h"               // the correction clamp's one path to PID_DV_CLIP and the watch
 #include "../pid_policy.h"              // pid_in_home_zone
+#include "../move_settle.h"               // move-and-settle: strategy, configuration, settle_drop
 
 CommandCallback cmd_map[256] = {0};
 
@@ -65,6 +66,14 @@ void init_callbacks()
     cmd_map[SET_PID_TOLERANCE] = &callback_set_pid_tolerance;
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[SET_PID_OPEN_ABOVE] = &callback_set_pid_open_above;
+    cmd_map[SET_LOOP_STRATEGY] = &callback_set_loop_strategy;
+    cmd_map[SET_MOVE_SETTLE_MEASURE] = &callback_set_move_settle_measure;
+    cmd_map[SET_MOVE_SETTLE_FEEDFORWARD] = &callback_set_move_settle_feedforward;
+    cmd_map[SET_MOVE_SETTLE_SHAPER] = &callback_set_move_settle_shaper;
+    cmd_map[SET_MOVE_SETTLE_ACCEPT] = &callback_set_move_settle_accept;
+    cmd_map[SET_MOVE_SETTLE_MODEL] = &callback_set_move_settle_model;
+    cmd_map[SET_MOVE_SETTLE_SCALE] = &callback_set_move_settle_scale;
+    cmd_map[SET_MOVE_SETTLE_FINISH] = &callback_set_move_settle_finish;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -281,6 +290,34 @@ void callback_enable_stage_pid()
     pid_requested[axis] = true;
     pid_realign_pending[axis] = false;   // an explicit enable takes the frames as they are (gate below)
 
+    // Move-and-settle (SET_LOOP_STRATEGY): nothing is handed to the chip. The request arms
+    // move_settle.cpp, which plans, measures and corrects each COMMANDED move and leaves the axis
+    // unregulated in between; the home zone is honoured per move there. Validated above exactly like
+    // the chip's loop: driver present, encoder configured, frames within the watchdog.
+    // ENABLE NEVER MOVES THE STAGE here (operator's rule, 2026-09-20: in the product the loop is enabled
+    // once, when the software starts - before homing, with the frames agreeing - and getting it back
+    // after a fault or a DISABLE means restarting the software, which resets, homes and enables again).
+    // Only tools enable in mid-session, after open-loop motion, with the counter off the stage by the
+    // lost motion: there the policy does what it does after any motion it did not issue - the stage is
+    // where it is, so the COUNTER adopts the encoder's reading (outside the home zone, at rest, inside
+    // the watchdog validated above). A relative step after that is relative; nothing was moved to make
+    // it so. The chip's loop, by contrast, slews the deviation away on enable.
+    if (settle_selected(axis))
+    {
+        if (stage_PID_enabled[axis]) tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
+        stage_PID_enabled[axis] = 0;
+        pid_zone_hold[axis] = false;
+        settle_drop(axis, false);
+        settle_adopt_position(axis);
+        // Until 2026-09-22 this was a move-and-settle leg to the current position ("settle at position"): with
+        // the adopting enable the tuner's mixed soak had degraded rep by rep (bench 2026-09-20, 11 back-offs and
+        // a miss in 150 moves). That was the booked-gap integrator of move_settle_policy.h (fixed 2026-09-21: a
+        // push anchors the gap), which the adopting enable merely started sooner - a first move planned on a
+        // reckoned play state. With the fix the three enable variants soak alike (2026-09-22, interleaved: 85 /
+        // 89 / 87 % first-leg, 0 back-offs, 0 missed each), so the operator's rule stands as written above.
+        return;
+    }
+
     // Inside the home exclusion zone the encoder may not follow the actuator
     // (stage resting on its stop while the actuator retracts), so the loop is not
     // engaged here: it is recorded as requested and check_closed_loop() engages
@@ -358,7 +395,6 @@ void callback_set_pid_open_above()
     pid_open_above_pps[axis] = pps < 0 ? -pps : pps;
 }
 
-
 // SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]
 // target-reached tolerance in 0.01 um; 0 keeps the current value. Applied at once if
 // the encoder is configured (the two registers are plain writes) and by every later
@@ -418,7 +454,7 @@ void callback_set_encoder_reporting()
     Y_use_encoder = false;
     Z_use_encoder = false;
 
-    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
+    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_MOVE_SETTLE)
     {
         encoder_report_axis = 0xFF;
         encoder_report_mode = ENCODER_REPORT_OFF;
@@ -456,11 +492,118 @@ void callback_set_pid_limits()
         pid_max_dev_usteps[axis] = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(dev_um) / 1000.0f);
 }
 
+// SET_LOOP_STRATEGY (51): [2] protocol axis, [3] LOOP_STRATEGY_*. Chooses what ENABLE_STAGE_PID arms:
+// the TMC4361A's PID (default) or move-and-settle (move_settle_policy.h). Refused while a loop is
+// requested on the axis - the two must not change hands with one of them engaged: DISABLE first.
+void callback_set_loop_strategy()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    uint8_t strategy = buffer_rx[3];
+    if (strategy != LOOP_STRATEGY_CHIP_PID && strategy != LOOP_STRATEGY_MOVE_SETTLE) { report_move_error(); return; }
+    if (strategy == loop_strategy[axis]) return;
+    if (pid_requested[axis] || settle_axis_busy(axis)) { report_move_error(); return; }
+    loop_strategy[axis] = strategy;
+    settle_drop(axis, false);
+}
+
+// SET_MOVE_SETTLE_MEASURE (52): [3] settle time before the window in 0.5 ms, [4] window in 0.5 ms, [5] trim
+// gain in 1/16, [6] bits 0-3 max trims per approach, bits 4-5 MOVE_SETTLE_APPROACH_*, bits 6-7 max re-approaches.
+// Literal values; they apply from the next move.
+void callback_set_move_settle_measure()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    uint8_t approach = (buffer_rx[6] >> 4) & 0x03;
+    if (buffer_rx[4] == 0 || buffer_rx[5] == 0 || buffer_rx[5] > 32 || approach > MOVE_SETTLE_APPROACH_NEGATIVE)
+    { report_move_error(); return; }
+    settle_config[axis].wait_half_ms = buffer_rx[3];
+    settle_config[axis].window_half_ms = buffer_rx[4];
+    settle_config[axis].gain_x16 = buffer_rx[5];
+    settle_config[axis].max_trims = buffer_rx[6] & 0x0F;
+    settle_config[axis].approach = approach;
+    settle_config[axis].max_reapproaches = (buffer_rx[6] >> 6) & 0x03;
+}
+
+// SET_MOVE_SETTLE_FEEDFORWARD (53): [3..4] lost motion in 0.01 um, [5] undershoot bias in 0.01 um,
+// [6] back-off distance in 0.1 um (kept beyond the lost motion when a move resolves it).
+void callback_set_move_settle_feedforward()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    settle_config[axis].lost_motion_c_um = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    settle_config[axis].bias_c_um = buffer_rx[5];
+    settle_config[axis].backoff_d_um = buffer_rx[6];
+    settle_model_reseed(axis);
+}
+
+// SET_MOVE_SETTLE_MODEL (56): [3] carry in 0.01 um, [4] push from which the carry is full in 0.01 um,
+// [5] learning gain in 1/16 (0 = the model stays as configured). The learned model is re-seeded.
+void callback_set_move_settle_model()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    if (buffer_rx[4] == 0 || buffer_rx[5] > 16 || buffer_rx[6] > 32) { report_move_error(); return; }
+    settle_config[axis].carry_c_um = buffer_rx[3];
+    settle_config[axis].full_push_c_um = buffer_rx[4];
+    settle_config[axis].learn_x16 = buffer_rx[5];
+    settle_config[axis].bias_sigma_x16 = buffer_rx[6];
+    settle_model_reseed(axis);
+}
+
+// SET_MOVE_SETTLE_SCALE (57): [3..4] int16 ppm, stage travel per motor travel minus one; +-5000 at most
+void callback_set_move_settle_scale()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    int16_t ppm = (int16_t)((uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]));
+    if (ppm > 5000 || ppm < -5000) { report_move_error(); return; }
+    settle_config[axis].scale_ppm = ppm;
+    settle_model_reseed(axis);
+}
+
+// SET_MOVE_SETTLE_FINISH (61): [3..4] uint16 finishing leg, usteps (0 = off), [5..6] uint16 threshold in 16 usteps: a
+// first leg longer than it is split (0 = every leg longer than the finishing leg). A finishing leg the threshold
+// does not clear would send the long leg the wrong way: refused. Nothing learned depends on it: no re-seed.
+void callback_set_move_settle_finish()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    uint16_t finish = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    uint16_t from16 = (uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]);
+    if (finish != 0 && from16 != 0 && (uint32_t)finish >= (uint32_t)from16 * 16u) { report_move_error(); return; }
+    settle_config[axis].finish_usteps = finish;
+    settle_config[axis].finish_from_16usteps = from16;
+}
+
+// SET_MOVE_SETTLE_SHAPER (54): [3..4] half the ring period in 10 us (0 = legs are never split),
+// [5] share of a split leg that goes first in 1/256 (0 = half), [6] longest leg that is split, um.
+void callback_set_move_settle_shaper()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    settle_config[axis].split_half_period_10us = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    settle_config[axis].split_first_x256 = buffer_rx[5];
+    settle_config[axis].split_max_um = buffer_rx[6];
+}
+
+// SET_MOVE_SETTLE_ACCEPT (55): [3..4] accepted overshoot in 0.01 um (0 = the target tolerance),
+// [5] ring peak-to-peak required before DONE in 0.01 um (0 = not required), [6] extra windows it may wait.
+void callback_set_move_settle_accept()
+{
+    uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
+    if (axis >= TOTAL_AXES) return;
+    settle_config[axis].tol_over_c_um = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
+    settle_config[axis].quiet_pp_c_um = buffer_rx[5];
+    settle_config[axis].max_quiet_windows = buffer_rx[6];
+}
+
 void callback_disable_stage_pid()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;  // Invalid axis
 
+    settle_drop(axis, true);   // a move-and-settle in flight ends; the counter goes back on the host's frame once the ramp is idle
     tmc4361A_set_PID(&tmc4361[axis], PID_DISABLE);
     stage_PID_enabled[axis] = 0;
     pid_requested[axis] = false;
@@ -531,6 +674,7 @@ static void init_filterwheel_axis(uint8_t axis)
     pid_fault_cause[axis] = PID_FAULT_NONE;
     pid_requested[axis] = false;
     pid_zone_hold[axis] = false;
+    settle_drop(axis, false);
 
     // The index flag is enabled as the LEFT stop switch above, but enableHomingLimit()
     // sets STOP_LEFT_IS_HOME, which turns that input into the HOME_REF input. The
@@ -681,6 +825,7 @@ void callback_initialize()
         pid_fault_cause[i] = PID_FAULT_NONE;
         pid_requested[i] = false;
         pid_zone_hold[i] = false;
+        settle_drop(i, false);   // the chip was reset: nothing a move-and-settle knew survives (its strategy and settings do)
     }
     encoder_report_axis = 0xFF;
     encoder_report_mode = ENCODER_REPORT_OFF;
@@ -757,5 +902,9 @@ void callback_reset()
         pid_tr_tolerance_usteps[i] = 0;
         completion_window_usteps[i] = 0;
         pid_open_above_pps[i] = 0;
+        loop_strategy[i] = LOOP_STRATEGY_CHIP_PID;
+        settle_config_default(i);
+        settle_model_reseed(i);
+        settle_drop(i, false);
     }
 }

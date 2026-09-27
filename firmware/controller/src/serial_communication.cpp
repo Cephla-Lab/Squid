@@ -1,4 +1,5 @@
 #include "serial_communication.h"
+#include "move_settle.h"   // move-and-settle: settle_armed, the move-and-settle report
 
 void process_serial_message()
 {
@@ -100,7 +101,7 @@ void send_position_update()
     buffer_tx[8] = byte((Y_pos_int32t >> 8) % 256);
     buffer_tx[9] = byte((Y_pos_int32t) % 256);
 
-    uint32_t Z_pos_int32t = uint32_t( Z_use_encoder ? Z_pos : int32_t(tmc4361A_currentPosition(&tmc4361[z])) );
+    uint32_t Z_pos_int32t = uint32_t( Z_use_encoder ? Z_pos : settle_report_position(z, int32_t(tmc4361A_currentPosition(&tmc4361[z]))) );
     buffer_tx[10] = byte(Z_pos_int32t >> 24);
     buffer_tx[11] = byte((Z_pos_int32t >> 16) % 256);
     buffer_tx[12] = byte((Z_pos_int32t >> 8) % 256);
@@ -134,16 +135,31 @@ void send_position_update()
       buffer_tx[17] = byte((enc_u) % 256);
 
       byte flags = (1 << ENC_FLAG_REPORTING);
-      if (stage_PID_enabled[encoder_report_axis]) flags |= (1 << ENC_FLAG_PID_ENABLED);
+      // Move-and-settle never engages the chip's loop: "enabled" there means armed with the frames
+      // aligned, "held" armed with the post-homing realignment still owed.
+      bool placing = settle_armed(encoder_report_axis);
+      if (stage_PID_enabled[encoder_report_axis] || (placing && !pid_realign_pending[encoder_report_axis]))
+        flags |= (1 << ENC_FLAG_PID_ENABLED);
       if (pid_fault[encoder_report_axis])         flags |= (1 << ENC_FLAG_PID_FAULT);
-      if (pid_zone_hold[encoder_report_axis])     flags |= (1 << ENC_FLAG_PID_ZONE);
+      if (pid_zone_hold[encoder_report_axis] || (placing && pid_realign_pending[encoder_report_axis]))
+        flags |= (1 << ENC_FLAG_PID_ZONE);
       flags |= byte((internal_axis_to_protocol(encoder_report_axis) & 0x07) << ENC_FLAG_AXIS_SHIFT);
       buffer_tx[19] = flags;
 
-      int32_t dev_clip = enc_dev > 32767 ? 32767 : (enc_dev < -32768 ? -32768 : enc_dev);
-      uint16_t dev_u = uint16_t(int16_t(dev_clip));
-      buffer_tx[20] = byte(dev_u >> 8);
-      buffer_tx[21] = byte(dev_u & 0xFF);
+      if (encoder_report_mode == ENCODER_REPORT_MOVE_SETTLE)
+      {
+        // the last move-and-settle's report instead of the clipped deviation (ENC_POS and XACTUAL are both
+        // in this packet): first landing, then trims / re-approaches / limited / busy
+        buffer_tx[20] = settle_report_landing(encoder_report_axis);
+        buffer_tx[21] = settle_report_bits(encoder_report_axis);
+      }
+      else
+      {
+        int32_t dev_clip = enc_dev > 32767 ? 32767 : (enc_dev < -32768 ? -32768 : enc_dev);
+        uint16_t dev_u = uint16_t(int16_t(dev_clip));
+        buffer_tx[20] = byte(dev_u >> 8);
+        buffer_tx[21] = byte(dev_u & 0xFF);
+      }
     }
     else
     {

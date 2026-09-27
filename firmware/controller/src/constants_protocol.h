@@ -97,11 +97,71 @@ static const int SET_PID_OPEN_ABOVE = 50;     // [2]=axis, [3..4]=ramp velocity 
                                               // closed loop is opened while the axis moves; it re-engages as the ramp
                                               // slows below it (see check_closed_loop). 0 (default) = rest-only: open
                                               // for every move, engaged only at rest. >= VMAX = engaged throughout.
+// Move-and-settle (firmware 1.7): the feedforward alternative to the TMC4361A's PID - see move_settle_policy.h.
+// Every field of the four SET_MOVE_SETTLE_* commands is literal (no "0 = keep"): RESET restores the firmware
+// defaults and a host sends all of them, so nothing an earlier session left behind survives.
+static const int SET_LOOP_STRATEGY = 51;      // [2]=axis, [3]=LOOP_STRATEGY_*: what ENABLE_STAGE_PID hands the axis to. Refused
+                                              // (CMD_EXECUTION_ERROR) while a loop is requested: DISABLE first.
+static const int LOOP_STRATEGY_CHIP_PID = 0;  // the TMC4361A's PID (default; the behaviour of firmware 1.6)
+static const int LOOP_STRATEGY_MOVE_SETTLE = 1; // move-and-settle: open-loop ramps planned in the encoder's frame, finite
+                                              // corrections from a window-averaged reading, nothing regulating at rest
+static const int SET_MOVE_SETTLE_MEASURE = 52;  // [2]=axis, [3]=settle time after the ramp stops before the window opens, 0.5 ms
+                                              // (default 10 = 5 ms), [4]=averaging window in 0.5 ms (one ring period; default
+                                              // 18 = 9 ms), [5]=trim gain in 1/16 (default 12), [6]=bits 0-3 max trims per
+                                              // approach (default 6), bits 4-5 MOVE_SETTLE_APPROACH_*, bits 6-7 max re-approaches (default 2)
+static const int MOVE_Z_FROM_MEASURED = 1;      // MOVE_Z [6]: the relative move starts from where the stage IS (the encoder), not from the
+                                              // last target. Move-and-settle only; any other value, strategy or firmware: the plain move.
+static const int MOVE_Z_RETRY_LAST = 2;         // MOVE_Z [6]: move to the LAST move-and-settle target on Z again, whatever the payload - the
+                                              // host's retry of a MISSED move planned from the encoder (its target was measured + correction,
+                                              // which the host cannot know). The payload is the host's best estimate as a relative move,
+                                              // used as-is where the flag means nothing: old firmware, other strategies, no such target.
+static const int SET_MOVE_SETTLE_SCALE = 57;    // [2]=axis, [3..4]=int16, ppm: stage travel per motor travel minus one - the screw's lead
+                                              // against the encoder's scale (-1100 = the stage moves 0.11 um less per 100 um than the
+                                              // counter). Every leg is planned through it and it is learned from long continuing legs
+                                              // (learning gain of SET_MOVE_SETTLE_MODEL); +-5000 at most. Re-seeds the model.
+static const int SET_MOVE_SETTLE_FINISH = 61;   // [2]=axis, [3..4]=uint16 finishing leg, usteps (0 = off), [5..6]=uint16 threshold in
+                                              // units of 16 usteps (0 = the finishing leg's own length). A move whose first approach
+                                              // leg would want more stage travel than the threshold is issued as two approach legs:
+                                              // the long one aimed the finishing leg short of the target, then, from its measured
+                                              // landing, an ordinary continuing leg for the rest (bench 2026-09-26: a fast leg of
+                                              // 0.5-3 mm lands +-1 um off the model, a 50 um leg after it lands like any short step;
+                                              // move_settle_policy.h). Refused (CMD_EXECUTION_ERROR) when both are non-zero and the
+                                              // finishing leg is not shorter than the threshold. Does not re-seed the model.
+static const int MOVE_SETTLE_APPROACH_MOVE_DIRECTION = 0; // approach from the side the move comes from (default)
+static const int MOVE_SETTLE_APPROACH_POSITIVE = 1;       // always finish travelling +: a move toward - goes beyond and comes back
+static const int MOVE_SETTLE_APPROACH_NEGATIVE = 2;       // always finish travelling -
+static const int SET_MOVE_SETTLE_FEEDFORWARD = 53; // [2]=axis, [3..4]=lost motion flank to flank on a reversal, 0.01 um - where the
+                                              // learning starts (default 0; start UNDER the real value), [5]=undershoot bias of the first
+                                              // landing, 0.01 um (default 0), [6]=back-off distance, 0.1 um (default 30 = 3 um;
+                                              // must exceed the lost motion)
+static const int SET_MOVE_SETTLE_SHAPER = 54;   // [2]=axis, [3..4]=half the ring period in 10 us (0 = off, default; 442 for the
+                                              // 113 Hz Squid+ Z), [5]=share of the leg that goes first in 1/256 (128 = half),
+                                              // [6]=longest leg that is split, um
+static const int SET_MOVE_SETTLE_ACCEPT = 55;   // [2]=axis, [3..4]=accepted overshoot in 0.01 um (0 = the target tolerance, i.e.
+                                              // symmetric), [5]=ring peak-to-peak required before DONE, 0.01 um (0 = not required),
+                                              // [6]=extra windows DONE may wait for it
+static const int SET_MOVE_SETTLE_MODEL = 56;    // [2]=axis, [3]=carry: how far a full push leaves the stage beyond the drive flank,
+                                              // 0.01 um - where the learning starts (default 0), [4]=push from which the carry is
+                                              // full, 0.01 um (default 94 = 10 usteps at 16 usteps/FS), [5]=learning gain in 1/16
+                                              // (default 4; 0 = the model stays as configured), [6]=learned undershoot bias of the
+                                              // first landing in landing-scatter sigmas, 1/16 (default 8 = half a sigma; 0 = the
+                                              // fixed bias of SET_MOVE_SETTLE_FEEDFORWARD only). Sending this or
+                                              // SET_MOVE_SETTLE_FEEDFORWARD re-seeds the learned model from the configured values.
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,
                                                      // bytes 20-21 = int16 ENC_POS_DEV (ENC_POS - XACTUAL as the chip reports it, clipped)
 static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own position field carries ENC_POS
+static const int ENCODER_REPORT_MOVE_SETTLE = 3;       // as 1, but bytes 20-21 carry the last move-and-settle's report instead of the
+                                                     // clipped deviation (the host has ENC_POS and XACTUAL in the same packet):
+                                                     // byte 20 = int8 first landing, usteps, + = short of the target in the
+                                                     // approach direction; byte 21 = MOVE_SETTLE_REPORT_* bits
+static const int MOVE_SETTLE_REPORT_TRIMS_MASK = 15;       // byte 21 bits 0-3: trims used (clipped)
+static const int MOVE_SETTLE_REPORT_BACKED_OFF = 4;  // bit 4: the move needed a back-off and a fresh approach
+static const int MOVE_SETTLE_REPORT_MISSED = 5;      // bit 5: budget spent outside the tolerance: the command failed (CMD_EXECUTION_ERROR),
+                                                     // no fault latched, the position fields show where the stage is
+static const int MOVE_SETTLE_REPORT_LIMITED = 6;           // bit 6: a leg was clamped to the travel limits
+static const int MOVE_SETTLE_REPORT_BUSY = 7;              // bit 7: a move-and-settle is in progress
 // byte 19 flag bits, valid only while reporting is active
 static const int ENC_FLAG_REPORTING = 0;     // reporting active
 static const int ENC_FLAG_PID_ENABLED = 1;   // closed loop enabled on the reported axis

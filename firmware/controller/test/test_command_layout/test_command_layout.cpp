@@ -428,6 +428,9 @@ void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
     const char *fsrc = load_source("src/functions.cpp");
     TEST_ASSERT_NOT_NULL(fsrc);
     assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!pid_fault[z] &&", "focusPosition = focusPosition +");
+    // the panel is locked out while a commanded move is in progress: wheel travel dropped, joystick read as undeflected
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!panel_locked_out() &&", "focusPosition = focusPosition +");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "if (panel_locked_out()) { joystick_delta_x = 0; joystick_delta_y = 0; }", "flag_read_joystick = true;");
 
     const char *csrc = load_source("src/commands/commands.cpp");
     TEST_ASSERT_NOT_NULL(csrc);

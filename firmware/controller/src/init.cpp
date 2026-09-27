@@ -2,6 +2,7 @@
 
 #include "tmc/drivers/driver_probe.h"
 #include "tmc/drivers/stepper_driver.h"
+#include "move_settle.h"   // settle_config_default
 
 /*
   Boot-time driver report (design M7: host visibility of the driver type is a
@@ -299,6 +300,11 @@ void init_stages()
   tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
   tmc4361A_enableHomingLimit(&tmc4361[y], lft_sw_pol[y], TMC4361_homing_sw[y], home_safety_margin[y]);
   tmc4361A_enableHomingLimit(&tmc4361[z], rht_sw_pol[z], TMC4361_homing_sw[z], home_safety_margin[z]);
+
+  // Move-and-settle starts from the same defaults a RESET restores (the strategy itself boots as
+  // the chip's PID: loop_strategy is zero-initialised).
+  for (uint8_t i = 0; i < TOTAL_AXES; i++)
+    settle_config_default(i);
 
   /*********************************************************************************************************
    ***************************************** TMC4361A + TMC2660 end ****************************************

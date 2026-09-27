@@ -569,6 +569,22 @@ void ISR_strobeTimer()
 /***************************************************************************************************/
 PacketSerial joystick_packetSerial;
 
+// The panel is the operator's tool for BETWEEN commands (operator's rule, 2026-09-20: "the joystick panel
+// should be disabled during commanded moves"). While the host has a move or a homing in progress on any
+// axis, what the panel sends is DROPPED, not queued: a wheel count that rewrote the ramp target of a
+// commanded Z move left the counter beside the target and the command IN_PROGRESS for ever (bench
+// 2026-09-20), a count released after the acknowledgement would move the stage during the exposure, and
+// a joystick deflection would drive X or Y under a stack. Dropped like the travel of a latched fault:
+// the wheel position is still tracked, so nothing is released when the lock-out ends.
+bool panel_locked_out()
+{
+  return X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress
+      || W_commanded_movement_in_progress || W2_commanded_movement_in_progress
+      || is_homing_X || is_homing_Y || is_homing_Z || is_homing_XY || is_homing_W || is_homing_W2
+      || is_preparing_for_homing_X || is_preparing_for_homing_Y || is_preparing_for_homing_Z
+      || is_preparing_for_homing_W || is_preparing_for_homing_W2;
+}
+
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 {
 
@@ -589,7 +605,7 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
     int32_t wheel = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
     // Post-fault contract: while a Z loop fault is latched the wheel's travel is dropped, not
     // accumulated - otherwise acknowledging the fault would release it as one motion (do_focus_control).
-    if (!pid_fault[z] && wheel != focuswheel_pos)
+    if (!pid_fault[z] && !panel_locked_out() && wheel != focuswheel_pos)
     {
       focusPosition = focusPosition + (wheel - focuswheel_pos);
       focus_wheel_pending = true;
@@ -599,6 +615,9 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 
   joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );
   joystick_delta_y = JOYSTICK_SIGN_Y * int16_t( uint16_t(buffer[6]) * 256 + uint16_t(buffer[7]) );
+  // locked out: an undeflected joystick, so that check_joystick() brings an axis it was driving to rest
+  // (it already leaves the axis of the commanded move itself alone)
+  if (panel_locked_out()) { joystick_delta_x = 0; joystick_delta_y = 0; }
   btns = buffer[8];
 
   // temporary

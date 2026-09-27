@@ -2,6 +2,7 @@
 
 #include "tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
 #include "pid_policy.h"                  // pid_engage_pending, pid_completion_encoder_ok
+#include "move_settle.h"                   // move-and-settle: settle_axis_busy, settle_drop, settle_selected
 
 /*
   THE OPERATOR-DRIVEN MOTION PATHS ARE PART OF THE FAIL-SAFE.
@@ -592,9 +593,27 @@ void do_focus_control()
   // Z moves here only for a wheel input (focus_wheel_pending), never because a pass found the
   // target different from the axis: a commanded move issues its own ramp, and a target changed by
   // a limit, a fault stop or a recovery must not move an axis on its own.
-  if (tmc_driver_ready(&tmc4361[z]) && focus_wheel_pending && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  // A move-and-settle in flight (move_settle.cpp) owns the axis for the tens of ms it takes: the counter is off
+  // the host's frame until its last leg is re-based, so the wheel's ramp waits for it - the input stays
+  // pending and is issued on the first pass after.
+  // "After" is after the command has been ACKNOWLEDGED, not after its last leg: check_position() looks
+  // at the counter once per interval_check_position, this function on every pass, so a wheel ramp issued
+  // in between moved the counter off the target before the completion test had seen it there - and the
+  // command stayed IN_PROGRESS for ever (bench 2026-09-20, settle8_wheel1: a -300 um move "stopped" 416
+  // usteps = 26 wheel units from its target). The command owns the axis until check_position() says so -
+  // in every mode: an open-loop or chip-PID move whose ramp target the wheel rewrites ends beside its
+  // target just the same. The panel's input is dropped while a command is in progress (panel_locked_out(),
+  // functions.cpp); what can still be pending here is an input that arrived just before the command.
+  if (tmc_driver_ready(&tmc4361[z]) && focus_wheel_pending && is_homing_Z == false && is_preparing_for_homing_Z == false
+      && !settle_axis_busy(z) && !Z_commanded_movement_in_progress)
   {
     focus_wheel_pending = false;
+    int32_t travel = focusPosition - tmc4361A_currentPosition(&tmc4361[z]);
+    // the next move-and-settle plans from a fresh reading, and knows which way the wheel went. No travel
+    // (the wheel came back while its input was held, a command has replaced its target): nothing moved,
+    // and what is known about the stage stays known.
+    if (settle_selected(z) && travel != 0)
+      settle_external_motion(z, travel);
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
   }
 }
@@ -638,6 +657,11 @@ static uint32_t completion_inside_since_us[TOTAL_AXES];   // pid_completion_dwel
 
 static bool commanded_move_complete(uint8_t axis, int32_t target)
 {
+  // Move-and-settle owns the completion of its moves: busy until the last leg has been measured
+  // inside the tolerance and the counter re-based to the target, after which the counter leg below
+  // holds by construction. Tested first, and without a register read: while a move-and-settle measures,
+  // every read this pass does not make is an encoder sample it can take.
+  if (settle_axis_busy(axis)) { completion_inside_since_us[axis] = 0; return false; }
   int32_t pos = tmc4361A_currentPosition(&tmc4361[axis]);
   int32_t d = pos - target;
   int32_t win = completion_window_usteps[axis];
@@ -851,6 +875,7 @@ static void pid_trip_fault(uint8_t axis, uint8_t cause)
   pid_fault[axis] = true;
   pid_fault_cause[axis] = cause;   // status bytes 19-21 while reporting is off
   pid_correction_watch_reset(&pid_corr_watch[axis]);
+  settle_drop(axis, false);         // a move-and-settle in flight ends here; the position is suspect, its frame not restored
   fail_commanded_move(axis);
 }
 
@@ -861,10 +886,50 @@ static inline int32_t pid_tolerance_eff(uint8_t axis)
   return tmc4361[axis].pid_tolerance > 0 ? tmc4361[axis].pid_tolerance : 25;
 }
 
+// First rest outside the home zone after a homing: take the counter's frame as the encoder's.
+// The loop (check_closed_loop) and move-and-settle (move_settle.cpp) then correct only deviations
+// that arise from here on, which is the same position semantics open loop has always had on a
+// stage whose actuator homes below the stage's stop. Only at rest: the two frames must be compared
+// with nothing in motion - the caller checks. Returns false when the offset was refused, with the
+// fault latched.
+bool pid_realign_now(uint8_t i)
+{
+  // The absorbed offset is bounded by what the configuration declares (home zone +
+  // watchdog): a larger one is lost motion during the first departure, or an encoder
+  // that never started following - a fault, not a gap (pid_policy.h).
+  int32_t frame_offset = tmc4361A_read_deviation(&tmc4361[i]);
+  // ENC_POS was zeroed at the switch by the homing: it is the encoder's travel since then.
+  int32_t enc_travel = tmc4361A_read_encoder(&tmc4361[i], 0);
+  pid_realign_pending[i] = false;
+  if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i],
+                           enc_travel, PID_REALIGN_MIN_ENC_TRAVEL_TOLERANCES * pid_tolerance_eff(i)))
+  {
+    pid_trip_fault(i, PID_FAULT_REALIGN_REFUSED);
+    return false;
+  }
+  tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
+  return true;
+}
+
+// move_settle.cpp's doors into this file's closed-loop internals
+bool pid_axis_is_homing(uint8_t axis) { return axis_is_homing(axis); }
+void pid_raise_fault(uint8_t axis, uint8_t cause) { pid_trip_fault(axis, cause); }
+void pid_fail_move(uint8_t axis) { fail_commanded_move(axis); }
+bool pid_move_in_progress(uint8_t axis)
+{
+  return axis == x ? X_commanded_movement_in_progress : axis == y ? Y_commanded_movement_in_progress
+       : axis == z ? Z_commanded_movement_in_progress : axis == w ? W_commanded_movement_in_progress
+       : axis == w2 ? W2_commanded_movement_in_progress : false;
+}
+
 void check_closed_loop()
 {
   for (uint8_t i = 0; i < TOTAL_AXES; i++)
   {
+    // An axis whose strategy is move-and-settle never hands the chip its loop: check_move_settle()
+    // is its policy, and the chip's regulation stays off (ENABLE_STAGE_PID does not write it).
+    if (settle_selected(i))
+      continue;
     // Nothing is read for axes the host never asked a loop for: the shipping
     // path costs nothing here. A loop that is not engaged is not correcting:
     // its watch starts fresh when it next engages.
@@ -1010,20 +1075,8 @@ void check_closed_loop()
         // Only at rest: the two frames must be compared with nothing in motion.
         if (running)
           continue;
-        // The absorbed offset is bounded by what the configuration declares (home zone +
-        // watchdog): a larger one is lost motion during the first departure, or an encoder
-        // that never started following - a fault, not a gap (pid_policy.h).
-        int32_t frame_offset = tmc4361A_read_deviation(&tmc4361[i]);
-        // ENC_POS was zeroed at the switch by the homing: it is the encoder's travel since then.
-        int32_t enc_travel = tmc4361A_read_encoder(&tmc4361[i], 0);
-        pid_realign_pending[i] = false;
-        if (!pid_realign_allowed(frame_offset, pid_home_zone_usteps[i], pid_max_dev_usteps[i],
-                                 enc_travel, PID_REALIGN_MIN_ENC_TRAVEL_TOLERANCES * pid_tolerance_eff(i)))
-        {
-          pid_trip_fault(i, PID_FAULT_REALIGN_REFUSED);
-          continue;
-        }
-        tmc4361A_write_encoder(&tmc4361[i], tmc4361A_currentPosition(&tmc4361[i]));
+        if (!pid_realign_now(i))
+          continue;   // refused: the fault is latched
       }
       int32_t dev = tmc4361A_read_deviation(&tmc4361[i]);
       int32_t lim = pid_max_dev_usteps[i] > 0 ? pid_max_dev_usteps[i] : 0x7FFFFFFF;

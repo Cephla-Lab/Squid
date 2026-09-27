@@ -1,5 +1,6 @@
 #include "src/init.h"
 #include "src/operations.h"
+#include "src/move_settle.h"
 #include "src/serial_communication.h"
 
 #include "src/def/def_v1.h"
@@ -68,6 +69,9 @@ void loop() {
   // functions read STATUS separately, ~0.36 ms apart, so a ramp that stops between
   // the reads would otherwise be acknowledged with the loop still held open.
   check_closed_loop();
+  // Move-and-settle (SET_LOOP_STRATEGY): the axes it owns are skipped by check_closed_loop() and
+  // advanced here, right before check_position() for the same latency reason.
+  check_move_settle();
   check_position();
   check_limits();
 }

@@ -26,6 +26,14 @@ void callback_set_ramp_profile();
 void callback_set_pid_tolerance();
 void callback_set_completion_window();
 void callback_set_pid_open_above();
+void callback_set_loop_strategy();
+void callback_set_move_settle_measure();
+void callback_set_move_settle_feedforward();
+void callback_set_move_settle_shaper();
+void callback_set_move_settle_accept();
+void callback_set_move_settle_model();
+void callback_set_move_settle_scale();
+void callback_set_move_settle_finish();
 
 void callback_disable_stage_pid();
 void callback_initfilterwheel();

@@ -2,6 +2,7 @@
 
 #include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
 #include "../operations.h"                   // pid_before_move
+#include "../move_settle.h"                    // move-and-settle: settle_armed, settle_move_to
 
 // Surface a failed move whose callback had already claimed
 // mcu_cmd_execution_in_progress = true. Unwinds the in_progress flag
@@ -107,13 +108,37 @@ void callback_move_z()
     // written focusPosition would be carried out by that detent.
     if (!axis_driver_ready(z)) return;
     long relative_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-    long current_position = tmc4361A_currentPosition(&tmc4361[z]);
+    settle_close_external(z);    // focus-wheel motion not yet measured: the counter goes onto the encoder first
+    // The host's frame: while a move-and-settle is in flight the counter is off it by the move-and-settle's offset
+    // (0 at rest), so a relative move starts from where the host believes the axis is.
+    long current_position = tmc4361A_currentPosition(&tmc4361[z]) - settle_axis_offset(z);
+    // [6] = MOVE_Z_FROM_MEASURED: relative to where the stage IS (move-and-settle only; ignored otherwise,
+    // and by older firmware). For a correction that was measured from the stage's real position (laser
+    // autofocus). A z-stack must NOT use it: chained on landings, the residuals add up plane after plane.
+    if (buffer_rx[6] == MOVE_Z_FROM_MEASURED) current_position = settle_measured_position(z, current_position);
     Z_direction = sgn(relative_position);
     Z_commanded_target_position = ( relative_position > 0 ? min(current_position + relative_position, Z_POS_LIMIT) : max(current_position + relative_position, Z_NEG_LIMIT) );
+    // [6] = MOVE_Z_RETRY_LAST: the host's retry of a MISSED move that was planned from the encoder. Its target was
+    // (measured + correction), which the host cannot know - the counter is off it by up to the accepted band - so
+    // the target is the one this controller resolved, and the payload (the host's estimate, relative to where the
+    // stage is now) is the move only where that record means nothing: another strategy, the last move not missed.
+    if (buffer_rx[6] == MOVE_Z_RETRY_LAST)
+    {
+        int32_t last_target;
+        if (settle_last_target(z, &last_target))
+        {
+            Z_commanded_target_position = last_target;
+            Z_direction = sgn(Z_commanded_target_position - current_position);
+        }
+    }
     pid_before_move(z);
     focusPosition = Z_commanded_target_position;
     mcu_cmd_execution_in_progress = true;
-    if ( tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
+    // Move-and-settle (SET_LOOP_STRATEGY) plans the ramp from the encoder and owns the move until it
+    // is measured in place; otherwise the target goes straight to the ramp generator, as always - and
+    // move-and-settle, if it is this axis's strategy, is told which way the open-loop ramp went.
+    if (!settle_armed(z)) settle_external_motion(z, Z_commanded_target_position - current_position);
+    if ( (settle_armed(z) ? settle_move_to(z, Z_commanded_target_position) : tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position)) == 0)
     {
         Z_commanded_movement_in_progress = true;
     }
@@ -209,11 +234,14 @@ void callback_move_to_z()
 {
     if (!axis_driver_ready(z)) return;
     long absolute_position = int32_t(uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]));
-    Z_direction = sgn(absolute_position - tmc4361A_currentPosition(&tmc4361[z]));
+    settle_close_external(z);    // focus-wheel motion not yet measured: the counter goes onto the encoder first
+    Z_direction = sgn(absolute_position - (tmc4361A_currentPosition(&tmc4361[z]) - settle_axis_offset(z)));
     Z_commanded_target_position = min(max(absolute_position, Z_NEG_LIMIT), Z_POS_LIMIT);
     pid_before_move(z);
     mcu_cmd_execution_in_progress = true;
-    if (tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position) == 0)
+    // see callback_move_z: move-and-settle owns the move when it is armed on the axis
+    if (!settle_armed(z)) settle_external_motion(z, Z_commanded_target_position - tmc4361A_currentPosition(&tmc4361[z]));
+    if ((settle_armed(z) ? settle_move_to(z, Z_commanded_target_position) : tmc4361A_moveTo(&tmc4361[z], Z_commanded_target_position)) == 0)
     {
         focusPosition = Z_commanded_target_position;
         Z_commanded_movement_in_progress = true;
@@ -606,6 +634,7 @@ void callback_home_or_zero()
             Y_pos = 0;
             break;
         case AXIS_Z:
+            settle_drop(z, false);   // both frames are redefined here: nothing a move-and-settle knew survives
             tmc4361A_setCurrentPosition(&tmc4361[z], 0);
             tmc4361A_write_encoder(&tmc4361[z], 0);   // keep ENC_POS aligned with XACTUAL
             Z_pos = 0;

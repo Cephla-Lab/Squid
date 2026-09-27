@@ -56,7 +56,7 @@
 //               RESET returns every loop setting (clamp, watchdog, zone, tolerances,
 //               completion window, loop-mode threshold) to the firmware default.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 6
+#define FIRMWARE_VERSION_MINOR 7
 
 #include "def/def_v1.h"
 
