@@ -3357,6 +3357,11 @@ class SpinningDiskConfocalWidget(QWidget):
         if self.disk_position_state == 1:
             self.btn_toggle_widefield.setText("Switch to Widefield")
 
+        try:
+            self.btn_toggle_motor.setChecked(self.xlight.get_disk_motor_state())
+        except Exception as e:
+            self._log.warning(f"Could not query XLight disk motor state: {e}")
+
         self.btn_toggle_widefield.clicked.connect(self.toggle_disk_position)
         self.btn_toggle_motor.clicked.connect(self.toggle_motor)
 
@@ -3387,7 +3392,7 @@ class SpinningDiskConfocalWidget(QWidget):
         self.dropdown_dichroic = None
         if self.xlight.has_dichroic_filters_wheel:
             self.dropdown_dichroic = QComboBox(self)
-            self.dropdown_dichroic.addItems([str(i + 1) for i in range(5)])
+            self.dropdown_dichroic.addItems([str(i + 1) for i in range(self.xlight.dichroic_positions)])
 
         illuminationIrisLayout = QHBoxLayout()
         illuminationIrisLayout.addWidget(QLabel("Illumination Iris"))
@@ -3414,7 +3419,7 @@ class SpinningDiskConfocalWidget(QWidget):
         # self.filter_slider = QComboBox(self)
         # self.filter_slider.addItems(["0", "1", "2", "3"])
         self.filter_slider = QSlider(Qt.Horizontal)
-        self.filter_slider.setRange(0, 3)
+        self.filter_slider.setRange(0, self.xlight.filter_slider_positions - 1)
         self.filter_slider.setTickPosition(QSlider.TicksBelow)
         self.filter_slider.setTickInterval(1)
         filterSliderLayout.addWidget(self.filter_slider)
@@ -3476,9 +3481,13 @@ class SpinningDiskConfocalWidget(QWidget):
         target_position = 0 if self.disk_position_state == 1 else 1
 
         def on_finished(success, error_msg):
-            QMetaObject.invokeMethod(
-                self, "_on_disk_position_toggled", Qt.QueuedConnection, Q_ARG(int, target_position)
-            )
+            if success:
+                QMetaObject.invokeMethod(
+                    self, "_on_disk_position_toggled", Qt.QueuedConnection, Q_ARG(int, target_position)
+                )
+            else:
+                # The disk did not move, so stay in the current mode
+                QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
 
         utils.threaded_operation_helper(self.xlight.set_disk_position, on_finished, position=target_position)
 
@@ -3497,9 +3506,16 @@ class SpinningDiskConfocalWidget(QWidget):
         state = self.btn_toggle_motor.isChecked()
 
         def on_finished(success, error_msg):
-            QMetaObject.invokeMethod(self, "enable_all_buttons", Qt.QueuedConnection, Q_ARG(bool, True))
+            # On failure the motor is still in its previous state
+            running = state if success else not state
+            QMetaObject.invokeMethod(self, "_on_motor_toggled", Qt.QueuedConnection, Q_ARG(bool, running))
 
         utils.threaded_operation_helper(self.xlight.set_disk_motor_state, on_finished, state=state)
+
+    @Slot(bool)
+    def _on_motor_toggled(self, running):
+        self.btn_toggle_motor.setChecked(running)
+        self.enable_all_buttons(True)
 
     def set_emission_filter(self, index):
         self.enable_all_buttons(False)
@@ -3562,15 +3578,20 @@ class SpinningDiskConfocalWidget(QWidget):
         """Shared logic for updating an iris value from UI interaction."""
         self.block_iris_control_signals(True)
         self.enable_all_buttons(False)
-        if from_slider:
-            value = slider.value()
-        else:
-            value = spinbox.value()
-            slider.setValue(value)
-        hw_setter(value)
-        signal.emit(float(value))
-        self.enable_all_buttons(True)
-        self.block_iris_control_signals(False)
+        try:
+            if from_slider:
+                value = slider.value()
+            else:
+                value = spinbox.value()
+                slider.setValue(value)
+            hw_setter(value)
+            # Only persist values the hardware accepted
+            signal.emit(float(value))
+        except Exception as e:
+            self._log.error(f"Failed to set XLight iris: {e}")
+        finally:
+            self.enable_all_buttons(True)
+            self.block_iris_control_signals(False)
 
     def update_illumination_iris(self, from_slider: bool):
         self._update_iris_hardware(
