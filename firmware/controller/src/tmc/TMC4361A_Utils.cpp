@@ -967,8 +967,7 @@ void tmc4361A_moveToExtreme(TMC4361ATypeDef *tmc4361A, int32_t vel, int8_t dir) 
   -----------------------------------------------------------------------------
 */
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
-  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request), in one
-  // read-modify-write: the two profile bits are cleared and the wanted one set in the same word.
+  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request)
   int32_t rampmode = tmc4361A_readInt(tmc4361A, TMC4361A_RAMPMODE);
   rampmode &= ~(TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
   rampmode |= TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE);

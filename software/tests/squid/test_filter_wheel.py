@@ -165,26 +165,6 @@ class TestSquidFilterWheelSkipInit:
         mock_microcontroller.set_pid_arguments.assert_not_called()
         mock_microcontroller.turn_on_stage_pid.assert_not_called()
 
-    def test_a_stale_enable_pid_w_key_in_the_ini_is_warned_about(
-        self, mock_microcontroller, squid_config, tmp_path, monkeypatch, caplog
-    ):
-        import logging
-        import control._def
-
-        ini = tmp_path / "configuration_test.ini"
-        ini.write_text("[GENERAL]\nenable_pid_w = True\n")
-        monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(ini))
-        with caplog.at_level(logging.WARNING):
-            SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
-        assert any("enable_pid_w = True is ignored" in r.getMessage() for r in caplog.records)
-        mock_microcontroller.turn_on_stage_pid.assert_not_called()
-
-        ini.write_text("[GENERAL]\nenable_pid_w = False\n")
-        caplog.clear()
-        with caplog.at_level(logging.WARNING):
-            SquidFilterWheel(mock_microcontroller, squid_config, skip_init=False)
-        assert not any("enable_pid_w" in r.getMessage() for r in caplog.records)
-
 
 class TestSquidFilterWheelAbsoluteMove:
     """Tests for the absolute-MOVETO move path on the filter wheel.

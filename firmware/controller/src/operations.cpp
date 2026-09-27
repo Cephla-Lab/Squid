@@ -561,8 +561,7 @@ static inline bool within_completion_window(uint8_t axis, int32_t position, int3
   return (d < 0 ? -d : d) <= win;
 }
 
-// A commanded move is done when the ramp has stopped exactly at the target - or, for an axis with
-// a completion window, once the position is inside the window. One position read per axis per check.
+// Done: stopped exactly at the target, or inside the axis's completion window.
 static inline bool commanded_move_done(uint8_t axis, int32_t target)
 {
   int32_t position = tmc4361A_currentPosition(&tmc4361[axis]);

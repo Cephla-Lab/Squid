@@ -153,11 +153,7 @@ void callback_enable_stage_pid()
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;  // Invalid axis
 
-    // Closed loop on the filter wheels is not supported (decided 2026-09-24). A wheel is a rotary
-    // axis with no travel limit, and this firmware has no watchdog or clamp on the chip's controller:
-    // a wrong encoder sign would run it away with nothing to stop it. The wheel's encoder is read
-    // (SET_ENCODER_REPORTING) and never closed into a loop. Refused like a bad move, so a host or a
-    // bench tool that asks anyway gets CMD_EXECUTION_ERROR instead of silence.
+    // Closed loop on the filter wheels is not supported: refused like a bad move.
     if (axis == w || axis == w2)
     {
         mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
@@ -197,49 +193,30 @@ void callback_set_encoder_reporting()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     uint8_t mode = buffer_rx[3];
+    bool on = axis != 0xFF && mode != ENCODER_REPORT_OFF && mode <= ENCODER_REPORT_ENC_AS_POSITION;
 
-    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
-    {
-        // Off: also hands the position field back to XACTUAL for every axis (leaving mode 2).
-        encoder_report_axis = 0xFF;
-        encoder_report_mode = ENCODER_REPORT_OFF;
-        X_use_encoder = false;
-        Y_use_encoder = false;
-        Z_use_encoder = false;
-        return;
-    }
-    // send_position_update() will read this axis's chip every packet, through a config pointer
-    // that is null until the chip has been initialised - for the wheels only by INITFILTERWHEEL.
-    // Gated like a move (the reply is CMD_EXECUTION_ERROR); nothing is changed when refused.
-    if (!axis_driver_ready(axis)) return;
+    // Reporting reads the chip every packet; a wheel's chip is only usable after INITFILTERWHEEL.
+    // A refused command changes nothing.
+    if (on && !axis_driver_ready(axis)) return;
 
-    X_use_encoder = false;
-    Y_use_encoder = false;
-    Z_use_encoder = false;
-    encoder_report_axis = axis;
-    encoder_report_mode = mode;
-    if (mode == ENCODER_REPORT_ENC_AS_POSITION)
-    {
-        if (axis == x) X_use_encoder = true;
-        else if (axis == y) Y_use_encoder = true;
-        else if (axis == z) Z_use_encoder = true;
-    }
+    encoder_report_axis = on ? axis : 0xFF;
+    encoder_report_mode = on ? mode : ENCODER_REPORT_OFF;
+    bool as_position = on && mode == ENCODER_REPORT_ENC_AS_POSITION;
+    X_use_encoder = as_position && axis == x;
+    Y_use_encoder = as_position && axis == y;
+    Z_use_encoder = as_position && axis == z;
 }
 
 // SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
-// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
-// INITIALIZE (the host sets it once with the other motion parameters), but
-// INITFILTERWHEEL re-initialises the wheel's motion chip and with it the S-shape: set the
-// profile AFTER the wheel has been initialised. RESET
-// returns every axis to the S-shape, applied by the next ramp setup.
+// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. INITFILTERWHEEL and RESET
+// return the axis to the S-shape; INITIALIZE does not.
 void callback_set_ramp_profile()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;
     uint8_t profile = buffer_rx[3];
     if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
-    // The ramp init below writes the chip through a config pointer that is null until the chip
-    // has been initialised (the wheels only by INITFILTERWHEEL): gated like a move.
+    // The ramp init writes the chip; a wheel's chip is only usable after INITFILTERWHEEL.
     if (!axis_driver_ready(axis)) return;
     tmc4361[axis].ramp_profile = profile;
     tmc4361A_sRampInit(&tmc4361[axis]);
