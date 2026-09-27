@@ -145,6 +145,11 @@ class DirectionSign(enum.IntEnum):
     DIRECTION_SIGN_NEGATIVE = -1
 
 
+def _normalise_loop_name(v) -> str:
+    # "move_settle", and the way people write it: "move-settle", "move-and-settle"
+    return str(v).strip().lower().replace("-", "_").replace("move_and_settle", "move_settle")
+
+
 class PIDConfig(pydantic.BaseModel):
     ENABLED: bool
     P: float
@@ -158,6 +163,52 @@ class PIDConfig(pydantic.BaseModel):
     # Ramp velocity (native units/s) above which the loop is opened while the axis moves, re-engaging as it
     # slows. 0 = rest-only; >= MAX_SPEED = engaged throughout; ~1 mm/s keeps focus steps closed-loop only.
     OPEN_ABOVE_MM_S: float = 0.0
+    # What the enabled loop IS (firmware >= 1.7): "pid" = the TMC4361A's continuous loop, "move_settle" =
+    # move-and-settle (feedforward move planned from the encoder, measured at rest over one ring period,
+    # finite corrections, nothing regulating in between). See control._def.LOOP_STRATEGY and the
+    # MOVE_SETTLE_* comments there for each setting.
+    STRATEGY: str = "pid"
+    MOVE_SETTLE_WAIT_MS: float = 5.0
+    MOVE_SETTLE_WINDOW_MS: float = 9.0
+    MOVE_SETTLE_TRIM_GAIN: float = 0.75
+    MOVE_SETTLE_MAX_TRIMS: int = 6
+    MOVE_SETTLE_MAX_REAPPROACHES: int = 1
+    MOVE_SETTLE_APPROACH: str = "move"
+    MOVE_SETTLE_LOST_MOTION_UM: float = 0.0
+    MOVE_SETTLE_BIAS_UM: float = 0.0
+    MOVE_SETTLE_BACKOFF_UM: float = 3.0
+    MOVE_SETTLE_CARRY_UM: float = 0.0
+    MOVE_SETTLE_FULL_PUSH_UM: float = 0.94
+    MOVE_SETTLE_LEARN_GAIN: float = 0.25
+    MOVE_SETTLE_BIAS_SIGMA: float = 0.5
+    MOVE_SETTLE_SCALE_PPM: int = 0
+    MOVE_SETTLE_SHAPER_HALF_PERIOD_MS: float = 0.0
+    MOVE_SETTLE_SHAPER_FIRST_SHARE: float = 0.5
+    MOVE_SETTLE_SHAPER_MAX_MOVE_UM: int = 0
+    MOVE_SETTLE_OVERSHOOT_TOLERANCE_UM: float = 0.28
+    MOVE_SETTLE_QUIET_PP_UM: float = 0.0
+    MOVE_SETTLE_QUIET_WINDOWS: int = 0
+    # long legs end with a short finishing leg: its length (0 = off) and the first-leg length it is used from
+    MOVE_SETTLE_FINISH_UM: float = 0.0
+    MOVE_SETTLE_FINISH_FROM_UM: float = 1000.0
+
+    @pydantic.field_validator("STRATEGY")
+    @classmethod
+    def _known_strategy(cls, v):
+        v = _normalise_loop_name(v)
+        if v not in _def.LOOP_STRATEGY.NAMES:
+            raise ValueError(f"loop strategy must be one of {sorted(_def.LOOP_STRATEGY.NAMES)}, not {v!r}")
+        return v
+
+    @pydantic.field_validator("MOVE_SETTLE_APPROACH")
+    @classmethod
+    def _known_approach(cls, v):
+        v = str(v).strip().lower()
+        if v not in _def.MOVE_SETTLE_APPROACH.NAMES:
+            raise ValueError(
+                f"move-and-settle approach must be one of {sorted(_def.MOVE_SETTLE_APPROACH.NAMES)}, not {v!r}"
+            )
+        return v
 
 
 class AxisConfig(pydantic.BaseModel):
@@ -233,10 +284,31 @@ class StageConfig(pydantic.BaseModel):
     THETA_AXIS: AxisConfig
 
 
+def _z_encoder_control_from_def() -> dict:
+    """ENABLED / STRATEGY for Z from its one key. "pid" is refused like any other value: the chip's PID is
+    not a product option for Z, and an ini that asks for it must not come up as something else."""
+    value = _normalise_loop_name(_def.Z_ENCODER_CONTROL)
+    if value == "off":
+        return {"ENABLED": False}
+    if value == "move_settle":
+        return {"ENABLED": True, "STRATEGY": "move_settle"}
+    raise ValueError(
+        f"z_encoder_control must be 'off' or 'move_settle', not {_def.Z_ENCODER_CONTROL!r}: the TMC4361A's PID is "
+        f"no longer a product option for Z (bench only, tools/z_encoder_pid_tuner.py)"
+    )
+
+
 def _pid_config_from_def(axis: str) -> PIDConfig:
     """PID/closed-loop settings for stage axis 'X', 'Y' or 'Z' from the machine constants."""
+    if axis == "Z":
+        loop = _z_encoder_control_from_def()
+    else:
+        loop = {
+            "ENABLED": bool(getattr(_def, f"ENABLE_PID_{axis}")),
+            "STRATEGY": str(getattr(_def, f"LOOP_STRATEGY_{axis}", "pid")),
+        }
     return PIDConfig(
-        ENABLED=bool(getattr(_def, f"ENABLE_PID_{axis}")),
+        **loop,
         P=getattr(_def, f"PID_P_{axis}"),
         I=getattr(_def, f"PID_I_{axis}"),
         D=getattr(_def, f"PID_D_{axis}"),
@@ -245,6 +317,28 @@ def _pid_config_from_def(axis: str) -> PIDConfig:
         HOME_ZONE_UM=float(getattr(_def, f"PID_HOME_ZONE_{axis}_UM", 0)),
         TOLERANCE_UM=float(getattr(_def, f"PID_TOLERANCE_{axis}_UM", 0.0)),
         OPEN_ABOVE_MM_S=float(getattr(_def, f"PID_OPEN_ABOVE_{axis}_mm", 0.0)),
+        MOVE_SETTLE_WAIT_MS=float(getattr(_def, f"MOVE_SETTLE_WAIT_MS_{axis}", 5.0)),
+        MOVE_SETTLE_WINDOW_MS=float(getattr(_def, f"MOVE_SETTLE_WINDOW_MS_{axis}", 9.0)),
+        MOVE_SETTLE_TRIM_GAIN=float(getattr(_def, f"MOVE_SETTLE_TRIM_GAIN_{axis}", 0.75)),
+        MOVE_SETTLE_MAX_TRIMS=int(getattr(_def, f"MOVE_SETTLE_MAX_TRIMS_{axis}", 6)),
+        MOVE_SETTLE_MAX_REAPPROACHES=int(getattr(_def, f"MOVE_SETTLE_MAX_REAPPROACHES_{axis}", 1)),
+        MOVE_SETTLE_APPROACH=str(getattr(_def, f"MOVE_SETTLE_APPROACH_{axis}", "move")),
+        MOVE_SETTLE_LOST_MOTION_UM=float(getattr(_def, f"MOVE_SETTLE_LOST_MOTION_{axis}_UM", 0.0)),
+        MOVE_SETTLE_BIAS_UM=float(getattr(_def, f"MOVE_SETTLE_BIAS_{axis}_UM", 0.0)),
+        MOVE_SETTLE_BACKOFF_UM=float(getattr(_def, f"MOVE_SETTLE_BACKOFF_{axis}_UM", 3.0)),
+        MOVE_SETTLE_CARRY_UM=float(getattr(_def, f"MOVE_SETTLE_CARRY_{axis}_UM", 0.0)),
+        MOVE_SETTLE_FULL_PUSH_UM=float(getattr(_def, f"MOVE_SETTLE_FULL_PUSH_{axis}_UM", 0.94)),
+        MOVE_SETTLE_LEARN_GAIN=float(getattr(_def, f"MOVE_SETTLE_LEARN_GAIN_{axis}", 0.25)),
+        MOVE_SETTLE_BIAS_SIGMA=float(getattr(_def, f"MOVE_SETTLE_BIAS_SIGMA_{axis}", 0.5)),
+        MOVE_SETTLE_SCALE_PPM=int(getattr(_def, f"MOVE_SETTLE_SCALE_PPM_{axis}", 0)),
+        MOVE_SETTLE_SHAPER_HALF_PERIOD_MS=float(getattr(_def, f"MOVE_SETTLE_SHAPER_HALF_PERIOD_{axis}_MS", 0.0)),
+        MOVE_SETTLE_SHAPER_FIRST_SHARE=float(getattr(_def, f"MOVE_SETTLE_SHAPER_FIRST_SHARE_{axis}", 0.5)),
+        MOVE_SETTLE_SHAPER_MAX_MOVE_UM=int(getattr(_def, f"MOVE_SETTLE_SHAPER_MAX_MOVE_{axis}_UM", 0)),
+        MOVE_SETTLE_OVERSHOOT_TOLERANCE_UM=float(getattr(_def, f"MOVE_SETTLE_OVERSHOOT_TOLERANCE_{axis}_UM", 0.28)),
+        MOVE_SETTLE_QUIET_PP_UM=float(getattr(_def, f"MOVE_SETTLE_QUIET_PP_{axis}_UM", 0.0)),
+        MOVE_SETTLE_QUIET_WINDOWS=int(getattr(_def, f"MOVE_SETTLE_QUIET_WINDOWS_{axis}", 0)),
+        MOVE_SETTLE_FINISH_UM=float(getattr(_def, f"MOVE_SETTLE_FINISH_{axis}_UM", 0.0)),
+        MOVE_SETTLE_FINISH_FROM_UM=float(getattr(_def, f"MOVE_SETTLE_FINISH_FROM_{axis}_UM", 1000.0)),
     )
 
 

@@ -69,6 +69,14 @@ _CMD_NAMES = {
     CMD_SET.SET_PID_TOLERANCE: "SET_PID_TOLERANCE",
     CMD_SET.SET_COMPLETION_WINDOW: "SET_COMPLETION_WINDOW",
     CMD_SET.SET_PID_OPEN_ABOVE: "SET_PID_OPEN_ABOVE",
+    CMD_SET.SET_LOOP_STRATEGY: "SET_LOOP_STRATEGY",
+    CMD_SET.SET_MOVE_SETTLE_MEASURE: "SET_MOVE_SETTLE_MEASURE",
+    CMD_SET.SET_MOVE_SETTLE_FEEDFORWARD: "SET_MOVE_SETTLE_FEEDFORWARD",
+    CMD_SET.SET_MOVE_SETTLE_SHAPER: "SET_MOVE_SETTLE_SHAPER",
+    CMD_SET.SET_MOVE_SETTLE_ACCEPT: "SET_MOVE_SETTLE_ACCEPT",
+    CMD_SET.SET_MOVE_SETTLE_MODEL: "SET_MOVE_SETTLE_MODEL",
+    CMD_SET.SET_MOVE_SETTLE_SCALE: "SET_MOVE_SETTLE_SCALE",
+    CMD_SET.SET_MOVE_SETTLE_FINISH: "SET_MOVE_SETTLE_FINISH",
     CMD_SET.SEND_HARDWARE_TRIGGER: "SEND_HARDWARE_TRIGGER",
     CMD_SET.SET_STROBE_DELAY: "SET_STROBE_DELAY",
     CMD_SET.SET_AXIS_DISABLE_ENABLE: "SET_AXIS_DISABLE_ENABLE",
@@ -134,6 +142,24 @@ class CommandAborted(RuntimeError):
         super().__init__(reason)
         self.command_id = command_id
         self.recoverable = recoverable
+
+
+def decode_move_settle_report(landing_byte: int, bits: int) -> dict:
+    """Status bytes 20-21 in ENCODER_REPORTING.MOVE_SETTLE: what the controller's last move-and-settle did.
+
+    first_landing_usteps is target - measured mean after the feedforward leg, positive = short of the
+    target in the approach direction (clipped to +-127): the quantity the lost-motion and bias settings
+    are tuned against. trims and backed_off are the corrections it then needed; missed says the budget ran out
+    outside the tolerance (the command failed with CMD_EXECUTION_ERROR, nothing was latched).
+    """
+    return {
+        "first_landing_usteps": landing_byte - 256 if landing_byte > 127 else landing_byte,
+        "trims": bits & MOVE_SETTLE_REPORT.TRIMS_MASK,
+        "backed_off": bool(bits & (1 << MOVE_SETTLE_REPORT.BACKED_OFF)),
+        "missed": bool(bits & (1 << MOVE_SETTLE_REPORT.MISSED)),
+        "limited": bool(bits & (1 << MOVE_SETTLE_REPORT.LIMITED)),
+        "busy": bool(bits & (1 << MOVE_SETTLE_REPORT.BUSY)),
+    }
 
 
 def decode_encoder_flags(flags: int) -> dict:
@@ -721,6 +747,11 @@ class Microcontroller:
         # None when the reported axis's counter is not in the status packet (theta / the filter wheels).
         self.encoder_dev32 = None
         self.encoder_flags = 0  # raw status byte 19
+        # ENCODER_REPORTING.MOVE_SETTLE (firmware >= 1.7): bytes 20-21 carry the last move-and-settle's report
+        # instead of the clipped deviation. The layouts cannot be told apart on the wire, so the mode this
+        # host last asked for decides how they are read.
+        self._encoder_report_mode = ENCODER_REPORTING.OFF
+        self.move_settle_report = None  # dict, see decode_move_settle_report(); None until one was received
         # Latched closed-loop faults, byte 18 bits 4-6 as a 3-bit mask (bit 0 = X, 1 = Y, 2 = Z).
         # Kept so each new fault is logged once instead of on every packet.
         self.pid_fault_mask = 0
@@ -1196,6 +1227,44 @@ class Microcontroller:
     def move_z_usteps(self, usteps):
         self._move_axis_usteps(usteps, CMD_SET.MOVE_Z)
 
+    def move_z_usteps_from_measured(self, usteps):
+        """A relative Z move that starts from where the stage IS (move-and-settle, firmware >= 1.7).
+
+        A plain relative move starts from the last target, and the stage may sit anywhere inside the
+        accepted band of that (-0.19 / +0.28 um by default). For a correction that was MEASURED from the
+        stage's real position - laser autofocus - that residual would add to the focus error. Never for
+        the planes of a z-stack: chained on landings, the residuals (and the deliberate short aim) add
+        up plane after plane. Other strategies and older firmware ignore the flag: a plain relative move.
+        """
+        payload = self._int_to_payload(int(usteps), 4)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVE_Z
+        cmd[2] = payload >> 24
+        cmd[3] = (payload >> 16) & 0xFF
+        cmd[4] = (payload >> 8) & 0xFF
+        cmd[5] = payload & 0xFF
+        cmd[6] = MOVE_Z_FROM_MEASURED
+        self.send_command(cmd)
+
+    def move_z_usteps_retry_last(self, usteps):
+        """Send a MISSED Z move again, to the target the controller resolved for it (move-and-settle, firmware >= 1.7).
+
+        A move that started from where the stage IS (move_z_usteps_from_measured) went to (encoder + correction),
+        and the host knows only the counter - off the stage by up to the accepted band at rest - so an absolute
+        move to (counter + correction) would shift the plane. The controller keeps that target and goes to it
+        again; `usteps` is the host's best estimate as a relative move from where the stage is now, and is the
+        move only where the flag means nothing: other strategies, older firmware, a last move that was not missed.
+        """
+        payload = self._int_to_payload(int(usteps), 4)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVE_Z
+        cmd[2] = payload >> 24
+        cmd[3] = (payload >> 16) & 0xFF
+        cmd[4] = (payload >> 8) & 0xFF
+        cmd[5] = payload & 0xFF
+        cmd[6] = MOVE_Z_RETRY_LAST
+        self.send_command(cmd)
+
     def move_z_to_usteps(self, usteps):
         self._move_axis_to_usteps(usteps, CMD_SET.MOVETO_Z)
 
@@ -1377,6 +1446,7 @@ class Microcontroller:
         cmd[1] = CMD_SET.SET_ENCODER_REPORTING
         cmd[2] = int(axis)
         cmd[3] = int(mode)
+        self._encoder_report_mode = int(mode)
         self.send_command(cmd)
 
     def set_pid_limits(self, axis, max_correction_velocity_mm_s, max_deviation_um):
@@ -1457,6 +1527,197 @@ class Microcontroller:
         cmd[2] = int(axis)
         cmd[3] = (v >> 8) & 0xFF
         cmd[4] = v & 0xFF
+        self.send_command(cmd)
+
+    def set_loop_strategy(self, axis, strategy):
+        """What ENABLE_STAGE_PID arms on `axis` (firmware >= 1.7): LOOP_STRATEGY.CHIP_PID or .PLACEMENT.
+
+        The controller refuses the change (CMD_EXECUTION_ERROR) while a loop is requested on the axis:
+        turn_off_stage_pid first. RESET restores CHIP_PID. Older firmware ignores the command.
+        """
+        if strategy not in (LOOP_STRATEGY.CHIP_PID, LOOP_STRATEGY.MOVE_SETTLE):
+            raise ValueError(f"unknown loop strategy {strategy!r}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_LOOP_STRATEGY
+        cmd[2] = int(axis)
+        cmd[3] = int(strategy)
+        self.send_command(cmd)
+
+    def set_move_settle_measure(
+        self,
+        axis,
+        window_ms=9.0,
+        trim_gain=0.75,
+        max_trims=6,
+        max_reapproaches=1,
+        approach=MOVE_SETTLE_APPROACH.MOVE_DIRECTION,
+        wait_ms=5.0,
+    ):
+        """Move-and-settle on `axis`: how a landing is measured and corrected (firmware >= 1.7).
+
+        wait_ms is the wait after the ramp stops before the averaging window opens (0 .. 127.5 ms): the
+        stage's arrival transient is not its rest position. window_ms is the averaging window - one period
+        of the stage's ring (0.5 .. 127.5 ms; both in 0.5 ms steps); trim_gain the share of a shortfall one
+        trim moves (1/16 .. 2, 1/16 steps); max_trims per approach (0 .. 15) and max_reapproaches per move
+        (0 .. 3) the budgets whose exhaustion is a MISSED move (CMD_EXECUTION_ERROR, no fault latched); approach a MOVE_SETTLE_APPROACH value (in the
+        controller's frame). Every field is literal: there is no 'keep the current value'.
+        """
+        s = int(round(wait_ms * 2))
+        w = int(round(window_ms * 2))
+        g = int(round(trim_gain * 16))
+        if not (0 <= s <= 255):
+            raise ValueError("settle must be 0 .. 127.5 ms")
+        if not (1 <= w <= 255):
+            raise ValueError("window must be 0.5 .. 127.5 ms")
+        if not (1 <= g <= 32):
+            raise ValueError("trim gain must be 1/16 .. 2")
+        if not (0 <= int(max_trims) <= 15) or not (0 <= int(max_reapproaches) <= 3):
+            raise ValueError("max_trims must be 0 .. 15 and max_reapproaches 0 .. 3")
+        if approach not in (
+            MOVE_SETTLE_APPROACH.MOVE_DIRECTION,
+            MOVE_SETTLE_APPROACH.POSITIVE,
+            MOVE_SETTLE_APPROACH.NEGATIVE,
+        ):
+            raise ValueError(f"unknown approach {approach!r}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_MEASURE
+        cmd[2] = int(axis)
+        cmd[3] = s
+        cmd[4] = w
+        cmd[5] = g
+        cmd[6] = (int(max_reapproaches) << 6) | (int(approach) << 4) | int(max_trims)
+        self.send_command(cmd)
+
+    def set_move_settle_feedforward(self, axis, lost_motion_um=0.0, bias_um=0.0, backoff_um=3.0):
+        """Move-and-settle on `axis`: what is added to the plan (firmware >= 1.7).
+
+        lost_motion_um goes on top of every leg that reverses the motor (0 .. 655.35 um; keep it under
+        the measured value - an overestimate overshoots); bias_um makes the first landing aim short
+        (0 .. 2.55 um); backoff_um is how far beyond the target a re-approach starts (0 .. 25.5 um; the
+        controller keeps it beyond the lost motion). Literal values.
+        """
+        lm = int(round(lost_motion_um * 100))
+        b = int(round(bias_um * 100))
+        bo = int(round(backoff_um * 10))
+        if not (0 <= lm <= 0xFFFF) or not (0 <= b <= 0xFF) or not (0 <= bo <= 0xFF):
+            raise ValueError("lost motion 0 .. 655.35 um, bias 0 .. 2.55 um, back-off 0 .. 25.5 um")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_FEEDFORWARD
+        cmd[2] = int(axis)
+        cmd[3] = (lm >> 8) & 0xFF
+        cmd[4] = lm & 0xFF
+        cmd[5] = b
+        cmd[6] = bo
+        self.send_command(cmd)
+
+    def set_move_settle_model(self, axis, carry_um=0.0, full_push_um=0.94, learn_gain=0.25, bias_sigma=0.5):
+        """Move-and-settle on `axis`: the lost-motion model every leg is planned through (firmware >= 1.7).
+
+        carry_um (0 .. 2.55) is how far a leg that pushes the stage a good way leaves it beyond the drive
+        flank - in full from a push of full_push_um (0.01 .. 2.55), in proportion below; a trim leaves it
+        nearly in contact. It is only where the controller's learning starts (as is the lost motion of
+        set_move_settle_feedforward): learn_gain (0 .. 1, 1/16 steps) is the share of each landing's prediction
+        error that goes into the model, 0 keeps the configured values. bias_sigma (0 .. 2, 1/16 steps) makes the
+        first landing aim short by that many sigmas of the landing scatter the controller measures (capped at
+        half the tolerance), so that a miss is a cheap trim and not a back-off. Sending this re-seeds the model.
+        """
+        c = int(round(carry_um * 100))
+        fp = int(round(full_push_um * 100))
+        g = int(round(learn_gain * 16))
+        b = int(round(bias_sigma * 16))
+        if not (0 <= c <= 0xFF) or not (1 <= fp <= 0xFF) or not (0 <= g <= 16) or not (0 <= b <= 32):
+            raise ValueError("carry 0 .. 2.55 um, full push 0.01 .. 2.55 um, learning gain 0 .. 1, bias 0 .. 2 sigma")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_MODEL
+        cmd[2] = int(axis)
+        cmd[3] = c
+        cmd[4] = fp
+        cmd[5] = g
+        cmd[6] = b
+        self.send_command(cmd)
+
+    def set_move_settle_scale(self, axis, scale_ppm=0):
+        """Move-and-settle on `axis`: stage travel per commanded travel, minus one, in ppm (firmware >= 1.7).
+
+        The screw's lead against the encoder's scale: -1100 says the stage moves 0.11 um less per 100 um
+        than the step counter. Every leg is planned through it and the controller goes on learning it from
+        long continuing moves (learning gain of set_move_settle_model). -5000 .. 5000; sending this re-seeds
+        the model.
+        """
+        ppm = int(round(scale_ppm))
+        if not (-5000 <= ppm <= 5000):
+            raise ValueError("scale -5000 .. 5000 ppm")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_SCALE
+        cmd[2] = int(axis)
+        cmd[3] = (ppm >> 8) & 0xFF  # int16, big-endian, two's complement
+        cmd[4] = ppm & 0xFF
+        self.send_command(cmd)
+
+    def set_move_settle_finish(self, axis, finish_um=0.0, from_um=0.0, usteps_per_um=1.0):
+        """Move-and-settle on `axis`: long legs end with a short finishing leg (firmware >= 1.7).
+
+        A move whose first leg would be longer than from_um is issued as two approach legs: the long one aimed
+        finish_um short of the target, then an ordinary continuing leg for the rest from the measured landing -
+        after a fast leg of 0.5-3 mm the stage lands up to 1 um off the model, a 50 um leg right after it lands
+        like any short step (bench 2026-09-26). finish_um 0 = off. The wire carries usteps (finish, 0 .. 65535)
+        and 16-ustep units (from, 0 .. 65535 x 16): usteps_per_um is the axis's, and a later change of the
+        microstepping needs this sent again. from_um 0 splits every leg longer than the finishing leg; otherwise
+        finish_um must be shorter than from_um (the controller refuses the rest). Literal values.
+        """
+        finish = int(round(finish_um * usteps_per_um))
+        from16 = int(round(from_um * usteps_per_um / 16))
+        if not (0 <= finish <= 0xFFFF) or not (0 <= from16 <= 0xFFFF):
+            raise ValueError("finishing leg 0 .. 65535 usteps, threshold 0 .. 65535 x 16 usteps")
+        if finish != 0 and from16 != 0 and finish >= from16 * 16:
+            raise ValueError("the finishing leg must be shorter than the length it is used from")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_FINISH
+        cmd[2] = int(axis)
+        cmd[3] = (finish >> 8) & 0xFF
+        cmd[4] = finish & 0xFF
+        cmd[5] = (from16 >> 8) & 0xFF
+        cmd[6] = from16 & 0xFF
+        self.send_command(cmd)
+
+    def set_move_settle_shaper(self, axis, half_period_ms=0.0, first_share=0.5, max_move_um=0):
+        """Move-and-settle on `axis`: ZV input shaper for short legs (firmware >= 1.7).
+
+        Legs up to max_move_um (0 .. 255) are issued in two parts half_period_ms apart (half the ring
+        period, 0 .. 655.35 ms in 10 us steps; 0 = off), first_share of the leg first (for a lightly
+        damped ring slightly more than half: 1 / (1 + exp(-zeta * pi))). Literal values.
+        """
+        h = int(round(half_period_ms * 100))
+        s = int(round(first_share * 256))
+        if not (0 <= h <= 0xFFFF) or not (1 <= s <= 255) or not (0 <= int(max_move_um) <= 255):
+            raise ValueError("half period 0 .. 655.35 ms, first share 1/256 .. 255/256, max move 0 .. 255 um")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_SHAPER
+        cmd[2] = int(axis)
+        cmd[3] = (h >> 8) & 0xFF
+        cmd[4] = h & 0xFF
+        cmd[5] = s
+        cmd[6] = int(max_move_um)
+        self.send_command(cmd)
+
+    def set_move_settle_accept(self, axis, overshoot_tolerance_um=0.28, quiet_pp_um=0.0, quiet_windows=0):
+        """Move-and-settle on `axis`: what is acknowledged (firmware >= 1.7).
+
+        overshoot_tolerance_um (0 .. 655.35; 0 = the target tolerance, i.e. symmetric) is the overshoot
+        accepted without a back-off; quiet_pp_um (0 .. 2.55; 0 = not required) the ring peak-to-peak
+        the acknowledgement waits for, over at most quiet_windows (0 .. 255) extra windows. Literal values.
+        """
+        o = int(round(overshoot_tolerance_um * 100))
+        p = int(round(quiet_pp_um * 100))
+        if not (0 <= o <= 0xFFFF) or not (0 <= p <= 0xFF) or not (0 <= int(quiet_windows) <= 255):
+            raise ValueError("overshoot 0 .. 655.35 um, settle p-p 0 .. 2.55 um, windows 0 .. 255")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_MOVE_SETTLE_ACCEPT
+        cmd[2] = int(axis)
+        cmd[3] = (o >> 8) & 0xFF
+        cmd[4] = o & 0xFF
+        cmd[5] = p
+        cmd[6] = int(quiet_windows)
         self.send_command(cmd)
 
     def set_pid_tolerance(self, axis, deadband_um, target_reached_um=None):
@@ -1916,7 +2177,6 @@ class Microcontroller:
                 if reporting:
                     encoder_pos = theta_pos
                     self.encoder_pos = encoder_pos
-                    self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
                     # ENC_POS minus the reported axis's step counter, both from this packet, at full
                     # width: the firmware's own field clips to int16 (+-192 um on a 256 usteps/FS Z).
                     counter = {AXIS.X: x_pos, AXIS.Y: y_pos, AXIS.Z: z_pos}.get(
@@ -1924,6 +2184,12 @@ class Microcontroller:
                     )
                     dev32 = None if counter is None else encoder_pos - counter
                     self.encoder_dev32 = dev32
+                    if self._encoder_report_mode == ENCODER_REPORTING.MOVE_SETTLE:
+                        # bytes 20-21 are the last move-and-settle's report; the deviation is the one above
+                        self.move_settle_report = decode_move_settle_report(msg[20], msg[21])
+                        self.encoder_deviation = 0 if dev32 is None else max(-32768, min(32767, dev32))
+                    else:
+                        self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
                 else:
                     self.pid_fault_causes = {
                         AXIS.X: (msg[19] >> PID_FAULT_CAUSE.X_SHIFT) & PID_FAULT_CAUSE.MASK,

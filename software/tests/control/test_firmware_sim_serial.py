@@ -89,6 +89,15 @@ class TestFirmwareConstants:
             "SET_PID_TOLERANCE": 48,
             "SET_COMPLETION_WINDOW": 49,
             "SET_PID_OPEN_ABOVE": 50,
+            # move-and-settle (firmware 1.7)
+            "SET_LOOP_STRATEGY": 51,
+            "SET_MOVE_SETTLE_MEASURE": 52,
+            "SET_MOVE_SETTLE_FEEDFORWARD": 53,
+            "SET_MOVE_SETTLE_SHAPER": 54,
+            "SET_MOVE_SETTLE_ACCEPT": 55,
+            "SET_MOVE_SETTLE_MODEL": 56,
+            "SET_MOVE_SETTLE_SCALE": 57,
+            "SET_MOVE_SETTLE_FINISH": 61,
         }
         missing = [name for name in expected if name not in cmd_ids]
         assert not missing, f"strict simulator whitelist is missing: {missing}"

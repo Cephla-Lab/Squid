@@ -211,6 +211,18 @@ class CMD_SET:
     SET_PID_TOLERANCE = 48  # Closed-loop deadband and target-reached tolerance in physical units (fw >= 1.6)
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target (fw >= 1.6)
     SET_PID_OPEN_ABOVE = 50  # Ramp velocity above which the closed loop is opened while moving (fw >= 1.6)
+    SET_LOOP_STRATEGY = 51  # What ENABLE_STAGE_PID arms: the TMC4361A's PID or move-and-settle (fw >= 1.7)
+    SET_MOVE_SETTLE_MEASURE = (
+        52  # Move-and-settle: averaging window, trim gain, trim / re-approach budgets, approach side
+    )
+    SET_MOVE_SETTLE_FEEDFORWARD = 53  # Move-and-settle: lost motion on a reversal, undershoot bias, back-off distance
+    SET_MOVE_SETTLE_SHAPER = 54  # Move-and-settle: split short legs half a ring period apart (ZV input shaper)
+    SET_MOVE_SETTLE_ACCEPT = 55  # Move-and-settle: accepted overshoot, ring amplitude required before the ack
+    SET_MOVE_SETTLE_MODEL = (
+        56  # Move-and-settle: lost-motion model (carry of a full push, where it is full, learning gain)
+    )
+    SET_MOVE_SETTLE_SCALE = 57  # Move-and-settle: the screw's lead against the encoder's scale, ppm
+    SET_MOVE_SETTLE_FINISH = 61  # Move-and-settle: long legs end with a short finishing leg (length, and from what length)
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -398,6 +410,44 @@ class ENCODER_REPORTING:
     OFF = 0
     ENC_IN_THETA = 1
     ENC_AS_POSITION = 2
+    # firmware >= 1.7: as ENC_IN_THETA, but bytes 20-21 carry the last move-and-settle's report (MOVE_SETTLE_REPORT)
+    # instead of the clipped deviation - the host computes that from ENC_POS and the counter anyway
+    MOVE_SETTLE = 3
+
+
+class LOOP_STRATEGY:
+    """CMD_SET.SET_LOOP_STRATEGY values (firmware >= 1.7): what ENABLE_STAGE_PID hands the axis to.
+
+    CHIP_PID is the TMC4361A's continuous loop (firmware 1.6 behaviour). PLACEMENT is the feedforward
+    alternative (firmware/controller/src/move_settle_policy.h): every commanded move is planned in the
+    encoder's frame and run open loop by the ramp generator, the encoder is read only at rest and
+    averaged over one period of the stage's ring, corrections are finite moves (a trim in the direction
+    of travel when short, a back-off and fresh approach when past), and nothing regulates between moves.
+    """
+
+    CHIP_PID = 0
+    MOVE_SETTLE = 1
+    NAMES = {"pid": CHIP_PID, "move_settle": MOVE_SETTLE}
+
+
+class MOVE_SETTLE_APPROACH:
+    """Which side move-and-settle finishes a move from (SET_MOVE_SETTLE_MEASURE)."""
+
+    MOVE_DIRECTION = 0  # the side the move comes from (default)
+    POSITIVE = 1  # always finish travelling +: a move toward - goes beyond the target and comes back
+    NEGATIVE = 2
+    NAMES = {"move": MOVE_DIRECTION, "positive": POSITIVE, "negative": NEGATIVE}
+
+
+class MOVE_SETTLE_REPORT:
+    """Status byte 21 in ENCODER_REPORTING.MOVE_SETTLE; byte 20 is the int8 first landing in usteps,
+    + = short of the target in the approach direction."""
+
+    TRIMS_MASK = 15  # bits 0-3: trims used
+    BACKED_OFF = 4  # the move needed a back-off and a fresh approach
+    MISSED = 5  # budget spent outside the tolerance: the command failed, no fault latched, the axis stays usable
+    LIMITED = 6  # a leg was clamped to the travel limits
+    BUSY = 7  # a move-and-settle is in progress
 
 
 class RAMP_PROFILE:
@@ -785,8 +835,12 @@ HAS_ENCODER_Z = False
 # enable PID control
 ENABLE_PID_X = False
 ENABLE_PID_Y = False
-ENABLE_PID_Z = False
 ENABLE_PID_W = False
+# Z has ONE key in place of the enable + loop-strategy pair (2026-09-20): "off" = open loop, "move_settle" =
+# move-and-settle with encoder correction (needs firmware >= 1.7 and HAS_ENCODER_Z; settings: MOVE_SETTLE_*_Z
+# below). The TMC4361A's PID never shipped on Z and is not a product option: it stays reachable from
+# tools/z_encoder_pid_tuner.py only.
+Z_ENCODER_CONTROL = "off"
 
 # PID arguments
 PID_P_X = int(1 << 12)
@@ -849,6 +903,132 @@ PID_TOLERANCE_Z_UM = 0.0
 PID_OPEN_ABOVE_X_mm = 0.0
 PID_OPEN_ABOVE_Y_mm = 0.0
 PID_OPEN_ABOVE_Z_mm = 0.0
+
+# What "closed loop" means on an axis whose PID is enabled (firmware >= 1.7, SET_LOOP_STRATEGY):
+#   "pid"       - the TMC4361A's continuous loop, as in firmware 1.6 (rest-only with PID_OPEN_ABOVE 0)
+#   "move_settle" - move-and-settle: the move is planned from the encoder and run open loop, the
+#                 landing is measured at rest over one ring period, and corrected - if at all - by
+#                 finite moves; nothing regulates during the exposure. See LOOP_STRATEGY.
+# The move-and-settle settings below apply to "move_settle" only; the tolerance it accepts is PID_TOLERANCE_*_UM
+# (two encoder counts when 0) and the error it refuses to correct PID_MAX_DEVIATION_*_UM.
+# X and Y only: Z is move-and-settle or nothing, see Z_ENCODER_CONTROL.
+LOOP_STRATEGY_X = "pid"
+LOOP_STRATEGY_Y = "pid"
+# Settle time (ms) after the ramp stops before the averaging window opens: the arrival transient is not
+# the rest position (Squid+ Z: a window opened at the stop read up to 0.5 um beyond where the stage came
+# to rest; from 5 ms on the mean is within 0.05 um of it).
+MOVE_SETTLE_WAIT_MS_X = 5.0
+MOVE_SETTLE_WAIT_MS_Y = 5.0
+MOVE_SETTLE_WAIT_MS_Z = 5.0
+# Averaging window (ms): ONE period of the stage's ring, so the ring cancels in the mean and dithers
+# the encoder's quantisation. Squid+ Z rings at 113 Hz (2026-09-19 traces): 9 ms.
+MOVE_SETTLE_WINDOW_MS_X = 9.0
+MOVE_SETTLE_WINDOW_MS_Y = 9.0
+MOVE_SETTLE_WINDOW_MS_Z = 9.0
+# A trim moves this share of the measured shortfall (resolution 1/16), at least one microstep.
+MOVE_SETTLE_TRIM_GAIN_X = 0.75
+MOVE_SETTLE_TRIM_GAIN_Y = 0.75
+MOVE_SETTLE_TRIM_GAIN_Z = 0.75
+# Budgets per move: trims per approach, and back-off + fresh approach cycles. Spent = a latched TIMEOUT fault.
+MOVE_SETTLE_MAX_TRIMS_X = 6
+MOVE_SETTLE_MAX_TRIMS_Y = 6
+MOVE_SETTLE_MAX_TRIMS_Z = 6
+MOVE_SETTLE_MAX_REAPPROACHES_X = 1
+MOVE_SETTLE_MAX_REAPPROACHES_Y = 1
+MOVE_SETTLE_MAX_REAPPROACHES_Z = 1
+# Side a move finishes from: "move" (where it comes from), "positive" or "negative" (always that way:
+# best absolute repeatability, one extra leg on every move against it). In the HOST's frame: "positive"
+# finishes travelling toward +mm (on Z: upward); the stage layer translates it to the counter's frame.
+MOVE_SETTLE_APPROACH_X = "move"
+MOVE_SETTLE_APPROACH_Y = "move"
+MOVE_SETTLE_APPROACH_Z = "move"
+# Feedforward (um). Lost motion: added to a leg that reverses the motor - keep it UNDER the measured
+# value (Squid+ Z: 0.9-1.2 um measured, so 0.8), an overestimate overshoots. Bias: the first landing
+# aims this far short, so that a miss is corrected by a trim rather than a back-off. Back-off: how far
+# beyond the target a re-approach starts; must exceed the lost motion.
+MOVE_SETTLE_LOST_MOTION_X_UM = 0.0
+MOVE_SETTLE_LOST_MOTION_Y_UM = 0.0
+MOVE_SETTLE_LOST_MOTION_Z_UM = 0.0
+MOVE_SETTLE_BIAS_X_UM = 0.0
+MOVE_SETTLE_BIAS_Y_UM = 0.0
+MOVE_SETTLE_BIAS_Z_UM = 0.0
+# The lost-motion model the plans go through (move_settle_policy.h): a leg that pushes the stage a good way
+# leaves it CARRY um beyond the drive flank (in full from a push of FULL_PUSH um, in proportion below), a
+# trim leaves it nearly in contact - so what the next leg does depends on how the last one ended. CARRY
+# and LOST_MOTION are only where the controller's learning starts; LEARN_GAIN is the share of each
+# landing's prediction error that goes into them (0 = keep the configured values).
+MOVE_SETTLE_CARRY_X_UM = 0.0
+MOVE_SETTLE_CARRY_Y_UM = 0.0
+MOVE_SETTLE_CARRY_Z_UM = 0.0
+MOVE_SETTLE_FULL_PUSH_X_UM = 0.94
+MOVE_SETTLE_FULL_PUSH_Y_UM = 0.94
+MOVE_SETTLE_FULL_PUSH_Z_UM = 0.94
+MOVE_SETTLE_LEARN_GAIN_X = 0.25
+MOVE_SETTLE_LEARN_GAIN_Y = 0.25
+MOVE_SETTLE_LEARN_GAIN_Z = 0.25
+# Back-offs are the exception (bench 2026-09-20: 70-120 ms each and the source of every fault): the first
+# landing aims short by this many sigmas of the landing scatter the controller measures itself (never
+# more than half the tolerance), an overshoot inside OVERSHOOT_TOLERANCE is accepted (it does not
+# accumulate: the next plan starts from the encoder), and only what lies beyond it is backed off from,
+# MAX_REAPPROACHES times. A move whose budget runs out is MISSED: it fails with CMD_EXECUTION_ERROR, no
+# fault is latched, the position reads where the stage is, and the axis stays usable.
+MOVE_SETTLE_BIAS_SIGMA_X = 0.5
+MOVE_SETTLE_BIAS_SIGMA_Y = 0.5
+MOVE_SETTLE_BIAS_SIGMA_Z = 0.5
+# MOVE_Z byte 6: the relative move starts from where the stage IS (the encoder), not from the last target.
+# Move-and-settle only; every other strategy and older firmware ignore the byte (a plain relative move).
+MOVE_Z_FROM_MEASURED = 1
+# MOVE_Z byte 6: move to the LAST move-and-settle target on Z again, whatever the payload - the host's retry of a
+# MISSED move that was planned from the encoder (its target was measured + correction, which the host cannot know).
+# The payload is the host's best estimate as a relative move, used as-is where the flag means nothing: older
+# firmware, other strategies, no such target.
+MOVE_Z_RETRY_LAST = 2
+
+# Stage travel per commanded travel, minus one, in ppm: the screw's lead against the encoder's scale (the
+# Z tuner's encoder check prints the ratio: 0.9989 is -1100). Every leg is planned through it, and the
+# controller goes on learning it from long continuing moves; without it a 200 um move lands 0.2 um short
+# and the plane after it pays the same again (bench 2026-09-20). -5000 .. 5000.
+MOVE_SETTLE_SCALE_PPM_X = 0
+MOVE_SETTLE_SCALE_PPM_Y = 0
+MOVE_SETTLE_SCALE_PPM_Z = 0
+MOVE_SETTLE_BACKOFF_X_UM = 3.0
+MOVE_SETTLE_BACKOFF_Y_UM = 3.0
+MOVE_SETTLE_BACKOFF_Z_UM = 3.0
+# ZV input shaper: legs up to MAX_MOVE um are issued in two parts HALF_PERIOD ms apart (half the ring
+# period: 4.42 ms at 113 Hz), FIRST_SHARE of the leg first, so the two ring-downs cancel. 0 ms = off.
+MOVE_SETTLE_SHAPER_HALF_PERIOD_X_MS = 0.0
+MOVE_SETTLE_SHAPER_HALF_PERIOD_Y_MS = 0.0
+MOVE_SETTLE_SHAPER_HALF_PERIOD_Z_MS = 0.0
+MOVE_SETTLE_SHAPER_FIRST_SHARE_X = 0.5
+MOVE_SETTLE_SHAPER_FIRST_SHARE_Y = 0.5
+MOVE_SETTLE_SHAPER_FIRST_SHARE_Z = 0.5
+MOVE_SETTLE_SHAPER_MAX_MOVE_X_UM = 0
+MOVE_SETTLE_SHAPER_MAX_MOVE_Y_UM = 0
+MOVE_SETTLE_SHAPER_MAX_MOVE_Z_UM = 0
+# Acceptance. Overshoot tolerance (um): an overshoot up to this is accepted rather than backed off from;
+# 0 = the target tolerance (symmetric). Settle: the ack additionally waits until the ring's
+# peak-to-peak over a window is below SETTLE_PP um, for at most SETTLE_WINDOWS extra windows; 0 = off.
+MOVE_SETTLE_OVERSHOOT_TOLERANCE_X_UM = 0.28
+MOVE_SETTLE_OVERSHOOT_TOLERANCE_Y_UM = 0.28
+MOVE_SETTLE_OVERSHOOT_TOLERANCE_Z_UM = 0.28
+MOVE_SETTLE_QUIET_PP_X_UM = 0.0
+MOVE_SETTLE_QUIET_PP_Y_UM = 0.0
+MOVE_SETTLE_QUIET_PP_Z_UM = 0.0
+MOVE_SETTLE_QUIET_WINDOWS_X = 0
+MOVE_SETTLE_QUIET_WINDOWS_Y = 0
+MOVE_SETTLE_QUIET_WINDOWS_Z = 0
+# Long legs end with a short finishing leg (bench 2026-09-26). After a fast leg of 0.5-3 mm the stage lands up to
+# +-1 um off the model, and not as a function of position, so long legs trimmed or backed off (44 % first-leg
+# landings, 8 % back-offs); a 50 um leg issued right after one lands like any short step (72 %, 3 %, 0.12 um
+# median). A move whose first leg would be longer than FINISH_FROM um is issued as two approach legs: the long
+# one aimed FINISH um short of the target, then a normal continuing leg for the rest from the measured landing.
+# FINISH 0 = off (one leg to the target, as before). FINISH must be shorter than FINISH_FROM.
+MOVE_SETTLE_FINISH_X_UM = 0.0
+MOVE_SETTLE_FINISH_Y_UM = 0.0
+MOVE_SETTLE_FINISH_Z_UM = 50.0
+MOVE_SETTLE_FINISH_FROM_X_UM = 1000.0
+MOVE_SETTLE_FINISH_FROM_Y_UM = 1000.0
+MOVE_SETTLE_FINISH_FROM_Z_UM = 1000.0
 
 # Completion window per stage axis in um (firmware >= 1.6, SET_COMPLETION_WINDOW): a move is acknowledged
 # once the step counter - and, with the loop engaged, the encoder - is within this distance of the target
@@ -1513,6 +1693,18 @@ class SlackNotifications:
     WATCHDOG_ENABLED = True  # Standalone acquisition watchdog: alert on crash / hang / error / abort
 
 
+def _dropped_key_warnings(general_options) -> list:
+    """One message per dropped [GENERAL] key an ini still carries. The loader skips a key that has no
+    constant without a word, and these two used to close the Z loop: the operator has to be told."""
+    dropped = {"enable_pid_z": "z_encoder_control", "loop_strategy_z": "z_encoder_control"}  # 2026-09-20
+    return [
+        f"[GENERAL] {old} is no longer read and is IGNORED: Z encoder control is the one key {new} = off | "
+        f"move_settle (absent = off = open loop; the chip PID is no longer a product option for Z)"
+        for old, new in dropped.items()
+        if old in general_options
+    ]
+
+
 try:
     with open("cache/config_file_path.txt", "r") as file:
         for line in file:
@@ -1544,6 +1736,8 @@ if config_files:
         value = cfp.get("GENERAL", varnamelower)
         actualvalue = conf_attribute_reader(value)
         locals()[var_name] = actualvalue
+    for _message in _dropped_key_warnings(cfp.options("GENERAL")):
+        log.warning(_message)
     for classkey in var_items:
         myclass = None
         classkeyupper = classkey.upper()

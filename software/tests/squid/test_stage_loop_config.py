@@ -147,13 +147,87 @@ def test_old_firmware_enables_the_loop_but_skips_the_new_commands():
 def test_process_config_carries_the_machine_constants():
     cfg = squid.config.get_stage_config()
     assert cfg.Z_AXIS.PID is not None
-    assert cfg.Z_AXIS.PID.ENABLED == bool(_def.ENABLE_PID_Z)
+    # Z's one key: anything but off / move_settle would not have let squid.config import
+    assert cfg.Z_AXIS.PID.ENABLED == (str(_def.Z_ENCODER_CONTROL).strip().lower() != "off")
+    assert cfg.Z_AXIS.PID.STRATEGY == ("move_settle" if cfg.Z_AXIS.PID.ENABLED else "pid")
     assert cfg.Z_AXIS.PID.P == _def.PID_P_Z
     assert cfg.Z_AXIS.HAS_ENCODER == bool(_def.HAS_ENCODER_Z)
     assert cfg.Z_AXIS.ENCODER_FLIP_DIR == bool(_def.ENCODER_FLIP_DIR_Z)
     assert cfg.Z_AXIS.RAMP_PROFILE in ("sshape", "trapezoid")
     assert cfg.Z_AXIS.PID.OPEN_ABOVE_MM_S == float(getattr(_def, "PID_OPEN_ABOVE_Z_mm", 0.0))
     assert cfg.Z_AXIS.COMPLETION_WINDOW_UM == float(getattr(_def, "COMPLETION_WINDOW_Z_UM", 0.0))
+
+
+# squid.config builds its singleton at import, so the key is tested through the function that reads it.
+def test_z_encoder_control_off_is_an_open_loop_z(monkeypatch):
+    monkeypatch.setattr(_def, "Z_ENCODER_CONTROL", "off")
+    # dropped, not mapped: a constant of the old name (an old ini cannot even create one) switches nothing on
+    monkeypatch.setattr(_def, "ENABLE_PID_Z", True, raising=False)
+    monkeypatch.setattr(_def, "LOOP_STRATEGY_Z", "move_settle", raising=False)
+    pid = squid.config._pid_config_from_def("Z")
+    assert pid.ENABLED is False
+    assert pid.STRATEGY == "pid"  # the model's default, never sent while the loop is off
+
+
+@pytest.mark.parametrize("written", ["move_settle", " Move-and-Settle ", "MOVE-SETTLE"])
+def test_z_encoder_control_move_settle_is_the_loop_on_as_move_and_settle(monkeypatch, written):
+    monkeypatch.setattr(_def, "Z_ENCODER_CONTROL", written)
+    pid = squid.config._pid_config_from_def("Z")
+    assert pid.ENABLED is True
+    assert pid.STRATEGY == "move_settle"
+
+
+@pytest.mark.parametrize("written", ["pid", "True", True, False, "on", ""])
+def test_z_encoder_control_refuses_the_chip_pid_and_every_other_value(monkeypatch, written):
+    """The chip PID is no longer a product option for Z (2026-09-20). An ini that asks for it - or carries
+    the old True / False over into the new key - must stop the startup, not come up as some other Z."""
+    monkeypatch.setattr(_def, "Z_ENCODER_CONTROL", written)
+    with pytest.raises(ValueError) as e:
+        squid.config._pid_config_from_def("Z")
+    msg = str(e.value)
+    assert "z_encoder_control" in msg and "'off'" in msg and "'move_settle'" in msg
+    assert repr(written) in msg
+    assert "no longer a product option for Z" in msg
+
+
+def test_x_and_y_keep_their_enable_and_strategy_keys(monkeypatch):
+    monkeypatch.setattr(_def, "Z_ENCODER_CONTROL", "off")  # Z's key is not theirs
+    monkeypatch.setattr(_def, "ENABLE_PID_X", True)
+    monkeypatch.setattr(_def, "LOOP_STRATEGY_X", "move_settle")
+    monkeypatch.setattr(_def, "ENABLE_PID_Y", True)
+    monkeypatch.setattr(_def, "LOOP_STRATEGY_Y", "pid")
+    x = squid.config._pid_config_from_def("X")
+    y = squid.config._pid_config_from_def("Y")
+    assert (x.ENABLED, x.STRATEGY) == (True, "move_settle")
+    assert (y.ENABLED, y.STRATEGY) == (True, "pid")
+    monkeypatch.setattr(_def, "ENABLE_PID_X", False)
+    assert squid.config._pid_config_from_def("X").ENABLED is False
+
+
+def test_a_dropped_z_key_left_in_an_ini_is_named_once_with_its_replacement():
+    """The ini loader skips a key that has no constant without a word. enable_pid_z = True used to close
+    the Z loop; an ini that still says so now runs Z open loop, and the log has to say why."""
+    options = ["enable_pid_x", "enable_pid_z", "_enable_pid_z_options", "loop_strategy_z", "z_encoder_control"]
+    messages = _def._dropped_key_warnings(options)
+    assert len(messages) == 2, messages
+    assert " enable_pid_z is no longer read" in messages[0]
+    assert " loop_strategy_z is no longer read" in messages[1]
+    for message in messages:
+        assert "IGNORED" in message and "z_encoder_control = off | move_settle" in message
+    assert _def._dropped_key_warnings(["enable_pid_x", "loop_strategy_x", "z_encoder_control"]) == []
+
+
+def test_no_shipped_ini_carries_a_dropped_key_or_an_unknown_z_encoder_control():
+    from configparser import ConfigParser
+    from pathlib import Path
+
+    inis = sorted((Path(_def.__file__).parent.parent / "configurations").glob("configuration_*.ini"))
+    assert inis
+    for ini in inis:
+        cfp = ConfigParser()
+        cfp.read(ini)
+        assert _def._dropped_key_warnings(cfp.options("GENERAL")) == [], ini.name
+        assert cfp.get("GENERAL", "z_encoder_control", fallback="off") in ("off", "move_settle"), ini.name
 
 
 def test_a_loop_kept_engaged_in_flight_is_flagged_as_unqualified(caplog):

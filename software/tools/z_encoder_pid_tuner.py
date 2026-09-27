@@ -71,7 +71,14 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import control._def as _def  # noqa: E402  (loads the machine configuration)
-from control._def import AXIS, ENCODER_REPORTING, PID_FAULT_CAUSE, RAMP_PROFILE  # noqa: E402
+from control._def import (  # noqa: E402
+    AXIS,
+    ENCODER_REPORTING,
+    LOOP_STRATEGY,
+    PID_FAULT_CAUSE,
+    MOVE_SETTLE_APPROACH,
+    RAMP_PROFILE,
+)
 from control.microcontroller import Microcontroller, get_microcontroller_serial_device  # noqa: E402
 
 FULLSTEPS_PER_REV = 200
@@ -179,6 +186,14 @@ class Sampler(threading.Thread):
     def clear(self):
         with self._lock:
             self.rows.clear()
+
+
+class MissedMove(RuntimeError):
+    """A move-and-settle move that spent its correction budget outside the tolerance.
+
+    The controller fails the command (CMD_EXECUTION_ERROR) and latches nothing: the step counter reads
+    where the stage is and the axis stays usable. A RuntimeError so that code which does not know
+    about it still stops; the actions that measure moves catch it, record it and go on."""
 
 
 class ZTuner:
@@ -421,6 +436,9 @@ class ZTuner:
         # an ack, the faulted move was recorded as a clean one - and the abort was left uncleared for
         # the next send_command to warn about.
         err = self.mcu.last_command_aborted_error
+        if err is not None and self._move_missed():
+            self.mcu.acknowledge_aborted_command()
+            raise MissedMove(f"Z move missed (move-and-settle budget spent outside the tolerance): {err}")
         if err is not None:
             # before the abort is acknowledged: DISABLE (and a validated ENABLE, RESET, INITIALIZE) clear
             # the cause along with the fault, so this is the only moment the firmware will say why
@@ -514,11 +532,12 @@ class ZTuner:
         self.wait()
         m.set_completion_window(AXIS.Z, self.a.window_um / 1000.0)
         self.wait()
+        self._configure_strategy()
         m.configure_stage_pid(AXIS.Z, TRANSITIONS_PER_REV, flip_direction=flip)
         self.wait()
         m.set_pid_arguments(AXIS.Z, self.a.p, self.a.i, self.a.d)
         self.wait()
-        m.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA)
+        m.set_encoder_reporting(AXIS.Z, self._report_mode())
         self.wait()
         time.sleep(0.2)
         st = m.get_encoder_state()
@@ -529,6 +548,98 @@ class ZTuner:
         self.log(
             f"encoder configured: {TRANSITIONS_PER_REV} transitions/rev, flip={flip}, "
             f"correction vmax {self.a.corr_vmax} mm/s, watchdog {self.a.max_dev_um} um, home zone {self.a.zone_um} um"
+        )
+
+    def _move_settle(self):
+        return self.a.strategy == "move_settle"
+
+    def _move_missed(self):
+        """The failed command was a MISSED move-and-settle move, not a fault: the report says so and no
+        fault is latched (byte 18's fault bits arrive in every packet)."""
+        if not self._move_settle():
+            return False
+        rep = self.mcu.move_settle_report
+        return bool(rep and rep.get("missed")) and AXIS.Z not in self.mcu.pid_fault_axes()
+
+    def _report_mode(self):
+        # move-and-settle: bytes 20-21 carry the last move-and-settle's report; the deviation comes from dev32 either way
+        return ENCODER_REPORTING.MOVE_SETTLE if self._move_settle() else ENCODER_REPORTING.ENC_IN_THETA
+
+    def _configure_strategy(self):
+        """What 'closed' means in this run (--strategy): the TMC4361A's PID or move-and-settle.
+
+        A state on the controller, so it is always sent where the firmware knows it (>= 1.7). The
+        loop is off here (configure runs before any enable), which is the only time the controller
+        accepts a change. Firmware 1.6 ignores unknown commands silently, so asking it for move-and-settle
+        would run the chip's PID under the wrong label: refused here instead.
+        """
+        m = self.mcu
+        has_move_settle = tuple(m.firmware_version) >= (1, 7)
+        if not has_move_settle:
+            if self._move_settle():
+                raise RuntimeError(f"--strategy move_settle needs firmware >= 1.7 (have {m.firmware_version})")
+            return
+        m.set_loop_strategy(AXIS.Z, LOOP_STRATEGY.NAMES[self.a.strategy])
+        self.wait()
+        if not self._move_settle():
+            return
+        m.set_move_settle_measure(
+            AXIS.Z,
+            window_ms=self.a.move_settle_window_ms,
+            trim_gain=self.a.move_settle_gain,
+            max_trims=self.a.move_settle_max_trims,
+            max_reapproaches=self.a.move_settle_max_reapproaches,
+            approach=MOVE_SETTLE_APPROACH.NAMES[self.a.move_settle_approach],
+            wait_ms=self.a.move_settle_wait_ms,
+        )
+        self.wait()
+        m.set_move_settle_feedforward(
+            AXIS.Z,
+            lost_motion_um=self.a.move_settle_lost_um,
+            bias_um=self.a.move_settle_bias_um,
+            backoff_um=self.a.move_settle_backoff_um,
+        )
+        self.wait()
+        m.set_move_settle_model(
+            AXIS.Z,
+            carry_um=self.a.move_settle_carry_um,
+            full_push_um=self.a.move_settle_full_push_um,
+            learn_gain=self.a.move_settle_learn,
+            bias_sigma=self.a.move_settle_bias_sigma,
+        )
+        self.wait()
+        m.set_move_settle_scale(AXIS.Z, scale_ppm=self.a.move_settle_scale_ppm)
+        self.wait()
+        if self.a.move_settle_finish_um is not None and self.a.move_settle_finish_from_um is not None:
+            # only when asked for: an older image does not know the command (it would ack it as a no-op)
+            m.set_move_settle_finish(
+                AXIS.Z,
+                finish_um=self.a.move_settle_finish_um,
+                from_um=self.a.move_settle_finish_from_um,
+                usteps_per_um=USTEPS_PER_MM / 1000.0,
+            )
+            self.wait()
+        m.set_move_settle_shaper(
+            AXIS.Z,
+            half_period_ms=self.a.move_settle_shaper_ms,
+            first_share=self.a.move_settle_shaper_share,
+            max_move_um=self.a.move_settle_shaper_max_um,
+        )
+        self.wait()
+        m.set_move_settle_accept(
+            AXIS.Z,
+            overshoot_tolerance_um=self.a.move_settle_over_um,
+            quiet_pp_um=self.a.move_settle_quiet_pp_um,
+            quiet_windows=self.a.move_settle_quiet_windows,
+        )
+        self.wait()
+        self.log(
+            f"strategy: move-and-settle - settle {self.a.move_settle_wait_ms} ms, window {self.a.move_settle_window_ms} ms, "
+            f"gain {self.a.move_settle_gain}, trims "
+            f"{self.a.move_settle_max_trims}, re-approaches {self.a.move_settle_max_reapproaches}, approach {self.a.move_settle_approach}, "
+            f"lost motion {self.a.move_settle_lost_um} um, bias {self.a.move_settle_bias_um} um, back-off {self.a.move_settle_backoff_um} um, "
+            f"shaper {self.a.move_settle_shaper_ms} ms x {self.a.move_settle_shaper_share} up to {self.a.move_settle_shaper_max_um} um, "
+            f"overshoot tol {self.a.move_settle_over_um} um, settle p-p {self.a.move_settle_quiet_pp_um} um x {self.a.move_settle_quiet_windows}"
         )
 
     def encoder_check(self):
@@ -1378,7 +1489,7 @@ class ZTuner:
         finally:
             if restore_reporting:
                 try:
-                    self.mcu.set_encoder_reporting(AXIS.Z, ENCODER_REPORTING.ENC_IN_THETA)
+                    self.mcu.set_encoder_reporting(AXIS.Z, self._report_mode())
                     self.wait(5)
                 except Exception as e:  # noqa: BLE001
                     self.log(f"could not restore encoder reporting: {e}")
@@ -1400,6 +1511,12 @@ class ZTuner:
         cause = PID_FAULT_CAUSE.NONE
         try:
             ack_s, st = self._move_and_read(self.a.depth_mm + step_um / 1000.0)  # no settle: read follows the ack
+        except MissedMove as e:
+            # not a fault and not an abort of the series: the row carries settle_missed = 1 and where the
+            # stage ended (the counter was put on the encoder's reading), and the next step goes on from there
+            self.log(f"ackprobe: {e} - keeping the row, continuing")
+            ack_s = self.last_cmd_to_ack_s
+            st = self._ack_state()
         except RuntimeError as e:
             # A CMD_EXECUTION_ERROR rides on the same packet as the fault bit, so a move the
             # controller aborted IS a faulted move, not a lost sample. move_to_depth timed the error
@@ -1480,6 +1597,11 @@ class ZTuner:
             "time_to_within_tolerance_ms": t_tol,
             "engaged_throughout": engaged_throughout,
             "window_samples": samples,
+            "move_settle": (
+                dict(self.mcu.move_settle_report)
+                if (closed and self._move_settle() and self.mcu.move_settle_report)
+                else None
+            ),
             "faults_in_window": faults,
             "fault_cause": cause,
             "fault_cause_name": self._cause_text(cause),
@@ -1705,7 +1827,12 @@ class ZTuner:
                             rows.append(row)  # the faulted move is a result, not a lost sample
                             if abort is not None:
                                 raise abort
-                            self.move_to_depth(self.a.depth_mm)
+                            try:
+                                self.move_to_depth(self.a.depth_mm)
+                            except MissedMove as e:
+                                # the unmeasured return: the axis is usable and the next step is planned from
+                                # where the stage is, so this costs the run nothing
+                                self.log(f"ackprobe: return move: {e} - continuing")
                             self.settle(0.15)
                     finally:
                         if closed:
@@ -1840,6 +1967,12 @@ class ZTuner:
         "faults_in_window",
         "fault_cause",
         "fault_cause_name",
+        # move-and-settle only (--strategy move_settle, closed rows): the controller's own account of the move
+        "settle_first_landing_usteps",
+        "settle_trims",
+        "settle_backed_off",
+        "settle_missed",
+        "settle_limited",
     ]
 
     def _ackprobe_report(self, rows, tol_um):
@@ -1872,6 +2005,11 @@ class ZTuner:
                         r["faults_in_window"],
                         r["fault_cause"],
                         r["fault_cause_name"],
+                        "" if not r.get("move_settle") else r["move_settle"]["first_landing_usteps"],
+                        "" if not r.get("move_settle") else r["move_settle"]["trims"],
+                        "" if not r.get("move_settle") else int(r["move_settle"]["backed_off"]),
+                        "" if not r.get("move_settle") else int(r["move_settle"]["missed"]),
+                        "" if not r.get("move_settle") else int(r["move_settle"]["limited"]),
                     ]
                 )
         summary = self._ackprobe_summary(rows)
@@ -2075,6 +2213,114 @@ def main():
         default=0.0,
         help="ramp velocity (mm/s) above which the loop is opened during moves; 0 = rest-only, >= vmax = in-flight",
     )
+    ap.add_argument(
+        "--strategy",
+        choices=sorted(LOOP_STRATEGY.NAMES),
+        default="pid",
+        help="what 'closed' is: the TMC4361A's PID, or move-and-settle (firmware >= 1.7): feedforward move planned "
+        "from the encoder, measured at rest over one ring period, finite corrections, nothing regulating in between",
+    )
+    ap.add_argument(
+        "--move-settle-wait-ms",
+        type=float,
+        default=5.0,
+        help="move-and-settle: wait after the ramp stops before the window opens",
+    )
+    ap.add_argument(
+        "--move-settle-window-ms", type=float, default=9.0, help="move-and-settle: averaging window = one ring period"
+    )
+    ap.add_argument(
+        "--move-settle-gain", type=float, default=0.75, help="move-and-settle: share of a shortfall one trim moves"
+    )
+    ap.add_argument("--move-settle-max-trims", type=int, default=6)
+    ap.add_argument("--move-settle-max-reapproaches", type=int, default=1)
+    ap.add_argument(
+        "--move-settle-approach",
+        choices=sorted(MOVE_SETTLE_APPROACH.NAMES),
+        default="move",
+        help="move-and-settle: side a move finishes from, in the CONTROLLER's frame (this tool talks to the controller "
+        "directly): on the Squid+ Z 'negative' is upward (extension)",
+    )
+    ap.add_argument(
+        "--move-settle-lost-um",
+        type=float,
+        default=0.0,
+        help="move-and-settle: lost motion added on a reversal (under the measured value)",
+    )
+    ap.add_argument(
+        "--move-settle-bias-um", type=float, default=0.0, help="move-and-settle: the first landing aims this far short"
+    )
+    ap.add_argument(
+        "--move-settle-carry-um",
+        type=float,
+        default=0.0,
+        help="move-and-settle: carry of a full push, where the learning starts",
+    )
+    ap.add_argument(
+        "--move-settle-full-push-um",
+        type=float,
+        default=0.94,
+        help="move-and-settle: push from which the carry is full",
+    )
+    ap.add_argument(
+        "--move-settle-learn",
+        type=float,
+        default=0.25,
+        help="move-and-settle: learning gain of the lost-motion model (0 = fixed)",
+    )
+    ap.add_argument(
+        "--move-settle-scale-ppm",
+        type=int,
+        default=0,
+        help="move-and-settle: stage travel per commanded travel minus one, ppm (encoder check ratio 0.9989 = -1100)",
+    )
+    ap.add_argument(
+        "--move-settle-bias-sigma",
+        type=float,
+        default=0.5,
+        help="move-and-settle: learned undershoot bias of the first landing, in landing-scatter sigmas (0 = fixed bias only)",
+    )
+    ap.add_argument(
+        "--move-settle-finish-um",
+        type=float,
+        default=None,
+        help="move-and-settle: long legs end with a finishing leg this long (0 = off). Sent only together with "
+        "--move-settle-finish-from-um: an older image does not know the command",
+    )
+    ap.add_argument(
+        "--move-settle-finish-from-um",
+        type=float,
+        default=None,
+        help="move-and-settle: first legs longer than this are split (0 = every leg longer than the finishing leg)",
+    )
+    ap.add_argument(
+        "--move-settle-backoff-um",
+        type=float,
+        default=3.0,
+        help="move-and-settle: back-off beyond the target before a re-approach",
+    )
+    ap.add_argument(
+        "--move-settle-shaper-ms",
+        type=float,
+        default=0.0,
+        help="move-and-settle: ZV shaper half period (4.42 at 113 Hz); 0 = off",
+    )
+    ap.add_argument(
+        "--move-settle-shaper-share", type=float, default=0.5, help="move-and-settle: share of a split leg issued first"
+    )
+    ap.add_argument(
+        "--move-settle-shaper-max-um", type=int, default=0, help="move-and-settle: longest leg that is split"
+    )
+    ap.add_argument(
+        "--move-settle-over-um", type=float, default=0.28, help="move-and-settle: accepted overshoot (0 = the tolerance)"
+    )
+    ap.add_argument(
+        "--move-settle-quiet-pp-um",
+        type=float,
+        default=0.0,
+        help="move-and-settle: ring p-p required before the ack (0 = off)",
+    )
+    ap.add_argument("--move-settle-quiet-windows", type=int, default=0)
     ap.add_argument(
         "--align-after-home",
         action="store_true",

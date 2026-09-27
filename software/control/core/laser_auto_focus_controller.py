@@ -390,7 +390,10 @@ class LaserAutofocusController(QObject):
             self.piezo.move_relative(um_to_move)
             self.signal_piezo_position_update.emit()
         else:
-            self.stage.move_z(um_to_move / 1000)
+            # The displacement was measured from where the stage IS. A stage that knows where that is
+            # (move-and-settle) starts the correction from there instead of from its last target.
+            move = getattr(self.stage, "move_z_from_measured", None) or self.stage.move_z
+            move(um_to_move / 1000)
 
     def apply_relative_offset_um(self, offset_um: float) -> None:
         """Open-loop relative Z move of ``offset_um`` (displacement µm, 1:1 with Z), with NO

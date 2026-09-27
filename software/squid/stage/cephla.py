@@ -30,6 +30,8 @@ class CephlaStage(AbstractStage):
         self._microcontroller = microcontroller
         self._homing_done = False
         self._scanning_position_z_mm = None
+        # axes the controller lands by the encoder (move-and-settle enabled and accepted): see _z_lands_by_encoder
+        self._lands_by_encoder = set()
 
         # Before any axis is touched: this refuses a configuration outright, and it used to do so
         # from inside _configure_axis(Z) - the last of the three calls - leaving X and Y configured
@@ -54,6 +56,16 @@ class CephlaStage(AbstractStage):
     # The first park after homing must land past the home zone by at least this much (see
     # _check_z_home_gap_is_covered): the firmware wants visible encoder travel before it realigns.
     _Z_FLOOR_ABOVE_ZONE_MARGIN_UM = 50
+
+    # Firmware from which SET_LOOP_STRATEGY and the SET_MOVE_SETTLE_* commands exist (move-and-settle).
+    _MIN_FIRMWARE_FOR_MOVE_SETTLE = (1, 7)
+
+    def _fw_has_move_settle(self) -> bool:
+        fw = self._microcontroller.firmware_version
+        try:
+            return tuple(fw) >= self._MIN_FIRMWARE_FOR_MOVE_SETTLE
+        except TypeError:
+            return False
 
     def _fw_has_loop_settings(self) -> bool:
         fw = self._microcontroller.firmware_version
@@ -234,6 +246,10 @@ class CephlaStage(AbstractStage):
                 f"axis {microcontroller_axis_number}: closed-loop limits / home zone / tolerance need firmware >= 1.6 "
                 f"(have {mc.firmware_version}); enabling the loop without them"
             )
+        if not self._configure_loop_strategy(
+            microcontroller_axis_number, pid, axis_config.MOVEMENT_SIGN, self._usteps_per_um(axis_config)
+        ):
+            return
         try:
             mc.turn_on_stage_pid(microcontroller_axis_number)
             mc.wait_till_operation_is_completed()
@@ -241,6 +257,20 @@ class CephlaStage(AbstractStage):
             _log.error(
                 f"axis {microcontroller_axis_number}: the controller refused the closed loop ({e}); running open-loop for "
                 f"this session (a full restart re-homes and re-enables)"
+            )
+            return
+        if pid.STRATEGY == "move_settle":
+            self._lands_by_encoder.add(microcontroller_axis_number)
+            _log.info(
+                f"axis {microcontroller_axis_number}: move-and-settle requested - settle {pid.MOVE_SETTLE_WAIT_MS} ms, "
+                f"window {pid.MOVE_SETTLE_WINDOW_MS} ms, "
+                f"trim gain {pid.MOVE_SETTLE_TRIM_GAIN}, trims {pid.MOVE_SETTLE_MAX_TRIMS}, re-approaches "
+                f"{pid.MOVE_SETTLE_MAX_REAPPROACHES}, approach {pid.MOVE_SETTLE_APPROACH}, lost motion "
+                f"{pid.MOVE_SETTLE_LOST_MOTION_UM} um, bias {pid.MOVE_SETTLE_BIAS_UM} um, back-off {pid.MOVE_SETTLE_BACKOFF_UM} um, "
+                f"finishing leg {pid.MOVE_SETTLE_FINISH_UM or 'off'} um from {pid.MOVE_SETTLE_FINISH_FROM_UM} um, "
+                f"shaper {pid.MOVE_SETTLE_SHAPER_HALF_PERIOD_MS or 'off'} ms, tolerance "
+                f"{pid.TOLERANCE_UM or 'default (2 counts)'} um, watchdog {effective_dev_um:g} um, home zone "
+                f"{pid.HOME_ZONE_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, ramp {axis_config.RAMP_PROFILE}"
             )
             return
         _log.info(
@@ -251,6 +281,104 @@ class CephlaStage(AbstractStage):
             f"completion window {axis_config.COMPLETION_WINDOW_UM} um, encoder flip {axis_config.ENCODER_FLIP_DIR}, "
             f"ramp {axis_config.RAMP_PROFILE}"
         )
+
+    @staticmethod
+    def _approach_in_controller_frame(approach_name: str, movement_sign) -> int:
+        """The ini names the approach side in the HOST's frame ("positive" = finish travelling toward
+        +mm); the controller wants it in the counter's. On an axis whose movement sign is negative (the
+        Squid+ Z: +mm = extension = the counter's -) the two fixed sides swap."""
+        approach = _def.MOVE_SETTLE_APPROACH.NAMES[approach_name]
+        if int(movement_sign) < 0:
+            approach = {
+                _def.MOVE_SETTLE_APPROACH.POSITIVE: _def.MOVE_SETTLE_APPROACH.NEGATIVE,
+                _def.MOVE_SETTLE_APPROACH.NEGATIVE: _def.MOVE_SETTLE_APPROACH.POSITIVE,
+            }.get(approach, approach)
+        return approach
+
+    @staticmethod
+    def _usteps_per_um(axis_config) -> float:
+        """Motor usteps per um of stage travel, unsigned: what SET_MOVE_SETTLE_FINISH carries its lengths in
+        (the wire is in usteps there, the ini in um)."""
+        return axis_config.MICROSTEPS_PER_STEP * axis_config.FULL_STEPS_PER_REV / (abs(axis_config.SCREW_PITCH) * 1000.0)
+
+    def _configure_loop_strategy(self, microcontroller_axis_number: int, pid, movement_sign=1, usteps_per_um=1.0) -> bool:
+        """Send what the enabled loop IS (firmware >= 1.7). Returns False when the axis must stay open-loop.
+
+        The strategy is a state on the controller, like the loop mode: it is sent even for "pid", so a
+        value a tool run left behind cannot survive into this session. The controller refuses a change
+        while a loop is requested (a software restart without RESET leaves the previous session's
+        request standing), so the request is dropped first; no fault is latched at this point - the
+        caller returned on one - so that DISABLE acknowledges nothing.
+        """
+        mc = self._microcontroller
+        if not self._fw_has_move_settle():
+            if pid.STRATEGY != "pid":
+                letter = _AXIS_LETTER.get(microcontroller_axis_number, "?")
+                key = "z_encoder_control" if letter == "z" else f"loop_strategy_{letter}"  # the key the ini carries
+                _log.error(
+                    f"axis {microcontroller_axis_number}: {key} = {pid.STRATEGY!r} needs firmware >= 1.7 "
+                    f"(have {mc.firmware_version}); the closed loop is NOT requested for this axis - the chip's "
+                    f"PID is a different loop with different settings, not a fallback"
+                )
+                return False
+            return True
+        mc.turn_off_stage_pid(microcontroller_axis_number)
+        mc.wait_till_operation_is_completed()
+        mc.set_loop_strategy(microcontroller_axis_number, _def.LOOP_STRATEGY.NAMES[pid.STRATEGY])
+        mc.wait_till_operation_is_completed()
+        if pid.STRATEGY != "move_settle":
+            return True
+        # Every move-and-settle field is literal on the wire (no 'keep'): all four commands, always.
+        mc.set_move_settle_measure(
+            microcontroller_axis_number,
+            window_ms=pid.MOVE_SETTLE_WINDOW_MS,
+            trim_gain=pid.MOVE_SETTLE_TRIM_GAIN,
+            max_trims=pid.MOVE_SETTLE_MAX_TRIMS,
+            max_reapproaches=pid.MOVE_SETTLE_MAX_REAPPROACHES,
+            approach=self._approach_in_controller_frame(pid.MOVE_SETTLE_APPROACH, movement_sign),
+            wait_ms=pid.MOVE_SETTLE_WAIT_MS,
+        )
+        mc.wait_till_operation_is_completed()
+        mc.set_move_settle_feedforward(
+            microcontroller_axis_number,
+            lost_motion_um=pid.MOVE_SETTLE_LOST_MOTION_UM,
+            bias_um=pid.MOVE_SETTLE_BIAS_UM,
+            backoff_um=pid.MOVE_SETTLE_BACKOFF_UM,
+        )
+        mc.wait_till_operation_is_completed()
+        mc.set_move_settle_model(
+            microcontroller_axis_number,
+            carry_um=pid.MOVE_SETTLE_CARRY_UM,
+            full_push_um=pid.MOVE_SETTLE_FULL_PUSH_UM,
+            learn_gain=pid.MOVE_SETTLE_LEARN_GAIN,
+            bias_sigma=pid.MOVE_SETTLE_BIAS_SIGMA,
+        )
+        mc.wait_till_operation_is_completed()
+        mc.set_move_settle_scale(microcontroller_axis_number, scale_ppm=pid.MOVE_SETTLE_SCALE_PPM)
+        mc.wait_till_operation_is_completed()
+        # an image without this command completes it without error (an unmapped command is a no-op there)
+        mc.set_move_settle_finish(
+            microcontroller_axis_number,
+            finish_um=pid.MOVE_SETTLE_FINISH_UM,
+            from_um=pid.MOVE_SETTLE_FINISH_FROM_UM,
+            usteps_per_um=usteps_per_um,
+        )
+        mc.wait_till_operation_is_completed()
+        mc.set_move_settle_shaper(
+            microcontroller_axis_number,
+            half_period_ms=pid.MOVE_SETTLE_SHAPER_HALF_PERIOD_MS,
+            first_share=pid.MOVE_SETTLE_SHAPER_FIRST_SHARE,
+            max_move_um=pid.MOVE_SETTLE_SHAPER_MAX_MOVE_UM,
+        )
+        mc.wait_till_operation_is_completed()
+        mc.set_move_settle_accept(
+            microcontroller_axis_number,
+            overshoot_tolerance_um=pid.MOVE_SETTLE_OVERSHOOT_TOLERANCE_UM,
+            quiet_pp_um=pid.MOVE_SETTLE_QUIET_PP_UM,
+            quiet_windows=pid.MOVE_SETTLE_QUIET_WINDOWS,
+        )
+        mc.wait_till_operation_is_completed()
+        return True
 
     def x_mm_to_usteps(self, mm: float):
         return self._config.X_AXIS.convert_real_units_to_ustep(mm)
@@ -275,7 +403,68 @@ class CephlaStage(AbstractStage):
                 self._calc_move_timeout(rel_mm, self.get_config().Y_AXIS.MAX_SPEED)
             )
 
+    def _z_lands_by_encoder(self) -> bool:
+        """Z runs move-and-settle: the controller plans every move from the encoder through its lost-motion
+        model and corrects the landing, down as well as up. The host's own backlash move (5 um past, then
+        back up) would then be two settled moves and a forced reversal - ~100 ms instead of ~40 (bench
+        2026-09-20) - for a lost motion that is already dealt with."""
+        return _def.AXIS.Z in self._lands_by_encoder
+
+    def _wait_for_z(self, target_usteps: int, timeout_s: float, retry=None):
+        """Wait for a Z move. In move-and-settle a move whose corrections ran out is MISSED: the command
+        fails, nothing is latched, and the step counter reads where the stage IS - so the same absolute
+        target, sent again, is a fresh move from there. A move whose target the host cannot name (planned
+        from the encoder: move_z_from_measured) passes `retry`, which sends it instead. Once; a second miss
+        is the caller's to see. Anything the controller does not call recoverable (a latched fault, a lost
+        acknowledgement) is not retried."""
+        mc = self._microcontroller
+        try:
+            mc.wait_till_operation_is_completed(timeout_s)
+            return
+        except control.microcontroller.CommandAborted as e:
+            if not (self._z_lands_by_encoder() and e.recoverable):
+                raise
+            self._log.warning(f"Z move missed its target ({e}); sending it once more")
+        mc.acknowledge_aborted_command()
+        if retry is not None:
+            retry()
+        else:
+            mc.move_z_to_usteps(target_usteps)
+        mc.wait_till_operation_is_completed(timeout_s)
+
+    def move_z_from_measured(self, rel_mm: float, blocking: bool = True):
+        """A relative Z move from where the stage IS, for a correction that was measured from there (laser
+        autofocus). Only move-and-settle knows where that is; anything else is the ordinary move_z().
+
+        If it is MISSED, its retry cannot be an absolute move to (counter + correction): the controller resolved
+        the target as (encoder + correction), and at rest the counter is off the encoder by up to the accepted
+        band (~8-12 usteps at 64 usteps/FS), so that move would shift the plane that was asked for. The controller
+        remembers the target it resolved; the retry asks for it (MOVE_Z_RETRY_LAST) and carries the host's
+        estimate as a relative move from where the stage is now, for wherever the flag means nothing."""
+        if not self._z_lands_by_encoder():
+            self.move_z(rel_mm, blocking)
+            return
+        mc = self._microcontroller
+        rel_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(rel_mm)
+        target_usteps = mc.get_pos()[2] + rel_usteps   # the host's estimate only: nominal + correction
+        mc.move_z_usteps_from_measured(rel_usteps)
+        if blocking:
+            self._wait_for_z(
+                target_usteps,
+                self._calc_move_timeout(rel_mm, self.get_config().Z_AXIS.MAX_SPEED),
+                # after a miss the counter reads where the stage IS: the estimate, relative to there
+                retry=lambda: mc.move_z_usteps_retry_last(target_usteps - mc.get_pos()[2]),
+            )
+
     def move_z(self, rel_mm: float, blocking: bool = True):
+        if self._z_lands_by_encoder():
+            rel_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(rel_mm)
+            target_usteps = self._microcontroller.get_pos()[2] + rel_usteps   # at rest the counter IS the last target
+            self._microcontroller.move_z_usteps(rel_usteps)
+            if blocking:
+                self._wait_for_z(target_usteps, self._calc_move_timeout(rel_mm, self.get_config().Z_AXIS.MAX_SPEED))
+            return
+
         # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
         # are moving in the negative (down) z direction, we need to move past our mark a bit then
         # back up.  If we are already moving in the "up" position, we can move straight there.
@@ -329,6 +518,14 @@ class CephlaStage(AbstractStage):
         if clamped_abs_mm != abs_mm:
             self._log.debug(f"Clamped Z move target {abs_mm} mm to soft limit {clamped_abs_mm} mm.")
         abs_mm = clamped_abs_mm
+
+        if self._z_lands_by_encoder():
+            target_usteps = self._config.Z_AXIS.convert_real_units_to_ustep(abs_mm)
+            timeout_s = self._calc_move_timeout(abs_mm - self.get_pos().z_mm, self.get_config().Z_AXIS.MAX_SPEED)
+            self._microcontroller.move_z_to_usteps(target_usteps)
+            if blocking:
+                self._wait_for_z(target_usteps, timeout_s)
+            return
 
         # From Hongquan, we want the z axis to rest on the "up" (wrt gravity) direction of gravity. So if we
         # are moving in the negative (down) z direction, we need to move past our mark a bit then
