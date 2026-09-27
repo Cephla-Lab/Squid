@@ -108,11 +108,11 @@ def test_spot_detection_parameters():
 
     # Test with custom parameters
     params = {
-        "y_window": 50,
-        "x_window": 15,
-        "min_peak_width": 5,
-        "min_peak_distance": 5,
-        "min_peak_prominence": 0.25,
+        "threshold": 20,
+        "min_area": 10,
+        "max_area": 2000,
+        "row_tolerance": 30,
+        "max_aspect_ratio": 2.0,
     }
 
     result = find_spot_location(image, params=params)
