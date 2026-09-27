@@ -603,9 +603,9 @@ class LaserAutofocusController(QObject):
                 spot_detection_params = {
                     "y_window": self.laser_af_properties.y_window,
                     "x_window": self.laser_af_properties.x_window,
-                    "peak_width": self.laser_af_properties.min_peak_width,
-                    "peak_distance": self.laser_af_properties.min_peak_distance,
-                    "peak_prominence": self.laser_af_properties.min_peak_prominence,
+                    "min_peak_width": self.laser_af_properties.min_peak_width,
+                    "min_peak_distance": self.laser_af_properties.min_peak_distance,
+                    "min_peak_prominence": self.laser_af_properties.min_peak_prominence,
                     "spot_spacing": self.laser_af_properties.spot_spacing,
                 }
                 result = utils.find_spot_location(
