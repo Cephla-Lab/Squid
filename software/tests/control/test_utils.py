@@ -97,6 +97,10 @@ def test_invalid_inputs():
     with pytest.raises(ValueError):
         find_spot_location(np.zeros((480, 640), dtype=np.uint8), mode="invalid")
 
+    # Test unknown parameter
+    with pytest.raises(ValueError, match="peak_width"):
+        find_spot_location(create_test_image([(320, 240)]), params={"peak_width": 5})
+
 
 def test_spot_detection_parameters():
     # Create test image with single spot
