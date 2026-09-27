@@ -169,6 +169,8 @@ class XLight_Simulation:
         self.illumination_iris = 0
         self.emission_iris = 0
         self.slider_position = 0
+        self.dichroic_positions = XLIGHT_V3_DICHROIC_POSITIONS
+        self.filter_slider_positions = XLIGHT_V3_FILTER_SLIDER_POSITIONS
 
     def set_emission_filter(self, position, extraction=False, validate=False):
         self.emission_wheel_pos = position
@@ -219,7 +221,7 @@ class XLight_Simulation:
         return self.emission_iris
 
     def set_filter_slider(self, position):
-        if str(position) not in ["0", "1", "2", "3"]:
+        if str(position) not in [str(i) for i in range(self.filter_slider_positions)]:
             raise ValueError("Invalid slider position!")
         self.slider_position = position
         return self.slider_position
@@ -254,10 +256,13 @@ class XLight:
         self.sleep_time_for_wheel = sleep_time_for_wheel
         self.disable_emission_filter_wheel = disable_emission_filter_wheel
         self.slider_position = 0
-        self.illumination_iris = 0
-        self.emission_iris = 0
+        # Iris positions are unknown (None) until the device acknowledges a command
+        self.illumination_iris = None
+        self.emission_iris = None
         self.emission_wheel_pos = None
         self._emission_wheel_extracted = False
+        self.dichroic_positions = XLIGHT_V2_DICHROIC_POSITIONS
+        self.filter_slider_positions = XLIGHT_V3_FILTER_SLIDER_POSITIONS
 
         # Auto-detect protocol: try V3 (115200) first, then V1/V2 (9600)
         self.protocol_version = self._connect_and_detect(SN)
@@ -272,6 +277,10 @@ class XLight:
         else:
             # V3/Cicero: use idc command for config
             self.parse_idc_response(self.serial_connection.write_and_read("idc\r"))
+            if self.has_dichroic_filters_wheel:
+                self.dichroic_positions = self._query_position_count("C", XLIGHT_V3_DICHROIC_POSITIONS)
+            if self.has_dichroic_filter_slider:
+                self.filter_slider_positions = self._query_position_count("P", XLIGHT_V3_FILTER_SLIDER_POSITIONS)
 
         self.print_config()
 
@@ -319,6 +328,34 @@ class XLight:
         self.has_emission_iris_diaphragm = bool(config_value & 0x00000400)
         self.has_dichroic_filter_slider = bool(config_value & 0x00000800)
         self.has_ttl_control = bool(config_value & 0x00001000)
+
+    def _query_position_count(self, prefix, default):
+        """Ask the device how many positions a wheel or slider has ("r<prefix>N")."""
+        query = "r" + prefix + "N"
+        try:
+            response = self.serial_connection.write_and_check(query + "\r", query, read_delay=0.01, max_attempts=2)
+            count = int(response[len(query) :])
+        except (SerialDeviceError, ValueError) as e:
+            self.log.warning(f"Could not read number of positions with '{query}' ({e}), assuming {default}")
+            return default
+        if count < 1:
+            self.log.warning(f"X-Light reported {count} positions for '{query}', assuming {default}")
+            return default
+        self.log.info(f"X-Light reported {count} positions for '{query}'")
+        return count
+
+    def _send_iris_command(self, command, max_attempts=3):
+        """Send an iris command and confirm that the device acknowledged it.
+
+        The acknowledgement can follow the unread reply of an earlier unvalidated command
+        (e.g. "B1\\rJ800" after an emission wheel move), so look for it anywhere in the response.
+        """
+        for _ in range(max_attempts):
+            response = self.serial_connection.write_and_read(command + "\r", read_delay=2)
+            if command in response.split():
+                return
+            self.log.warning(f"X-Light did not acknowledge '{command}', got '{response}'")
+        raise SerialDeviceError(f"X-Light did not acknowledge '{command}'")
 
     def print_config(self):
         self.log.info(
@@ -376,8 +413,8 @@ class XLight:
         return self.emission_wheel_pos
 
     def set_dichroic(self, position, extraction=False):
-        if str(position) not in ["1", "2", "3", "4", "5"]:
-            raise ValueError("Invalid dichroic wheel position!")
+        if str(position) not in [str(i + 1) for i in range(self.dichroic_positions)]:
+            raise ValueError(f"Invalid dichroic wheel position {position}, must be 1-{self.dichroic_positions}")
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
@@ -416,8 +453,10 @@ class XLight:
         # value: 0 - 100
         if value == self.illumination_iris:
             return self.illumination_iris
+        # Unknown until acknowledged, so that a failed command is sent again on the next call
+        self.illumination_iris = None
+        self._send_iris_command("J" + str(int(10 * value)))
         self.illumination_iris = value
-        self.serial_connection.write_and_read("J" + str(int(10 * value)) + "\r", read_delay=2)
         return self.illumination_iris
 
     def get_illumination_iris(self):
@@ -429,8 +468,10 @@ class XLight:
         # value: 0 - 100
         if value == self.emission_iris:
             return self.emission_iris
+        # Unknown until acknowledged, so that a failed command is sent again on the next call
+        self.emission_iris = None
+        self._send_iris_command("V" + str(int(10 * value)))
         self.emission_iris = value
-        self.serial_connection.write_and_read("V" + str(int(10 * value)) + "\r", read_delay=2)
         return self.emission_iris
 
     def get_emission_iris(self):
@@ -439,8 +480,8 @@ class XLight:
         return self.emission_iris
 
     def set_filter_slider(self, position):
-        if str(position) not in ["0", "1", "2", "3"]:
-            raise ValueError("Invalid slider position!")
+        if str(position) not in [str(i) for i in range(self.filter_slider_positions)]:
+            raise ValueError(f"Invalid slider position {position}, must be 0-{self.filter_slider_positions - 1}")
         self.slider_position = position
         position_to_write = str(position)
         position_to_read = str(position)

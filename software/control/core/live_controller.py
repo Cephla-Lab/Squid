@@ -8,6 +8,7 @@ from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control.microcontroller import Microcontroller
+from control.serial_peripherals import SerialDeviceError
 from squid.abc import CameraAcquisitionMode, AbstractCamera
 
 from control._def import *
@@ -338,17 +339,30 @@ class LiveController(QObject):
                     )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
-            # Apply per-channel iris values
+            # Apply per-channel iris values. A channel without its own value gets the default, which
+            # is what the confocal widget shows for it.
             hw_settings = self.currentConfiguration.confocal_hardware_settings
-            if hw_settings is not None:
-                xlight = self.microscope.addons.xlight
+            xlight = self.microscope.addons.xlight
+            for has_iris, iris_val, default, set_iris in (
+                (
+                    xlight.has_illumination_iris_diaphragm,
+                    getattr(hw_settings, "illumination_iris", None),
+                    XLIGHT_ILLUMINATION_IRIS_DEFAULT,
+                    xlight.set_illumination_iris,
+                ),
+                (
+                    xlight.has_emission_iris_diaphragm,
+                    getattr(hw_settings, "emission_iris", None),
+                    XLIGHT_EMISSION_IRIS_DEFAULT,
+                    xlight.set_emission_iris,
+                ),
+            ):
+                if not has_iris:
+                    continue
                 try:
-                    if hw_settings.illumination_iris is not None and xlight.has_illumination_iris_diaphragm:
-                        xlight.set_illumination_iris(int(hw_settings.illumination_iris))
-                    if hw_settings.emission_iris is not None and xlight.has_emission_iris_diaphragm:
-                        xlight.set_emission_iris(int(hw_settings.emission_iris))
-                except (OSError, ValueError) as e:
-                    self._log.warning(f"Not setting iris values: {e}")
+                    set_iris(int(iris_val) if iris_val is not None else int(default))
+                except (OSError, ValueError, SerialDeviceError) as e:
+                    self._log.error(f"Not setting iris value: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:
                 self.microscope.addons.dragonfly.set_emission_filter(
