@@ -2075,9 +2075,10 @@ def test_save_zarr_job_uses_the_settings_it_carries(tmp_path, monkeypatch):
     )
     try:
         job.run()
-
-        (writer,) = SaveZarrJob._zarr_writers.values()
-        assert writer.config.chunk_mode == ZarrChunkMode.TILED_256
-        assert writer.config.compression == ZarrCompression.BEST
     finally:
         SaveZarrJob.clear_writers()
+
+    with open(tmp_path / "zarr" / "A1" / "fov_0.ome.zarr" / "zarr.json") as f:
+        written = json.load(f)["attributes"]["_squid"]
+    assert written["chunk_mode"] == ZarrChunkMode.TILED_256.value
+    assert written["compression"] == ZarrCompression.BEST.value

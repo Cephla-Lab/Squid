@@ -553,6 +553,10 @@ def test_saving_settings_changed_after_startup_apply_to_the_next_acquisition(tmp
     monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.INDIVIDUAL_IMAGES)
     monkeypatch.setattr(control._def, "TIFF_COMPRESSION_LEVEL", 0)
     scope, tt, mpc = _controller_with_tracker()
+    # One image is enough.
+    mpc.scanCoordinates.remove_region("region_2")
+    mpc.scanCoordinates.remove_region("region_grid")
+    mpc.selected_configurations = mpc.selected_configurations[:1]
     mpc.set_base_path(str(tmp_path))
     mpc.start_new_experiment("acquisition", add_timestamp=False)
 

@@ -59,7 +59,7 @@ def save_image(
     save_directory: str,
     config: AcquisitionChannel,
     is_color: bool,
-    tiff_compression_level: int = 0,
+    tiff_compression_level: int,
 ) -> np.array:
     saving_path = get_image_filepath(save_directory, file_id, config.name, image.dtype)
 
