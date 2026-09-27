@@ -327,6 +327,13 @@ static const char *load_source(const char *relative_path)
 
         g_source[n] = '\0';
 
+        /* A checkout with core.autocrlf reads "\r\n": the function-body scan wants "\n}\n", so drop every '\r'. */
+        size_t w = 0;
+        for (size_t r = 0; r < n; r++)
+            if (g_source[r] != '\r')
+                g_source[w++] = g_source[r];
+        g_source[w] = '\0';
+
         /* A truncated read would silently undercount the guards. */
         TEST_ASSERT_FALSE_MESSAGE(truncated, "g_source is too small for the file being scanned");
         return g_source;
@@ -415,8 +422,10 @@ void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
        callback_configure_stage_pid() the frames are realigned only with no fault latched. */
     const char *src = load_source("src/operations.cpp");
     TEST_ASSERT_NOT_NULL(src);
-    assert_in_body_before(src, "operations.cpp", "void check_joystick()", "!pid_fault[x] &&", "tmc4361A_setSpeed( &tmc4361[x]");
-    assert_in_body_before(src, "operations.cpp", "void check_joystick()", "!pid_fault[y] &&", "tmc4361A_setSpeed( &tmc4361[y]");
+    /* the per-axis joystick blocks live in joystick_x_apply() / joystick_y_apply(): check_joystick() calls them on its
+       tick and the panel lock-out at once (functions.cpp) */
+    assert_in_body_before(src, "operations.cpp", "void joystick_x_apply()", "!pid_fault[x] &&", "tmc4361A_setSpeed( &tmc4361[x]");
+    assert_in_body_before(src, "operations.cpp", "void joystick_y_apply()", "!pid_fault[y] &&", "tmc4361A_setSpeed( &tmc4361[y]");
     assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "if (pid_fault[z]) { focus_wheel_pending = false; return; }", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
     assert_in_body_before(src, "operations.cpp", "void do_focus_control()", "focus_wheel_pending &&", "tmc4361A_moveTo(&tmc4361[z], focusPosition)");
     assert_in_body_before(src, "operations.cpp", "static void pid_trip_fault(uint8_t axis, uint8_t cause)", "tmc4361A_stop_here(&tmc4361[axis])", "fail_commanded_move(axis);");
@@ -430,7 +439,11 @@ void test_operator_motion_paths_are_gated_on_a_latched_fault(void)
     assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!pid_fault[z] &&", "focusPosition = focusPosition +");
     // the panel is locked out while a commanded move is in progress: wheel travel dropped, joystick read as undeflected
     assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!panel_locked_out() &&", "focusPosition = focusPosition +");
-    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "if (panel_locked_out()) { joystick_delta_x = 0; joystick_delta_y = 0; }", "flag_read_joystick = true;");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_delta_x = 0; joystick_delta_y = 0;", "flag_read_joystick = true;");
+    /* an axis the joystick is driving is brought to rest at the lock-out itself, not at check_joystick()'s next tick: a
+       command shorter than the tick would otherwise end with the jog still running */
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_x_apply();", "flag_read_joystick = true;");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_y_apply();", "flag_read_joystick = true;");
 
     const char *csrc = load_source("src/commands/commands.cpp");
     TEST_ASSERT_NOT_NULL(csrc);
@@ -537,7 +550,9 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
         "fail_commanded_move(); one above it would be an operator-driven gate reporting "
         "a hardware fault as some unrelated command's failure");
 
-    assert_guard_precedes_motion(src, "operations.cpp", "void check_joystick()",
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_x_apply()",
+                                 "tmc_driver_ready(", "tmc4361A_setSpeed(");
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_y_apply()",
                                  "tmc_driver_ready(", "tmc4361A_setSpeed(");
     assert_guard_precedes_motion(src, "operations.cpp", "void do_focus_control()",
                                  "tmc_driver_ready(", "tmc4361A_moveTo(");
