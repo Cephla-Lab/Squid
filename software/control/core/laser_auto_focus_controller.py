@@ -147,6 +147,17 @@ class LaserAutofocusController(QObject):
         """
         self.camera.set_region_of_interest(0, 0, 3088, 2064)
 
+        # The crop sizes have no control in the settings panel, so take them from the machine configuration.
+        # A loaded profile still holds the sizes it was saved with.
+        self.laser_af_properties = self.laser_af_properties.model_copy(
+            update={
+                "width": control._def.LASER_AF_CROP_WIDTH,
+                "height": control._def.LASER_AF_CROP_HEIGHT,
+                "initialize_crop_width": control._def.LASER_AF_INITIALIZE_CROP_WIDTH,
+                "initialize_crop_height": control._def.LASER_AF_INITIALIZE_CROP_HEIGHT,
+            }
+        )
+
         # update camera settings
         self.camera.set_exposure_time(self.laser_af_properties.focus_camera_exposure_time_ms)
         try:
