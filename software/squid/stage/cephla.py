@@ -566,6 +566,42 @@ class CephlaStage(AbstractStage):
     def get_state(self) -> StageStage:
         return StageStage(busy=self._microcontroller.is_busy())
 
+    def _release_z_home_sensor(self, blocking: bool) -> bool:
+        """After a Z homing: take the stage past the home sensor's release point and back to the floor.
+
+        The home sensor is a Hall-effect sensor with hysteresis (_def.Z_HOME_SENSOR_HYSTERESIS_MM): asserted at
+        home, it stays asserted until the stage is that far out, and the controller refuses every move toward
+        home while it is. Going out is always allowed, and once released the sensor trips again only at home
+        itself, so the way back to the floor is free. True if the stage now stands at the floor with the sensor
+        released.
+        """
+        hysteresis_mm = float(getattr(_def, "Z_HOME_SENSOR_HYSTERESIS_MM", 0.0) or 0.0)
+        if hysteresis_mm <= 0:
+            return False
+        z_axis = self._config.Z_AXIS
+        release_mm = hysteresis_mm + float(getattr(_def, "Z_HOME_SENSOR_RELEASE_MARGIN_MM", 0.2))
+        if release_mm > z_axis.MAX_POSITION:
+            _log.warning(
+                f"z_home_sensor_hysteresis_mm = {hysteresis_mm:g}: the release point {release_mm:g} mm is beyond the Z "
+                f"travel ({z_axis.MAX_POSITION:g} mm); not releasing the home sensor"
+            )
+            return False
+        if not blocking:
+            _log.warning(
+                f"Z homed non-blocking: the home sensor is still asserted; the caller must take Z past "
+                f"{release_mm:g} mm before any move toward home"
+            )
+            return False
+        floor_mm = z_axis.MIN_POSITION
+        self.move_z_to(release_mm, blocking=True)
+        if floor_mm <= 0:
+            # no floor above home to come back to: a return to home would assert the sensor again
+            _log.info(f"Z home sensor released; Z stays at {release_mm:g} mm (no Z floor above home)")
+            return False
+        self.move_z_to(floor_mm, blocking=True)
+        _log.info(f"Z home sensor released at {release_mm:g} mm; Z parked at the {floor_mm:g} mm floor")
+        return True
+
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         # NOTE(imo): Arbitrarily use max speed / 5 for homing speed.  It'd be better to have it exactly!
         x_timeout = self._calc_move_timeout(
@@ -602,7 +638,8 @@ class CephlaStage(AbstractStage):
             self._microcontroller.home_z(homing_direction=z_dir)
         if blocking:
             self._microcontroller.wait_till_operation_is_completed(z_timeout)
-        if z and getattr(_def, "Z_PARK_AT_MIN_AFTER_HOMING", False):
+        # a release of the home sensor ends at the floor, which is the park position too
+        if z and not self._release_z_home_sensor(blocking) and getattr(_def, "Z_PARK_AT_MIN_AFTER_HOMING", False):
             # Homing is the only motion allowed below the Z soft floor: on a stage whose actuator homes
             # below the stage's stop, the region above home is a gap where the stage does not follow.
             # Park at the floor so every later move (and the closed loop, which engages at rest outside

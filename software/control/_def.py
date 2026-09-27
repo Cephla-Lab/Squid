@@ -1061,6 +1061,16 @@ HOMING_ENABLED_Z = False
 # not exceed the floor, so the closed loop engages at the parked position.
 Z_HOME_GAP_MM = 0.0
 Z_PARK_AT_MIN_AFTER_HOMING = False
+# The Z home sensor is a Hall-effect sensor: it trips at home and lets go only some distance further out
+# (0.994-0.999 mm on the Squid+ bench Z, 2026-09-26: tools of squid-bench z/move_settle, t1_switch.py). While it
+# is asserted the controller refuses every Z move TOWARD home - the TMC4361A does not ramp toward an asserted
+# stop switch - so after a homing a downward move that starts inside that band fails (CMD_EXECUTION_ERROR at 16
+# usteps/FS, a command that never completes at 64) until the stage has once been past the release point.
+# With the hysteresis given, a blocking Z homing is followed by a move to hysteresis + margin and back to the
+# Z floor (SOFTWARE_POS_LIMIT.Z_NEGATIVE; the sensor trips again only at home itself - the bench Z came back
+# to 0.06 mm without it). 0 = no release move: the first Z move after a homing must then go past the band.
+Z_HOME_SENSOR_HYSTERESIS_MM = 0.0
+Z_HOME_SENSOR_RELEASE_MARGIN_MM = 0.2
 
 SLEEP_TIME_S = 0.005
 
