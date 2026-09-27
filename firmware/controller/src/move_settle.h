@@ -102,4 +102,12 @@ void check_move_settle();
 uint8_t settle_report_landing(uint8_t axis);
 uint8_t settle_report_bits(uint8_t axis);
 
+#ifdef BENCH_SETTLE_TRACE   // BENCH BUILDS ONLY: BENCH_DUMP_SETTLE_TRACE (the settle trace, move_settle.cpp)
+/* 0 = start dumping the ring from its oldest record (refused while a move-and-settle is in flight on Z),
+   1 = clear the ring */
+void bench_settle_trace_request(uint8_t what);
+/* main loop, once per pass: a few lines of a dump in progress */
+void bench_settle_trace_service();
+#endif
+
 #endif // MOVE_SETTLE_H

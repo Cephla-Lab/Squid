@@ -522,10 +522,245 @@ static bool settle_command_timed_out(uint8_t axis)
   return true;
 }
 
+#ifdef BENCH_SETTLE_TRACE
+// BENCH BUILDS ONLY (BENCH_DUMP_SETTLE_TRACE): THE SETTLE TRACE. The status packet says of a move where
+// its first leg landed and how many corrections followed; judging the MODEL takes every leg - what the
+// plan believed (free travel, push, expected stage travel), what the window then measured, and what that
+// landing did to side / gap / lost / carry / scale. One record per decision of the policy, taken between
+// settle_step() and settle_execute(), kept in RAM: nothing is printed while a series runs (text on the
+// link misaligns the host's packet parser, and the time would come out of the windows being measured).
+// The host asks for the dump after the run, with its tool off the port.
+#define SETTLE_TRACE_RECORDS        2048u
+#define SETTLE_TRACE_LINES_PER_PASS 6       // of a dump, per main-loop pass: the loop is never held for long
+#define SETTLE_TRACE_STALL_MS       2000u   // nobody reading: the dump is abandoned, not left to greet the next host
+struct SettleTraceRecord {
+  uint32_t t_ms, move_no;
+  int32_t  target;
+  int32_t  n_x16, free_x16, push_x16, expect_x16, from_x16;          // the leg, as planned (pre)
+  int32_t  mean_x16, pp;                                             // the window that judged it
+  int32_t  gap_pre_x16, gap_post_x16;
+  int32_t  lost_pre_x16[2], lost_post_x16[2], carry_pre_x16[2], carry_post_x16[2];
+  int32_t  scale_ppm_x16, land_mad_x256, rev_mad_x256;               // post
+  int32_t  next_n_x16, next_free_x16, next_expect_x16, x_leg;        // the decision (post)
+  int32_t  trim_drive_x16, trim_expect_x16;                          // post
+  uint16_t n_samples;
+  uint8_t  axis, leg, next_leg, trims, reapproaches, fault;
+  int8_t   dir, leg_dir, side_pre, side_post;
+  bool     against, learn, observed, from_encoder, teach_hold, done, missed, move;
+};
+// one name per value of settle_trace_line(), in its order
+static const char SETTLE_TRACE_COLUMNS[] =
+  "seq,t_ms,axis,move_no,target,leg,dir,leg_dir,against,learn,observed,from_encoder,"
+  "n_x16,free_x16,push_x16,expect_x16,from_x16,mean_x16,pp,n_samples,"
+  "side_pre,gap_pre_x16,side_post,gap_post_x16,"
+  "lost0_pre,lost1_pre,lost0_post,lost1_post,carry0_pre,carry1_pre,carry0_post,carry1_post,"
+  "scale_ppm_x16,land_mad_x256,rev_mad_x256,teach_hold,trims,reapproaches,"
+  "done,missed,fault,move,next_leg,next_n_x16,next_free_x16,next_expect_x16,x_leg,"
+  "trim_drive_x16,trim_expect_x16";
+// RAM2: 2048 records are 272 KB, and RAM1 is where the stack lives. Not zeroed at boot - nothing reads a
+// record that was not written.
+static_assert(sizeof(SettleTraceRecord) == 136, "the ring's size is stated here, in platformio.ini and in the bench kit's README");
+static DMAMEM SettleTraceRecord settle_trace_ring[SETTLE_TRACE_RECORDS];
+static uint32_t settle_trace_total = 0;     // records taken since boot / the last clear = the next seq; the ring keeps the newest
+static uint32_t settle_trace_move_no = 0;   // settle_move_to() calls, all axes, since boot / the last clear
+static bool     settle_trace_dumping = false;
+static uint8_t  settle_trace_phase = 0;     // 0 = STH is next, 1 = records, 2 = STE
+static uint32_t settle_trace_next = 0;      // a dump in progress: seq of the next record to send ...
+static uint32_t settle_trace_end = 0;       // ... and one past the last (what was stored when it was asked for)
+static uint32_t settle_trace_lines = 0;
+static uint32_t settle_trace_sent_ms = 0;
+static char     settle_trace_text[768];     // the header is the longest line (~480 characters; a record at its widest 415)
+static uint16_t settle_trace_len = 0;
+
+// `pre`: the state going into the deciding pass, `s`: what settle_step() left - BEFORE settle_execute(),
+// which may abort or re-base and take the policy's own post-state with it.
+static void settle_trace_record(uint8_t axis, const SettleState *pre, const SettleState *s,
+                                const SettleInputs *in, const SettleActions *out)
+{
+  SettleTraceRecord *r = &settle_trace_ring[settle_trace_total % SETTLE_TRACE_RECORDS];
+  settle_trace_total++;
+  // the window as settle_decide() saw it: the deciding pass adds its own sample before it decides
+  int64_t sum = pre->sum;
+  uint32_t n = pre->n;
+  int32_t mn = pre->mn, mx = pre->mx;
+  if (in->enc_valid && (int32_t)(in->now_us - pre->t_meas_us) >= 0)
+  {
+    sum += in->enc; n++;
+    if (in->enc < mn) mn = in->enc;
+    if (in->enc > mx) mx = in->enc;
+  }
+  r->t_ms = millis(); r->move_no = settle_trace_move_no; r->axis = axis;
+  r->target = pre->target; r->leg = pre->leg; r->dir = pre->dir; r->leg_dir = pre->leg_dir;
+  r->against = pre->leg_against; r->learn = pre->leg_learn; r->observed = pre->leg_observed;
+  r->from_encoder = pre->leg_from_encoder;
+  r->n_x16 = pre->leg_n_x16; r->free_x16 = pre->leg_free_x16; r->push_x16 = pre->leg_push_x16;
+  r->expect_x16 = pre->leg_expect_x16; r->from_x16 = pre->leg_from_x16;
+  // a decision that did not keep its mean (the home zone, a fault) still measured one
+  r->mean_x16 = s->last_mean_valid ? s->last_mean_x16 : (n > 0 ? (int32_t)settle_div_round(sum * SETTLE_X16, n) : 0);
+  r->pp = n > 0 ? mx - mn : 0;
+  r->n_samples = (uint16_t)n;
+  r->side_pre = pre->side; r->gap_pre_x16 = pre->gap_x16; r->side_post = s->side; r->gap_post_x16 = s->gap_x16;
+  for (uint8_t k = 0; k < 2; k++)
+  {
+    r->lost_pre_x16[k] = pre->lost_x16[k]; r->lost_post_x16[k] = s->lost_x16[k];
+    r->carry_pre_x16[k] = pre->carry_x16[k]; r->carry_post_x16[k] = s->carry_x16[k];
+  }
+  r->scale_ppm_x16 = s->scale_ppm_x16; r->land_mad_x256 = s->land_mad_x256; r->rev_mad_x256 = s->rev_mad_x256;
+  r->teach_hold = pre->teach_hold; r->trims = s->trims; r->reapproaches = s->reapproaches;
+  r->done = out->done; r->missed = out->missed; r->fault = out->fault; r->move = out->move;
+  r->next_leg = s->leg; r->next_n_x16 = s->leg_n_x16; r->next_free_x16 = s->leg_free_x16;
+  r->next_expect_x16 = s->leg_expect_x16; r->x_leg = s->x_leg;
+  r->trim_drive_x16 = (int32_t)s->trim_drive_x16;      // a run of trims: a few hundred usteps at the very most
+  r->trim_expect_x16 = (int32_t)s->trim_expect_x16;
+}
+
+// The lines are put together by hand, like report_driver_probe()'s (init.cpp): newlib's formatted
+// output is ~24 KB of flash, and the checksum wants the whole line in one place anyway.
+static void settle_trace_put(char c)
+{
+  if (settle_trace_len < sizeof(settle_trace_text) - 4) settle_trace_text[settle_trace_len++] = c;   // room for "*CC\n"
+}
+
+static void settle_trace_begin(const char *tag)
+{
+  settle_trace_len = 0;
+  while (*tag) settle_trace_put(*tag++);
+}
+
+static void settle_trace_digits(uint32_t v)
+{
+  char digits[10];
+  uint8_t k = 0;
+  do { digits[k++] = (char)('0' + v % 10u); v /= 10u; } while (v);
+  while (k) settle_trace_put(digits[--k]);
+}
+
+// one value of a line: every one of them follows a comma
+static void settle_trace_unsigned(uint32_t v)
+{
+  settle_trace_put(',');
+  settle_trace_digits(v);
+}
+
+static void settle_trace_signed(int32_t v)
+{
+  settle_trace_put(',');
+  if (v < 0) settle_trace_put('-');
+  settle_trace_digits(v < 0 ? 0u - (uint32_t)v : (uint32_t)v);
+}
+
+// NMEA style: "*" and the XOR of every character before it, two upper-case hex digits. The line shares
+// the link with the 24-byte status packets, so the host needs a way to tell a whole line from a torn one.
+static void settle_trace_send()
+{
+  static const char HEX_DIGITS[] = "0123456789ABCDEF";
+  uint8_t cc = 0;
+  for (uint16_t k = 0; k < settle_trace_len; k++) cc ^= (uint8_t)settle_trace_text[k];
+  settle_trace_text[settle_trace_len++] = '*';
+  settle_trace_text[settle_trace_len++] = HEX_DIGITS[cc >> 4];
+  settle_trace_text[settle_trace_len++] = HEX_DIGITS[cc & 0x0F];
+  settle_trace_text[settle_trace_len++] = '\n';
+  SerialUSB.write((const uint8_t *)settle_trace_text, settle_trace_len);
+  settle_trace_lines++;
+  settle_trace_sent_ms = millis();
+}
+
+static void settle_trace_line(uint32_t seq)
+{
+  const SettleTraceRecord *r = &settle_trace_ring[seq % SETTLE_TRACE_RECORDS];
+  settle_trace_begin("ST");
+  settle_trace_unsigned(seq); settle_trace_unsigned(r->t_ms); settle_trace_unsigned(r->axis);
+  settle_trace_unsigned(r->move_no); settle_trace_signed(r->target);
+  settle_trace_unsigned(r->leg); settle_trace_signed(r->dir); settle_trace_signed(r->leg_dir);
+  settle_trace_unsigned(r->against); settle_trace_unsigned(r->learn); settle_trace_unsigned(r->observed);
+  settle_trace_unsigned(r->from_encoder);
+  settle_trace_signed(r->n_x16); settle_trace_signed(r->free_x16); settle_trace_signed(r->push_x16);
+  settle_trace_signed(r->expect_x16); settle_trace_signed(r->from_x16); settle_trace_signed(r->mean_x16);
+  settle_trace_signed(r->pp); settle_trace_unsigned(r->n_samples);
+  settle_trace_signed(r->side_pre); settle_trace_signed(r->gap_pre_x16);
+  settle_trace_signed(r->side_post); settle_trace_signed(r->gap_post_x16);
+  settle_trace_signed(r->lost_pre_x16[0]); settle_trace_signed(r->lost_pre_x16[1]);
+  settle_trace_signed(r->lost_post_x16[0]); settle_trace_signed(r->lost_post_x16[1]);
+  settle_trace_signed(r->carry_pre_x16[0]); settle_trace_signed(r->carry_pre_x16[1]);
+  settle_trace_signed(r->carry_post_x16[0]); settle_trace_signed(r->carry_post_x16[1]);
+  settle_trace_signed(r->scale_ppm_x16); settle_trace_signed(r->land_mad_x256); settle_trace_signed(r->rev_mad_x256);
+  settle_trace_unsigned(r->teach_hold); settle_trace_unsigned(r->trims); settle_trace_unsigned(r->reapproaches);
+  settle_trace_unsigned(r->done); settle_trace_unsigned(r->missed); settle_trace_unsigned(r->fault);
+  settle_trace_unsigned(r->move); settle_trace_unsigned(r->next_leg);
+  settle_trace_signed(r->next_n_x16); settle_trace_signed(r->next_free_x16); settle_trace_signed(r->next_expect_x16);
+  settle_trace_signed(r->x_leg);
+  settle_trace_signed(r->trim_drive_x16); settle_trace_signed(r->trim_expect_x16);
+}
+
+void bench_settle_trace_request(uint8_t what)
+{
+  if (what == 1)
+  {
+    settle_trace_total = 0; settle_trace_move_no = 0;
+    settle_trace_dumping = false;
+    return;
+  }
+  // a move in flight has the loop to itself: a line put together is time its windows would not get
+  if (what != 0 || settle_axis_busy(z)) return;
+  uint32_t stored = settle_trace_total < SETTLE_TRACE_RECORDS ? settle_trace_total : SETTLE_TRACE_RECORDS;
+  settle_trace_end = settle_trace_total;
+  settle_trace_next = settle_trace_total - stored;
+  settle_trace_phase = 0; settle_trace_lines = 0;
+  settle_trace_sent_ms = millis();
+  settle_trace_dumping = true;
+}
+
+void bench_settle_trace_service()
+{
+  if (!settle_trace_dumping) return;
+  if (settle_axis_busy(z)) { settle_trace_sent_ms = millis(); return; }   // a move began under the dump: it waits, for the same reason
+  for (uint8_t k = 0; k < SETTLE_TRACE_LINES_PER_PASS; k++)
+  {
+    // Never wait on the host: usb_serial_write() blocks for up to 120 ms when every buffer is in flight
+    if (SerialUSB.availableForWrite() < (int)sizeof(settle_trace_text))
+    {
+      if ((uint32_t)(millis() - settle_trace_sent_ms) > SETTLE_TRACE_STALL_MS) settle_trace_dumping = false;
+      return;
+    }
+    if (settle_trace_phase == 0)
+    {
+      settle_trace_begin("STH");
+      settle_trace_unsigned(settle_trace_total);
+      settle_trace_unsigned(settle_trace_end - settle_trace_next);
+      settle_trace_put(',');
+      for (const char *c = SETTLE_TRACE_COLUMNS; *c; c++) settle_trace_put(*c);
+      settle_trace_send();
+      settle_trace_phase = 1;
+    }
+    else if (settle_trace_phase == 1)
+    {
+      // moves made since the dump began may have overwritten the oldest: go on from what is still there
+      if (settle_trace_total - settle_trace_next > SETTLE_TRACE_RECORDS)
+        settle_trace_next = settle_trace_total - SETTLE_TRACE_RECORDS;
+      if (settle_trace_next >= settle_trace_end) { settle_trace_phase = 2; continue; }
+      settle_trace_line(settle_trace_next++);
+      settle_trace_send();
+    }
+    else
+    {
+      uint32_t lines = settle_trace_lines;           // STH and every ST before this line: the host can tell what it lost
+      settle_trace_begin("STE");
+      settle_trace_unsigned(lines);
+      settle_trace_send();
+      settle_trace_dumping = false;
+      return;
+    }
+  }
+}
+#endif /* BENCH_SETTLE_TRACE */
+
 int8_t settle_move_to(uint8_t axis, int32_t target)
 {
   TMC4361ATypeDef *chip = &tmc4361[axis];
   SettleState *s = &settle_state[axis];
+#ifdef BENCH_SETTLE_TRACE
+  settle_trace_move_no++;        // BENCH BUILDS ONLY: the move the records that follow belong to
+#endif
 
   ext_resp_open[axis] = false;   // a commanded move keeps its own response account (the policy's)
   // a dropped move-and-settle still owes its re-base: settle it into this move's bookkeeping
@@ -661,7 +896,17 @@ void check_move_settle()
       in.enc_valid = true;
     }
     in.correct_allowed = settle_encoder_is_evidence(i, s->target);
+#ifdef BENCH_SETTLE_TRACE
+    SettleState pre = *s;            // BENCH BUILDS ONLY: what the policy knew going into this pass
+#endif
     settle_step(s, &settle_params[i], &in, &out);
+#ifdef BENCH_SETTLE_TRACE
+    // a window was judged in this pass (a quiet-window repeat leaves the state in MEASURE: its mean is new).
+    // Taken BEFORE settle_execute(), which may abort or re-base and take the policy's post-state with it.
+    if (pre.state == SETTLE_MEASURE && (s->state != SETTLE_MEASURE || s->last_mean_us != pre.last_mean_us
+                                        || out.done || out.missed || out.fault || out.move))
+      settle_trace_record(i, &pre, s, &in, &out);
+#endif
     settle_execute(i, &out, true);   // DONE only ever comes out of a pass that found the ramp idle
   }
 }

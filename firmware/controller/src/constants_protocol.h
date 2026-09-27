@@ -119,6 +119,29 @@ static const int SET_MOVE_SETTLE_SCALE = 57;    // [2]=axis, [3..4]=int16, ppm: 
                                               // against the encoder's scale (-1100 = the stage moves 0.11 um less per 100 um than the
                                               // counter). Every leg is planned through it and it is learned from long continuing legs
                                               // (learning gain of SET_MOVE_SETTLE_MODEL); +-5000 at most. Re-seeds the model.
+static const int BENCH_INJECT_FOCUS_WHEEL = 58; // BENCH BUILDS ONLY (-DBENCH_WHEEL_INJECT; without it the number is unassigned and ignored):
+                                              // [2..3]=int16 wheel travel per packet, usteps (the panel sends multiples of 16),
+                                              // [4..5]=uint16 delay before the first packet, ms, [6]=packets (0 = 1), one every
+                                              // 8 ms. Each goes through the lines the panel's packet goes through
+                                              // (onJoystickPacketReceived): focusPosition += travel; focus_wheel_pending = true.
+static const int BENCH_DUMP_SETTLE_TRACE = 59;  // BENCH BUILDS ONLY (-DBENCH_SETTLE_TRACE; without it the number is unassigned and ignored):
+                                              // [2]=0 start the dump of the settle trace - one record per measured leg of every
+                                              // move-and-settle move, kept in RAM - as ASCII lines on this link (STH / ST / STE,
+                                              // move_settle.cpp), oldest first; refused (CMD_EXECUTION_ERROR) while a
+                                              // move-and-settle is in flight on Z. [2]=1 clear the ring.
+static const int BENCH_PANEL_STREAM = 60;       // BENCH BUILDS ONLY (-DBENCH_WHEEL_INJECT; without it the number is unassigned and ignored):
+                                              // whole panel packets, built as the panel builds them and handed to the panel's
+                                              // handler (onJoystickPacketReceived) one every 2 ms, the panel's cadence, from the
+                                              // main loop - the parser, the first-packet handling, the lock-out and the wheel
+                                              // accumulation as with the panel, which command 58 bypasses. [2]=op: 1 wheel
+                                              // stream, [3..4]=int16 wheel travel per packet, usteps (the panel sends multiples
+                                              // of 16), [5..6]=uint16 packets (0 = 1); 2 joystick stream, [3..4]=int16 x,
+                                              // [5..6]=int16 y as the panel encodes them, 100 packets (200 ms; the host repeats
+                                              // the command for a longer deflection); 3 release, one packet with the wheel where
+                                              // it is and the joystick at 0,0 (the panel's idle packet); 0 report, one ASCII
+                                              // line on this link, at once: PN,<real packets>,<real packets in the last
+                                              // 1000 ms>,<focuswheel_pos>,<panel_locked_out()>,<synthetic packets>*CC (NMEA
+                                              // checksum, like the settle trace's). A new stream replaces a pending one.
 static const int SET_MOVE_SETTLE_FINISH = 61;   // [2]=axis, [3..4]=uint16 finishing leg, usteps (0 = off), [5..6]=uint16 threshold in
                                               // units of 16 usteps (0 = the finishing leg's own length). A move whose first approach
                                               // leg would want more stage travel than the threshold is issued as two approach legs:

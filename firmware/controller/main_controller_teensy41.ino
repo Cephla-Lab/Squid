@@ -35,6 +35,13 @@ void loop() {
   }
 
   joystick_packetSerial.update();
+#ifdef BENCH_WHEEL_INJECT
+  bench_wheel_service();   // BENCH BUILDS ONLY: scheduled focus-wheel packets, handled where the panel's are
+  bench_panel_service();   // BENCH BUILDS ONLY: whole synthetic panel packets, through the panel's handler
+#endif
+#ifdef BENCH_SETTLE_TRACE
+  bench_settle_trace_service();   // BENCH BUILDS ONLY: a few lines per pass of a settle-trace dump the host asked for
+#endif
 
   process_serial_message();
   do_camera_trigger();

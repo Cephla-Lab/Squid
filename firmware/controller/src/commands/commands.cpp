@@ -74,6 +74,13 @@ void init_callbacks()
     cmd_map[SET_MOVE_SETTLE_MODEL] = &callback_set_move_settle_model;
     cmd_map[SET_MOVE_SETTLE_SCALE] = &callback_set_move_settle_scale;
     cmd_map[SET_MOVE_SETTLE_FINISH] = &callback_set_move_settle_finish;
+#ifdef BENCH_WHEEL_INJECT
+    cmd_map[BENCH_INJECT_FOCUS_WHEEL] = &callback_bench_inject_focus_wheel;
+    cmd_map[BENCH_PANEL_STREAM] = &callback_bench_panel_stream;
+#endif
+#ifdef BENCH_SETTLE_TRACE
+    cmd_map[BENCH_DUMP_SETTLE_TRACE] = &callback_bench_dump_settle_trace;
+#endif
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -395,6 +402,7 @@ void callback_set_pid_open_above()
     pid_open_above_pps[axis] = pps < 0 ? -pps : pps;
 }
 
+
 // SET_PID_TOLERANCE (48): [2] protocol axis, [3..4] loop deadband in 0.01 um, [5..6]
 // target-reached tolerance in 0.01 um; 0 keeps the current value. Applied at once if
 // the encoder is configured (the two registers are plain writes) and by every later
@@ -575,6 +583,46 @@ void callback_set_move_settle_finish()
     settle_config[axis].finish_usteps = finish;
     settle_config[axis].finish_from_16usteps = from16;
 }
+
+#ifdef BENCH_WHEEL_INJECT
+// BENCH_INJECT_FOCUS_WHEEL (58), BENCH BUILDS ONLY: [2..3] int16 usteps per packet, [4..5] uint16 ms before
+// the first, [6] packets. Completes at once; the packets follow from the main loop (bench_wheel_service).
+void callback_bench_inject_focus_wheel()
+{
+    int16_t travel = (int16_t)((uint16_t(buffer_rx[2]) << 8) + uint16_t(buffer_rx[3]));
+    uint16_t delay_ms = (uint16_t)((uint16_t(buffer_rx[4]) << 8) + uint16_t(buffer_rx[5]));
+    bench_wheel_schedule(travel, delay_ms, buffer_rx[6]);
+}
+
+// BENCH_PANEL_STREAM (60), BENCH BUILDS ONLY: [2] op - 1 wheel stream: [3..4] int16 usteps per packet, [5..6] uint16
+// packets; 2 joystick stream: [3..4] int16 x, [5..6] int16 y, 100 packets; 3 release: one idle packet; 0 report: one
+// PN line on this link, written here (short) - the loop is not held. A stream completes at once; its packets follow
+// from the main loop (bench_panel_service), one every 2 ms, and replace whatever was pending.
+void callback_bench_panel_stream()
+{
+    int16_t a = (int16_t)((uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]));
+    uint16_t b = (uint16_t)((uint16_t(buffer_rx[5]) << 8) + uint16_t(buffer_rx[6]));
+    switch (buffer_rx[2])
+    {
+    case 0: bench_panel_report(); break;
+    case 1: bench_panel_wheel_stream(a, b); break;
+    case 2: bench_panel_joystick(a, (int16_t)b); break;
+    case 3: bench_panel_release(); break;
+    default: report_move_error(); break;
+    }
+}
+#endif
+
+#ifdef BENCH_SETTLE_TRACE
+// BENCH_DUMP_SETTLE_TRACE (59), BENCH BUILDS ONLY: [2] 0 = dump the settle trace, 1 = clear it. Completes at
+// once; the lines follow from the main loop (bench_settle_trace_service). A dump is refused while a
+// move-and-settle is in flight on Z, and says so: silence is what an image without the trace answers with.
+void callback_bench_dump_settle_trace()
+{
+    if (buffer_rx[2] == 0 && settle_axis_busy(z)) { report_move_error(); return; }
+    bench_settle_trace_request(buffer_rx[2]);
+}
+#endif
 
 // SET_MOVE_SETTLE_SHAPER (54): [3..4] half the ring period in 10 us (0 = legs are never split),
 // [5] share of a split leg that goes first in 1/256 (0 = half), [6] longest leg that is split, um.

@@ -72,6 +72,16 @@ extern PacketSerial joystick_packetSerial;
 
 bool panel_locked_out();   // a commanded move or a homing is in progress: the panel's input is dropped
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size);
+#ifdef BENCH_WHEEL_INJECT   // BENCH BUILDS ONLY: BENCH_INJECT_FOCUS_WHEEL, BENCH_PANEL_STREAM
+void bench_wheel_schedule(int16_t travel_usteps, uint16_t delay_ms, uint8_t packets);
+void bench_wheel_service();
+// BENCH_PANEL_STREAM: whole panel packets through onJoystickPacketReceived(), one every 2 ms from the main loop
+void bench_panel_wheel_stream(int16_t travel_usteps, uint16_t packets);   // op 1
+void bench_panel_joystick(int16_t x, int16_t y);                          // op 2: 100 packets = 200 ms
+void bench_panel_release();                                               // op 3: one idle packet
+void bench_panel_report();                                                // op 0: one PN line on the USB link, at once
+void bench_panel_service();
+#endif
 
 /***************************************************************************************************/
 /*********************************************  utils  *********************************************/

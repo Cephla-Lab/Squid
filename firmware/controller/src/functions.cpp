@@ -585,6 +585,55 @@ bool panel_locked_out()
       || is_preparing_for_homing_W || is_preparing_for_homing_W2;
 }
 
+#ifdef BENCH_WHEEL_INJECT
+// BENCH BUILDS ONLY (BENCH_PANEL_STREAM op 0): the panel's packets are counted where they arrive, so that a
+// script can tell whether the real panel is talking, and how fast, before it trusts what it injected. A
+// packet from the streamer (bench_panel_service) is told apart by the flag it holds around its call and
+// counted on its own. The last-second count is 10 buckets of 100 ms: exact enough for "is it alive at
+// ~500/s", and nothing to keep per packet.
+#define BENCH_PANEL_BUCKETS 10
+static bool     bench_panel_synthetic = false;
+static uint32_t bench_panel_real_total = 0, bench_panel_synth_total = 0;
+static uint16_t bench_panel_bucket[BENCH_PANEL_BUCKETS] = {0};
+static uint8_t  bench_panel_bucket_i = 0;
+static uint32_t bench_panel_bucket_ms = 0;   // when the bucket being filled began
+
+static void bench_panel_buckets_advance()
+{
+  uint32_t now = millis();
+  for (uint8_t k = 0; k < BENCH_PANEL_BUCKETS && (uint32_t)(now - bench_panel_bucket_ms) >= 100u; k++)
+  {
+    bench_panel_bucket_i = (uint8_t)((bench_panel_bucket_i + 1) % BENCH_PANEL_BUCKETS);
+    bench_panel_bucket[bench_panel_bucket_i] = 0;
+    bench_panel_bucket_ms += 100u;
+  }
+  if ((uint32_t)(now - bench_panel_bucket_ms) >= 100u) bench_panel_bucket_ms = now;   // a gap longer than the ring: every bucket is stale
+}
+
+// The panel on the controller keeps sending its ABSOLUTE count every 2 ms while a stream runs, so each of
+// its idle packets would undo the synthetic count before it (and its undeflected joystick would cancel a
+// synthetic deflection). While a stream runs, and for a tail after its last packet, the panel's packets
+// are counted, their count kept, and DROPPED; when the mute ends focuswheel_pos is put back on the
+// panel's count (bench_panel_service), so the stream's travel stays and nothing is released. Returns
+// true for a packet to drop.
+#define BENCH_PANEL_MUTE_TAIL_MS 100u
+static int32_t  bench_panel_real_wheel = 0;
+static bool     bench_panel_real_seen = false;
+static bool     bench_panel_muting = false;
+static uint32_t bench_panel_last_synth_ms = 0;
+
+static bool bench_panel_count(const uint8_t* buffer)
+{
+  if (bench_panel_synthetic) { bench_panel_synth_total++; bench_panel_last_synth_ms = millis(); return false; }
+  bench_panel_real_total++;
+  bench_panel_buckets_advance();
+  bench_panel_bucket[bench_panel_bucket_i]++;
+  bench_panel_real_wheel = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
+  bench_panel_real_seen = true;
+  return bench_panel_muting;
+}
+#endif
+
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 {
 
@@ -594,6 +643,9 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
       Serial.println("! wrong number of bytes received !");
     return;
   }
+#ifdef BENCH_WHEEL_INJECT
+  if (bench_panel_count(buffer)) return;   // BENCH BUILDS ONLY: counted before anything the packet does; the panel's own packets are dropped while a stream runs
+#endif
 
   if (first_packet_from_joystick_panel)
   {
@@ -633,6 +685,144 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
   flag_read_joystick = true;
 
 }
+
+#ifdef BENCH_WHEEL_INJECT
+// BENCH BUILDS ONLY (BENCH_INJECT_FOCUS_WHEEL). Focus-wheel packets without a hand on the wheel: the
+// panel talks to this controller and not to the PC, so wheel input arriving at an arbitrary moment of a
+// commanded move cannot be produced from the bench otherwise. The schedule runs on this controller's
+// clock, from the main loop, where the panel's packets are handled; each packet does to focusPosition /
+// focus_wheel_pending exactly what onJoystickPacketReceived() does with a changed wheel position.
+#define BENCH_WHEEL_PACKET_US 8000u
+static int32_t bench_wheel_travel = 0;
+static uint8_t bench_wheel_packets = 0;
+static uint32_t bench_wheel_due_us = 0;
+
+void bench_wheel_schedule(int16_t travel_usteps, uint16_t delay_ms, uint8_t packets)
+{
+  bench_wheel_travel = travel_usteps;
+  bench_wheel_packets = packets ? packets : 1;
+  bench_wheel_due_us = micros() + (uint32_t)delay_ms * 1000u;
+}
+
+void bench_wheel_service()
+{
+  if (bench_wheel_packets == 0 || (int32_t)(micros() - bench_wheel_due_us) < 0) return;
+  bench_wheel_packets--;
+  bench_wheel_due_us += BENCH_WHEEL_PACKET_US;
+  if (!pid_fault[z] && !panel_locked_out() && bench_wheel_travel != 0)
+  {
+    focusPosition = focusPosition + bench_wheel_travel;
+    focus_wheel_pending = true;
+  }
+}
+
+// BENCH BUILDS ONLY (BENCH_PANEL_STREAM). Command 58 reproduces what a changed wheel position DOES; this
+// reproduces the panel: a 10-byte packet built as control_panel_teensyLC.ino builds its own (int32 wheel
+// position, int16 joystick x, int16 y, big-endian, buttons, CRC placeholder) and handed to
+// onJoystickPacketReceived() one every 2 ms, the panel's cadence - so the parser, the first-packet handling,
+// the lock-out and the wheel accumulation are the lines a real packet takes. The wheel position is the
+// streamer's own count, started from the firmware's at the first packet of every stream so that nothing
+// jumps (between streams the real panel's packets put focuswheel_pos back at the panel's count; during
+// one they are muted, see bench_panel_count).
+#define BENCH_PANEL_PACKET_US        2000u
+#define BENCH_PANEL_JOYSTICK_PACKETS 100u    // 200 ms per command: the host repeats it for a longer deflection
+static int32_t  bench_panel_wheel_pos = 0;
+static bool     bench_panel_seeded = false;
+static int16_t  bench_panel_travel = 0, bench_panel_jx = 0, bench_panel_jy = 0;
+static uint16_t bench_panel_pending = 0;
+static uint32_t bench_panel_due_us = 0;
+
+// a new stream replaces whatever was left of the last one
+static void bench_panel_start(int16_t travel_usteps, int16_t x, int16_t y, uint16_t packets)
+{
+  bench_panel_travel = travel_usteps; bench_panel_jx = x; bench_panel_jy = y;
+  bench_panel_seeded = false;
+  bench_panel_pending = packets;
+  bench_panel_due_us = micros();   // the first packet on the next main-loop pass
+  bench_panel_muting = true;
+  bench_panel_last_synth_ms = millis();
+}
+
+void bench_panel_wheel_stream(int16_t travel_usteps, uint16_t packets) { bench_panel_start(travel_usteps, 0, 0, packets ? packets : 1); }
+void bench_panel_joystick(int16_t x, int16_t y) { bench_panel_start(0, x, y, BENCH_PANEL_JOYSTICK_PACKETS); }
+void bench_panel_release() { bench_panel_start(0, 0, 0, 1); }
+
+static void bench_panel_send_one()
+{
+  if (!bench_panel_seeded) { bench_panel_wheel_pos = focuswheel_pos; bench_panel_seeded = true; }
+  bench_panel_wheel_pos += bench_panel_travel;
+  uint32_t w = (uint32_t)bench_panel_wheel_pos;
+  uint16_t jx = (uint16_t)bench_panel_jx, jy = (uint16_t)bench_panel_jy;
+  uint8_t packet[JOYSTICK_MSG_LENGTH];
+  packet[0] = (uint8_t)(w >> 24); packet[1] = (uint8_t)(w >> 16); packet[2] = (uint8_t)(w >> 8); packet[3] = (uint8_t)w;
+  packet[4] = (uint8_t)(jx >> 8); packet[5] = (uint8_t)jx;
+  packet[6] = (uint8_t)(jy >> 8); packet[7] = (uint8_t)jy;
+  packet[8] = 0;   // buttons: nothing reads them (the panel's pull-up sends 1 unpressed)
+  packet[9] = 0;   // the panel's CRC placeholder
+  bench_panel_synthetic = true;
+  onJoystickPacketReceived(packet, JOYSTICK_MSG_LENGTH);
+  bench_panel_synthetic = false;
+}
+
+void bench_panel_service()
+{
+  if (bench_panel_muting && bench_panel_pending == 0 && (uint32_t)(millis() - bench_panel_last_synth_ms) >= BENCH_PANEL_MUTE_TAIL_MS)
+  {
+    bench_panel_muting = false;
+    if (bench_panel_real_seen) focuswheel_pos = bench_panel_real_wheel;   // the panel's count resumes without a jump
+  }
+  if (bench_panel_pending == 0 || (int32_t)(micros() - bench_panel_due_us) < 0) return;
+  bench_panel_pending--;
+  bench_panel_due_us += BENCH_PANEL_PACKET_US;
+  bench_panel_send_one();
+}
+
+// The PN line is put together by hand and checksummed NMEA style like the settle trace's lines (whose helpers
+// are move_settle.cpp's own, behind BENCH_SETTLE_TRACE): "*" and the XOR of every character before it, so the
+// host can tell a whole line from one torn by a status packet. Short, and written at once: this is a query,
+// not a dump.
+static char    bench_panel_text[96];   // "PN" + 5 values of at most 12 characters + "*CC\n"
+static uint8_t bench_panel_len = 0;
+
+static void bench_panel_put(char c)
+{
+  if (bench_panel_len < sizeof(bench_panel_text) - 4) bench_panel_text[bench_panel_len++] = c;   // room for "*CC\n"
+}
+
+// one value of the line: every one of them follows a comma
+static void bench_panel_value(int32_t v, bool is_signed)
+{
+  char digits[10];
+  uint8_t k = 0;
+  uint32_t u = is_signed && v < 0 ? 0u - (uint32_t)v : (uint32_t)v;
+  bench_panel_put(',');
+  if (is_signed && v < 0) bench_panel_put('-');
+  do { digits[k++] = (char)('0' + u % 10u); u /= 10u; } while (u);
+  while (k) bench_panel_put(digits[--k]);
+}
+
+void bench_panel_report()
+{
+  static const char HEX_DIGITS[] = "0123456789ABCDEF";
+  bench_panel_buckets_advance();
+  uint32_t last_second = 0;
+  for (uint8_t k = 0; k < BENCH_PANEL_BUCKETS; k++) last_second += bench_panel_bucket[k];
+  bench_panel_len = 0;
+  bench_panel_put('P'); bench_panel_put('N');
+  bench_panel_value((int32_t)bench_panel_real_total, false);
+  bench_panel_value((int32_t)last_second, false);
+  bench_panel_value(focuswheel_pos, true);
+  bench_panel_value(panel_locked_out() ? 1 : 0, false);
+  bench_panel_value((int32_t)bench_panel_synth_total, false);
+  uint8_t cc = 0;
+  for (uint8_t k = 0; k < bench_panel_len; k++) cc ^= (uint8_t)bench_panel_text[k];
+  bench_panel_text[bench_panel_len++] = '*';
+  bench_panel_text[bench_panel_len++] = HEX_DIGITS[cc >> 4];
+  bench_panel_text[bench_panel_len++] = HEX_DIGITS[cc & 0x0F];
+  bench_panel_text[bench_panel_len++] = '\n';
+  SerialUSB.write((const uint8_t *)bench_panel_text, bench_panel_len);
+}
+#endif
 
 /***************************************************************************************************/
 /*********************************************  utils  *********************************************/

@@ -34,6 +34,13 @@ void callback_set_move_settle_accept();
 void callback_set_move_settle_model();
 void callback_set_move_settle_scale();
 void callback_set_move_settle_finish();
+#ifdef BENCH_WHEEL_INJECT
+void callback_bench_inject_focus_wheel();
+void callback_bench_panel_stream();
+#endif
+#ifdef BENCH_SETTLE_TRACE
+void callback_bench_dump_settle_trace();
+#endif
 
 void callback_disable_stage_pid();
 void callback_initfilterwheel();
