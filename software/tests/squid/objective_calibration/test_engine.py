@@ -3,7 +3,8 @@ import pytest
 from control._def import FocusMeasureOperator
 from control.utils import calculate_focus_measure
 from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, cycle_report, run_calibration
-from squid.objective_calibration.hardware import RunCancelled
+from squid.objective_calibration.engine import _restore
+from squid.objective_calibration.hardware import RestoreError, RunCancelled
 from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
 
 
@@ -185,3 +186,62 @@ def test_cycle_report_has_one_line_per_objective_per_cycle_with_the_gate_values(
     for line in lines[1:]:
         for field in ("focus", "rise", "µm/px", "rotation", "anisotropy", "residual", "drift"):
             assert field in line, (field, line)
+
+
+class _JammedTurret:
+    """The external review's reproducer: the turret never confirms any objective."""
+
+    def __init__(self):
+        self.calls = []
+
+    def current_objective(self):
+        return None
+
+    def switch_objective(self, name):
+        self.calls.append(("switch", name))
+        raise RuntimeError("turret jammed; objective unknown")
+
+    def xy_limits_um(self):
+        return ((-10000, 10000), (-10000, 10000))
+
+    def move_xy_to_um(self, x, y):
+        self.calls.append(("xy", x, y))
+
+    def move_z_to_um(self, z):
+        self.calls.append(("z", z))
+
+
+def test_an_unconfirmed_objective_never_gets_the_old_focus_z():
+    hw = _JammedTurret()
+    with pytest.raises(RestoreError, match="objective unknown"):
+        _restore(hw, "4x", 1000, 2000, 5000)
+    assert ("xy", 1000, 2000) in hw.calls  # XY is still put back: a lateral move is safe
+    assert not any(call[0] == "z" for call in hw.calls), hw.calls
+
+
+def test_a_failed_switch_back_leaves_z_where_the_changer_left_it():
+    hw, cfg = _machine()
+    cfg.cycles = 1
+    hw.fail_switch_to = "10x"  # the switch to 10x faults, and so does the restore back to it
+    original_move_z = hw.move_z_to_um
+    z_moves_after_the_fault = []
+
+    def move_z(z):
+        if hw.faulted:
+            z_moves_after_the_fault.append(z)
+        original_move_z(z)
+
+    original_switch = hw.switch_objective
+    hw.faulted = False
+
+    def switch(name):
+        if name == "10x":
+            hw.faulted = True
+        original_switch(name)
+
+    hw.switch_objective = switch
+    hw.move_z_to_um = move_z
+    result = run_calibration(hw, cfg, fine_metric=lape)
+    assert result.restore_failed and "not confirmed" in result.stopped
+    assert z_moves_after_the_fault == []
+    assert hw.get_xy_um() == pytest.approx((1000.0, 2000.0))

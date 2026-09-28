@@ -120,8 +120,12 @@ def _return_xy(hw, x: float, y: float) -> None:
 
 
 def _restore(hw, objective: str, x: float, y: float, z: float) -> None:
-    """Put the objective, XY and Z back. Every step is attempted even if an earlier one fails, so a
-    stuck XY axis never leaves Z out of place; any failure raises RestoreError, which stops the run."""
+    """Put the objective, XY and Z back; any failure raises RestoreError, which stops the run.
+
+    XY is attempted even if the objective step fails (a lateral move is safe), and Z even if XY
+    fails, so a stuck XY axis never leaves Z out of place. But Z returns to the imaging position
+    only once the start objective is confirmed in place: with a jammed or partly rotated turret it
+    stays where the changer left it."""
     failures = []
     try:
         if hw.current_objective() != objective:
@@ -132,10 +136,16 @@ def _restore(hw, objective: str, x: float, y: float, z: float) -> None:
         _return_xy(hw, x, y)
     except Exception as e:  # noqa: BLE001
         failures.append(f"XY: {e}")
-    try:
-        hw.move_z_to_um(z)
-    except Exception as e:  # noqa: BLE001
-        failures.append(f"Z: {e}")
+    if hw.current_objective() != objective:
+        failures.append(
+            f"Z: not returned to {z:.1f} µm because {objective} is not confirmed in place; "
+            "check the objective changer before moving Z"
+        )
+    else:
+        try:
+            hw.move_z_to_um(z)
+        except Exception as e:  # noqa: BLE001
+            failures.append(f"Z: {e}")
     if failures:
         raise RestoreError(f"Restoring {objective} at ({x:.1f}, {y:.1f}, {z:.1f}) µm failed: " + "; ".join(failures))
 
