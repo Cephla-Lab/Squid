@@ -41,17 +41,10 @@ class TestNoYamlIsUnchanged:
         assert run.returncode == 0, run.output
         assert run.report["use_xeryon"] is True
         assert run.report["objectives"] == CSV_OBJECTIVES
-        # This shipped ini writes these lists Python-repr style, with single quotes,
-        # e.g. XERYON_OBJECTIVE_SWITCHER_POS_1 = ['10x', '20x', '25x', '60x']. That is
-        # not valid JSON (JSON requires double quotes), so conf_attribute_reader's
-        # JSON-first parser fails and falls through to returning the raw config
-        # string unchanged. The harness's `list(...)` then explodes that raw string
-        # into its individual characters. This is today's actual (surprising, and
-        # arguably buggy) master behavior for this file -- pinned here verbatim so a
-        # real fix elsewhere doesn't get silently re-broken. See task report for
-        # evidence and discussion.
-        assert run.report["xeryon_pos_1"] == list("['10x', '20x', '25x', '60x']")
-        assert run.report["xeryon_pos_2"] == list("['2x', '4x']")
+        # This shipped ini's lists use single quotes, which isn't valid JSON, so
+        # conf_attribute_reader falls through to returning the raw config string.
+        assert run.report["xeryon_pos_1"] == "['10x', '20x', '25x', '60x']"
+        assert run.report["xeryon_pos_2"] == "['2x', '4x']"
 
     @pytest.mark.parametrize(
         "cache_text, expected",

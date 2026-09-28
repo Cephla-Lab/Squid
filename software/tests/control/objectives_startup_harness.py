@@ -63,12 +63,15 @@ def run_def(
             f"""
             import json
             import control._def as d
+            # Report list/tuple values as lists; pass anything else (e.g. a raw string,
+            # if the .ini value wasn't valid JSON) through unchanged.
+            _raw = lambda v: list(v) if isinstance(v, (list, tuple)) else v
             print({_MARKER!r} + json.dumps({{
                 "objectives": d.OBJECTIVES,
                 "default_objective": d.DEFAULT_OBJECTIVE,
                 "turret_positions": d.OBJECTIVE_TURRET_POSITIONS,
-                "xeryon_pos_1": list(d.XERYON_OBJECTIVE_SWITCHER_POS_1),
-                "xeryon_pos_2": list(d.XERYON_OBJECTIVE_SWITCHER_POS_2),
+                "xeryon_pos_1": _raw(d.XERYON_OBJECTIVE_SWITCHER_POS_1),
+                "xeryon_pos_2": _raw(d.XERYON_OBJECTIVE_SWITCHER_POS_2),
                 "use_xeryon": d.USE_XERYON,
                 "use_turret": d.USE_OBJECTIVE_TURRET,
                 "extra": {extra_report_expr},
