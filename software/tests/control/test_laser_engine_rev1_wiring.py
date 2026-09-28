@@ -22,12 +22,12 @@ def test_build_from_config_without_the_vendor_module_has_no_source(monkeypatch):
 
     real_import = builtins.__import__
 
-    def no_mpb(name, *a, **kw):
+    def no_l3_driver(name, *a, **kw):
         if name == "control.laser_engine_rev1_l3_driver":
             raise ImportError("not in this build")
         return real_import(name, *a, **kw)
 
-    monkeypatch.setattr(builtins, "__import__", no_mpb)
+    monkeypatch.setattr(builtins, "__import__", no_l3_driver)
     engine = build_from_config(sn="X", source_sn=None, options=EngineOptions())
     assert isinstance(engine, LaserEngineRev1) and engine._source_factory is None
 
