@@ -126,7 +126,7 @@ def _channel_switch_stub(floor_percent, qtbot, cap_percent=100.0):
     """LiveControlWidget-shaped stub with real intensity controls, wired exactly like __init__ (~4663-4667):
     spinbox valueChanged -> the update method (update_config_illumination_intensity) and -> slider.setValue(int(x));
     slider valueChanged -> spinbox.setValue. This is what lets a cap/floor mismatch cause real Qt feedback
-    (fix round 1: recursion / value fights), not just a one-shot value check.
+    (recursion, or the two controls fighting), not just a one-shot value check.
     """
     stub = MagicMock()
     stub.is_switching_mode = False
@@ -170,18 +170,15 @@ def test_live_control_widget_zero_floor_changes_nothing(qtbot):
     assert stub.slider_illuminationIntensity.value() == 3
 
 
-# ---- fix round 1 (2026-09-28): CappedSlider bounded clamp; one ceiled floor for slider and spinbox -----------------
+# ---- floor/cap interplay: bounded clamp in CappedSlider, one ceiled floor for slider and spinbox ---------------------
 
 
 @contextlib.contextmanager
-def _bounded_slider_changes(limit=20):
+def _bounded_slider_changes():
     """Counts CappedSlider.sliderChange invocations for the duration of the block. A RecursionError raised
-    inside an overridden Qt virtual method does not reliably propagate to the Python caller or even to
-    sys.excepthook (PyQt reports it there, but formatting a deep RecursionError can itself recurse and be
-    swallowed - see probe.py/probe2.py, which raise the recursion limit and still see "Error in sys.excepthook").
-    Counting calls catches the cap/floor branches oscillating forever (fix round 1, bug 1) directly and
-    deterministically, the same signal probe.py reports ("sliderChange calls").
-    """
+    inside an overridden Qt virtual method does not reliably reach the Python caller or sys.excepthook
+    (formatting a deep RecursionError can itself run out of stack), so the tests assert a bounded call count:
+    that catches the cap and floor clamps oscillating forever directly and deterministically."""
     orig = control.widgets.CappedSlider.sliderChange
     count = [0]
 
@@ -197,8 +194,8 @@ def _bounded_slider_changes(limit=20):
 
 
 def test_channel_switch_from_a_floor_to_a_lower_cap_does_not_recurse(qtbot):
-    """Reproduces probe.py's "560_then_lowcap": switching from the 560 channel (floor 10) to a channel capped
-    at 5 while the old floor is still set must not recurse forever between the cap and the floor branches."""
+    """Switching from the 560 channel (floor 10) to a channel capped at 5 while the old floor is still set must
+    not recurse forever between the cap and the floor clamps."""
     stub, _ = _channel_switch_stub(floor_percent=10.0, qtbot=qtbot, cap_percent=100.0)
     with _bounded_slider_changes() as count:
         control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(50.0))  # the 560 channel
@@ -207,35 +204,35 @@ def test_channel_switch_from_a_floor_to_a_lower_cap_does_not_recurse(qtbot):
         stub.liveController.get_intensity_floor_percent.return_value = 0.0
         control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(3.0))  # then a channel capped at 5 %
 
-    assert count[0] <= 20
+    assert 0 < count[0] <= 20  # > 0: the counting hook really intercepted the slider
     assert stub.slider_illuminationIntensity.value() <= 5
     assert stub.entry_illuminationIntensity.value() <= 5
 
 
 def test_floor_above_cap_settles_at_the_floor(qtbot):
-    """Reproduces probe.py's "floor_above_cap": a channel whose own floor is above its own cap must not recurse -
-    the floor wins (per the bounded-clamp order: cap first, then floor)."""
+    """A channel whose own floor is above its own cap must not recurse - the floor wins (the bounded clamp
+    applies the cap first, then the floor)."""
     stub, _ = _channel_switch_stub(floor_percent=20.0, qtbot=qtbot, cap_percent=10.0)
     with _bounded_slider_changes() as count:
         control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(50.0))
 
-    assert count[0] <= 20
+    assert 0 < count[0] <= 20  # > 0: the counting hook really intercepted the slider
     assert stub.slider_illuminationIntensity.value() == 20
     assert stub.entry_illuminationIntensity.value() == pytest.approx(20.0)
 
 
 def test_noninteger_floor_slider_and_spinbox_agree_after_editing_to_the_minimum(qtbot):
-    """Reproduces probe2.py's non-integer-floor case: the slider (integer units) and the spinbox (2-decimal
-    rounding) must land on the same ceiled floor, and editing down to the minimum must not spam
-    update_illumination (fix round 1, bug 2: 660 calls + RecursionError before the fix)."""
+    """With a non-integer floor the slider (integer units) and the spinbox (2-decimal rounding) must land on the
+    same ceiled floor, and editing down to the minimum must not spam update_illumination (without the shared
+    ceiled floor the two controls fought: hundreds of calls and a RecursionError)."""
     stub, _ = _channel_switch_stub(floor_percent=100 * 200 / 1950, qtbot=qtbot, cap_percent=100.0)  # 10.256...%
     with _bounded_slider_changes() as count:
         control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(50.0))
 
         calls_before = stub.liveController.update_illumination.call_count
-        stub.entry_illuminationIntensity.setValue(10.0)  # e.g. the down arrow stops at the spinbox minimum (10.26)
+        stub.entry_illuminationIntensity.setValue(10.0)  # e.g. the down arrow stops at the spinbox minimum (11)
 
-    assert count[0] <= 20
+    assert 0 < count[0] <= 20  # > 0: the counting hook really intercepted the slider
     assert stub.slider_illuminationIntensity.value() == 11
     assert stub.entry_illuminationIntensity.value() == pytest.approx(11.0)
     assert stub.liveController.update_illumination.call_count - calls_before <= 3

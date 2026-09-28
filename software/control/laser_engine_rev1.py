@@ -953,7 +953,7 @@ class LaserEngineRev1(QObject):
         if self.line_for_wavelength(wavelength) != SOURCE_560_LINE:
             return 0.0
         src = self._source  # local: close() can clear self._source on another thread
-        if src is None:
+        if src is None or not src.max_power_mw > 0:  # limits unknown (or a bad reply): no floor rather than a crash
             return 0.0
         return 100.0 * src.min_power_mw / src.max_power_mw
 

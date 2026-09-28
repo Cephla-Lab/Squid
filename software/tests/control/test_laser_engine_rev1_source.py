@@ -158,6 +158,9 @@ def test_intensity_floor_percent():
     no_source_engine.open()
     assert no_source_engine.intensity_floor_percent(560) == 0.0
 
+    source.max_power_mw = 0.0  # a source that reported no limits: no floor, not a ZeroDivisionError on a channel switch
+    assert engine.intensity_floor_percent(560) == 0.0
+
 
 def test_below_minimum_warns_on_every_api_request():
     """The tab notice fires once per session, but an API caller must be told on every below-minimum request."""
