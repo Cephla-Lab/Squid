@@ -39,6 +39,7 @@ class LightSourceType(Enum):
     VersaLase = 4
     SCI = 5
     AndorLaser = 6
+    CephlaLaserEngineRev1 = 7
 
 
 class IntensityControlMode(Enum):

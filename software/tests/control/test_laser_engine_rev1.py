@@ -324,3 +324,105 @@ def test_sleep_disables_the_line():
     assert engine.wait_until_ready(["L1"], timeout_s=2.0)
     engine.put_to_sleep("L1")
     assert "LINE1:EN 0" in fake.sent
+
+
+from unittest.mock import MagicMock
+
+from control.lighting import IlluminationController, IntensityControlMode, LightSourceType, ShutterControlMode
+
+
+def test_set_line_intensity_scales_to_the_line_ceiling_and_reads_back():
+    engine, fake = _opened()
+    engine.set_line_intensity(2, 50.0)
+    assert fake.sent[-1] == "LINE2:SET %.4f" % (0.5 * 2.045)
+    assert engine.get_line_intensity(2) == pytest.approx(50.0)
+
+
+def test_set_intensity_waits_for_ramp():
+    engine, fake = _opened()
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0)
+    engine.set_line_intensity(1, 80.0)  # line ON -> RAMP -> ON at the next STAT?
+    assert fake.lines[0]["st"] == "ON" and fake.lines[0]["now"] == pytest.approx(0.8 * 0.541)
+
+
+def test_set_intensity_after_connection_loss_raises_and_signals():
+    engine, fake = _opened()
+    lost = []
+    engine.connection_lost.connect(lost.append)
+    fake.unplug()
+    with pytest.raises(LaserEngineRev1Error, match="connection lost"):
+        engine.set_line_intensity(1, 10.0)
+    assert len(lost) == 1
+
+
+def test_calibration_csv_maps_optical_percent_to_drive_percent(tmp_path):
+    (tmp_path / "488.csv").write_text("DAC Percent,Optical Power (mW)\n0,0\n50,80\n100,100\n")
+    (tmp_path / "560_aom.csv").write_text("AOM Volts,Transmission\n0,0\n5,1\n")  # not a wavelength file: ignored here
+    engine, fake = _engine(calibration_dir=tmp_path)
+    engine.open()
+    engine.set_wavelength_intensity(488, 50.0)  # 50 % of the optical maximum = 31.25 % of the current ceiling
+    assert fake.sent[-1] == "LINE2:SET %.4f" % (0.3125 * 2.045)
+    assert engine.get_wavelength_intensity(488) == pytest.approx(50.0)
+
+
+def test_no_calibration_is_linear_and_logged_once():
+    engine, fake = _opened()
+    engine._log = MagicMock()
+    engine.set_wavelength_intensity(405, 40.0)
+    engine.set_wavelength_intensity(405, 60.0)
+    assert fake.sent[-1] == "LINE1:SET %.4f" % (0.6 * 0.541)
+    assert sum("no intensity calibration" in str(c) for c in engine._log.info.call_args_list) == 1
+
+
+def test_intensity_follows_the_live_ttl_map():
+    engine, fake = _opened()
+    ports = {488: ILLUMINATION_CODE.ILLUMINATION_D2}
+    engine.ttl_map_provider = lambda: dict(ports)
+    engine.light_source.set_intensity(488, 50.0)
+    assert "LINE2:SET %.4f" % (0.5 * 2.045) in fake.sent
+    ports[488] = ILLUMINATION_CODE.ILLUMINATION_D4  # remapped in Squid's port map: the set-point moves with the TTL
+    engine.light_source.set_intensity(488, 50.0)
+    assert "LINE4:SET %.4f" % (0.5 * 1.196) in fake.sent
+
+
+def test_wavelength_not_on_an_engine_port_is_left_to_the_controller():
+    engine, fake = _opened()
+    engine.ttl_map_provider = lambda: {730: 20}  # a port beyond D5
+    n = len(fake.sent)
+    engine.light_source.set_intensity(730, 50.0)  # no engine command; IlluminationController still selects the port
+    assert len(fake.sent) == n
+
+
+def test_light_source_rejects_software_shutter():
+    engine, _ = _opened()
+    with pytest.raises(ValueError):
+        engine.light_source.set_shutter_control_mode(ShutterControlMode.Software)
+
+
+def test_illumination_controller_software_intensity_ttl_shutter_and_wake():
+    engine, fake = _opened()
+    mcu = MagicMock()
+    ctrl = IlluminationController(
+        mcu,
+        IntensityControlMode.Software,
+        ShutterControlMode.TTL,
+        LightSourceType.CephlaLaserEngineRev1,
+        engine.light_source,
+        config_repo=MagicMock(
+            get_illumination_config=lambda: None
+        ),  # Squid's default TTL map, whatever YAML is on this machine
+    )
+    engine.ttl_map_provider = lambda: ctrl.channel_mappings_TTL  # as Task 7 wires it
+    assert "ARM" not in fake.sent  # building the controller only opens the engine
+    fake.tok = [True] * 5
+    ctrl.set_intensity(488, 25.0)
+    assert "LINE2:SET %.4f" % (0.25 * 2.045) in fake.sent
+    assert (
+        "ARM" in fake.sent and "LINE2:EN 1" in fake.sent
+    )  # using the line wakes it first (re-arm on use, no dark frames)
+    mcu.set_illumination.assert_called_with(
+        ILLUMINATION_CODE.ILLUMINATION_D2, 25.0
+    )  # the controller selects D2 for 488
+    ctrl.turn_on_illumination(488)
+    mcu.turn_on_illumination.assert_called_once()

@@ -11,8 +11,10 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
 from qtpy.QtCore import QObject, Signal
 
 import squid.logging
@@ -21,13 +23,15 @@ from control.laser_engine_rev1_link import EngineCommandError, EngineLink, Engin
 from control.laser_engine_rev1_status import (
     ERROR_STATES,
     REFUSE_STATES,
+    SOURCE_560_LINE,
     EngineRev1Status,
     LineState,
     SourceStatus,
     is_560_line,
     parse_status,
 )
-from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL
+from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL, IntensityControlMode, ShutterControlMode
+from squid.abc import LightSource
 
 IDN_PREFIX = "Cephla,LaserEngineCarrier-rev1,"
 DEFAULT_CALIBRATION_DIR = Path(__file__).resolve().parent.parent / "machine_configs" / "intensity_calibrations"
@@ -71,6 +75,38 @@ def _uptime_text(ms: float) -> str:
     if s < 7200:
         return f"{s / 60:.0f} min"
     return f"{s / 3600:.1f} h"
+
+
+def load_intensity_calibrations(directory: Path) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+    """Squid's calibration files, <wavelength>.csv with "DAC Percent" and "Optical Power (mW)" (tools/generate_intensity_calibrations.py).
+    For this engine "DAC Percent" is the % of the line's current ceiling. Returns wavelength -> (optical %, drive %), ascending.
+    """
+    luts: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+    if not directory.is_dir():
+        return luts
+    for path in sorted(directory.glob("*.csv")):
+        try:
+            wavelength = int(path.stem)
+        except ValueError:
+            continue  # not a wavelength file (e.g. 560_aom.csv, Task 9)
+        try:
+            data = pd.read_csv(path)
+            power = data["Optical Power (mW)"].to_numpy(dtype=float)
+            drive = np.clip(data["DAC Percent"].to_numpy(dtype=float), 0.0, 100.0)
+        except (OSError, KeyError, ValueError) as e:
+            squid.logging.get_logger(__name__).warning(f"intensity calibration {path} not used: {e}")
+            continue
+        if len(power) < 2 or power.max() <= 0:
+            continue
+        order = np.argsort(power)
+        luts[wavelength] = (power[order] / power.max() * 100.0, drive[order])
+    return luts
+
+
+def calibrated_drive_percent(lut: Tuple[np.ndarray, np.ndarray], percent: float) -> float:
+    """% of optical power -> % of the line's current ceiling (same interpolation as IlluminationController._apply_lut)."""
+    power_pct, drive_pct = lut
+    return float(np.clip(np.interp(np.clip(percent, 0.0, 100.0), power_pct, drive_pct), 0.0, 100.0))
 
 
 class LaserEngineRev1(QObject):
@@ -124,6 +160,9 @@ class LaserEngineRev1(QObject):
         self._bringup_dropped: List[str] = []
         self._bringup_lock = threading.Lock()
         self._arm_wait_reason: Optional[str] = None  # last transient ARM refusal, until an ARM is accepted
+        self._requested: Dict[int, float] = {}  # last requested intensity per wavelength, % of optical power
+        self._luts: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None  # loaded on first use
+        self._linear_logged: set = set()
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -561,3 +600,140 @@ class LaserEngineRev1(QObject):
 
     def _on_lost(self) -> None:
         pass
+
+    # ---- intensity (Task 5) ------------------------------------------------------------------------------------------
+    SETTLE_TIMEOUT_S = 1.0  # firmware ramps 0 -> ceiling in 0.5 s
+
+    def set_line_intensity(self, line: int, percent: float) -> None:
+        """Raw drive, no calibration: % of the line's current ceiling (on DF line 3: % of the 560 source's maximum power)."""
+        if self._lost:
+            raise LaserEngineRev1Error(f"L{line}", "laser engine connection lost")
+        percent = max(0.0, min(100.0, float(percent)))
+        raw = self._stat()  # fresh: whether to wait for the ramp depends on the line's state now
+        self._percent[line] = percent
+        if is_560_line(raw, line):
+            self._set_source_power(percent)
+            return
+        amps = percent / 100.0 * float(raw["lines"][line - 1]["max"])
+        self._cmd(f"LINE{line}:SET {amps:.4f}")
+        if raw["lines"][line - 1]["st"] != "OFF":
+            self._wait_line_settled(line)  # an OFF line takes the set-point through the ramp when it is enabled
+
+    def _wait_line_settled(self, line: int) -> None:
+        """After a set-point change: wait out the firmware ramp (RAMP -> ON); warn after SETTLE_TIMEOUT_S."""
+        deadline = time.monotonic() + self.SETTLE_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if self.poll_once() is None:
+                raise LaserEngineRev1Error(f"L{line}", "laser engine connection lost")
+            if self._latest_raw["lines"][line - 1]["st"] != "RAMP":
+                return
+            time.sleep(0.02)
+        self._log.warning(f"L{line} did not reach its set-point within {self.SETTLE_TIMEOUT_S} s")
+
+    def get_line_intensity(self, line: int) -> float:
+        if line in self._percent:
+            return self._percent[line]
+        ln = self._stat()["lines"][line - 1]
+        return 100.0 * float(ln["target"]) / float(ln["max"]) if ln["max"] else 0.0
+
+    def set_wavelength_intensity(self, wavelength: int, percent: float) -> None:
+        """Squid's intensity (ruling 3): % of optical power, on the line whose TTL port this wavelength uses."""
+        line = self.line_for_wavelength(wavelength)
+        if line is None:
+            raise LaserEngineRev1Error(f"{wavelength} nm", "not on an engine port (D1-D5) in the illumination port map")
+        percent = max(0.0, min(100.0, float(percent)))
+        self._requested[wavelength] = percent
+        if self.variant == "DF" and line == SOURCE_560_LINE:
+            self.set_line_intensity(line, percent)  # 560: % of the source's maximum power, linear in mW
+            return
+        if self._luts is None:
+            self._luts = load_intensity_calibrations(self._calibration_dir)
+        lut = self._luts.get(wavelength)
+        if lut is None:
+            if wavelength not in self._linear_logged:
+                self._linear_logged.add(wavelength)
+                self._log.info(
+                    f"{wavelength} nm: no intensity calibration in {self._calibration_dir} - linear % of the L{line} current ceiling"
+                )
+            self.set_line_intensity(line, percent)
+            return
+        self.set_line_intensity(line, calibrated_drive_percent(lut, percent))
+
+    def get_wavelength_intensity(self, wavelength: int) -> float:
+        if wavelength in self._requested:
+            return self._requested[wavelength]
+        line = self.line_for_wavelength(wavelength)
+        return self.get_line_intensity(line) if line is not None else 0.0
+
+    def _set_source_power(self, percent: float) -> None:
+        pass  # Task 6: the percent is already stored in self._percent
+
+    @property
+    def light_source(self) -> "LaserEngineRev1LightSource":
+        if self._light_source is None:
+            self._light_source = LaserEngineRev1LightSource(self)
+        return self._light_source
+
+
+class _SameKey(dict):
+    """IlluminationController's channel map for this source: every wavelength maps to itself (ruling 5). The engine resolves the
+    line at call time from the TTL port map, so intensity and exposure always use the same port."""
+
+    def __missing__(self, key):
+        return key
+
+
+class LaserEngineRev1LightSource(LightSource):
+    """IlluminationController's view of the engine: intensity over USB; on/off = Squid controller TTL (hardware-timed)."""
+
+    def __init__(self, engine: LaserEngineRev1):
+        self._engine = engine
+        self.channel_mappings = _SameKey()  # empty: constructing the controller reads nothing from the engine
+        self._unmapped_warned: set = set()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+
+    def initialize(self):
+        self._engine.open()
+        return True
+
+    def set_intensity_control_mode(self, mode):
+        if mode != IntensityControlMode.Software:
+            raise ValueError("the rev 1 laser engine takes its set-point over USB (IntensityControlMode.Software)")
+
+    def get_intensity_control_mode(self):
+        return IntensityControlMode.Software
+
+    def set_shutter_control_mode(self, mode):
+        if mode != ShutterControlMode.TTL:  # a software gate would hold a line emitting between exposures
+            raise ValueError(
+                "the rev 1 laser engine is gated by the Squid controller TTL lines (ShutterControlMode.TTL)"
+            )
+
+    def get_shutter_control_mode(self):
+        return ShutterControlMode.TTL
+
+    def set_shutter_state(self, channel, on):
+        raise ValueError("the rev 1 laser engine is gated by the Squid controller TTL lines, not by software")
+
+    def get_shutter_state(self, channel):
+        return False  # no software gate; exposure is the TTL line
+
+    def set_intensity(self, channel, intensity):  # channel = wavelength (nm)
+        line = self._engine.line_for_wavelength(channel)
+        if line is None:  # not an engine port: the controller still selects its TTL port right after this call
+            if channel not in self._unmapped_warned:
+                self._unmapped_warned.add(channel)
+                self._log.warning(
+                    f"{channel} nm is not on an engine port (D1-D5): intensity not sent to the laser engine"
+                )
+            return
+        self._engine.wake_up(f"L{line}")  # re-arm + enable on use first; never raises
+        self._engine.set_wavelength_intensity(
+            channel, intensity
+        )  # then the set-point: waits out the ramp when the line is on
+
+    def get_intensity(self, channel) -> float:
+        return self._engine.get_wavelength_intensity(channel)
+
+    def shut_down(self):
+        self._engine.close()
