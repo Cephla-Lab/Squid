@@ -370,6 +370,50 @@ class TestConfigRepositoryProfileConfigs:
 
         assert set(yaml.safe_load(path.read_text())) <= set(LaserAFConfig.model_fields)
 
+    @pytest.mark.parametrize(
+        "saved_filter_sigma, filter_sigma",
+        [
+            # no filter was the default, and it was left out of the file
+            ("", None),
+            ("filter_sigma: null", None),
+            # "None" in the settings panel
+            ("filter_sigma: -1.0", None),
+            ("filter_sigma: 2.0", 2.0),
+        ],
+    )
+    def test_laser_af_config_saved_with_line_profile_detection_keeps_its_filter(
+        self, repo_with_profile, temp_dir, saved_filter_sigma, filter_sigma
+    ):
+        """On the launch after the upgrade, and on the one after it: the profile is saved at each launch."""
+        path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
+        path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION + saved_filter_sigma)
+
+        first_launch = repo_with_profile.get_laser_af_config("20x")
+        repo_with_profile.save_laser_af_config("default", "20x", first_launch)
+        second_launch = _reopened(temp_dir).get_laser_af_config("20x")
+
+        assert [_filter_in_use(first_launch), _filter_in_use(second_launch)] == [filter_sigma, filter_sigma]
+        # the settings panel shows the value itself
+        assert first_launch.filter_sigma == second_launch.filter_sigma
+
+    def test_laser_af_config_without_a_filter_has_none_after_it_is_saved(self, repo_with_profile, temp_dir):
+        """None is left out of the saved file, and a file without the setting gets the default filter."""
+        repo_with_profile.save_laser_af_config("default", "20x", LaserAFConfig(filter_sigma=None))
+
+        assert _filter_in_use(_reopened(temp_dir).get_laser_af_config("20x")) is None
+
+
+def _reopened(base_path):
+    """The repository of the next launch, which has nothing of this one in its cache."""
+    repo = ConfigRepository(base_path=base_path)
+    repo.set_profile("default")
+    return repo
+
+
+def _filter_in_use(config):
+    """The sigma that spot detection filters with, None if it does not filter."""
+    return config.filter_sigma if config.filter_sigma is not None and config.filter_sigma > 0 else None
+
 
 class TestConfigRepositoryCacheManagement:
     """Tests for cache management."""

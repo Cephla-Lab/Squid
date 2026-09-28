@@ -467,7 +467,7 @@ cc_min_area: 5               # Pixels
 cc_max_area: 5000            # Pixels
 cc_row_tolerance: 50.0       # Max distance of the spot from the centre row, in pixels
 cc_max_aspect_ratio: 2.5     # Longer side over shorter side of the spot's bounding box
-filter_sigma: 1              # Gaussian filter before detection (null to disable)
+filter_sigma: 1              # Gaussian filter before detection (0 for no filter)
 
 # Camera settings
 focus_camera_exposure_time_ms: 0.2
@@ -482,8 +482,8 @@ reference_image_dtype: null
 Files saved before connected components spot detection also have the line-profile settings
 (`displacement_success_window_um`, `y_window`, `x_window`, `min_peak_width`, `min_peak_distance`,
 `min_peak_prominence`, `spot_spacing`). They still load, with their calibration and reference. Those settings
-are ignored, and are gone from the file once it is saved again. Any other unknown setting is an error: the
-file is not loaded.
+are ignored, and are gone from the file once it is saved again. Such a file without `filter_sigma` has no
+filter, which was the default when it was saved. Any other unknown setting is an error: the file is not loaded.
 
 ---
 
