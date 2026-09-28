@@ -162,6 +162,9 @@ class TestValidate:
             "CON",
             "nul",
             "Com1",
+            "con.oil",
+            "NUL.20x",
+            "COM1.x",
         ],
     )
     def test_bad_names(self, name):
@@ -170,6 +173,13 @@ class TestValidate:
         with pytest.raises(ObjectivesConfigError) as err:
             _valid(data)
         assert err.value.field == "objectives[0].name"
+
+    def test_dotted_name_not_matching_a_reserved_prefix_is_accepted(self):
+        # "Condenser 10x" (and, more generally, any name whose stem before the first dot is not
+        # itself a reserved device name) must not be rejected by the dotted-prefix check.
+        data = _data()
+        data["objectives"][0]["name"] = "Condenser 10x"
+        _valid(data)
 
     def test_case_insensitive_duplicate_names(self):
         data = _data()

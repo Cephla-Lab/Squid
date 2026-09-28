@@ -5,7 +5,7 @@ import tests.control.gui_test_stubs  # noqa: F401  (same Qt setup as the other d
 import control._def
 import control.widgets_objectives as widgets_objectives
 from control.core.config.repository import ConfigRepository
-from control.objectives_config import EditorRow
+from control.objectives_config import EditorRow, ObjectivesConfigError
 from control.widgets_objectives import ObjectivesEditorDialog
 
 CATALOG = {
@@ -214,3 +214,18 @@ def test_removing_all_mounted_rows_leaves_a_new_row_with_no_copy_source(qtbot, r
     assert combo.count() == 0
     assert combo.currentText() == ""
     assert dialog.save()  # still works; the objective gets general-only channels
+
+
+# --- R3: an invalid objectives.yaml at editor-open time falls back to the seed ---
+
+
+def test_invalid_existing_yaml_shows_a_warning_and_seeds_from_the_constructor_args(
+    qtbot, repo, no_dialogs, monkeypatch
+):
+    def _raise():
+        raise ObjectivesConfigError(repo.machine_configs_path / "objectives.yaml", "(file)", "is not valid YAML")
+
+    monkeypatch.setattr(repo, "get_objectives_config", _raise)
+    dialog = _turret_dialog(qtbot, repo)
+    assert [(r.name, r.slot) for r in dialog.rows()] == [("4x", 1), ("10x", 2), ("20x", 3)]
+    assert no_dialogs["warning"] and "not valid YAML" in no_dialogs["warning"][0]

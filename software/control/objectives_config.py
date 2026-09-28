@@ -124,7 +124,7 @@ def validate_objectives_config(config: ObjectivesConfig, *, use_xeryon: bool, us
                 fail(f"{where}.name", f"'{name}' contains '{ch}', which is invalid in a Windows file name")
             if ord(ch) < 32:
                 fail(f"{where}.name", f"'{name}' contains a control character, which is invalid in a file name")
-        if name.upper() in _WINDOWS_RESERVED_DEVICE_NAMES:
+        if name.split(".")[0].upper() in _WINDOWS_RESERVED_DEVICE_NAMES:
             fail(f"{where}.name", f"'{name}' is a reserved Windows device name and cannot be used as a file name")
         if name.lower() in names:
             fail(

@@ -65,7 +65,16 @@ class ObjectivesEditorDialog(QDialog):
         self.setWindowTitle("Objectives")
         self.setMinimumSize(900, 360)
         self._build_ui()
-        existing = config_repo.get_objectives_config()
+        try:
+            existing = config_repo.get_objectives_config()
+        except oc.ObjectivesConfigError as e:
+            QMessageBox.warning(
+                self,
+                "Objectives",
+                f"{e.field}: {e.reason} — the editor opens with the objective list the software is "
+                "running with; saving replaces the file",
+            )
+            existing = None
         if existing is not None:
             rows = oc.config_to_rows(existing)
         else:
