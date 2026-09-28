@@ -20,6 +20,12 @@ def spots_image(spots, shape=(256, 1024), y_px=128):
     return np.round(255 * np.outer(gy, profile) / profile.max()).astype(np.uint8)
 
 
+def roi_frame(camera, sensor):
+    """The sensor image cut to the camera's region of interest, as the real focus camera returns it."""
+    x, y, width, height = camera.get_region_of_interest()
+    return sensor[y : y + height, x : x + width]
+
+
 @pytest.fixture(scope="module")
 def laser_af():
     scope = control.microscope.Microscope.build_from_global_config(True, skip_init=True)
@@ -56,7 +62,8 @@ def test_saved_peak_setting_reaches_spot_detection(laser_af, setting, saved_valu
 def test_initialize_takes_the_crop_sizes_from_the_machine_config(laser_af, monkeypatch):
     """A loaded profile carries the crop sizes it was saved with; Initialize must use the .ini ones."""
     monkeypatch.setattr(control._def, "LASER_AF_CROP_WIDTH", 1024)
-    monkeypatch.setattr(control._def, "LASER_AF_CROP_HEIGHT", 128)
+    # tall enough for spot detection's y window (96 rows either side of the spot), and not the saved 256
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_HEIGHT", 224)
     monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_WIDTH", 2800)
     monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_HEIGHT", 1800)
     # keep the simulated calibration out of the checkout's user profile
@@ -70,7 +77,8 @@ def test_initialize_takes_the_crop_sizes_from_the_machine_config(laser_af, monke
         laser_af_averaging_n=1,
     )
     # outside the saved initialize crop (1200 x 800 around the sensor centre), inside the .ini one
-    laser_af.get_new_frame = lambda: spots_image([(604.0, 1.0, 5.0)], shape=(2064, 3088), y_px=401)
+    sensor = spots_image([(604.0, 1.0, 5.0)], shape=(2064, 3088), y_px=401)
+    laser_af.get_new_frame = lambda: roi_frame(laser_af.camera, sensor)
 
     assert laser_af.initialize_auto()
-    assert laser_af.camera.get_region_of_interest() == (88, 336, 1024, 128)
+    assert laser_af.camera.get_region_of_interest() == (88, 288, 1024, 224)
