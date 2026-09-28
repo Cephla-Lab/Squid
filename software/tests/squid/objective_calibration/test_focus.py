@@ -98,9 +98,9 @@ class TestSweep:
             )
 
     def test_computed_range_widens_once(self):
-        hw = _hw(
-            "20x", z_focus=18.0
-        )  # LAPE on a step<=2*DOF coarse level is flat noise beyond a few DOF; 25 is invisible
+        # Focus 1 um past the ±15 um computed range. Further out, the coarse level's metric (LAPE,
+        # since the step is <= 2*DOF) is flat noise and cannot see it: spec C §6.3's open amendment.
+        hw = _hw("20x", z_focus=16.0)
         result = focus_sweep(
             hw,
             objective="20x",
@@ -112,7 +112,8 @@ class TestSweep:
             fine_metric=lape,
             range_is_computed=True,
         )
-        assert result.z_best_um == pytest.approx(18.0, abs=0.25)
+        assert max(result.levels[1].z_um) == pytest.approx(30.0)  # the widened coarse level ran
+        assert result.z_best_um == pytest.approx(16.0, abs=0.25)
 
     def test_samples_outside_the_z_limit_are_dropped_not_clamped(self):
         hw = _hw("20x", z_focus=0.0, z_limits_um=(-8.0, 5000.0))

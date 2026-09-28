@@ -6,36 +6,43 @@ image centre, where A_k = -M_k and M_k maps a pixel offset to the stage move tha
 A mosaic-consistent camera has M = +px * I. Defocus blurs the scene with a Gaussian of
 sigma = sqrt(sigma_opt^2 + (0.5 * NA * dz)^2).
 
-The default scene is a broadband random texture, like a real specimen: a sum of a few sinusoids
-has a line spectrum that phase correlation (which whitens the spectrum) cannot register.
+The default scene is a broadband random specimen, like a real one: a sum of a few sinusoids has a
+line spectrum that phase correlation (which whitens the spectrum) cannot register. It is built from
+octaves, periodic noise textures at texel sizes 0.05 um * 2**k, so one physical specimen has detail
+at every magnification from 2x to 60x. A pixel sees only the octaves at least MIN_TEXEL_PX of its
+size; finer ones would average away inside it.
 """
 
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
+import math
+
 import cv2
 import numpy as np
 
 from squid.objective_calibration.hardware import RunCancelled, check_xy_target, check_z_target
 
-TEXTURE_RES_UM = 0.5
-TEXTURE_PERIOD_UM = 1024.0  # at least twice the widest simulated field of view, so no frame sees a repeat
+TEXEL0_UM = 0.05  # octave k has texels of TEXEL0_UM * 2**k: 0.05 um to 12.8 um
+OCTAVES = 9
+OCTAVE_TEXELS = 1024  # per side; octave k repeats every OCTAVE_TEXELS texels, >= 716 px wherever it is seen
+MIN_TEXEL_PX = 0.7  # an octave is seen by pixels up to 1/0.7 of its texel
 
 
 @lru_cache(maxsize=2)
-def _broadband_texture(seed: int, size: int) -> np.ndarray:
-    """A periodic, unit-variance random field with energy from 2 to ~50 texels (six octaves),
-    built in Fourier space so it wraps seamlessly."""
+def _octaves(seed: int) -> Tuple[np.ndarray, ...]:
+    """Independent periodic noise textures, one per octave, each low-passed to ~2-texel features
+    (so sampling at >= MIN_TEXEL_PX texels per pixel does not alias) and normalised to unit std."""
     rng = np.random.default_rng(seed)
-    spectrum = np.fft.fft2(rng.normal(0.0, 1.0, (size, size)))
-    f = np.fft.fftfreq(size)
-    f2 = f[None, :] ** 2 + f[:, None] ** 2
-    texture = np.zeros((size, size))
-    for sigma in (0.7, 1.4, 2.8, 5.6, 11.2, 22.4):
-        layer = np.real(np.fft.ifft2(spectrum * np.exp(-2 * np.pi**2 * sigma**2 * f2)))
-        texture += layer / layer.std()
-    return (texture / texture.std()).astype(np.float32)
+    f = np.fft.fftfreq(OCTAVE_TEXELS)
+    lowpass = np.exp(-2 * np.pi**2 * (f[None, :] ** 2 + f[:, None] ** 2))
+    octaves = []
+    for _ in range(OCTAVES):
+        noise = rng.normal(0.0, 1.0, (OCTAVE_TEXELS, OCTAVE_TEXELS))
+        layer = np.real(np.fft.ifft2(np.fft.fft2(noise) * lowpass))
+        octaves.append((layer / layer.std()).astype(np.float32))
+    return tuple(octaves)
 
 
 @dataclass
@@ -59,14 +66,11 @@ class FakeScene:
     amplitudes: np.ndarray = field(default_factory=lambda: np.zeros(0))
     wavevectors: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     phases: np.ndarray = field(default_factory=lambda: np.zeros(0))
-    texture: Optional[np.ndarray] = None  # broadband random field, TEXTURE_RES_UM per texel, periodic
-
-    def __post_init__(self):
-        self._prepared: Dict[float, np.ndarray] = {}
+    octaves: Optional[Tuple[np.ndarray, ...]] = None  # broadband specimen, octave k at TEXEL0_UM * 2**k
 
     @classmethod
     def random(cls, seed=0):
-        return cls(texture=_broadband_texture(seed, int(round(TEXTURE_PERIOD_UM / TEXTURE_RES_UM))))
+        return cls(octaves=_octaves(seed))
 
     @classmethod
     def flat(cls):
@@ -76,28 +80,25 @@ class FakeScene:
     def periodic(cls, period_um=20.0):
         return cls(np.array([1.0]), np.array([[2 * np.pi / period_um, 0.0]]), np.array([0.0]))
 
-    def _texture_for(self, px_um: float) -> np.ndarray:
-        """The texture anti-aliased for one pixel scale (half a pixel of blur), computed once."""
-        key = round(px_um, 6)
-        if key not in self._prepared:
-            sigma = 0.5 * px_um / TEXTURE_RES_UM
-            self._prepared[key] = cv2.GaussianBlur(self.texture, (0, 0), sigma) if sigma > 0.3 else self.texture
-        return self._prepared[key]
-
     def render(self, ux: np.ndarray, uy: np.ndarray, sigma_um: float, px_um: float) -> np.ndarray:
         out = np.zeros_like(ux)
         for a, (kx, ky), phase in zip(self.amplitudes, self.wavevectors, self.phases):
             attenuation = np.exp(-0.5 * (sigma_um**2) * (kx * kx + ky * ky))
             out += a * attenuation * np.sin(kx * ux + ky * uy + phase)
-        if self.texture is not None:
-            n = self.texture.shape[0]
-            mapx = ((ux / TEXTURE_RES_UM) % n).astype(np.float32)
-            mapy = ((uy / TEXTURE_RES_UM) % n).astype(np.float32)
-            sampled = cv2.remap(self._texture_for(px_um), mapx, mapy, cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP)
+        if self.octaves is not None:
+            specimen = np.zeros(ux.shape, dtype=np.float32)
+            for k, octave in enumerate(self.octaves):
+                texel = TEXEL0_UM * 2**k
+                if texel < MIN_TEXEL_PX * px_um:
+                    continue
+                mapx = ((ux / texel) % OCTAVE_TEXELS).astype(np.float32)
+                mapy = ((uy / texel) % OCTAVE_TEXELS).astype(np.float32)
+                specimen += cv2.remap(octave, mapx, mapy, cv2.INTER_CUBIC, borderMode=cv2.BORDER_WRAP)
             sigma_px = sigma_um / px_um
             if sigma_px > 0.05:
-                sampled = cv2.GaussianBlur(sampled, (0, 0), sigma_px)
-            out = out + 0.3 * sampled  # 0.3 keeps the uint16 image unsaturated
+                specimen = cv2.GaussianBlur(specimen, (0, 0), sigma_px)
+            # One fixed scale for every magnification (the same specimen); 0.3 keeps uint16 unsaturated.
+            out = out + 0.3 * specimen / math.sqrt(len(self.octaves))
         return out
 
 

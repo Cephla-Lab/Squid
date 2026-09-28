@@ -80,3 +80,37 @@ def test_rectangular_shape_and_hooks():
     hw.fail_snap_at = 2
     with pytest.raises(RuntimeError):
         hw.snap("20x", "BF")
+
+
+@pytest.mark.parametrize("px_um", [0.065, 0.094, 0.19, 0.94, 1.9])
+def test_every_magnification_has_registrable_detail(px_um):
+    """60x to 2x: a stage move must register cleanly, or high-magnification calibrations fail on the fake."""
+    from squid.objective_calibration.registration import phase_shift
+
+    obj = FakeObjective("x", 20, 0.8, pixel_um=px_um)
+    hw = FakeCalibrationHardware(
+        {"x": obj}, FakeScene.random(), shape=(240, 320), start_objective="x", microstep_um=0.0
+    )
+    ref = hw.snap("x", "BF")
+    hw.move_xy_to_um(7.3 * px_um, -3.1 * px_um)  # content moves by (-7.3, +3.1) px
+    s = phase_shift(ref, hw.snap("x", "BF"))
+    assert s.peak_ratio > 3
+    assert (s.dx, s.dy) == (pytest.approx(-7.3, abs=0.5), pytest.approx(3.1, abs=0.5))
+
+
+def test_one_specimen_across_magnifications():
+    """20x and 10x see the same sample: a 2x-downsampled 20x frame matches the centre of the 10x frame."""
+    import cv2
+
+    objectives = {
+        "20x": FakeObjective("20x", 20, 0.8, pixel_um=0.19),
+        "10x": FakeObjective("10x", 10, 0.8, pixel_um=0.38),
+    }
+    hw = FakeCalibrationHardware(objectives, FakeScene.random(), shape=(240, 320), start_objective="20x", noise=0.0)
+    high = hw.snap("20x", "BF").astype(np.float32)
+    hw.switch_objective("10x")
+    low = hw.snap("10x", "BF").astype(np.float32)
+    small = cv2.resize(high, (160, 120), interpolation=cv2.INTER_AREA)
+    centre = low[60:180, 80:240]
+    a, b = small - small.mean(), centre - centre.mean()
+    assert float((a * b).sum() / np.sqrt((a * a).sum() * (b * b).sum())) > 0.8
