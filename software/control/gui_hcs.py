@@ -2332,6 +2332,12 @@ class HighContentScreeningGui(QMainWindow):
         from control.widgets_objective_calibration import ObjectiveCalibrationDialog
         from squid.objective_calibration.engine import ObjectiveSpec
 
+        # Before the adapter is built: it snapshots the current objective, which is stale mid-switch.
+        reason = self.objective_calibration_busy_reason()
+        if reason:
+            QMessageBox.information(self, "Objective Calibration", reason)
+            return
+
         binned_px_um = self.camera.get_pixel_size_binned_um()
         specs = [
             ObjectiveSpec(
