@@ -49,6 +49,8 @@ def run_def(
     cache_text=None,
     pre_imports=(),
     extra_report_expr="None",
+    objectives_yaml=None,
+    patch_yaml_path=True,
 ) -> DefRun:
     work = Path(tmp_path) / "work"
     (work / "cache").mkdir(parents=True)
@@ -57,7 +59,20 @@ def run_def(
     if cache_text is not None:
         (work / "cache" / "objective_and_sample_format.txt").write_text(cache_text)
 
-    lines = [f"import {module}" for module in pre_imports]
+    lines = []
+    if patch_yaml_path:
+        # Always point the loader somewhere controlled, so the test never sees a real
+        # machine_configs/objectives.yaml on the developer's machine: the tmp YAML when
+        # objectives_yaml is given, otherwise a non-existent tmp path.
+        yaml_path = Path(tmp_path) / "objectives.yaml"
+        if objectives_yaml is not None:
+            yaml_path.write_text(objectives_yaml)
+        lines = [
+            "import control.objectives_config as _oc",
+            "import pathlib",
+            f"_oc.OBJECTIVES_YAML_PATH = pathlib.Path({str(yaml_path)!r})",
+        ]
+    lines += [f"import {module}" for module in pre_imports]
     lines.append(
         textwrap.dedent(
             f"""
