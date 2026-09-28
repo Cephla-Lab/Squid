@@ -290,7 +290,7 @@ class FakeSource:
         self.silent = False
         self.poll_delay_s = 0.0
         self.fail_enable = False
-        self.fail_disable = 0  # the number of upcoming disable() calls that raise (review fix 1's covering test)
+        self.fail_disable = 0  # the number of upcoming disable() calls that raise
         self.calls: List[str] = []
         self._starting_polls = 0
 

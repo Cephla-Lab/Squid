@@ -94,6 +94,23 @@ def test_connection_lost_disables_source():
     assert source.calls[-1] == "disable"
 
 
+def test_l3_error_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    fake.faults = ["OVERTEMP"]  # a system fault latched: every line, L3 included, reads FAULT
+    assert engine.poll_once().channels["L3"].state == LineState.FAULT
+    engine.source_step()
+    assert source.calls[-1] == "disable" and not source.enabled
+
+
+def test_put_to_sleep_l3_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.put_to_sleep("L3")
+    engine.source_step()
+    assert "LINE3:EN 0" in fake.sent and source.calls[-1] == "disable" and not source.enabled
+
+
 def test_idle_off():
     engine, fake, source = _with_source()
     _to_ready(engine, source)
@@ -171,7 +188,7 @@ def test_ready_only_once_power_has_settled():
 def test_acquisition_use_keeps_the_source_on():
     engine, fake, source = _with_source()
     _to_ready(engine, source)
-    engine.source_idle_off_s = 0.05
+    engine.source_idle_off_s = 0.5
     engine._source_last_use -= 1.0  # rewind instead of sleeping: deterministic, not scheduling-dependent
     engine.note_use(["L1", "L3"])  # Squid's acquisition, every FOV
     engine.poll_once()
@@ -291,7 +308,7 @@ def test_shutter_mode_can_be_switched_in_the_tab():
         engine2.set_shutter_with_aom("open")
 
 
-# ---- review fix round 1: a failed disable is never retried; duplicate enables (t6_probe.py / t6_probe3.py ideas) --------
+# ---- a failed disable is retried; an enable is never queued twice -----------------------------------------------------
 
 
 def test_failed_disable_is_retried():
@@ -301,14 +318,14 @@ def test_failed_disable_is_retried():
     engine.disarm()
     engine.source_step()  # this disable fails; the source is still on
     assert source.enabled
-    engine.poll_once()  # _after_poll: not wanted, still reads ready -> queues another disable
+    engine.poll_once()  # not wanted and still reads ready: the step above queued another disable
     engine.source_step()
     assert not source.enabled
 
 
 def test_enable_is_not_repeated_while_the_first_start_is_polled():
     class CallerDuringPoll(FakeSource):
-        """t6_probe3's idea: a caller (wake_up) runs on the source thread's own poll, right after the first enable."""
+        """A caller (wake_up) runs during the source thread's own poll, right after the first enable."""
 
         def __init__(self):
             super().__init__()
@@ -330,12 +347,12 @@ def test_enable_is_not_repeated_while_the_first_start_is_polled():
     assert source.calls.count("enable") == 1
 
 
-# ---- review fix round 2: the reconcile must survive link loss; two more discriminating concurrency tests ----------------
+# ---- concurrent wake / disable; the reconcile survives link loss ------------------------------------------------------
 
 
 def test_concurrent_wake_during_line3_set_enables_once():
-    """Round 2 finding 3's scenario, probe_rr's B: a second wake_up / wait_until_ready thread lands inside the
-    LINE3:SET round-trip. The lock around the enable_pending check-then-set must make the second call a no-op."""
+    """A second wake_up / wait_until_ready caller lands inside the LINE3:SET round-trip. The lock around the
+    enable_pending check-then-set makes the second call a no-op."""
     engine, fake, source = _with_source()
     real_cmd = engine._cmd
     fired = [False]
@@ -354,32 +371,37 @@ def test_concurrent_wake_during_line3_set_enables_once():
 
 
 def test_disable_racing_the_enable_put_stays_consistent():
-    """Round 2 finding 3's scenario, probe_rr's C: a disable from another thread lands between _wake_source setting
-    _source_want_on = True and its own queue.put(("enable", ...)). The lock serialises the two, so the source's
-    enabled state and _source_want_on must agree once both threads are done (before round 1 this could disagree)."""
+    """A disable from another thread lands between _wake_source setting _source_want_on = True and its own
+    queue.put(("enable", ...)). The lock serialises the two, so the source's enabled state and _source_want_on
+    agree once both threads are done."""
     engine, fake, source = _with_source()
     _to_ready(engine, source)
     source.enabled = False  # e.g. switched off on its own front panel: L3 reads SOURCE_OFF, _source_want_on still True
     engine.source_step()
     engine.poll_once()
     real_put = engine._source_queue.put
+    helpers = []
 
     def put_with_interleaved_disable(item, *a, **kw):
         if item[0] == "enable":
             t = threading.Thread(target=engine._disable_source)
+            helpers.append(t)
             t.start()
             t.join(0.2)  # blocks on _source_lock until this put's caller releases it: no deadlock, just a wait
         return real_put(item, *a, **kw)
 
     engine._source_queue.put = put_with_interleaved_disable
     engine.wake_up("L3")
+    for t in helpers:
+        t.join()  # the disable has run before the step: the outcome does not depend on scheduling
+    assert helpers
     engine.source_step()
     assert source.enabled == engine._source_want_on
 
 
 def test_failed_disable_after_link_loss_is_retried():
-    """Round 2 finding 1: once the engine link is lost, poll_once() returns None and the poll thread stops calling
-    _after_poll - so a failed disable must be retried by source_step itself, with no further poll_once() at all."""
+    """Once the engine link is lost, poll_once() returns None and the poll thread stops calling _after_poll, so a
+    failed disable is retried by source_step itself, with no further poll_once() at all."""
     engine, fake, source = _with_source()
     _to_ready(engine, source)
     source.fail_disable = 1
