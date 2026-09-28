@@ -1,14 +1,12 @@
 """Per-machine list of the mounted objectives: machine_configs/objectives.yaml.
 
-Leaf module. It imports only pydantic, yaml, the standard library and
-control.objective_changer_constants: control._def loads it while it is still
-initializing, and control/models/__init__.py (like most of control.*) imports _def.
+Leaf module. It imports only pydantic, yaml, the standard library,
+control.objective_changer_constants and control.atomic_file: control._def loads it while it is
+still initializing, and control/models/__init__.py (like most of control.*) imports _def.
 """
 
 import ast
-import logging
 import math
-import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -17,12 +15,16 @@ from typing import Dict, List, Optional, Set, Tuple
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from control.atomic_file import write_atomically
 from control.objective_changer_constants import NIMOTION_TURRET_SLOTS, XERYON_SLOTS
-
-_log = logging.getLogger(__name__)  # the stdlib logger: this leaf module cannot import squid.logging
 
 # Read at call time, so tests can point it elsewhere before control._def is imported.
 OBJECTIVES_YAML_PATH = Path(__file__).resolve().parent.parent / "machine_configs" / "objectives.yaml"
+
+_HEADER = (
+    "# The objectives mounted on this microscope, written by Settings > Advanced > Objectives...\n"
+    "# Hand edits are checked at startup: if this file is invalid, the software stops and names the problem.\n"
+)
 
 _RESERVED_NAMES = {"general", ".", ".."}
 # Names become channel_configs/<name>.yaml file stems: reject characters that are illegal in a
@@ -165,6 +167,10 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         raise ObjectivesConfigError(path, "(file)", f"cannot be read: {e}") from e
+    return _parse_objectives_text(text, path)
+
+
+def _parse_objectives_text(text: str, path: Path) -> ObjectivesConfig:
     try:
         data = yaml.safe_load(text)
     except yaml.YAMLError as e:
@@ -174,25 +180,52 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
     return parse_objectives_config(data, path)
 
 
+def backup_path(path: Path) -> Path:
+    """Where save_objectives_config keeps the last good version of `path` (objectives.yaml.bak)."""
+    return path.with_name(path.name + ".bak")
+
+
+def _last_good_bytes(path: Path) -> Optional[bytes]:
+    """The bytes of `path` when it holds a valid objective list, else None (missing, unreadable or
+    damaged). Validated against its own changer kind: this module cannot read the machine .ini."""
+    try:
+        data = path.read_bytes()
+        config = _parse_objectives_text(data.decode("utf-8"), path)
+        kind = config.changer.kind
+        validate_objectives_config(
+            config,
+            use_xeryon=kind is ChangerKind.XERYON,
+            use_turret=kind is ChangerKind.NIMOTION_TURRET,
+            path=path,
+        )
+    except (OSError, UnicodeDecodeError, ObjectivesConfigError):
+        return None
+    return data
+
+
 def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
-    """Write machine_configs/objectives.yaml. Writes to a temp file in the same directory and
-    os.replace()s it onto `path` (an atomic publish on both POSIX and Windows for a
-    same-filesystem rename): a reader never observes a partially-written file, and a failed
-    publish leaves the previous file untouched, with no temp file left behind."""
+    """Write machine_configs/objectives.yaml, with a header comment, through write_atomically: a
+    reader never sees a partial file, a power cut leaves the old or the new file (never an empty
+    one), and a failed write leaves the previous file untouched.
+
+    Before replacing a previous file that is itself valid, keeps it as objectives.yaml.bak, which
+    startup names when it refuses a damaged file. A damaged previous file is not kept, so it never
+    overwrites the last good copy."""
     path = Path(path) if path is not None else OBJECTIVES_YAML_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False), encoding="utf-8")
-        os.replace(tmp, path)
-    except Exception as original_exc:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError as cleanup_exc:
-            _log.error(
-                f"Failed to remove temp file {tmp} after a failed publish: {cleanup_exc}. Original: {original_exc}"
-            )
-        raise original_exc
+    previous = _last_good_bytes(path)
+    if previous is not None:
+        write_atomically(backup_path(path), previous)
+    text = _HEADER + yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False)
+    write_atomically(path, text.encode("utf-8"))
+
+
+def restore_hint(path: Path) -> str:
+    """The sentence startup appends to its error for a damaged `path` when a last good copy exists."""
+    backup = backup_path(path)
+    if not backup.exists():
+        return ""
+    return f" The last good version is {backup}: to restore it, rename it to {path.name}, replacing this file."
 
 
 def to_objectives_dict(config: ObjectivesConfig) -> Dict[str, Dict[str, float]]:

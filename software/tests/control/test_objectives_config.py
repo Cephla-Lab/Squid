@@ -1,4 +1,5 @@
 import ast
+import os
 from pathlib import Path
 
 import pytest
@@ -60,7 +61,7 @@ def test_module_imports_only_allowed_modules():
     for module in modules:
         assert not module.startswith("squid"), module
         if module.startswith("control"):
-            assert module == "control.objective_changer_constants", module
+            assert module in ("control.objective_changer_constants", "control.atomic_file"), module
 
 
 class TestParse:
@@ -293,9 +294,9 @@ class TestDerivedAndRoundTrip:
         assert oc.load_objectives_config(path) == config
 
     def test_failed_publish_leaves_the_previous_file_untouched_and_no_temp_file(self, tmp_path, monkeypatch):
-        # R6(b): save_objectives_config writes to a temp file and os.replace()s it onto the
-        # real path; if the replace fails, the previous file must be byte-identical and no
-        # temp file must be left behind.
+        # R6(b): save_objectives_config publishes through write_atomically (a temp file
+        # os.replace()d onto the real path); if the replace fails, the previous file must be
+        # byte-identical and no temp file (or .bak) must be left behind.
         path = tmp_path / "objectives.yaml"
         oc.save_objectives_config(_valid(_data()), path)
         original_bytes = path.read_bytes()
@@ -306,7 +307,7 @@ class TestDerivedAndRoundTrip:
         new_config = _valid(
             _data(objectives=[{"name": "99x", "magnification": 99, "na": 1.0, "tube_lens_f_mm": 180, "slot": 1}])
         )
-        monkeypatch.setattr(oc.os, "replace", _raise)
+        monkeypatch.setattr(os, "replace", _raise)
         with pytest.raises(OSError):
             oc.save_objectives_config(new_config, path)
         assert path.read_bytes() == original_bytes
@@ -320,7 +321,7 @@ class TestDerivedAndRoundTrip:
         def _raise(*a, **k):
             raise ValueError("boom")
 
-        monkeypatch.setattr(oc.os, "replace", _raise)
+        monkeypatch.setattr(os, "replace", _raise)
         with pytest.raises(ValueError, match="boom"):
             oc.save_objectives_config(config, path)
         assert not path.exists()
@@ -336,10 +337,89 @@ class TestDerivedAndRoundTrip:
         def _raise_unlink(self, missing_ok=False):
             raise OSError("cannot unlink temp file")
 
-        monkeypatch.setattr(oc.os, "replace", _raise_replace)
+        monkeypatch.setattr(os, "replace", _raise_replace)
         monkeypatch.setattr(oc.Path, "unlink", _raise_unlink)
         with pytest.raises(OSError, match="disk full"):
             oc.save_objectives_config(config, path)
+
+
+class TestSaveKeepsALastGoodCopy:
+    def test_header_comment_is_written_and_the_file_still_loads(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        config = _valid(_data())
+        oc.save_objectives_config(config, path)
+        text = path.read_text(encoding="utf-8")
+        assert text.startswith("#")
+        assert "Settings > Advanced > Objectives..." in text
+        assert "startup" in text
+        assert oc.load_objectives_config(path) == config
+
+    def test_first_save_writes_no_backup(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        oc.save_objectives_config(_valid(_data()), path)
+        assert [p.name for p in tmp_path.iterdir()] == ["objectives.yaml"]
+
+    def test_second_save_keeps_the_first_as_the_backup(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        first = _valid(_data())
+        second = _valid(
+            _data(objectives=[{"name": "99x", "magnification": 99, "na": 1.0, "tube_lens_f_mm": 180, "slot": 1}])
+        )
+        oc.save_objectives_config(first, path)
+        first_bytes = path.read_bytes()
+        oc.save_objectives_config(second, path)
+        backup = tmp_path / "objectives.yaml.bak"
+        assert oc.backup_path(path) == backup
+        assert backup.read_bytes() == first_bytes
+        assert oc.load_objectives_config(path) == second
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["objectives.yaml", "objectives.yaml.bak"]
+
+    def test_hand_edited_valid_file_is_backed_up_byte_for_byte(self, tmp_path):
+        # A valid file edited by hand (comments and all) is the last good copy as it stands.
+        path = tmp_path / "objectives.yaml"
+        hand_edited = (
+            "# my notes\nversion: 1\nchanger: {kind: none}\n"
+            "objectives:\n  - {name: 10x, magnification: 10, na: 0.3, tube_lens_f_mm: 180}\n"
+        )
+        path.write_text(hand_edited, encoding="utf-8")
+        oc.save_objectives_config(_valid(_data()), path)
+        assert (tmp_path / "objectives.yaml.bak").read_text(encoding="utf-8") == hand_edited
+
+    @pytest.mark.parametrize(
+        "damaged",
+        [
+            pytest.param("", id="empty"),  # e.g. by a power cut, before the fsync
+            pytest.param("\x00" * 64, id="zeroed"),
+            pytest.param("objectives: [\n", id="not-yaml"),
+            pytest.param("version: 1\nchanger: {kind: none}\n", id="no-objectives-key"),
+            # Parses, but startup would refuse it: two objectives in slot 1.
+            pytest.param(
+                "version: 1\nchanger: {kind: nimotion_turret}\nobjectives:\n"
+                "  - {name: 4x, magnification: 4, na: 0.13, tube_lens_f_mm: 180, slot: 1}\n"
+                "  - {name: 10x, magnification: 10, na: 0.3, tube_lens_f_mm: 180, slot: 1}\n",
+                id="duplicate-slot",
+            ),
+        ],
+    )
+    def test_damaged_file_never_overwrites_the_last_good_backup(self, tmp_path, damaged):
+        path = tmp_path / "objectives.yaml"
+        oc.save_objectives_config(_valid(_data()), path)
+        oc.save_objectives_config(_valid(_data()), path)
+        backup = tmp_path / "objectives.yaml.bak"
+        last_good = backup.read_bytes()
+        path.write_text(damaged, encoding="utf-8")  # damaged by hand after startup
+        new_config = _valid(
+            _data(objectives=[{"name": "99x", "magnification": 99, "na": 1.0, "tube_lens_f_mm": 180, "slot": 1}])
+        )
+        oc.save_objectives_config(new_config, path)
+        assert backup.read_bytes() == last_good
+        assert oc.load_objectives_config(path) == new_config
+
+    def test_damaged_file_with_no_backup_yet_writes_no_backup(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        path.write_text("objectives: [\n", encoding="utf-8")
+        oc.save_objectives_config(_valid(_data()), path)
+        assert [p.name for p in tmp_path.iterdir()] == ["objectives.yaml"]
 
 
 class TestSerialRule:

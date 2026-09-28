@@ -4,6 +4,7 @@ from qtpy.QtWidgets import QAbstractItemView, QMessageBox
 
 import tests.control.gui_test_stubs  # noqa: F401  (same Qt setup as the other dialog tests)
 import control._def
+import control.objectives_config as oc
 import control.widgets_objectives as widgets_objectives
 from control.core.config.repository import ConfigRepository
 from control.objectives_config import EditorRow, ObjectivesConfigError
@@ -258,6 +259,36 @@ def test_invalid_existing_yaml_shows_a_warning_and_seeds_from_the_constructor_ar
     dialog = _turret_dialog(qtbot, repo)
     assert [(r.name, r.slot) for r in dialog.rows()] == [("4x", 1), ("10x", 2), ("20x", 3)]
     assert no_dialogs["warning"] and "not valid YAML" in no_dialogs["warning"][0]
+
+
+def test_a_file_damaged_after_startup_reopens_the_running_list_not_the_catalog(qtbot, repo, no_dialogs, monkeypatch):
+    # The software started from a valid objectives.yaml holding one custom objective (no changer);
+    # the file was then damaged. The editor must reopen the list the software runs with: seeding
+    # from the catalog would make Save replace the custom objective with every catalog entry.
+    running = oc.parse_objectives_config(
+        {
+            "version": 1,
+            "changer": {"kind": "none"},
+            "objectives": [{"name": "25x custom", "magnification": 25, "na": 0.75, "tube_lens_f_mm": 180}],
+        }
+    )
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)
+    monkeypatch.setattr(control._def, "OBJECTIVES_CONFIG", running)
+    monkeypatch.setattr(control._def, "read_objectives_csv", lambda path: CATALOG)
+
+    def _raise():
+        raise ObjectivesConfigError(repo.machine_configs_path / "objectives.yaml", "(file)", "is not valid YAML")
+
+    monkeypatch.setattr(repo, "get_objectives_config", _raise)
+    dialog = ObjectivesEditorDialog.for_current_machine(repo)
+    qtbot.addWidget(dialog)
+    assert [(r.name, r.slot) for r in dialog.rows()] == [("25x custom", None)]
+    assert no_dialogs["warning"] and "not valid YAML" in no_dialogs["warning"][0]
+
+    assert dialog.save()
+    saved = oc.load_objectives_config(repo.machine_configs_path / "objectives.yaml")
+    assert [o.name for o in saved.objectives] == ["25x custom"]
 
 
 # --- R4: a mounted row's name cannot be edited; a newly added row's can ---
