@@ -6,7 +6,6 @@ untouched. Until B2, nothing outside the calibration dialog reads this file.
 """
 
 import math
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Literal, Optional, Tuple
@@ -15,11 +14,9 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-import squid.logging
+from control.atomic_file import write_atomically
 from control.objectives_config import serial_matches
 from squid.objective_calibration.pixel_size import decompose
-
-_log = squid.logging.get_logger(__name__)
 
 MAX_NOMINAL_DEVIATION = 0.10
 MAX_ROTATION_SPREAD_DEG = 0.3
@@ -293,23 +290,8 @@ def load_objective_calibration(path) -> Optional[ObjectiveCalibrationConfig]:
 
 
 def save_objective_calibration(config: ObjectiveCalibrationConfig, path) -> None:
-    """Publish atomically: write a temp file in the same directory, force it to disk, then
-    os.replace() it onto `path`. A crash or power cut leaves either the old file or the new one,
-    never an empty or partial file; a failed publish leaves no temp file behind."""
+    """Publish through write_atomically: a crash or power cut leaves either the old file or the new
+    one, never an empty or partial file, and a failed publish leaves no temp file behind."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except Exception as original_exc:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError as cleanup_exc:
-            _log.error(
-                f"Failed to remove temp file {tmp} after a failed publish: {cleanup_exc}. Original: {original_exc}"
-            )
-        raise original_exc
+    write_atomically(path, yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False).encode("utf-8"))

@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import pytest
 import yaml
@@ -210,7 +212,7 @@ def test_a_failed_publish_keeps_the_previous_file(tmp_path, monkeypatch):
     def fail(*args):
         raise OSError("disk full")
 
-    monkeypatch.setattr(occ.os, "replace", fail)
+    monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(OSError, match="disk full"):
         save_objective_calibration(merge_pixel_records(first, {"10x": _record(declared=D10)}), path)
     assert load_objective_calibration(path) == first
