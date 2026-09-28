@@ -482,7 +482,7 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
         "the variable, does not trip this.)");
 
     /* The per-axis joystick blocks live in joystick_x_apply() / joystick_y_apply(), which check_joystick()
-       calls on its tick and the panel lock-out calls at once (functions.cpp). */
+       calls on its tick and when the panel lock-out begins. */
     assert_guard_precedes_motion(src, "operations.cpp", "void joystick_x_apply()",
                                  "tmc_driver_ready(", "tmc4361A_setSpeed(");
     assert_guard_precedes_motion(src, "operations.cpp", "void joystick_y_apply()",
@@ -507,10 +507,8 @@ void test_functions_locks_the_panel_out_during_commanded_moves(void)
 
     assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!panel_locked_out() &&", "focusPosition = focusPosition +");
     assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_delta_x = 0; joystick_delta_y = 0;", "flag_read_joystick = true;");
-    /* An axis the joystick is driving is brought to rest at the lock-out itself, not at check_joystick()'s
-       next tick: a command shorter than the tick would otherwise end with the jog still running. */
-    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_x_apply();", "flag_read_joystick = true;");
-    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_y_apply();", "flag_read_joystick = true;");
+    /* That an axis the joystick is jogging is brought to rest when the lock-out begins is behaviour, not
+       layout: test_panel_lockout runs check_joystick() and onJoystickPacketReceived() themselves. */
 }
 
 /*
