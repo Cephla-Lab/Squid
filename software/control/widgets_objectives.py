@@ -57,9 +57,10 @@ class ObjectivesEditorDialog(QDialog):
         self._catalog = catalog
         self._on_restart = on_restart
         self._copied = set()  # (source, target) pairs already copied by an earlier Save
-        # Names of rows present before any addition in this dialog session (spec A §5's "mounted
-        # objective" choices for a newly added row's copy-source combo). Populated as add_row()
-        # is called for the seeded/existing rows, in __init__ below; unaffected by later removals.
+        # Names of the mounted (existing/seeded) rows currently in the table (spec A §5's "mounted
+        # objective" choices for a newly added row's copy-source combo). Populated by add_row()
+        # for such rows and pruned by remove_row() when one of them is removed; never includes a
+        # row added during this dialog session, no matter how long it has been in the table (R1).
         self._mounted_names: List[str] = []
         self.setWindowTitle("Objectives")
         self.setMinimumSize(900, 360)
@@ -140,19 +141,23 @@ class ObjectivesEditorDialog(QDialog):
         combo.currentIndexChanged.connect(self._refresh_highlight)
         return combo
 
-    def _copy_from_combo(self, copy_from: str) -> QComboBox:
+    def _copy_from_combo(self, copy_from: Optional[str]) -> QComboBox:
         combo = QComboBox()
         combo.addItems(self._mounted_names)
-        index = combo.findText(copy_from)
-        if index < 0:
-            # copy_from wasn't one of the rows present at dialog-open time (e.g. an EditorRow
-            # built directly, as the tests do); still honor it rather than silently dropping it.
-            combo.addItem(copy_from)
-            index = combo.count() - 1
-        combo.setCurrentIndex(index)
+        if copy_from is not None:
+            index = combo.findText(copy_from)
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        combo.setEnabled(combo.count() > 0)
         return combo
 
-    def add_row(self, row: oc.EditorRow) -> None:
+    def add_row(self, row: oc.EditorRow, *, new: Optional[bool] = None) -> None:
+        # `new` distinguishes a row added during this dialog session (always gets a copy-source
+        # combo, even when it has no copy source yet) from an existing/seeded (mounted) row.
+        # Callers that build an EditorRow directly and leave `new` unset are inferred from
+        # copy_from, matching this method's behavior before R1.
+        if new is None:
+            new = row.copy_from is not None
         r = self._table.rowCount()
         self._table.insertRow(r)
         texts = {
@@ -167,9 +172,9 @@ class ObjectivesEditorDialog(QDialog):
             self._table.setItem(r, col, QTableWidgetItem(text))
         if self._kind is not oc.ChangerKind.NONE:
             self._table.setCellWidget(r, _COL_SLOT, self._slot_combo(row.slot))
-        if row.copy_from is None:
+        if not new:
             # An existing (mounted) row: it is not itself copying settings from anywhere, and it
-            # becomes one of the choices offered to rows added after it.
+            # becomes one of the choices offered to rows added after it (spec A §5).
             self._mounted_names.append(row.name)
             copy_item = QTableWidgetItem("")
             copy_item.setFlags(copy_item.flags() & ~Qt.ItemIsEditable)
@@ -179,6 +184,12 @@ class ObjectivesEditorDialog(QDialog):
         self._refresh_highlight()
 
     def remove_row(self, index: int) -> None:
+        if self._table.cellWidget(index, _COL_COPY) is None:
+            # A mounted row is being removed: it is no longer a valid copy source for rows
+            # added later in this session (R1's "remove-all-mounted" case).
+            name = self._table.item(index, _COL_NAME).text()
+            if name in self._mounted_names:
+                self._mounted_names.remove(name)
         self._table.removeRow(index)
         self._refresh_highlight()
 
@@ -221,25 +232,28 @@ class ObjectivesEditorDialog(QDialog):
         rows = self.rows()
         used = {r.slot for r in rows}
         free = [s for s in range(1, oc.SLOT_COUNTS[self._kind] + 1) if s not in used]
+        # R1: the copy source is always one of the mounted objectives (the rows present before
+        # any additions in this session), never a row added earlier in this same session.
+        mounted_rows = [r for r in rows if r.name in self._mounted_names]
         return oc.EditorRow(
             name,
             magnification,
             na,
             tube_lens_f_mm,
             free[0] if free else None,
-            copy_from=oc.nearest_by_magnification(magnification, rows),
+            copy_from=oc.nearest_by_magnification(magnification, mounted_rows),
         )
 
     def _add_from_catalog(self):
         name, ok = QInputDialog.getItem(self, "Add from catalog", "Objective:", list(self._catalog), 0, False)
         if ok:
             optics = self._catalog[name]
-            self.add_row(self._new_row(name, optics["magnification"], optics["NA"], optics["tube_lens_f_mm"]))
+            self.add_row(self._new_row(name, optics["magnification"], optics["NA"], optics["tube_lens_f_mm"]), new=True)
 
     def _add_custom(self):
         name, ok = QInputDialog.getText(self, "Add custom objective", "Name:")
         if ok:
-            self.add_row(self._new_row(name, None, None, None))
+            self.add_row(self._new_row(name, None, None, None), new=True)
 
     def _remove_selected(self):
         for index in sorted({i.row() for i in self._table.selectedIndexes()}, reverse=True):

@@ -81,11 +81,11 @@ def test_added_objective_copies_channel_settings(qtbot, repo, no_dialogs, tmp_pa
 
 def test_copy_column_is_a_combo_for_a_new_row_preselected_to_nearest_magnification(qtbot, repo, no_dialogs):
     dialog = _turret_dialog(qtbot, repo)
-    dialog.remove_row(0)  # frees slot 1
+    dialog.remove_row(0)  # frees slot 1; also removes "4x" from the mounted (copy-source) pool
     dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
     combo = dialog._table.cellWidget(dialog._table.rowCount() - 1, widgets_objectives._COL_COPY)
     assert isinstance(combo, widgets_objectives.QComboBox)
-    assert [combo.itemText(i) for i in range(combo.count())] == ["4x", "10x", "20x"]
+    assert [combo.itemText(i) for i in range(combo.count())] == ["10x", "20x"]
     assert combo.currentText() == "20x"
     # An existing (mounted) row's cell is not a combo.
     assert dialog._table.cellWidget(0, widgets_objectives._COL_COPY) is None
@@ -185,3 +185,32 @@ def test_xeryon_seed_blocks_save_until_one_per_position(qtbot, repo, no_dialogs)
     dialog.remove_row(0)
     assert dialog.highlighted_rows() == set()
     assert dialog.save()
+
+
+# --- R1: a new row's copy source is always a mounted objective ---
+
+
+def test_second_added_row_offers_only_mounted_objectives_as_copy_source(qtbot, repo, no_dialogs):
+    # turret 4x/10x/20x, add 40x, then add 60x: the 60x combo must offer only the mounted
+    # names (never "40x", which was added earlier in this dialog session), preselected to
+    # the nearest MOUNTED objective (20x, not 40x).
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.add_row(dialog._new_row("40x", 40.0, 0.95, 180.0), new=True)
+    dialog.add_row(dialog._new_row("60x", 60.0, 1.2, 180.0), new=True)
+    last = dialog._table.rowCount() - 1
+    combo = dialog._table.cellWidget(last, widgets_objectives._COL_COPY)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["4x", "10x", "20x"]
+    assert combo.currentText() == "20x"
+
+
+def test_removing_all_mounted_rows_leaves_a_new_row_with_no_copy_source(qtbot, repo, no_dialogs):
+    dialog = _turret_dialog(qtbot, repo)
+    for _ in range(3):
+        dialog.remove_row(0)
+    dialog.add_row(dialog._new_row("40x", 40.0, 0.95, 180.0), new=True)
+    last = dialog._table.rowCount() - 1
+    combo = dialog._table.cellWidget(last, widgets_objectives._COL_COPY)
+    assert isinstance(combo, widgets_objectives.QComboBox)
+    assert combo.count() == 0
+    assert combo.currentText() == ""
+    assert dialog.save()  # still works; the objective gets general-only channels
