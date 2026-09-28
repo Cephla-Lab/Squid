@@ -75,3 +75,13 @@ def load_plate_holder(path: str = PLATE_HOLDER_PATH) -> Optional[PlateHolder]:
 
 def save_plate_holder(holder: PlateHolder, path: str = PLATE_HOLDER_PATH) -> None:
     save_yaml_model_atomic(holder, path)
+
+
+def clear_plate_holder(path: str = PLATE_HOLDER_PATH) -> bool:
+    """Remove the record (absent file == rotation 0.00 deg). False when there
+    was nothing to remove."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return False
+    return True

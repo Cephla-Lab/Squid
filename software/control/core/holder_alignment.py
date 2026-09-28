@@ -25,14 +25,17 @@ from control.core.plate_fit import circumcenter as _circumcenter, fit_plate_plac
 from control.core.plate_transform import PlateTransform, plate_transform_for, resolve_rotation_deg
 from control.models.sample_format_config import load_user_sample_formats, save_user_sample_formats
 from control.models.plate_holder import (
+    clear_plate_holder,
     HolderMeasuredPoint,
     HolderMeasurement,
+    load_plate_holder,
     PlateHolder,
     save_plate_holder,
 )
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
+
 
 # Same-corner features the square-well method may nominate (shown once,
 # applied to every well - mixing corners would break the constant-offset
@@ -276,10 +279,7 @@ class HolderAlignmentSession:
         """Formats whose definition carries a rotation measured under the
         PREVIOUS mounting - offered for clearing at save time (the write-time
         staleness handling; there is no counter to expire them otherwise)."""
-        stored = load_user_sample_formats()
-        if stored is None:
-            return []
-        return sorted(fmt for fmt, d in stored.formats.items() if d.rotation_deg is not None)
+        return formats_with_rotation_overrides()
 
     def save(self, confirm_warnings: bool = False, clear_overrides: Tuple[str, ...] = ()) -> PlateHolder:
         """Write the minimal holder record. Nothing else is written: the
@@ -307,20 +307,8 @@ class HolderAlignmentSession:
         log.info(f"Holder rotation saved: {result.rotation_deg:.2f} deg, measured on {self.format}.")
 
         if clear_overrides:
-            self._clear_rotation_overrides(clear_overrides)
+            clear_rotation_overrides(clear_overrides)
         return holder
-
-    def _clear_rotation_overrides(self, formats: Tuple[str, ...]):
-        stored = load_user_sample_formats()
-        if stored is None:
-            return
-        for fmt in formats:
-            definition = stored.formats.get(fmt)
-            if definition is not None and definition.rotation_deg is not None:
-                definition.rotation_deg = None
-                definition.rotation_measured = None
-                log.info(f"Cleared the measured rotation override for {fmt!r}; it now inherits the holder angle.")
-        save_user_sample_formats(stored)
 
     # ------------------------------------------------------------------ status
 
@@ -331,3 +319,49 @@ class HolderAlignmentSession:
             return "No holder rotation measured - 0.00 deg assumed."
         origin = "measured for this format" if source == "measured" else "holder record"
         return f"Current rotation {angle:.2f} deg ({origin})."
+
+
+# ------------------------------------------------------- the saved angle
+# Module level, not session methods: the saved angle belongs to the machine.
+
+
+def formats_with_rotation_overrides() -> List[str]:
+    """Formats whose definition carries its own measured rotation - they do NOT
+    follow a change to the holder record unless the override is cleared."""
+    stored = load_user_sample_formats()
+    if stored is None:
+        return []
+    return sorted(fmt for fmt, d in stored.formats.items() if d.rotation_deg is not None)
+
+
+def clear_rotation_overrides(formats: Tuple[str, ...]):
+    stored = load_user_sample_formats()
+    if stored is None:
+        return
+    for fmt in formats:
+        definition = stored.formats.get(fmt)
+        if definition is not None and definition.rotation_deg is not None:
+            definition.rotation_deg = None
+            definition.rotation_measured = None
+            log.info(f"Cleared the measured rotation override for {fmt!r}; it now inherits the holder angle.")
+    save_user_sample_formats(stored)
+
+
+def clear_holder_rotation(clear_overrides: Tuple[str, ...] = ()) -> bool:
+    """Remove the machine's holder record: every format that inherits it is
+    positioned with 0.00 deg again. Not a session method - the angle belongs to
+    the machine, so clearing must work whatever plate is loaded (glass slide
+    included). The removed points are logged: they are the only copy."""
+    holder = load_plate_holder()
+    removed = clear_plate_holder()
+    if removed and holder is not None:
+        points = ", ".join(f"{p.well}=({p.x_mm}, {p.y_mm})" for p in holder.measured.points)
+        log.info(
+            f"Holder rotation cleared: was {holder.rotation_deg:.2f} deg, measured on {holder.measured.on!r} "
+            f"at {holder.measured.timestamp} from [{points}]. 0.00 deg now applies."
+        )
+    elif removed:
+        log.info("Unreadable holder record removed. 0.00 deg now applies.")
+    if clear_overrides:
+        clear_rotation_overrides(clear_overrides)
+    return removed

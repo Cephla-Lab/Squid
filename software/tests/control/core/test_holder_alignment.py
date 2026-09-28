@@ -8,9 +8,12 @@ import pytest
 import control._def as _def
 from control.core.holder_alignment import (
     circumcenter,
+    clear_holder_rotation,
+    formats_with_rotation_overrides,
     HolderAlignmentSession,
     SessionError,
 )
+from control.core.plate_transform import resolve_rotation_deg
 from control.models.plate_holder import load_plate_holder
 from control.models.sample_format_config import (
     FormatMeasurement,
@@ -317,3 +320,72 @@ def test_status_line_tracks_provenance(tree):
         )
     )
     assert "0.50 deg (measured for this format)" in session.status_line()
+
+
+# --------------------------------------------------------------------- clear
+
+
+def save_96_with_rotation_override(rotation_deg=0.5):
+    save_user_sample_formats(
+        UserSampleFormats(
+            formats={
+                "96 well plate": SampleFormat(
+                    rows=8,
+                    cols=12,
+                    well_spacing_mm=9.0,
+                    well_size_mm=6.21,
+                    a1_x_mm=11.41,
+                    rotation_deg=rotation_deg,
+                    rotation_measured=FormatMeasurement(
+                        points=[
+                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
+                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
+                        ],
+                        timestamp="2026-08-16T00:00:00",
+                    ),
+                )
+            }
+        )
+    )
+
+
+def test_clear_removes_the_saved_angle_and_keeps_the_session(tree):
+    session = HolderAlignmentSession("1536 well plate")
+    touch_all_square(session, theta_deg=0.37)
+    session.save()
+    assert "0.37 deg (holder record)" in session.status_line()
+
+    assert clear_holder_rotation() is True
+
+    assert load_plate_holder() is None
+    assert "0.00 deg assumed" in session.status_line()
+    assert resolve_rotation_deg("96 well plate") == (0.0, "none")  # every format, not just this one
+    # clearing is about the SAVED angle: the points set in the session survive
+    assert session.fit().rotation_deg == 0.37
+
+
+def test_clear_with_nothing_saved_reports_it(tree):
+    assert clear_holder_rotation() is False
+
+
+def test_clear_removes_an_unreadable_record(tree):
+    (tree / "machine_configs" / "plate_holder.yaml").write_text("rotation_deg: 0.4\n")  # no provenance: rejected
+    assert load_plate_holder() is None
+
+    assert clear_holder_rotation() is True
+    assert not (tree / "machine_configs" / "plate_holder.yaml").exists()
+
+
+def test_clear_leaves_format_overrides_unless_asked(tree):
+    save_96_with_rotation_override(0.5)
+    session = HolderAlignmentSession("1536 well plate")
+    touch_all_square(session, theta_deg=0.37)
+    session.save()
+
+    clear_holder_rotation()
+    assert resolve_rotation_deg("96 well plate") == (0.5, "measured")
+    assert formats_with_rotation_overrides() == ["96 well plate"]
+
+    clear_holder_rotation(clear_overrides=("96 well plate",))
+    assert resolve_rotation_deg("96 well plate") == (0.0, "none")
+    assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 11.41  # the measured a1 survives

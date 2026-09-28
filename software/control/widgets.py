@@ -30,8 +30,15 @@ from control.core.coordinate_provenance import (
     staleness_warning,
     write_scan_coordinates_csv,
 )
-from control.core.holder_alignment import CORNER_FEATURES, HolderAlignmentSession, SessionError
+from control.core.holder_alignment import (
+    clear_holder_rotation,
+    CORNER_FEATURES,
+    formats_with_rotation_overrides,
+    HolderAlignmentSession,
+    SessionError,
+)
 from control.core.plate_fit import circumcenter, PlateFitError
+from control.models.plate_holder import load_plate_holder, PLATE_HOLDER_PATH
 from control.core.plate_transform import plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
@@ -11805,13 +11812,15 @@ class WellplateFormatWidget(QWidget):
         self.comboBox.setItemData(index, font, Qt.FontRole)
 
     def wellplateChanged(self, index):
-        # Capture BEFORE overwriting: the Rejected branch below needs the previous
-        # format, and the old code read self.wellplate_format after it had already
-        # been set to "custom" - findData("custom") re-selected "calibrate
-        # format..." and the dropdown was stuck there on cancel.
-        previous_format = self.wellplate_format
-        self.wellplate_format = self.comboBox.itemData(index)
-        if self.wellplate_format == "custom":
+        selected = self.comboBox.itemData(index)
+        if selected == "custom":
+            # "calibrate format..." is an action, not a format: wellplate_format
+            # keeps naming the plate that is loaded while the dialog is open.
+            # The dialog's holder-rotation mode measures on that plate, and the
+            # Rejected branch reverts the dropdown to it. Overwriting it with
+            # "custom" first stranded the dropdown on cancel (findData("custom")
+            # re-selected "calibrate format...") and handed the holder mode a
+            # format that does not exist.
             calibration_dialog = WellplateCalibration(
                 self, self.stage, self.navigationViewer, self.streamHandler, self.liveController
             )
@@ -11821,11 +11830,11 @@ class WellplateFormatWidget(QWidget):
                 # WellplateCalibration.reject() deliberately does not try to
                 # second-guess it (it used to, with an int-vs-string findData
                 # mismatch that could not find anything).
-                self.wellplate_format = previous_format
-                prev_index = self.comboBox.findData(previous_format)
+                prev_index = self.comboBox.findData(self.wellplate_format)
                 if prev_index >= 0:
                     self.comboBox.setCurrentIndex(prev_index)
         else:
+            self.wellplate_format = selected
             self.setWellplateSettings(self.wellplate_format)
 
     def select_format_silently(self, format_id):
@@ -12286,9 +12295,14 @@ class WellplateCalibration(QDialog):
         layout = QVBoxLayout(self.holder_widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
+        status_row = QHBoxLayout()
         self.holder_status_label = QLabel("")
         self.holder_status_label.setWordWrap(True)
-        layout.addWidget(self.holder_status_label)
+        self.holder_clear_button = QPushButton("Clear Rotation")
+        self.holder_clear_button.clicked.connect(self._holder_clear)
+        status_row.addWidget(self.holder_status_label, 1)
+        status_row.addWidget(self.holder_clear_button)
+        layout.addLayout(status_row)
 
         self.holder_method_label = QLabel("")
         self.holder_method_label.setWordWrap(True)
@@ -12352,6 +12366,8 @@ class WellplateCalibration(QDialog):
     def _enter_holder_mode(self):
         """(Re)create the session for the CURRENTLY selected plate format."""
         format_ = self.wellplateFormatWidget.wellplate_format
+        # The saved angle belongs to the machine: clearable whatever is loaded.
+        self.holder_clear_button.setEnabled(os.path.exists(PLATE_HOLDER_PATH))
         try:
             self.holder_session = HolderAlignmentSession(format_)
         except SessionError as e:
@@ -12390,6 +12406,7 @@ class WellplateCalibration(QDialog):
     def _holder_refresh(self):
         session = self.holder_session
         self.holder_status_label.setText(session.status_line())
+        self.holder_clear_button.setEnabled(os.path.exists(PLATE_HOLDER_PATH))
         for i, well in enumerate(session.reference_wells):
             done = well.point_mm is not None
             if done:
@@ -12535,6 +12552,43 @@ class WellplateCalibration(QDialog):
             f"Rotation {holder.rotation_deg:.2f} deg saved to machine_configs/plate_holder.yaml. "
             f"It now applies to every plate format without a measured override.",
         )
+
+    def _holder_clear(self):
+        holder = load_plate_holder()
+        if holder is None:
+            saved = "an unreadable record"
+        else:
+            saved = f"{holder.rotation_deg:.2f} deg"
+            if holder.measured.on:
+                saved += f", measured on {holder.measured.on}"
+        answer = QMessageBox.question(
+            self,
+            "Clear holder rotation",
+            f"Clear the saved holder rotation ({saved})? Plates are positioned with 0.00 deg "
+            f"until a new rotation is measured. Points set in this dialog are kept.",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        clear = ()
+        overrides = formats_with_rotation_overrides()
+        if overrides:
+            answer = QMessageBox.question(
+                self,
+                "Format rotation overrides",
+                f"{len(overrides)} format(s) carry their own measured rotation and keep it: "
+                f"{', '.join(overrides)}. Clear those too?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                clear = tuple(overrides)
+
+        clear_holder_rotation(clear_overrides=clear)
+        if self.holder_session is not None:
+            self._holder_refresh()
+        else:
+            self.holder_clear_button.setEnabled(False)
 
     def load_existing_format_values(self):
         """Load current values from selected existing format into the parameter inputs."""

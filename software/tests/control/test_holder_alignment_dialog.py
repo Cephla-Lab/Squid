@@ -5,7 +5,7 @@ import math
 from unittest.mock import MagicMock, patch
 
 import pytest
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QDialog, QMessageBox
 
 import control._def as _def
 from control.models.plate_holder import load_plate_holder
@@ -172,4 +172,90 @@ def test_round_plate_hides_corner_picker_and_uses_rim_method(qapp, tree):
     assert dialog.holder_session.touches_per_well == 3
     assert not dialog.holder_corner_combo.isVisibleTo(dialog.holder_widget)
     assert "3 points on the rim" in dialog.holder_method_label.text()
+    dialog.close()
+
+
+def test_opened_from_the_dropdown_measures_the_loaded_plate(qapp, tree):
+    """The one real way in: 'calibrate format...' in the Sample Format dropdown.
+    Every other test here hands the dialog a mock that already names a plate;
+    the real widget used to name "custom" while the dialog was open."""
+    import control.widgets
+
+    live_controller = MagicMock()
+    live_controller.is_live = True
+    widget = control.widgets.WellplateFormatWidget(MagicMock(), MagicMock(), MagicMock(), live_controller)
+    widget.comboBox.setCurrentIndex(widget.comboBox.findData("96 well plate"))
+
+    seen = {}
+
+    def operator_selects_holder_mode(dialog):
+        dialog.holder_rotation_radio.setChecked(True)
+        seen["format"] = dialog.holder_session.format
+        seen["wells"] = [edit.text() for edit in dialog.holder_well_edits]
+        seen["method"] = dialog.holder_method_label.text()
+        return QDialog.Rejected
+
+    with patch.object(control.widgets.WellplateCalibration, "exec_", operator_selects_holder_mode):
+        widget.comboBox.setCurrentIndex(widget.comboBox.findData("custom"))
+
+    assert seen["format"] == "96 well plate"
+    assert seen["wells"] == ["A1", "A12", "H1", "H12"]
+    assert "96 well plate: touch 3 points on the rim" in seen["method"]
+    assert widget.comboBox.currentData() == "96 well plate"  # cancel still reverts
+
+
+def save_a_rotation(dialog, stage):
+    for i, well in enumerate(dialog.holder_session.reference_wells):
+        set_stage_pos(stage, *synthetic_corner_touch(dialog.holder_session, well))
+        dialog.holder_record_buttons[i].click()
+    with patch.object(QMessageBox, "information"):
+        dialog.holder_save_button.click()
+
+
+def test_clear_rotation_is_disabled_until_something_is_saved(qapp, tree):
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    assert not dialog.holder_clear_button.isEnabled()
+
+    save_a_rotation(dialog, stage)
+    assert dialog.holder_clear_button.isEnabled()
+    dialog.close()
+
+
+def test_clear_rotation_asks_first_and_keeps_the_points(qapp, tree):
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    save_a_rotation(dialog, stage)
+
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.No) as question:
+        dialog.holder_clear_button.click()
+    assert "0.37 deg, measured on 1536 well plate" in question.call_args.args[2]
+    assert load_plate_holder().rotation_deg == 0.37  # declined: nothing happened
+
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+        dialog.holder_clear_button.click()
+    assert load_plate_holder() is None
+    assert "0.00 deg assumed" in dialog.holder_status_label.text()
+    assert not dialog.holder_clear_button.isEnabled()
+    # the measurement in progress is untouched and can be saved again
+    assert "Rotation 0.37 deg" in dialog.holder_fit_label.text()
+    assert dialog.holder_save_button.isEnabled()
+    dialog.close()
+
+
+def test_clear_rotation_works_with_a_glass_slide_loaded(qapp, tree):
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    save_a_rotation(dialog, stage)
+    dialog.close()
+
+    dialog, _ = make_dialog(qapp, format_="glass slide")
+    dialog.holder_rotation_radio.setChecked(True)
+    assert dialog.holder_session is None
+    assert dialog.holder_clear_button.isEnabled()
+
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.Yes):
+        dialog.holder_clear_button.click()
+    assert load_plate_holder() is None
+    assert not dialog.holder_clear_button.isEnabled()
     dialog.close()
