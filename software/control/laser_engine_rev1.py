@@ -211,6 +211,8 @@ class LaserEngineRev1(QObject):
         self._source_error: Optional[str] = None  # set after SOURCE_ENABLE_ATTEMPTS failures; cleared by fault_reset()
         self._clamp_warned = False
         self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = full transmission
+        self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
+        self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates; review fix 1)
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -627,24 +629,38 @@ class LaserEngineRev1(QObject):
             raise LaserEngineRev1Error(channel_key, f"560 nm source not usable: {st.detail or 'not responding'}")
 
     def _wake_source(self) -> None:
+        """Review fix 2b: the enable_pending check-then-set and the queue/state update happen under the lock; only the
+        serial round-trip (_cmd) runs outside it, so a concurrent _disable_source() cannot interleave mid-update."""
         if self._source is None:
             return
         self._touch_source()
-        if self._source_enable_pending:
-            return  # the source thread has not run the last enable yet (wake_up / wait_until_ready call this every poll)
+        with self._source_lock:
+            if self._source_enable_pending:
+                return  # the source thread has not run the last enable yet (wake_up / wait_until_ready call this every poll)
+            self._source_enable_pending = True
         volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
-        self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
+        try:
+            self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
+        except Exception:
+            with self._source_lock:
+                self._source_enable_pending = False
+            raise
         start = self._source.min_power_mw  # ruling 4: start at the source's own minimum, then the request
-        requested = self._source_requested_mw if self._source_requested_mw is not None else start
-        self._source_pending_mw = requested if requested > start else None
-        self._source_want_on = True
-        self._source_enable_pending = True
-        self._source_queue.put(("enable", start))
+        with self._source_lock:
+            requested = self._source_requested_mw if self._source_requested_mw is not None else start
+            self._source_pending_mw = requested if requested > start else None
+            self._source_want_on = True
+            self._source_queue.put(("enable", start))
 
     def _disable_source(self) -> None:
-        if self._source is not None and self._source_want_on:
+        if self._source is None:
+            return
+        with self._source_lock:
+            if not self._source_want_on:
+                return
             self._source_want_on = False
             self._source_pending_mw = None
+            self._source_disable_pending = True  # review fix 1: source_step clears it once the disable has run
             self._source_queue.put(("disable", None))
 
     def _touch_source(self) -> None:
@@ -692,10 +708,14 @@ class LaserEngineRev1(QObject):
             time.sleep(self.query_interval_s)
 
     def source_step(self) -> None:
-        """One pass of the source thread: run queued requests, then poll. The only place that does source I/O."""
+        """One pass of the source thread: run queued requests, then poll. The only place that does source I/O.
+        Review fix 2a: `_source_enable_pending` is cleared only after this step's poll + judge_source, so a caller
+        (wake_up / wait_until_ready) polling in between still sees the enable as pending and does not queue a second one.
+        Review fix 1: a queued disable's pending flag is cleared here too, whether it succeeded or raised."""
         src = self._source
         if src is None:
             return
+        ran_enable = False
         while True:
             try:
                 op, arg = self._source_queue.get_nowait()
@@ -703,6 +723,7 @@ class LaserEngineRev1(QObject):
                 break
             try:
                 if op == "enable":
+                    ran_enable = True
                     src.set_power_mw(arg)
                     src.enable()
                     self._source_enabled, self._source_failures = True, 0
@@ -718,18 +739,26 @@ class LaserEngineRev1(QObject):
                     if self._source_failures >= self.SOURCE_ENABLE_ATTEMPTS:
                         self._source_error = f"enable failed {self._source_failures}x: {e}"
             finally:
-                if op == "enable":
-                    self._source_enable_pending = (
-                        False  # only once the enable has run (or failed): no duplicate enables
-                    )
-        status = src.poll()
-        if status.ready and self._source_pending_mw is not None:
-            pending, self._source_pending_mw = self._source_pending_mw, None
-            try:
-                src.set_power_mw(pending)
-            except Exception as e:
-                self._log.error(f"560 nm source power: {e}")
-        self._source_status = self._judge_source(status)
+                if op == "disable":
+                    with self._source_lock:
+                        self._source_disable_pending = False  # retried at the next _after_poll if it just failed
+        try:
+            status = src.poll()
+            with self._source_lock:
+                pending = self._source_pending_mw
+                if status.ready and pending is not None:
+                    self._source_pending_mw = None
+                else:
+                    pending = None
+            if pending is not None:
+                try:
+                    src.set_power_mw(pending)
+                except Exception as e:
+                    self._log.error(f"560 nm source power: {e}")
+            self._source_status = self._judge_source(status)
+        finally:
+            if ran_enable:
+                self._source_enable_pending = False
 
     def _judge_source(self, status: SourceStatus) -> SourceStatus:
         """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request."""
@@ -762,6 +791,15 @@ class LaserEngineRev1(QObject):
             return
         raw = self._latest_raw or {}
         if not self._source_want_on:
+            # Review fix 1: a failed disable must not be forgotten. If the source still reads emitting/starting and no
+            # disable is already queued, queue one now - retried every poll until it actually takes.
+            st = self._source_status
+            if st is not None and (st.ready or st.starting):
+                with self._source_lock:
+                    if not self._source_disable_pending:
+                        self._source_disable_pending = True
+                        self._source_queue.put(("disable", None))
+            self._set_held_shutter(False, raw)  # held-open mode: close it too, retried every poll while unwanted
             return
         l3 = status.channels.get("L3")
         idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
@@ -855,13 +893,14 @@ class LaserEngineRev1(QObject):
             raise LaserEngineRev1Error("L3", "560 nm source not configured")
         self._touch_source()
         mw = self._source_power_for(percent / 100.0 * self._source.max_power_mw)  # % of maximum power, linear in mW
-        self._source_requested_mw = mw
-        if self._source_enable_pending or self._source_pending_mw is not None:
-            self._source_pending_mw = (
-                mw  # still starting at the minimum: go to the new request once the source is ready
-            )
-        elif self._source_want_on:
-            self._source_queue.put(("power", mw))
+        with self._source_lock:
+            self._source_requested_mw = mw
+            if self._source_enable_pending or self._source_pending_mw is not None:
+                self._source_pending_mw = (
+                    mw  # still starting at the minimum: go to the new request once the source is ready
+                )
+            elif self._source_want_on:
+                self._source_queue.put(("power", mw))
 
     def _aom_full_volts(self) -> float:
         return AOM_FULL_SCALE_V  # Task 9: the calibrated peak-transmission voltage

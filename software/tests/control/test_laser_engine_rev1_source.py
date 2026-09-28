@@ -148,16 +148,16 @@ def test_acquisition_use_keeps_the_source_on():
     engine, fake, source = _with_source()
     _to_ready(engine, source)
     engine.source_idle_off_s = 0.05
-    time.sleep(0.06)
+    engine._source_last_use -= 1.0  # rewind instead of sleeping: deterministic, not scheduling-dependent
     engine.note_use(["L1", "L3"])  # Squid's acquisition, every FOV
     engine.poll_once()
     engine.source_step()
-    time.sleep(0.06)
+    engine._source_last_use -= 1.0
     engine.channel_keys_for_wavelengths([561])  # live view / acquisition start on the L3 port
     engine.poll_once()
     engine.source_step()
     assert "disable" not in source.calls
-    time.sleep(0.06)
+    engine._source_last_use -= 1.0
     engine.note_use(["L1"])  # an acquisition without L3 does not count
     engine.poll_once()
     engine.source_step()
@@ -265,3 +265,57 @@ def test_shutter_mode_can_be_switched_in_the_tab():
     engine2, _, _ = _with_source()
     with pytest.raises(ValueError, match="no AOM"):
         engine2.set_shutter_with_aom("open")
+
+
+# ---- review fix round 1: a failed disable is never retried; duplicate enables (t6_probe.py / t6_probe3.py ideas) --------
+
+
+def test_failed_disable_is_retried():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.fail_disable = 1  # the source's own disable() raises once (e.g. a serial hiccup)
+    engine.disarm()
+    engine.source_step()  # this disable fails; the source is still on
+    assert source.enabled
+    engine.poll_once()  # _after_poll: not wanted, still reads ready -> queues another disable
+    engine.source_step()
+    assert not source.enabled
+
+
+def test_enable_is_not_repeated_while_the_first_start_is_polled():
+    class CallerDuringPoll(FakeSource):
+        """t6_probe3's idea: a caller (wake_up) runs on the source thread's own poll, right after the first enable."""
+
+        def __init__(self):
+            super().__init__()
+            self.engine = None
+            self.fired = False
+
+        def poll(self):
+            if self.engine is not None and not self.fired and self.calls.count("enable") == 1:
+                self.fired = True
+                self.engine.wake_up("L3")  # what a live-view / set-intensity caller does on another thread
+            return super().poll()
+
+    source = CallerDuringPoll()
+    engine, fake, _ = _with_source(source)
+    source.engine = engine
+    engine.wake_up("L3")
+    for _ in range(6):
+        engine.source_step()
+    assert source.calls.count("enable") == 1
+
+
+def test_wake_and_disable_interleaved_stay_consistent():
+    engine, fake, source = _with_source()
+    real_cmd = engine._cmd
+
+    def cmd_with_interleaved_disable(line):
+        if line.startswith("LINE3:SET"):
+            engine._disable_source()  # simulate the poll thread deciding to switch off mid wake
+        return real_cmd(line)
+
+    engine._cmd = cmd_with_interleaved_disable
+    engine.wake_up("L3")
+    engine.source_step()
+    assert source.enabled == engine._source_want_on

@@ -290,6 +290,7 @@ class FakeSource:
         self.silent = False
         self.poll_delay_s = 0.0
         self.fail_enable = False
+        self.fail_disable = 0  # the number of upcoming disable() calls that raise (review fix 1's covering test)
         self.calls: List[str] = []
         self._starting_polls = 0
 
@@ -322,6 +323,9 @@ class FakeSource:
 
     def disable(self) -> None:
         self.calls.append("disable")
+        if self.fail_disable > 0:
+            self.fail_disable -= 1
+            raise RuntimeError("disable refused")
         self.enabled = False
 
     def close(self) -> None:
