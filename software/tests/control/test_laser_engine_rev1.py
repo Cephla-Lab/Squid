@@ -125,3 +125,202 @@ def test_engine_options_are_validated():
     with pytest.raises(ValueError, match="AOM in the beam path"):
         EngineOptions(shutter_with_aom="open")
     EngineOptions(aom_in_path=True, shutter_with_aom="open", aom_attenuation=True)
+
+
+from control._def import ILLUMINATION_CODE
+
+
+def _opened(tok_delay_polls=0):
+    engine, fake = _engine(FakeEngine(tok_delay_polls=tok_delay_polls))
+    engine.open()
+    return engine, fake
+
+
+def test_channel_keys_for_wavelengths_dedupes_and_skips_unknown():
+    engine, _ = _opened()
+    assert engine.channel_keys_for_wavelengths([488, 470, 532, 560, 640]) == ["L2", "L3", "L4"]
+
+
+def test_line_for_wavelength_follows_the_ttl_map():
+    engine, _ = _opened()
+    assert [engine.line_for_wavelength(w) for w in (405, 488, 560, 638, 730)] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]  # DF on Squid's defaults
+    engine.ttl_map_provider = lambda: {
+        488: ILLUMINATION_CODE.ILLUMINATION_D4,  # code 13 = port D4 = engine TTL4
+        640: ILLUMINATION_CODE.ILLUMINATION_D3,  # code 14 = port D3 = engine TTL3
+        700: 20,  # not a D1-D5 port
+    }
+    assert engine.line_for_wavelength(488) == 4 and engine.line_for_wavelength(640) == 3
+    assert engine.line_for_wavelength(700) is None and engine.line_for_wavelength(405) is None
+
+
+def test_on_startup_arms_and_brings_every_line_up():
+    engine, fake = _opened()
+    engine.on_startup()
+    for _ in range(3):
+        engine.poll_once()
+    assert {"TEC1:OUT 1", "TEC2:OUT 1", "TEC4:OUT 1", "TEC5:OUT 1"} <= set(fake.sent) and "TEC3:OUT 1" not in fake.sent
+    assert "ARM" in fake.sent
+    assert all(f"LINE{n}:EN 1" in fake.sent for n in (1, 2, 4, 5))
+    assert "LINE3:EN 1" not in fake.sent  # no 560 source configured in this test
+    assert engine.bringup_state == "done"
+
+
+def test_startup_bring_up_waits_for_cover_and_transient_refusals():
+    engine, fake = _opened()
+    fake.open_cover()
+    fake.arm_refusals = ["WDOG_5V low (watchdog in reset)"]
+    engine.on_startup()
+    for _ in range(3):
+        engine.poll_once()
+    assert "ARM" not in fake.sent and engine.bringup_state == "running"  # cover open: every line reads PAUSED
+    fake.close_cover()
+    engine.poll_once()
+    assert "WDOG_5V low" in engine.bringup_state  # says why it is waiting
+    for _ in range(3):
+        engine.poll_once()
+    assert fake.sent.count("ARM") == 2  # one transient refusal, then armed
+    assert engine.bringup_state == "done"
+
+
+def test_startup_key_off_gives_up_then_arms_on_use():
+    engine, fake = _opened()
+    fake.key_on = False
+    engine.on_startup()  # ARM refused: key off -> the bring-up ends
+    assert fake.sent.count("ARM") == 1 and engine.bringup_state.startswith("cancelled")
+    assert any("key switch off" in n for n in engine.notices)
+    fake.key_on = True  # turning the key on alone brings nothing back
+    for _ in range(3):
+        engine.poll_once()
+    assert fake.sent.count("ARM") == 1
+    engine.wake_up("L1")  # the next use arms
+    assert fake.sent.count("ARM") == 2 and fake.armed
+
+
+def test_startup_with_an_engine_fault_is_cancelled():
+    engine, fake = _opened()
+    fake.faults = ["OVERTEMP"]  # latched after the connect reset
+    engine.on_startup()
+    assert "ARM" not in fake.sent and "OVERTEMP" in engine.bringup_state
+
+
+def test_disarm_after_startup_is_not_undone_automatically():
+    engine, fake = _opened(tok_delay_polls=10_000)  # TECs still warming up: the bring-up is still running
+    engine.on_startup()
+    engine.poll_once()
+    assert fake.armed and engine.bringup_state == "running"
+    fake.armed, fake.last_event = False, "HOST_LOST"  # the engine disarmed itself (host timeout, key cycle)
+    for _ in range(3):
+        engine.poll_once()
+    assert fake.sent.count("ARM") == 1 and "HOST_LOST" in engine.bringup_state
+
+
+def test_key_cycle_right_after_the_startup_arm_is_not_undone():
+    engine, fake = _opened(tok_delay_polls=10_000)
+    engine.on_startup()  # ARM accepted
+    fake.armed = False  # key off and on again before the next poll
+    for _ in range(3):
+        engine.poll_once()
+    assert fake.sent.count("ARM") == 1 and engine.bringup_state.startswith("cancelled")
+
+
+def test_wait_until_ready_arms_enables_and_waits_for_tok_on_use():
+    engine, fake = _opened(tok_delay_polls=3)
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0) is True
+    assert "ARM" in fake.sent and "TEC1:OUT 1" in fake.sent and "LINE1:EN 1" in fake.sent
+    assert engine.get_latest_status().channels["L1"].state == LineState.READY
+
+
+def test_warming_up_resends_tec_on_once():
+    engine, fake = _opened(tok_delay_polls=10_000)
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=0.3) is False
+    assert fake.sent.count("TEC1:OUT 1") == 2  # on_startup + one resend by the wait (the bring-up does not resend)
+
+
+def test_key_off_raises_with_the_firmware_reason():
+    engine, fake = _opened()
+    fake.key_on = False
+    with pytest.raises(LaserEngineRev1Error, match="key switch off"):
+        engine.wait_until_ready(["L1"], timeout_s=1.0)
+
+
+def test_transient_arm_refusal_waits():
+    engine, fake = _opened()
+    fake.arm_refusals = ["WDOG_5V low (watchdog in reset)", "expanders not responding"]
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0) is True
+    assert fake.sent.count("ARM") == 3
+
+
+def test_blocked_line_raises():
+    engine, fake = _opened()
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0)
+    fake.set_tok(1, False)
+    with pytest.raises(LaserEngineRev1Error, match="FAULT:RESET"):
+        engine.wait_until_ready(["L1"], timeout_s=1.0)
+
+
+def test_no_enable_while_paused():
+    engine, fake = _opened()
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0)
+    fake.open_cover()
+    engine.poll_once()
+    n_en = fake.sent.count("LINE1:EN 1")
+    assert engine.wait_until_ready(["L1"], timeout_s=0.3) is False  # paused: wait, not an error
+    assert fake.sent.count("LINE1:EN 1") == n_en
+    fake.close_cover()
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0) is True
+    assert fake.sent.count("LINE1:EN 1") == n_en  # the firmware resumed it, the driver did not re-enable
+
+
+def test_cover_open_before_arm_waits():
+    engine, fake = _opened()
+    fake.open_cover()
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=0.3) is False
+    assert "ARM" not in fake.sent
+    fake.close_cover()
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0) is True
+
+
+def test_cover_open_with_nothing_on_does_not_enable():
+    engine, fake = _opened()
+    engine.on_startup()  # the first bring-up step arms
+    assert fake.armed
+    fake.open_cover()  # armed, nothing on: the firmware does not pause, only interlock_ok = 0
+    assert engine.wait_until_ready(["L1"], timeout_s=0.3) is False
+    assert "LINE1:EN 1" not in fake.sent
+
+
+def test_cancel_and_connection_loss():
+    engine, fake = _opened(tok_delay_polls=10_000)
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=5.0, cancel_fn=lambda: True) is False
+    fake.unplug()
+    assert engine.wait_until_ready(["L1"], timeout_s=5.0) is False
+    assert engine.is_connection_lost()
+
+
+def test_wake_up_never_raises_and_goes_all_the_way():
+    engine, fake = _opened()
+    fake.tok = [True] * 5  # TECs already in window
+    engine.wake_up("L1")
+    assert "ARM" in fake.sent and "LINE1:EN 1" in fake.sent
+    fake.key_on = False
+    engine.disarm()
+    engine.wake_up("L1")  # refused ARM: logged, not raised
+
+
+def test_sleep_disables_the_line():
+    engine, fake = _opened()
+    engine.on_startup()
+    assert engine.wait_until_ready(["L1"], timeout_s=2.0)
+    engine.put_to_sleep("L1")
+    assert "LINE1:EN 0" in fake.sent

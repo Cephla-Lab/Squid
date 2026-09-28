@@ -16,6 +16,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 from qtpy.QtCore import QObject, Signal
 
 import squid.logging
+from control._def import source_code_to_port_index
 from control.laser_engine_rev1_link import EngineCommandError, EngineLink, EngineLinkError
 from control.laser_engine_rev1_status import (
     ERROR_STATES,
@@ -26,6 +27,7 @@ from control.laser_engine_rev1_status import (
     is_560_line,
     parse_status,
 )
+from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL
 
 IDN_PREFIX = "Cephla,LaserEngineCarrier-rev1,"
 DEFAULT_CALIBRATION_DIR = Path(__file__).resolve().parent.parent / "machine_configs" / "intensity_calibrations"
@@ -112,6 +114,16 @@ class LaserEngineRev1(QObject):
         self._source = None  # engine-owned 560 nm source (Task 6)
         self._source_status: Optional[SourceStatus] = None
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.ttl_map_provider: Optional[Callable[[], Dict[int, int]]] = (
+            None  # Task 7: IlluminationController.channel_mappings_TTL
+        )
+        self._bringup_state = ""  # "", "running", "done", "cancelled: ..."
+        self._bringup_keys: List[str] = []
+        self._bringup_armed = False  # the bring-up has seen the engine armed (a later disarm cancels it)
+        self._bringup_waiting: set = set()  # lines waiting for the operator (notice given once)
+        self._bringup_dropped: List[str] = []
+        self._bringup_lock = threading.Lock()
+        self._arm_wait_reason: Optional[str] = None  # last transient ARM refusal, until an ARM is accepted
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -274,10 +286,267 @@ class LaserEngineRev1(QObject):
         self._on_lost()
         self.connection_lost.emit(message)
 
-    # ---- hooks: startup bring-up (Task 4), engine-owned source (Task 6) ----------------------------------------------
+    # ARM refusals that clear by themselves within seconds: wait for them instead of aborting (firmware app.cpp arm())
+    TRANSIENT_ARM_REASONS = (
+        "cover interlock open",
+        "WDOG_5V low",
+        "expanders not responding",
+        "DAC not initialised",
+        "12V_OK low",
+        "PG_BUCKS low",
+    )
+
+    # ---- wavelength -> line: the same map that selects the TTL port (ruling 5) ---------------------------------------
+    def _ttl_map(self) -> Dict[int, int]:
+        provider = self.ttl_map_provider
+        return provider() if provider is not None else _DEFAULT_CHANNEL_MAPPINGS_TTL
+
+    def line_for_wavelength(self, wavelength) -> Optional[int]:
+        """Squid port Dn is cabled to engine TTLn, so the line is the port the wavelength's TTL uses (D3/D4 codes are swapped)."""
+        code = self._ttl_map().get(wavelength)
+        if code is None:
+            return None
+        index = source_code_to_port_index(code)
+        return index + 1 if 0 <= index < 5 else None
+
+    def channel_keys_for_wavelengths(self, wavelengths: Iterable[int]) -> List[str]:
+        keys: List[str] = []
+        for w in wavelengths:
+            n = self.line_for_wavelength(w)
+            if n is not None and f"L{n}" not in keys:
+                keys.append(f"L{n}")
+        self.note_use(keys)  # Squid asks at acquisition start and live start
+        return keys
+
+    def note_use(self, channel_keys: Iterable[str]) -> None:
+        """The lines are being used (Squid's acquisition calls this for every FOV). On DF, L3 in use keeps the 560 source from
+        idling off. The L3 emission tap / hour meter cannot tell: on DF they include TOK3, which reads low."""
+        if self.variant == "DF" and "L3" in channel_keys:
+            self._touch_source()
+
+    @staticmethod
+    def _line_of(channel_key: str) -> int:
+        return int(channel_key.lstrip("L"))
+
+    # ---- startup bring-up (ruling 1) -------------------------------------------------------------------------------------
+    @property
+    def bringup_state(self) -> str:
+        if self._bringup_state == "running" and self._arm_wait_reason:
+            return f"running - ARM waits: {self._arm_wait_reason}"
+        return self._bringup_state
+
+    def on_startup(self) -> None:
+        """Once, from MicroscopeAddons.prepare_for_use: TECs on, then ARM and bring every line up, the 560 included.
+        Runs one step per STAT? poll, so Squid's startup never waits for the TECs. TEC auto-on in firmware: to-do (§3.5d).
+        """
+        raw = self._stat()
+        for i, ln in enumerate(raw["lines"]):
+            if ln.get("tok_req") and ln.get("kind") != "NONE":
+                try:
+                    self._cmd(f"TEC{i + 1}:OUT 1")
+                except EngineCommandError as e:
+                    self._log.warning(f"TEC{i + 1} did not switch on: {e.reason}")
+        self._bringup_keys = [
+            f"L{i + 1}"
+            for i, ln in enumerate(raw["lines"])
+            if ln.get("kind") != "NONE" and not (is_560_line(raw, i + 1) and self._source is None)
+        ]
+        self._bringup_armed = False
+        self._bringup_dropped = []
+        self._bringup_state = "running"
+        self._log.info(f"laser engine startup: arming and bringing up {', '.join(self._bringup_keys)}")
+        self.poll_once()  # first step now: the ARM
+
+    def _end_bringup(self, result: str) -> None:
+        self._bringup_state = result
+        if result == "done":
+            self._log.info("laser engine startup: every line ready")
+        else:
+            self._notice(f"startup bring-up {result}")
+
     def _bringup_step(self, status: EngineRev1Status) -> None:
+        if self._bringup_state != "running" or not self._bringup_lock.acquire(blocking=False):
+            return
+        try:
+            if status.armed:
+                self._bringup_armed = True
+            elif self._bringup_armed:  # the first disarm of any kind ends it; lines then come up on use only
+                self._end_bringup(
+                    f"cancelled: the engine disarmed ({status.last_event or 'DISARM'}) - lines come up on use"
+                )
+                return
+            system_faults = [f for f in status.fault_names if f != "TOK_LOST"]
+            if system_faults:
+                self._end_bringup(
+                    f"cancelled: engine fault {', '.join(system_faults)} - Reset faults; lines then come up on use"
+                )
+                return
+            pending = [k for k in self._bringup_keys if not status.channels[k].is_ready]
+            if not pending:
+                dropped = self._bringup_dropped
+                self._end_bringup(f"done except {', '.join(dropped)}" if dropped else "done")
+                return
+            for key in pending:
+                try:
+                    self._ensure_ready_step(key, status)
+                except LaserEngineRev1Error as e:
+                    if e.channel_key == "engine":  # a real ARM refusal (key off, fault latched) or the link: give up
+                        self._end_bringup(f"cancelled: {e} - lines come up on use")
+                        return
+                    if e.needs_operator:  # e.g. the 560 key: keep waiting for the operator
+                        if key not in self._bringup_waiting:
+                            self._bringup_waiting.add(key)
+                            self._notice(f"startup: {key} waits for the operator: {status.channels[key].reason}")
+                        continue
+                    self._bringup_keys.remove(key)
+                    self._bringup_dropped.append(key)
+                    self._notice(f"startup: {key} not brought up: {status.channels[key].reason or e}")
+                if not status.armed:
+                    return  # one ARM per step; the lines follow at the next poll
+        finally:
+            self._bringup_lock.release()
+
+    # ---- consent / faults ------------------------------------------------------------------------------------------------
+    def arm(self) -> None:
+        try:
+            self._cmd("ARM")
+        except EngineCommandError as e:
+            raise LaserEngineRev1Error("engine", f"cannot arm: {e.reason}") from e
+
+    def _try_arm(self) -> bool:
+        """True when armed; False on a transient refusal (retried at the next step); raises on a real refusal."""
+        try:
+            self._cmd("ARM")
+        except EngineCommandError as e:
+            if e.reason.startswith(self.TRANSIENT_ARM_REASONS):
+                if e.reason != self._arm_wait_reason:  # log each new reason once, not every second
+                    self._log.info(f"laser engine not ready to arm yet: {e.reason}")
+                self._arm_wait_reason = e.reason
+                return False
+            self._arm_wait_reason = None
+            raise LaserEngineRev1Error("engine", f"cannot arm: {e.reason}") from e
+        self._arm_wait_reason = None
+        return True
+
+    def disarm(self) -> None:
+        if self._bringup_state == "running":
+            self._end_bringup("cancelled: disarmed by the operator")
+        self._disable_source()
+        self._cmd("DISARM")
+
+    def fault_reset(self) -> None:
+        self._clear_source_error()
+        try:
+            self._cmd("FAULT:RESET")
+        except EngineCommandError as e:
+            raise LaserEngineRev1Error("engine", f"fault reset refused: {e.reason}") from e
+
+    # ---- enable on use ---------------------------------------------------------------------------------------------------
+    def _ensure_ready_step(self, channel_key: str, status: EngineRev1Status, tec_retried: Optional[set] = None) -> None:
+        """One non-blocking step towards READY for one line. Raises LaserEngineRev1Error for error/operator states."""
+        info = status.channels[channel_key]
+        n = self._line_of(channel_key)
+        is560 = is_560_line(self._latest_raw or {}, n)
+        if is560:
+            self._touch_source()
+        if info.state in REFUSE_STATES:
+            raise LaserEngineRev1Error(channel_key, info.reason, needs_operator=info.state == LineState.NEEDS_KEY)
+        if info.state == LineState.NOT_ARMED:
+            if self._try_arm():
+                self._bringup_armed = True  # a disarm after this (even before the next poll) ends a running bring-up
+        elif info.state == LineState.WARMING_UP:
+            if tec_retried is not None and channel_key not in tec_retried:
+                tec_retried.add(channel_key)
+                try:
+                    self._cmd(f"TEC{n}:OUT 1")  # idempotent; covers a TCM that was silent at on_startup()
+                except EngineCommandError as e:
+                    self._log.warning(f"TEC{n} did not switch on: {e.reason}")
+        elif info.state == LineState.OFF:
+            if is560:
+                self._check_source_usable(channel_key)  # fail before touching line 3 or the source
+            try:
+                self._cmd(f"LINE{n}:EN 1")
+            except EngineCommandError as e:
+                if e.reason.startswith("TOK low"):
+                    return
+                raise LaserEngineRev1Error(channel_key, e.reason) from e
+            if is560:
+                self._wake_source()
+        elif info.state == LineState.SOURCE_OFF:
+            self._check_source_usable(channel_key)
+            self._wake_source()
+        # STARTING / PAUSED / READY: nothing to do; the firmware or the source moves on by itself
+
+    def wake_up(self, channel_key: str) -> None:
+        """Non-blocking (live view, set_intensity): up to three steps towards READY. Never raises."""
+        for _ in range(3):
+            status = self.poll_once()
+            if status is None or channel_key not in status.channels:
+                return
+            if status.channels[channel_key].state not in (LineState.NOT_ARMED, LineState.OFF, LineState.SOURCE_OFF):
+                return
+            try:
+                self._ensure_ready_step(channel_key, status)
+            except (LaserEngineRev1Error, EngineCommandError) as e:
+                self._log.warning(f"laser engine wake_up({channel_key}): {e}")
+                return
+
+    def wake_up_all(self) -> None:
+        status = self.poll_once()
+        for key, info in status.channels.items() if status else []:
+            if info.state not in (LineState.UNUSED, LineState.NOT_CONFIGURED):
+                self.wake_up(key)
+
+    def put_to_sleep(self, channel_key: str) -> None:
+        n = self._line_of(channel_key)
+        if is_560_line(self._latest_raw or {}, n):
+            self._disable_source()
+        self._cmd(f"LINE{n}:EN 0")
+
+    def sleep_all(self) -> None:
+        for n in range(1, 6):
+            self.put_to_sleep(f"L{n}")
+
+    def wait_until_ready(
+        self, channel_keys: List[str], timeout_s: float = 300.0, cancel_fn: Callable[[], bool] = lambda: False
+    ) -> bool:
+        deadline = time.monotonic() + timeout_s
+        tec_retried: set = set()
+        while True:
+            if cancel_fn() or self._lost:
+                return False
+            status = self.poll_once()
+            if status is None:
+                return False
+            if status.is_ready_for(channel_keys):
+                return True
+            for key in channel_keys:
+                if key not in status.channels:
+                    raise LaserEngineRev1Error(key, "no such line")
+                if not status.channels[key].is_ready:
+                    self._ensure_ready_step(key, status, tec_retried)
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.query_interval_s)
+
+    # ---- engine-owned source hooks used above (Task 6 implements them) ---------------------------------------------
+    def _check_source_usable(self, channel_key: str) -> None:
+        if self._source is None:
+            raise LaserEngineRev1Error(channel_key, "560 nm source not configured")
+
+    def _wake_source(self) -> None:
         pass
 
+    def _disable_source(self) -> None:
+        pass
+
+    def _touch_source(self) -> None:
+        pass
+
+    def _clear_source_error(self) -> None:
+        pass
+
+    # ---- hooks: engine-owned source (Task 6) ------------------------------------------------------------------------
     def _open_source(self) -> None:
         pass
 
