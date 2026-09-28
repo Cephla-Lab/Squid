@@ -15,6 +15,7 @@ Organization:
 - Cache Management: cache control
 """
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
@@ -501,13 +502,23 @@ class ConfigRepository:
 
     def copy_objective_channel_configs(self, source: str, target: str) -> List[str]:
         """Copy channel_configs/<source>.yaml to <target>.yaml in every profile that has the
-        source and not the target. Never overwrites, moves or deletes. Returns the profiles written."""
+        source and not the target. Never overwrites, moves or deletes. Returns the profiles written.
+
+        Copies to a temp file in the destination directory first, then os.replace()s it onto
+        <target>.yaml (R6a): a copy that dies partway through never leaves a partial file under
+        the final name, so "never overwrite an existing target" stays safe on retry."""
         written = []
         for profile in self.get_available_profiles():
             src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
             dst = src.with_name(f"{target}.yaml")
             if src.exists() and not dst.exists():
-                shutil.copyfile(src, dst)
+                tmp = dst.with_name(f".{target}.yaml.tmp")
+                try:
+                    shutil.copyfile(src, tmp)
+                    os.replace(tmp, dst)
+                except OSError:
+                    tmp.unlink(missing_ok=True)
+                    raise
                 written.append(profile)
         self._profile_cache.pop(f"objective:{target}", None)
         return written

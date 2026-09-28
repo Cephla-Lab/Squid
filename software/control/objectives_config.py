@@ -7,6 +7,7 @@ initializing, and control/models/__init__.py (like most of control.*) imports _d
 
 import ast
 import math
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -171,9 +172,19 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
 
 
 def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
+    """Write machine_configs/objectives.yaml. Writes to a temp file in the same directory and
+    os.replace()s it onto `path` (an atomic publish on both POSIX and Windows for a
+    same-filesystem rename): a reader never observes a partially-written file, and a failed
+    publish leaves the previous file untouched, with no temp file left behind (R6b)."""
     path = Path(path) if path is not None else OBJECTIVES_YAML_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False), encoding="utf-8")
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def to_objectives_dict(config: ObjectivesConfig) -> Dict[str, Dict[str, float]]:

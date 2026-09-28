@@ -289,6 +289,26 @@ class TestDerivedAndRoundTrip:
         oc.save_objectives_config(config, path)
         assert oc.load_objectives_config(path) == config
 
+    def test_failed_publish_leaves_the_previous_file_untouched_and_no_temp_file(self, tmp_path, monkeypatch):
+        # R6(b): save_objectives_config writes to a temp file and os.replace()s it onto the
+        # real path; if the replace fails, the previous file must be byte-identical and no
+        # temp file must be left behind.
+        path = tmp_path / "objectives.yaml"
+        oc.save_objectives_config(_valid(_data()), path)
+        original_bytes = path.read_bytes()
+
+        def _raise(*a, **k):
+            raise OSError("disk full")
+
+        new_config = _valid(
+            _data(objectives=[{"name": "99x", "magnification": 99, "na": 1.0, "tube_lens_f_mm": 180, "slot": 1}])
+        )
+        monkeypatch.setattr(oc.os, "replace", _raise)
+        with pytest.raises(OSError):
+            oc.save_objectives_config(new_config, path)
+        assert path.read_bytes() == original_bytes
+        assert [p.name for p in tmp_path.iterdir()] == ["objectives.yaml"]  # no temp file left behind
+
 
 class TestSerialRule:
     @pytest.mark.parametrize(

@@ -1,4 +1,9 @@
+import shutil
+
+import pytest
+
 from control.core.config.repository import ConfigRepository
+import control.core.config.repository as repository
 import control.objectives_config as oc
 
 
@@ -52,3 +57,35 @@ def test_copy_never_moves_or_deletes_the_source(tmp_path):
     repo.copy_objective_channel_configs("10x", "10x oil")
     assert (a / "10x.yaml").read_text() == "A10"
     assert (a / "10x oil.yaml").read_text() == "A10"
+
+
+def _fail_mid_copy(src, dst):
+    """Simulate a copy that dies partway through: some bytes land under `dst` before the error."""
+    with open(dst, "wb") as f:
+        f.write(b"PARTIAL")
+    raise OSError("disk full")
+
+
+def test_failed_copy_leaves_no_target_file(tmp_path, monkeypatch):
+    # R6(a): copy_objective_channel_configs must copy to a temp file and os.replace() it onto
+    # the target, so a copy that dies partway through never leaves a <target>.yaml behind (which
+    # would otherwise be trusted as "already copied" and block a retry, per "never overwrite").
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr(repository.shutil, "copyfile", _fail_mid_copy)
+    with pytest.raises(OSError):
+        repo.copy_objective_channel_configs("10x", "20x water")
+    assert not (a / "20x water.yaml").exists()
+    assert [p.name for p in a.iterdir()] == ["10x.yaml"]  # no temp file left behind either
+
+
+def test_retry_after_the_fault_is_removed_copies_the_full_file(tmp_path, monkeypatch):
+    original_copyfile = shutil.copyfile  # captured before patching: repository.shutil IS shutil
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr(repository.shutil, "copyfile", _fail_mid_copy)
+    with pytest.raises(OSError):
+        repo.copy_objective_channel_configs("10x", "20x water")
+    monkeypatch.setattr(repository.shutil, "copyfile", original_copyfile)  # the fault is fixed
+    assert repo.copy_objective_channel_configs("10x", "20x water") == ["a"]
+    assert (a / "20x water.yaml").read_text() == "A10"

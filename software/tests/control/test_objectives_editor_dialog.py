@@ -141,6 +141,7 @@ def test_copy_failure_shows_critical_and_does_not_write_yaml(qtbot, repo, no_dia
     assert repo.get_objectives_config() is None  # the YAML was not written
     assert no_dialogs["critical"] and "disk full" in no_dialogs["critical"][0]
     assert "NOT saved" in no_dialogs["critical"][0]
+    assert no_dialogs["question"] == []  # R6(c): no restart prompt on a failed save
 
 
 def test_save_failure_shows_critical(qtbot, repo, no_dialogs, monkeypatch):
@@ -153,6 +154,7 @@ def test_save_failure_shows_critical(qtbot, repo, no_dialogs, monkeypatch):
     assert not dialog.save()
     assert no_dialogs["critical"] and "permission denied" in no_dialogs["critical"][0]
     assert "not written" in no_dialogs["critical"][0]
+    assert no_dialogs["question"] == []  # R6(c): no restart prompt on a failed save
 
 
 def test_for_current_machine_seeds_from_the_def_module_with_raw_string_lists(qtbot, repo, monkeypatch):
