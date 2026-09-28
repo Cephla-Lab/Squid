@@ -456,18 +456,17 @@ pixel_to_um_calibration_distance: 6.0
 laser_af_range: 100.0
 laser_af_averaging_n: 3
 spot_detection_mode: dual_right
-displacement_success_window_um: 1.0
+displacement_success_window_pixels: 300.0   # Max distance of the spot from x_reference
 
 # Spot detection
 spot_crop_size: 100
 correlation_threshold: 0.9
-y_window: 96
-x_window: 20
-min_peak_width: 10.0
-min_peak_distance: 10.0
-min_peak_prominence: 0.25
-spot_spacing: 100.0
-filter_sigma: null
+cc_threshold: 8.0            # Intensity threshold for binarization
+cc_min_area: 5               # Pixels
+cc_max_area: 5000            # Pixels
+cc_row_tolerance: 50.0       # Max distance of the spot from the centre row, in pixels
+cc_max_aspect_ratio: 2.5     # Longer side over shorter side of the spot's bounding box
+filter_sigma: 1              # Gaussian filter before detection (null to disable)
 
 # Camera settings
 focus_camera_exposure_time_ms: 0.2
@@ -478,6 +477,12 @@ reference_image: null
 reference_image_shape: null
 reference_image_dtype: null
 ```
+
+Files saved before connected components spot detection also have the line-profile settings
+(`displacement_success_window_um`, `y_window`, `x_window`, `min_peak_width`, `min_peak_distance`,
+`min_peak_prominence`, `spot_spacing`). They still load, with their calibration and reference. Those settings
+are ignored, and are gone from the file once it is saved again. Any other unknown setting is an error: the
+file is not loaded.
 
 ---
 

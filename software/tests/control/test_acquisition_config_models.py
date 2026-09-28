@@ -764,6 +764,27 @@ class TestLaserAFConfig:
         mode = config.get_spot_detection_mode()
         assert mode == SpotDetectionMode.DUAL_LEFT
 
+    def test_laser_af_config_accepts_retired_line_profile_settings(self):
+        """Profiles saved before connected components detection have these; they load and the settings are dropped."""
+        config = LaserAFConfig(
+            pixel_to_um=0.5,
+            displacement_success_window_um=1.0,
+            y_window=96,
+            x_window=20,
+            min_peak_width=10.0,
+            min_peak_distance=10.0,
+            min_peak_prominence=0.2,
+            spot_spacing=100.0,
+        )
+
+        assert config.pixel_to_um == 0.5
+        assert set(config.model_dump()) == set(LaserAFConfig.model_fields)
+
+    def test_laser_af_config_rejects_unknown_setting(self):
+        """A misspelled setting must stay an error: it would otherwise be ignored and its default used."""
+        with pytest.raises(ValidationError, match="cc_treshold"):
+            LaserAFConfig(cc_treshold=5)
+
 
 class TestMergeChannelConfigs:
     """Tests for merge_channel_configs function (schema v1.0)."""

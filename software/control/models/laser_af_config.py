@@ -6,13 +6,27 @@ calibration data and detection parameters.
 """
 
 import base64
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import control._def as _def
 from control._def import SpotDetectionMode
+
+# Settings of the line-profile spot detection, which connected components detection replaced.
+# Saved profiles still have them.
+RETIRED_FIELDS = frozenset(
+    {
+        "displacement_success_window_um",
+        "y_window",
+        "x_window",
+        "min_peak_width",
+        "min_peak_distance",
+        "min_peak_prominence",
+        "spot_spacing",
+    }
+)
 
 
 class LaserAFConfig(BaseModel):
@@ -107,6 +121,14 @@ class LaserAFConfig(BaseModel):
     reference_image_dtype: Optional[str] = Field(None, description="Data type of reference image array")
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_retired_fields(cls, data: Any) -> Any:
+        """Let a profile saved with the retired settings load, keeping its calibration and reference."""
+        if not isinstance(data, dict):
+            return data
+        return {name: value for name, value in data.items() if name not in RETIRED_FIELDS}
 
     def get_spot_detection_mode(self) -> SpotDetectionMode:
         """Get the SpotDetectionMode enum value."""
