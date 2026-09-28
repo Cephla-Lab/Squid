@@ -230,7 +230,9 @@ class LaserEngineRev1(QObject):
         self._source_error: Optional[str] = None  # set after SOURCE_ENABLE_ATTEMPTS failures; cleared by fault_reset()
         self._clamp_warned = False
         self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = full transmission
-        self._aom_lock = threading.Lock()  # orders the wake's and the set-point's LINE3:SET; never with _source_lock
+        # orders the wake's and the set-point's LINE3:SET; may take _source_lock inside it (link lost -> _on_lost ->
+        # _disable_source), never the reverse: nothing holding _source_lock waits for _aom_lock
+        self._aom_lock = threading.Lock()
         self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
         self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates)
         self._aom_cal: Optional[Tuple[np.ndarray, np.ndarray]] = None
