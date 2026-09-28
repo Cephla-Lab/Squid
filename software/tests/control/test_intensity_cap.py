@@ -107,6 +107,7 @@ def _channel_switch_stub(cap_percent, qtbot):
     stub = MagicMock()
     stub.is_switching_mode = False
     stub.liveController.get_intensity_cap_percent.return_value = cap_percent
+    stub.liveController.get_intensity_floor_percent.return_value = 0.0
     stub.liveController.is_confocal_mode.return_value = False
 
     slider = control.widgets.CappedSlider(control.widgets.Qt.Horizontal)

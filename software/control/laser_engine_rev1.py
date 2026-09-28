@@ -944,6 +944,19 @@ class LaserEngineRev1(QObject):
         line = self.line_for_wavelength(wavelength)
         return self.get_line_intensity(line) if line is not None else 0.0
 
+    def intensity_floor_percent(self, wavelength) -> float:
+        """Ruling 2026-09-28: without the AOM in the beam path, the GUI must not offer 0-9 % on the 560 nm source
+        (its own minimum set-point) - this is that floor, as % of the source's maximum optical power. 0.0 whenever
+        the engine itself can go dark (AOM in the path closes it at 0 %) or this is not the DF 560 source line."""
+        if self.variant != "DF" or self.options.aom_in_path:
+            return 0.0
+        if self.line_for_wavelength(wavelength) != SOURCE_560_LINE:
+            return 0.0
+        src = self._source  # local: close() can clear self._source on another thread
+        if src is None:
+            return 0.0
+        return 100.0 * src.min_power_mw / src.max_power_mw
+
     def _set_source_power(self, percent: float) -> None:
         src = self._source
         if src is None:
@@ -978,13 +991,15 @@ class LaserEngineRev1(QObject):
             self._set_aom_volts(self._aom_full_volts())  # full transmission (no-op when already there)
         if mw >= floor:
             return mw
+        top = src.max_power_mw
+        text = (
+            f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW "
+            f"({100.0 * floor / top:.3g} % of {top:.0f} mW) - running at the minimum"
+        )
+        self._log.warning(text)  # every request: API callers (not just the tab) must be told each time
         if not self._clamp_warned:
             self._clamp_warned = True
-            top = src.max_power_mw
-            self._notice(
-                f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW "
-                f"({100.0 * floor / top:.3g} % of {top:.0f} mW) - running at the minimum"
-            )
+            self._notice(text, warn=False)  # tab notice once per session (already logged above); avoid flooding it
         return floor
 
     def _aom_calibration(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:

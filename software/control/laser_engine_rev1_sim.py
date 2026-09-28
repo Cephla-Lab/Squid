@@ -238,8 +238,12 @@ class FakeEngine:
                 return "ERR line blocked by a latched fault - FAULT:RESET"
             if self.lines[i]["tok_req"] and not self.tok[i]:
                 return "ERR TOK low - TEC not in window"
-            if self.lines[i]["st"] == "OFF":
-                self.lines[i]["st"] = "RAMP"
+            if self.lines[i]["st"] != "OFF":
+                return "OK"  # already on
+            if self.suspended:
+                self.lines[i]["resume"] = 1  # join the resume set: comes up (RAMP) at close_cover()
+                return "OK"
+            self.lines[i]["st"] = "RAMP"
             return "OK"
         if key == "LINE:SET":
             i = n - 1

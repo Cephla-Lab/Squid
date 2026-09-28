@@ -60,3 +60,27 @@ def test_out_of_step_reply_resyncs_and_retries_once():
     link = EngineLink(fake)
     assert link.command("LINE1:SET 0.2") == "0.2000"
     assert fake.sent.count("LINE1:SET 0.2") == 2  # every engine command is idempotent, so the repeat is harmless
+
+
+def test_fake_enable_during_a_pause_joins_the_resume_set():
+    """Mirrors the firmware fix (made in parallel, firmware repo): LINE<n>:EN 1 during a cover pause joins the
+    resume set - reply OK, the line stays OFF - instead of the old refusal or an immediate RAMP."""
+    fake = FakeEngine(tok_delay_polls=0)
+    fake.latch_ok = True  # skip FAULT:RESET; ARM needs the hardware fault latch clear
+    fake.tok = [True] * 5
+    link = EngineLink(fake)
+    assert link.command("ARM") == ""
+    assert link.command("LINE1:EN 1") == ""
+    assert fake.lines[0]["st"] == "RAMP"
+
+    fake.open_cover()  # firmware pauses: L1 was on
+    assert fake.suspended and fake.lines[0]["st"] == "OFF" and fake.lines[0]["resume"] == 1
+
+    assert link.command("LINE2:EN 1") == ""  # joins the resume set instead of being refused
+    assert fake.lines[1]["st"] == "OFF" and fake.lines[1]["resume"] == 1
+    assert fake.lines[0]["resume"] == 1  # L1's pending resume is untouched
+
+    fake.close_cover()
+    assert fake.lines[0]["st"] == "RAMP" and fake.lines[1]["st"] == "RAMP"
+    link.status()  # one STAT? ticks RAMP -> ON
+    assert fake.lines[0]["st"] == "ON" and fake.lines[1]["st"] == "ON"

@@ -108,6 +108,31 @@ class LiveController(QObject):
             return 100.0
         return channel_config.get_max_output_percent(ill_config)
 
+    def get_intensity_floor_percent(self, channel_config: Optional["AcquisitionChannel"]) -> float:
+        """Minimum allowed illumination intensity (percent) for a channel.
+
+        Asks the Squid laser engine addon (if any) for its own floor on this
+        channel's wavelength - e.g. the DF 560 nm source's minimum set-point,
+        below which the GUI must not go without an AOM to dim/close further
+        (ruling 2026-09-28). 0.0 for every other channel, engine, or the
+        2024/25 engine (no such method).
+        """
+        if not channel_config:
+            return 0.0
+        ill_config = self._get_illumination_config()
+        if not ill_config:
+            return 0.0
+        wavelength = channel_config.get_illumination_wavelength(ill_config)
+        if wavelength is None:
+            return 0.0
+        engine = getattr(self.microscope.addons, "squid_laser_engine", None)
+        if engine is None:
+            return 0.0
+        floor_fn = getattr(engine, "intensity_floor_percent", None)
+        if floor_fn is None:
+            return 0.0
+        return floor_fn(wavelength)
+
     # ─────────────────────────────────────────────────────────────────────────────
     # Squid laser engine readiness (warn-only)
     # ─────────────────────────────────────────────────────────────────────────────
@@ -266,6 +291,13 @@ class LiveController(QObject):
                 f"{intensity}% to {intensity_cap}% (channel max output)"
             )
             intensity = intensity_cap
+        intensity_floor = self.get_intensity_floor_percent(self.currentConfiguration)
+        if intensity < intensity_floor:
+            self._log.warning(
+                f"Clamping illumination intensity for '{self.currentConfiguration.name}' from "
+                f"{intensity}% to {intensity_floor}% (channel minimum output)"
+            )
+            intensity = intensity_floor
         if self._is_led_matrix():
             if self.microscope.addons.sci_microscopy_led_array:
                 # set color based on channel name

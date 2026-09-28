@@ -1,6 +1,7 @@
 import threading
 import time
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -140,6 +141,34 @@ def test_below_minimum_clamps_and_warns_once():
     assert sum("below the 560 nm minimum" in n for n in engine.notices) == 1
     assert any("(20 % of 1000 mW)" in n for n in engine.notices)  # the minimum as a % of maximum power
     assert engine.poll_once().channels["L3"].state == LineState.READY  # READY at the clamped power
+
+
+def test_intensity_floor_percent():
+    """Ruling 2026-09-28: the 560 source's own minimum, as a % of maximum power, is the GUI floor - but only when
+    the engine cannot go below it in hardware (no AOM in the path)."""
+    engine, fake, source = _with_source()  # FakeSource 200-1000 mW
+    assert engine.intensity_floor_percent(560) == pytest.approx(20.0)
+    assert engine.intensity_floor_percent(488) == 0.0  # not the 560 source line
+
+    aom_engine, _, _ = _with_source(options=EngineOptions(aom_in_path=True))
+    assert aom_engine.intensity_floor_percent(560) == 0.0  # the AOM closes for 0 %: no floor needed
+
+    no_source_fake = FakeEngine(tok_delay_polls=0)
+    no_source_engine = LaserEngineRev1(link_factory=lambda: EngineLink(no_source_fake), query_interval_s=0.01)
+    no_source_engine.open()
+    assert no_source_engine.intensity_floor_percent(560) == 0.0
+
+
+def test_below_minimum_warns_on_every_api_request():
+    """The tab notice fires once per session, but an API caller must be told on every below-minimum request."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine._log = MagicMock()
+    engine.set_line_intensity(3, 5.0)  # 50 mW, below the 200 mW minimum
+    engine.set_line_intensity(3, 0.0)  # a second below-minimum request
+    warnings = [c.args[0] for c in engine._log.warning.call_args_list if "below the 560 nm minimum" in c.args[0]]
+    assert len(warnings) == 2
+    assert sum("below the 560 nm minimum" in n for n in engine.notices) == 1
 
 
 def test_zero_percent_without_the_aom_clamps_and_warns_once():
