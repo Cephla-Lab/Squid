@@ -261,6 +261,10 @@ class SquidLaserEngineBase(QObject):
         for k in _CHANNEL_DISPLAY_ORDER:
             self.put_to_sleep(k)
 
+    def on_startup(self) -> None:
+        """Called once from MicroscopeAddons.prepare_for_use. The 2024/25 engine: wake every channel (TEC warm-up)."""
+        self.wake_up_all()
+
     def wait_until_ready(
         self,
         channel_keys: List[str],

@@ -1020,3 +1020,30 @@ class LaserEngineRev1LightSource(LightSource):
 
     def shut_down(self):
         self._engine.close()
+
+
+def _production_source_factory(source_sn: Optional[str]):
+    try:
+        from control.laser_engine_rev1_l3_driver import open_l3_source  # Task 10; absent from builds without it
+    except ImportError:
+        return None
+    return lambda: open_l3_source(sn=source_sn)
+
+
+def options_from_def() -> EngineOptions:
+    import control._def as d  # read at call time: the .ini has been applied by then
+
+    return EngineOptions(
+        source_idle_off_min=d.LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN,
+        aom_in_path=bool(d.LASER_ENGINE_REV1_AOM_IN_PATH),
+        shutter_with_aom=str(d.LASER_ENGINE_REV1_SHUTTER_WITH_AOM),
+        aom_attenuation=bool(d.LASER_ENGINE_REV1_AOM_ATTENUATION),
+    )
+
+
+def build_from_config(sn: Optional[str], source_sn: Optional[str], options: EngineOptions) -> LaserEngineRev1:
+    return LaserEngineRev1(
+        link_factory=lambda: EngineLink.open(sn=sn),
+        source_factory=_production_source_factory(source_sn),
+        options=options,
+    )

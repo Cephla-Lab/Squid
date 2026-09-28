@@ -999,6 +999,24 @@ ANDOR_LASER_PID = 0x0300
 USE_SQUID_LASER_ENGINE = False
 SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
 
+# Cephla laser engine, carrier rev 1 (Teensy 4.1 text protocol, laser-engine-firmware). One light source: intensity over USB,
+# exposure timing on the Squid controller TTL lines D1-D5. Mutually exclusive with USE_SQUID_LASER_ENGINE.
+USE_LASER_ENGINE_REV1 = False
+LASER_ENGINE_REV1_SN = None  # Teensy USB serial number (all digits is fine: matched as text)
+LASER_ENGINE_REV1_SOURCE_SN = None  # DF: USB serial number of the engine's 560 nm source
+LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN = (
+    30  # DF: 560 source off after this many minutes without use; 0 = 24 h (no "never")
+)
+LASER_ENGINE_REV1_AOM_IN_PATH = (
+    False  # DF: the 560 AOM is aligned into the beam path (changing it needs optical re-alignment)
+)
+LASER_ENGINE_REV1_SHUTTER_WITH_AOM = (
+    "gate"  # with the AOM: "gate" = shutter follows each exposure too; "open" = held open, AOM gates
+)
+LASER_ENGINE_REV1_AOM_ATTENUATION = (
+    False  # dim the 560 below its minimum with the AOM (needs intensity_calibrations/560_aom.csv)
+)
+
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25
 XLIGHT_VALIDATE_WHEEL_POS = False
@@ -1339,6 +1357,13 @@ def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> Non
         )
 
 
+def _validate_laser_engine_flags(use_old: bool, use_rev1: bool) -> None:
+    if use_old and use_rev1:
+        raise ValueError(
+            "USE_SQUID_LASER_ENGINE and USE_LASER_ENGINE_REV1 are mutually exclusive (set only one to True in the machine .ini)"
+        )
+
+
 # fluidics
 RUN_FLUIDICS = False
 FLUIDICS_CONFIG_PATH = "machine_configs/fluidics_config.yaml"  # the library's FluidicsConfig YAML
@@ -1465,6 +1490,7 @@ if config_files:
         populate_class_from_dict(myclass, pop_items)
 
     _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+    _validate_laser_engine_flags(USE_SQUID_LASER_ENGINE, USE_LASER_ENGINE_REV1)
 
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
@@ -1479,6 +1505,7 @@ else:
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
         _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
+        _validate_laser_engine_flags(USE_SQUID_LASER_ENGINE, USE_LASER_ENGINE_REV1)
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)

@@ -21,6 +21,8 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
+import control.laser_engine_rev1 as laser_engine_rev1
+import control.laser_engine_rev1_sim as laser_engine_rev1_sim
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
@@ -232,6 +234,17 @@ class MicroscopeAddons:
                 if not simulated
                 else squid_laser_engine.SquidLaserEngine_Simulation()
             )
+        if control._def.USE_LASER_ENGINE_REV1:
+            options = laser_engine_rev1.options_from_def()
+            laser_engine = (
+                laser_engine_rev1.build_from_config(
+                    sn=control._def.LASER_ENGINE_REV1_SN,
+                    source_sn=control._def.LASER_ENGINE_REV1_SOURCE_SN,
+                    options=options,
+                )
+                if not simulated
+                else laser_engine_rev1_sim.build_simulated_engine(options=options)
+            )
 
         return MicroscopeAddons(
             xlight,
@@ -299,7 +312,7 @@ class MicroscopeAddons:
             # start() may raise if the USB device is missing — intentional hard fail
             # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
             self.squid_laser_engine.start()
-            self.squid_laser_engine.wake_up_all()  # fire-and-forget
+            self.squid_laser_engine.on_startup()  # old engine: wake all (TEC warm-up); rev 1: TECs on, arm, bring every line up
 
 
 class LowLevelDrivers:
@@ -436,6 +449,17 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
+        elif control._def.USE_LASER_ENGINE_REV1 and addons.squid_laser_engine is not None:
+            illumination_controller = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                ShutterControlMode.TTL,
+                LightSourceType.CephlaLaserEngineRev1,
+                addons.squid_laser_engine.light_source,
+            )
+            # ruling 5: the engine line for a wavelength is the port its TTL uses, read live (follows port-map edits and the
+            # Microscope.config_repo setter, which replaces illumination_controller.config_repo)
+            addons.squid_laser_engine.ttl_map_provider = lambda: illumination_controller.channel_mappings_TTL
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
 

@@ -330,3 +330,13 @@ class FakeSource:
 
     def close(self) -> None:
         self.calls.append("close")
+
+
+def build_simulated_engine(options=None):
+    from control.laser_engine_rev1 import LaserEngineRev1
+    from control.laser_engine_rev1_link import EngineLink
+
+    fake, source = FakeEngine(tok_delay_polls=3), FakeSource()
+    engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, options=options)
+    engine.sim_engine, engine.sim_source = fake, source  # test / demo access
+    return engine
