@@ -72,9 +72,12 @@ class TestSweep:
         )
         assert result.z_best_um == pytest.approx(37.0, abs=0.25 * depth_of_field_um(na))
         assert hw.get_z_um() == pytest.approx(result.z_best_um, abs=hw.z_microstep_um)  # lands on a Z microstep
-        coarse = plan_coarse_level(na, 100.0, 0.0)
-        # the high-passed std runs only while the step exceeds 2*DOF (never at 4x or 10x with these ranges)
-        assert result.levels[0].metric == ("highpass_std" if coarse.step_um > 2 * depth_of_field_um(na) else "fine")
+        # The first level always uses the high-passed std (spec C §6.3 as amended 2026-09-28); finer
+        # levels use it only while their step exceeds 2*DOF.
+        assert result.levels[0].metric == "highpass_std"
+        for level in result.levels[1:]:
+            step = abs(level.z_um[1] - level.z_um[0])
+            assert level.metric == ("highpass_std" if step > 2 * depth_of_field_um(na) else "fine")
 
     def test_narrow_user_range_at_4x_still_works(self):
         hw = _hw("4x", z_focus=8.0)
@@ -131,30 +134,21 @@ class TestSweep:
             )
 
 
-_Q1 = pytest.mark.xfail(
-    strict=True,
-    reason="Q1, spec C §6.3 amendment held until after the B1 bench (branch feat/objective-focus-amendment): "
-    "a first level run with LAPE cannot refuse noise or see a focus far outside the range. Strict: remove "
-    "this mark when the amendment lands.",
-)
-
-
 class TestNoFalseFocus:
     """External reviews: a sweep either finds the true focus or refuses; it must never report an
-    unrelated peak. The original noisy cases, with the default noise and a 40 px focus square. Known
-    failures are kept visible (strict xfail) rather than hidden by moving the target."""
+    unrelated peak. The original noisy cases, with the default noise and a 40 px focus square. They
+    failed before spec C §6.3's amendment (the first level always uses the high-passed std; the
+    peak-rise floor is the mean of the lowest quartile)."""
 
     def _sweep(self, hw, **kw):
         args = dict(objective="20x", channel="BF", na=0.8, center_um=0.0, square_px=40, fine_metric=lape)
         return focus_sweep(hw, **{**args, **kw})
 
-    @_Q1
     def test_a_noisy_flat_field_is_refused(self):
         hw = _hw("20x", z_focus=0.0, scene=FakeScene.flat())  # default noise 0.002
         with pytest.raises(FocusError, match="No focus peak found"):
             self._sweep(hw, range_um=20.0)
 
-    @_Q1
     @pytest.mark.parametrize("z_focus", [18.0, 25.0])
     def test_a_focus_past_the_computed_range_is_recovered_or_refused(self, z_focus):
         hw = _hw("20x", z_focus=z_focus)
@@ -169,7 +163,6 @@ class TestNoFalseFocus:
         with pytest.raises(FocusError, match="widen the range|No focus peak found"):
             self._sweep(hw, range_um=100.0)
 
-    @_Q1
     def test_noisy_flat_fields_are_refused_across_seeds(self):
         for seed in range(6):
             hw = _hw("20x", z_focus=0.0, scene=FakeScene.flat(), seed=seed)

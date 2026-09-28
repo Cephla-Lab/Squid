@@ -81,12 +81,11 @@ def _at_edge(index: int, n: int) -> bool:
     return index < 2 or index > n - 3
 
 
-def _run_level(hw, level, *, objective, channel, na, square_px, fine_metric) -> SweepLevel:
+def _run_level(hw, level, *, coarse, objective, channel, na, square_px, fine_metric) -> SweepLevel:
     low, high = hw.z_limits_um()
     targets = [z for z in level_targets(level) if low <= z <= high]
     if len(targets) < MIN_IN_LIMIT_SAMPLES:
         raise FocusError("Search range hits the Z limit; refocus the starting objective or narrow the range.")
-    coarse = level.step_um > 2 * depth_of_field_um(na)
     pre = targets[0] - max(2 * level.step_um, 1.0)
     if pre >= low:
         hw.move_z_to_um(pre)
@@ -130,10 +129,15 @@ def focus_sweep(
     level = plan_coarse_level(na, range_um, center_um)
     widened = False
     while True:
-        swept = _run_level(hw, level, **run)
+        # The first level always uses the high-passed std: the fine metric is flat noise a few DOF
+        # from focus, so it can neither see a focus outside the range nor refuse a blank field.
+        swept = _run_level(hw, level, coarse=True, **run)
         levels.append(swept)
-        lowest = min(swept.values)
-        peak_rise = (max(swept.values) - lowest) / max(lowest, _EPS)
+        # A robust floor (the lowest quartile's mean, not the single minimum): one low sample must
+        # not turn noise into a peak.
+        ordered = np.sort(np.asarray(swept.values))
+        floor = float(np.mean(ordered[: max(1, len(ordered) // 4)]))
+        peak_rise = (float(ordered[-1]) - floor) / max(floor, _EPS)
         if peak_rise < PEAK_RISE_MIN:  # before the edge gate: a flat curve has its maximum anywhere
             raise FocusError(
                 f"No focus peak found within ±{level.half_span_um:g} µm "
@@ -158,7 +162,7 @@ def focus_sweep(
     while nxt is not None:
         recentred = False
         while True:
-            swept = _run_level(hw, nxt, **run)
+            swept = _run_level(hw, nxt, coarse=nxt.step_um > 2 * depth_of_field_um(na), **run)
             levels.append(swept)
             current_best = int(np.argmax(swept.values))
             if not _at_edge(current_best, len(swept.values)):
