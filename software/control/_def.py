@@ -1278,6 +1278,10 @@ X_HOME_SAFETY_POINT = 0
 Y_HOME_SAFETY_POINT = 0
 Z_HOME_SAFETY_POINT = 1200
 
+# A blocking downward Z move goes this far past its target and comes back up, so that Z always rests on the
+# same side of the drive (um). It must exceed the lost motion of the stage.
+Z_BACKLASH_COMPENSATION_UM = 5.0
+
 USE_XERYON = False
 XERYON_SERIAL_NUMBER = "95130303033351E02050"
 XERYON_SPEED = 80
