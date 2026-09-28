@@ -585,6 +585,9 @@ class ObjectiveTurret4PosController:
             return
 
         captured_z = self._retract_z_if_possible()
+        # Unknown until the rotation completes: after a failed rotation the turret may sit between
+        # slots, and keeping the old name would make a move back to it take the shortcut above.
+        self._current_objective = None
         try:
             self._rotate_to(objective_name, timeout_s)
             self._current_objective = objective_name

@@ -867,3 +867,28 @@ def test_sim_accepts_di_invert_kwarg():
     sim.move_to_objective("10x")
     assert sim.current_objective == "10x"
     sim.close()
+
+
+def test_a_failed_rotation_forgets_the_objective_so_a_move_back_really_moves(monkeypatch):
+    """After a rotation fails partway the turret may sit between slots. Keeping the old name would make
+    a move back to it take the same-slot shortcut and report success without moving."""
+    controller, fake = _make_real_controller(monkeypatch)
+    names = list(controller._positions)
+    first = names[0]
+    second = next(n for n in names if controller._positions[n] != controller._positions[first])
+    rotations = []
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: rotations.append(name))
+    controller.move_to_objective(first)
+
+    def jam(name, timeout_s):
+        rotations.append(name)
+        raise RuntimeError("drive alarm mid-rotation")
+
+    monkeypatch.setattr(controller, "_rotate_to", jam)
+    with pytest.raises(RuntimeError, match="mid-rotation"):
+        controller.move_to_objective(second)
+    assert controller.current_objective is None
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: rotations.append(name))
+    controller.move_to_objective(first)
+    assert rotations == [first, second, first]  # the move back really rotated
+    controller.close()
