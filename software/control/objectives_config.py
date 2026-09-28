@@ -6,6 +6,7 @@ initializing, and control/models/__init__.py (like most of control.*) imports _d
 """
 
 import ast
+import math
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -20,6 +21,13 @@ from control.objective_changer_constants import NIMOTION_TURRET_SLOTS, XERYON_SL
 OBJECTIVES_YAML_PATH = Path(__file__).resolve().parent.parent / "machine_configs" / "objectives.yaml"
 
 _RESERVED_NAMES = {"general", ".", ".."}
+# Names become channel_configs/<name>.yaml file stems: reject characters that are illegal in a
+# Windows file name (":" also makes an NTFS alternate data stream) and Windows' reserved device
+# names, so a config authored on macOS/Linux still produces valid file names on a Windows bench PC.
+_WINDOWS_ILLEGAL_NAME_CHARS = '<>:"|?*'
+_WINDOWS_RESERVED_DEVICE_NAMES = (
+    {"CON", "PRN", "AUX", "NUL"} | {f"COM{d}" for d in range(1, 10)} | {f"LPT{d}" for d in range(1, 10)}
+)
 
 
 class ObjectivesConfigError(Exception):
@@ -90,6 +98,8 @@ def validate_objectives_config(config: ObjectivesConfig, *, use_xeryon: bool, us
     def fail(field, reason):
         raise ObjectivesConfigError(path, field, reason)
 
+    if config.version != 1:
+        fail("version", f"is {config.version}, but only version 1 is supported")
     if not config.objectives:
         fail("objectives", "at least one objective is required")
     expected = changer_kind_for_flags(use_xeryon, use_turret)
@@ -109,16 +119,23 @@ def validate_objectives_config(config: ObjectivesConfig, *, use_xeryon: bool, us
             fail(f"{where}.name", "must be non-empty, with no leading or trailing spaces")
         if "/" in name or "\\" in name or name.lower() in _RESERVED_NAMES:
             fail(f"{where}.name", f"'{name}' is reserved or contains a path separator (names become file names)")
+        for ch in name:
+            if ch in _WINDOWS_ILLEGAL_NAME_CHARS:
+                fail(f"{where}.name", f"'{name}' contains '{ch}', which is invalid in a Windows file name")
+            if ord(ch) < 32:
+                fail(f"{where}.name", f"'{name}' contains a control character, which is invalid in a file name")
+        if name.upper() in _WINDOWS_RESERVED_DEVICE_NAMES:
+            fail(f"{where}.name", f"'{name}' is a reserved Windows device name and cannot be used as a file name")
         if name.lower() in names:
             fail(
                 f"{where}.name", f"'{name}' duplicates '{names[name.lower()]}' (names are compared case-insensitively)"
             )
         names[name.lower()] = name
-        if not obj.magnification > 0:
+        if not (math.isfinite(obj.magnification) and obj.magnification > 0):
             fail(f"{where}.magnification", "must be greater than 0")
-        if not 0 < obj.na <= 1.5:
+        if not (math.isfinite(obj.na) and 0 < obj.na <= 1.5):
             fail(f"{where}.na", "must be greater than 0 and at most 1.5")
-        if not obj.tube_lens_f_mm > 0:
+        if not (math.isfinite(obj.tube_lens_f_mm) and obj.tube_lens_f_mm > 0):
             fail(f"{where}.tube_lens_f_mm", "must be greater than 0")
         if n_slots == 0:
             if obj.slot is not None:
@@ -141,7 +158,11 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
     if not path.exists():
         return None
     try:
-        data = yaml.safe_load(path.read_text())
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ObjectivesConfigError(path, "(file)", f"cannot be read: {e}") from e
+    try:
+        data = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise ObjectivesConfigError(path, "(file)", f"is not valid YAML: {e}") from e
     if data is None:
@@ -152,7 +173,7 @@ def load_objectives_config(path=None) -> Optional[ObjectivesConfig]:
 def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
     path = Path(path) if path is not None else OBJECTIVES_YAML_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False))
+    path.write_text(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False), encoding="utf-8")
 
 
 def to_objectives_dict(config: ObjectivesConfig) -> Dict[str, Dict[str, float]]:

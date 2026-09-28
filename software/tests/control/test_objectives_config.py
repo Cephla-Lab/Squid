@@ -23,6 +23,32 @@ def _valid(data, *, use_xeryon=False, use_turret=True):
     return config
 
 
+def test_conftest_patches_objectives_yaml_path_before_any_other_control_import():
+    """F5: control._def reads objectives_config.OBJECTIVES_YAML_PATH at import time, so
+    tests/conftest.py must patch it before any other control.* import pulls _def in
+    transitively (e.g. control.microcontroller). Otherwise a real machine_configs/objectives.yaml
+    on a dev/bench machine changes OBJECTIVES for the whole in-process suite, or sys.exit(1)s
+    at collection."""
+    conftest_path = Path(oc.__file__).resolve().parent.parent / "tests" / "conftest.py"
+    tree = ast.parse(conftest_path.read_text())
+    patch_lineno = None
+    first_other_control_import_lineno = None
+    for node in ast.walk(tree):
+        names_and_modules = []
+        if isinstance(node, ast.Import):
+            names_and_modules = [(alias.name, node.lineno) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names_and_modules = [(node.module, node.lineno)]
+        for module, lineno in names_and_modules:
+            if module == "control.objectives_config":
+                patch_lineno = lineno
+            elif module.startswith("control") and first_other_control_import_lineno is None:
+                first_other_control_import_lineno = lineno
+    assert patch_lineno is not None, "conftest.py must import control.objectives_config"
+    assert first_other_control_import_lineno is not None, "conftest.py must import some other control.* module"
+    assert patch_lineno < first_other_control_import_lineno
+
+
 def test_module_imports_only_allowed_modules():
     tree = ast.parse(Path(oc.__file__).read_text())
     modules = set()
@@ -84,13 +110,60 @@ class TestParse:
         text = str(err)
         assert "objectives.yaml" in text and "objectives[0].slot" in text and "delete" in text
 
+    def test_invalid_utf8_bytes_is_an_error(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        path.write_bytes(b"version: 1\nchanger: {kind: none}\nobjectives:\n  - name: \xff\xfe bad\n")
+        with pytest.raises(ObjectivesConfigError) as err:
+            oc.load_objectives_config(path)
+        assert "cannot be read" in err.value.reason
+
+    def test_directory_at_the_path_is_an_error(self, tmp_path):
+        path = tmp_path / "objectives.yaml"
+        path.mkdir()
+        with pytest.raises(ObjectivesConfigError) as err:
+            oc.load_objectives_config(path)
+        assert "cannot be read" in err.value.reason
+
+    def test_utf8_model_string_round_trips(self, tmp_path):
+        data = _data()
+        data["objectives"][0]["model"] = "20× water"
+        config = _valid(data)
+        path = tmp_path / "objectives.yaml"
+        oc.save_objectives_config(config, path)
+        loaded = oc.load_objectives_config(path)
+        assert loaded.objectives[0].model == "20× water"
+
 
 class TestValidate:
     def test_at_least_one_objective(self):
         with pytest.raises(ObjectivesConfigError, match="at least one"):
             _valid(_data(objectives=[]))
 
-    @pytest.mark.parametrize("name", ["", " 4x", "4x ", "a/b", "a\\b", ".", "..", "general", "General"])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            " 4x",
+            "4x ",
+            "a/b",
+            "a\\b",
+            ".",
+            "..",
+            "general",
+            "General",
+            "20x:oil",
+            "20x*",
+            "20x?",
+            "20x|w",
+            'a"b',
+            "a<b",
+            "a>b",
+            "a\tb",
+            "CON",
+            "nul",
+            "Com1",
+        ],
+    )
     def test_bad_names(self, name):
         data = _data()
         data["objectives"][0]["name"] = name
@@ -104,13 +177,31 @@ class TestValidate:
         with pytest.raises(ObjectivesConfigError, match="case-insensitively"):
             _valid(data)
 
-    @pytest.mark.parametrize("field, value", [("magnification", 0), ("na", 0), ("na", 1.6), ("tube_lens_f_mm", -1)])
+    @pytest.mark.parametrize(
+        "field, value",
+        [
+            ("magnification", 0),
+            ("na", 0),
+            ("na", 1.6),
+            ("tube_lens_f_mm", -1),
+            ("magnification", 1e999),
+            ("na", 1e999),
+            ("tube_lens_f_mm", 1e999),
+        ],
+    )
     def test_optics_bounds(self, field, value):
         data = _data()
         data["objectives"][0][field] = value
         with pytest.raises(ObjectivesConfigError) as err:
             _valid(data)
         assert err.value.field == f"objectives[0].{field}"
+
+    def test_version_other_than_1_rejected(self):
+        data = _data()
+        data["version"] = 7
+        with pytest.raises(ObjectivesConfigError) as err:
+            _valid(data)
+        assert err.value.field == "version"
 
     def test_duplicate_slot(self):
         data = _data()
