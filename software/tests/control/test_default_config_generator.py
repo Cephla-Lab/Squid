@@ -710,3 +710,25 @@ class TestConfocalToggleConfigSwitching:
         cf = repo.get_merged_channels("20x", confocal_mode=True)
         assert wf[0].confocal_hardware_settings.emission_iris == 40.0
         assert cf[0].confocal_hardware_settings.emission_iris == 40.0
+
+
+def test_objectives_default_to_the_installed_list(monkeypatch):
+    import control._def
+    import control.default_config_generator as generator
+
+    illumination_config = IlluminationChannelConfig(
+        version=1,
+        channels=[
+            IlluminationChannel(
+                name="Channel A",
+                type=IlluminationType.EPI_ILLUMINATION,
+                wavelength_nm=488,
+                controller_port="D1",
+                source_code=11,
+            ),
+        ],
+    )
+    monkeypatch.setattr(control._def, "OBJECTIVES", {"4x": {}, "20x water": {}})
+    _, objective_configs = generate_default_configs(illumination_config)
+    assert sorted(objective_configs) == ["20x water", "4x"]
+    assert not hasattr(generator, "DEFAULT_OBJECTIVES")
