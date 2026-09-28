@@ -7,9 +7,11 @@ before any change, and must keep passing after it.
 
 import csv
 import json
+import re
 
 import pytest
 
+from control.objectives_config import ObjectivesConfigError
 from tests.control.objectives_startup_harness import SOFTWARE_DIR, XERYON_INI, run_def
 
 CSV_OBJECTIVES = {
@@ -140,6 +142,31 @@ class TestWithYaml:
         assert " - ERROR - " in run.output
         assert run.report is None
         assert "objectives.yaml" in run.output and field in run.output and "delete" in run.output
+
+    @staticmethod
+    def _error_message(output):
+        """The message of the one ERROR log line (its text between the level and the source location)."""
+        (message,) = re.findall(r" - ERROR - (.*) \(\w+\.py:\d+\)", output)
+        return message
+
+    def test_invalid_yaml_without_a_backup_gives_the_unchanged_message(self, tmp_path):
+        run = run_def(tmp_path, objectives_yaml="   \n")
+        assert run.returncode == 1
+        expected = str(ObjectivesConfigError(tmp_path / "objectives.yaml", "(file)", "is empty"))
+        assert self._error_message(run.output) == expected
+
+    def test_invalid_yaml_with_a_backup_names_it_and_how_to_restore_it(self, tmp_path):
+        backup = tmp_path / "objectives.yaml.bak"
+        backup.write_text(NONE_YAML_WITHOUT_20X)
+        run = run_def(tmp_path, objectives_yaml="   \n")
+        assert run.returncode == 1
+        assert "Traceback" not in run.output
+        assert run.report is None
+        message = self._error_message(run.output)
+        expected = str(ObjectivesConfigError(tmp_path / "objectives.yaml", "(file)", "is empty"))
+        assert message.startswith(expected)  # the original message is still all there
+        assert str(backup) in message
+        assert "rename it to objectives.yaml" in message
 
     def test_default_objective_fallback_wording_is_true_for_both_cases(self, tmp_path):
         # No cache file at all: there is nothing recorded to call "not mounted".

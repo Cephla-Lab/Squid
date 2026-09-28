@@ -15,8 +15,6 @@ Organization:
 - Cache Management: cache control
 """
 
-import os
-import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
@@ -25,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 import squid.logging
 import control.objectives_config as objectives_config
+from control.atomic_file import write_atomically
 
 from control.models import (
     AcquisitionChannel,
@@ -504,27 +503,15 @@ class ConfigRepository:
         """Copy channel_configs/<source>.yaml to <target>.yaml in every profile that has the
         source and not the target. Never overwrites, moves or deletes. Returns the profiles written.
 
-        Copies to a temp file in the destination directory first, then os.replace()s it onto
-        <target>.yaml: a copy that dies partway through never leaves a partial file under the
-        final name, so "never overwrite an existing target" stays safe on retry."""
+        Publishes through write_atomically: a copy that dies partway through (or loses power)
+        never leaves a partial or empty file under the final name, so "never overwrite an
+        existing target" stays safe on retry."""
         written = []
         for profile in self.get_available_profiles():
             src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
             dst = src.with_name(f"{target}.yaml")
             if src.exists() and not dst.exists():
-                tmp = dst.with_name(f".{target}.yaml.tmp")
-                try:
-                    shutil.copyfile(src, tmp)
-                    os.replace(tmp, dst)
-                except Exception as original_exc:
-                    try:
-                        tmp.unlink(missing_ok=True)
-                    except OSError as cleanup_exc:
-                        logger.error(
-                            f"Failed to remove temp file {tmp} after a failed copy: {cleanup_exc}. "
-                            f"Original: {original_exc}"
-                        )
-                    raise original_exc
+                write_atomically(dst, src.read_bytes())
                 written.append(profile)
         self._profile_cache.pop(f"objective:{target}", None)
         return written

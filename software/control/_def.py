@@ -1514,7 +1514,7 @@ def _apply_objectives_yaml():
 try:
     OBJECTIVES_CONFIG = _apply_objectives_yaml()
 except _objectives_config.ObjectivesConfigError as e:
-    log.error(str(e))
+    log.error(f"{e}{_objectives_config.restore_hint(_objectives_config.OBJECTIVES_YAML_PATH)}")
     sys.exit(1)
 
 
