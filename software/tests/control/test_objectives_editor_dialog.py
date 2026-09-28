@@ -73,7 +73,7 @@ def test_restart_now_calls_the_callback(qtbot, repo, monkeypatch):
 def test_added_objective_copies_channel_settings(qtbot, repo, no_dialogs, tmp_path):
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)  # frees slot 1
-    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
     assert dialog.save()
     for profile in ("a", "b"):
         path = tmp_path / "user_profiles" / profile / "channel_configs" / "20x water.yaml"
@@ -82,11 +82,11 @@ def test_added_objective_copies_channel_settings(qtbot, repo, no_dialogs, tmp_pa
 
 def test_copy_column_is_a_combo_for_a_new_row_preselected_to_nearest_magnification(qtbot, repo, no_dialogs):
     dialog = _turret_dialog(qtbot, repo)
-    dialog.remove_row(0)  # frees slot 1; also removes "4x" from the mounted (copy-source) pool
-    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    dialog.remove_row(0)  # frees slot 1; "4x" stays in the mounted (copy-source) pool regardless
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
     combo = dialog._table.cellWidget(dialog._table.rowCount() - 1, widgets_objectives._COL_COPY)
     assert isinstance(combo, widgets_objectives.QComboBox)
-    assert [combo.itemText(i) for i in range(combo.count())] == ["10x", "20x"]
+    assert [combo.itemText(i) for i in range(combo.count())] == ["4x", "10x", "20x"]
     assert combo.currentText() == "20x"
     # An existing (mounted) row's cell is not a combo.
     assert dialog._table.cellWidget(0, widgets_objectives._COL_COPY) is None
@@ -97,7 +97,7 @@ def test_copy_combo_can_be_changed_to_a_different_mounted_objective(qtbot, repo,
         (tmp_path / "user_profiles" / profile / "channel_configs" / "10x.yaml").write_text(f"{profile}-10x")
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)  # frees slot 1
-    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
     combo = dialog._table.cellWidget(dialog._table.rowCount() - 1, widgets_objectives._COL_COPY)
     combo.setCurrentIndex(combo.findText("10x"))
     assert dialog.save()
@@ -109,7 +109,7 @@ def test_copy_combo_can_be_changed_to_a_different_mounted_objective(qtbot, repo,
 def test_second_save_is_idempotent(qtbot, repo, no_dialogs, tmp_path):
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)
-    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
     assert dialog.save()
     first = repo.get_objectives_config()
     assert dialog.save()
@@ -122,7 +122,7 @@ def test_second_save_is_idempotent(qtbot, repo, no_dialogs, tmp_path):
 
 def test_invalid_table_is_refused_with_the_startup_message(qtbot, repo, no_dialogs):
     dialog = _turret_dialog(qtbot, repo)
-    dialog.add_row(EditorRow("40x", 40.0, 0.95, 180.0, 1))  # slot 1 is taken by 4x
+    dialog.add_row(EditorRow("40x", 40.0, 0.95, 180.0, 1), new=True)  # slot 1 is taken by 4x
     assert not dialog.save()
     assert repo.get_objectives_config() is None
     assert "already used" in no_dialogs["warning"][0]
@@ -131,7 +131,7 @@ def test_invalid_table_is_refused_with_the_startup_message(qtbot, repo, no_dialo
 def test_copy_failure_shows_critical_and_does_not_write_yaml(qtbot, repo, no_dialogs, monkeypatch):
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)  # frees slot 1
-    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
 
     def _raise(*a, **k):
         raise OSError("disk full")
@@ -190,7 +190,8 @@ def test_xeryon_seed_blocks_save_until_one_per_position(qtbot, repo, no_dialogs)
     assert dialog.save()
 
 
-# --- R1: a new row's copy source is always a mounted objective ---
+# --- R1/R7: a new row's copy source is always one of the objectives mounted when the dialog
+# opened, regardless of rows added or removed during this session ---
 
 
 def test_second_added_row_offers_only_mounted_objectives_as_copy_source(qtbot, repo, no_dialogs):
@@ -206,17 +207,42 @@ def test_second_added_row_offers_only_mounted_objectives_as_copy_source(qtbot, r
     assert combo.currentText() == "20x"
 
 
-def test_removing_all_mounted_rows_leaves_a_new_row_with_no_copy_source(qtbot, repo, no_dialogs):
+def test_removing_all_mounted_rows_still_offers_them_as_copy_sources(qtbot, repo, no_dialogs):
+    # Ruling 13: the copy-source pool is fixed at dialog-open time (existing config or seed) and
+    # is not pruned by removals during the session -- an objective's channel-config files stay on
+    # disk after it is removed from the table, so it remains a valid source.
     dialog = _turret_dialog(qtbot, repo)
     for _ in range(3):
         dialog.remove_row(0)
     dialog.add_row(dialog._new_row("40x", 40.0, 0.95, 180.0), new=True)
     last = dialog._table.rowCount() - 1
     combo = dialog._table.cellWidget(last, widgets_objectives._COL_COPY)
-    assert isinstance(combo, widgets_objectives.QComboBox)
-    assert combo.count() == 0
-    assert combo.currentText() == ""
-    assert dialog.save()  # still works; the objective gets general-only channels
+    assert [combo.itemText(i) for i in range(combo.count())] == ["4x", "10x", "20x"]
+    assert combo.currentText() == "20x"  # nearest to 40 among the open-time mounted objectives
+    assert dialog.save()
+
+
+def test_remove_then_add_rename_workflow_can_still_copy_the_removed_objectives_settings(
+    qtbot, repo, no_dialogs, monkeypatch, tmp_path
+):
+    # The locked-name tooltip (R4) prescribes remove-then-add for a rename. Remove "20x" (freeing
+    # its slot), then "rename" it by adding a custom "20x oil" at the same magnification: it must
+    # still be able to copy "20x"'s settings, even though that row is no longer in the table.
+    monkeypatch.setattr(widgets_objectives.QInputDialog, "getText", lambda *a, **k: ("20x oil", True))
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(2)  # "20x", slot 3
+    dialog._add_custom()
+    row = dialog._table.rowCount() - 1
+    combo = dialog._table.cellWidget(row, widgets_objectives._COL_COPY)
+    dialog._table.item(row, widgets_objectives._COL_NA).setText("0.8")
+    dialog._table.item(row, widgets_objectives._COL_TUBE).setText("180")
+    dialog._table.item(row, widgets_objectives._COL_MAG).setText("20")
+    assert [combo.itemText(i) for i in range(combo.count())] == ["4x", "10x", "20x"]
+    assert combo.currentText() == "20x"
+    assert dialog.save()
+    for profile in ("a", "b"):
+        path = tmp_path / "user_profiles" / profile / "channel_configs" / "20x oil.yaml"
+        assert path.read_text() == f"{profile}-20x"
 
 
 # --- R3: an invalid objectives.yaml at editor-open time falls back to the seed ---
