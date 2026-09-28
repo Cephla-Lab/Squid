@@ -957,6 +957,20 @@ class LaserEngineRev1(QObject):
             return 0.0
         return 100.0 * src.min_power_mw / src.max_power_mw
 
+    @property
+    def source_status(self) -> Optional[SourceStatus]:
+        """The engine-owned source's last judged status (read-only, for display); None when there is no source."""
+        src = self._source  # local: close() can clear self._source on another thread
+        return self._source_status if src is not None else None
+
+    @property
+    def source_limits_mw(self) -> Optional[Tuple[float, float]]:
+        """(minimum, maximum) set-point of the engine-owned source in mW (read-only, for display); None when absent."""
+        src = self._source  # local: close() can clear self._source on another thread
+        if src is None:
+            return None
+        return float(src.min_power_mw), float(src.max_power_mw)
+
     def _set_source_power(self, percent: float) -> None:
         src = self._source
         if src is None:

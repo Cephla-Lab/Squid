@@ -1,0 +1,504 @@
+"""Bench GUI for the Cephla laser engine, carrier rev 1: drive the engine through the Squid driver, no microscope.
+
+Reusable panels take an engine (LaserEngineRev1ServicePanel, LogPane: for Squid's "Laser Engine" tab later);
+BenchWindow and main() are the standalone app (tools/laser_engine_rev1_bench.py). The bench has no Squid controller,
+so no TTL: the per-line "Gate (bench, no TTL)" checkbox holds the line's gate on in firmware instead. Emission still
+needs the hardware permits.
+"""
+
+import logging
+import math
+import sys
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from qtpy.QtCore import QObject, Qt, Signal
+from qtpy.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSpinBox,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+from serial.tools import list_ports
+
+import squid.logging
+from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, _production_source_factory
+from control.laser_engine_rev1_link import EngineCommandError, EngineLink
+from control.laser_engine_rev1_sim import build_simulated_engine
+from control.laser_engine_rev1_status import EngineRev1Status, LineState, SourceStatus, _source_state
+from control.laser_engine_rev1_widget import LaserEngineRev1Widget
+
+# bench only: Squid takes the wavelengths from its channel configs
+DF_WAVELENGTHS = {1: 405, 2: 488, 3: 560, 4: 638, 5: 730}
+_UNITS = {"WLD": "A", "VOLT": "V"}  # set-point unit per line kind (VOLT = the DF line 3 AOM analog input)
+_TEENSY_VID = 0x16C0  # PJRC: preselected in the port list
+
+
+def source_state_text(status: Optional[SourceStatus]) -> str:
+    """SOURCE_OFF / STARTING / READY / NEEDS_KEY / FAULT + detail: the same judgement as line 3's state."""
+    if status is None:
+        return "no status yet"
+    state, reason = _source_state(status)
+    return f"{state.name}  {reason}".strip()
+
+
+@dataclass
+class _LineRow:
+    key: str
+    wavelength: int
+    name: QLabel
+    state: QLabel
+    spin: QDoubleSpinBox
+    readback: QLabel
+    wake: QPushButton
+    sleep: QPushButton
+    gate: QCheckBox
+
+    def widgets(self) -> List[QWidget]:
+        return [self.name, self.state, self.spin, self.readback, self.wake, self.sleep, self.gate]
+
+
+class LaserEngineRev1ServicePanel(QWidget):
+    """Per-line intensity / wake / sleep / bench gate, the engine's 560 source, and a raw command line."""
+
+    RAW_HISTORY = 5
+
+    def __init__(self, engine: LaserEngineRev1, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._engine = engine
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self._source_request_pct: Optional[float] = None  # the last 560 request sent from this panel
+        self._raw_history: List[str] = []
+        self.rows: Dict[str, _LineRow] = {}
+        layout = QVBoxLayout(self)
+
+        lines_box = QGroupBox("Lines (bench)")
+        grid = QGridLayout(lines_box)
+        for col, text in enumerate(("Line", "State", "Intensity", "Target / now", "", "", "")):
+            grid.addWidget(QLabel(f"<b>{text}</b>"), 0, col)
+        for n, wavelength in DF_WAVELENGTHS.items():
+            row = self._make_row(n, wavelength)
+            self.rows[row.key] = row
+            for col, widget in enumerate(row.widgets()):
+                grid.addWidget(widget, n, col)
+        grid.setColumnStretch(1, 1)
+        layout.addWidget(lines_box)
+
+        self.message_label = QLabel("")  # the last refusal / error from this panel (also logged)
+        self.message_label.setWordWrap(True)
+        self.message_label.setStyleSheet("color: #c0392b;")
+        layout.addWidget(self.message_label)
+
+        self.source_box: Optional[QGroupBox] = None
+        limits = engine.source_limits_mw
+        if limits is not None:
+            self.source_box = QGroupBox("560 nm source")
+            form = QFormLayout(self.source_box)
+            self.source_state_label = QLabel("")
+            self.source_requested_label = QLabel("—")
+            self.source_measured_label = QLabel("—")
+            self.source_limits_label = QLabel(f"{limits[0]:.0f} – {limits[1]:.0f} mW")
+            form.addRow("State", self.source_state_label)
+            form.addRow("Requested", self.source_requested_label)
+            form.addRow("Measured", self.source_measured_label)
+            form.addRow("Limits", self.source_limits_label)
+            layout.addWidget(self.source_box)
+
+        raw_box = QGroupBox("Raw command")
+        raw_layout = QVBoxLayout(raw_box)
+        raw_row = QHBoxLayout()
+        self.raw_edit = QLineEdit()
+        self.raw_edit.setPlaceholderText("e.g. STAT?  VAR?  LINE1:EN 1  (a trailing ? = query)")
+        self.raw_send_btn = QPushButton("Send")
+        raw_row.addWidget(self.raw_edit, 1)
+        raw_row.addWidget(self.raw_send_btn)
+        raw_layout.addLayout(raw_row)
+        note = QLabel("bench: sent straight to the engine; the hardware permits still apply")
+        note.setStyleSheet("color: gray;")
+        raw_layout.addWidget(note)
+        self.raw_reply = QLabel("")
+        self.raw_reply.setWordWrap(True)
+        self.raw_reply.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        raw_layout.addWidget(self.raw_reply)
+        self.raw_history_label = QLabel("")
+        self.raw_history_label.setStyleSheet("font-family: monospace; color: gray;")
+        self.raw_history_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        raw_layout.addWidget(self.raw_history_label)
+        self.raw_send_btn.clicked.connect(lambda _=False: self.send_raw())
+        self.raw_edit.returnPressed.connect(self.send_raw)
+        layout.addWidget(raw_box)
+        layout.addStretch(1)
+
+        engine.status_updated.connect(self._on_status)
+        latest = engine.get_latest_status()
+        if latest is not None:
+            self._on_status(latest)
+        else:
+            self._update_source_box()
+
+    def _make_row(self, n: int, wavelength: int) -> _LineRow:
+        key = f"L{n}"
+        spin = QDoubleSpinBox()
+        spin.setDecimals(1)
+        spin.setSuffix(" %")
+        spin.setKeyboardTracking(False)  # send on Enter / arrows / focus out, not on every keystroke
+        try:
+            floor = math.ceil(self._engine.intensity_floor_percent(wavelength))
+        except Exception as e:
+            self._log.warning(f"{key}: no intensity floor ({e}); 0 %")
+            floor = 0
+        spin.setRange(floor, 100.0)
+        spin.setValue(floor)  # before connecting: building the panel sends nothing
+        spin.valueChanged.connect(lambda pct, n=n, wl=wavelength: self._set_intensity(n, wl, pct))
+        wake = QPushButton("Wake")
+        wake.clicked.connect(lambda _=False, k=key: self._run(f"{k} wake", lambda: self._engine.wake_up(k)))
+        sleep = QPushButton("Sleep")
+        sleep.clicked.connect(lambda _=False, k=key: self._run(f"{k} sleep", lambda: self._engine.put_to_sleep(k)))
+        gate = QCheckBox("Gate (bench, no TTL)")
+        gate.setToolTip(
+            f"LINE{n}:GATE 1: holds the line's gate on without a TTL (emission still needs the hardware permits)"
+        )
+        gate.toggled.connect(lambda on, n=n: self._set_gate(n, on))
+        state = QLabel("—")
+        state.setWordWrap(True)
+        return _LineRow(
+            key=key,
+            wavelength=wavelength,
+            name=QLabel(f"L{n} · {wavelength} nm"),
+            state=state,
+            spin=spin,
+            readback=QLabel("—"),
+            wake=wake,
+            sleep=sleep,
+            gate=gate,
+        )
+
+    # ---- actions: errors shown (and logged), never raised ----------------------------------------------------------
+    def _show_error(self, text: str) -> None:
+        self._log.warning(text)
+        self.message_label.setText(text)
+
+    def _run(self, what: str, fn) -> bool:
+        try:
+            fn()
+        except Exception as e:
+            self._show_error(f"{what}: {e}")
+            return False
+        self.message_label.setText("")
+        return True
+
+    def _set_intensity(self, n: int, wavelength: int, pct: float) -> None:
+        if self._run(f"L{n} intensity {pct:.1f} %", lambda: self._engine.set_wavelength_intensity(wavelength, pct)):
+            if n == 3 and self._engine.variant == "DF":
+                self._source_request_pct = pct
+                self._update_source_box()
+
+    def _set_gate(self, n: int, on: bool) -> None:
+        ok = self._run(f"LINE{n}:GATE {int(on)}", lambda: self._engine.link.command(f"LINE{n}:GATE {int(on)}"))
+        if on and not ok:  # the gate did not open: show it unchecked
+            gate = self.rows[f"L{n}"].gate
+            gate.blockSignals(True)
+            gate.setChecked(False)
+            gate.blockSignals(False)
+
+    def release_gates(self) -> None:
+        """Uncheck every bench gate (each sends LINE<n>:GATE 0). Call before the engine closes."""
+        for row in self.rows.values():
+            if row.gate.isChecked():
+                row.gate.setChecked(False)
+
+    def closeEvent(self, event) -> None:
+        self.release_gates()
+        super().closeEvent(event)
+
+    def send_raw(self, text: Optional[str] = None) -> str:
+        """A trailing "?" = query (the reply as sent); anything else = command (OK / ERR). Returns the reply shown."""
+        text = (self.raw_edit.text() if text is None else text).strip()
+        if not text:
+            return ""
+        try:
+            if text.endswith("?"):
+                reply = self._engine.link.query(text)
+            else:
+                reply = f"OK {self._engine.link.command(text)}".strip()
+        except EngineCommandError as e:
+            reply = f"ERR {e.reason}"
+        except Exception as e:
+            reply = f"error: {e}"
+        self.raw_reply.setText(reply)
+        short = reply if len(reply) <= 80 else reply[:77] + "..."
+        self._raw_history = (self._raw_history + [f"> {text}  ->  {short}"])[-self.RAW_HISTORY :]
+        self.raw_history_label.setText("\n".join(self._raw_history))
+        return reply
+
+    # ---- status ----------------------------------------------------------------------------------------------------
+    def _on_status(self, status: EngineRev1Status) -> None:
+        for key, row in self.rows.items():
+            info = status.channels.get(key)
+            if info is None or info.state == LineState.UNUSED:  # nothing on this line in this variant
+                for widget in row.widgets():
+                    widget.setVisible(False)
+                continue
+            row.state.setText(f"{info.state.name}  {info.reason}".strip())
+            unit = _UNITS.get(info.kind, "")
+            row.readback.setText(f"{info.target:.3f} / {info.now:.3f} {unit}".strip())
+        self._update_source_box()
+
+    def _update_source_box(self) -> None:
+        if self.source_box is None:
+            return
+        limits = self._engine.source_limits_mw
+        if limits is None:  # the engine has closed its source
+            self.source_state_label.setText("closed")
+            return
+        status = self._engine.source_status
+        self.source_state_label.setText(source_state_text(status))
+        self.source_measured_label.setText("—" if status is None else f"{status.power_mw:.1f} mW")
+        if self._source_request_pct is not None:
+            mw = self._source_request_pct / 100.0 * limits[1]
+            text = f"{mw:.0f} mW ({self._source_request_pct:.1f} %)"
+            if mw < limits[0]:
+                text += f" - the source runs at its minimum, {limits[0]:.0f} mW"
+            self.source_requested_label.setText(text)
+
+
+class _LogBridge(QObject):
+    text = Signal(str)
+
+
+class QtLogHandler(logging.Handler):
+    """Forwards log records (from any thread) as text through a Qt signal: queued to the GUI thread's receivers."""
+
+    def __init__(self, level: int = logging.INFO):
+        super().__init__(level)
+        self.bridge = _LogBridge()
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self.bridge.text.emit(self.format(record))
+        except RuntimeError:
+            pass  # the Qt side is already gone (shutdown)
+        except Exception:
+            self.handleError(record)
+
+
+class LogPane(QPlainTextEdit):
+    """The squid logger hierarchy's records (the engine's poll / source threads included), newest at the bottom."""
+
+    MAX_LINES = 5000
+
+    def __init__(self, parent: Optional[QWidget] = None, level: int = logging.INFO):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setMaximumBlockCount(self.MAX_LINES)
+        self.setStyleSheet("font-family: monospace;")
+        self.handler = QtLogHandler(level)
+        self.handler.bridge.text.connect(self.appendPlainText)
+        root = squid.logging.get_logger()
+        root.addHandler(self.handler)
+        handler = self.handler  # the lambda must not hold the pane: it runs while the pane is being destroyed
+        self.destroyed.connect(lambda *_: root.removeHandler(handler))
+
+    def detach(self) -> None:
+        squid.logging.get_logger().removeHandler(self.handler)
+
+
+class BenchWindow(QMainWindow):
+    """Standalone bench app: connection bar, the Squid Laser Engine tab + the service panel, and the log."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Laser engine rev 1 - bench")
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        self.engine: Optional[LaserEngineRev1] = None
+        self.engine_widget: Optional[LaserEngineRev1Widget] = None
+        self.service_panel: Optional[LaserEngineRev1ServicePanel] = None
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        bar1 = QHBoxLayout()
+        bar1.addWidget(QLabel("Teensy"))
+        self.port_combo = QComboBox()
+        self.port_combo.setMinimumWidth(360)
+        bar1.addWidget(self.port_combo, 1)
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(lambda _=False: self.refresh_ports())
+        bar1.addWidget(self.refresh_btn)
+        bar1.addWidget(QLabel("560 source SN"))
+        self.source_sn_edit = QLineEdit()
+        self.source_sn_edit.setPlaceholderText("optional")
+        self.source_sn_edit.setToolTip("Blank = no serial number given to the 560 source driver")
+        bar1.addWidget(self.source_sn_edit)
+        self.simulate_cb = QCheckBox("Simulate (no hardware)")
+        bar1.addWidget(self.simulate_cb)
+        self.bringup_cb = QCheckBox("Bring up on connect")
+        self.bringup_cb.setChecked(True)
+        bar1.addWidget(self.bringup_cb)
+        self.connect_btn = QPushButton("Connect")
+        self.connect_btn.clicked.connect(lambda _=False: self.connect_engine())
+        bar1.addWidget(self.connect_btn)
+        self.disconnect_btn = QPushButton("Disconnect")
+        self.disconnect_btn.clicked.connect(lambda _=False: self.disconnect_engine())
+        bar1.addWidget(self.disconnect_btn)
+        layout.addLayout(bar1)
+
+        defaults = EngineOptions()
+        bar2 = QHBoxLayout()
+        self.aom_cb = QCheckBox("AOM in path")
+        self.aom_cb.setChecked(defaults.aom_in_path)
+        bar2.addWidget(self.aom_cb)
+        bar2.addWidget(QLabel("Shutter with AOM"))
+        self.shutter_combo = QComboBox()
+        self.shutter_combo.addItem("gate", "gate")
+        self.shutter_combo.addItem("open", "open")
+        self.shutter_combo.setCurrentIndex(self.shutter_combo.findData(defaults.shutter_with_aom))
+        bar2.addWidget(self.shutter_combo)
+        self.aom_cb.toggled.connect(lambda _: self._update_enabled())
+        bar2.addWidget(QLabel("560 idle-off"))
+        self.idle_spin = QSpinBox()
+        self.idle_spin.setRange(0, 24 * 60)
+        self.idle_spin.setSuffix(" min")
+        self.idle_spin.setSpecialValueText("24 h")  # 0 = 24 h: there is no "never off"
+        self.idle_spin.setValue(int(defaults.source_idle_off_min))
+        bar2.addWidget(self.idle_spin)
+        bar2.addStretch(1)
+        layout.addLayout(bar2)
+
+        self.panel_splitter = QSplitter(Qt.Horizontal)
+        self.log_pane = LogPane()
+        vertical = QSplitter(Qt.Vertical)
+        vertical.addWidget(self.panel_splitter)
+        vertical.addWidget(self.log_pane)
+        vertical.setStretchFactor(0, 3)
+        vertical.setStretchFactor(1, 1)
+        layout.addWidget(vertical, 1)
+        self.setCentralWidget(central)
+        self.refresh_ports()
+        self._update_enabled()
+
+    def refresh_ports(self) -> None:
+        self.port_combo.clear()
+        preferred = -1
+        for p in sorted(list_ports.comports(), key=lambda p: p.device):
+            self.port_combo.addItem(f"{p.device} — {p.serial_number or '-'} — {p.description or ''}", p.device)
+            if preferred < 0 and p.vid == _TEENSY_VID:
+                preferred = self.port_combo.count() - 1
+        if preferred >= 0:
+            self.port_combo.setCurrentIndex(preferred)
+
+    def _update_enabled(self) -> None:
+        idle = self.engine is None
+        for widget in (
+            self.port_combo,
+            self.refresh_btn,
+            self.source_sn_edit,
+            self.simulate_cb,
+            self.bringup_cb,
+            self.aom_cb,
+            self.idle_spin,
+            self.connect_btn,
+        ):
+            widget.setEnabled(idle)
+        self.shutter_combo.setEnabled(idle and self.aom_cb.isChecked())
+        self.disconnect_btn.setEnabled(not idle)
+
+    def _options(self) -> EngineOptions:
+        aom = self.aom_cb.isChecked()
+        return EngineOptions(
+            source_idle_off_min=float(self.idle_spin.value()),
+            aom_in_path=aom,
+            shutter_with_aom=self.shutter_combo.currentData() if aom else "gate",
+        )
+
+    def _build_engine(self, options: EngineOptions) -> LaserEngineRev1:
+        if self.simulate_cb.isChecked():
+            return build_simulated_engine(options)
+        device = self.port_combo.currentData()
+        if not device:
+            raise RuntimeError("no Teensy port selected (Refresh, or tick Simulate)")
+        sn = self.source_sn_edit.text().strip()
+        source_factory = _production_source_factory(sn or None)
+        if source_factory is None:
+            self._log.warning("no 560 driver in this build: L3 reads NOT_CONFIGURED")
+        return LaserEngineRev1(
+            link_factory=lambda: EngineLink.open(device=device), source_factory=source_factory, options=options
+        )
+
+    def _connect_failed(self, text: str) -> None:
+        self._log.error(text)
+        QMessageBox.warning(self, "Laser engine", text)
+
+    def connect_engine(self) -> None:
+        if self.engine is not None:
+            return
+        try:
+            engine = self._build_engine(self._options())
+        except Exception as e:
+            self._connect_failed(f"connect failed: {e}")
+            return
+        try:
+            engine.start()
+            if self.bringup_cb.isChecked():
+                engine.on_startup()
+        except Exception as e:
+            try:
+                engine.close()  # disarms and switches the 560 off if it got that far
+            except Exception:
+                self._log.exception("closing the engine after a failed connect")
+            self._connect_failed(f"connect failed: {e}")
+            return
+        self.engine = engine
+        self.engine_widget = LaserEngineRev1Widget(engine)
+        self.service_panel = LaserEngineRev1ServicePanel(engine)
+        self.panel_splitter.addWidget(self.engine_widget)
+        self.panel_splitter.addWidget(self.service_panel)
+        self._update_enabled()
+        self._log.info(f"connected: variant {engine.variant or '?'}")
+
+    def disconnect_engine(self) -> None:
+        engine = self.engine
+        if engine is None:
+            return
+        if self.service_panel is not None:
+            self.service_panel.release_gates()  # GATE 0 while the link is still open
+        try:
+            engine.close()  # DISARM, 560 off
+        except Exception:
+            self._log.exception("closing the laser engine")
+        self.engine = None
+        for widget in (self.engine_widget, self.service_panel):
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()  # Qt drops it from the splitter
+        self.engine_widget = self.service_panel = None
+        self._update_enabled()
+        self._log.info("disconnected")
+
+    def closeEvent(self, event) -> None:
+        self.disconnect_engine()
+        self.log_pane.detach()
+        super().closeEvent(event)
+
+
+def main() -> None:
+    squid.logging.setup_uncaught_exception_logging()  # a slot's exception is logged instead of aborting the app
+    app = QApplication.instance() or QApplication(sys.argv)
+    window = BenchWindow()
+    window.resize(1500, 900)
+    window.show()
+    sys.exit(app.exec_())
