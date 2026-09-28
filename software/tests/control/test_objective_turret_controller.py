@@ -892,3 +892,42 @@ def test_a_failed_rotation_forgets_the_objective_so_a_move_back_really_moves(mon
     controller.move_to_objective(first)
     assert rotations == [first, second, first]  # the move back really rotated
     controller.close()
+
+
+def _real_controller_on_a_stage(monkeypatch, z_mm=5.0):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    controller, _ = _make_real_controller(monkeypatch)
+    stage = FakeStage(z_mm=z_mm)
+    controller._stage = stage
+    names = list(controller._positions)
+    first = names[0]
+    second = next(n for n in names if controller._positions[n] != controller._positions[first])
+    return controller, stage, first, second
+
+
+def test_a_failed_rotation_leaves_z_retracted(monkeypatch):
+    """With the objective unknown, Z must not go back up to the imaging height (external review of #683)."""
+    controller, stage, first, second = _real_controller_on_a_stage(monkeypatch)
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: None)
+    controller.move_to_objective(first)
+    stage.z_moves.clear()
+
+    def jam(name, timeout_s):
+        raise RuntimeError("drive alarm after partial rotation")
+
+    monkeypatch.setattr(controller, "_rotate_to", jam)
+    with pytest.raises(RuntimeError, match="partial rotation"):
+        controller.move_to_objective(second)
+    assert controller.current_objective is None
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
+    controller.close()
+
+
+@pytest.mark.parametrize("restore_z", [True, False])
+def test_a_successful_rotation_restores_z_unless_told_not_to(monkeypatch, restore_z):
+    controller, stage, first, second = _real_controller_on_a_stage(monkeypatch, z_mm=5.0)
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: None)
+    controller.move_to_objective(second, restore_z=restore_z)
+    assert stage.z_moves == ([OBJECTIVE_RETRACTED_POS_MM, 5.0] if restore_z else [OBJECTIVE_RETRACTED_POS_MM])
+    assert controller.current_objective == second
+    controller.close()
