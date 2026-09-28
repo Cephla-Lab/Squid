@@ -234,9 +234,6 @@ class LaserEngineRev1(QObject):
         self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates)
         self._aom_cal: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self._aom_cal_read = False
-        self._source_dark = False  # the 560 was set to exactly 0 %: kept off, and L3 reads READY (ruling F-0)
-        self._dark_noticed = False
-        self._source_reported: Optional[SourceStatus] = None  # the source's own last reading, before _judge_source
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -669,25 +666,21 @@ class LaserEngineRev1(QObject):
         """Queue one source enable at the source's minimum (the request follows once it is ready).
         The enable_pending check-then-set and the queue/state update run under _source_lock; only the LINE3:SET
         round-trip runs outside it, so a concurrent _disable_source() cannot interleave with the update. `src` is
-        captured once, so a concurrent _close_source() cannot leave _source_enable_pending set. A 560 set to 0 %
-        (dark) is never enabled: checked before the LINE3:SET and again, under the lock, before the enable is queued.
+        captured once, so a concurrent _close_source() cannot leave _source_enable_pending set.
         """
         src = self._source
         if src is None:
             return
         self._touch_source()
         with self._source_lock:
-            if self._source_dark or self._source_enable_pending:
-                return  # dark by request, or the source thread has not run the last enable yet (callers repeat)
+            if self._source_enable_pending:
+                return  # the source thread has not run the last enable yet (callers repeat)
             self._source_enable_pending = True
         try:
             volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
             self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
             start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the request
             with self._source_lock:
-                if self._source_dark:  # set to 0 % during the LINE3:SET round-trip: stay off
-                    self._source_enable_pending = False
-                    return
                 requested = self._source_requested_mw if self._source_requested_mw is not None else start
                 self._source_pending_mw = requested if requested > start else None
                 self._source_want_on = True
@@ -734,7 +727,6 @@ class LaserEngineRev1(QObject):
                 self._log.error(f"560 nm source: switching off at connect: {e}")
             self._notice("560 nm source was on at connect (the last session did not switch it off): switched off")
             first = self._source.poll()
-        self._source_reported = first
         self._source_status = self._judge_source(first, self._source)
 
     def _start_source_thread(self) -> None:
@@ -761,9 +753,9 @@ class LaserEngineRev1(QObject):
         (wake_up / wait_until_ready) polling in between still sees the request as queued and does not queue another.
         The tail reconciles a source that is not wanted but still reads emitting or starting by queuing one disable.
         It lives here, not in _after_poll, so a failed disable is retried even after the engine link is lost (the poll
-        thread stops then; this thread keeps stepping). It acts on the source's own reading, never on the judged
-        status (which reads READY for a 560 dark by request). A source that still reads on right after a disable gets
-        a second, redundant disable at the next step; that is harmless."""
+        thread stops then; this thread keeps stepping). It acts on the source's own reading, not on the judged
+        status. A source that still reads on right after a disable gets a second, redundant disable at the next step;
+        that is harmless."""
         src = self._source
         if src is None:
             return
@@ -806,7 +798,6 @@ class LaserEngineRev1(QObject):
                     src.set_power_mw(pending)
                 except Exception as e:
                     self._log.error(f"560 nm source power: {e}")
-            self._source_reported = status
             self._source_status = self._judge_source(status, src)
         finally:
             if ran_enable:
@@ -826,13 +817,10 @@ class LaserEngineRev1(QObject):
                     self._source_queue.put(("disable", None))
 
     def _judge_source(self, status: SourceStatus, src) -> SourceStatus:
-        """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request;
-        a source set to 0 % (dark) that reads off is READY, like any other line at 0 %. `src` is the source that
-        reported `status` (close() may clear self._source meanwhile)."""
+        """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request.
+        `src` is the source that reported `status` (close() may clear self._source meanwhile)."""
         if self._source_error is not None:
             return replace(status, fault=True, detail=self._source_error)
-        if self._source_dark and status.off:
-            return replace(status, ready=True, settled=True, off=False)
         if status.ready:
             target = self._source_requested_mw if self._source_requested_mw is not None else src.min_power_mw
             tol = max(self.SOURCE_SETTLE_TOL_MW, self.SOURCE_SETTLE_TOL_FRAC * target)
@@ -955,23 +943,6 @@ class LaserEngineRev1(QObject):
         src = self._source
         if src is None:
             raise LaserEngineRev1Error("L3", "560 nm source not configured")
-        if percent <= 0:  # ruling F-0: exactly 0 % = dark (source off), not the minimum power
-            with self._source_lock:
-                self._source_dark = True
-                self._source_requested_mw = None
-            self._disable_source()
-            if not self._dark_noticed:
-                self._dark_noticed = True
-                self._notice(
-                    f"560 nm set to 0 %: source switched off (its minimum is {src.min_power_mw:.0f} mW); "
-                    "any higher value starts it again"
-                )
-            return
-        with self._source_lock:
-            was_dark, self._source_dark = self._source_dark, False
-        if was_dark and self._source_reported is not None:
-            # drop the dark READY now, so the wake that follows this request sees SOURCE_OFF and starts the source
-            self._source_status = self._judge_source(self._source_reported, src)
         self._touch_source()
         mw = self._source_power_for(percent / 100.0 * src.max_power_mw)  # % of maximum power, linear in mW
         with self._source_lock:
@@ -984,23 +955,32 @@ class LaserEngineRev1(QObject):
                 self._source_queue.put(("power", mw))
 
     def _source_power_for(self, mw: float) -> float:
-        """Laser power for a request. Below the source's minimum: dim with the AOM (option on + calibrated), else clamp + warn once."""
+        """Laser power for a request; the source never runs below its own minimum. Below it: dim with the AOM (option on
+        + calibrated); else, with the AOM in the path, 0 % closes the AOM (dark at the sample); else clamp + warn once
+        (0 % included when there is no AOM)."""
         floor = self._source.min_power_mw
         cal = self._aom_calibration()
-        if cal is None:
-            if mw >= floor:
-                return mw
-            if not self._clamp_warned:
-                self._clamp_warned = True
-                self._notice(
-                    f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW - running at the minimum"
-                )
-            return floor
-        trans, volts = cal
-        self._set_aom_volts(
-            float(np.interp(min(1.0, max(0.0, mw / floor)), trans, volts))
-        )  # full transmission at >= floor
-        return max(mw, floor)
+        if cal is not None:
+            trans, volts = cal
+            self._set_aom_volts(
+                float(np.interp(min(1.0, max(0.0, mw / floor)), trans, volts))
+            )  # full transmission at >= floor
+            return max(mw, floor)
+        if self.options.aom_in_path:
+            if mw <= 0:
+                self._set_aom_volts(0.0)  # AOM closed, the source at its minimum
+                return floor
+            self._set_aom_volts(self._aom_full_volts())  # full transmission (no-op when already there)
+        if mw >= floor:
+            return mw
+        if not self._clamp_warned:
+            self._clamp_warned = True
+            top = self._source.max_power_mw
+            self._notice(
+                f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW "
+                f"({100.0 * floor / top:.3g} % of {top:.0f} mW) - running at the minimum"
+            )
+        return floor
 
     def _aom_calibration(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         if not self.options.aom_attenuation:
@@ -1094,9 +1074,7 @@ class LaserEngineRev1LightSource(LightSource):
 
     def set_intensity(self, channel, intensity):  # channel = wavelength (nm)
         """Wake the line on use (re-arm + enable), then send the set-point. Can block the caller for up to three STAT?
-        round-trips (the wake) plus the firmware ramp wait (SETTLE_TIMEOUT_S, <= ~1 s).
-        On DF the 560's request comes first and 0 % wakes nothing: 0 % means dark (the source off), and a request
-        above 0 % after that must be in place before the wake, so the wake starts the source again."""
+        round-trips (the wake) plus the firmware ramp wait (SETTLE_TIMEOUT_S, <= ~1 s)."""
         line = self._engine.line_for_wavelength(channel)
         if line is None:  # not an engine port: the controller still selects its TTL port right after this call
             if channel not in self._unmapped_warned:
@@ -1104,11 +1082,6 @@ class LaserEngineRev1LightSource(LightSource):
                 self._log.warning(
                     f"{channel} nm is not on an engine port (D1-D5): intensity not sent to the laser engine"
                 )
-            return
-        if self._engine.variant == "DF" and line == SOURCE_560_LINE:
-            self._engine.set_wavelength_intensity(channel, intensity)
-            if intensity > 0:
-                self._engine.wake_up(f"L{line}")  # never raises
             return
         self._engine.wake_up(f"L{line}")  # re-arm + enable on use first; never raises
         self._engine.set_wavelength_intensity(
