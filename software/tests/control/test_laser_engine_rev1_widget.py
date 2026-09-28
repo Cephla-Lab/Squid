@@ -52,3 +52,13 @@ def test_widget_idle_off_and_shutter_controls(qtbot):
     widget2.shutter_combo.setCurrentIndex(widget2.shutter_combo.findData("open"))
     assert engine2.shutter_with_aom == "open" and engine2.sim_engine.sent[-1] == "SHUT:SRC MCU"
     engine2.close()
+
+
+def test_widget_shows_the_startup_state_at_once(qtbot):
+    engine = build_simulated_engine()
+    engine.open()
+    engine.on_startup()  # the bring-up is now running: the sim TECs need 3 polls
+    widget = LaserEngineRev1Widget(engine)  # no poll_once() in between: the tab must not wait for the next status
+    qtbot.addWidget(widget)
+    assert widget.startup_label.text().startswith("startup: ")
+    engine.close()

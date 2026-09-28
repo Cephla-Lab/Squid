@@ -52,7 +52,7 @@ class LaserEngineRev1Widget(QWidget):
         self.banner.setStyleSheet("background-color: #c0392b; color: white; padding: 4px;")
         self.banner.setVisible(False)
         layout.addWidget(self.banner)
-        self.startup_label = QLabel("")
+        self.startup_label = QLabel(self._startup_text(engine.bringup_state))  # bring-up may already be running
         layout.addWidget(self.startup_label)
         self.event_label = QLabel("")
         layout.addWidget(self.event_label)
@@ -95,6 +95,10 @@ class LaserEngineRev1Widget(QWidget):
         engine.connection_lost.connect(self._on_lost)
         engine.notice_added.connect(self._on_notice)
 
+    @staticmethod
+    def _startup_text(state: str) -> str:
+        return f"startup: {state}" if state else ""
+
     def _run(self, fn) -> None:
         try:
             fn()
@@ -110,8 +114,7 @@ class LaserEngineRev1Widget(QWidget):
 
     def _on_status(self, status: EngineRev1Status) -> None:
         self.summary_label.setText(summary_text(status, self._engine.is_connection_lost()))
-        state = self._engine.bringup_state
-        self.startup_label.setText(f"startup: {state}" if state else "")
+        self.startup_label.setText(self._startup_text(self._engine.bringup_state))
         self.event_label.setText(f"last engine event: {status.last_event}" if status.last_event else "")
         for key, info in status.channels.items():
             if info.state == LineState.UNUSED:
