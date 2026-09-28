@@ -129,3 +129,49 @@ class TestSweep:
             focus_sweep(
                 hw, objective="20x", channel="BF", na=0.8, center_um=0.0, range_um=20.0, square_px=40, fine_metric=lape
             )
+
+
+_Q1 = pytest.mark.xfail(
+    strict=True,
+    reason="Q1, spec C §6.3 amendment held until after the B1 bench (branch feat/objective-focus-amendment): "
+    "a first level run with LAPE cannot refuse noise or see a focus far outside the range. Strict: remove "
+    "this mark when the amendment lands.",
+)
+
+
+class TestNoFalseFocus:
+    """External reviews: a sweep either finds the true focus or refuses; it must never report an
+    unrelated peak. The original noisy cases, with the default noise and a 40 px focus square. Known
+    failures are kept visible (strict xfail) rather than hidden by moving the target."""
+
+    def _sweep(self, hw, **kw):
+        args = dict(objective="20x", channel="BF", na=0.8, center_um=0.0, square_px=40, fine_metric=lape)
+        return focus_sweep(hw, **{**args, **kw})
+
+    @_Q1
+    def test_a_noisy_flat_field_is_refused(self):
+        hw = _hw("20x", z_focus=0.0, scene=FakeScene.flat())  # default noise 0.002
+        with pytest.raises(FocusError, match="No focus peak found"):
+            self._sweep(hw, range_um=20.0)
+
+    @_Q1
+    @pytest.mark.parametrize("z_focus", [18.0, 25.0])
+    def test_a_focus_past_the_computed_range_is_recovered_or_refused(self, z_focus):
+        hw = _hw("20x", z_focus=z_focus)
+        try:
+            result = self._sweep(hw, range_um=15.0, range_is_computed=True)
+        except FocusError:
+            return  # a clear refusal is acceptable
+        assert result.z_best_um == pytest.approx(z_focus, abs=0.25)
+
+    def test_a_focus_far_past_a_user_range_is_refused(self):
+        hw = _hw("20x", z_focus=150.0)  # 50 um past the ±100 um search
+        with pytest.raises(FocusError, match="widen the range|No focus peak found"):
+            self._sweep(hw, range_um=100.0)
+
+    @_Q1
+    def test_noisy_flat_fields_are_refused_across_seeds(self):
+        for seed in range(6):
+            hw = _hw("20x", z_focus=0.0, scene=FakeScene.flat(), seed=seed)
+            with pytest.raises(FocusError, match="No focus peak found"):
+                self._sweep(hw, range_um=20.0)
