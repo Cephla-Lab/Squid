@@ -230,6 +230,7 @@ class LaserEngineRev1(QObject):
         self._source_error: Optional[str] = None  # set after SOURCE_ENABLE_ATTEMPTS failures; cleared by fault_reset()
         self._clamp_warned = False
         self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = full transmission
+        self._aom_lock = threading.Lock()  # orders the wake's and the set-point's LINE3:SET; never with _source_lock
         self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
         self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates)
         self._aom_cal: Optional[Tuple[np.ndarray, np.ndarray]] = None
@@ -666,7 +667,8 @@ class LaserEngineRev1(QObject):
         """Queue one source enable at the source's minimum (the request follows once it is ready).
         The enable_pending check-then-set and the queue/state update run under _source_lock; only the LINE3:SET
         round-trip runs outside it, so a concurrent _disable_source() cannot interleave with the update. `src` is
-        captured once, so a concurrent _close_source() cannot leave _source_enable_pending set.
+        captured once, so a concurrent _close_source() cannot leave _source_enable_pending set. The AOM read + send
+        runs under _aom_lock (not _source_lock), so it cannot interleave with _set_aom_volts on another thread.
         """
         src = self._source
         if src is None:
@@ -677,8 +679,9 @@ class LaserEngineRev1(QObject):
                 return  # the source thread has not run the last enable yet (callers repeat)
             self._source_enable_pending = True
         try:
-            volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
-            self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
+            with self._aom_lock:
+                volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
+                self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
             start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the request
             with self._source_lock:
                 requested = self._source_requested_mw if self._source_requested_mw is not None else start
@@ -944,7 +947,7 @@ class LaserEngineRev1(QObject):
         if src is None:
             raise LaserEngineRev1Error("L3", "560 nm source not configured")
         self._touch_source()
-        mw = self._source_power_for(percent / 100.0 * src.max_power_mw)  # % of maximum power, linear in mW
+        mw = self._source_power_for(percent / 100.0 * src.max_power_mw, src)  # % of maximum power, linear in mW
         with self._source_lock:
             self._source_requested_mw = mw
             if self._source_enable_pending or self._source_pending_mw is not None:
@@ -954,11 +957,11 @@ class LaserEngineRev1(QObject):
             elif self._source_want_on:
                 self._source_queue.put(("power", mw))
 
-    def _source_power_for(self, mw: float) -> float:
+    def _source_power_for(self, mw: float, src) -> float:
         """Laser power for a request; the source never runs below its own minimum. Below it: dim with the AOM (option on
         + calibrated); else, with the AOM in the path, 0 % closes the AOM (dark at the sample); else clamp + warn once
-        (0 % included when there is no AOM)."""
-        floor = self._source.min_power_mw
+        (0 % included when there is no AOM). `src` is the caller's source (close() may clear self._source meanwhile)."""
+        floor = src.min_power_mw
         cal = self._aom_calibration()
         if cal is not None:
             trans, volts = cal
@@ -975,7 +978,7 @@ class LaserEngineRev1(QObject):
             return mw
         if not self._clamp_warned:
             self._clamp_warned = True
-            top = self._source.max_power_mw
+            top = src.max_power_mw
             self._notice(
                 f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW "
                 f"({100.0 * floor / top:.3g} % of {top:.0f} mW) - running at the minimum"
@@ -1000,11 +1003,16 @@ class LaserEngineRev1(QObject):
         return float(cal[1][-1]) if cal is not None else AOM_FULL_SCALE_V  # the peak-transmission voltage
 
     def _set_aom_volts(self, volts: float) -> None:
-        now = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
-        if abs(volts - now) < 1e-3:
-            return
-        self._aom_volts = volts
-        self._cmd(f"LINE3:SET {volts:.3f}")
+        """_aom_lock covers compare + send + cache, not the ramp wait (poll_once can re-enter _wake_source)."""
+        with self._aom_lock:
+            now = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
+            if abs(volts - now) < 1e-3:
+                return
+            try:
+                self._cmd(f"LINE3:SET {volts:.3f}")
+            except EngineCommandError as e:
+                raise LaserEngineRev1Error("L3", e.reason) from e
+            self._aom_volts = volts  # cached only once the engine has accepted it: a refused set is sent again
         self._wait_line_settled(3)  # the AOM input ramps like any line set-point (returns at once while line 3 is off)
 
     def set_source_idle_off_min(self, minutes: float) -> None:

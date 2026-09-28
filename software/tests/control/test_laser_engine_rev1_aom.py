@@ -65,13 +65,15 @@ def test_aom_back_to_full_transmission_at_or_above_the_minimum(tmp_path):
 
 
 def test_aom_zero_percent_is_the_calibrated_zero_transmission(tmp_path):
-    (tmp_path / "560_aom.csv").write_text(CAL)
+    (tmp_path / "560_aom.csv").write_text(CAL.replace("\n0,0\n", "\n0.5,0\n"))  # zero transmission at 0.5 V, not 0 V
     engine, fake, source = _ready_engine(tmp_path)
     engine.set_line_intensity(3, 50.0)
-    n_sent = len(fake.sent)
-    engine.set_line_intensity(3, 0.0)  # the calibration's 0-transmission voltage (0 V here), the source at its minimum
     engine.source_step()
-    assert [c for c in fake.sent[n_sent:] if c.startswith("LINE3:SET")] == ["LINE3:SET 0.000"]
+    assert source.power_mw == pytest.approx(500.0)
+    n_sent = len(fake.sent)
+    engine.set_line_intensity(3, 0.0)  # the calibration's 0-transmission voltage, the source at its minimum
+    engine.source_step()
+    assert [c for c in fake.sent[n_sent:] if c.startswith("LINE3:SET")] == ["LINE3:SET 0.500"]
     assert source.power_mw == pytest.approx(200.0) and source.enabled
     assert not any("below the 560 nm minimum" in n for n in engine.notices)
     assert engine.poll_once().channels["L3"].state == LineState.READY

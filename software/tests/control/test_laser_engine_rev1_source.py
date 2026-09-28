@@ -142,9 +142,27 @@ def test_below_minimum_clamps_and_warns_once():
     assert engine.poll_once().channels["L3"].state == LineState.READY  # READY at the clamped power
 
 
+def test_zero_percent_without_the_aom_clamps_and_warns_once():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_line_intensity(3, 50.0)
+    engine.source_step()
+    engine.set_line_intensity(3, 0.0)  # the first below-minimum request is 0 %: no AOM, so the minimum + one warning
+    engine.set_line_intensity(3, 0.0)
+    engine.source_step()
+    assert source.power_mw == pytest.approx(200.0) and source.enabled
+    assert [n for n in engine.notices if "below the 560 nm minimum" in n] == [
+        "560 nm: 0 mW requested is below the 560 nm minimum of 200 mW (20 % of 1000 mW) - running at the minimum"
+    ]
+    assert not any(c.startswith("LINE3:SET 0.") for c in fake.sent)  # no AOM: line 3 is never closed
+
+
 def test_zero_percent_with_the_aom_closes_it():
     engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))  # no AOM calibration file
     _to_ready(engine, source)
+    engine.light_source.set_intensity(560, 50.0)
+    engine.source_step()
+    assert source.power_mw == pytest.approx(500.0)
     n_sent = len(fake.sent)
     engine.light_source.set_intensity(560, 0.0)  # the AOM closed: dark at the sample, the source at its minimum
     engine.source_step()
@@ -156,6 +174,42 @@ def test_zero_percent_with_the_aom_closes_it():
     engine.source_step()
     assert [c for c in fake.sent[n_sent:] if c.startswith("LINE3:SET")] == ["LINE3:SET 5.000"]
     assert source.power_mw == pytest.approx(500.0)
+
+
+def _refuse_once(fake, command):
+    """The engine refuses `command` once (e.g. a transient expander error), then accepts it again."""
+    real_reply, left = fake._reply, [1]
+
+    def reply(cmd):
+        if cmd == command and left[0]:
+            left[0] -= 1
+            return "ERR simulated refusal"
+        return real_reply(cmd)
+
+    fake._reply = reply
+
+
+def test_refused_aom_close_is_sent_again():
+    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))
+    _to_ready(engine, source)
+    _refuse_once(fake, "LINE3:SET 0.000")
+    with pytest.raises(LaserEngineRev1Error, match="simulated refusal"):
+        engine.set_line_intensity(3, 0.0)
+    n_sent = len(fake.sent)
+    engine.set_line_intensity(3, 0.0)  # the AOM never closed: the retry must send the close again
+    assert "LINE3:SET 0.000" in fake.sent[n_sent:] and fake.lines[2]["target"] == 0.0
+
+
+def test_refused_aom_open_is_sent_again():
+    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))
+    _to_ready(engine, source)
+    engine.set_line_intensity(3, 0.0)  # the AOM closed
+    _refuse_once(fake, "LINE3:SET 5.000")
+    with pytest.raises(LaserEngineRev1Error, match="simulated refusal"):
+        engine.set_line_intensity(3, 50.0)
+    n_sent = len(fake.sent)
+    engine.set_line_intensity(3, 50.0)  # the AOM never opened: the retry must send full transmission again
+    assert "LINE3:SET 5.000" in fake.sent[n_sent:] and fake.lines[2]["target"] > 0.0
 
 
 def test_slow_source_does_not_delay_heartbeat():
@@ -362,6 +416,29 @@ def test_concurrent_wake_during_line3_set_enables_once():
     for _ in range(4):
         engine.source_step()
     assert source.calls.count("enable") == 1
+
+
+def test_aom_set_racing_the_wake_line3_set_stays_consistent():
+    """Another thread's AOM set-point (0 % closes the AOM) lands inside the wake's LINE3:SET round-trip. _aom_lock
+    orders the two sends, so the engine ends at the cached value, not at the wake's full transmission."""
+    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))
+    real_cmd = engine._cmd
+    helpers = []
+
+    def cmd_with_racing_close(line):
+        if line.startswith("LINE3:SET") and not helpers:
+            t = threading.Thread(target=engine._set_aom_volts, args=(0.0,))
+            helpers.append(t)
+            t.start()
+            t.join(0.2)  # blocks on _aom_lock until the wake's send is done: no deadlock, just a wait
+        return real_cmd(line)
+
+    engine._cmd = cmd_with_racing_close
+    engine.wake_up("L3")
+    for t in helpers:
+        t.join()  # the close has run: the outcome does not depend on scheduling
+    assert helpers
+    assert [c for c in fake.sent if c.startswith("LINE3:SET")][-1] == "LINE3:SET 0.000" and engine._aom_volts == 0.0
 
 
 def test_disable_racing_the_enable_put_stays_consistent():
