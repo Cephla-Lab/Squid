@@ -50,6 +50,7 @@ class LineInfo:
     target: float
     now: float
     max: float
+    gate: bool = False  # firmware gate held on without a TTL (LINE<n>:GATE 1)
 
     @property
     def is_ready(self) -> bool:
@@ -154,6 +155,7 @@ def parse_status(
             target=float(ln["target"] or 0.0),
             now=float(ln["now"] or 0.0),
             max=float(ln["max"] or 0.0),
+            gate=bool(ln.get("gate", 0)),
         )
     return EngineRev1Status(
         channels=channels,

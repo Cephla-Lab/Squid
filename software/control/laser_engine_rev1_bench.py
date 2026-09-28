@@ -10,6 +10,7 @@ import logging
 import math
 import re
 import sys
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -123,6 +124,7 @@ class LaserEngineRev1ServicePanel(QWidget):
         self._raw_history: List[str] = []
         self._accepted: Dict[str, float] = {}  # per row: the last intensity the engine accepted (or was seeded with)
         self._seeded = False
+        self._gate_cmd_t: Dict[int, float] = {}  # per line: when this panel last sent a GATE command
         self.rows: Dict[str, _LineRow] = {}
         if engine.variant != "DF":
             self._log.warning(f"variant {engine.variant!r}: the bench wavelength labels (L3 = 560 nm ...) assume DF")
@@ -275,7 +277,10 @@ class LaserEngineRev1ServicePanel(QWidget):
             self._accepted[key] = row.spin.value()
         self._seeded = True
 
+    GATE_SYNC_GUARD_S = 1.5  # a status polled around our own GATE command may predate it: don't let it flip the box
+
     def _set_gate(self, n: int, on: bool) -> None:
+        self._gate_cmd_t[n] = time.time()
         try:
             self._engine.link.command(f"LINE{n}:GATE {int(on)}")
         except Exception as e:
@@ -311,6 +316,7 @@ class LaserEngineRev1ServicePanel(QWidget):
                 gate = _RAW_GATE.fullmatch(text)
                 if gate is not None and f"L{gate.group(1)}" in self.rows:  # keep the bench gate box in step
                     _set_quietly(self.rows[f"L{gate.group(1)}"].gate, gate.group(2).upper() in ("1", "ON"))
+                    self._gate_cmd_t[int(gate.group(1))] = time.time()
         except EngineCommandError as e:
             reply = f"ERR {e.reason}"
         except Exception as e:
@@ -332,6 +338,8 @@ class LaserEngineRev1ServicePanel(QWidget):
                     widget.setVisible(False)
                 continue
             row.state.setText(f"{info.state.name}  {info.reason}".strip())
+            if status.timestamp_s > self._gate_cmd_t.get(info.line, 0.0) + self.GATE_SYNC_GUARD_S:
+                _set_quietly(row.gate, info.gate)  # the box always ends up showing the engine's gate
             unit = _UNITS.get(info.kind, "")
             row.readback.setText(f"{info.target:.3f} / {info.now:.3f} {unit}".strip())
         self._update_source_box()
@@ -536,9 +544,11 @@ class BenchWindow(QMainWindow):
             self._log.error("set-points not zeroed at connect: no engine status")
             return
         for key, info in status.channels.items():
-            if info.state == LineState.UNUSED or (engine.variant == "DF" and info.line == SOURCE_560_LINE):
+            if info.state == LineState.UNUSED:
                 continue
-            try:
+            if engine.variant == "DF" and info.line == SOURCE_560_LINE and not engine.options.aom_in_path:
+                continue  # no AOM: the source starts at its minimum; nothing to zero
+            try:  # with the AOM in the path, 0 % on the 560 line closes the AOM (analog 0 V)
                 engine.set_line_intensity(info.line, 0.0)
             except Exception as e:
                 self._log.error(f"{key} set-point not zeroed at connect: {e}")
@@ -563,6 +573,8 @@ class BenchWindow(QMainWindow):
             self.panel_splitter.addWidget(self.engine_widget)
             self.panel_splitter.addWidget(self.service_panel)
             engine.connection_lost.connect(self._on_link_lost)
+            if engine.is_connection_lost():  # lost before the signal was connected (during the zeroing / bring-up)
+                self._on_link_lost("lost during connect")
         except Exception as e:
             self._drop_panels()
             try:

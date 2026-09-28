@@ -381,3 +381,32 @@ def test_small_guards(qtbot):
         assert bench._UNITS["CHASSIS"] == "A"
     finally:
         engine.close()
+
+
+# ---- start dark with the AOM; gate boxes follow the engine ------------------------------------------------------------
+def test_connect_with_the_aom_closes_it(qtbot, monkeypatch):
+    fake = _shared_sim(monkeypatch)
+    win = _window(qtbot, monkeypatch)
+    win.aom_cb.setChecked(True)
+    try:
+        win.connect_btn.click()
+        assert "LINE3:SET 0.000" in fake.sent  # with the AOM in the path, the 560 line starts dark
+        assert win.engine._aom_volts == 0.0 and win.service_panel.rows["L3"].spin.value() == 0.0
+    finally:
+        win.disconnect_btn.click()
+
+
+def test_gate_box_follows_the_engine_after_the_guard(qtbot):
+    engine, panel = _panel(qtbot)
+    try:
+        box = panel.rows["L2"].gate
+        box.setChecked(True)  # GATE 1 sent now
+        engine.sim_engine.lines[1]["gate"] = 0  # a status that predates our command must not flip the box
+        engine.poll_once()
+        assert box.isChecked()
+        panel._gate_cmd_t[2] = 0.0  # the guard has passed
+        engine.sim_engine.lines[3]["gate"] = 1  # e.g. a raw "LINE4:GATE TRUE" the regex did not catch
+        engine.poll_once()
+        assert not box.isChecked() and panel.rows["L4"].gate.isChecked()  # the boxes show the engine's gates
+    finally:
+        engine.close()
