@@ -505,8 +505,8 @@ class ConfigRepository:
         source and not the target. Never overwrites, moves or deletes. Returns the profiles written.
 
         Copies to a temp file in the destination directory first, then os.replace()s it onto
-        <target>.yaml (R6a): a copy that dies partway through never leaves a partial file under
-        the final name, so "never overwrite an existing target" stays safe on retry."""
+        <target>.yaml: a copy that dies partway through never leaves a partial file under the
+        final name, so "never overwrite an existing target" stays safe on retry."""
         written = []
         for profile in self.get_available_profiles():
             src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
@@ -516,9 +516,15 @@ class ConfigRepository:
                 try:
                     shutil.copyfile(src, tmp)
                     os.replace(tmp, dst)
-                except OSError:
-                    tmp.unlink(missing_ok=True)
-                    raise
+                except Exception as original_exc:
+                    try:
+                        tmp.unlink(missing_ok=True)
+                    except OSError as cleanup_exc:
+                        logger.error(
+                            f"Failed to remove temp file {tmp} after a failed copy: {cleanup_exc}. "
+                            f"Original: {original_exc}"
+                        )
+                    raise original_exc
                 written.append(profile)
         self._profile_cache.pop(f"objective:{target}", None)
         return written

@@ -1,4 +1,5 @@
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -89,3 +90,36 @@ def test_retry_after_the_fault_is_removed_copies_the_full_file(tmp_path, monkeyp
     monkeypatch.setattr(repository.shutil, "copyfile", original_copyfile)  # the fault is fixed
     assert repo.copy_objective_channel_configs("10x", "20x water") == ["a"]
     assert (a / "20x water.yaml").read_text() == "A10"
+
+
+def _fail_mid_copy_non_oserror(src, dst):
+    """Like _fail_mid_copy, but with an exception type that isn't a subclass of OSError."""
+    with open(dst, "wb") as f:
+        f.write(b"PARTIAL")
+    raise ValueError("boom")
+
+
+def test_non_oserror_during_copy_leaves_no_temp_file_and_propagates(tmp_path, monkeypatch):
+    # The cleanup must run for ANY exception during the copy/replace, not only OSError.
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr(repository.shutil, "copyfile", _fail_mid_copy_non_oserror)
+    with pytest.raises(ValueError, match="boom"):
+        repo.copy_objective_channel_configs("10x", "20x water")
+    assert [p.name for p in a.iterdir()] == ["10x.yaml"]  # no temp file left behind
+
+
+def test_unlink_failure_during_copy_cleanup_does_not_mask_the_original_error(tmp_path, monkeypatch):
+    _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    repo = ConfigRepository(base_path=tmp_path)
+
+    def _raise_copyfile(*a_, **k):
+        raise OSError("disk full")
+
+    def _raise_unlink(self, missing_ok=False):
+        raise OSError("cannot unlink temp file")
+
+    monkeypatch.setattr(repository.shutil, "copyfile", _raise_copyfile)
+    monkeypatch.setattr(Path, "unlink", _raise_unlink)
+    with pytest.raises(OSError, match="disk full"):
+        repo.copy_objective_channel_configs("10x", "20x water")

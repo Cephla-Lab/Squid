@@ -309,6 +309,35 @@ class TestDerivedAndRoundTrip:
         assert path.read_bytes() == original_bytes
         assert [p.name for p in tmp_path.iterdir()] == ["objectives.yaml"]  # no temp file left behind
 
+    def test_non_oserror_during_publish_leaves_no_temp_file_and_propagates(self, tmp_path, monkeypatch):
+        # The cleanup must run for ANY exception during the write/replace, not only OSError.
+        path = tmp_path / "objectives.yaml"
+        config = _valid(_data())
+
+        def _raise(*a, **k):
+            raise ValueError("boom")
+
+        monkeypatch.setattr(oc.os, "replace", _raise)
+        with pytest.raises(ValueError, match="boom"):
+            oc.save_objectives_config(config, path)
+        assert not path.exists()
+        assert list(tmp_path.iterdir()) == []  # no temp file left behind
+
+    def test_unlink_failure_during_cleanup_does_not_mask_the_original_error(self, tmp_path, monkeypatch):
+        path = tmp_path / "objectives.yaml"
+        config = _valid(_data())
+
+        def _raise_replace(*a, **k):
+            raise OSError("disk full")
+
+        def _raise_unlink(self, missing_ok=False):
+            raise OSError("cannot unlink temp file")
+
+        monkeypatch.setattr(oc.os, "replace", _raise_replace)
+        monkeypatch.setattr(oc.Path, "unlink", _raise_unlink)
+        with pytest.raises(OSError, match="disk full"):
+            oc.save_objectives_config(config, path)
+
 
 class TestSerialRule:
     @pytest.mark.parametrize(

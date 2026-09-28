@@ -6,6 +6,7 @@ initializing, and control/models/__init__.py (like most of control.*) imports _d
 """
 
 import ast
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from control.objective_changer_constants import NIMOTION_TURRET_SLOTS, XERYON_SLOTS
+
+_log = logging.getLogger(__name__)  # the stdlib logger: this leaf module cannot import squid.logging
 
 # Read at call time, so tests can point it elsewhere before control._def is imported.
 OBJECTIVES_YAML_PATH = Path(__file__).resolve().parent.parent / "machine_configs" / "objectives.yaml"
@@ -175,16 +178,21 @@ def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
     """Write machine_configs/objectives.yaml. Writes to a temp file in the same directory and
     os.replace()s it onto `path` (an atomic publish on both POSIX and Windows for a
     same-filesystem rename): a reader never observes a partially-written file, and a failed
-    publish leaves the previous file untouched, with no temp file left behind (R6b)."""
+    publish leaves the previous file untouched, with no temp file left behind."""
     path = Path(path) if path is not None else OBJECTIVES_YAML_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_text(yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False), encoding="utf-8")
         os.replace(tmp, path)
-    except OSError:
-        tmp.unlink(missing_ok=True)
-        raise
+    except Exception as original_exc:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError as cleanup_exc:
+            _log.error(
+                f"Failed to remove temp file {tmp} after a failed publish: {cleanup_exc}. Original: {original_exc}"
+            )
+        raise original_exc
 
 
 def to_objectives_dict(config: ObjectivesConfig) -> Dict[str, Dict[str, float]]:
