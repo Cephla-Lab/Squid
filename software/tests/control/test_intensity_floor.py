@@ -2,6 +2,7 @@
 GUI as a floor below which the controls must not go without an AOM to dim/close further.
 """
 
+import contextlib
 from unittest.mock import MagicMock
 
 import pytest
@@ -95,19 +96,38 @@ def test_intensity_floor_percent_zero_when_the_engine_has_no_such_method(scope, 
 def test_update_illumination_clamps_up_to_the_floor(scope, live):
     scope.addons.squid_laser_engine = _fake_engine(10.0)
     scope.illumination_controller.set_intensity = MagicMock()
+    live._log = MagicMock()
 
     live.currentConfiguration = _acquisition_channel("Fluorescence 560 nm Ex", intensity=5.0)
     live.update_illumination()
     scope.illumination_controller.set_intensity.assert_called_once_with(560, 10.0)
+    warnings = [c.args[0] for c in live._log.warning.call_args_list]
+    assert any("Clamping illumination intensity" in w and "channel minimum output" in w for w in warnings)
 
+    live._log.reset_mock()
     scope.illumination_controller.set_intensity.reset_mock()
     live.currentConfiguration = _acquisition_channel("Fluorescence 560 nm Ex", intensity=50.0)
     live.update_illumination()
     scope.illumination_controller.set_intensity.assert_called_once_with(560, 50.0)
+    assert live._log.warning.call_count == 0  # above the floor: no clamp, no warning
+
+
+def _config(intensity=50.0):
+    config = MagicMock()
+    config.exposure_time = 10.0
+    config.analog_gain = 0.0
+    config.illumination_intensity = intensity
+    config.z_offset_um = 0.0
+    config.name = "ch"
+    return config
 
 
 def _channel_switch_stub(floor_percent, qtbot, cap_percent=100.0):
-    """LiveControlWidget-shaped stub with real intensity controls."""
+    """LiveControlWidget-shaped stub with real intensity controls, wired exactly like __init__ (~4663-4667):
+    spinbox valueChanged -> the update method (update_config_illumination_intensity) and -> slider.setValue(int(x));
+    slider valueChanged -> spinbox.setValue. This is what lets a cap/floor mismatch cause real Qt feedback
+    (fix round 1: recursion / value fights), not just a one-shot value check.
+    """
     stub = MagicMock()
     stub.is_switching_mode = False
     stub.liveController.get_intensity_cap_percent.return_value = cap_percent
@@ -120,17 +140,16 @@ def _channel_switch_stub(floor_percent, qtbot, cap_percent=100.0):
     stub.slider_illuminationIntensity = slider
 
     spin = control.widgets.QDoubleSpinBox()
+    spin.setKeyboardTracking(False)
     spin.setRange(0, 100)
     qtbot.addWidget(spin)
     stub.entry_illuminationIntensity = spin
 
-    config = MagicMock()
-    config.exposure_time = 10.0
-    config.analog_gain = 0.0
-    config.illumination_intensity = 50.0
-    config.z_offset_um = 0.0
-    config.name = "ch"
-    return stub, config
+    spin.valueChanged.connect(lambda v: control.widgets.LiveControlWidget.update_config_illumination_intensity(stub, v))
+    spin.valueChanged.connect(lambda x: slider.setValue(int(x)))
+    slider.valueChanged.connect(spin.setValue)
+
+    return stub, _config(50.0)
 
 
 def test_live_control_widget_floors_intensity_controls_on_channel_switch(qtbot):
@@ -149,6 +168,77 @@ def test_live_control_widget_zero_floor_changes_nothing(qtbot):
     assert stub.entry_illuminationIntensity.minimum() == pytest.approx(0.0)
     stub.slider_illuminationIntensity.setValue(3)
     assert stub.slider_illuminationIntensity.value() == 3
+
+
+# ---- fix round 1 (2026-09-28): CappedSlider bounded clamp; one ceiled floor for slider and spinbox -----------------
+
+
+@contextlib.contextmanager
+def _bounded_slider_changes(limit=20):
+    """Counts CappedSlider.sliderChange invocations for the duration of the block. A RecursionError raised
+    inside an overridden Qt virtual method does not reliably propagate to the Python caller or even to
+    sys.excepthook (PyQt reports it there, but formatting a deep RecursionError can itself recurse and be
+    swallowed - see probe.py/probe2.py, which raise the recursion limit and still see "Error in sys.excepthook").
+    Counting calls catches the cap/floor branches oscillating forever (fix round 1, bug 1) directly and
+    deterministically, the same signal probe.py reports ("sliderChange calls").
+    """
+    orig = control.widgets.CappedSlider.sliderChange
+    count = [0]
+
+    def counted(self, change):
+        count[0] += 1
+        return orig(self, change)
+
+    control.widgets.CappedSlider.sliderChange = counted
+    try:
+        yield count
+    finally:
+        control.widgets.CappedSlider.sliderChange = orig
+
+
+def test_channel_switch_from_a_floor_to_a_lower_cap_does_not_recurse(qtbot):
+    """Reproduces probe.py's "560_then_lowcap": switching from the 560 channel (floor 10) to a channel capped
+    at 5 while the old floor is still set must not recurse forever between the cap and the floor branches."""
+    stub, _ = _channel_switch_stub(floor_percent=10.0, qtbot=qtbot, cap_percent=100.0)
+    with _bounded_slider_changes() as count:
+        control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(50.0))  # the 560 channel
+
+        stub.liveController.get_intensity_cap_percent.return_value = 5.0
+        stub.liveController.get_intensity_floor_percent.return_value = 0.0
+        control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(3.0))  # then a channel capped at 5 %
+
+    assert count[0] <= 20
+    assert stub.slider_illuminationIntensity.value() <= 5
+    assert stub.entry_illuminationIntensity.value() <= 5
+
+
+def test_floor_above_cap_settles_at_the_floor(qtbot):
+    """Reproduces probe.py's "floor_above_cap": a channel whose own floor is above its own cap must not recurse -
+    the floor wins (per the bounded-clamp order: cap first, then floor)."""
+    stub, _ = _channel_switch_stub(floor_percent=20.0, qtbot=qtbot, cap_percent=10.0)
+    with _bounded_slider_changes() as count:
+        control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(50.0))
+
+    assert count[0] <= 20
+    assert stub.slider_illuminationIntensity.value() == 20
+    assert stub.entry_illuminationIntensity.value() == pytest.approx(20.0)
+
+
+def test_noninteger_floor_slider_and_spinbox_agree_after_editing_to_the_minimum(qtbot):
+    """Reproduces probe2.py's non-integer-floor case: the slider (integer units) and the spinbox (2-decimal
+    rounding) must land on the same ceiled floor, and editing down to the minimum must not spam
+    update_illumination (fix round 1, bug 2: 660 calls + RecursionError before the fix)."""
+    stub, _ = _channel_switch_stub(floor_percent=100 * 200 / 1950, qtbot=qtbot, cap_percent=100.0)  # 10.256...%
+    with _bounded_slider_changes() as count:
+        control.widgets.LiveControlWidget.update_ui_for_mode(stub, _config(50.0))
+
+        calls_before = stub.liveController.update_illumination.call_count
+        stub.entry_illuminationIntensity.setValue(10.0)  # e.g. the down arrow stops at the spinbox minimum (10.26)
+
+    assert count[0] <= 20
+    assert stub.slider_illuminationIntensity.value() == 11
+    assert stub.entry_illuminationIntensity.value() == pytest.approx(11.0)
+    assert stub.liveController.update_illumination.call_count - calls_before <= 3
 
 
 def test_capped_slider_set_floor_clamps_values_below_it(qtbot):
@@ -170,8 +260,16 @@ def test_capped_slider_overlay_region_nonempty_with_floor_or_cap(qtbot):
     slider.setRange(0, 100)
     slider.setValue(50)
 
+    opt = control.widgets.QStyleOptionSlider()
+    slider.initStyleOption(opt)
+    groove = slider.style().subControlRect(
+        control.widgets.QStyle.CC_Slider, opt, control.widgets.QStyle.SC_SliderGroove, slider
+    )
+
     slider.set_floor(10)
-    assert slider._overlay_region() is not None and not slider._overlay_region().isEmpty()
+    region = slider._overlay_region()
+    assert region is not None and not region.isEmpty()
+    assert region.boundingRect().left() == groove.x()  # the floor's gray region is on the low side of the groove
 
     slider.set_floor(0)
     slider.set_cap(80)

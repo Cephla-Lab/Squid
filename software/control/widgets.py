@@ -4448,27 +4448,36 @@ class CappedSlider(QSlider):
         self._cap: Optional[int] = None
         self._floor: Optional[int] = None
 
+    def _bounded(self, v: int) -> int:
+        """One clamp, floor winning when the two disagree (e.g. a floor set above the cap): cap first, then floor."""
+        if self._cap is not None:
+            v = min(v, self._cap)
+        if self._floor is not None:
+            v = max(v, self._floor)
+        return v
+
+    def _apply_bounds(self) -> None:
+        target = self._bounded(self.value())
+        if target != self.value():
+            self.setValue(target)
+
     def set_cap(self, cap: float):
         """Cap the usable range at `cap` (slider units)."""
         self._cap = int(cap)
-        if self.value() > self._cap:
-            self.setValue(self._cap)
+        self._apply_bounds()
         self.update()
 
     def set_floor(self, floor: float):
         """Floor the usable range at `floor` (slider units): values below it clamp up to it."""
         self._floor = math.ceil(floor)
-        if self.value() < self._floor:
-            self.setValue(self._floor)
+        self._apply_bounds()
         self.update()
 
     def sliderChange(self, change):
         if change == QAbstractSlider.SliderValueChange:
-            if self._cap is not None and self.value() > self._cap:
-                self.setValue(self._cap)
-                return
-            if self._floor is not None and self.value() < self._floor:
-                self.setValue(self._floor)
+            target = self._bounded(self.value())
+            if target != self.value():
+                self.setValue(target)
                 return
         super().sliderChange(change)
 
@@ -4911,7 +4920,10 @@ class LiveControlWidget(QFrame):
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
                 # Floor intensity controls at the channel's minimum output (e.g. the DF 560 source, ruling 2026-09-28)
-                intensity_floor = self.liveController.get_intensity_floor_percent(self.currentConfiguration)
+                # Ceiled once here so the slider (integer units) and the spinbox (2-decimal rounding) agree on the
+                # same floor value - otherwise the two fight each other through their cross-wired valueChanged
+                # signals (a non-integer floor could recurse or spam update_illumination).
+                intensity_floor = math.ceil(self.liveController.get_intensity_floor_percent(self.currentConfiguration))
                 self.slider_illuminationIntensity.set_floor(intensity_floor)
                 self.entry_illuminationIntensity.setMinimum(intensity_floor)
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
