@@ -2353,13 +2353,6 @@ class HighContentScreeningGui(QMainWindow):
             )
             hardware, after_run, manual_switch = adapter, adapter.restore_mode, not adapter.has_changer
 
-        def busy_reason():
-            if self.liveController is not None and self.liveController.is_live:
-                return "Live view is running. Stop it before calibrating."
-            if self.multipointController is not None and self.multipointController.acquisition_in_progress():
-                return "An acquisition is running."
-            return None
-
         current = self.liveController.currentConfiguration
         dialog = ObjectiveCalibrationDialog(
             hardware,
@@ -2373,7 +2366,7 @@ class HighContentScreeningGui(QMainWindow):
             ),
             manual_switch=manual_switch,
             default_channel=current.name if current is not None else None,
-            busy_reason=busy_reason,
+            busy_reason=self.objective_calibration_busy_reason,
             after_run=after_run,
             parent=self,
         )
@@ -2385,6 +2378,20 @@ class HighContentScreeningGui(QMainWindow):
             dropdown.setCurrentText(self.objectiveStore.current_objective)
             dropdown.blockSignals(False)
             self.objectivesWidget.signal_objective_changed.emit()
+
+    def objective_calibration_busy_reason(self):
+        """Why Utils > Objective Calibration must not start now, or None. An objective switch (the
+        dropdown is disabled while it runs on a helper thread) or a contrast autofocus would put two
+        threads on the turret and Z."""
+        if self.liveController is not None and self.liveController.is_live:
+            return "Live view is running. Stop it before calibrating."
+        if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+            return "An acquisition is running."
+        if self.objectivesWidget is not None and not self.objectivesWidget.dropdown.isEnabled():
+            return "An objective switch is in progress; wait for it to finish."
+        if self.autofocusController is not None and self.autofocusController.autofocus_in_progress:
+            return "Autofocus is running; wait for it to finish."
+        return None
 
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""

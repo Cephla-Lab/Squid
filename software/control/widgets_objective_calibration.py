@@ -41,7 +41,7 @@ from control.models.objective_calibration_config import (
     review_save,
     with_summary,
 )
-from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, RunResult, run_calibration
+from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, RunResult, cycle_report, run_calibration
 from squid.objective_calibration.hardware import RunCancelled
 
 log = squid.logging.get_logger(__name__)
@@ -50,7 +50,8 @@ RUNNING_MESSAGE = (
     "A calibration is running. Cancel it and wait for the stage and objective to be put back before closing."
 )
 GUIDANCE = (
-    "Use a flat, textured, non-periodic sample (a stained section, or a USAF target away from its bar groups), "
+    "Use a flat, textured, non-periodic sample (a stained section, or a region of a USAF target containing "
+    "several bar groups of different sizes: a single group is periodic, and bare glass has no texture), "
     "roughly in focus on the current objective, with the stage away from its travel limits. "
     "Saved calibrations are recorded for review; this version does not apply them yet."
 )
@@ -256,7 +257,9 @@ class ObjectiveCalibrationDialog(QDialog):
 
     # ---------------------------------------------------------------- state
     def _running(self) -> bool:
-        return self.worker is not None and self.worker.isRunning()
+        # Until _finished has run, not merely until the thread exits: in between, the result is not
+        # applied yet, and a new run started there would have its worker cleared by the old _finished.
+        return self.worker is not None
 
     def _say(self, message: str):
         self.label_result.setText(message)
@@ -379,8 +382,16 @@ class ObjectiveCalibrationDialog(QDialog):
         else:
             self.result = result
             self._show_result(result)
+            for line in cycle_report(result):  # every gate value, so the squid log is the bench record
+                log.info(line)
+                self.log_view.append(line)
             if result.stopped == "cancelled":
                 self._say("Calibration cancelled. The stage and objective have been put back.")
+            elif result.restore_failed:
+                self._say(
+                    f"Calibration stopped: {result.stopped}. The stage or objective may not be where it started: "
+                    "check the machine, then reselect the objective in the main window."
+                )
             elif result.stopped:
                 self._say(f"Calibration stopped: {result.stopped}. Check the stage and objective before continuing.")
             else:

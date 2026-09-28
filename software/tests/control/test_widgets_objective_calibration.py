@@ -10,6 +10,7 @@ from control.models.objective_calibration_config import (
     merge_pixel_records,
 )
 from control.utils import calculate_focus_measure
+import control.widgets_objective_calibration as woc
 from control.widgets_objective_calibration import ObjectiveCalibrationDialog
 from squid.objective_calibration.engine import ObjectiveSpec, PixelSizeSummary
 from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
@@ -192,3 +193,24 @@ def test_validity_banner_and_clear_selected(tmp_path, monkeypatch, make_dialog):
     assert "10x" not in saved.objectives
     assert saved.objectives["4x"].pixel_size.pixel_size_um == pytest.approx(1.66)
     assert "not calibrated" in dialog.validity_labels["10x"].text()
+
+
+def test_guidance_points_at_texture_not_blank_glass():
+    assert "several bar groups of different sizes" in woc.GUIDANCE
+    assert "away from its bar groups" not in woc.GUIDANCE
+
+
+def test_a_failed_restore_asks_the_operator_to_reselect_the_objective(qtbot, make_dialog):
+    dialog, hw = make_dialog()
+    hw.fail_switch_to = "10x"  # the switch to 10x faults, and so does the restore back to it
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    assert "reselect the objective in the main window" in dialog.label_result.text()
+
+
+def test_the_log_shows_every_objective_of_every_cycle(qtbot, make_dialog):
+    dialog, _ = make_dialog()
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    log = dialog.log_view.toPlainText()
+    assert "cycle 1 4x: focus" in log and "cycle 1 10x: focus" in log

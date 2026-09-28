@@ -139,3 +139,15 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_objective_calibration_refuses_during_an_objective_switch_or_autofocus(qtbot, confirm_exit_yes):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert win.objective_calibration_busy_reason() is None
+    win.objectivesWidget.dropdown.setEnabled(False)  # ObjectivesWidget's guard while a switch runs
+    assert "objective switch" in win.objective_calibration_busy_reason()
+    win.objectivesWidget.dropdown.setEnabled(True)
+    win.autofocusController.autofocus_in_progress = True
+    assert "Autofocus" in win.objective_calibration_busy_reason()
