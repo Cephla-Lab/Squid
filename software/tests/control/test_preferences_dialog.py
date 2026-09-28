@@ -789,6 +789,16 @@ class TestTiffCompressionSetting:
         finally:
             control._def.TIFF_COMPRESSION_LEVEL = original
 
+    def test_out_of_range_config_value_is_not_a_change(self, qtbot, sample_config, temp_config_file):
+        """The spin box shows the nearest level it has, which is also the one in effect."""
+        sample_config.set("GENERAL", "tiff_compression_level", "12")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.tiff_compression_spinbox.value() == 9
+        assert not [c for c in dialog._get_changes() if c[0] == "TIFF Compression Level"]
+
     def test_only_shown_for_the_formats_that_support_it(self, preferences_dialog):
         for file_saving_option, visible in (
             ("INDIVIDUAL_IMAGES", True),

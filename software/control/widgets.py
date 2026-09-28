@@ -1924,8 +1924,14 @@ class PreferencesDialog(QDialog):
         return self._get_config_value("GENERAL", "file_saving_option", control._def.FILE_SAVING_OPTION.name)
 
     def _get_tiff_compression_level(self):
-        """The TIFF compression level currently in effect, falling back to the running value."""
-        return self._get_config_int("GENERAL", "tiff_compression_level", control._def.TIFF_COMPRESSION_LEVEL)
+        """The TIFF compression level currently in effect, falling back to the running value.
+
+        Limited to what the spin box can show, like the running value is, so that an out of range
+        value in the config file isn't reported as a change.
+        """
+        level = self._get_config_int("GENERAL", "tiff_compression_level", control._def.TIFF_COMPRESSION_LEVEL)
+        spinbox = self.tiff_compression_spinbox
+        return min(max(level, spinbox.minimum()), spinbox.maximum())
 
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
