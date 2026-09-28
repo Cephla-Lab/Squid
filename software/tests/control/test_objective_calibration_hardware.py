@@ -154,10 +154,11 @@ def test_camera_key_and_image_transform():
 
 
 def test_simulation_hardware_calibrates_end_to_end():
+    # 60x is the hardest case: 0.063 um pixels against the 0.79 um stage microstep.
     specs = [
         ObjectiveSpec("4x", 4, 0.13, 0.94),
-        ObjectiveSpec("10x", 10, 0.3, 0.376),
         ObjectiveSpec("20x", 20, 0.8, 0.188),
+        ObjectiveSpec("60x", 60, 1.2, 0.063),
     ]
     hw = simulation_hardware(specs, "20x", 3.76)
     result = run_calibration(
@@ -166,9 +167,10 @@ def test_simulation_hardware_calibrates_end_to_end():
         fine_metric=lambda crop: float(calculate_focus_measure(crop, FocusMeasureOperator.LAPE)),
     )
     assert result.stopped is None
-    assert set(result.pixel_sizes) == {"4x", "10x", "20x"}
+    assert set(result.pixel_sizes) == {"4x", "20x", "60x"}
     for name, summary in result.pixel_sizes.items():
-        assert summary.pixel_size_um == pytest.approx(hw.objectives[name].pixel_um, rel=0.005)
+        # Stage-limited (spec B §5.2, ~error/distance): 0.1 um over the ~15 um 60x moves is ~0.7%.
+        assert summary.pixel_size_um == pytest.approx(hw.objectives[name].pixel_um, rel=0.01)
 
 
 def test_simulation_hardware_has_something_to_measure():
