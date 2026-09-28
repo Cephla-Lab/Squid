@@ -122,6 +122,7 @@ class ObjectivesEditorDialog(QDialog):
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
         self._table.setColumnHidden(_COL_SLOT, self._kind is oc.ChangerKind.NONE)
+        self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table)
         buttons = QHBoxLayout()
         for text, slot in (
@@ -153,12 +154,39 @@ class ObjectivesEditorDialog(QDialog):
     def _copy_from_combo(self, copy_from: Optional[str]) -> QComboBox:
         combo = QComboBox()
         combo.addItems(self._mounted_names)
-        if copy_from is not None:
-            index = combo.findText(copy_from)
-            if index >= 0:
-                combo.setCurrentIndex(index)
+        combo._user_picked = False  # cleared once the user (not this dialog) chooses a source
+        self._set_combo_selection(combo, copy_from)
         combo.setEnabled(combo.count() > 0)
+        # currentIndexChanged fires for both programmatic and user-driven changes; only the
+        # ones not wrapped in _set_combo_selection() count as the user picking a source (R5).
+        combo.currentIndexChanged.connect(lambda _index=None, c=combo: self._on_copy_combo_changed(c))
         return combo
+
+    @staticmethod
+    def _set_combo_selection(combo: QComboBox, name: Optional[str]) -> None:
+        combo._programmatic_change = True
+        try:
+            combo.setCurrentIndex(combo.findText(name) if name is not None else -1)
+        finally:
+            combo._programmatic_change = False
+
+    @staticmethod
+    def _on_copy_combo_changed(combo: QComboBox) -> None:
+        if not getattr(combo, "_programmatic_change", False):
+            combo._user_picked = True
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        # R5: while a new row's copy source has not been picked by hand, retarget it to the
+        # nearest mounted objective whenever the row's magnification changes.
+        if item.column() != _COL_MAG:
+            return
+        combo = self._table.cellWidget(item.row(), _COL_COPY)
+        if combo is None or getattr(combo, "_user_picked", False):
+            return
+        mounted_rows = [r for r in self.rows() if r.name in self._mounted_names]
+        nearest = oc.nearest_by_magnification(_float_or_none(item.text()), mounted_rows)
+        if nearest is not None:
+            self._set_combo_selection(combo, nearest)
 
     def add_row(self, row: oc.EditorRow, *, new: Optional[bool] = None) -> None:
         # `new` distinguishes a row added during this dialog session (always gets a copy-source

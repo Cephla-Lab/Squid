@@ -252,3 +252,30 @@ def test_editing_a_mounted_name_via_the_table_is_refused(qtbot, repo, no_dialogs
     assert not bool(dialog._table.model().flags(index) & Qt.ItemIsEditable)
     dialog._table.edit(index)
     assert dialog.rows()[0].name == "4x"
+
+
+# --- R5: a new row's copy source tracks its magnification until the user picks one ---
+
+
+def test_copy_source_tracks_magnification_until_the_user_picks_one(qtbot, repo, no_dialogs, monkeypatch, tmp_path):
+    for profile in ("a", "b"):
+        (tmp_path / "user_profiles" / profile / "channel_configs" / "10x.yaml").write_text(f"{profile}-10x")
+    monkeypatch.setattr(widgets_objectives.QInputDialog, "getText", lambda *a, **k: ("custom", True))
+    dialog = _turret_dialog(qtbot, repo)
+    dialog._add_custom()
+    row = dialog._table.rowCount() - 1
+    combo = dialog._table.cellWidget(row, widgets_objectives._COL_COPY)
+    dialog._table.item(row, widgets_objectives._COL_NA).setText("0.8")
+    dialog._table.item(row, widgets_objectives._COL_TUBE).setText("180")
+
+    dialog._table.item(row, widgets_objectives._COL_MAG).setText("20")
+    assert combo.currentText() == "20x"
+
+    combo.setCurrentText("10x")  # the user picks a source explicitly
+    dialog._table.item(row, widgets_objectives._COL_MAG).setText("40")
+    assert combo.currentText() == "10x"  # no longer auto-updated
+
+    assert dialog.save()
+    for profile in ("a", "b"):
+        path = tmp_path / "user_profiles" / profile / "channel_configs" / "custom.yaml"
+        assert path.read_text() == f"{profile}-10x"
