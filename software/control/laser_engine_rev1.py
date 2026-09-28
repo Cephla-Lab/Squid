@@ -166,6 +166,7 @@ class LaserEngineRev1(QObject):
     SOURCE_ENABLE_ATTEMPTS = 3  # consecutive enable failures before the source is reported as a fault
     SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
     SOURCE_SETTLE_TOL_FRAC = 0.05
+    POLL_JOIN_TIMEOUT_S = 4.0  # close(): one STAT? can take the link's 3 s read timeout (EngineLink.open), + 1 s
 
     def __init__(
         self,
@@ -252,10 +253,15 @@ class LaserEngineRev1(QObject):
             link.close()
             raise RuntimeError(f"{idn!r} is not a rev 1 laser engine")
         self._link = link
-        self.variant = link.query("VAR?")
-        link.command(f"HOST:TIMEOUT {self.HOST_TIMEOUT_S}")
-        self._configure_lines()
-        self._reset_at_connect(link.status())
+        try:
+            self.variant = link.query("VAR?")
+            link.command(f"HOST:TIMEOUT {self.HOST_TIMEOUT_S}")
+            self._configure_lines()
+            self._reset_at_connect(link.status())
+        except Exception:
+            self._link = None  # a later open() starts again instead of returning early on a half-configured link
+            link.close()
+            raise
         self._open_source()
 
     def _reset_at_connect(self, raw: dict) -> None:
@@ -319,7 +325,7 @@ class LaserEngineRev1(QObject):
     def close(self) -> None:
         self._running.clear()
         if self._thread is not None:
-            self._thread.join(timeout=2.0)
+            self._thread.join(timeout=self.POLL_JOIN_TIMEOUT_S)
             self._thread = None
         self._close_source()
         if self._link is not None:
@@ -353,7 +359,12 @@ class LaserEngineRev1(QObject):
     # ---- polling / heartbeat -------------------------------------------------------------------------------------------
     def _poll_loop(self) -> None:
         while self._running.is_set():
-            if self.poll_once() is None and self._lost:
+            try:
+                if self.poll_once() is None and self._lost:
+                    return
+            except Exception as e:  # a bug (e.g. an unexpected STAT? shape) must not stop the heartbeat silently
+                self._log.exception("laser engine poll thread")
+                self._signal_lost(f"poll thread error: {e}")  # the tab's banner, the 560 off, waits return False
                 return
             time.sleep(self.query_interval_s)
 
@@ -509,7 +520,8 @@ class LaserEngineRev1(QObject):
                         continue
                     self._bringup_keys.remove(key)
                     self._bringup_dropped.append(key)
-                    self._notice(f"startup: {key} not brought up: {status.channels[key].reason or e}")
+                    # the refusal itself (e.g. the firmware's reason), not the line's status text
+                    self._notice(f"startup: {key} not brought up: {e}")
                 if not status.armed:
                     return  # one ARM per step; the lines follow at the next poll
         finally:
@@ -632,6 +644,8 @@ class LaserEngineRev1(QObject):
             for key in channel_keys:
                 if key not in status.channels:
                     raise LaserEngineRev1Error(key, "no such line")
+                if status.channels[key].state == LineState.UNUSED:
+                    raise LaserEngineRev1Error(key, "nothing on this line in this variant")
                 if not status.channels[key].is_ready:
                     self._ensure_ready_step(key, status, tec_retried)
             if time.monotonic() >= deadline:

@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,24 @@ def test_connection_lost_on_serial_error():
     assert engine.poll_once() is None
     assert engine.poll_once() is None
     assert engine.is_connection_lost() and len(lost) == 1
+
+
+def test_poll_thread_error_is_reported_as_connection_lost(monkeypatch, qtbot):
+    import control.laser_engine_rev1 as rev1
+
+    def unexpected_shape(*a, **kw):
+        raise KeyError("lines")  # e.g. a STAT? reply of an unexpected shape
+
+    engine, fake = _engine()
+    lost = []
+    engine.connection_lost.connect(lost.append)
+    monkeypatch.setattr(rev1, "parse_status", unexpected_shape)
+    engine.start()
+    qtbot.waitUntil(lambda: len(lost) > 0, timeout=2000)  # emitted on the poll thread, delivered by the Qt event loop
+    qtbot.wait(50)  # nothing else queued behind it
+    assert engine.is_connection_lost() and len(lost) == 1 and "poll thread error" in lost[0]
+    engine.close()  # still closes cleanly
+    assert "DISARM" in fake.sent
 
 
 def test_close_disarms_and_is_safe_twice():
@@ -255,6 +274,17 @@ def test_transient_arm_refusal_waits():
     fake.arm_refusals = ["WDOG_5V low (watchdog in reset)", "expanders not responding"]
     assert engine.wait_until_ready(["L1"], timeout_s=2.0) is True
     assert fake.sent.count("ARM") == 3
+
+
+def test_unused_line_raises_at_once():
+    fake = FakeEngine(tok_delay_polls=0)
+    fake.lines[4]["kind"] = "NONE"  # a variant with nothing on line 5
+    engine, _ = _engine(fake)
+    engine.open()
+    t0 = time.monotonic()
+    with pytest.raises(LaserEngineRev1Error, match="nothing on this line"):
+        engine.wait_until_ready(["L5"], timeout_s=5.0)
+    assert time.monotonic() - t0 < 1.0  # refused at once, not after the timeout
 
 
 def test_blocked_line_raises():
