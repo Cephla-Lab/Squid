@@ -132,7 +132,12 @@ class TestWithYaml:
     )
     def test_invalid_yaml_stops_startup(self, tmp_path, yaml_text, overrides, field):
         run = run_def(tmp_path, objectives_yaml=yaml_text, ini_general_overrides=overrides)
-        assert run.returncode != 0
+        # returncode == 1 and no traceback distinguish the clean log.error(...) + sys.exit(1)
+        # path from an uncaught ObjectivesConfigError (which would also give a nonzero
+        # returncode and mention the path/field/"delete" text, via the exception message).
+        assert run.returncode == 1
+        assert "Traceback" not in run.output
+        assert " - ERROR - " in run.output
         assert run.report is None
         assert "objectives.yaml" in run.output and field in run.output and "delete" in run.output
 
