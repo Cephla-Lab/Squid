@@ -1,7 +1,10 @@
 """Simulated rev 1 laser engine and its 560 nm source, for tests and Squid's simulation mode (no vendor protocol here)."""
 
 import json
+import time as _time
 from typing import List, Optional
+
+from control.laser_engine_rev1_status import SourceStatus
 
 # DF variant table (laser-engine-firmware firmware/src/variant.h): (label, kind, max, tok_required)
 _DF_LINES = [
@@ -272,3 +275,54 @@ class FakeEngine:
                 self._tok_countdown[n - 1] = self.tok_delay_polls
             return "OK CMD:REPLY=1@%d" % n
         return "ERR unknown command"
+
+
+class FakeSource:
+    """Vendor-neutral stand-in for the engine's 560 nm source: off -> (enable) starting for 2 polls -> ready."""
+
+    def __init__(self, max_power_mw: float = 1000.0, min_power_mw: float = 200.0):
+        self.max_power_mw = max_power_mw
+        self.min_power_mw = min_power_mw
+        self.enabled = False
+        self.power_mw = 0.0
+        self.needs_key = False
+        self.fault = False
+        self.silent = False
+        self.poll_delay_s = 0.0
+        self.fail_enable = False
+        self.calls: List[str] = []
+        self._starting_polls = 0
+
+    def poll(self) -> SourceStatus:
+        if self.poll_delay_s:
+            _time.sleep(self.poll_delay_s)
+        if self.silent:
+            return SourceStatus(link_ok=False)
+        if self.needs_key:
+            return SourceStatus(link_ok=True, needs_key=True)
+        if self.fault:
+            return SourceStatus(link_ok=True, fault=True, detail="simulated")
+        if not self.enabled:
+            return SourceStatus(link_ok=True, off=True)
+        if self._starting_polls > 0:
+            self._starting_polls -= 1
+            return SourceStatus(link_ok=True, starting=True)
+        return SourceStatus(link_ok=True, ready=True, power_mw=self.power_mw)
+
+    def set_power_mw(self, mw: float) -> None:
+        self.power_mw = max(self.min_power_mw, min(mw, self.max_power_mw))
+        self.calls.append("power %.1f" % mw)
+
+    def enable(self) -> None:
+        self.calls.append("enable")
+        if self.fail_enable:
+            raise RuntimeError("enable refused")
+        if not self.needs_key:
+            self.enabled, self._starting_polls = True, 2
+
+    def disable(self) -> None:
+        self.calls.append("disable")
+        self.enabled = False
+
+    def close(self) -> None:
+        self.calls.append("close")

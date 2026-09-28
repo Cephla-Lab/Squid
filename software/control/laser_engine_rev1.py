@@ -9,9 +9,9 @@ any disarm; and sets intensities. Exposure timing is NOT here: the Squid control
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
 import numpy as np
 import pandas as pd
@@ -77,6 +77,33 @@ def _uptime_text(ms: float) -> str:
     return f"{s / 3600:.1f} h"
 
 
+AOM_FULL_SCALE_V = 5.0  # GATED3 = the AOM driver's analog input, 0-5 V; full scale = full transmission
+
+
+def idle_off_seconds(minutes: float) -> float:
+    """Ruling 4: the 560 source idle-off time; 0 means 24 h (the source is never left on indefinitely)."""
+    if minutes < 0:
+        raise ValueError("idle-off minutes must be >= 0 (0 = 24 h)")
+    return float(minutes if minutes > 0 else 24 * 60) * 60.0
+
+
+class SourceDriver(Protocol):
+    """The engine's own free-space source (DF: the 560 nm fiber laser). Implementations must never raise from poll()."""
+
+    max_power_mw: float
+    min_power_mw: float  # the source's own minimum set-point (read from the device)
+
+    def poll(self) -> SourceStatus: ...
+
+    def set_power_mw(self, mw: float) -> None: ...
+
+    def enable(self) -> None: ...
+
+    def disable(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
 def load_intensity_calibrations(directory: Path) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
     """Squid's calibration files, <wavelength>.csv with "DAC Percent" and "Optical Power (mW)" (tools/generate_intensity_calibrations.py).
     For this engine "DAC Percent" is the % of the line's current ceiling. Returns wavelength -> (optical %, drive %), ascending.
@@ -118,6 +145,9 @@ class LaserEngineRev1(QObject):
     DEFAULT_QUERY_INTERVAL_S = 1.0  # every STAT? is the heartbeat: must stay well under HOST_TIMEOUT_S
     HOST_TIMEOUT_S = 5
     CONFIG_RETRY_S = 3.0  # expanders come up within ~1 s of a cold power-up (firmware retries them once a second)
+    SOURCE_ENABLE_ATTEMPTS = 3  # consecutive enable failures before the source is reported as a fault
+    SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
+    SOURCE_SETTLE_TOL_FRAC = 0.05
 
     def __init__(
         self,
@@ -163,6 +193,24 @@ class LaserEngineRev1(QObject):
         self._requested: Dict[int, float] = {}  # last requested intensity per wavelength, % of optical power
         self._luts: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None  # loaded on first use
         self._linear_logged: set = set()
+        self.source_idle_off_s = idle_off_seconds(
+            self.options.source_idle_off_min
+        )  # the tab can change it (session only)
+        self._source_queue: "queue.Queue" = queue.Queue()
+        self._source_thread: Optional[threading.Thread] = None
+        self._source_running = threading.Event()
+        self._source_want_on = False  # what the driver has asked for
+        self._source_enabled = False  # what the source thread has done
+        self._source_enable_pending = False  # an enable is queued and not yet executed (no duplicates)
+        self._source_requested_mw: Optional[float] = (
+            None  # the laser power to run at (already clamped / split with the AOM)
+        )
+        self._source_pending_mw: Optional[float] = None
+        self._source_last_use = time.monotonic()
+        self._source_failures = 0  # consecutive failed enables
+        self._source_error: Optional[str] = None  # set after SOURCE_ENABLE_ATTEMPTS failures; cleared by fault_reset()
+        self._clamp_warned = False
+        self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = full transmission
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -572,34 +620,171 @@ class LaserEngineRev1(QObject):
     def _check_source_usable(self, channel_key: str) -> None:
         if self._source is None:
             raise LaserEngineRev1Error(channel_key, "560 nm source not configured")
+        st = self._source_status
+        if st is not None and st.needs_key:
+            raise LaserEngineRev1Error(channel_key, "turn the 560 key OFF then ON", needs_operator=True)
+        if st is not None and (st.fault or not st.link_ok):
+            raise LaserEngineRev1Error(channel_key, f"560 nm source not usable: {st.detail or 'not responding'}")
 
     def _wake_source(self) -> None:
-        pass
+        if self._source is None:
+            return
+        self._touch_source()
+        if self._source_enable_pending:
+            return  # the source thread has not run the last enable yet (wake_up / wait_until_ready call this every poll)
+        volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
+        self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
+        start = self._source.min_power_mw  # ruling 4: start at the source's own minimum, then the request
+        requested = self._source_requested_mw if self._source_requested_mw is not None else start
+        self._source_pending_mw = requested if requested > start else None
+        self._source_want_on = True
+        self._source_enable_pending = True
+        self._source_queue.put(("enable", start))
 
     def _disable_source(self) -> None:
-        pass
+        if self._source is not None and self._source_want_on:
+            self._source_want_on = False
+            self._source_pending_mw = None
+            self._source_queue.put(("disable", None))
 
     def _touch_source(self) -> None:
-        pass
+        self._source_last_use = time.monotonic()
 
     def _clear_source_error(self) -> None:
-        pass
+        self._source_error, self._source_failures = None, 0
 
     # ---- hooks: engine-owned source (Task 6) ------------------------------------------------------------------------
     def _open_source(self) -> None:
-        pass
+        if self.variant != "DF" or self._source_factory is None:
+            return
+        try:
+            self._source = self._source_factory()
+        except Exception as e:  # the engine stays usable on its other lines; L3 reads NOT_CONFIGURED
+            self._log.error(f"560 nm source not available: {e}")
+            self._source = None
+            return
+        first = self._source.poll()  # known (e.g. key not cycled) before line 3 is touched
+        if first.ready or first.starting:  # left on by a session that ended without switching it off (e.g. a crash)
+            try:
+                self._source.disable()  # the source thread is not running yet: direct call
+            except Exception as e:
+                self._log.error(f"560 nm source: switching off at connect: {e}")
+            self._notice("560 nm source was on at connect (the last session did not switch it off): switched off")
+            first = self._source.poll()
+        self._source_status = self._judge_source(first)
 
     def _start_source_thread(self) -> None:
-        pass
+        if self._source is None or self._source_running.is_set():
+            return
+        self._source_running.set()
+        self._source_thread = threading.Thread(target=self._source_loop, name="LaserEngineRev1Source", daemon=True)
+        self._source_thread.start()
+
+    def _source_loop(self) -> None:
+        while self._source_running.is_set():
+            try:
+                self.source_step()
+            except (
+                Exception
+            ) as e:  # a driver bug must not kill the thread silently: report the source as not responding
+                self._log.exception("560 nm source thread")
+                self._source_status = SourceStatus(link_ok=False, detail=f"source thread error: {e}")
+            time.sleep(self.query_interval_s)
+
+    def source_step(self) -> None:
+        """One pass of the source thread: run queued requests, then poll. The only place that does source I/O."""
+        src = self._source
+        if src is None:
+            return
+        while True:
+            try:
+                op, arg = self._source_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if op == "enable":
+                    src.set_power_mw(arg)
+                    src.enable()
+                    self._source_enabled, self._source_failures = True, 0
+                elif op == "power":
+                    src.set_power_mw(arg)
+                elif op == "disable":
+                    src.disable()
+                    self._source_enabled = False
+            except Exception as e:
+                self._log.error(f"560 nm source {op}: {e}")
+                if op == "enable":
+                    self._source_failures += 1
+                    if self._source_failures >= self.SOURCE_ENABLE_ATTEMPTS:
+                        self._source_error = f"enable failed {self._source_failures}x: {e}"
+            finally:
+                if op == "enable":
+                    self._source_enable_pending = (
+                        False  # only once the enable has run (or failed): no duplicate enables
+                    )
+        status = src.poll()
+        if status.ready and self._source_pending_mw is not None:
+            pending, self._source_pending_mw = self._source_pending_mw, None
+            try:
+                src.set_power_mw(pending)
+            except Exception as e:
+                self._log.error(f"560 nm source power: {e}")
+        self._source_status = self._judge_source(status)
+
+    def _judge_source(self, status: SourceStatus) -> SourceStatus:
+        """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request."""
+        if self._source_error is not None:
+            return replace(status, fault=True, detail=self._source_error)
+        if status.ready:
+            target = self._source_requested_mw if self._source_requested_mw is not None else self._source.min_power_mw
+            tol = max(self.SOURCE_SETTLE_TOL_MW, self.SOURCE_SETTLE_TOL_FRAC * target)
+            settled = self._source_pending_mw is None and abs(status.power_mw - target) <= tol
+            return replace(status, settled=settled)
+        return status
 
     def _close_source(self) -> None:
-        pass
+        if self._source is None:
+            return
+        self._source_running.clear()
+        if self._source_thread is not None:
+            self._source_thread.join(timeout=3.0)
+            self._source_thread = None
+        for action in (self._source.disable, self._source.close):  # always off on close, whatever was requested
+            try:
+                action()
+            except Exception:
+                self._log.exception("560 nm source shutdown")
+        self._source = None
 
     def _after_poll(self, status: EngineRev1Status) -> None:
-        pass
+        """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter."""
+        if self._source is None:
+            return
+        raw = self._latest_raw or {}
+        if not self._source_want_on:
+            return
+        l3 = status.channels.get("L3")
+        idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
+        not_armed = not status.armed and not self._source_enable_pending  # a STAT? taken just before this thread's ARM
+        if not_armed or (l3 is not None and l3.state in ERROR_STATES) or idle:
+            if idle:
+                self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
+            self._disable_source()
+            self._set_held_shutter(False, raw)
+        elif l3 is not None and l3.state == LineState.READY:
+            self._set_held_shutter(True, raw)
+
+    def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
+        """AOM "open" mode only: the shutter open while the 560 is ready, closed once it is switched off."""
+        if not self._shutter_held_open() or bool((raw.get("shutter") or {}).get("open")) == want_open:
+            return
+        try:
+            self._cmd(f"SHUT:OPEN {int(want_open)}")
+        except (EngineCommandError, LaserEngineRev1Error) as e:
+            self._log.warning(f"shutter {'open' if want_open else 'close'} not done (retried at the next poll): {e}")
 
     def _on_lost(self) -> None:
-        pass
+        self._disable_source()
 
     # ---- intensity (Task 5) ------------------------------------------------------------------------------------------
     SETTLE_TIMEOUT_S = 1.0  # firmware ramps 0 -> ceiling in 0.5 s
@@ -666,7 +851,47 @@ class LaserEngineRev1(QObject):
         return self.get_line_intensity(line) if line is not None else 0.0
 
     def _set_source_power(self, percent: float) -> None:
-        pass  # Task 6: the percent is already stored in self._percent
+        if self._source is None:
+            raise LaserEngineRev1Error("L3", "560 nm source not configured")
+        self._touch_source()
+        mw = self._source_power_for(percent / 100.0 * self._source.max_power_mw)  # % of maximum power, linear in mW
+        self._source_requested_mw = mw
+        if self._source_enable_pending or self._source_pending_mw is not None:
+            self._source_pending_mw = (
+                mw  # still starting at the minimum: go to the new request once the source is ready
+            )
+        elif self._source_want_on:
+            self._source_queue.put(("power", mw))
+
+    def _aom_full_volts(self) -> float:
+        return AOM_FULL_SCALE_V  # Task 9: the calibrated peak-transmission voltage
+
+    def _source_power_for(self, mw: float) -> float:
+        """Laser power for a request. Below the source's minimum: the minimum, with one warning (Task 9: or dim with the AOM)."""
+        floor = self._source.min_power_mw
+        if mw >= floor:
+            return mw
+        if not self._clamp_warned:
+            self._clamp_warned = True
+            self._notice(
+                f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW - running at the minimum"
+            )
+        return floor
+
+    def set_source_idle_off_min(self, minutes: float) -> None:
+        """Tab control, this session only (the .ini sets the default). 0 = 24 h."""
+        self.source_idle_off_s = idle_off_seconds(minutes)
+
+    def set_shutter_with_aom(self, mode: str) -> None:
+        """Tab control, this session only. "gate": the shutter also follows each exposure; "open": held open while the 560 is ready."""
+        if mode not in ("gate", "open"):
+            raise ValueError(f"shutter mode {mode!r}: 'gate' or 'open'")
+        if not self.options.aom_in_path:
+            raise ValueError("no AOM in the beam path (LASER_ENGINE_REV1_AOM_IN_PATH): the shutter always gates")
+        self.shutter_with_aom = mode  # first, so the poll thread does not re-open it
+        if mode == "gate":
+            self._cmd("SHUT:OPEN 0")
+        self._cmd(f"SHUT:SRC {self._shutter_src()}")
 
     @property
     def light_source(self) -> "LaserEngineRev1LightSource":
