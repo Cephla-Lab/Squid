@@ -139,3 +139,34 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_objective_calibration_refuses_during_an_objective_switch_or_autofocus(qtbot, confirm_exit_yes):
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert win.objective_calibration_busy_reason() is None
+    win.objectivesWidget.dropdown.setEnabled(False)  # ObjectivesWidget's guard while a switch runs
+    assert "objective switch" in win.objective_calibration_busy_reason()
+    win.objectivesWidget.dropdown.setEnabled(True)
+    win.autofocusController.autofocus_in_progress = True
+    assert "Autofocus" in win.objective_calibration_busy_reason()
+
+
+def test_objective_calibration_does_not_open_during_an_objective_switch(qtbot, confirm_exit_yes, monkeypatch):
+    """The adapter snapshots the objective when it is built: opened mid-switch, the snapshot would be
+    the old objective, and a later run could skip a switch it needs. Refuse before building it."""
+    import control.widgets_objective_calibration as woc
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    shown, opened = [], []
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text, *a, **k: shown.append(text))
+    monkeypatch.setattr(woc.ObjectiveCalibrationDialog, "exec_", lambda self: opened.append(self) or 0)
+    win.objectivesWidget.dropdown.setEnabled(False)  # a switch is running on the helper thread
+    win.openObjectiveCalibration()
+    assert opened == [] and "objective switch" in shown[0]
+    win.objectivesWidget.dropdown.setEnabled(True)
+    win.openObjectiveCalibration()
+    assert len(opened) == 1

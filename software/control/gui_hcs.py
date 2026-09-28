@@ -668,6 +668,7 @@ class HighContentScreeningGui(QMainWindow):
             self.microscope._laser_af_controller = self.laserAutofocusController
 
         self.live_only_mode = live_only_mode or LIVE_ONLY_MODE
+        self.is_simulation = is_simulation
         self.is_live_scan_grid_on = False
         self.live_scan_grid_was_on = None
         self.performance_mode = False
@@ -845,6 +846,10 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
             filter_wheel_tuning_action.triggered.connect(self.openFilterWheelTuning)
             utils_menu.addAction(filter_wheel_tuning_action)
+        objective_calibration_action = QAction("Objective Calibration...", self)
+        objective_calibration_action.setMenuRole(QAction.NoRole)
+        objective_calibration_action.triggered.connect(self.openObjectiveCalibration)
+        utils_menu.addAction(objective_calibration_action)
 
         if USE_JUPYTER_CONSOLE:
             # Create namespace to expose to Jupyter
@@ -2318,6 +2323,81 @@ class HighContentScreeningGui(QMainWindow):
             parent=self,
         )
         dialog.exec_()
+
+    def openObjectiveCalibration(self):
+        """Open Utils > Objective Calibration...: measure each mounted objective's pixel size and
+        pixel->stage matrix (control/widgets_objective_calibration.py). Under --simulation it runs on
+        the synthetic microscope: the simulated camera's frames do not follow the stage."""
+        from control.objective_calibration_hardware import MicroscopeCalibrationHardware, simulation_hardware
+        from control.widgets_objective_calibration import ObjectiveCalibrationDialog
+        from squid.objective_calibration.engine import ObjectiveSpec
+
+        # Before the adapter is built: it snapshots the current objective, which is stale mid-switch.
+        reason = self.objective_calibration_busy_reason()
+        if reason:
+            QMessageBox.information(self, "Objective Calibration", reason)
+            return
+
+        binned_px_um = self.camera.get_pixel_size_binned_um()
+        specs = [
+            ObjectiveSpec(
+                name,
+                info["magnification"],
+                info["NA"],
+                ObjectiveStore.calculate_pixel_size_factor(info, control._def.TUBE_LENS_MM) * binned_px_um,
+            )
+            for name, info in self.objectiveStore.objectives_dict.items()
+        ]
+        start_objective = self.objectiveStore.current_objective
+        if self.is_simulation:
+            hardware, after_run, manual_switch = simulation_hardware(specs, start_objective, binned_px_um), None, False
+        else:
+            adapter = MicroscopeCalibrationHardware(
+                self.microscope,
+                camera_config=squid.config.get_camera_config(),
+                objective_changer=self.objective_changer,
+            )
+            hardware, after_run, manual_switch = adapter, adapter.restore_mode, not adapter.has_changer
+
+        current = self.liveController.currentConfiguration
+        dialog = ObjectiveCalibrationDialog(
+            hardware,
+            specs,
+            [channel.name for channel in self.liveController.get_channels(start_objective)],
+            self.microscope.config_repo,
+            tube_lens_mm=control._def.TUBE_LENS_MM,
+            get_declared=control._def.get_declared,
+            fine_metric=lambda crop: float(
+                control.utils.calculate_focus_measure(crop, control._def.FOCUS_MEASURE_OPERATOR)
+            ),
+            manual_switch=manual_switch,
+            default_channel=current.name if current is not None else None,
+            busy_reason=self.objective_calibration_busy_reason,
+            after_run=after_run,
+            parent=self,
+        )
+        dialog.exec_()
+        dropdown = self.objectivesWidget.dropdown if self.objectivesWidget is not None else None
+        if dropdown is not None and dropdown.currentText() != self.objectiveStore.current_objective:
+            # A failed restore left another objective in place: show it, and let the app follow it.
+            dropdown.blockSignals(True)
+            dropdown.setCurrentText(self.objectiveStore.current_objective)
+            dropdown.blockSignals(False)
+            self.objectivesWidget.signal_objective_changed.emit()
+
+    def objective_calibration_busy_reason(self):
+        """Why Utils > Objective Calibration must not start now, or None. An objective switch (the
+        dropdown is disabled while it runs on a helper thread) or a contrast autofocus would put two
+        threads on the turret and Z."""
+        if self.liveController is not None and self.liveController.is_live:
+            return "Live view is running. Stop it before calibrating."
+        if self.multipointController is not None and self.multipointController.acquisition_in_progress():
+            return "An acquisition is running."
+        if self.objectivesWidget is not None and not self.objectivesWidget.dropdown.isEnabled():
+            return "An objective switch is in progress; wait for it to finish."
+        if self.autofocusController is not None and self.autofocusController.autofocus_in_progress:
+            return "Autofocus is running; wait for it to finish."
+        return None
 
     def openFilterWheelConfigEditor(self):
         """Open the filter wheel configuration dialog"""

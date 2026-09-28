@@ -585,12 +585,15 @@ class ObjectiveTurret4PosController:
             return
 
         captured_z = self._retract_z_if_possible()
-        try:
-            self._rotate_to(objective_name, timeout_s)
-            self._current_objective = objective_name
-        finally:
-            if restore_z:
-                self._restore_z_if_captured(captured_z)
+        # Unknown until the rotation completes: after a failed rotation the turret may sit between
+        # slots, and keeping the old name would make a move back to it take the shortcut above. A
+        # failed rotation also leaves Z retracted: the error propagates before Z would go back up to
+        # the imaging height under an objective that is not confirmed in place.
+        self._current_objective = None
+        self._rotate_to(objective_name, timeout_s)
+        self._current_objective = objective_name
+        if restore_z:
+            self._restore_z_if_captured(captured_z)
 
     def clear_alarm(self) -> None:
         clear_drive_alarm(self._modbus, self._slave_id)
