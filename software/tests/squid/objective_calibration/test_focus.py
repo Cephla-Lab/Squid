@@ -85,7 +85,7 @@ class TestSweep:
 
     def test_untextured_field_fails_the_peak_rise_gate(self):
         hw = _hw("20x", z_focus=0.0, scene=FakeScene.flat(), noise=0.0)  # LAPE on noise spreads 23% over 40 px crops
-        with pytest.raises(FocusError, match="No focus peak found"):
+        with pytest.raises(FocusError, match=r"No focus peak found within ±[\d.]+ µm \(contrast rise \d+%, need 20%\)"):
             focus_sweep(
                 hw, objective="20x", channel="BF", na=0.8, center_um=0.0, range_um=20.0, square_px=40, fine_metric=lape
             )

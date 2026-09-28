@@ -136,7 +136,8 @@ def focus_sweep(
         peak_rise = (max(swept.values) - lowest) / max(lowest, _EPS)
         if peak_rise < PEAK_RISE_MIN:  # before the edge gate: a flat curve has its maximum anywhere
             raise FocusError(
-                f"No focus peak found within ±{level.half_span_um:g} µm; "
+                f"No focus peak found within ±{level.half_span_um:g} µm "
+                f"(contrast rise {peak_rise:.0%}, need {PEAK_RISE_MIN:.0%}); "
                 "move to a textured area, or refocus and widen the range."
             )
         best = int(np.argmax(swept.values))

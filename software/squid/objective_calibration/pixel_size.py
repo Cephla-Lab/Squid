@@ -72,7 +72,11 @@ def decompose(m) -> Tuple[float, float, np.ndarray, float]:
 def _register(ref, img):
     shift = phase_shift(ref, img)
     if shift.response < MIN_RESPONSE or shift.peak_ratio < MIN_PEAK_RATIO:
-        raise PixelSizeError("Stage-move images don't match; check the sample (textured, not periodic) and focus.")
+        raise PixelSizeError(
+            "Stage-move images don't match; check the sample (textured, not periodic) and focus. "
+            f"(response {shift.response:.2f}, peak ratio {shift.peak_ratio:.1f}; "
+            f"need {MIN_RESPONSE:g} and {MIN_PEAK_RATIO:g})"
+        )
     return shift
 
 
@@ -110,9 +114,11 @@ def measure_pixel_size(hw, *, objective: str, channel: str, nominal_px_um: float
             residual = _register(ref_crop, img_crop)
             p = np.array([q[0] + residual.dx, q[1] + residual.dy])
             tolerance = max(RUNG2_TOLERANCE_PX, RUNG2_TOLERANCE_FRACTION * float(np.linalg.norm(predicted)))
-            if float(np.linalg.norm(p - predicted)) > tolerance:
+            off_px = float(np.linalg.norm(p - predicted))
+            if off_px > tolerance:
                 raise PixelSizeError(
-                    "Stage moves disagree with the image (backlash, missed steps or a periodic sample)."
+                    "Stage moves disagree with the image (backlash, missed steps or a periodic sample). "
+                    f"(off by {off_px:.1f} px, limit {tolerance:.1f} px)"
                 )
             displacements.append(tuple(d))
             shifts.append(tuple(p))
@@ -124,11 +130,17 @@ def measure_pixel_size(hw, *, objective: str, channel: str, nominal_px_um: float
     tolerance_um = max(0.5 * pixel_size, 2 * hw.xy_microstep_um())
     drift_um = math.hypot(back.dx, back.dy) * pixel_size
     if drift_um > tolerance_um:
-        raise PixelSizeError("Image drifted during the measurement; let the system settle and retry.")
+        raise PixelSizeError(
+            "Image drifted during the measurement; let the system settle and retry. "
+            f"(drift {drift_um:.2f} µm, limit {tolerance_um:.2f} µm)"
+        )
     residuals = np.asarray(displacements) + np.asarray(shifts) @ m.T
     rms_um = float(np.sqrt(np.mean(np.sum(residuals**2, axis=1))))
     if rms_um > tolerance_um:
-        raise PixelSizeError("Stage moves are inconsistent (backlash or stage error).")
+        raise PixelSizeError(
+            "Stage moves are inconsistent (backlash or stage error). "
+            f"(RMS residual {rms_um:.2f} µm, limit {tolerance_um:.2f} µm)"
+        )
     if abs(anisotropy - 1.0) > MAX_ANISOTROPY:
         raise PixelSizeError(
             f"Pixel scale differs between x and y by {anisotropy - 1.0:.1%}; "

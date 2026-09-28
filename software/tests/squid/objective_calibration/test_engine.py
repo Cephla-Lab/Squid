@@ -2,7 +2,7 @@ import pytest
 
 from control._def import FocusMeasureOperator
 from control.utils import calculate_focus_measure
-from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, run_calibration
+from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, cycle_report, run_calibration
 from squid.objective_calibration.hardware import RunCancelled
 from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
 
@@ -103,6 +103,7 @@ def test_failed_restore_stops_the_run():
     hw.switch_objective = switch
     result = run_calibration(hw, cfg, fine_metric=lape)
     assert result.stopped.startswith("Restoring")
+    assert result.restore_failed
     assert len(result.cycles) == 1
 
 
@@ -170,3 +171,17 @@ def test_a_failed_xy_restore_still_restores_z_and_the_objective():
     assert result.stopped.startswith("Restoring") and "XY: XY stage fault" in result.stopped
     assert hw.current_objective() == "10x"
     assert hw.get_z_um() == pytest.approx(1.0)
+
+
+def test_cycle_report_has_one_line_per_objective_per_cycle_with_the_gate_values():
+    hw, cfg = _machine()
+    cfg.cycles = 1
+    hw.objectives["4x"].z_focus_um = 92.0  # 4x fails; 10x and 20x succeed
+    result = run_calibration(hw, cfg, fine_metric=lape)
+    assert not result.restore_failed
+    lines = cycle_report(result)
+    assert len(lines) == 3
+    assert lines[0].startswith("cycle 1 4x: ") and "widen the range" in lines[0]
+    for line in lines[1:]:
+        for field in ("focus", "rise", "µm/px", "rotation", "anisotropy", "residual", "drift"):
+            assert field in line, (field, line)

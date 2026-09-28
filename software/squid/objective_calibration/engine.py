@@ -85,6 +85,7 @@ class RunResult:
     cycles: List[CycleResult]
     pixel_sizes: Dict[str, PixelSizeSummary]
     stopped: Optional[str] = None
+    restore_failed: bool = False  # the machine may not be where the run started
 
 
 class _Cancellable:
@@ -176,6 +177,7 @@ def run_calibration(
         return RunResult([], {}, str(e))
     cycles: List[CycleResult] = []
     stopped: Optional[str] = None
+    restore_failed = False
 
     for index in range(cfg.cycles):
         if should_cancel():
@@ -228,6 +230,7 @@ def run_calibration(
             _restore(hw, *start)
         except RestoreError as e:
             stopped = str(e)
+            restore_failed = True
             break
         if stopped:
             break
@@ -238,4 +241,28 @@ def run_calibration(
             if r.pixel is not None:
                 by_objective.setdefault(name, []).append(r.pixel)
     summaries = {name: _summarize(name, results) for name, results in by_objective.items()}
-    return RunResult(cycles, summaries, stopped)
+    return RunResult(cycles, summaries, stopped, restore_failed)
+
+
+def cycle_report(result: RunResult) -> List[str]:
+    """One line per objective per cycle, with every gate value or the failure: the bench record."""
+    lines = []
+    for cycle in result.cycles:
+        for name, r in cycle.objectives.items():
+            prefix = f"cycle {cycle.index + 1} {name}: "
+            if r.error:
+                lines.append(prefix + r.error)
+                continue
+            parts = []
+            if r.focus is not None:
+                parts.append(f"focus {r.focus.z_best_um:.2f} µm (rise {r.focus.peak_rise:.0%})")
+            if r.pixel is not None:
+                p = r.pixel
+                parts.append(
+                    f"{p.pixel_size_um:.5f} µm/px, rotation {p.rotation_deg:+.3f}°, anisotropy {p.anisotropy:.4f}, "
+                    f"residual {p.fit_residual_um:.2f} µm, drift {p.drift_um:.2f} µm"
+                )
+            lines.append(prefix + ", ".join(parts))
+        if cycle.error:
+            lines.append(f"cycle {cycle.index + 1}: {cycle.error}")
+    return lines

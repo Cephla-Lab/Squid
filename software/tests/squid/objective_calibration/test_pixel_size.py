@@ -64,7 +64,7 @@ def test_same_side_approach_cancels_backlash_whatever_the_arrival_direction(firs
 def test_without_the_same_side_approach_backlash_fails_the_residual_gate(monkeypatch):
     hw = _hw(0.5 * np.eye(2), backlash_um=2.0)
     monkeypatch.setattr(ps, "approach_xy", lambda hw, x, y, margin_um=ps.APPROACH_MARGIN_UM: hw.move_xy_to_um(x, y))
-    with pytest.raises(PixelSizeError):
+    with pytest.raises(PixelSizeError, match=r"limit [\d.]+ (µm|px)\)"):  # the message says by how much
         measure_pixel_size(hw, objective="20x", channel="BF", nominal_px_um=0.5)
 
 
@@ -84,13 +84,19 @@ def test_target_outside_limits_is_refused_before_moving():
 
 def test_periodic_sample_fails_registration():
     hw = _hw(0.5 * np.eye(2), scene=FakeScene.periodic(period_um=10.0))
-    with pytest.raises(PixelSizeError, match="don't match|disagree"):
+    with pytest.raises(
+        PixelSizeError,
+        match=r"don't match.*\(response [\d.]+, peak ratio [\d.]+; need|disagree.*\(off by [\d.]+ px, limit [\d.]+ px\)",
+    ):
         measure_pixel_size(hw, objective="20x", channel="BF", nominal_px_um=0.5)
 
 
 def test_drift_fails_the_drift_gate():
     hw = _hw(0.5 * np.eye(2), drift_um_per_op=(0.05, 0.0))
-    with pytest.raises(PixelSizeError, match="drifted|inconsistent"):
+    with pytest.raises(
+        PixelSizeError,
+        match=r"drifted.*\(drift [\d.]+ µm, limit [\d.]+ µm\)|inconsistent.*\(RMS residual [\d.]+ µm, limit [\d.]+ µm\)",
+    ):
         measure_pixel_size(hw, objective="20x", channel="BF", nominal_px_um=0.5)
 
 
