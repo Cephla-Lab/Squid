@@ -15,6 +15,7 @@ Organization:
 - Cache Management: cache control
 """
 
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
@@ -22,6 +23,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 import squid.logging
+import control.objectives_config as objectives_config
 
 from control.models import (
     AcquisitionChannel,
@@ -487,6 +489,28 @@ class ConfigRepository:
         path = self.machine_configs_path / "filter_wheels.yaml"
         self._save_yaml(path, config)
         self._machine_cache["filter_wheel_registry"] = config
+
+    def get_objectives_config(self) -> Optional["objectives_config.ObjectivesConfig"]:
+        """Load machine_configs/objectives.yaml (None if absent). Not cached: the editor
+        is the only caller, and startup reads it through control._def."""
+        return objectives_config.load_objectives_config(self.machine_configs_path / "objectives.yaml")
+
+    def save_objectives_config(self, config: "objectives_config.ObjectivesConfig") -> None:
+        """Save machine_configs/objectives.yaml. Takes effect after a restart."""
+        objectives_config.save_objectives_config(config, self.machine_configs_path / "objectives.yaml")
+
+    def copy_objective_channel_configs(self, source: str, target: str) -> List[str]:
+        """Copy channel_configs/<source>.yaml to <target>.yaml in every profile that has the
+        source and not the target. Never overwrites, moves or deletes. Returns the profiles written."""
+        written = []
+        for profile in self.get_available_profiles():
+            src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
+            dst = src.with_name(f"{target}.yaml")
+            if src.exists() and not dst.exists():
+                shutil.copyfile(src, dst)
+                written.append(profile)
+        self._profile_cache.pop(f"objective:{target}", None)
+        return written
 
     def get_camera_names(self) -> List[str]:
         """Get list of available camera names from registry."""

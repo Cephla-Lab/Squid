@@ -1,0 +1,54 @@
+from control.core.config.repository import ConfigRepository
+import control.objectives_config as oc
+
+
+def _config():
+    return oc.parse_objectives_config(
+        {
+            "version": 1,
+            "changer": {"kind": "none"},
+            "objectives": [{"name": "10x", "magnification": 10, "na": 0.3, "tube_lens_f_mm": 180}],
+        }
+    )
+
+
+def _profile(base, name, files):
+    channel_configs = base / "user_profiles" / name / "channel_configs"
+    channel_configs.mkdir(parents=True)
+    for file_name, text in files.items():
+        (channel_configs / file_name).write_text(text)
+    return channel_configs
+
+
+def test_objectives_config_round_trip(tmp_path):
+    repo = ConfigRepository(base_path=tmp_path)
+    assert repo.get_objectives_config() is None
+    repo.save_objectives_config(_config())
+    assert (tmp_path / "machine_configs" / "objectives.yaml").exists()
+    assert repo.get_objectives_config() == _config()
+
+
+def test_copy_into_every_profile_that_has_the_source(tmp_path):
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    b = _profile(tmp_path, "b", {"10x.yaml": "B10"})
+    c = _profile(tmp_path, "c", {"general.yaml": "G"})  # no source file
+    repo = ConfigRepository(base_path=tmp_path)
+    assert repo.copy_objective_channel_configs("10x", "20x water") == ["a", "b"]
+    assert (a / "20x water.yaml").read_text() == "A10"
+    assert (b / "20x water.yaml").read_text() == "B10"
+    assert not (c / "20x water.yaml").exists()
+
+
+def test_copy_never_overwrites(tmp_path):
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10", "20x.yaml": "KEEP"})
+    repo = ConfigRepository(base_path=tmp_path)
+    assert repo.copy_objective_channel_configs("10x", "20x") == []
+    assert (a / "20x.yaml").read_text() == "KEEP"
+
+
+def test_copy_never_moves_or_deletes_the_source(tmp_path):
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    repo.copy_objective_channel_configs("10x", "10x oil")
+    assert (a / "10x.yaml").read_text() == "A10"
+    assert (a / "10x oil.yaml").read_text() == "A10"
