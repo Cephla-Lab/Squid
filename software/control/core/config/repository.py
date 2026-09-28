@@ -25,6 +25,7 @@ from pydantic import BaseModel, ValidationError
 
 import squid.logging
 import control.objectives_config as objectives_config
+import control.models.objective_calibration_config as objective_calibration_config
 
 from control.models import (
     AcquisitionChannel,
@@ -528,6 +529,20 @@ class ConfigRepository:
                 written.append(profile)
         self._profile_cache.pop(f"objective:{target}", None)
         return written
+
+    def get_objective_calibration(self) -> Optional["objective_calibration_config.ObjectiveCalibrationConfig"]:
+        """Load machine_configs/objective_calibration.yaml (None if absent). Not cached: until B2 the
+        calibration dialog is the only caller. Raises ObjectiveCalibrationFileError for a file that
+        exists but cannot be read; such a file must never be overwritten."""
+        return objective_calibration_config.load_objective_calibration(
+            self.machine_configs_path / "objective_calibration.yaml"
+        )
+
+    def save_objective_calibration(self, config: "objective_calibration_config.ObjectiveCalibrationConfig") -> None:
+        """Atomically publish machine_configs/objective_calibration.yaml."""
+        objective_calibration_config.save_objective_calibration(
+            config, self.machine_configs_path / "objective_calibration.yaml"
+        )
 
     def get_camera_names(self) -> List[str]:
         """Get list of available camera names from registry."""
