@@ -1,13 +1,18 @@
+import logging
 import threading
+from pathlib import Path
 
 import pytest
 from qtpy.QtWidgets import QMessageBox
 
+import control.laser_engine_rev1_bench as bench
 import squid.logging
 from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, LaserEngineRev1Error
 from control.laser_engine_rev1_bench import BenchWindow, LaserEngineRev1ServicePanel, LogPane
 from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine, build_simulated_engine
+from control.laser_engine_rev1_sim import FakeEngine, FakeSource, build_simulated_engine
+
+NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 
 
 @pytest.fixture(autouse=True)
@@ -213,3 +218,166 @@ def test_bench_window_connect_error_stays_disconnected(qtbot, monkeypatch):
         assert win.connect_btn.isEnabled() and not win.disconnect_btn.isEnabled()
     finally:
         win.log_pane.detach()
+
+
+# ---- fix round 1 -----------------------------------------------------------------------------------------------------
+def _shared_sim(monkeypatch):
+    """Every simulated connect talks to one fake engine; it keeps set-points across a DISARM, as the firmware does."""
+    fake, source = FakeEngine(tok_delay_polls=0), FakeSource()
+
+    def build(options=None):
+        engine = LaserEngineRev1(
+            link_factory=lambda: EngineLink(fake),
+            source_factory=lambda: source,
+            options=options,
+            calibration_dir=NO_CALIBRATIONS,
+        )
+        engine.sim_engine, engine.sim_source = fake, source
+        return engine
+
+    monkeypatch.setattr(bench, "build_simulated_engine", build)
+    return fake
+
+
+def _window(qtbot, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(f"unexpected message box: {a[2:]}"))
+    win = BenchWindow()
+    qtbot.addWidget(win)
+    win.simulate_cb.setChecked(True)
+    return win
+
+
+def test_reconnect_starts_dark_and_the_spinbox_matches(qtbot, monkeypatch):
+    fake = _shared_sim(monkeypatch)
+    win = _window(qtbot, monkeypatch)
+    try:
+        win.connect_btn.click()
+        win.service_panel.rows["L2"].spin.setValue(50.0)
+        win.disconnect_btn.click()
+        assert fake.lines[1]["target"] > 1.0  # the engine keeps the set-point across the DISARM
+        mark = len(fake.sent)
+        win.connect_btn.click()
+        assert "LINE2:SET 0.0000" in fake.sent[mark:] and fake.lines[1]["target"] == 0.0
+        assert not any(s.startswith("LINE3:SET 0") for s in fake.sent[mark:])  # the 560 line is left to its source
+        assert win.service_panel.rows["L2"].spin.value() == 0.0
+        assert win.service_panel.rows["L3"].spin.value() == 20.0  # the 560 floor (no AOM)
+    finally:
+        win.close()
+
+
+def test_panel_seeds_the_spinboxes_from_the_engine(qtbot):
+    engine = build_simulated_engine()
+    engine.open()
+    try:
+        engine.sim_engine.lines[3]["target"] = 0.598  # L4 left at 50 % of 1.196 A
+        engine.poll_once()
+        panel = LaserEngineRev1ServicePanel(engine)
+        qtbot.addWidget(panel)
+        assert panel.rows["L4"].spin.value() == 50.0
+        assert panel.rows["L1"].spin.value() == 0.0 and panel.rows["L3"].spin.value() == 20.0
+        assert not any(s.startswith("LINE4:SET") for s in engine.sim_engine.sent)  # seeding sends nothing
+    finally:
+        engine.close()
+
+
+def test_refused_gate_0_keeps_the_box_checked_and_warns(qtbot, caplog):
+    engine, panel = _panel(qtbot)
+    fake = engine.sim_engine
+    try:
+        panel.rows["L2"].gate.setChecked(True)
+        fake.i2c_fail_count = 1  # the GATE 0 below is refused
+        with caplog.at_level(logging.WARNING):
+            panel.rows["L2"].gate.setChecked(False)
+        assert fake.lines[1]["gate"] == 1 and panel.rows["L2"].gate.isChecked()  # the box shows the engine
+        text = "GATE 0 refused (I2C write failed) - gate may still be ON: Sleep the line or Disconnect"
+        assert text in panel.message_label.text()
+        assert any(text in r.getMessage() and r.levelno == logging.WARNING for r in caplog.records)
+        panel.rows["L2"].gate.setChecked(False)  # accepted now
+        assert fake.lines[1]["gate"] == 0 and not panel.rows["L2"].gate.isChecked()
+    finally:
+        engine.close()
+
+
+def test_refused_intensity_set_reverts_the_spinbox(qtbot):
+    engine, panel = _panel(qtbot)
+    try:
+        panel.rows["L1"].spin.setValue(10.0)  # accepted
+        engine.sim_engine.unplug()
+        engine.poll_once()  # connection lost
+        panel.rows["L1"].spin.setValue(30.0)
+        assert panel.rows["L1"].spin.value() == 10.0 and "L1 intensity" in panel.message_label.text()
+    finally:
+        engine.close()
+
+
+def test_window_close_releases_gates_then_disarms(qtbot, monkeypatch):
+    fake = _shared_sim(monkeypatch)
+    win = _window(qtbot, monkeypatch)
+    win.connect_btn.click()
+    win.service_panel.rows["L1"].gate.setChecked(True)
+    win.service_panel.rows["L4"].gate.setChecked(True)
+    mark = len(fake.sent)
+    win.close()
+    tail = fake.sent[mark:]
+    assert tail[-1] == "DISARM" and "LINE1:GATE 0" in tail and "LINE4:GATE 0" in tail
+    assert win.engine is None
+
+
+def test_connection_lost_disables_the_panel_and_reconnect_recovers(qtbot, monkeypatch):
+    win = _window(qtbot, monkeypatch)
+    try:
+        win.connect_btn.click()
+        engine = win.engine
+        engine.sim_engine.unplug()
+        engine.poll_once()  # the loss is seen here (or by the poll thread: queued)
+        qtbot.waitUntil(lambda: not win.service_panel.isEnabled(), timeout=3000)
+        assert "DISCONNECTED - link lost" in win.link_label.text()
+        win.disconnect_btn.click()  # the refused GATE 0 / DISARM must not raise
+        assert win.engine is None and win.connect_btn.isEnabled()
+        win.connect_btn.click()
+        assert win.engine is not None and win.service_panel.isEnabled() and win.link_label.text() == ""
+    finally:
+        win.close()
+
+
+def test_failed_panel_build_closes_the_engine(qtbot, monkeypatch):
+    fake = _shared_sim(monkeypatch)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
+    win = BenchWindow()
+    qtbot.addWidget(win)
+    win.simulate_cb.setChecked(True)
+
+    def broken(engine):
+        raise RuntimeError("panel bug")
+
+    monkeypatch.setattr(bench, "LaserEngineRev1ServicePanel", broken)
+    win.connect_btn.click()
+    assert win.engine is None and shown and "panel bug" in shown[0]
+    assert fake.sent[-1] == "DISARM" and win.connect_btn.isEnabled() and not win.disconnect_btn.isEnabled()
+    assert win.panel_splitter.count() == 0 or not win.panel_splitter.widget(0).isVisible()
+    win.close()
+
+
+def test_raw_gate_command_syncs_the_checkbox(qtbot):
+    engine, panel = _panel(qtbot)
+    try:
+        assert panel.send_raw("LINE2:GATE ON") == "OK" and panel.rows["L2"].gate.isChecked()
+        assert panel.send_raw("line2:gate 0") == "OK" and not panel.rows["L2"].gate.isChecked()
+        engine.sim_engine.i2c_fail_count = 1
+        assert panel.send_raw("LINE5:GATE 1").startswith("ERR") and not panel.rows["L5"].gate.isChecked()
+        assert engine.sim_engine.sent[-1] == "LINE5:GATE 1"  # the box did not send anything of its own
+    finally:
+        engine.close()
+
+
+def test_small_guards(qtbot):
+    from qtpy.QtCore import Qt
+
+    engine, panel = _panel(qtbot)
+    try:
+        assert panel.rows["L1"].spin.focusPolicy() == Qt.StrongFocus
+        assert "AOM analog path" in panel.rows["L3"].gate.toolTip()
+        assert bench._UNITS["CHASSIS"] == "A"
+    finally:
+        engine.close()

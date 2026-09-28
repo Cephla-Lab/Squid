@@ -8,6 +8,7 @@ needs the hardware permits.
 
 import logging
 import math
+import re
 import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -39,12 +40,23 @@ import squid.logging
 from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, _production_source_factory
 from control.laser_engine_rev1_link import EngineCommandError, EngineLink
 from control.laser_engine_rev1_sim import build_simulated_engine
-from control.laser_engine_rev1_status import EngineRev1Status, LineState, SourceStatus, _source_state
+from control.laser_engine_rev1_status import (
+    SOURCE_560_LINE,
+    EngineRev1Status,
+    LineState,
+    SourceStatus,
+    _source_state,
+)
 from control.laser_engine_rev1_widget import LaserEngineRev1Widget
 
 # bench only: Squid takes the wavelengths from its channel configs
 DF_WAVELENGTHS = {1: 405, 2: 488, 3: 560, 4: 638, 5: 730}
-_UNITS = {"WLD": "A", "VOLT": "V"}  # set-point unit per line kind (VOLT = the DF line 3 AOM analog input)
+_UNITS = {"WLD": "A", "CHASSIS": "A", "VOLT": "V"}  # set-point unit per line kind (VOLT = DF L3, the AOM input)
+_RAW_GATE = re.compile(r"LINE(\d):GATE\s+([01]|ON|OFF)", re.IGNORECASE)
+L3_GATE_TIP = (
+    "Bench gate on L3 drives the AOM analog path; the shutter follows the TTL3 jack "
+    "(or the MCU in the AOM 'open' mode), so this alone may give no 560 light."
+)
 _TEENSY_VID = 0x16C0  # PJRC: preselected in the port list
 
 
@@ -54,6 +66,32 @@ def source_state_text(status: Optional[SourceStatus]) -> str:
         return "no status yet"
     state, reason = _source_state(status)
     return f"{state.name}  {reason}".strip()
+
+
+class _IntensitySpinBox(QDoubleSpinBox):
+    """Takes the mouse wheel only when focused: scrolling past the panel must not change a laser's intensity."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event) -> None:
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+def _set_quietly(widget, value) -> None:
+    """Show a value without emitting its change signal (nothing is sent to the engine)."""
+    widget.blockSignals(True)
+    try:
+        if isinstance(widget, QCheckBox):
+            widget.setChecked(bool(value))
+        else:
+            widget.setValue(value)
+    finally:
+        widget.blockSignals(False)
 
 
 @dataclass
@@ -83,7 +121,11 @@ class LaserEngineRev1ServicePanel(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._source_request_pct: Optional[float] = None  # the last 560 request sent from this panel
         self._raw_history: List[str] = []
+        self._accepted: Dict[str, float] = {}  # per row: the last intensity the engine accepted (or was seeded with)
+        self._seeded = False
         self.rows: Dict[str, _LineRow] = {}
+        if engine.variant != "DF":
+            self._log.warning(f"variant {engine.variant!r}: the bench wavelength labels (L3 = 560 nm ...) assume DF")
         layout = QVBoxLayout(self)
 
         lines_box = QGroupBox("Lines (bench)")
@@ -144,7 +186,7 @@ class LaserEngineRev1ServicePanel(QWidget):
         layout.addStretch(1)
 
         engine.status_updated.connect(self._on_status)
-        latest = engine.get_latest_status()
+        latest = engine.get_latest_status()  # also seeds the spinboxes
         if latest is not None:
             self._on_status(latest)
         else:
@@ -152,7 +194,7 @@ class LaserEngineRev1ServicePanel(QWidget):
 
     def _make_row(self, n: int, wavelength: int) -> _LineRow:
         key = f"L{n}"
-        spin = QDoubleSpinBox()
+        spin = _IntensitySpinBox()
         spin.setDecimals(1)
         spin.setSuffix(" %")
         spin.setKeyboardTracking(False)  # send on Enter / arrows / focus out, not on every keystroke
@@ -162,7 +204,8 @@ class LaserEngineRev1ServicePanel(QWidget):
             self._log.warning(f"{key}: no intensity floor ({e}); 0 %")
             floor = 0
         spin.setRange(floor, 100.0)
-        spin.setValue(floor)  # before connecting: building the panel sends nothing
+        spin.setValue(floor)  # before connecting: building the panel sends nothing (seeded from the status below)
+        self._accepted[key] = floor
         spin.valueChanged.connect(lambda pct, n=n, wl=wavelength: self._set_intensity(n, wl, pct))
         wake = QPushButton("Wake")
         wake.clicked.connect(lambda _=False, k=key: self._run(f"{k} wake", lambda: self._engine.wake_up(k)))
@@ -170,7 +213,9 @@ class LaserEngineRev1ServicePanel(QWidget):
         sleep.clicked.connect(lambda _=False, k=key: self._run(f"{k} sleep", lambda: self._engine.put_to_sleep(k)))
         gate = QCheckBox("Gate (bench, no TTL)")
         gate.setToolTip(
-            f"LINE{n}:GATE 1: holds the line's gate on without a TTL (emission still needs the hardware permits)"
+            L3_GATE_TIP
+            if n == 3
+            else f"LINE{n}:GATE 1: holds the line's gate on without a TTL (emission still needs the hardware permits)"
         )
         gate.toggled.connect(lambda on, n=n: self._set_gate(n, on))
         state = QLabel("—")
@@ -201,19 +246,47 @@ class LaserEngineRev1ServicePanel(QWidget):
         self.message_label.setText("")
         return True
 
+    def _is_source_line(self, n: int) -> bool:
+        return self._engine.variant == "DF" and n == SOURCE_560_LINE
+
     def _set_intensity(self, n: int, wavelength: int, pct: float) -> None:
-        if self._run(f"L{n} intensity {pct:.1f} %", lambda: self._engine.set_wavelength_intensity(wavelength, pct)):
-            if n == 3 and self._engine.variant == "DF":
-                self._source_request_pct = pct
-                self._update_source_box()
+        key = f"L{n}"
+        if not self._run(
+            f"{key} intensity {pct:.1f} %", lambda: self._engine.set_wavelength_intensity(wavelength, pct)
+        ):
+            _set_quietly(self.rows[key].spin, self._accepted[key])  # show what the engine still has
+            return
+        self._accepted[key] = pct
+        if self._is_source_line(n):
+            self._source_request_pct = pct
+            self._update_source_box()
+
+    def _seed_from(self, status: EngineRev1Status) -> None:
+        """Show each line's current set-point (% of its ceiling; the 560 at its floor) without sending anything."""
+        for key, row in self.rows.items():
+            info = status.channels.get(key)
+            if info is None or info.state == LineState.UNUSED:
+                continue
+            if self._is_source_line(info.line):
+                value = row.spin.minimum()  # the source starts at its minimum
+            else:
+                value = 100.0 * info.target / info.max if info.max > 0 else 0.0
+            _set_quietly(row.spin, value)
+            self._accepted[key] = row.spin.value()
+        self._seeded = True
 
     def _set_gate(self, n: int, on: bool) -> None:
-        ok = self._run(f"LINE{n}:GATE {int(on)}", lambda: self._engine.link.command(f"LINE{n}:GATE {int(on)}"))
-        if on and not ok:  # the gate did not open: show it unchecked
-            gate = self.rows[f"L{n}"].gate
-            gate.blockSignals(True)
-            gate.setChecked(False)
-            gate.blockSignals(False)
+        try:
+            self._engine.link.command(f"LINE{n}:GATE {int(on)}")
+        except Exception as e:
+            reason = e.reason if isinstance(e, EngineCommandError) else str(e)
+            _set_quietly(self.rows[f"L{n}"].gate, not on)  # the box shows what the engine still has
+            if on:
+                self._show_error(f"L{n} GATE 1 refused ({reason}) - gate stays off")
+            else:
+                self._show_error(f"L{n} GATE 0 refused ({reason}) - gate may still be ON: Sleep the line or Disconnect")
+            return
+        self.message_label.setText("")
 
     def release_gates(self) -> None:
         """Uncheck every bench gate (each sends LINE<n>:GATE 0). Call before the engine closes."""
@@ -235,6 +308,9 @@ class LaserEngineRev1ServicePanel(QWidget):
                 reply = self._engine.link.query(text)
             else:
                 reply = f"OK {self._engine.link.command(text)}".strip()
+                gate = _RAW_GATE.fullmatch(text)
+                if gate is not None and f"L{gate.group(1)}" in self.rows:  # keep the bench gate box in step
+                    _set_quietly(self.rows[f"L{gate.group(1)}"].gate, gate.group(2).upper() in ("1", "ON"))
         except EngineCommandError as e:
             reply = f"ERR {e.reason}"
         except Exception as e:
@@ -247,6 +323,8 @@ class LaserEngineRev1ServicePanel(QWidget):
 
     # ---- status ----------------------------------------------------------------------------------------------------
     def _on_status(self, status: EngineRev1Status) -> None:
+        if not self._seeded:
+            self._seed_from(status)
         for key, row in self.rows.items():
             info = status.channels.get(key)
             if info is None or info.state == LineState.UNUSED:  # nothing on this line in this variant
@@ -377,6 +455,9 @@ class BenchWindow(QMainWindow):
         self.idle_spin.setValue(int(defaults.source_idle_off_min))
         bar2.addWidget(self.idle_spin)
         bar2.addStretch(1)
+        self.link_label = QLabel("")
+        self.link_label.setStyleSheet("color: #c0392b; font-weight: bold;")
+        bar2.addWidget(self.link_label)
         layout.addLayout(bar2)
 
         self.panel_splitter = QSplitter(Qt.Horizontal)
@@ -390,6 +471,9 @@ class BenchWindow(QMainWindow):
         self.setCentralWidget(central)
         self.refresh_ports()
         self._update_enabled()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.disconnect_engine)  # GATE 0 + DISARM however the app ends
 
     def refresh_ports(self) -> None:
         self.port_combo.clear()
@@ -443,6 +527,22 @@ class BenchWindow(QMainWindow):
         self._log.error(text)
         QMessageBox.warning(self, "Laser engine", text)
 
+    def _zero_set_points(self, engine: LaserEngineRev1) -> None:
+        """The engine keeps each line's set-point across a DISARM or a lost host, and the bring-up ramps back to it:
+        start every fitted line at 0 (raw drive, no calibration). Not the DF 560 line: its source starts at its minimum.
+        """
+        status = engine.poll_once()
+        if status is None:
+            self._log.error("set-points not zeroed at connect: no engine status")
+            return
+        for key, info in status.channels.items():
+            if info.state == LineState.UNUSED or (engine.variant == "DF" and info.line == SOURCE_560_LINE):
+                continue
+            try:
+                engine.set_line_intensity(info.line, 0.0)
+            except Exception as e:
+                self._log.error(f"{key} set-point not zeroed at connect: {e}")
+
     def connect_engine(self) -> None:
         if self.engine is not None:
             return
@@ -453,39 +553,65 @@ class BenchWindow(QMainWindow):
             return
         try:
             engine.start()
+            self._zero_set_points(engine)  # before the bring-up enables anything
             if self.bringup_cb.isChecked():
                 engine.on_startup()
+            engine.poll_once()  # the panel seeds its spinboxes from the latest status
+            self.engine = engine
+            self.engine_widget = LaserEngineRev1Widget(engine)
+            self.service_panel = LaserEngineRev1ServicePanel(engine)
+            self.panel_splitter.addWidget(self.engine_widget)
+            self.panel_splitter.addWidget(self.service_panel)
+            engine.connection_lost.connect(self._on_link_lost)
         except Exception as e:
+            self._drop_panels()
             try:
                 engine.close()  # disarms and switches the 560 off if it got that far
             except Exception:
                 self._log.exception("closing the engine after a failed connect")
+            self.engine = None
+            self._update_enabled()
             self._connect_failed(f"connect failed: {e}")
             return
-        self.engine = engine
-        self.engine_widget = LaserEngineRev1Widget(engine)
-        self.service_panel = LaserEngineRev1ServicePanel(engine)
-        self.panel_splitter.addWidget(self.engine_widget)
-        self.panel_splitter.addWidget(self.service_panel)
+        self.link_label.setText("")
         self._update_enabled()
         self._log.info(f"connected: variant {engine.variant or '?'}")
 
-    def disconnect_engine(self) -> None:
+    def _on_link_lost(self, message: str) -> None:
         engine = self.engine
-        if engine is None:
+        if engine is None or not engine.is_connection_lost():  # a late signal from an engine already closed
             return
+        self.link_label.setText(f"DISCONNECTED - link lost: {message}")
         if self.service_panel is not None:
-            self.service_panel.release_gates()  # GATE 0 while the link is still open
-        try:
-            engine.close()  # DISARM, 560 off
-        except Exception:
-            self._log.exception("closing the laser engine")
-        self.engine = None
+            self.service_panel.setEnabled(False)
+        self._log.error(f"DISCONNECTED - link lost ({message}): Disconnect, check USB / power, then Connect")
+
+    def _drop_panels(self) -> None:
         for widget in (self.engine_widget, self.service_panel):
             if widget is not None:
                 widget.hide()
                 widget.deleteLater()  # Qt drops it from the splitter
         self.engine_widget = self.service_panel = None
+
+    def disconnect_engine(self) -> None:
+        """Idempotent (Disconnect, window close, application quit)."""
+        engine = self.engine
+        if engine is None:
+            return
+        self.engine = None
+        if self.service_panel is not None:
+            if engine.is_connection_lost():  # nothing reaches the engine; each GATE 0 would only time out
+                self._log.warning(
+                    "link lost: bench gates not released - the engine disarms itself on the host timeout "
+                    "and the next connect sets GATE 0 on every line"
+                )
+            else:
+                self.service_panel.release_gates()  # GATE 0 while the link is still open
+        try:
+            engine.close()  # DISARM, 560 off
+        except Exception:
+            self._log.exception("closing the laser engine")
+        self._drop_panels()
         self._update_enabled()
         self._log.info("disconnected")
 
