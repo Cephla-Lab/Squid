@@ -59,6 +59,10 @@ class LaserAFConfig(BaseModel):
     laser_af_range: float = Field(
         default_factory=lambda: float(_def.LASER_AF_RANGE), description="Autofocus search range in um"
     )
+    search_for_spot: bool = Field(
+        default_factory=lambda: _def.LASER_AF_SEARCH_FOR_SPOT,
+        description="Search for the spot in z, over laser_af_range, when an autofocus move does not find it",
+    )
     laser_af_averaging_n: int = Field(
         default_factory=lambda: _def.LASER_AF_AVERAGING_N, description="Number of measurements to average"
     )

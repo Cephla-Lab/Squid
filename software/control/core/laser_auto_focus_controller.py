@@ -337,11 +337,13 @@ class LaserAutofocusController(QObject):
         x, y = centroid
         return (x - self.laser_af_properties.x_reference) * self.laser_af_properties.pixel_to_um
 
-    def measure_displacement(self, search_for_spot: bool = True) -> float:
+    def measure_displacement(self, search_for_spot: bool = False) -> float:
         """Measure the displacement of the laser spot from the reference position.
 
         Args:
-            search_for_spot: If True, search for spot if not found at current position
+            search_for_spot: If True and the spot is not found at the current position, search for it in z.
+                This moves z: it stays where the spot was found, and the displacement returned is the one
+                measured there. If False, z does not move.
 
         Returns:
             float: Displacement in micrometers, or float('nan') if measurement fails
@@ -357,20 +359,21 @@ class LaserAutofocusController(QObject):
             self._log.exception("Turning on AF laser timed out, failed to measure displacement.")
             return finish_with(float("nan"))
 
-        # get laser spot location
-        result = self._get_laser_spot_centroid()
+        try:
+            displacement_um = self._measure_displacement_with_laser_on(search_for_spot)
+        finally:
+            # Also when the measurement raises, e.g. on a failed move of the search: the laser must not stay on
+            self._turn_off_laser_after_measurement()
+        return finish_with(displacement_um)
 
+    def _measure_displacement_with_laser_on(self, search_for_spot: bool) -> float:
+        result = self._get_laser_spot_centroid()
         if result is not None:
             # Spot found on first try
-            self._turn_off_laser_after_measurement()
-            return finish_with(self._get_displacement_from_centroid(result))
+            return self._get_displacement_from_centroid(result)
 
         self._log.error("Failed to detect laser spot during displacement measurement")
-
-        # The laser stays on during the search
-        displacement_um = self._search_for_spot_in_z() if search_for_spot else float("nan")
-        self._turn_off_laser_after_measurement()
-        return finish_with(displacement_um)
+        return self._search_for_spot_in_z() if search_for_spot else float("nan")
 
     def _search_for_spot_in_z(self) -> float:
         """Search for the spot by scanning z through the laser AF range. The AF laser must already be on.
@@ -466,7 +469,7 @@ class LaserAutofocusController(QObject):
         # Record original z position so we can restore it on failure
         original_z_um = self._get_z_um()
 
-        current_displacement_um = self.measure_displacement()
+        current_displacement_um = self.measure_displacement(search_for_spot=self.laser_af_properties.search_for_spot)
         self._log.info(f"Current laser AF displacement: {current_displacement_um:.1f} μm")
 
         if math.isnan(current_displacement_um):
@@ -499,7 +502,8 @@ class LaserAutofocusController(QObject):
         move_um = target_z_um - self._get_z_um()
         if abs(move_um) > 0.01:  # Only move if difference is significant
             self._log.info(f"Restoring z position: moving {move_um:.1f} μm")
-            self._move_z(move_um)
+            # The acquisition goes on from the restored position when autofocus fails
+            self._move_z_and_settle(move_um)
 
     def _get_z_um(self) -> float:
         """Current z position in um, of the piezo if there is one, else of the stage."""
@@ -674,15 +678,15 @@ class LaserAutofocusController(QObject):
                 f"x={self.laser_af_properties.x_reference:.1f} - possible debris/contamination"
             )
 
-        current_norm = self._normalized_spot_crop(current_image, int(self.laser_af_properties.x_reference))
-
-        # Calculate normalized cross correlation
-        correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
+        # Calculate normalized cross correlation. It is nan for a blank crop, which divides by zero.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            current_norm = self._normalized_spot_crop(current_image, int(self.laser_af_properties.x_reference))
+            correlation = np.corrcoef(current_norm.ravel(), self.reference_crop.ravel())[0, 1]
 
         self._log.info(f"Cross correlation with reference: {correlation:.3f}")
 
-        # Check if correlation exceeds threshold
-        if correlation < self.laser_af_properties.correlation_threshold:
+        # Check if correlation exceeds threshold; no correlation is no alignment either
+        if not np.isfinite(correlation) or correlation < self.laser_af_properties.correlation_threshold:
             self._log.warning("Cross correlation check failed - spots not well aligned")
             return False, correlation
 

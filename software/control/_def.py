@@ -950,6 +950,8 @@ LASER_AF_FILTER_SIGMA = 1  # Sigma for Gaussian filter before spot detection
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
 
+# When an autofocus move finds no spot, search for it in z, over LASER_AF_RANGE on each side
+LASER_AF_SEARCH_FOR_SPOT = True
 # If True, search downward (smaller z values) first then upward; if False, search upward first
 LASER_AF_SEARCH_DOWN_FIRST = True
 

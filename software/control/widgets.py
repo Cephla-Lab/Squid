@@ -3100,6 +3100,13 @@ class LaserAutofocusSettingWidget(QWidget):
         )
         self._add_spinbox(settings_layout, "Correlation Threshold:", "correlation_threshold", 0.1, 1.0, 2, 0.1)
         self._add_spinbox(settings_layout, "Laser AF Range (μm):", "laser_af_range", 1, 1000, 1)
+        self.search_for_spot_checkbox = QCheckBox("Search in Z when Spot Not Found")
+        self.search_for_spot_checkbox.setToolTip(
+            "When an autofocus move finds no spot, look for it in z, over the Laser AF Range on each side.\n"
+            "Reading the displacement never moves z."
+        )
+        self.search_for_spot_checkbox.setChecked(self.laserAutofocusController.laser_af_properties.search_for_spot)
+        settings_layout.addWidget(self.search_for_spot_checkbox)
         self.update_threshold_button = QPushButton("Apply without Re-initialization")
         settings_layout.addWidget(self.update_threshold_button)
         settings_group.setLayout(settings_layout)
@@ -3247,6 +3254,8 @@ class LaserAutofocusSettingWidget(QWidget):
             else:
                 spinbox.setValue(current_value)
 
+        self.search_for_spot_checkbox.setChecked(self.laserAutofocusController.laser_af_properties.search_for_spot)
+
         # Update exposure and gain
         self.exposure_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_exposure_time_ms)
         self.analog_gain_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain)
@@ -3270,6 +3279,7 @@ class LaserAutofocusSettingWidget(QWidget):
             "correlation_threshold": self.spinboxes["correlation_threshold"].value(),
             "pixel_to_um_calibration_distance": self.spinboxes["pixel_to_um_calibration_distance"].value(),
             "laser_af_range": self.spinboxes["laser_af_range"].value(),
+            "search_for_spot": self.search_for_spot_checkbox.isChecked(),
             "spot_detection_mode": self.spot_mode_combo.currentData(),
             **self._spot_detection_settings(),
             "filter_sigma": self.spinboxes["filter_sigma"].value(),
@@ -3299,6 +3309,7 @@ class LaserAutofocusSettingWidget(QWidget):
             "displacement_success_window_pixels": int(self.spinboxes["displacement_success_window_pixels"].value()),
             "correlation_threshold": self.spinboxes["correlation_threshold"].value(),
             "laser_af_range": self.spinboxes["laser_af_range"].value(),
+            "search_for_spot": self.search_for_spot_checkbox.isChecked(),
         }
         self.laserAutofocusController.update_threshold_properties(updates)
 

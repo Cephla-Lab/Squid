@@ -708,6 +708,7 @@ class TestLaserAFConfig:
         assert config.pixel_to_um == 1.0
         assert config.has_reference is False
         assert config.laser_af_range == float(_def.LASER_AF_RANGE)
+        assert config.search_for_spot == _def.LASER_AF_SEARCH_FOR_SPOT
         assert config.spot_detection_mode == SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE)
         assert config.laser_af_averaging_n == _def.LASER_AF_AVERAGING_N
         assert config.correlation_threshold == _def.CORRELATION_THRESHOLD
