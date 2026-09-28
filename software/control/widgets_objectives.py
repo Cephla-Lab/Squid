@@ -57,6 +57,10 @@ class ObjectivesEditorDialog(QDialog):
         self._catalog = catalog
         self._on_restart = on_restart
         self._copied = set()  # (source, target) pairs already copied by an earlier Save
+        # Names of rows present before any addition in this dialog session (spec A §5's "mounted
+        # objective" choices for a newly added row's copy-source combo). Populated as add_row()
+        # is called for the seeded/existing rows, in __init__ below; unaffected by later removals.
+        self._mounted_names: List[str] = []
         self.setWindowTitle("Objectives")
         self.setMinimumSize(900, 360)
         self._build_ui()
@@ -100,7 +104,7 @@ class ObjectivesEditorDialog(QDialog):
         note = QLabel(
             "The objectives mounted on this microscope. Changes take effect after a restart. "
             "Changing an objective's optics, serial or slot invalidates calibrations measured with the "
-            "old values (Objective Calibration shows which). Removing an objective keeps its files."
+            "old values (Objective Calibration will show which). Removing an objective keeps its files."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
@@ -136,6 +140,18 @@ class ObjectivesEditorDialog(QDialog):
         combo.currentIndexChanged.connect(self._refresh_highlight)
         return combo
 
+    def _copy_from_combo(self, copy_from: str) -> QComboBox:
+        combo = QComboBox()
+        combo.addItems(self._mounted_names)
+        index = combo.findText(copy_from)
+        if index < 0:
+            # copy_from wasn't one of the rows present at dialog-open time (e.g. an EditorRow
+            # built directly, as the tests do); still honor it rather than silently dropping it.
+            combo.addItem(copy_from)
+            index = combo.count() - 1
+        combo.setCurrentIndex(index)
+        return combo
+
     def add_row(self, row: oc.EditorRow) -> None:
         r = self._table.rowCount()
         self._table.insertRow(r)
@@ -151,9 +167,15 @@ class ObjectivesEditorDialog(QDialog):
             self._table.setItem(r, col, QTableWidgetItem(text))
         if self._kind is not oc.ChangerKind.NONE:
             self._table.setCellWidget(r, _COL_SLOT, self._slot_combo(row.slot))
-        copy_item = QTableWidgetItem(row.copy_from or "")
-        copy_item.setFlags(copy_item.flags() & ~Qt.ItemIsEditable)
-        self._table.setItem(r, _COL_COPY, copy_item)
+        if row.copy_from is None:
+            # An existing (mounted) row: it is not itself copying settings from anywhere, and it
+            # becomes one of the choices offered to rows added after it.
+            self._mounted_names.append(row.name)
+            copy_item = QTableWidgetItem("")
+            copy_item.setFlags(copy_item.flags() & ~Qt.ItemIsEditable)
+            self._table.setItem(r, _COL_COPY, copy_item)
+        else:
+            self._table.setCellWidget(r, _COL_COPY, self._copy_from_combo(row.copy_from))
         self._refresh_highlight()
 
     def remove_row(self, index: int) -> None:
@@ -163,17 +185,22 @@ class ObjectivesEditorDialog(QDialog):
     def rows(self) -> List[oc.EditorRow]:
         rows = []
         for r in range(self._table.rowCount()):
-            combo = self._table.cellWidget(r, _COL_SLOT)
+            slot_combo = self._table.cellWidget(r, _COL_SLOT)
+            copy_combo = self._table.cellWidget(r, _COL_COPY)
+            if copy_combo is not None:
+                copy_from = copy_combo.currentText() or None
+            else:
+                copy_from = self._table.item(r, _COL_COPY).text() or None
             rows.append(
                 oc.EditorRow(
                     name=self._table.item(r, _COL_NAME).text(),
                     magnification=_float_or_none(self._table.item(r, _COL_MAG).text()),
                     na=_float_or_none(self._table.item(r, _COL_NA).text()),
                     tube_lens_f_mm=_float_or_none(self._table.item(r, _COL_TUBE).text()),
-                    slot=combo.currentData() if combo is not None else None,
+                    slot=slot_combo.currentData() if slot_combo is not None else None,
                     model=self._table.item(r, _COL_MODEL).text(),
                     serial=self._table.item(r, _COL_SERIAL).text(),
-                    copy_from=self._table.item(r, _COL_COPY).text() or None,
+                    copy_from=copy_from,
                 )
             )
         return rows
@@ -226,12 +253,32 @@ class ObjectivesEditorDialog(QDialog):
         except oc.ObjectivesConfigError as e:
             QMessageBox.warning(self, "Objectives", f"{e.field}: {e.reason}")
             return False
-        self._repo.save_objectives_config(config)
+        # Channel-config copies happen before the YAML write, so a copy failure never leaves an
+        # objectives.yaml pointing at an objective whose channel settings did not make it to disk.
         for row in rows:
             if row.copy_from and (row.copy_from, row.name) not in self._copied:
-                profiles = self._repo.copy_objective_channel_configs(row.copy_from, row.name)
+                try:
+                    profiles = self._repo.copy_objective_channel_configs(row.copy_from, row.name)
+                except OSError as e:
+                    QMessageBox.critical(
+                        self,
+                        "Objectives",
+                        f"Could not copy channel settings from '{row.copy_from}' to '{row.name}': {e}. "
+                        "The objective list was NOT saved.",
+                    )
+                    return False
                 self._copied.add((row.copy_from, row.name))
                 self._log.info(f"copied channel settings {row.copy_from} -> {row.name} in profiles {profiles}")
+        objectives_yaml_path = self._repo.machine_configs_path / "objectives.yaml"
+        try:
+            self._repo.save_objectives_config(config)
+        except OSError as e:
+            QMessageBox.critical(
+                self,
+                "Objectives",
+                f"Could not write {objectives_yaml_path}: {e}. The objective list was not written.",
+            )
+            return False
         answer = QMessageBox.question(
             self,
             "Restart to apply",

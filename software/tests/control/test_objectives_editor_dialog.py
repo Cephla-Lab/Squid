@@ -2,6 +2,8 @@ import pytest
 from qtpy.QtWidgets import QMessageBox
 
 import tests.control.gui_test_stubs  # noqa: F401  (same Qt setup as the other dialog tests)
+import control._def
+import control.widgets_objectives as widgets_objectives
 from control.core.config.repository import ConfigRepository
 from control.objectives_config import EditorRow
 from control.widgets_objectives import ObjectivesEditorDialog
@@ -24,9 +26,10 @@ def repo(tmp_path):
 
 @pytest.fixture
 def no_dialogs(monkeypatch):
-    shown = {"warning": [], "question": []}
+    shown = {"warning": [], "question": [], "critical": []}
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown["warning"].append(a[2]) or QMessageBox.Ok)
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: shown["question"].append(a[2]) or QMessageBox.No)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *a, **k: shown["critical"].append(a[2]) or QMessageBox.Ok)
     return shown
 
 
@@ -76,6 +79,32 @@ def test_added_objective_copies_channel_settings(qtbot, repo, no_dialogs, tmp_pa
         assert path.read_text() == f"{profile}-20x"
 
 
+def test_copy_column_is_a_combo_for_a_new_row_preselected_to_nearest_magnification(qtbot, repo, no_dialogs):
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)  # frees slot 1
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    combo = dialog._table.cellWidget(dialog._table.rowCount() - 1, widgets_objectives._COL_COPY)
+    assert isinstance(combo, widgets_objectives.QComboBox)
+    assert [combo.itemText(i) for i in range(combo.count())] == ["4x", "10x", "20x"]
+    assert combo.currentText() == "20x"
+    # An existing (mounted) row's cell is not a combo.
+    assert dialog._table.cellWidget(0, widgets_objectives._COL_COPY) is None
+
+
+def test_copy_combo_can_be_changed_to_a_different_mounted_objective(qtbot, repo, no_dialogs, tmp_path):
+    for profile in ("a", "b"):
+        (tmp_path / "user_profiles" / profile / "channel_configs" / "10x.yaml").write_text(f"{profile}-10x")
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)  # frees slot 1
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+    combo = dialog._table.cellWidget(dialog._table.rowCount() - 1, widgets_objectives._COL_COPY)
+    combo.setCurrentIndex(combo.findText("10x"))
+    assert dialog.save()
+    for profile in ("a", "b"):
+        path = tmp_path / "user_profiles" / profile / "channel_configs" / "20x water.yaml"
+        assert path.read_text() == f"{profile}-10x"
+
+
 def test_second_save_is_idempotent(qtbot, repo, no_dialogs, tmp_path):
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)
@@ -96,6 +125,48 @@ def test_invalid_table_is_refused_with_the_startup_message(qtbot, repo, no_dialo
     assert not dialog.save()
     assert repo.get_objectives_config() is None
     assert "already used" in no_dialogs["warning"][0]
+
+
+def test_copy_failure_shows_critical_and_does_not_write_yaml(qtbot, repo, no_dialogs, monkeypatch):
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)  # frees slot 1
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"))
+
+    def _raise(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(repo, "copy_objective_channel_configs", _raise)
+    assert not dialog.save()
+    assert repo.get_objectives_config() is None  # the YAML was not written
+    assert no_dialogs["critical"] and "disk full" in no_dialogs["critical"][0]
+    assert "NOT saved" in no_dialogs["critical"][0]
+
+
+def test_save_failure_shows_critical(qtbot, repo, no_dialogs, monkeypatch):
+    dialog = _turret_dialog(qtbot, repo)
+
+    def _raise(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(repo, "save_objectives_config", _raise)
+    assert not dialog.save()
+    assert no_dialogs["critical"] and "permission denied" in no_dialogs["critical"][0]
+    assert "not written" in no_dialogs["critical"][0]
+
+
+def test_for_current_machine_seeds_from_the_def_module_with_raw_string_lists(qtbot, repo, monkeypatch):
+    monkeypatch.setattr(control._def, "USE_XERYON", True)
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)
+    # The shipped Xeryon ini loads these as Python-literal strings, not real lists (see the
+    # comment in ObjectivesEditorDialog.for_current_machine).
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_1", "['10x', '20x']")
+    monkeypatch.setattr(control._def, "XERYON_OBJECTIVE_SWITCHER_POS_2", "['4x']")
+    monkeypatch.setattr(control._def, "read_objectives_csv", lambda path: CATALOG)
+
+    dialog = ObjectivesEditorDialog.for_current_machine(repo)
+    qtbot.addWidget(dialog)
+
+    assert [(r.name, r.slot) for r in dialog.rows()] == [("10x", 1), ("20x", 1), ("4x", 2)]
 
 
 def test_xeryon_seed_blocks_save_until_one_per_position(qtbot, repo, no_dialogs):
