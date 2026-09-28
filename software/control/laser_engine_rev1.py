@@ -231,9 +231,12 @@ class LaserEngineRev1(QObject):
         self._clamp_warned = False
         self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = full transmission
         self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
-        self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates; review fix 1)
+        self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates)
         self._aom_cal: Optional[Tuple[np.ndarray, np.ndarray]] = None
         self._aom_cal_read = False
+        self._source_dark = False  # the 560 was set to exactly 0 %: kept off, and L3 reads READY (ruling F-0)
+        self._dark_noticed = False
+        self._source_reported: Optional[SourceStatus] = None  # the source's own last reading, before _judge_source
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -663,31 +666,37 @@ class LaserEngineRev1(QObject):
             raise LaserEngineRev1Error(channel_key, f"560 nm source not usable: {st.detail or 'not responding'}")
 
     def _wake_source(self) -> None:
-        """Review fix 2b: the enable_pending check-then-set and the queue/state update happen under the lock; only the
-        serial round-trip (_cmd) runs outside it, so a concurrent _disable_source() cannot interleave mid-update.
-        Review round 2, finding 3: `src` is captured once at the top and used throughout, so a concurrent
-        _close_source() clearing self._source to None cannot make `self._source.min_power_mw` raise and leave
-        `_source_enable_pending` stuck True (the exception guard below then covers everything up to the final put)."""
+        """Queue one source enable at the source's minimum (the request follows once it is ready).
+        The enable_pending check-then-set and the queue/state update run under _source_lock; only the LINE3:SET
+        round-trip runs outside it, so a concurrent _disable_source() cannot interleave with the update. `src` is
+        captured once, so a concurrent _close_source() cannot leave _source_enable_pending set. A 560 set to 0 %
+        (dark) is never enabled: checked before the LINE3:SET and again, under the lock, before the enable is queued.
+        """
         src = self._source
         if src is None:
             return
         self._touch_source()
         with self._source_lock:
-            if self._source_enable_pending:
-                return  # the source thread has not run the last enable yet (wake_up / wait_until_ready call this every poll)
+            if self._source_dark or self._source_enable_pending:
+                return  # dark by request, or the source thread has not run the last enable yet (callers repeat)
             self._source_enable_pending = True
         try:
             volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
             self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
             start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the request
             with self._source_lock:
+                if self._source_dark:  # set to 0 % during the LINE3:SET round-trip: stay off
+                    self._source_enable_pending = False
+                    return
                 requested = self._source_requested_mw if self._source_requested_mw is not None else start
                 self._source_pending_mw = requested if requested > start else None
                 self._source_want_on = True
                 self._source_queue.put(("enable", start))
-        except Exception:
+        except Exception as e:
             with self._source_lock:
                 self._source_enable_pending = False
+            if isinstance(e, EngineCommandError):  # callers (wait_until_ready) raise only LaserEngineRev1Error
+                raise LaserEngineRev1Error("L3", e.reason) from e
             raise
 
     def _disable_source(self) -> None:
@@ -698,7 +707,7 @@ class LaserEngineRev1(QObject):
                 return
             self._source_want_on = False
             self._source_pending_mw = None
-            self._source_disable_pending = True  # review fix 1: source_step clears it once the disable has run
+            self._source_disable_pending = True  # source_step clears it once the disable has run
             self._source_queue.put(("disable", None))
 
     def _touch_source(self) -> None:
@@ -725,7 +734,8 @@ class LaserEngineRev1(QObject):
                 self._log.error(f"560 nm source: switching off at connect: {e}")
             self._notice("560 nm source was on at connect (the last session did not switch it off): switched off")
             first = self._source.poll()
-        self._source_status = self._judge_source(first)
+        self._source_reported = first
+        self._source_status = self._judge_source(first, self._source)
 
     def _start_source_thread(self) -> None:
         if self._source is None or self._source_running.is_set():
@@ -747,14 +757,13 @@ class LaserEngineRev1(QObject):
 
     def source_step(self) -> None:
         """One pass of the source thread: run queued requests, then poll. The only place that does source I/O.
-        Review fix 2a: `_source_enable_pending` is cleared only after this step's poll + judge_source, so a caller
-        (wake_up / wait_until_ready) polling in between still sees the enable as pending and does not queue a second one.
-        Review round 2, finding 1: the "source unwanted but still emitting/starting" reconcile lives HERE (not in
-        _after_poll), using this step's own fresh status, so it keeps running after the engine link is lost (the poll
-        thread stops calling _after_poll once poll_once() returns None, but this thread keeps stepping).
-        Review round 2, finding 2: `_source_disable_pending` is cleared only after the post-step poll/judge (the same
-        deferred pattern as `_source_enable_pending`/ran_enable), so this step's own reconcile never re-queues a
-        disable it just ran on a status that has not caught up yet."""
+        _source_enable_pending and _source_disable_pending are cleared only after this step's own poll, so a caller
+        (wake_up / wait_until_ready) polling in between still sees the request as queued and does not queue another.
+        The tail reconciles a source that is not wanted but still reads emitting or starting by queuing one disable.
+        It lives here, not in _after_poll, so a failed disable is retried even after the engine link is lost (the poll
+        thread stops then; this thread keeps stepping). It acts on the source's own reading, never on the judged
+        status (which reads READY for a 560 dark by request). A source that still reads on right after a disable gets
+        a second, redundant disable at the next step; that is harmless."""
         src = self._source
         if src is None:
             return
@@ -797,33 +806,35 @@ class LaserEngineRev1(QObject):
                     src.set_power_mw(pending)
                 except Exception as e:
                     self._log.error(f"560 nm source power: {e}")
-            self._source_status = self._judge_source(status)
+            self._source_reported = status
+            self._source_status = self._judge_source(status, src)
         finally:
             if ran_enable:
                 self._source_enable_pending = False
             with self._source_lock:
                 if ran_disable:
-                    # the disable we just ran (succeeded or failed) is no longer "in the queue": release the flag now,
-                    # on this step's own fresh status, not an earlier stale one (review round 2, finding 2).
+                    # the disable this step ran (succeeded or failed) is no longer queued
                     self._source_disable_pending = False
                 if (
-                    status is not None
+                    status is not None  # the source's own reading, not the judged one
                     and not self._source_want_on
                     and not self._source_disable_pending
                     and (status.ready or status.starting)
                 ):
-                    # the source is not wanted but still reads emitting/starting: queue one disable. Lives here (not
-                    # in _after_poll) so a failed disable is retried even after the engine link is lost and the poll
-                    # thread stops running (review round 2, finding 1).
+                    # not wanted but still reads emitting/starting (e.g. a failed disable): queue one disable
                     self._source_disable_pending = True
                     self._source_queue.put(("disable", None))
 
-    def _judge_source(self, status: SourceStatus) -> SourceStatus:
-        """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request."""
+    def _judge_source(self, status: SourceStatus, src) -> SourceStatus:
+        """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request;
+        a source set to 0 % (dark) that reads off is READY, like any other line at 0 %. `src` is the source that
+        reported `status` (close() may clear self._source meanwhile)."""
         if self._source_error is not None:
             return replace(status, fault=True, detail=self._source_error)
+        if self._source_dark and status.off:
+            return replace(status, ready=True, settled=True, off=False)
         if status.ready:
-            target = self._source_requested_mw if self._source_requested_mw is not None else self._source.min_power_mw
+            target = self._source_requested_mw if self._source_requested_mw is not None else src.min_power_mw
             tol = max(self.SOURCE_SETTLE_TOL_MW, self.SOURCE_SETTLE_TOL_FRAC * target)
             settled = self._source_pending_mw is None and abs(status.power_mw - target) <= tol
             return replace(status, settled=settled)
@@ -845,9 +856,8 @@ class LaserEngineRev1(QObject):
 
     def _after_poll(self, status: EngineRev1Status) -> None:
         """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter.
-        Review round 2, finding 1: the "still on but not wanted" reconcile moved to source_step's own tail (it needs to
-        keep running after the engine link is lost, which stops this method from being called at all). This method
-        keeps only the held-open shutter close, which needs the engine link and so must stay on the poll thread."""
+        Retrying a disable that did not take is source_step's job (it keeps running after the engine link is lost);
+        the held-open shutter needs the engine link, so it is handled here."""
         if self._source is None:
             return
         raw = self._latest_raw or {}
@@ -942,10 +952,28 @@ class LaserEngineRev1(QObject):
         return self.get_line_intensity(line) if line is not None else 0.0
 
     def _set_source_power(self, percent: float) -> None:
-        if self._source is None:
+        src = self._source
+        if src is None:
             raise LaserEngineRev1Error("L3", "560 nm source not configured")
+        if percent <= 0:  # ruling F-0: exactly 0 % = dark (source off), not the minimum power
+            with self._source_lock:
+                self._source_dark = True
+                self._source_requested_mw = None
+            self._disable_source()
+            if not self._dark_noticed:
+                self._dark_noticed = True
+                self._notice(
+                    f"560 nm set to 0 %: source switched off (its minimum is {src.min_power_mw:.0f} mW); "
+                    "any higher value starts it again"
+                )
+            return
+        with self._source_lock:
+            was_dark, self._source_dark = self._source_dark, False
+        if was_dark and self._source_reported is not None:
+            # drop the dark READY now, so the wake that follows this request sees SOURCE_OFF and starts the source
+            self._source_status = self._judge_source(self._source_reported, src)
         self._touch_source()
-        mw = self._source_power_for(percent / 100.0 * self._source.max_power_mw)  # % of maximum power, linear in mW
+        mw = self._source_power_for(percent / 100.0 * src.max_power_mw)  # % of maximum power, linear in mW
         with self._source_lock:
             self._source_requested_mw = mw
             if self._source_enable_pending or self._source_pending_mw is not None:
@@ -1065,6 +1093,10 @@ class LaserEngineRev1LightSource(LightSource):
         return False  # no software gate; exposure is the TTL line
 
     def set_intensity(self, channel, intensity):  # channel = wavelength (nm)
+        """Wake the line on use (re-arm + enable), then send the set-point. Can block the caller for up to three STAT?
+        round-trips (the wake) plus the firmware ramp wait (SETTLE_TIMEOUT_S, <= ~1 s).
+        On DF the 560's request comes first and 0 % wakes nothing: 0 % means dark (the source off), and a request
+        above 0 % after that must be in place before the wake, so the wake starts the source again."""
         line = self._engine.line_for_wavelength(channel)
         if line is None:  # not an engine port: the controller still selects its TTL port right after this call
             if channel not in self._unmapped_warned:
@@ -1072,6 +1104,11 @@ class LaserEngineRev1LightSource(LightSource):
                 self._log.warning(
                     f"{channel} nm is not on an engine port (D1-D5): intensity not sent to the laser engine"
                 )
+            return
+        if self._engine.variant == "DF" and line == SOURCE_560_LINE:
+            self._engine.set_wavelength_intensity(channel, intensity)
+            if intensity > 0:
+                self._engine.wake_up(f"L{line}")  # never raises
             return
         self._engine.wake_up(f"L{line}")  # re-arm + enable on use first; never raises
         self._engine.set_wavelength_intensity(

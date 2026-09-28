@@ -117,11 +117,34 @@ def test_below_minimum_clamps_and_warns_once():
     engine, fake, source = _with_source()
     _to_ready(engine, source)
     engine.set_line_intensity(3, 10.0)  # 100 mW, below the 200 mW minimum
-    engine.set_line_intensity(3, 0.0)
+    engine.set_line_intensity(3, 5.0)  # 50 mW: still above 0 %, so clamped too (0 % is dark)
     engine.source_step()
     assert source.power_mw == pytest.approx(200.0)
     assert sum("below the 560 nm minimum" in n for n in engine.notices) == 1
     assert engine.poll_once().channels["L3"].state == LineState.READY  # READY at the clamped power
+
+
+def test_zero_percent_is_dark():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    n_sent = len(fake.sent)
+    engine.light_source.set_intensity(560, 0.0)  # 0 % = dark: the source goes off, not down to its minimum
+    assert not any(c.startswith(("ARM", "LINE3:EN", "LINE3:SET")) for c in fake.sent[n_sent:])  # set only, no wake
+    engine.source_step()
+    assert source.calls[-1] == "disable" and not source.enabled
+    assert engine.poll_once().channels["L3"].state == LineState.READY  # dark by request, like any line at 0 %
+    engine.set_line_intensity(3, 0.0)
+    assert sum("set to 0 %" in n for n in engine.notices) == 1
+    n_sent, n_calls = len(fake.sent), len(source.calls)
+    assert engine.wait_until_ready(["L3"], timeout_s=1.0) is True
+    engine.source_step()
+    assert "enable" not in source.calls[n_calls:] and not any(c.startswith("LINE3:SET") for c in fake.sent[n_sent:])
+    engine.light_source.set_intensity(560, 10.0)  # 100 mW: the source starts again, at its 200 mW minimum
+    for _ in range(4):
+        engine.source_step()
+    assert source.calls[n_calls:] == ["power 200.0", "enable"] and source.enabled
+    assert sum("below the 560 nm minimum" in n for n in engine.notices) == 1
+    assert engine.poll_once().channels["L3"].state == LineState.READY
 
 
 def test_slow_source_does_not_delay_heartbeat():
