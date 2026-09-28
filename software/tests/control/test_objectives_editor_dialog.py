@@ -1,4 +1,5 @@
 import pytest
+from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QMessageBox
 
 import tests.control.gui_test_stubs  # noqa: F401  (same Qt setup as the other dialog tests)
@@ -229,3 +230,25 @@ def test_invalid_existing_yaml_shows_a_warning_and_seeds_from_the_constructor_ar
     dialog = _turret_dialog(qtbot, repo)
     assert [(r.name, r.slot) for r in dialog.rows()] == [("4x", 1), ("10x", 2), ("20x", 3)]
     assert no_dialogs["warning"] and "not valid YAML" in no_dialogs["warning"][0]
+
+
+# --- R4: a mounted row's name cannot be edited; a newly added row's can ---
+
+
+def test_mounted_row_name_is_not_editable_but_a_new_rows_is(qtbot, repo, no_dialogs):
+    dialog = _turret_dialog(qtbot, repo)
+    mounted_item = dialog._table.item(0, widgets_objectives._COL_NAME)
+    assert not bool(mounted_item.flags() & Qt.ItemIsEditable)
+    dialog.add_row(dialog._new_row("40x", 40.0, 0.95, 180.0), new=True)
+    new_item = dialog._table.item(dialog._table.rowCount() - 1, widgets_objectives._COL_NAME)
+    assert bool(new_item.flags() & Qt.ItemIsEditable)
+
+
+def test_editing_a_mounted_name_via_the_table_is_refused(qtbot, repo, no_dialogs):
+    # A double-click or F2 goes through QAbstractItemView.edit(index), which Qt refuses (logging
+    # "editing failed") and opens no editor when the model reports the index is not editable.
+    dialog = _turret_dialog(qtbot, repo)
+    index = dialog._table.model().index(0, widgets_objectives._COL_NAME)
+    assert not bool(dialog._table.model().flags(index) & Qt.ItemIsEditable)
+    dialog._table.edit(index)
+    assert dialog.rows()[0].name == "4x"

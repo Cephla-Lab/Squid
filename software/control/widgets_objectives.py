@@ -179,6 +179,11 @@ class ObjectivesEditorDialog(QDialog):
         }
         for col, text in texts.items():
             self._table.setItem(r, col, QTableWidgetItem(text))
+        if not new:
+            # R4: no rename for a mounted row (remove it and add it again instead).
+            name_item = self._table.item(r, _COL_NAME)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
+            name_item.setToolTip("To rename, remove it and add it again")
         if self._kind is not oc.ChangerKind.NONE:
             self._table.setCellWidget(r, _COL_SLOT, self._slot_combo(row.slot))
         if not new:
