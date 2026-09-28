@@ -1,0 +1,50 @@
+# Objectives Configuration (v1)
+#
+# The per-machine list of the objectives actually MOUNTED on this microscope: one entry per
+# changer slot (installed = mounted). This becomes the runtime source for the objective list and
+# the changer slot maps, replacing objective_and_sample_formats/objectives.csv and the .ini's
+# OBJECTIVE_TURRET_POSITIONS / XERYON_OBJECTIVE_SWITCHER_POS_1/2 for this machine.
+#
+# This file is optional. If not present, the objective list comes from objectives.csv and the
+# machine .ini, as before.
+#
+# Edit this file through Settings > Advanced > Objectives... in the GUI rather than by hand where
+# possible: the editor validates it and copies channel settings for a newly added objective. If
+# you do edit it by hand, a restart is required to pick up changes.
+#
+# Copy this file to objectives.yaml and edit for your system.
+
+version: 1
+
+changer:
+  # nimotion_turret | xeryon | none. Must agree with this machine's USE_OBJECTIVE_TURRET /
+  # USE_XERYON .ini flags (nimotion_turret <-> USE_OBJECTIVE_TURRET, xeryon <-> USE_XERYON,
+  # neither flag <-> none).
+  kind: nimotion_turret
+
+objectives:
+  # name: unique key (case-insensitively) used to look up channel configs, laser AF configs and
+  #   calibration; becomes the file stem channel_configs/<name>.yaml, so it must be a valid file
+  #   name on every OS this config might be read on.
+  # magnification, na, tube_lens_f_mm: the objective's optics (na: 0 < na <= 1.5).
+  # slot: 1..N, N from the changer kind's slot count; omit (or null) when changer.kind is none.
+  # model, serial: optional free text, e.g. for bench records; "" if unknown.
+  - name: 4x
+    magnification: 4
+    na: 0.13
+    tube_lens_f_mm: 180
+    slot: 1
+    model: "Olympus PLN4X"
+    serial: ""
+
+  - name: 10x
+    magnification: 10
+    na: 0.3
+    tube_lens_f_mm: 180
+    slot: 2
+
+  - name: 20x
+    magnification: 20
+    na: 0.8
+    tube_lens_f_mm: 180
+    slot: 3
