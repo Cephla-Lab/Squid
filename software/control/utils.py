@@ -81,11 +81,9 @@ def crop_image(image, crop_width, crop_height):
 def calculate_focus_measure(image, method=FocusMeasureOperator.LAPE):
     image = to_grayscale(image)
     if method == FocusMeasureOperator.LAPE:
-        if image.dtype == np.uint16:
-            lap = cv2.Laplacian(image, cv2.CV_32F)
-        else:
-            lap = cv2.Laplacian(image, cv2.CV_16S)
-        focus_measure = mean(square(lap))
+        # float, not CV_16S: squaring an int16 Laplacian wraps around, which makes sharp 8-bit images score low
+        lap = cv2.Laplacian(image, cv2.CV_32F)
+        focus_measure = mean(square(lap, dtype=np.float64))
     elif method == FocusMeasureOperator.GLVA:
         focus_measure = np.std(image, axis=None)  # GLVA
     elif method == FocusMeasureOperator.TENENGRAD:
