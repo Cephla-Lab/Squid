@@ -45,9 +45,12 @@ class ObjectivesEditorDialog(QDialog):
         turret_positions,
         xeryon_pos_1,
         xeryon_pos_2,
+        running_config: Optional[oc.ObjectivesConfig] = None,
         on_restart: Optional[Callable[[], None]] = None,
         parent=None,
     ):
+        """running_config: the objectives.yaml the software started with (None if it started
+        without one). The editor reopens it when the file on disk has since been damaged."""
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self._repo = config_repo
@@ -79,7 +82,9 @@ class ObjectivesEditorDialog(QDialog):
                 f"{e.field}: {e.reason} — the editor opens with the objective list the software is "
                 "running with; saving replaces the file",
             )
-            existing = None
+            # The list the software is running with: the file as loaded at startup, or, if it
+            # started without one, today's ini/catalog setup (the seed below).
+            existing = running_config
         if existing is not None:
             rows = oc.config_to_rows(existing)
         else:
@@ -108,6 +113,7 @@ class ObjectivesEditorDialog(QDialog):
             turret_positions=control._def.OBJECTIVE_TURRET_POSITIONS,
             xeryon_pos_1=control._def.XERYON_OBJECTIVE_SWITCHER_POS_1,
             xeryon_pos_2=control._def.XERYON_OBJECTIVE_SWITCHER_POS_2,
+            running_config=control._def.OBJECTIVES_CONFIG,
             on_restart=on_restart,
             parent=parent,
         )
