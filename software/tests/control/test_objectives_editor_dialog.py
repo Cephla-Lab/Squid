@@ -1,6 +1,6 @@
 import pytest
 from qtpy.QtCore import Qt
-from qtpy.QtWidgets import QMessageBox
+from qtpy.QtWidgets import QAbstractItemView, QMessageBox
 
 import tests.control.gui_test_stubs  # noqa: F401  (same Qt setup as the other dialog tests)
 import control._def
@@ -275,11 +275,12 @@ def test_mounted_row_name_is_not_editable_but_a_new_rows_is(qtbot, repo, no_dial
 def test_editing_a_mounted_name_via_the_table_is_refused(qtbot, repo, no_dialogs):
     # A double-click or F2 goes through QAbstractItemView.edit(index), which Qt refuses (logging
     # "editing failed") and opens no editor when the model reports the index is not editable.
+    # edit() itself types nothing, so the real check is that Qt never entered its editing state.
     dialog = _turret_dialog(qtbot, repo)
     index = dialog._table.model().index(0, widgets_objectives._COL_NAME)
     assert not bool(dialog._table.model().flags(index) & Qt.ItemIsEditable)
     dialog._table.edit(index)
-    assert dialog.rows()[0].name == "4x"
+    assert dialog._table.state() != QAbstractItemView.EditingState
 
 
 # --- R5: a new row's copy source tracks its magnification until the user picks one ---

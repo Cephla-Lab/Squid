@@ -165,6 +165,7 @@ class TestValidate:
             "con.oil",
             "NUL.20x",
             "COM1.x",
+            "CON .oil",
         ],
     )
     def test_bad_names(self, name):
@@ -174,11 +175,13 @@ class TestValidate:
             _valid(data)
         assert err.value.field == "objectives[0].name"
 
-    def test_dotted_name_not_matching_a_reserved_prefix_is_accepted(self):
-        # "Condenser 10x" (and, more generally, any name whose stem before the first dot is not
-        # itself a reserved device name) must not be rejected by the dotted-prefix check.
+    @pytest.mark.parametrize("name", ["Condenser 10x", "Console.x", "con10x.oil"])
+    def test_dotted_name_not_matching_a_reserved_prefix_is_accepted(self, name):
+        # A name whose stem before the first dot is not itself (once stripped of surrounding
+        # spaces) an exact reserved device name must not be rejected by the dotted-prefix check,
+        # even when the stem merely starts with or contains one ("Console", "con10x").
         data = _data()
-        data["objectives"][0]["name"] = "Condenser 10x"
+        data["objectives"][0]["name"] = name
         _valid(data)
 
     def test_case_insensitive_duplicate_names(self):
