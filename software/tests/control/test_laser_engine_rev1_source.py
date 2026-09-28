@@ -1,3 +1,4 @@
+import threading
 import time
 from pathlib import Path
 
@@ -306,16 +307,61 @@ def test_enable_is_not_repeated_while_the_first_start_is_polled():
     assert source.calls.count("enable") == 1
 
 
-def test_wake_and_disable_interleaved_stay_consistent():
+# ---- review fix round 2: the reconcile must survive link loss; two more discriminating concurrency tests ----------------
+
+
+def test_concurrent_wake_during_line3_set_enables_once():
+    """Round 2 finding 3's scenario, probe_rr's B: a second wake_up / wait_until_ready thread lands inside the
+    LINE3:SET round-trip. The lock around the enable_pending check-then-set must make the second call a no-op."""
     engine, fake, source = _with_source()
     real_cmd = engine._cmd
+    fired = [False]
 
-    def cmd_with_interleaved_disable(line):
-        if line.startswith("LINE3:SET"):
-            engine._disable_source()  # simulate the poll thread deciding to switch off mid wake
+    def cmd_with_nested_wake(line):
+        if line.startswith("LINE3:SET") and not fired[0]:
+            fired[0] = True
+            engine._wake_source()  # a second caller's wake, landing in this window
         return real_cmd(line)
 
-    engine._cmd = cmd_with_interleaved_disable
+    engine._cmd = cmd_with_nested_wake
+    engine.wake_up("L3")
+    for _ in range(4):
+        engine.source_step()
+    assert source.calls.count("enable") == 1
+
+
+def test_disable_racing_the_enable_put_stays_consistent():
+    """Round 2 finding 3's scenario, probe_rr's C: a disable from another thread lands between _wake_source setting
+    _source_want_on = True and its own queue.put(("enable", ...)). The lock serialises the two, so the source's
+    enabled state and _source_want_on must agree once both threads are done (before round 1 this could disagree)."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.enabled = False  # e.g. switched off on its own front panel: L3 reads SOURCE_OFF, _source_want_on still True
+    engine.source_step()
+    engine.poll_once()
+    real_put = engine._source_queue.put
+
+    def put_with_interleaved_disable(item, *a, **kw):
+        if item[0] == "enable":
+            t = threading.Thread(target=engine._disable_source)
+            t.start()
+            t.join(0.2)  # blocks on _source_lock until this put's caller releases it: no deadlock, just a wait
+        return real_put(item, *a, **kw)
+
+    engine._source_queue.put = put_with_interleaved_disable
     engine.wake_up("L3")
     engine.source_step()
     assert source.enabled == engine._source_want_on
+
+
+def test_failed_disable_after_link_loss_is_retried():
+    """Round 2 finding 1: once the engine link is lost, poll_once() returns None and the poll thread stops calling
+    _after_poll - so a failed disable must be retried by source_step itself, with no further poll_once() at all."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.fail_disable = 1
+    fake.unplug()
+    engine.poll_once()  # link lost -> _on_lost() -> _disable_source() queues a disable
+    for _ in range(3):
+        engine.source_step()  # no poll_once() in between: the reconcile must live in source_step, not _after_poll
+    assert not source.enabled

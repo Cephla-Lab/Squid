@@ -630,27 +630,31 @@ class LaserEngineRev1(QObject):
 
     def _wake_source(self) -> None:
         """Review fix 2b: the enable_pending check-then-set and the queue/state update happen under the lock; only the
-        serial round-trip (_cmd) runs outside it, so a concurrent _disable_source() cannot interleave mid-update."""
-        if self._source is None:
+        serial round-trip (_cmd) runs outside it, so a concurrent _disable_source() cannot interleave mid-update.
+        Review round 2, finding 3: `src` is captured once at the top and used throughout, so a concurrent
+        _close_source() clearing self._source to None cannot make `self._source.min_power_mw` raise and leave
+        `_source_enable_pending` stuck True (the exception guard below then covers everything up to the final put)."""
+        src = self._source
+        if src is None:
             return
         self._touch_source()
         with self._source_lock:
             if self._source_enable_pending:
                 return  # the source thread has not run the last enable yet (wake_up / wait_until_ready call this every poll)
             self._source_enable_pending = True
-        volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
         try:
+            volts = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
             self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM analog (harmless without an AOM); TTL3 gates it
+            start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the request
+            with self._source_lock:
+                requested = self._source_requested_mw if self._source_requested_mw is not None else start
+                self._source_pending_mw = requested if requested > start else None
+                self._source_want_on = True
+                self._source_queue.put(("enable", start))
         except Exception:
             with self._source_lock:
                 self._source_enable_pending = False
             raise
-        start = self._source.min_power_mw  # ruling 4: start at the source's own minimum, then the request
-        with self._source_lock:
-            requested = self._source_requested_mw if self._source_requested_mw is not None else start
-            self._source_pending_mw = requested if requested > start else None
-            self._source_want_on = True
-            self._source_queue.put(("enable", start))
 
     def _disable_source(self) -> None:
         if self._source is None:
@@ -711,11 +715,17 @@ class LaserEngineRev1(QObject):
         """One pass of the source thread: run queued requests, then poll. The only place that does source I/O.
         Review fix 2a: `_source_enable_pending` is cleared only after this step's poll + judge_source, so a caller
         (wake_up / wait_until_ready) polling in between still sees the enable as pending and does not queue a second one.
-        Review fix 1: a queued disable's pending flag is cleared here too, whether it succeeded or raised."""
+        Review round 2, finding 1: the "source unwanted but still emitting/starting" reconcile lives HERE (not in
+        _after_poll), using this step's own fresh status, so it keeps running after the engine link is lost (the poll
+        thread stops calling _after_poll once poll_once() returns None, but this thread keeps stepping).
+        Review round 2, finding 2: `_source_disable_pending` is cleared only after the post-step poll/judge (the same
+        deferred pattern as `_source_enable_pending`/ran_enable), so this step's own reconcile never re-queues a
+        disable it just ran on a status that has not caught up yet."""
         src = self._source
         if src is None:
             return
         ran_enable = False
+        ran_disable = False
         while True:
             try:
                 op, arg = self._source_queue.get_nowait()
@@ -730,6 +740,7 @@ class LaserEngineRev1(QObject):
                 elif op == "power":
                     src.set_power_mw(arg)
                 elif op == "disable":
+                    ran_disable = True
                     src.disable()
                     self._source_enabled = False
             except Exception as e:
@@ -738,10 +749,7 @@ class LaserEngineRev1(QObject):
                     self._source_failures += 1
                     if self._source_failures >= self.SOURCE_ENABLE_ATTEMPTS:
                         self._source_error = f"enable failed {self._source_failures}x: {e}"
-            finally:
-                if op == "disable":
-                    with self._source_lock:
-                        self._source_disable_pending = False  # retried at the next _after_poll if it just failed
+        status = None
         try:
             status = src.poll()
             with self._source_lock:
@@ -759,6 +767,22 @@ class LaserEngineRev1(QObject):
         finally:
             if ran_enable:
                 self._source_enable_pending = False
+            with self._source_lock:
+                if ran_disable:
+                    # the disable we just ran (succeeded or failed) is no longer "in the queue": release the flag now,
+                    # on this step's own fresh status, not an earlier stale one (review round 2, finding 2).
+                    self._source_disable_pending = False
+                if (
+                    status is not None
+                    and not self._source_want_on
+                    and not self._source_disable_pending
+                    and (status.ready or status.starting)
+                ):
+                    # the source is not wanted but still reads emitting/starting: queue one disable. Lives here (not
+                    # in _after_poll) so a failed disable is retried even after the engine link is lost and the poll
+                    # thread stops running (review round 2, finding 1).
+                    self._source_disable_pending = True
+                    self._source_queue.put(("disable", None))
 
     def _judge_source(self, status: SourceStatus) -> SourceStatus:
         """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request."""
@@ -786,20 +810,15 @@ class LaserEngineRev1(QObject):
         self._source = None
 
     def _after_poll(self, status: EngineRev1Status) -> None:
-        """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter."""
+        """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter.
+        Review round 2, finding 1: the "still on but not wanted" reconcile moved to source_step's own tail (it needs to
+        keep running after the engine link is lost, which stops this method from being called at all). This method
+        keeps only the held-open shutter close, which needs the engine link and so must stay on the poll thread."""
         if self._source is None:
             return
         raw = self._latest_raw or {}
         if not self._source_want_on:
-            # Review fix 1: a failed disable must not be forgotten. If the source still reads emitting/starting and no
-            # disable is already queued, queue one now - retried every poll until it actually takes.
-            st = self._source_status
-            if st is not None and (st.ready or st.starting):
-                with self._source_lock:
-                    if not self._source_disable_pending:
-                        self._source_disable_pending = True
-                        self._source_queue.put(("disable", None))
-            self._set_held_shutter(False, raw)  # held-open mode: close it too, retried every poll while unwanted
+            self._set_held_shutter(False, raw)  # held-open mode: close it, retried every poll while unwanted
             return
         l3 = status.channels.get("L3")
         idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
