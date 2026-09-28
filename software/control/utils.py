@@ -14,7 +14,6 @@ import git
 from numpy import square, mean
 import numpy as np
 from scipy.ndimage import label, gaussian_filter
-from scipy import signal
 from skimage.registration import phase_cross_correlation
 import os
 from typing import Optional, Tuple, List, Callable
@@ -291,10 +290,7 @@ def find_spot_location(
         ValueError: If image is invalid, params has an unsupported key, or mode is incompatible with detected spots
     """
     # Input validation
-    if image is None or not isinstance(image, np.ndarray):
-        raise ValueError("Invalid input image")
-
-    if image.size == 0:
+    if image is None or not isinstance(image, np.ndarray) or image.size == 0:
         raise ValueError("Invalid input image")
 
     # Default parameters for connected component detection
@@ -316,7 +312,7 @@ def find_spot_location(
 
     try:
         # Apply Gaussian filter if requested
-        working_image = image.copy()
+        working_image = image
         if filter_sigma is not None and filter_sigma > 0:
             filtered = gaussian_filter(working_image.astype(float), sigma=filter_sigma)
             working_image = np.clip(filtered, 0, 255).astype(np.uint8)
@@ -350,25 +346,11 @@ def find_spot_location(
             if abs(cy - expected_row) > p["row_tolerance"]:
                 continue
 
-            # Aspect ratio filter (max of w/h or h/w, so always >= 1)
-            aspect_ratio = max(width / height, height / width) if height > 0 and width > 0 else float("inf")
-            if aspect_ratio > p["max_aspect_ratio"]:
+            # Aspect ratio filter (longer side over shorter side, so always >= 1)
+            if max(width, height) / min(width, height) > p["max_aspect_ratio"]:
                 continue
 
-            # Calculate mean intensity of this component for sorting
-            component_mask = labels == i
-            intensity = working_image[component_mask].mean()
-
-            valid_spots.append(
-                {
-                    "label": i,
-                    "col": cx,
-                    "row": cy,
-                    "area": area,
-                    "intensity": intensity,
-                    "mask": component_mask,
-                }
-            )
+            valid_spots.append({"label": i, "col": cx, "row": cy, "area": area})
 
         if len(valid_spots) == 0:
             raise ValueError("No valid spots detected after filtering")
@@ -392,10 +374,12 @@ def find_spot_location(
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 
-        # Calculate intensity-weighted centroid for sub-pixel accuracy
-        component_mask = selected_spot["mask"]
-        y_coords, x_coords = np.where(component_mask)
-        intensities = working_image[component_mask].astype(float)
+        # Calculate intensity-weighted centroid for sub-pixel accuracy, within the component's bounding box
+        left, top, width, height = stats[selected_spot["label"], cv2.CC_STAT_LEFT : cv2.CC_STAT_AREA]
+        bounding_box = np.s_[top : top + height, left : left + width]
+        component_mask = labels[bounding_box] == selected_spot["label"]
+        y_coords, x_coords = np.nonzero(component_mask)
+        intensities = working_image[bounding_box][component_mask].astype(float)
 
         # Subtract background (minimum intensity in component)
         intensities = intensities - intensities.min()
@@ -406,22 +390,12 @@ def find_spot_location(
             centroid_x = selected_spot["col"]
             centroid_y = selected_spot["row"]
         else:
-            centroid_x = (x_coords * intensities).sum() / sum_intensity
-            centroid_y = (y_coords * intensities).sum() / sum_intensity
+            centroid_x = ((x_coords + left) * intensities).sum() / sum_intensity
+            centroid_y = ((y_coords + top) * intensities).sum() / sum_intensity
 
         if debug_plot:
             _show_connected_components_debug_plot(
-                working_image,
-                binary,
-                labels,
-                num_labels,
-                valid_spots,
-                selected_spot,
-                centroid_x,
-                centroid_y,
-                expected_row,
-                p,
-                mode,
+                working_image, labels, valid_spots, selected_spot, centroid_x, centroid_y, p, mode
             )
 
         return (centroid_x, centroid_y)
@@ -435,20 +409,20 @@ def find_spot_location(
 
 def _show_connected_components_debug_plot(
     image: np.ndarray,
-    binary: np.ndarray,
     labels: np.ndarray,
-    num_labels: int,
     valid_spots: List[dict],
     selected_spot: dict,
     centroid_x: float,
     centroid_y: float,
-    expected_row: float,
     params: dict,
     mode: SpotDetectionMode,
 ) -> None:
     """Show debug visualization for connected components spot detection."""
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
+
+    num_labels = labels.max() + 1  # labels are 0 (background) to num_labels - 1
+    expected_row = image.shape[0] / 2.0
+    selected_mask = labels == selected_spot["label"]
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
 
@@ -464,7 +438,7 @@ def _show_connected_components_debug_plot(
 
     # Plot 2: Binary mask
     ax2 = axes[0, 1]
-    ax2.imshow(binary, cmap="gray")
+    ax2.imshow(labels > 0, cmap="gray")
     ax2.set_title(f"Binary Mask (threshold > {params['threshold']})")
 
     # Plot 3: Connected components with labels
@@ -499,14 +473,14 @@ def _show_connected_components_debug_plot(
     local_cy = centroid_y - y_start
     ax4.plot(local_cx, local_cy, "r+", markersize=20, markeredgewidth=2)
     # Show component boundary
-    zoomed_mask = selected_spot["mask"][y_start:y_end, x_start:x_end]
+    zoomed_mask = selected_mask[y_start:y_end, x_start:x_end]
     ax4.contour(zoomed_mask, colors="yellow", linewidths=1)
     ax4.set_title(f"Zoomed View - Mode: {mode.name}\nCentroid: ({centroid_x:.2f}, {centroid_y:.2f})")
 
     # Add info text
     spot_coords = ", ".join([f"({s['col']:.1f}, {s['row']:.1f})" for s in valid_spots])
     info_text = (
-        f"Selected spot: area={selected_spot['area']}, intensity={selected_spot['intensity']:.1f}\n"
+        f"Selected spot: area={selected_spot['area']}, intensity={image[selected_mask].mean():.1f}\n"
         f"All valid spots: [{spot_coords}]"
     )
     fig.text(0.5, 0.02, info_text, ha="center", fontsize=9, family="monospace")

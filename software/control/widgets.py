@@ -3271,11 +3271,7 @@ class LaserAutofocusSettingWidget(QWidget):
             "pixel_to_um_calibration_distance": self.spinboxes["pixel_to_um_calibration_distance"].value(),
             "laser_af_range": self.spinboxes["laser_af_range"].value(),
             "spot_detection_mode": self.spot_mode_combo.currentData(),
-            "cc_threshold": self.spinboxes["cc_threshold"].value(),
-            "cc_min_area": int(self.spinboxes["cc_min_area"].value()),
-            "cc_max_area": int(self.spinboxes["cc_max_area"].value()),
-            "cc_row_tolerance": self.spinboxes["cc_row_tolerance"].value(),
-            "cc_max_aspect_ratio": self.spinboxes["cc_max_aspect_ratio"].value(),
+            **self._spot_detection_settings(),
             "filter_sigma": self.spinboxes["filter_sigma"].value(),
             "focus_camera_exposure_time_ms": self.exposure_spinbox.value(),
             "focus_camera_analog_gain": self.analog_gain_spinbox.value(),
@@ -3286,6 +3282,16 @@ class LaserAutofocusSettingWidget(QWidget):
         self.signal_apply_settings.emit()
         self.update_threshold_button.setEnabled(True)
         self.update_calibration_label()
+
+    def _spot_detection_settings(self) -> dict:
+        """The connected component settings as entered, keyed by LaserAFConfig field."""
+        return {
+            "cc_threshold": self.spinboxes["cc_threshold"].value(),
+            "cc_min_area": int(self.spinboxes["cc_min_area"].value()),
+            "cc_max_area": int(self.spinboxes["cc_max_area"].value()),
+            "cc_row_tolerance": self.spinboxes["cc_row_tolerance"].value(),
+            "cc_max_aspect_ratio": self.spinboxes["cc_max_aspect_ratio"].value(),
+        }
 
     def update_threshold_settings(self):
         updates = {
@@ -3336,13 +3342,10 @@ class LaserAutofocusSettingWidget(QWidget):
 
     def run_spot_detection(self):
         """Run spot detection with current settings and emit results"""
-        params = {
-            "threshold": self.spinboxes["cc_threshold"].value(),
-            "min_area": int(self.spinboxes["cc_min_area"].value()),
-            "max_area": int(self.spinboxes["cc_max_area"].value()),
-            "row_tolerance": self.spinboxes["cc_row_tolerance"].value(),
-            "max_aspect_ratio": self.spinboxes["cc_max_aspect_ratio"].value(),
-        }
+        entered_settings = self.laserAutofocusController.laser_af_properties.model_copy(
+            update=self._spot_detection_settings()
+        )
+        params = entered_settings.spot_detection_params()
         mode = self.spot_mode_combo.currentData()
         sigma = self.spinboxes["filter_sigma"].value()
 
@@ -3351,7 +3354,7 @@ class LaserAutofocusSettingWidget(QWidget):
             try:
                 result = utils.find_spot_location(frame, mode=mode, params=params, filter_sigma=sigma, debug_plot=True)
                 if result is not None:
-                    x, y = result  # Unpack centroid (x, y)
+                    x, y = result
                     self.signal_laser_spot_location.emit(frame, x, y)
                 else:
                     raise Exception("No spot detection result returned")

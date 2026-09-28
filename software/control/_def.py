@@ -950,9 +950,8 @@ LASER_AF_FILTER_SIGMA = 1  # Sigma for Gaussian filter before spot detection
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
 
-LASER_AF_SEARCH_DOWN_FIRST = (
-    True  # If True, search downward (smaller z values) first then upward; if False, search upward first
-)
+# If True, search downward (smaller z values) first then upward; if False, search upward first
+LASER_AF_SEARCH_DOWN_FIRST = True
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False

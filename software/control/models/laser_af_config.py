@@ -116,6 +116,16 @@ class LaserAFConfig(BaseModel):
         """Set the spot detection mode from enum."""
         self.spot_detection_mode = mode
 
+    def spot_detection_params(self) -> dict:
+        """Connected component parameters, keyed the way utils.find_spot_location takes them."""
+        return {
+            "threshold": self.cc_threshold,
+            "min_area": self.cc_min_area,
+            "max_area": self.cc_max_area,
+            "row_tolerance": self.cc_row_tolerance,
+            "max_aspect_ratio": self.cc_max_aspect_ratio,
+        }
+
     @property
     def reference_image_cropped(self) -> Optional[np.ndarray]:
         """Convert stored base64 data back to numpy array."""
