@@ -5,9 +5,11 @@ control.objective_changer_constants: control._def loads it while it is still
 initializing, and control/models/__init__.py (like most of control.*) imports _def.
 """
 
+import ast
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -174,3 +176,110 @@ def to_xeryon_lists(config: ObjectivesConfig) -> Tuple[List[str], List[str]]:
 def serial_matches(recorded: str, current: str) -> bool:
     """Spec A §4.5, used by B and C: a serial counts only when one was recorded at calibration."""
     return recorded == "" or recorded == current
+
+
+def _as_name_list(value) -> List[str]:
+    """An ini-derived list of objective names; the shipped Xeryon ini gives a Python-literal string."""
+    if isinstance(value, str):
+        try:
+            value = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value]
+    return []
+
+
+def _as_slot_map(value) -> Dict[str, int]:
+    """An ini-derived objective -> slot map; tolerates a Python-literal string like _as_name_list."""
+    if isinstance(value, str):
+        try:
+            value = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            return {}
+    if isinstance(value, dict):
+        return {str(k): int(v) for k, v in value.items()}
+    return {}
+
+
+@dataclass
+class EditorRow:
+    """One row of the Objectives editor. Optics are None while blank; copy_from names the
+    mounted objective whose channel settings a newly added row copies (None for existing rows)."""
+
+    name: str
+    magnification: Optional[float]
+    na: Optional[float]
+    tube_lens_f_mm: Optional[float]
+    slot: Optional[int]
+    model: str = ""
+    serial: str = ""
+    copy_from: Optional[str] = None
+
+
+def _row_from_catalog(name, slot, catalog) -> EditorRow:
+    optics = catalog.get(name)
+    if optics is None:
+        return EditorRow(name, None, None, None, slot)
+    return EditorRow(name, optics["magnification"], optics["NA"], optics["tube_lens_f_mm"], slot)
+
+
+def seed_rows(kind, *, catalog, turret_positions, xeryon_pos_1, xeryon_pos_2) -> List[EditorRow]:
+    """First-open rows when no objectives.yaml exists (spec A §5)."""
+    turret_positions = _as_slot_map(turret_positions)
+    xeryon_pos_1 = _as_name_list(xeryon_pos_1)
+    xeryon_pos_2 = _as_name_list(xeryon_pos_2)
+
+    if kind is ChangerKind.NIMOTION_TURRET:
+        pairs = sorted(turret_positions.items(), key=lambda item: item[1])
+    elif kind is ChangerKind.XERYON:
+        pairs = [(name, 1) for name in xeryon_pos_1] + [(name, 2) for name in xeryon_pos_2]
+    else:
+        pairs = [(name, None) for name in catalog]
+    return [_row_from_catalog(name, slot, catalog) for name, slot in pairs]
+
+
+def config_to_rows(config: ObjectivesConfig) -> List[EditorRow]:
+    return [
+        EditorRow(o.name, o.magnification, o.na, o.tube_lens_f_mm, o.slot, o.model, o.serial) for o in config.objectives
+    ]
+
+
+def rows_to_config(kind: ChangerKind, rows: List[EditorRow]) -> ObjectivesConfig:
+    return parse_objectives_config(
+        {
+            "version": 1,
+            "changer": {"kind": kind.value},
+            "objectives": [
+                {
+                    "name": r.name,
+                    "magnification": r.magnification,
+                    "na": r.na,
+                    "tube_lens_f_mm": r.tube_lens_f_mm,
+                    "slot": r.slot,
+                    "model": r.model,
+                    "serial": r.serial,
+                }
+                for r in rows
+            ],
+        }
+    )
+
+
+def slot_conflicts(rows: List[EditorRow]) -> Set[int]:
+    """Indexes of rows whose slot another row also uses."""
+    by_slot: Dict[int, List[int]] = {}
+    for i, row in enumerate(rows):
+        if row.slot is not None:
+            by_slot.setdefault(row.slot, []).append(i)
+    return {i for indexes in by_slot.values() if len(indexes) > 1 for i in indexes}
+
+
+def nearest_by_magnification(magnification: Optional[float], rows: List[EditorRow]) -> Optional[str]:
+    """The row with optics closest in magnification (the lowest one when magnification is None)."""
+    candidates = [r for r in rows if r.magnification is not None]
+    if not candidates:
+        return None
+    if magnification is None:
+        return min(candidates, key=lambda r: r.magnification).name
+    return min(candidates, key=lambda r: abs(r.magnification - magnification)).name
