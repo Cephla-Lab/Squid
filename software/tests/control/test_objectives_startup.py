@@ -141,6 +141,18 @@ class TestWithYaml:
         assert run.report is None
         assert "objectives.yaml" in run.output and field in run.output and "delete" in run.output
 
+    def test_default_objective_fallback_wording_is_true_for_both_cases(self, tmp_path):
+        # No cache file at all: there is nothing recorded to call "not mounted".
+        no_cache = run_def(tmp_path / "no_cache", objectives_yaml=NONE_YAML_WITHOUT_20X, cache_text=None)
+        assert no_cache.returncode == 0, no_cache.output
+        assert "no usable cached default objective" in no_cache.output
+        assert "is not mounted" not in no_cache.output
+
+        # A cache exists but names an objective that is not mounted.
+        not_mounted = run_def(tmp_path / "not_mounted", objectives_yaml=NONE_YAML_WITHOUT_20X, cache_text=_cache("20x"))
+        assert not_mounted.returncode == 0, not_mounted.output
+        assert "the cached default objective is not mounted" in not_mounted.output
+
     def test_lookups_with_yaml(self, tmp_path):
         run = run_def(
             tmp_path,

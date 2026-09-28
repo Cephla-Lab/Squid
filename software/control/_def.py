@@ -1518,12 +1518,14 @@ except _objectives_config.ObjectivesConfigError as e:
     sys.exit(1)
 
 
-def _default_objective_fallback():
-    """Today's literal "20x" without objectives.yaml; with it, the lowest-magnification mounted objective."""
+def _default_objective_fallback(reason="the cached default objective is not mounted"):
+    """Today's literal "20x" without objectives.yaml; with it, the lowest-magnification mounted
+    objective. `reason` must be true for the caller's situation (e.g. there may be no cache file
+    at all, in which case nothing was "not mounted")."""
     if OBJECTIVES_CONFIG is None:
         return "20x"
     fallback = min(OBJECTIVES, key=lambda name: OBJECTIVES[name]["magnification"])
-    log.warning(f"the cached default objective is not mounted; starting on {fallback}")
+    log.warning(f"{reason}; starting on {fallback}")
     return fallback
 
 
@@ -1573,7 +1575,7 @@ try:
         if WELLPLATE_FORMAT not in WELLPLATE_FORMAT_SETTINGS:
             WELLPLATE_FORMAT = "96 well plate"
 except (FileNotFoundError, json.JSONDecodeError):
-    DEFAULT_OBJECTIVE = _default_objective_fallback()
+    DEFAULT_OBJECTIVE = _default_objective_fallback("no usable cached default objective")
     WELLPLATE_FORMAT = "96 well plate"
 
 NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
