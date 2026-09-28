@@ -268,6 +268,10 @@ def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
 
     monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
+    # An objective changer retracts Z when the microscope starts, which the V-308 refuses until it
+    # is referenced, so this can't depend on whether the machine's .ini has one.
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
     # skip_init leaves the V-308 unreferenced (reference=...and not skip_init); reference before moving.
