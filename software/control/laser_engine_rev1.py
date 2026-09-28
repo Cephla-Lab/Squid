@@ -136,6 +136,24 @@ def calibrated_drive_percent(lut: Tuple[np.ndarray, np.ndarray], percent: float)
     return float(np.clip(np.interp(np.clip(percent, 0.0, 100.0), power_pct, drive_pct), 0.0, 100.0))
 
 
+AOM_CAL_FILE = "560_aom.csv"  # columns "AOM Volts", "Transmission" (any scale)
+
+
+def load_aom_calibration(path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """(relative transmission 0..1 ascending, AOM volts), from 0 V up to the voltage of peak transmission; None if unusable."""
+    try:
+        data = pd.read_csv(path).sort_values("AOM Volts")
+        volts = data["AOM Volts"].to_numpy(dtype=float)
+        trans = data["Transmission"].to_numpy(dtype=float)
+    except (OSError, KeyError, ValueError):
+        return None
+    if len(volts) < 2 or trans.max() <= 0:
+        return None
+    peak = int(np.argmax(trans))
+    rising = np.maximum.accumulate(trans[: peak + 1]) / trans.max()  # np.interp needs ascending x
+    return rising, volts[: peak + 1]
+
+
 class LaserEngineRev1(QObject):
     status_updated = Signal(object)  # EngineRev1Status
     connection_lost = Signal(str)
@@ -213,6 +231,8 @@ class LaserEngineRev1(QObject):
         self._aom_volts: Optional[float] = None  # line 3 set-point = the AOM analog input; None = full transmission
         self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
         self._source_disable_pending = False  # a disable is queued and not yet executed (no duplicates; review fix 1)
+        self._aom_cal: Optional[Tuple[np.ndarray, np.ndarray]] = None
+        self._aom_cal_read = False
 
     # ---- lifecycle -------------------------------------------------------------------------------------------------
     @property
@@ -921,20 +941,49 @@ class LaserEngineRev1(QObject):
             elif self._source_want_on:
                 self._source_queue.put(("power", mw))
 
-    def _aom_full_volts(self) -> float:
-        return AOM_FULL_SCALE_V  # Task 9: the calibrated peak-transmission voltage
-
     def _source_power_for(self, mw: float) -> float:
-        """Laser power for a request. Below the source's minimum: the minimum, with one warning (Task 9: or dim with the AOM)."""
+        """Laser power for a request. Below the source's minimum: dim with the AOM (option on + calibrated), else clamp + warn once."""
         floor = self._source.min_power_mw
-        if mw >= floor:
-            return mw
-        if not self._clamp_warned:
-            self._clamp_warned = True
-            self._notice(
-                f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW - running at the minimum"
-            )
-        return floor
+        cal = self._aom_calibration()
+        if cal is None:
+            if mw >= floor:
+                return mw
+            if not self._clamp_warned:
+                self._clamp_warned = True
+                self._notice(
+                    f"560 nm: {mw:.0f} mW requested is below the 560 nm minimum of {floor:.0f} mW - running at the minimum"
+                )
+            return floor
+        trans, volts = cal
+        self._set_aom_volts(
+            float(np.interp(min(1.0, max(0.0, mw / floor)), trans, volts))
+        )  # full transmission at >= floor
+        return max(mw, floor)
+
+    def _aom_calibration(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+        if not self.options.aom_attenuation:
+            return None
+        if not self._aom_cal_read:
+            self._aom_cal_read = True
+            path = self._calibration_dir / AOM_CAL_FILE
+            self._aom_cal = load_aom_calibration(path)
+            if self._aom_cal is None:
+                self._notice(
+                    f"AOM attenuation is on but {path} is missing or unreadable: below-minimum 560 requests run at the minimum"
+                )
+        return self._aom_cal
+
+    def _aom_full_volts(self) -> float:
+        cal = self._aom_calibration()
+        return float(cal[1][-1]) if cal is not None else AOM_FULL_SCALE_V  # the peak-transmission voltage
+
+    def _set_aom_volts(self, volts: float) -> None:
+        now = self._aom_volts if self._aom_volts is not None else self._aom_full_volts()
+        if abs(volts - now) < 1e-3:
+            return
+        self._aom_volts = volts
+        self._cmd(f"LINE3:SET {volts:.3f}")
+        self._wait_line_settled(3)  # the AOM input ramps like any line set-point (returns at once while line 3 is off)
 
     def set_source_idle_off_min(self, minutes: float) -> None:
         """Tab control, this session only (the .ini sets the default). 0 = 24 h."""
