@@ -17,6 +17,7 @@ from squid.objective_calibration.hardware import CalibrationError, check_xy_targ
 from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
 
 SETTLE_S = 0.15  # spec B §5.1: settle after the last XY move, before the snap
+_sleep = time.sleep  # module-level so tests can observe the settles
 
 
 def camera_key(camera_config) -> str:
@@ -51,7 +52,7 @@ class MicroscopeCalibrationHardware:
         self._start_mode = self._live.currentConfiguration
         self._mode_key: Optional[Tuple[str, str]] = None  # (objective, channel) whose settings are applied
         self._frame_shape: Optional[Tuple[int, int]] = None
-        self._settle_pending = False
+        self._settle_s = 0.0  # settle owed before the next snap, by the moves since the last one
 
     @property
     def has_changer(self) -> bool:
@@ -83,6 +84,8 @@ class MicroscopeCalibrationHardware:
     def move_z_to_um(self, z_um: float) -> None:
         check_z_target(self, z_um)
         self._stage.move_z_to(z_um / 1000.0, blocking=True)
+        # The MCU reports done when the motor stops; the app settles Z before every image.
+        self._settle_s = max(self._settle_s, control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def get_xy_um(self) -> Tuple[float, float]:
         pos = self._stage.get_pos()
@@ -92,7 +95,7 @@ class MicroscopeCalibrationHardware:
         check_xy_target(self, x_um, y_um)
         self._stage.move_x_to(x_um / 1000.0, blocking=True)
         self._stage.move_y_to(y_um / 1000.0, blocking=True)
-        self._settle_pending = True
+        self._settle_s = max(self._settle_s, SETTLE_S)
 
     def z_limits_um(self) -> Tuple[float, float]:
         axis = self._stage.get_config().Z_AXIS
@@ -111,6 +114,11 @@ class MicroscopeCalibrationHardware:
     def snap(self, objective: str, channel: str) -> np.ndarray:
         if objective != self._objective:
             raise RuntimeError(f"snap for {objective} while {self._objective} is in place")
+        if self._live.trigger_mode == control._def.TriggerMode.CONTINUOUS:
+            # acquire_image neither triggers nor lights the sample in this mode: every frame would be dark.
+            raise CalibrationError(
+                "Continuous trigger mode is not supported for calibration; set the trigger mode to Software or Hardware."
+            )
         if self._mode_key != (objective, channel):
             config = self._live.get_channel_by_name(objective, channel)
             if config is None:
@@ -127,11 +135,12 @@ class MicroscopeCalibrationHardware:
             self._mode_key = (objective, channel)
         if not self._camera.get_is_streaming():
             self._camera.start_streaming()
-        if self._settle_pending:
-            time.sleep(SETTLE_S)
-            self._settle_pending = False
+        if self._settle_s:
+            _sleep(self._settle_s)
+            self._settle_s = 0.0
         image = self._microscope.acquire_image()  # raises RuntimeError when the camera returns no frame
-        return image.mean(axis=2) if image.ndim == 3 else image
+        # float32, not numpy's float64: the fine focus metric's cv2.Laplacian refuses a float64 source.
+        return image.mean(axis=2, dtype=np.float32) if image.ndim == 3 else image
 
     def frame_shape(self, channel: str) -> Tuple[int, int]:
         """Snaps one frame at the current objective the first time: before "Cycle 1" is logged."""

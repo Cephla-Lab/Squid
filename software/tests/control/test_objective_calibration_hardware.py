@@ -1,6 +1,9 @@
+import numpy as np
 import pytest
 
+import control._def
 import control.microscope
+import control.objective_calibration_hardware as ocht
 import squid.config
 from control._def import FocusMeasureOperator
 from control.objective_calibration_hardware import (
@@ -181,3 +184,40 @@ def test_simulation_hardware_has_something_to_measure():
     for spec in specs:
         assert hw.objectives[spec.name].pixel_um == pytest.approx(spec.nominal_px_um, rel=0.031)
         assert hw.objectives[spec.name].pixel_um != spec.nominal_px_um
+
+
+def _objective_and_channel(scope):
+    objective = scope.objective_store.current_objective
+    return objective, scope.live_controller.get_channels(objective)[0].name
+
+
+def test_a_colour_frame_becomes_a_float32_mono_frame_the_fine_metric_accepts(scope, monkeypatch):
+    rgb = np.random.default_rng(0).integers(0, 255, (60, 80, 3), dtype=np.uint8)
+    monkeypatch.setattr(scope, "acquire_image", lambda: rgb)
+    frame = _hw(scope).snap(*_objective_and_channel(scope))
+    assert frame.shape == (60, 80) and frame.dtype == np.float32
+    calculate_focus_measure(frame, FocusMeasureOperator.LAPE)  # cv2.Laplacian refuses a float64 source
+
+
+def test_continuous_trigger_mode_is_refused_loudly(scope):
+    scope.live_controller.trigger_mode = control._def.TriggerMode.CONTINUOUS
+    with pytest.raises(CalibrationError, match="Continuous trigger mode is not supported"):
+        _hw(scope).snap(*_objective_and_channel(scope))
+
+
+def test_the_next_snap_waits_for_the_stage_to_settle(scope, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(ocht, "_sleep", sleeps.append)
+    hw = _hw(scope)
+    objective, channel = _objective_and_channel(scope)
+    hw.snap(objective, channel)
+    assert sleeps == []  # nothing moved
+    z_low, z_high = hw.z_limits_um()
+    hw.move_z_to_um((z_low + z_high) / 2)
+    hw.snap(objective, channel)
+    assert sleeps == [control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000]
+    (x_low, x_high), (y_low, y_high) = hw.xy_limits_um()
+    hw.move_xy_to_um((x_low + x_high) / 2, (y_low + y_high) / 2)
+    hw.move_z_to_um((z_low + z_high) / 2 + 5.0)
+    hw.snap(objective, channel)
+    assert sleeps[-1] == max(ocht.SETTLE_S, control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
