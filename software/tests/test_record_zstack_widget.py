@@ -2186,6 +2186,65 @@ def test_recording_dz_hidden_when_nz_is_one(qtbot, simulated_widget_deps):
     assert w.label_recording_dz.isHidden()
 
 
+def test_collapsed_recording_section_stays_collapsed(qtbot, simulated_widget_deps):
+    """With the Recording phase unchecked its fields are hidden, and changing Laser AF or Nz
+    does not bring the Z offset or dz back; expanding shows the fields those settings call for."""
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.checkbox_recording.setChecked(False)
+    assert w.entry_fps.isHidden()
+
+    w.checkbox_laser_af.setChecked(True)
+    assert w.entry_recording_bottom_z.isHidden()
+    assert w.label_recording_bottom_z.isHidden()
+
+    w.entry_recording_Nz.setValue(3)
+    assert w.entry_recording_dz.isHidden()
+    assert w.label_recording_dz.isHidden()
+
+    w.checkbox_recording.setChecked(True)
+    assert not w.entry_recording_bottom_z.isHidden()
+    assert not w.label_recording_bottom_z.isHidden()
+    assert not w.entry_recording_dz.isHidden()
+    assert not w.label_recording_dz.isHidden()
+
+    # Expanding does not show what the settings do not call for.
+    w.checkbox_recording.setChecked(False)
+    w.checkbox_laser_af.setChecked(False)
+    w.entry_recording_Nz.setValue(1)
+    w.checkbox_recording.setChecked(True)
+    assert not w.entry_fps.isHidden()
+    assert w.entry_recording_bottom_z.isHidden()
+    assert w.entry_recording_dz.isHidden()
+
+
+def test_apply_yaml_settings_keeps_a_disabled_recording_section_collapsed(qtbot, simulated_widget_deps):
+    """Loading settings with the recording phase off, Laser AF on and Nz > 1 leaves the
+    Recording section collapsed, Z offset and dz included."""
+    from control.acquisition_yaml_loader import RecordZStackYAMLData
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+
+    w._apply_yaml_settings(
+        RecordZStackYAMLData(
+            widget_type="record_zstack", recording_enabled=False, zstack_enabled=True, laser_af=True, recording_nz=3
+        )
+    )
+
+    assert w.checkbox_recording.isChecked() is False
+    assert w.checkbox_laser_af.isChecked() is True
+    assert w.entry_recording_Nz.value() == 3
+    assert w.entry_fps.isHidden()
+    assert w.entry_recording_bottom_z.isHidden()
+    assert w.label_recording_bottom_z.isHidden()
+    assert w.entry_recording_dz.isHidden()
+    assert w.label_recording_dz.isHidden()
+
+
 def test_recording_offset_caption_and_build_parameters(qtbot, simulated_widget_deps):
     from control.widgets import RecordZStackMultiPointWidget
 
