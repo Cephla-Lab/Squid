@@ -299,3 +299,34 @@ def test_a_periodic_patch_is_never_measured_wrong_at_equal_magnification(period,
     except OffsetsError:
         return  # refused: acceptable
     assert result.offsets_um["20x-b"] == pytest.approx(offset, abs=0.5)  # never a wrong offset
+
+
+def _patch_beyond_the_search(px_low, axis, period, texture_amp):
+    """A grid patch of `period` over the matched template (0.35 of the view either side of its centre, not
+    the whole view) at an alias half way to the search's edge and at the truth, one period further: beyond
+    the search of the fake's 256 x 192 px frame, with the higher objective at 0.32 um/px."""
+    n, n_perp = (256, 192) if axis == 0 else (192, 256)
+    view, view_perp = n * 0.32, n_perp * 0.32
+    alias = 0.5 * (n * px_low - min(view, 0.6 * n * px_low)) / 2
+    truth = alias + period
+    low, high, perp = alias - 0.35 * view - 2.0, truth + 0.35 * view + 2.0, 0.35 * view_perp + 2.0
+    rect = (low, high, -perp, perp) if axis == 0 else (-perp, perp, low, high)
+    scene = FakeGridPatchScene(period, rect, seed=1, texture_amp=texture_amp)
+    return scene, ((truth, 0.0) if axis == 0 else (0.0, truth))
+
+
+@pytest.mark.parametrize("noise", [0.0, 0.002])
+@pytest.mark.parametrize("texture_amp", [0.0, 0.1])
+@pytest.mark.parametrize("period", [36.0, 44.0, 52.0])
+@pytest.mark.parametrize("axis", [0, 1], ids=["x", "y"])
+@pytest.mark.parametrize("px_low", [0.32, 0.40], ids=["20x-20x", "16x-20x"])
+def test_a_repeat_longer_than_half_the_template_is_refused_by_the_rest_of_the_view(
+    px_low, axis, period, texture_amp, noise
+):
+    """The review of 2dbc53d0: the patch's period exceeds half the matched template, so neither the
+    template's self-similarity nor the diluted frames' see it, and the truth lies beyond the search. The
+    template matches the patch one period off; the rest of the view, outside the patch, does not."""
+    scene, offset = _patch_beyond_the_search(px_low, axis, period, texture_amp)
+    images, view, ordered = _pair({"20x-a": px_low, "20x-b": 0.32}, offset, scene=scene, noise=noise)
+    with pytest.raises(OffsetsError):  # the truth is not searched: any offset measured would be wrong
+        register_offsets(images, view, ordered)

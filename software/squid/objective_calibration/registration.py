@@ -6,6 +6,7 @@ positive. This is cv2.phaseCorrelate(ref, img)'s order. skimage.registration.pha
 used elsewhere in the repo (control/utils.py), returns the opposite sign; do not mix them.
 """
 
+import math
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -69,7 +70,8 @@ def overlap_crops(ref, img, shift_px: Tuple[int, int]):
 # every side: such a pair measures offsets up to SEARCH_MARGIN of the reference's field of view per axis
 # (Match.search_px). The limit in um follows from the frame: 2048 px at 0.376 um/px, for example, gives
 # ±154 um. A best match on the border of the search area is refused (Match.at_edge); an offset beyond it
-# whose match is not on the border is refused by the other gates, a periodic sample by its self-similarity.
+# whose match is not on the border is refused by the other gates: a periodic sample by its self-similarity,
+# and a local repeat by the rest of the view, which must match too (Match.surround_score).
 SEARCH_MARGIN = 0.2
 # A frame whose autocorrelation has a local maximum this high outside the central peak's lobe repeats
 # itself at that shift: an offset cannot be told apart from one a period away, whatever the search area
@@ -109,6 +111,9 @@ class Match:
     self_similarity: Optional[SelfSimilarity]
     open_lobe: Optional[OpenLobe]  # the image's, else the view's; None when both central peaks are isolated
     search_px: Tuple[float, float]  # the largest |dx| and |dy| the search area holds (on its border)
+    # When the template is a crop of the view: the correlation, at the match, of the rest of the view with
+    # the image (_surround_score). None when the template is the whole view.
+    surround_score: Optional[float] = None
 
 
 def _quadratic_peak(surface: np.ndarray, iy: int, ix: int) -> Tuple[float, float]:
@@ -257,6 +262,36 @@ def self_similarity(image_hp: np.ndarray) -> Tuple[Optional[SelfSimilarity], Opt
     return SelfSimilarity(best, (int(cols[nearest] - cx), int(rows[nearest] - cy))), open_lobe
 
 
+def _surround_score(img, view, scale: float, sigma: float, dx: float, dy: float, footprint) -> Optional[float]:
+    """The normalized correlation between the image and the whole view, resampled and placed at the match
+    (dx, dy), over their overlap outside the matched template: the part of the view a cropped search did
+    not use. A local repeat matches only where it repeats, a true match everywhere. Both are high-passed on
+    the same rectangle, so a true match agrees up to its borders. None when the overlap holds nothing
+    outside the template. footprint = ((x0, y0), (x1, y1)): the template's pixels in the image, end exclusive."""
+    h, w = img.shape
+    rows, cols = view.shape
+    cx, cy = (w - 1) / 2 + dx, (h - 1) / 2 + dy  # the view's centre in the image
+    half_x, half_y = scale * (cols - 1) / 2, scale * (rows - 1) / 2
+    x0, x1 = max(0, math.ceil(cx - half_x)), min(w - 1, math.floor(cx + half_x))
+    y0, y1 = max(0, math.ceil(cy - half_y)), min(h - 1, math.floor(cy + half_y))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    xs = ((np.arange(x0, x1 + 1) - cx) / scale + (cols - 1) / 2).astype(np.float32)
+    ys = ((np.arange(y0, y1 + 1) - cy) / scale + (rows - 1) / 2).astype(np.float32)
+    mapx, mapy = np.meshgrid(xs, ys)
+    smoothed = cv2.GaussianBlur(view, (0, 0), 0.5 / scale) if scale < 1 else view  # as _resample_template
+    placed = cv2.remap(smoothed, mapx, mapy, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+    a, b = high_pass(img[y0 : y1 + 1, x0 : x1 + 1], sigma), high_pass(placed, sigma)
+    (fx0, fy0), (fx1, fy1) = footprint
+    outside = np.ones(a.shape, dtype=bool)
+    outside[max(0, fy0 - y0) : max(0, fy1 - y0), max(0, fx0 - x0) : max(0, fx1 - x0)] = False
+    if not outside.any():
+        return None
+    a, b = a[outside] - a[outside].mean(), b[outside] - b[outside].mean()
+    spread = math.sqrt(float((a * a).sum()) * float((b * b).sum()))
+    return float((a * b).sum()) / spread if spread > 0 else 0.0
+
+
 def match_template(image, template_image, scale: float) -> Match:
     """Where the higher-magnification `template_image` appears in `image` (spec C §6.4).
 
@@ -268,9 +303,10 @@ def match_template(image, template_image, scale: float) -> Match:
     specimen; the tests pin it). `runner_up_ratio` compares the peak with the best distinct peak
     outside its own lobe: near 1 for a periodic or featureless scene, None when there is none. The
     search sees only the translations it holds, so `self_similarity` measures, on the whole image and
-    the whole resampled view, whether the sample repeats at any translation up to half their size (a
-    cropped template can only raise it past the limit), and `open_lobe` whether their central peak can
-    be isolated at all.
+    the whole resampled view, whether the sample repeats at any translation up to half their size, and
+    `open_lobe` whether their central peak can be isolated at all. A cropped template's `surround_score`
+    checks the rest of the view at the match: a periodic patch that fills the template but not the frames
+    is diluted in their self-similarity, and matches one period off only inside the patch.
     """
     img = np.asarray(image, dtype=np.float32)
     view = np.asarray(template_image, dtype=np.float32)
@@ -292,14 +328,11 @@ def match_template(image, template_image, scale: float) -> Match:
     whole_view = (max(2, int(round(view.shape[0] * scale))), max(2, int(round(view.shape[1] * scale))))
     frames = [self_similarity(f) for f in (img_hp, high_pass(_resample_template(view, scale, whole_view), sigma))]
     repeat = max((s for s, _ in frames if s is not None), key=lambda s: s.value, default=None)
-    if (th, tw) != whole_view and repeat is not None and repeat.value < MAX_SELF_SIMILARITY:
-        # A cropped template (equal or near-equal magnifications) can only escalate the frames' verdict: a
-        # periodic patch that fills it but not the whole frames is diluted in the frames' self-similarity
-        # (the final review of C1). The frames' better-sampled result stays whenever it already decides.
-        template_repeat = self_similarity(tpl_hp)[0]
-        if template_repeat is not None and template_repeat.value >= MAX_SELF_SIMILARITY:
-            repeat = template_repeat
     open_lobe = frames[0][1] or frames[1][1]
     dx = px + (tw - 1) / 2 - (w - 1) / 2
     dy = py + (th - 1) / 2 - (h - 1) / 2
-    return Match(float(dx), float(dy), score, ratio, at_edge, repeat, open_lobe, ((w - tw) / 2, (h - th) / 2))
+    surround = None
+    if (th, tw) != whole_view:
+        surround = _surround_score(img, view, scale, sigma, dx, dy, ((ix, iy), (ix + tw, iy + th)))
+    search = ((w - tw) / 2, (h - th) / 2)
+    return Match(float(dx), float(dy), score, ratio, at_edge, repeat, open_lobe, search, surround)

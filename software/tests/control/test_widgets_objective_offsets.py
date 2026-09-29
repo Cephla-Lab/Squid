@@ -13,7 +13,7 @@ from control.models.objective_calibration_config import ImageTransform, build_pi
 from control.utils import calculate_focus_measure
 from control.widgets_objective_calibration import ORIENTATION_MESSAGE, ObjectiveCalibrationDialog
 from squid.objective_calibration.engine import ObjectiveSpec, PixelSizeSummary
-from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
+from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeGridPatchScene, FakeObjective, FakeScene
 
 SPECS = [ObjectiveSpec("4x", 4, 0.13, 1.625), ObjectiveSpec("10x", 10, 0.3, 0.65), ObjectiveSpec("20x", 20, 0.8, 0.325)]
 DECLARED = {
@@ -355,3 +355,58 @@ def test_a_run_whose_offsets_fail_says_so_and_keeps_the_saved_ones(qtbot, tmp_pa
     assert "saved offsets are unchanged" in again.label_result.text(), again.label_result.text()
     after = _saved(tmp_path).objectives["20x"].offset
     assert (after.dx_um, after.dy_um, after.dz_um) == (before.dx_um, before.dy_um, before.dz_um)
+
+
+@pytest.mark.parametrize("noise", [0.0, 0.0002])
+def test_a_repeat_beyond_the_search_is_never_saved_as_a_valid_offset(qtbot, tmp_path, noise):
+    """The review of 2dbc53d0, through the real dialog and save: two 20x objectives 28 µm apart, beyond
+    their ±16 µm search, over a 28 µm grid patch with a weak texture everywhere to focus on. Three
+    offsets-only cycles matched the patch one period off and saved dx 0.07 µm as "Z valid, XY valid"."""
+    names = ["20x-air", "20x-long"]
+    objectives = {
+        "20x-air": FakeObjective("20x-air", 20, 0.4, pixel_um=0.32),
+        "20x-long": FakeObjective("20x-long", 20, 0.4, pixel_um=0.32, parcentric_um=(28.0, 0.0), z_focus_um=3.0),
+    }
+    scene = FakeGridPatchScene(28.0, (-30.0, 50.0, -25.0, 25.0), grid_amp=0.5, seed=1, texture_amp=0.03)
+    hw = FakeCalibrationHardware(objectives, scene, noise=noise, microstep_um=0.0)
+    declared = {name: dict(DECLARED["20x"], na=0.4) for name in names}
+    repo = ConfigRepository(base_path=tmp_path)
+    records = {}
+    for name in names:
+        summary = PixelSizeSummary(name, 3, 0.32, 0.001, 0.32 * np.eye(2), 0.0, np.eye(2), True, 1.0, 0.1)
+        records[name] = build_pixel_record(
+            summary,
+            measured_at="2026-09-29T09:00:00",
+            camera_key=hw.camera_key(),
+            unbinned_sensor_pixel_um=6.5,
+            binned_sensor_pixel_um=6.5,
+            binning=1,
+            image_transform=ImageTransform(),
+            tube_lens_mm=180.0,
+            declared=declared[name],
+        )
+    repo.save_objective_calibration(merge_pixel_records(None, records))
+    dialog = ObjectiveCalibrationDialog(
+        hw,
+        [ObjectiveSpec(name, 20.0, 0.4, 0.32) for name in names],
+        ["BF"],
+        repo,
+        tube_lens_mm=180.0,
+        get_declared=lambda name: declared[name],
+        fine_metric=lape,
+        get_mounting=lambda name: ("nimotion_turret", names.index(name) + 1),
+        pos2_offset_um=0.0,
+    )
+    qtbot.addWidget(dialog)
+    dialog.spin_cycles.setValue(3)
+    dialog.spin_range.setValue(20.0)
+    dialog.checkbox_offsets.setChecked(True)
+    dialog.checkbox_pixel_size.setChecked(False)
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    if not dialog.offsets:  # refused
+        assert not dialog.button_apply.isEnabled()
+        return
+    dialog.button_apply.click()
+    saved = repo.get_objective_calibration().objectives["20x-long"].offset
+    assert saved.dx_um is None or saved.dx_um == pytest.approx(28.0, abs=3.0), dialog.label_offsets.text()

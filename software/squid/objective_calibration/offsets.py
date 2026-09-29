@@ -43,6 +43,7 @@ class PairResult:
     range_um: Optional[Tuple[float, float]] = None  # the largest |dx|, |dy| the search could measure, in um
     closure_error_um: Optional[float] = None  # a closure pair's |d(ref->i) + d(i->j) - d(ref->j)|
     message: str = ""  # a closure warning, or why the pair was not measured
+    surround_score: Optional[float] = None  # a cropped template's rest of the view (Match.surround_score)
 
 
 @dataclass
@@ -110,6 +111,15 @@ def match_failure(lower: str, higher: str, match: Match, px_um: float) -> Option
             f"offset may be larger than it can measure (±{x_um:.1f} µm in x, ±{y_um:.1f} µm in y on this frame); "
             "check that both objectives are seated."
         )
+    if match.surround_score is not None and match.surround_score < MIN_MATCH_SCORE:
+        x_um, y_um = (px * px_um for px in match.search_px)
+        return (
+            f"The match between {lower} and {higher} holds only inside the matched area ({measured}; the rest "
+            f"of the view {match.surround_score:.2f}, need {MIN_MATCH_SCORE}): the sample may repeat there, or "
+            f"their offset may be larger than this pair can measure (±{x_um:.1f} µm in x, ±{y_um:.1f} µm in y "
+            "on this frame). Use a sample with varied texture in both directions and check that both objectives "
+            "are seated."
+        )
     return None
 
 
@@ -124,6 +134,7 @@ def _measured(lower: str, higher: str, match: Match, diff: np.ndarray, px_um: fl
         match.runner_up_ratio,
         None if match.self_similarity is None else match.self_similarity.value,
         (match.search_px[0] * px_um, match.search_px[1] * px_um),
+        surround_score=match.surround_score,
     )
 
 
@@ -373,7 +384,8 @@ def _uniqueness(pair: PairResult) -> str:
     x_um, y_um = pair.range_um
     return (
         f"runner-up {_ratio(pair.runner_up_ratio)}, self-similarity {_ratio(pair.self_similarity)}, "
-        f"measurable to ±{x_um:.1f} µm in x and ±{y_um:.1f} µm in y"
+        + ("" if pair.surround_score is None else f"rest of the view {pair.surround_score:.3f}, ")
+        + f"measurable to ±{x_um:.1f} µm in x and ±{y_um:.1f} µm in y"
     )
 
 
