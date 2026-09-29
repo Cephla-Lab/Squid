@@ -1155,6 +1155,9 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.recordZStackController.acquisition_finished.connect(self.recordZStackWidget.acquisition_is_finished)
 
+        if self.fluidics is not None:
+            self._setup_fluidics_widgets()
+
         self.setupRecordTabWidget()
         self.setupCameraTabWidget()
 
@@ -1608,38 +1611,15 @@ class HighContentScreeningGui(QMainWindow):
         if not self.live_only_mode:
             self.imageDisplayTabs.currentChanged.connect(self.onDisplayTabChanged)
 
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.multipointController.signal_current_configuration.connect(self.napariLiveWidget.update_ui_for_mode)
-            self.autofocusController.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True)
-            )
-            self.streamHandler.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-            )
-            self.multipointController.image_to_display.connect(
-                lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-            )
-            if self.recordZStackController is not None:
-                self.recordZStackController.image_to_display.connect(
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False)
-                )
-            self.napariLiveWidget.signal_coordinates_clicked.connect(self.move_from_click_image)
-            self.liveControlWidget.signal_live_configuration.connect(self.napariLiveWidget.set_live_configuration)
-
-            if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napariLiveWidget.signal_newExposureTime.connect(self.cameraSettingWidget.set_exposure_time)
-                self.napariLiveWidget.signal_newAnalogGain.connect(self.cameraSettingWidget.set_analog_gain)
-                self.napariLiveWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-        else:
-            self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
-            self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            if self.recordZStackController is not None:
-                self.recordZStackController.image_to_display.connect(self.imageDisplayWindow.display_image)
-            self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
-            self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
-            self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
+        self.streamHandler.image_to_display.connect(self.imageDisplay.enqueue)
+        self.imageDisplay.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.autofocusController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.multipointController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        if self.recordZStackController is not None:
+            self.recordZStackController.image_to_display.connect(self.imageDisplayWindow.display_image)
+        self.liveControlWidget.signal_autoLevelSetting.connect(self.imageDisplayWindow.set_autolevel)
+        self.imageDisplayWindow.image_click_coordinates.connect(self.move_from_click_image)
+        self.imageDisplayWindow.signal_z_um_delta.connect(self.move_z_from_scroll)
 
         self.makeNapariConnections()
 
@@ -1781,50 +1761,8 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer.start()
 
     def makeNapariConnections(self):
-        """Initialize all Napari connections in one place"""
-        self.napari_connections = {
-            "napariLiveWidget": [],
-            "napariMultiChannelWidget": [],
-            "unifiedMosaicWidget": [],
-        }
-
-        # Setup live view connections
-        if USE_NAPARI_FOR_LIVE_VIEW and not self.live_only_mode:
-            self.napari_connections["napariLiveWidget"] = [
-                (self.multipointController.signal_current_configuration, self.napariLiveWidget.update_ui_for_mode),
-                (
-                    self.autofocusController.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=True),
-                ),
-                (
-                    self.streamHandler.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                ),
-                (
-                    self.multipointController.image_to_display,
-                    lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                ),
-                (self.napariLiveWidget.signal_coordinates_clicked, self.move_from_click_image),
-                (self.liveControlWidget.signal_live_configuration, self.napariLiveWidget.set_live_configuration),
-            ]
-            if self.recordZStackController is not None:
-                self.napari_connections["napariLiveWidget"].append(
-                    (
-                        self.recordZStackController.image_to_display,
-                        lambda image: self.napariLiveWidget.updateLiveLayer(image, from_autofocus=False),
-                    )
-                )
-
-            if USE_NAPARI_FOR_LIVE_CONTROL:
-                self.napari_connections["napariLiveWidget"].extend(
-                    [
-                        (self.napariLiveWidget.signal_newExposureTime, self.cameraSettingWidget.set_exposure_time),
-                        (self.napariLiveWidget.signal_newAnalogGain, self.cameraSettingWidget.set_analog_gain),
-                        (self.napariLiveWidget.signal_autoLevelSetting, self.imageDisplayWindow.set_autolevel),
-                    ]
-                )
-        # Non-Napari display connections are wired in make_connections() — wiring them
-        # here again under the same condition would double every click/scroll signal.
+        """Collect the (signal, slot[, connection_type]) pairs that feed the napari display widgets."""
+        self.napari_connections = []
 
         if not self.live_only_mode:
             self.napari_connections += [
@@ -2482,8 +2420,6 @@ class HighContentScreeningGui(QMainWindow):
             self.flexibleMultiPointWidget.refresh_channel_list()
         if self.wellplateMultiPointWidget:
             self.wellplateMultiPointWidget.refresh_channel_list()
-        if self.multiPointWithFluidicsWidget:
-            self.multiPointWithFluidicsWidget.refresh_channel_list()
         if self.recordZStackWidget is not None:
             self.recordZStackWidget.refresh_channel_list()
 

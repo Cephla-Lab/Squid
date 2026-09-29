@@ -114,6 +114,7 @@ class MultiPointWorkerBase:
         self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
         self.request_abort_fn: Callable[[], None] = request_abort_fn
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
+        self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
 
         # Optional SlackNotifier — subclasses set the real one if present.
         self._slack_notifier = None
@@ -158,6 +159,8 @@ class MultiPointWorkerBase:
         # zarr_writer_info into each job, so when multiprocessing is off the
         # frame callback must inject it itself before job.run().
         self._zarr_writer_info: Optional[ZarrWriterInfo] = None
+        # The settings in effect now, for the whole acquisition.
+        self._save_settings = SaveSettings()
         self._abort_on_failed_job = True
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
 
@@ -349,7 +352,9 @@ class MultiPointWorkerBase:
 
         Returns None if the job should be skipped.
         """
-        return job_class(capture_info=info, capture_image=JobImage(image_array=image))
+        return job_class(
+            capture_info=info, capture_image=JobImage(image_array=image), save_settings=self._save_settings
+        )
 
     def _finish_jobs(self, timeout_s=10):
         # Drain and summarize all currently available job results before waiting for completion
@@ -724,8 +729,7 @@ class MultiPointWorker(MultiPointWorkerBase):
         # are initialized in MultiPointWorkerBase.__init__.
 
         self.skip_saving = acquisition_parameters.skip_saving
-        # The settings in effect now, for the whole acquisition.
-        self._save_settings = SaveSettings()
+        # self._save_settings is initialized in MultiPointWorkerBase.__init__.
         file_saving_option = self._save_settings.file_saving_option
         use_ome_tiff = file_saving_option == FileSavingOption.OME_TIFF
         use_zarr_v3 = file_saving_option == FileSavingOption.ZARR_V3

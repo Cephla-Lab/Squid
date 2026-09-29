@@ -160,7 +160,8 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     parsed = parse_acquisition_dict(data, source=file_path)
 
     csv_path = os.path.join(folder or os.path.dirname(file_path), "coordinates.csv")
-    regions = parsed.wellplate_regions if parsed.widget_type == "wellplate" else parsed.flexible_positions
+    # record_zstack YAMLs carry wellplate-style regions and no flexible_positions.
+    regions = parsed.flexible_positions if parsed.widget_type == "flexible" else parsed.wellplate_regions
     if regions and any(not r.get("fovs") for r in regions) and os.path.isfile(csv_path):
         try:
             by_name = {r["name"]: r["fovs"] for r in read_coordinates_csv(csv_path)}

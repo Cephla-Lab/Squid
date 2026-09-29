@@ -39,23 +39,33 @@ def compute_pixel_size_um(objective_store, camera) -> Optional[float]:
         return None
 
 
-def create_experiment_dir(base_path: str, experiment_id: str) -> Tuple[str, str]:
+def create_experiment_dir(base_path: str, experiment_id: str, add_timestamp: bool = True) -> Tuple[str, str]:
     """Resolve a unique experiment ID and create its output directory.
 
-    Appends a timestamp to *experiment_id* (spaces replaced with underscores)
-    to guarantee uniqueness, then creates the directory tree under *base_path*.
+    With *add_timestamp* (the default) appends a timestamp to *experiment_id*
+    (spaces replaced with underscores) to guarantee uniqueness, then creates the
+    directory tree under *base_path*.  With ``add_timestamp=False`` the folder is
+    *experiment_id* verbatim and a ``FileExistsError`` is raised if it already
+    exists (the fluidics protocol runner names session folders itself and never
+    reuses one).
 
     Args:
         base_path: Root directory for all experiments.
         experiment_id: Human-readable experiment name supplied by the user.
+        add_timestamp: Append a timestamp to make the folder name unique.
 
     Returns:
         A ``(resolved_id, dir_path)`` tuple where *resolved_id* is the
-        timestamped identifier and *dir_path* is the absolute path of the
-        newly created directory.
+        (possibly timestamped) identifier and *dir_path* is the absolute path
+        of the newly created directory.
     """
-    resolved_id = experiment_id.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+    if add_timestamp:
+        resolved_id = experiment_id.replace(" ", "_") + "_" + datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")
+    else:
+        resolved_id = experiment_id
     dir_path = os.path.join(base_path, resolved_id)
+    if not add_timestamp and os.path.exists(dir_path):
+        raise FileExistsError(dir_path)
     utils.ensure_directory_exists(dir_path)
     return resolved_id, dir_path
 
