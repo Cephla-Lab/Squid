@@ -618,9 +618,7 @@ class QtRecordZStackController(RecordZStackController, QObject):
         objective_store,
         scan_coordinates,
     ):
-        import control._def
-
-        display_fps = float(getattr(control._def, "RECORD_ZSTACK_DISPLAY_FPS", 0))
+        display_fps = float(control._def.RECORD_ZSTACK_DISPLAY_FPS)
         preview_on = display_fps > 0
 
         # Map signal_acquisition_finished onto our Qt signal.  signal_new_image
@@ -2940,7 +2938,7 @@ class HighContentScreeningGui(QMainWindow):
         # Clean up record+z-stack controller: aborts any running acquisition and
         # shuts down its JobRunner subprocess so Zarr writers finalize instead of
         # being killed mid-write (corrupted store).
-        if getattr(self, "recordZStackController", None) is not None:
+        if self.recordZStackController is not None:
             try:
                 # 30s: the worker's unwind can legitimately take this long on a
                 # slow disk (RecordingWriter finalize budget + job drain + stage

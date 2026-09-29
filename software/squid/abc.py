@@ -588,7 +588,7 @@ class AbstractCamera(metaclass=abc.ABCMeta):
         support an internal frame-rate (e.g. ToupTek PRECISE_FRAMERATE) override
         this. Callers must still downsample to their target rate.
         """
-        max_fps = 1000.0 / self.get_total_frame_time()
+        max_fps = self.get_max_frame_rate()
         self._log.debug(f"set_frame_rate({fps}) no-op on base camera; max≈{max_fps:.2f} fps")
         return max_fps
 

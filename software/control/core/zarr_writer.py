@@ -788,6 +788,31 @@ class ZarrWriter:
             log.warning("could not update the OME t-axis scale with the measured time increment")
         zarr_json["attributes"] = attrs
 
+    def _seal_metadata(
+        self,
+        zarr_json_path: str,
+        complete: bool,
+        aborted: bool = False,
+        extra_attrs: Optional[Dict[str, object]] = None,
+        time_increment_s: Optional[float] = None,
+    ) -> None:
+        """Record in zarr.json how the acquisition ended (see finalize / abort for the arguments)."""
+        if not os.path.exists(zarr_json_path):
+            return
+        with open(zarr_json_path, "r") as f:
+            zarr_json = json.load(f)
+        attrs = zarr_json.get("attributes", {})
+        if "_squid" in attrs:
+            attrs["_squid"]["acquisition_complete"] = complete
+            if aborted:
+                attrs["_squid"]["aborted"] = True
+            if extra_attrs:
+                attrs["_squid"].update(extra_attrs)
+        if time_increment_s is not None:
+            self._stamp_time_increment(zarr_json, time_increment_s)
+        with open(zarr_json_path, "w") as f:
+            json.dump(zarr_json, f, indent=2)
+
     def finalize(self, time_increment_s: Optional[float] = None) -> None:
         """Finalize the dataset (blocking).
 
@@ -808,17 +833,7 @@ class ZarrWriter:
         # Update metadata with completion status (in zarr.json attributes)
         zarr_json_path = self._get_metadata_zarr_json_path()
         try:
-            if os.path.exists(zarr_json_path):
-                with open(zarr_json_path, "r") as f:
-                    zarr_json = json.load(f)
-                attrs = zarr_json.get("attributes", {})
-                if "_squid" in attrs:
-                    attrs["_squid"]["acquisition_complete"] = True
-                    zarr_json["attributes"] = attrs
-                if time_increment_s is not None:
-                    self._stamp_time_increment(zarr_json, time_increment_s)
-                with open(zarr_json_path, "w") as f:
-                    json.dump(zarr_json, f, indent=2)
+            self._seal_metadata(zarr_json_path, complete=True, time_increment_s=time_increment_s)
         except (OSError, json.JSONDecodeError) as e:
             log.error(f"Failed to finalize zarr metadata at {zarr_json_path}: {e}")
             # Don't raise - data is already written, just log the metadata issue
@@ -857,21 +872,13 @@ class ZarrWriter:
             # Mark as incomplete in metadata (in zarr.json attributes)
             zarr_json_path = self._get_metadata_zarr_json_path()
             try:
-                if os.path.exists(zarr_json_path):
-                    with open(zarr_json_path, "r") as f:
-                        zarr_json = json.load(f)
-                    attrs = zarr_json.get("attributes", {})
-                    if "_squid" in attrs:
-                        attrs["_squid"]["acquisition_complete"] = False
-                        if mark_aborted:
-                            attrs["_squid"]["aborted"] = True
-                        if extra_attrs:
-                            attrs["_squid"].update(extra_attrs)
-                    if time_increment_s is not None:
-                        self._stamp_time_increment(zarr_json, time_increment_s)
-                        zarr_json["attributes"] = attrs
-                    with open(zarr_json_path, "w") as f:
-                        json.dump(zarr_json, f, indent=2)
+                self._seal_metadata(
+                    zarr_json_path,
+                    complete=False,
+                    aborted=mark_aborted,
+                    extra_attrs=extra_attrs,
+                    time_increment_s=time_increment_s,
+                )
             except (OSError, json.JSONDecodeError) as e:
                 log.error(f"Failed to update abort metadata at {zarr_json_path}: {e}")
         finally:

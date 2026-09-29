@@ -216,15 +216,12 @@ class SimulatedCamera(AbstractCamera):
 
     @debug_log
     def set_frame_rate(self, fps: float) -> float:
+        max_fps = self.get_max_frame_rate()
         if fps is None or fps <= 0:
             self._target_frame_period_s = None
-            return 1000.0 / self.get_total_frame_time()
+            return max_fps
         self._target_frame_period_s = 1.0 / fps
-        # Clamp to exposure-limited maximum (total frame time includes strobe)
-        total_frame_time_s = self.get_total_frame_time() / 1000.0
-        effective_period_s = max(self._target_frame_period_s, total_frame_time_s)
-        effective = 1.0 / effective_period_s
-        return effective
+        return min(fps, max_fps)
 
     @debug_log
     def get_strobe_time(self):

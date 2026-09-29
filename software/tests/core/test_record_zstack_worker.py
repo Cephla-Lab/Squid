@@ -347,8 +347,20 @@ def test_probe_frame_shape_uses_processed_frame_not_resolution():
 # ---------------------------------------------------------------------------
 
 
-def _build_worker_harness(tmp_path, recording_enabled, zstack_enabled, zstack_channel_slice=slice(1, 2)):
-    """Simulated scope + live controller + a 1-FOV worker with tiny params."""
+def _build_worker_harness(
+    tmp_path,
+    recording_enabled,
+    zstack_enabled,
+    zstack_channel_slice=slice(1, 2),
+    callbacks=None,
+    display_frame_fn=None,
+    display_fps=0.0,
+    **param_overrides,
+):
+    """Simulated scope + live controller + a 1-FOV worker with tiny params.
+
+    param_overrides replace fields of the RecordZStackAcquisitionParameters built here.
+    """
     import control._def
     import tests.control.test_stubs as ts
     from control.core.multi_point_controller import NoOpCallbacks
@@ -368,7 +380,7 @@ def _build_worker_harness(tmp_path, recording_enabled, zstack_enabled, zstack_ch
     x0 = scope.stage.get_config().X_AXIS.MIN_POSITION + 1.0
     y0 = scope.stage.get_config().Y_AXIS.MIN_POSITION + 1.0
 
-    params = RecordZStackAcquisitionParameters(
+    param_values = dict(
         base_path=str(tmp_path),
         experiment_id="state_restore",
         Nt=1,
@@ -385,6 +397,8 @@ def _build_worker_harness(tmp_path, recording_enabled, zstack_enabled, zstack_ch
         z_max_um=1.0,
         z_step_um=1.0,
     )
+    param_values.update(param_overrides)
+    params = RecordZStackAcquisitionParameters(**param_values)
     aborted = {"v": False}
     worker = RecordZStackWorker(
         scope=scope,
@@ -392,10 +406,12 @@ def _build_worker_harness(tmp_path, recording_enabled, zstack_enabled, zstack_ch
         laser_auto_focus_controller=laser_af,
         objective_store=scope.objective_store,
         params=params,
-        callbacks=NoOpCallbacks,
+        callbacks=NoOpCallbacks if callbacks is None else callbacks,
         abort_requested_fn=lambda: aborted["v"],
         request_abort_fn=lambda: aborted.__setitem__("v", True),
         scan_region_fov_coords={"A1": [(x0, y0)]},
+        display_frame_fn=display_frame_fn,
+        display_fps=display_fps,
     )
     return scope, live_controller, channels, worker, aborted
 
@@ -1352,77 +1368,20 @@ def test_record_routes_sequentially_when_camera_paces_and_downsamples_when_it_ca
 # ---------------------------------------------------------------------------
 
 
-def _all_noop_callbacks():
-    """Fresh MultiPointControllerFunctions with all-no-op lambdas.
-
-    NoOpCallbacks is a shared module-level *instance*, so it is neither callable
-    nor safe to mutate per-test; build a fresh one instead.
-    """
-    from control.core.multi_point_utils import MultiPointControllerFunctions
-
-    return MultiPointControllerFunctions(
-        signal_acquisition_start=lambda *a, **kw: None,
-        signal_acquisition_finished=lambda *a, **kw: None,
-        signal_new_image=lambda *a, **kw: None,
-        signal_current_configuration=lambda *a, **kw: None,
-        signal_current_fov=lambda *a, **kw: None,
-        signal_overall_progress=lambda *a, **kw: None,
-        signal_region_progress=lambda *a, **kw: None,
-    )
-
-
 def test_recording_phase_calls_display_fn(tmp_path):
     """The recording phase must invoke the plain display callable (throttled).
     display_fps=1000 -> effectively every frame; assert at least one call."""
     pytest.importorskip("tensorstore")
     import numpy as np
-    import control._def
-    import tests.control.test_stubs as ts
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
-    from control.core.record_zstack_worker import RecordZStackWorker
 
-    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
-    scope = _build_simulated_microscope(64, 48)
-    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
-    laser_af = ts.get_test_laser_autofocus_controller(scope)
-    channels = live_controller.get_channels(scope.objective_store.default_objective)
-    scope.camera.set_exposure_time(1)
-    z_cfg = scope.stage.get_config().Z_AXIS
-    scope.stage.move_z_to((z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0)
-    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
-    x_cfg = scope.stage.get_config().X_AXIS
-    y_cfg = scope.stage.get_config().Y_AXIS
-
-    params = RecordZStackAcquisitionParameters(
-        base_path=str(tmp_path),
-        experiment_id="rec_preview",
-        Nt=1,
-        dt_s=0.0,
-        use_laser_af=False,
-        recording_enabled=True,
-        recording_channel=channels[0],
-        fps=10.0,
-        duration_s=0.3,
-        recording_bottom_z_offset_um=0.0,
-        zstack_enabled=False,
-        zstack_channels=[],
-        z_min_um=0.0,
-        z_max_um=0.0,
-        z_step_um=1.0,
-    )
     shown = []
-    worker = RecordZStackWorker(
-        scope=scope,
-        live_controller=live_controller,
-        laser_auto_focus_controller=laser_af,
-        objective_store=scope.objective_store,
-        params=params,
-        callbacks=_all_noop_callbacks(),
-        abort_requested_fn=lambda: False,
-        request_abort_fn=lambda: None,
-        scan_region_fov_coords={"A1": [(x_cfg.MIN_POSITION + 1.0, y_cfg.MIN_POSITION + 1.0)]},
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path,
+        recording_enabled=True,
+        zstack_enabled=False,
         display_frame_fn=shown.append,
         display_fps=1000.0,
+        duration_s=0.3,
     )
     worker.run()
     assert len(shown) >= 1
@@ -1433,54 +1392,21 @@ def test_zstack_phase_invokes_signal_new_image(tmp_path):
     """Pin the per-plane signal_new_image callback (was silently wired to a
     no-op before the preview feature): one call per plane x channel x FOV x t."""
     pytest.importorskip("tensorstore")
-    import control._def
-    import tests.control.test_stubs as ts
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
-    from control.core.record_zstack_worker import RecordZStackWorker
-
-    control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
-    scope = _build_simulated_microscope(64, 48)
-    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
-    laser_af = ts.get_test_laser_autofocus_controller(scope)
-    channels = live_controller.get_channels(scope.objective_store.default_objective)
-    scope.camera.set_exposure_time(1)
-    z_cfg = scope.stage.get_config().Z_AXIS
-    scope.stage.move_z_to((z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0)
-    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
-    x_cfg = scope.stage.get_config().X_AXIS
-    y_cfg = scope.stage.get_config().Y_AXIS
+    import dataclasses
+    from control.core.multi_point_controller import NoOpCallbacks
 
     new_image_calls = []
-    callbacks = _all_noop_callbacks()
-    callbacks.signal_new_image = lambda frame, info: new_image_calls.append(frame.frame.shape)
-
-    params = RecordZStackAcquisitionParameters(
-        base_path=str(tmp_path),
-        experiment_id="zstack_preview",
-        Nt=1,
-        dt_s=0.0,
-        use_laser_af=False,
-        recording_enabled=False,
-        recording_channel=None,
-        fps=10.0,
-        duration_s=0.1,
-        recording_bottom_z_offset_um=0.0,
-        zstack_enabled=True,
-        zstack_channels=channels[:2],
-        z_min_um=-1.0,
-        z_max_um=1.0,
-        z_step_um=1.0,  # offsets -1, 0, 1 -> 3 planes
+    callbacks = dataclasses.replace(
+        NoOpCallbacks, signal_new_image=lambda frame, info: new_image_calls.append(frame.frame.shape)
     )
-    worker = RecordZStackWorker(
-        scope=scope,
-        live_controller=live_controller,
-        laser_auto_focus_controller=laser_af,
-        objective_store=scope.objective_store,
-        params=params,
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path,
+        recording_enabled=False,
+        zstack_enabled=True,
+        zstack_channel_slice=slice(0, 2),
         callbacks=callbacks,
-        abort_requested_fn=lambda: False,
-        request_abort_fn=lambda: None,
-        scan_region_fov_coords={"A1": [(x_cfg.MIN_POSITION + 1.0, y_cfg.MIN_POSITION + 1.0)]},
+        z_min_um=-1.0,
+        z_max_um=1.0,  # offsets -1, 0, 1 -> 3 planes
     )
     worker.run()
     assert len(new_image_calls) == 3 * 2  # planes x channels x 1 FOV x 1 timepoint
