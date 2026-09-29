@@ -16925,13 +16925,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         show the Z-offset field only when Laser AF is enabled (the offset is
         relative to the AF reference plane; without AF the user positions Z
         directly), switch the offset caption between single- and multi-plane
-        wording, and reflow Nz/dz/offset between row 1 and row 2."""
+        wording, and reflow Nz/dz/offset between row 1 and row 2.
+
+        While the Recording phase is unchecked its section is collapsed and every
+        field in it stays hidden; expanding the section shows the fields placed in
+        its rows here."""
+        expanded = self.checkbox_recording.isChecked()
         multi = self.entry_recording_Nz.value() > 1
-        self.label_recording_dz.setVisible(multi)
-        self.entry_recording_dz.setVisible(multi)
+        self.label_recording_dz.setVisible(multi and expanded)
+        self.entry_recording_dz.setVisible(multi and expanded)
         use_af = self.checkbox_laser_af.isChecked()
-        self.label_recording_bottom_z.setVisible(use_af)
-        self.entry_recording_bottom_z.setVisible(use_af)
+        self.label_recording_bottom_z.setVisible(use_af and expanded)
+        self.entry_recording_bottom_z.setVisible(use_af and expanded)
         self.label_recording_bottom_z.setText("Bottom Z offset:" if multi else "Z offset:")
         self.entry_recording_bottom_z.setToolTip(
             "Bottom plane offset relative to the Z reference" if multi else "Offset relative to the Z reference"
