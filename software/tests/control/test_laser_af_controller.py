@@ -192,3 +192,18 @@ def test_search_checkbox_is_applied_on_initialize(settings_widget, monkeypatch):
     widget.apply_and_initialize()
 
     assert controller.laser_af_properties.search_for_spot is False
+
+
+def test_displacement_comes_from_the_frames_that_were_read_when_the_last_read_fails(make_controller):
+    ten_px_from_the_reference = spot_frame(REFERENCE_X_PX + 10)
+    frames = [ten_px_from_the_reference, ten_px_from_the_reference, None]
+    controller, _ = make_controller(frames, laser_af_averaging_n=3)
+
+    assert controller.measure_displacement() == pytest.approx(10 * PIXEL_TO_UM, abs=0.05)
+
+
+def test_displacement_is_nan_when_no_frame_can_be_read(make_controller):
+    controller, hardware = make_controller([None])
+
+    assert math.isnan(controller.measure_displacement())
+    assert not hardware.laser_is_on

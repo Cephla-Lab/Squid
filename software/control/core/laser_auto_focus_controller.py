@@ -810,8 +810,8 @@ class LaserAutofocusController(QObject):
                 )
                 continue
 
-        # optionally display the image
-        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE:
+        # optionally display the image; there is none when the last frame could not be read
+        if control._def.LASER_AF_DISPLAY_SPOT_IMAGE and image is not None:
             self.image_to_display.emit(image)
 
         # Check if we got enough successful detections
