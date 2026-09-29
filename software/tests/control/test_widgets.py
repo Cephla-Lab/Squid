@@ -15,7 +15,13 @@ import control._def
 import control.microscope
 import control.widgets
 from control.core import core as core_module
-from control.widgets import check_ram_available_with_error_dialog, NDViewerTab, SurfacePlotWidget
+from control.core.scan_coordinates import ScanCoordinates
+from control.widgets import (
+    check_ram_available_with_error_dialog,
+    FocusMapWidget,
+    NDViewerTab,
+    SurfacePlotWidget,
+)
 from squid.abc import CameraFrame, CameraFrameFormat
 from squid.config import CameraPixelFormat
 
