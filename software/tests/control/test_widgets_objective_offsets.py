@@ -317,3 +317,41 @@ def test_a_grid_one_period_off_saves_nothing(qtbot, tmp_path, make_dialog):
     assert _saved(tmp_path).offset_calibration is None
     assert dialog.label_ranges.text() == ""  # no pair was measured
     _assert_restored(hw)
+
+
+def test_a_pixel_size_only_run_after_an_offsets_save_keeps_its_reach(qtbot, tmp_path, make_dialog, monkeypatch):
+    """The final review of C1 (I1): after an offsets save the range defaults to ±20 um, so every run, not
+    only one with Offsets checked, must centre each sweep on the saved Z prediction."""
+    import sys
+
+    monkeypatch.setattr(sys.modules[__name__], "Z_FOCUS", {"4x": 0.0, "10x": 30.0, "20x": 55.0})
+    first, _ = make_dialog(range_um=100.0)
+    first.button_calibrate.click()
+    _wait(qtbot, first)
+    assert first.offsets, first.label_result.text()
+    first.button_apply.click()
+    pixel_only, _ = make_dialog(range_um=None, offsets=False)
+    assert pixel_only.spin_range.value() == 20.0
+    pixel_only.button_calibrate.click()
+    _wait(qtbot, pixel_only)
+    errors = {name: r.error for c in pixel_only.result.cycles for name, r in c.objectives.items()}
+    assert errors == {"4x": None, "10x": None, "20x": None}, errors
+
+
+def test_a_run_whose_offsets_fail_says_so_and_keeps_the_saved_ones(qtbot, tmp_path, make_dialog):
+    """The final review of C1 (I2): the offsets were requested, every cycle's failed; the dialog must not
+    report a plain finished run, and Apply must say the saved offsets are unchanged."""
+    dialog, hw = make_dialog()
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    dialog.button_apply.click()
+    before = _saved(tmp_path).objectives["20x"].offset
+    hw.objectives["20x"].parcentric_um = (150.0, 0.0)  # a misseat that keeps its slot: validity cannot see it
+    again, _ = make_dialog(hw=hw)
+    again.button_calibrate.click()
+    _wait(qtbot, again)
+    assert "Offsets not measured" in again.label_result.text(), again.label_result.text()
+    again.button_apply.click()
+    assert "saved offsets are unchanged" in again.label_result.text(), again.label_result.text()
+    after = _saved(tmp_path).objectives["20x"].offset
+    assert (after.dx_um, after.dy_um, after.dz_um) == (before.dx_um, before.dy_um, before.dz_um)

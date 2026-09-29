@@ -495,6 +495,11 @@ class ObjectiveCalibrationDialog(QDialog):
             cycles=self.spin_cycles.value(),
             measure_pixel_size=measure_pixel_size,
         )
+        mountings = self._current_mountings()
+        if offset_validity(self.saved, mountings, offset_camera_key(self.hardware)).z:
+            # Every run, not only one with Offsets checked: the ±20 um default range after an offsets save
+            # relies on the prediction (spec C §6.2 step 2.2; the final review of C1).
+            config.predicted_residual_um = parfocal_residuals_um(self.saved, mountings, self.pos2_offset_um)
         phase = None
         if measure_offsets:
             if len(selected) < 2:
@@ -509,9 +514,6 @@ class ObjectiveCalibrationDialog(QDialog):
                         "measure the pixel size too."
                     )
                     return
-            mountings = self._current_mountings()
-            if offset_validity(self.saved, mountings, offset_camera_key(self.hardware)).z:
-                config.predicted_residual_um = parfocal_residuals_um(self.saved, mountings, self.pos2_offset_um)
             phase = OffsetsPhase(config, fine_metric=self.fine_metric)
         hardware = _PromptedSwitch(self.hardware, self._ask_switch) if self.manual_switch else self.hardware
         self.result = None
@@ -595,7 +597,13 @@ class ObjectiveCalibrationDialog(QDialog):
                 if self.offsets:
                     parts.append(f"offsets measured for {', '.join(sorted(self.offsets))}")
                 failed = [f"cycle {c.index + 1}: {c.error}" for c in result.cycles if c.error]
-                if parts:
+                if parts and self.phase is not None and not self.offsets:
+                    # Offsets were asked for and none was measured: say so, not a plain finished run.
+                    self._say(
+                        f"Calibration finished: {'; '.join(parts)}. Offsets not measured ({'; '.join(failed)}); "
+                        "the saved offsets are unchanged. Nothing has been saved yet."
+                    )
+                elif parts:
                     self._say(f"Calibration finished: {'; '.join(parts)}. Nothing has been saved yet.")
                 else:
                     self._say("Calibration finished with nothing measured. " + "; ".join(failed))
@@ -769,6 +777,8 @@ class ObjectiveCalibrationDialog(QDialog):
             saved_what.append(f"the {'Z and XY' if save_xy else 'Z'} offsets of {', '.join(sorted(self.offsets))}")
             if not save_xy:
                 notes.append(ORIENTATION_MESSAGE)
+        elif self.phase is not None:
+            notes.append("Offsets were not measured; the saved offsets are unchanged.")
         merged = with_summary(merged, setup, self._declared_by_name(merged))
         try:
             self.config_repo.save_objective_calibration(merged)
