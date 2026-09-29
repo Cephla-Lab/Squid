@@ -10,11 +10,14 @@ saved records), never from a nominal fallback.
 import math
 from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from squid.objective_calibration.hardware import CalibrationError
+from squid.objective_calibration.engine import square_um
+from squid.objective_calibration.focus import FocusError, depth_of_field_um, focus_sweep
+from squid.objective_calibration.hardware import CalibrationError, LimitError, check_xy_target
+from squid.objective_calibration.pixel_size import approach_xy
 from squid.objective_calibration.registration import MAX_SELF_SIMILARITY, Match, match_template, template_shape
 
 MIN_MATCH_SCORE = 0.5
@@ -183,3 +186,224 @@ def register_offsets(images: Dict[str, np.ndarray], view, ordered: List[str]) ->
             result.warnings.append(pair.message)
         pairs.append(pair)
     return result
+
+
+@dataclass
+class ObjectiveOffset:
+    """One objective's offset in one cycle, relative to the reference (spec C §4, §6.5)."""
+
+    dx_um: float
+    dy_um: float
+    dz_um: float  # raw z_focus_k - z_focus_ref; the changer's own frame is subtracted at use time
+    match_score: float
+    runner_up_ratio: float
+    focus_peak_rise: float  # the worse of the two focus sweeps
+    closure_error_um: Optional[float]
+    z_focus_um: float  # the aligned focus, absolute (for D's report)
+
+
+@dataclass
+class OffsetsCycleResult:
+    cycle_index: int
+    reference: str
+    reference_z_focus_um: float
+    offsets: Dict[str, ObjectiveOffset]  # every non-reference objective
+    pairs: List[PairResult]
+    warnings: List[str]
+
+
+def _go_xy(hw, x_um: float, y_um: float) -> None:
+    """From the same side when the pre-move fits inside the limits, else directly (the target itself
+    was checked by the caller)."""
+    try:
+        approach_xy(hw, x_um, y_um)
+    except LimitError:
+        hw.move_xy_to_um(x_um, y_um)
+
+
+def aligned_range_um(na: float, offset_um: Tuple[float, float]) -> float:
+    """Pass 2's computed search range R2 = max(3·DOF, 5 µm + 2% of the displacement) (spec C §6.2)."""
+    return max(3 * depth_of_field_um(na), 5.0 + 0.02 * math.hypot(*offset_um))
+
+
+def _aligned_focus(
+    hw, *, name: str, channel: str, na: float, center_um: float, range_um: float, square_px: float, fine_metric
+):
+    """The full sweep at the aligned position over the computed range R2 (spec C §6.2 step 4).
+    focus_sweep owns the one widening: a computed range is doubled once on an edge hit, and a second
+    hit fails as "too uneven" (spec C §6.3 amendment, 2026-09-28)."""
+    try:
+        return focus_sweep(
+            hw,
+            objective=name,
+            channel=channel,
+            na=na,
+            center_um=center_um,
+            range_um=range_um,
+            square_px=square_px,
+            fine_metric=fine_metric,
+            range_is_computed=True,
+        )
+    except FocusError as e:
+        raise OffsetsError(f"{name} at its aligned position: {e}")
+
+
+class OffsetsPhase:
+    """The engine's phase-2 hook (spec C §6.2 steps 3-6): register the pass-1 images, then measure
+    each non-reference objective's focus with its centre on the reference's patch (pass 2). Any gate
+    failure raises OffsetsError, which fails the cycle; the engine restores and continues.
+
+    `align=False` skips pass 2 (dz from the pass-1 focus): only for the test that shows the slope
+    bias pass 2 removes."""
+
+    def __init__(self, cfg, *, fine_metric: Callable[[np.ndarray], float], align: bool = True):
+        self.cfg = cfg
+        self.fine_metric = fine_metric
+        self.align = align
+        self.results: List[OffsetsCycleResult] = []
+        self._specs = {spec.name: spec for spec in cfg.objectives}
+        self.ordered = [spec.name for spec in sorted(cfg.objectives, key=lambda spec: spec.magnification)]
+
+    def __call__(self, hw, cycle, view) -> None:
+        failed = [
+            f"{name}: {cycle.objectives[name].error}"
+            for name in self.ordered
+            if name not in cycle.objectives or cycle.objectives[name].image is None
+        ]
+        if failed:
+            raise OffsetsError("Offsets not measured in this cycle. " + "; ".join(failed))
+        reference = self.ordered[0]
+        xy = register_offsets({name: cycle.objectives[name].image for name in self.ordered}, view, self.ordered)
+        side_um = square_um(self.cfg.objectives, hw.frame_shape(self.cfg.channel))
+        z_reference = cycle.objectives[reference].focus.z_best_um
+        offsets: Dict[str, ObjectiveOffset] = {}
+        for name in reversed(self.ordered[1:]):  # descending magnification: the last of pass 1 is in place
+            spec = self._specs[name]
+            pass1 = cycle.objectives[name].focus
+            dx, dy = xy.offsets_um[name]
+            pair = next(p for p in xy.pairs if p.lower == reference and p.higher == name)
+            if self.align:
+                if hw.current_objective() != name:
+                    hw.switch_objective(name)
+                target = (cycle.start_xy_um[0] + dx, cycle.start_xy_um[1] + dy)
+                try:
+                    check_xy_target(hw, *target)
+                except LimitError:
+                    raise OffsetsError(
+                        f"The aligned position for {name} is outside the stage limits; start closer to the centre of travel."
+                    )
+                _go_xy(hw, *target)
+                focus = _aligned_focus(
+                    hw,
+                    name=name,
+                    channel=self.cfg.channel,
+                    na=spec.na,
+                    center_um=pass1.z_best_um,
+                    range_um=aligned_range_um(spec.na, (dx, dy)),
+                    square_px=side_um / spec.nominal_px_um,
+                    fine_metric=self.fine_metric,
+                )
+            else:
+                focus = pass1
+            offsets[name] = ObjectiveOffset(
+                dx_um=dx,
+                dy_um=dy,
+                dz_um=focus.z_best_um - z_reference,
+                match_score=pair.score,
+                runner_up_ratio=pair.runner_up_ratio,
+                focus_peak_rise=min(pass1.peak_rise, focus.peak_rise),
+                closure_error_um=xy.closure_error_um.get(name),
+                z_focus_um=focus.z_best_um,
+            )
+        self.results.append(OffsetsCycleResult(cycle.index, reference, z_reference, offsets, xy.pairs, xy.warnings))
+
+
+@dataclass
+class OffsetSummary:
+    """The mean over the successful cycles, with the worst quality numbers (spec C §6.5)."""
+
+    objective: str
+    cycles: int
+    dx_um: float
+    dy_um: float
+    dz_um: float
+    std_dx_um: Optional[float]
+    std_dy_um: Optional[float]
+    std_dz_um: Optional[float]
+    match_score: float  # worst (lowest)
+    runner_up_ratio: float  # worst (highest)
+    focus_peak_rise: float  # worst (lowest)
+    closure_error_um: Optional[float]  # worst (highest) over the cycles that measured a closure pair
+
+
+def _std(values: List[float]) -> Optional[float]:
+    return float(np.std(values, ddof=1)) if len(values) > 1 else None
+
+
+def summarize_offsets(results: List[OffsetsCycleResult]) -> Dict[str, OffsetSummary]:
+    """Per objective, over the cycles in `results` (each cycle has every non-reference objective)."""
+    if not results:
+        return {}
+    summaries = {}
+    for name in results[0].offsets:
+        per_cycle = [r.offsets[name] for r in results]
+        closures = [o.closure_error_um for o in per_cycle if o.closure_error_um is not None]
+        summaries[name] = OffsetSummary(
+            objective=name,
+            cycles=len(per_cycle),
+            dx_um=float(np.mean([o.dx_um for o in per_cycle])),
+            dy_um=float(np.mean([o.dy_um for o in per_cycle])),
+            dz_um=float(np.mean([o.dz_um for o in per_cycle])),
+            std_dx_um=_std([o.dx_um for o in per_cycle]),
+            std_dy_um=_std([o.dy_um for o in per_cycle]),
+            std_dz_um=_std([o.dz_um for o in per_cycle]),
+            match_score=min(o.match_score for o in per_cycle),
+            runner_up_ratio=max(o.runner_up_ratio for o in per_cycle),
+            focus_peak_rise=min(o.focus_peak_rise for o in per_cycle),
+            closure_error_um=max(closures) if closures else None,
+        )
+    return summaries
+
+
+def _ratio(value: Optional[float]) -> str:
+    return "none" if value is None else f"{value:.3f}"
+
+
+def _uniqueness(pair: PairResult) -> str:
+    x_um, y_um = pair.range_um
+    return (
+        f"runner-up {_ratio(pair.runner_up_ratio)}, self-similarity {_ratio(pair.self_similarity)}, "
+        f"measurable to ±{x_um:.1f} µm in x and ±{y_um:.1f} µm in y"
+    )
+
+
+def offsets_report(result, cycles: List[OffsetsCycleResult]) -> List[str]:
+    """Per cycle, the reference's focus and one line per pair with every measured value, or the
+    cycle's failure: the offsets' bench record (the engine's cycle_report has pass 1 and pixel size)."""
+    by_index = {measured.cycle_index: measured for measured in cycles}
+    lines = []
+    for cycle in result.cycles:
+        n = cycle.index + 1
+        measured = by_index.get(cycle.index)
+        if measured is None:
+            lines.append(f"cycle {n} offsets: {cycle.error or 'not measured'}")
+            continue
+        lines.append(f"cycle {n} offsets: reference {measured.reference}, focus {measured.reference_z_focus_um:.2f} µm")
+        for pair in measured.pairs:
+            if pair.lower == measured.reference:
+                o = measured.offsets[pair.higher]
+                lines.append(
+                    f"cycle {n} {pair.lower}-{pair.higher}: dx {o.dx_um:+.2f} µm, dy {o.dy_um:+.2f} µm, "
+                    f"dz {o.dz_um:+.2f} µm, aligned focus {o.z_focus_um:.2f} µm (rise {o.focus_peak_rise:.0%}), "
+                    f"match {o.match_score:.3f}, {_uniqueness(pair)}"
+                )
+            elif not pair.measurable:
+                lines.append(f"cycle {n} {pair.message}")
+            else:
+                closure = "" if pair.closure_error_um is None else f"closure {pair.closure_error_um:.2f} µm, "
+                warning = f"; {pair.message}" if pair.message else ""
+                lines.append(
+                    f"cycle {n} {pair.lower}-{pair.higher} (closure pair): {closure}match {pair.score:.3f}, "
+                    f"{_uniqueness(pair)}{warning}"
+                )
+    return lines

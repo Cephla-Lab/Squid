@@ -66,7 +66,7 @@ def test_phase2_hook_receives_this_cycles_matrices():
     hw, cfg = _machine()
     seen = []
     run_calibration(
-        hw, cfg, fine_metric=lape, phase2=lambda cycle, view: seen.append((cycle.index, view.pixel_size_um("20x")))
+        hw, cfg, fine_metric=lape, phase2=lambda hw, cycle, view: seen.append((cycle.index, view.pixel_size_um("20x")))
     )
     assert [index for index, _ in seen] == [0, 1]
     assert all(px == pytest.approx(0.32 * 1.01, rel=0.005) for _, px in seen)
@@ -168,7 +168,7 @@ def test_a_failed_xy_restore_still_restores_z_and_the_objective():
 
     hw.move_xy_to_um = move
     # The phase-2 hook runs just before the restore: arm the XY fault there.
-    result = run_calibration(hw, cfg, fine_metric=lape, phase2=lambda cycle, view: armed.update(on=True))
+    result = run_calibration(hw, cfg, fine_metric=lape, phase2=lambda hw, cycle, view: armed.update(on=True))
     assert result.stopped.startswith("Restoring") and "XY: XY stage fault" in result.stopped
     assert hw.current_objective() == "10x"
     assert hw.get_z_um() == pytest.approx(1.0)
