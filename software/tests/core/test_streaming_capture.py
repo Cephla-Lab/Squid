@@ -83,6 +83,14 @@ class _FakeSource:
 
 
 class _ListWriter:
+    dropped_count = 0
+
+    def mark_incomplete(self, captured, expected):
+        pass
+
+    def set_measured_time_increment(self, seconds):
+        pass
+
     def __init__(self):
         self.writes = []
 
@@ -240,6 +248,14 @@ def test_streaming_capture_no_enqueue_past_T_with_extra_frames():
 class _RecordingStubWriter:
     """Records which of finalize()/abort() was called."""
 
+    dropped_count = 0
+
+    def mark_incomplete(self, captured, expected):
+        pass
+
+    def set_measured_time_increment(self, seconds):
+        pass
+
     def __init__(self):
         self.writes = []
         self.finalized = False
@@ -359,6 +375,12 @@ def test_streaming_capture_logs_dropped_summary(caplog):
         """Writer that pretends to drop every frame (dropped_count always > 0)."""
 
         dropped_count = 3
+
+        def mark_incomplete(self, captured, expected):
+            pass
+
+        def set_measured_time_increment(self, seconds):
+            pass
 
         def start(self):
             pass
