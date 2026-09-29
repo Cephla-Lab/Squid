@@ -10,7 +10,7 @@ progress finishes first, then the restore runs.
 
 import math
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -34,6 +34,13 @@ class RunConfig:
     search_range_um: float = 100.0
     cycles: int = 3
     measure_pixel_size: bool = True
+    # An offsets-only run (measure_pixel_size False) registers with these matrices, for the current
+    # image pixels, from the saved and valid records (spec B §4.5); a combined run uses this cycle's.
+    saved_matrices_um_per_px: Dict[str, np.ndarray] = field(default_factory=dict)
+    # Each objective's parfocal residual from a prior calibration: z_frame minus the changer's own
+    # frame (spec C §4). The first focus of objective k is centred on the Z after the switch plus
+    # residual[k] - residual[previous objective]; a missing objective counts as 0 (today's frame).
+    predicted_residual_um: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -50,6 +57,9 @@ class CycleResult:
     index: int
     objectives: Dict[str, ObjectiveCycleResult] = field(default_factory=dict)
     error: Optional[str] = None
+    start_objective: Optional[str] = None
+    start_xy_um: Tuple[float, float] = (0.0, 0.0)
+    start_z_um: float = 0.0
 
 
 class CalibrationView:
@@ -173,7 +183,7 @@ def run_calibration(
     cfg: RunConfig,
     *,
     fine_metric: Callable[[np.ndarray], float],
-    phase2: Optional[Callable[[CycleResult, CalibrationView], None]] = None,
+    phase2: Optional[Callable[[Any, CycleResult, CalibrationView], None]] = None,
     progress: Optional[Callable[[str], None]] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> RunResult:
@@ -195,8 +205,9 @@ def run_calibration(
             break
         start_xy = hw.get_xy_um()
         start = (hw.current_objective(), *start_xy, hw.get_z_um())
-        cycle = CycleResult(index)
+        cycle = CycleResult(index, start_objective=start[0], start_xy_um=start_xy, start_z_um=start[3])
         cycles.append(cycle)
+        previous = start[0]
         try:
             for spec in ordered:
                 if should_cancel():
@@ -206,13 +217,15 @@ def run_calibration(
                 cycle.objectives[spec.name] = result
                 hw.switch_objective(spec.name)  # a failed switch is a hardware fault, not a quality gate
                 z_after_switch = hw.get_z_um()
+                residual = cfg.predicted_residual_um
+                predicted_step = residual.get(spec.name, 0.0) - residual.get(previous, 0.0)
                 try:
                     result.focus = focus_sweep(
                         hw,
                         objective=spec.name,
                         channel=cfg.channel,
                         na=spec.na,
-                        center_um=hw.get_z_um(),
+                        center_um=z_after_switch + predicted_step,
                         range_um=cfg.search_range_um,
                         square_px=side_um / spec.nominal_px_um,
                         fine_metric=fine_metric,
@@ -228,9 +241,19 @@ def run_calibration(
                     # where this one started, not up to R_eff out of focus.
                     _return_xy(hw, *start_xy)
                     hw.move_z_to_um(z_after_switch)
+                else:
+                    # Z is at this objective's focus now; after a failure it is back at the last one's,
+                    # and the next prediction starts from there.
+                    previous = spec.name
             if phase2 is not None:
-                matrices = {n: r.pixel.matrix_um_per_px for n, r in cycle.objectives.items() if r.pixel is not None}
-                phase2(cycle, CalibrationView(matrices))
+                if cfg.measure_pixel_size:
+                    matrices = {n: r.pixel.matrix_um_per_px for n, r in cycle.objectives.items() if r.pixel is not None}
+                else:
+                    matrices = cfg.saved_matrices_um_per_px
+                try:
+                    phase2(hw, cycle, CalibrationView(matrices))
+                except CalibrationError as e:  # a phase-2 quality gate fails the cycle; the run continues
+                    cycle.error = str(e)
         except RunCancelled:  # Cancel pressed, or a manual objective switch declined
             stopped = "cancelled"
         except Exception as e:  # a hardware or programming fault: restore, then stop the run

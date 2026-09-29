@@ -195,9 +195,11 @@ def test_validity_banner_and_clear_selected(tmp_path, monkeypatch, make_dialog):
     assert "not calibrated" in dialog.validity_labels["10x"].text()
 
 
-def test_guidance_points_at_texture_not_blank_glass():
-    assert "several bar groups of different sizes" in woc.GUIDANCE
-    assert "away from its bar groups" not in woc.GUIDANCE
+def test_guidance_leads_with_a_level_stained_section_and_warns_off_repeating_targets():
+    # The review of 2dbc53d0: a USAF target's bar groups can be refused as repeating; the bench decides it.
+    assert woc.GUIDANCE.startswith("Use a level stained section with varied texture in both directions")
+    assert "USAF target with a group-number label" not in woc.GUIDANCE
+    assert "repeating" in woc.GUIDANCE and "bare glass" in woc.GUIDANCE
 
 
 def test_a_failed_restore_asks_the_operator_to_reselect_the_objective(qtbot, make_dialog):
