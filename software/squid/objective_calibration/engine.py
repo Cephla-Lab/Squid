@@ -219,7 +219,6 @@ def run_calibration(
                 z_after_switch = hw.get_z_um()
                 residual = cfg.predicted_residual_um
                 predicted_step = residual.get(spec.name, 0.0) - residual.get(previous, 0.0)
-                previous = spec.name
                 try:
                     result.focus = focus_sweep(
                         hw,
@@ -242,6 +241,10 @@ def run_calibration(
                     # where this one started, not up to R_eff out of focus.
                     _return_xy(hw, *start_xy)
                     hw.move_z_to_um(z_after_switch)
+                else:
+                    # Z is at this objective's focus now; after a failure it is back at the last one's,
+                    # and the next prediction starts from there.
+                    previous = spec.name
             if phase2 is not None:
                 if cfg.measure_pixel_size:
                     matrices = {n: r.pixel.matrix_um_per_px for n, r in cycle.objectives.items() if r.pixel is not None}
