@@ -92,11 +92,8 @@ def resolve_effective_fps(camera, requested_fps: float, exposure_time_ms: float)
     ROI-limited free-run maximum).  A camera without the query, or one that fails it,
     leaves the request unchanged.
     """
-    query = getattr(camera, "get_max_frame_rate", None)
-    if not callable(query):
-        return float(requested_fps)
     try:
-        achievable = float(query(exposure_time_ms))
+        achievable = float(camera.get_max_frame_rate(exposure_time_ms))
     except Exception:
         return float(requested_fps)
     if not achievable > 0:
@@ -125,11 +122,9 @@ def _build_objective_info(objective_store, camera) -> dict:
     Save-button path may not always have a live camera reference).
     """
     current_objective = objective_store.current_objective
-    objective_dict = getattr(objective_store, "objectives_dict", {}).get(current_objective, {})
+    objective_dict = objective_store.objectives_dict.get(current_objective, {})
 
-    camera_binning = None
-    if camera is not None and hasattr(camera, "get_binning"):
-        camera_binning = list(camera.get_binning())
+    camera_binning = list(camera.get_binning()) if camera is not None else None
     # compute_pixel_size_um tolerates camera=None (returns None on any failure).
     pixel_size_um = compute_pixel_size_um(objective_store, camera)
 
@@ -190,8 +185,8 @@ def _save_record_zstack_yaml(
     }
 
     if params.xy_mode == "Select Wells":
-        region_centers = getattr(scan_coordinates, "region_centers", {}) or {}
-        region_shapes = getattr(scan_coordinates, "region_shapes", {}) or {}
+        region_centers = scan_coordinates.region_centers if scan_coordinates is not None else {}
+        region_shapes = scan_coordinates.region_shapes if scan_coordinates is not None else {}
         yaml_dict["wellplate_scan"] = {
             "scan_size_mm": params.scan_size_mm,
             "overlap_percent": params.overlap_percent,
@@ -277,7 +272,6 @@ class RecordZStackController:
         self._display_fps = display_fps
 
         self._abort_event: Event = Event()
-        self._worker = None
         self._thread: Optional[Thread] = None
 
         # Pre-warm a job runner subprocess at init so it is ready when the user
@@ -340,7 +334,7 @@ class RecordZStackController:
             channels = []
             seen_names = set()
             candidates = []
-            if params.recording_enabled and params.recording_channel is not None:
+            if params.recording_enabled:
                 candidates.append(params.recording_channel)
             if params.zstack_enabled:
                 candidates.extend(params.zstack_channels)
@@ -360,7 +354,7 @@ class RecordZStackController:
         # Full reusable settings snapshot (superset of acquisition_channels.yaml above,
         # written alongside it — not a replacement; see design doc's "Snapshot files" decision).
         try:
-            objective_info = _build_objective_info(self._objective_store, getattr(self._microscope, "camera", None))
+            objective_info = _build_objective_info(self._objective_store, self._microscope.camera)
             _save_record_zstack_yaml(
                 params,
                 os.path.join(experiment_dir, "acquisition.yaml"),
@@ -372,7 +366,7 @@ class RecordZStackController:
 
         # Collect scan coordinates: {region_id: [(x_mm, y_mm[, z_mm]), ...]}
         scan_region_fov_coords = {}
-        if self._scan_coordinates is not None and hasattr(self._scan_coordinates, "region_fov_coordinates"):
+        if self._scan_coordinates is not None:
             scan_region_fov_coords = dict(self._scan_coordinates.region_fov_coordinates)
 
         # Clear abort event for this run (thread-safe: Event.clear() is atomic).
@@ -390,7 +384,7 @@ class RecordZStackController:
             prewarmed_runner, prewarmed_bp_values = self._prewarm.take()
 
         try:
-            self._worker = RecordZStackWorker(
+            worker = RecordZStackWorker(
                 scope=self._microscope,
                 live_controller=self._live_controller,
                 laser_auto_focus_controller=self._laser_af,
@@ -410,7 +404,7 @@ class RecordZStackController:
             self._prewarm.shutdown_runner(prewarmed_runner, context="after worker creation failure")
             raise
 
-        self._thread = Thread(target=self._worker.run, name="RecordZStack-acquisition", daemon=True)
+        self._thread = Thread(target=worker.run, name="RecordZStack-acquisition", daemon=True)
         self._thread.start()
 
     def join(self, timeout: Optional[float] = None) -> None:
@@ -431,5 +425,4 @@ class RecordZStackController:
                 if self._thread.is_alive():
                     log.warning(f"RecordZStack acquisition thread did not stop within {timeout_s}s")
 
-        self._worker = None
         self._thread = None

@@ -21,7 +21,7 @@ class CountStop:
     def met(self, emitted: int) -> bool:
         return emitted >= self.target
 
-    def expected(self) -> Optional[int]:
+    def expected(self) -> int:
         """Expected total frame count, used for partial-capture warnings."""
         return self.target
 
@@ -48,7 +48,7 @@ class RecordingRouter:
     frames fill slots sequentially and are never rejected: a sensor free-running
     a few percent off the nominal rate, or a frame whose host-side callback ran
     late (a GUI repaint holding the GIL), must not cost a slot.  Only a gap of at
-    least ``max(stall_periods * period, min_stall_s)`` since the previous frame
+    least ``max(STALL_PERIODS * period, MIN_STALL_S)`` since the previous frame
     is treated as a real stall and leaves ``round(gap / period) - 1`` holes; the
     absolute floor matters at high rates, where a period is shorter than an
     ordinary host hiccup (at 108 fps a 20-50 ms GIL pause is 2-5 periods and cost
@@ -60,19 +60,18 @@ class RecordingRouter:
     such recording incomplete.
     """
 
-    def __init__(self, fps: float, paced: bool = False, stall_periods: float = 1.75, min_stall_s: float = 0.1):
+    STALL_PERIODS = 1.75
+    MIN_STALL_S = 0.1
+
+    def __init__(self, fps: float, paced: bool = False):
         self._period = 1.0 / fps if fps and fps > 0 else 0.0
         self._paced = bool(paced)
-        self._stall_gap = max(float(stall_periods) * self._period, float(min_stall_s))
+        self._stall_gap = max(self.STALL_PERIODS * self._period, self.MIN_STALL_S)
         self._t_index = 0  # next unfilled slot
         self._first_ts: Optional[float] = None
         self._last_ts: Optional[float] = None
         self._stalls = 0  # paced mode: gaps treated as stalls
         self._holes = 0  # paced mode: slots left as fill by those stalls
-
-    @property
-    def paced(self) -> bool:
-        return self._paced
 
     @property
     def nominal_period(self) -> Optional[float]:
@@ -138,15 +137,15 @@ class RecordingWriter:
     """Bounded-queue writer that drains frames to a ZarrWriter on a background thread.
 
     The hot camera callback calls `enqueue` (truly non-blocking); the background
-    thread calls `ZarrWriter.write_frame` which may block on I/O.  The queue is
+    thread calls `ZarrWriter.submit_frame` and waits for the writes, which may block on I/O.  The queue is
     bounded so that a slow disk eventually fills it: when full, `enqueue` drops the
     frame immediately (never blocks the camera delivery thread) and logs a warning.
 
     After `start()` the drain thread is the SOLE owner of the ZarrWriter: only it
-    calls `write_frame`, `finalize`, and `abort`.  The main thread only calls
+    calls `submit_frame`, `finalize`, and `abort`.  The main thread only calls
     `initialize()` (before the thread starts) and then enqueues items / signals stop.
     This prevents the data race where `abort()` used to call `self._writer.abort()`
-    concurrently with the drain thread still inside `write_frame`.
+    concurrently with the drain thread still inside a write.
     """
 
     def __init__(
@@ -173,13 +172,11 @@ class RecordingWriter:
         self._held_bytes = 0
         self._bytes_lock = threading.Lock()
         self._abort_requested = threading.Event()
-        # True when finalize() gave up on a wedged drain thread: write errors
-        # may still be accruing after finalize() returns, so callers must not
-        # trust write_error_count == 0 as "healthy" — check this flag too.
-        self._finalize_wedged = False
         # Set instead of the abort flag when finalize() gives up on a wedged
         # drain: the drain writes the remaining CAPTURED frames whenever the
         # stall clears, then exits and seals (abort would discard them).
+        # Write errors may still be accruing after finalize() returns, so callers
+        # must not trust write_error_count == 0 as "healthy" — see finalize_wedged.
         self._flush_and_exit = threading.Event()
         # (captured, expected) reported by the capture when frames never
         # arrived (camera stall) — drops/errors are counted here, but only the
@@ -220,40 +217,43 @@ class RecordingWriter:
         bounded queue is full (drain thread cannot keep up with disk I/O) the frame
         is dropped and counted rather than waiting for space.
         """
-        nbytes = int(getattr(frame, "nbytes", 0))
+        nbytes = int(frame.nbytes)
         with self._bytes_lock:
             over_cap = self._held_bytes + nbytes > self._max_bytes
             if not over_cap:
                 self._held_bytes += nbytes
         if over_cap:
-            self._dropped += 1
-            # Rate-limited: this runs on the hot camera delivery thread, and a
-            # stalled disk would otherwise log (and do handler I/O) at fps rate.
-            if self._dropped == 1 or self._dropped % 100 == 0:
-                _log.warning(
-                    f"recording byte cap reached ({self._max_bytes} B); dropped frame t={t} "
-                    f"(total dropped={self._dropped})"
-                )
+            self._count_drop(f"recording byte cap reached ({self._max_bytes} B)", t)
             return
         try:
             self._q.put_nowait((frame, t, c, z))
         except queue.Full:
-            with self._bytes_lock:
-                self._held_bytes -= nbytes
-            self._dropped += 1
-            if self._dropped == 1 or self._dropped % 100 == 0:
-                _log.warning(f"recording queue full; dropped frame t={t} (total dropped={self._dropped})")
+            self._release_bytes(nbytes)
+            self._count_drop("recording queue full", t)
+
+    def _count_drop(self, reason: str, t: int) -> None:
+        self._dropped += 1
+        # Rate-limited: this runs on the hot camera delivery thread, and a
+        # stalled disk would otherwise log (and do handler I/O) at fps rate.
+        if self._dropped == 1 or self._dropped % 100 == 0:
+            _log.warning(f"{reason}; dropped frame t={t} (total dropped={self._dropped})")
+
+    def _count_write_error(self, t: int, error: Exception) -> None:
+        self._write_errors += 1
+        _log.error(f"recording write_frame failed t={t}: {error}")
+
+    def _release_bytes(self, nbytes: int) -> None:
+        with self._bytes_lock:
+            self._held_bytes -= nbytes
 
     def _reap(self, future, nbytes: int, t: int) -> None:
         """Wait for one submitted write; count a failure; release its byte accounting."""
         try:
             future.result()
         except Exception as e:
-            self._write_errors += 1
-            _log.error(f"recording write_frame failed t={t}: {e}")
+            self._count_write_error(t, e)
         finally:
-            with self._bytes_lock:
-                self._held_bytes -= nbytes
+            self._release_bytes(nbytes)
 
     def _drain(self) -> None:
         """Background thread: sole owner of ZarrWriter after start().
@@ -275,20 +275,18 @@ class RecordingWriter:
                     if self._flush_and_exit.is_set():
                         break  # backlog flushed after a wedged finalize()
                     # Idle: reap what has completed so errors surface promptly.
-                    while inflight and getattr(inflight[0][0], "done", lambda: False)():
+                    while inflight and inflight[0][0].done():
                         self._reap(*inflight.popleft())
                     continue
                 if item is _SENTINEL:
                     break
                 frame, t, c, z = item
-                nbytes = int(getattr(frame, "nbytes", 0))
+                nbytes = int(frame.nbytes)
                 try:
                     future = self._writer.submit_frame(frame, t=t, c=c, z=z)
                 except Exception as e:
-                    self._write_errors += 1
-                    _log.error(f"recording write_frame failed t={t}: {e}")
-                    with self._bytes_lock:
-                        self._held_bytes -= nbytes
+                    self._count_write_error(t, e)
+                    self._release_bytes(nbytes)
                     continue
                 inflight.append((future, nbytes, t))
                 while len(inflight) >= self._max_inflight:
@@ -338,7 +336,7 @@ class RecordingWriter:
         In that state write_error_count may still be 0 (the errors happen after
         finalize() returned), so fail-fast callers must treat wedged as failure.
         """
-        return self._finalize_wedged
+        return self._flush_and_exit.is_set()
 
     def set_measured_time_increment(self, seconds: float) -> None:
         """Record the t-axis spacing the source actually delivered (see RecordingRouter.measured_period).
@@ -385,7 +383,6 @@ class RecordingWriter:
                         f"drain thread wedged (queue full for {timeout_s:.0f}s); giving up the wait — "
                         f"the captured backlog will be flushed and sealed whenever the stall clears"
                     )
-                    self._finalize_wedged = True
                     # Flush-and-exit, NOT abort: the queued frames are captured
                     # data; the daemon drain writes them once the stalled write
                     # returns, then exits and seals the store.
@@ -403,11 +400,10 @@ class RecordingWriter:
 
     def abort(self) -> None:
         """Signal the drain thread to stop (which aborts the ZarrWriter)."""
+        self._abort_requested.set()
         if not self._started:
             # start() never got the thread running (e.g. initialize() raised).
-            self._abort_requested.set()
             return
-        self._abort_requested.set()
         try:
             self._q.put_nowait(_SENTINEL)
         except queue.Full:
@@ -415,11 +411,6 @@ class RecordingWriter:
         self._thread.join(timeout=5.0)
         if self._thread.is_alive():
             _log.warning("drain thread still alive after abort() join timeout")
-
-
-# ---------------------------------------------------------------------------
-# Task C3: ContinuousFrameSource + StreamingCapture
-# ---------------------------------------------------------------------------
 
 
 class ContinuousFrameSource:
@@ -504,9 +495,10 @@ class StreamingCapture:
 
     Args:
         frame_source: Any object with ``start(on_frame)`` / ``stop()`` interface.
-        router: ``RecordingRouter`` (or compatible) — maps timestamps to (t,c,z).
-        stop_condition: ``CountStop`` (or compatible) — ``met(emitted)`` returns bool.
-        writer: Object with ``start()``, ``enqueue(frame,t,c,z)``, ``finalize()``, ``abort()``.
+        router: ``RecordingRouter`` (or an object with its public members) — maps timestamps to (t,c,z).
+        stop_condition: ``CountStop`` (or compatible) — ``met(emitted)`` returns bool, ``expected()``
+            the total frame count or None when there is none.
+        writer: ``RecordingWriter`` (or an object with its public members).
         abort_fn: Zero-argument callable; returns True to abort early.
         display_fn: Optional callable receiving a frame (np.ndarray) for live
             preview, throttled to display_fps.  Failures are logged once and
@@ -537,7 +529,7 @@ class StreamingCapture:
         self._aborted = False
         # Expected total frame count is fixed for the capture's lifetime, so
         # resolve it once here instead of re-probing on every hot-path frame.
-        self._expected: Optional[int] = stop_condition.expected() if hasattr(stop_condition, "expected") else None
+        self._expected: Optional[int] = stop_condition.expected()
 
         # Throttled live-preview tap (plain callable — no Qt in this module).
         # display_fps <= 0 disables the tap entirely.
@@ -604,15 +596,11 @@ class StreamingCapture:
         value is kept alongside for reference).
         """
         router = self._router
-        stalls = getattr(router, "stall_count", 0)
-        if stalls:
-            _log.warning(f"recording had {stalls} stall(s), {getattr(router, 'hole_count', 0)} slot(s) left as fill")
-        measure = getattr(router, "measured_period", None)
-        nominal = getattr(router, "nominal_period", None)
-        if measure is None or not nominal:
-            return
-        measured = measure()
-        if measured is None or measured <= 0:
+        if router.stall_count:
+            _log.warning(f"recording had {router.stall_count} stall(s), {router.hole_count} slot(s) left as fill")
+        nominal = router.nominal_period
+        measured = router.measured_period()
+        if not nominal or measured is None or measured <= 0:
             return
         deviation = (measured - nominal) / nominal
         if abs(deviation) <= self.RATE_DEVIATION_TOLERANCE:
@@ -621,8 +609,7 @@ class StreamingCapture:
             f"recording delivered at {1.0 / measured:.2f} fps, nominal {1.0 / nominal:.2f} fps "
             f"({deviation * 100:+.1f}%); the store's time_increment_s is stamped with the measured spacing"
         )
-        if hasattr(self._writer, "set_measured_time_increment"):
-            self._writer.set_measured_time_increment(measured)
+        self._writer.set_measured_time_increment(measured)
 
     def run(self, timeout: Optional[float] = None) -> int:
         """Start capture, block until done (or timeout), and return emitted count."""
@@ -633,8 +620,7 @@ class StreamingCapture:
             # if the camera delivers no frames at all (stall, misconfigured
             # trigger) the callback never runs and a bare wait(timeout) would
             # ignore Stop for the full timeout — and then seal the store as
-            # complete.  (FakeSource sets _done synchronously; the first wait()
-            # returns immediately in that case.)
+            # complete.
             deadline = (time.monotonic() + timeout) if timeout is not None else None
             while not self._done.wait(0.2):
                 if self._abort_fn():
@@ -647,8 +633,8 @@ class StreamingCapture:
             # Assumes source.stop() quiesces the camera delivery thread. With cameras
             # that don't join their callback thread on stop, a final in-flight frame may
             # reach writer.enqueue after finalize — harmless with RecordingWriter (the
-            # drain thread has exited, so the put times out and the frame is logged as
-            # dropped, not corrupted).
+            # drain thread has exited and the store is sealed, so the frame is queued
+            # and never written).
             self._source.stop()
             # source.stop() above quiesces the camera delivery thread, so reading
             # self._emitted here is safe without a lock: no callback thread mutates
@@ -667,12 +653,11 @@ class StreamingCapture:
                         f"streaming capture incomplete: captured {self._emitted}/{expected} "
                         f"frames; missing planes are blank fill"
                     )
-                    if hasattr(self._writer, "mark_incomplete"):
-                        self._writer.mark_incomplete(self._emitted, expected)
+                    self._writer.mark_incomplete(self._emitted, expected)
                 self._writer.finalize()
             # Surface total dropped frames so slow-disk runs are diagnosable without
             # grepping individual per-frame warnings.
-            dropped = self._writer.dropped_count if hasattr(self._writer, "dropped_count") else 0
+            dropped = self._writer.dropped_count
             if dropped > 0:
                 _log.warning(
                     f"streaming capture finished: {dropped} frame(s) dropped total " f"(queue full / slow disk)"

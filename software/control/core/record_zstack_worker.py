@@ -7,7 +7,7 @@ For each (time point, region, FOV) the worker:
   4. (optional) acquires a software-triggered z-stack saved via the inherited
      ``SaveZarrJob`` dispatch path.
 
-The recording phase reuses the C3 ``StreamingCapture`` primitive
+The recording phase reuses the ``StreamingCapture`` primitive
 (``ContinuousFrameSource`` + ``RecordingRouter`` + ``CountStop`` +
 ``RecordingWriter``).  The z-stack phase reuses ``MultiPointWorkerBase``'s
 shared single-frame capture + frame callback + job dispatch machinery, so the
@@ -17,7 +17,7 @@ worker builds its own ``JobRunner`` (or accepts a pre-warmed one) plus a
 
 import os
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Type
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -49,7 +49,6 @@ from control.core.record_zstack_controller import (
 )
 from control.core.job_processing import (
     AcquisitionInfo,
-    Job,
     JobRunner,
     SaveZarrJob,
     ZarrWriterInfo,
@@ -96,11 +95,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self.laser_af = laser_auto_focus_controller
         self.objectiveStore = objective_store
         self._scan: Dict[object, List[Tuple]] = scan_region_fov_coords or {}
-
-        # This worker drives the stage directly (no piezo z-stacking), and uses a
-        # single time_point at a time — refine the base placeholders.
-        self.use_piezo = False
-        self.time_point = 0
 
         # Experiment output layout (mirrors MultiPointWorker.experiment_path).
         self.base_path = params.base_path
@@ -208,13 +202,13 @@ class RecordZStackWorker(MultiPointWorkerBase):
         callback of its own.
         """
         # Quiesce live view once for the whole acquisition (restored in finally).
-        was_live = bool(getattr(self.liveController, "is_live", False))
+        was_live = bool(self.liveController.is_live)
         # Capture pre-acquisition hardware state so the finally can put the
         # camera/MCU/LiveController back the way the user had them: both phases
         # change the trigger mode, and every z-stack channel apply overwrites
         # the current channel configuration (exposure/gain/illumination).
-        prev_trigger_mode = getattr(self.liveController, "trigger_mode", None)
-        prev_configuration = getattr(self.liveController, "currentConfiguration", None)
+        prev_trigger_mode = self.liveController.trigger_mode
+        prev_configuration = self.liveController.currentConfiguration
         if was_live:
             try:
                 self.liveController.stop_live()
@@ -315,77 +309,29 @@ class RecordZStackWorker(MultiPointWorkerBase):
         return self.stage.get_pos().z_mm
 
     def _laser_af_has_reference(self) -> bool:
-        try:
-            return bool(self.laser_af.laser_af_properties.has_reference)
-        except Exception:
-            return False
+        return bool(self.laser_af.laser_af_properties.has_reference)
 
     # ---------------------------------------------------------------- record
     def record(self, t_idx: int, region_id, fov_idx: int, z_ref: float) -> int:
         """Record per-plane continuous streams for this FOV, then restore Z.
 
         Plane j records at ``z_ref + recording_bottom_z_offset_um + j*recording_dz_um``
-        (one Zarr store per plane; Nz=1 keeps the historical single-plane layout
-        byte-identical to before per-plane recording existed).  The recording
-        channel, achievable fps, and dataset frame count are all established
-        once per FOV and shared across every plane.  The stage moves to the
-        first plane with illumination OFF (matching the pre-multi-plane
-        behavior), illumination then turns on for the remainder of the FOV
+        (one Zarr store per plane).  The recording channel, achievable fps, and
+        dataset frame count are all established once per FOV and shared across
+        every plane.  The stage moves to the first plane with illumination OFF,
+        illumination then turns on for the remainder of the FOV
         (not toggled between planes), and the camera-mode + stage-Z restore
         always runs on the way out — normal completion, an abort between
         planes, or a plane raising the fail-fast ``RuntimeError`` below.
         Returns the total number of frames emitted across all planes.
         """
         # Apply the recording channel (exposure/gain/illumination settings).
-        rec_channel = self.params.recording_channel
-        if rec_channel is not None:
-            self._select_config(rec_channel)
+        self._select_config(self.params.recording_channel)
 
-        # Size the dataset, pacing, and time metadata from the fps the camera can
-        # actually deliver: a camera clamped below the requested rate (exposure
-        # limit, PRECISE_FRAMERATE max) can never fill fps*duration frames within
-        # duration seconds — the run would stall to the timeout and leave the
-        # trailing planes blank.  The mode switch happens first because toupcam
-        # resets its frame-rate strategy on mode change.  The probe runs once per
-        # acquisition (the recording exposure is fixed, so the achievable rate
-        # can't change between FOVs); later FOVs just re-assert the cached rate
-        # after their own mode switch.  Every plane records at the same fps.
+        # The mode switch happens first because toupcam resets its frame-rate
+        # strategy on mode change.
         self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-        if self._effective_fps is None:
-            # The rate was resolved by the controller before the run started
-            # (params.effective_fps, also in acquisition.yaml); a caller that built
-            # the params by hand falls back to the requested rate.  Applying the
-            # hint tells us whether the camera paces itself and, as a safety net,
-            # whether it can do even less than resolved.
-            target_fps = self.params.effective_fps or self.params.fps
-            effective_fps = target_fps
-            paced = False
-            try:
-                achievable_fps = self.camera.set_frame_rate(target_fps)
-                if achievable_fps and 0 < achievable_fps < target_fps * (1 - 0.01):
-                    log.warning(
-                        f"camera reports {achievable_fps:.2f} fps, below the resolved {target_fps:g} fps; "
-                        f"recording at {achievable_fps:.2f} fps (acquisition.yaml has the resolved value)"
-                    )
-                    effective_fps = achievable_fps
-                # A camera that reports it will deliver at (or below) the target
-                # rate delivers only wanted frames: route sequentially.  A camera
-                # that reports a HIGHER rate free-runs faster than the target (no
-                # hardware pacing) and must be downsampled by arrival time.
-                paced = bool(achievable_fps) and achievable_fps <= target_fps * (1 + 1e-6)
-            except Exception:
-                log.exception("set_frame_rate failed; assuming the resolved fps")
-            self._effective_fps = effective_fps
-            self._paced = paced
-            log.info(
-                f"recording at {effective_fps:g} fps ({'camera-paced, sequential slots' if paced else 'free-run, downsampled by arrival time'})"
-            )
-        else:
-            try:
-                self.camera.set_frame_rate(self._effective_fps)
-            except Exception:
-                log.exception("failed to re-apply cached frame rate")
-        effective_fps = self._effective_fps
+        effective_fps = self._apply_recording_rate()
         T = max(1, frame_count(effective_fps, self.params.duration_s))
 
         offsets = recording_plane_offsets_um(
@@ -393,9 +339,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
         )
         n_planes = len(offsets)
 
-        # Move to the first plane with illumination OFF (matches the
-        # pre-multi-plane behavior: the sample must not be illuminated during
-        # the Z move + settle). The CONTINUOUS stream does not gate
+        # Move to the first plane with illumination OFF (the sample must not be
+        # illuminated during the Z move + settle). The CONTINUOUS stream does not gate
         # illumination per-frame, and set_microscope_mode only energizes
         # illumination when live (we are not live here), so illumination is
         # turned on explicitly here and stays on across all planes of this FOV
@@ -412,7 +357,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
                         break
                     self._move_z_to_offset(z_ref, plane_offset_um)
                 total_emitted += self._record_one_plane(
-                    t_idx, region_id, fov_idx, plane_idx, n_planes, plane_offset_um, effective_fps, T
+                    t_idx, region_id, fov_idx, plane_idx, n_planes, plane_offset_um, T
                 )
         finally:
             self.liveController.turn_off_illumination()
@@ -429,6 +374,55 @@ class RecordZStackWorker(MultiPointWorkerBase):
             self.move_to_z_level(z_ref)
         return total_emitted
 
+    def _apply_recording_rate(self) -> float:
+        """Apply the recording frame rate to the camera and return the rate the recording runs at.
+
+        Sizes the dataset, pacing, and time metadata from the fps the camera can
+        actually deliver: a camera clamped below the requested rate (exposure
+        limit, PRECISE_FRAMERATE max) can never fill fps*duration frames within
+        duration seconds — the run would stall to the timeout and leave the
+        trailing planes blank.  The probe runs once per acquisition (the recording
+        exposure is fixed, so the achievable rate can't change between FOVs); later
+        FOVs just re-assert the cached rate after their own mode switch.  Every
+        plane records at the same fps.
+        """
+        if self._effective_fps is not None:
+            try:
+                self.camera.set_frame_rate(self._effective_fps)
+            except Exception:
+                log.exception("failed to re-apply cached frame rate")
+            return self._effective_fps
+
+        # The rate was resolved by the controller before the run started
+        # (params.effective_fps, also in acquisition.yaml); a caller that built
+        # the params by hand falls back to the requested rate.  Applying the
+        # hint tells us whether the camera paces itself and, as a safety net,
+        # whether it can do even less than resolved.
+        target_fps = self.params.effective_fps or self.params.fps
+        effective_fps = target_fps
+        paced = False
+        try:
+            achievable_fps = self.camera.set_frame_rate(target_fps)
+            if achievable_fps and 0 < achievable_fps < target_fps * (1 - 0.01):
+                log.warning(
+                    f"camera reports {achievable_fps:.2f} fps, below the resolved {target_fps:g} fps; "
+                    f"recording at {achievable_fps:.2f} fps (acquisition.yaml has the resolved value)"
+                )
+                effective_fps = achievable_fps
+            # A camera that reports it will deliver at (or below) the target
+            # rate delivers only wanted frames: route sequentially.  A camera
+            # that reports a HIGHER rate free-runs faster than the target (no
+            # hardware pacing) and must be downsampled by arrival time.
+            paced = bool(achievable_fps) and achievable_fps <= target_fps * (1 + 1e-6)
+        except Exception:
+            log.exception("set_frame_rate failed; assuming the resolved fps")
+        self._effective_fps = effective_fps
+        self._paced = paced
+        log.info(
+            f"recording at {effective_fps:g} fps ({'camera-paced, sequential slots' if paced else 'free-run, downsampled by arrival time'})"
+        )
+        return effective_fps
+
     def _record_one_plane(
         self,
         t_idx: int,
@@ -437,7 +431,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
         plane_idx: int,
         n_planes: int,
         plane_offset_um: float,
-        effective_fps: float,
         T: int,
     ) -> int:
         """Record one plane's continuous stream to its own Zarr store.
@@ -447,11 +440,9 @@ class RecordZStackWorker(MultiPointWorkerBase):
         of frames emitted for this plane.
         """
         rec_channel = self.params.recording_channel
+        effective_fps = self._effective_fps
         out = self._recording_path(t_idx, region_id, fov_idx, plane_idx=plane_idx, n_planes=n_planes)
         y, x, dtype = self._frame_shape
-
-        rec_channel_name = rec_channel.name if rec_channel is not None else "REC"
-        rec_color = rec_channel.display_color if rec_channel is not None else "#FFFFFF"
         # requested vs effective fps travel with the data: the store is sized and
         # timed from the rate the camera can deliver, which may be below what the
         # user typed (the GUI warns before starting; this is the on-disk record).
@@ -471,8 +462,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
             pixel_size_um=self._pixel_size_um if self._pixel_size_um is not None else 1.0,
             z_step_um=None,
             time_increment_s=(1.0 / effective_fps) if effective_fps and effective_fps > 0 else None,
-            channel_names=[rec_channel_name],
-            channel_colors=[rec_color],
+            channel_names=[rec_channel.name],
+            channel_colors=[rec_channel.display_color],
             channel_wavelengths=[None],
             is_hcs=False,
             extra_squid_attrs=extra_attrs,
@@ -529,7 +520,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # finally restores the user's trigger mode once at the end of the
         # acquisition.  Manage the streaming lifecycle locally so it never
         # interferes with the recording phase's CONTINUOUS streaming.
-        if getattr(self.liveController, "trigger_mode", None) != TriggerMode.SOFTWARE:
+        if self.liveController.trigger_mode != TriggerMode.SOFTWARE:
             try:
                 self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
             except Exception:
@@ -653,9 +644,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
     def _recording_path(self, t_idx: int, region_id, fov_idx: int, plane_idx: int = 0, n_planes: int = 1) -> str:
         """Per-(t, region, fov[, plane]) recording dataset path under {experiment}/recording.
 
-        Single-plane recordings (n_planes == 1) keep the historical
-        ``fov_{k}.ome.zarr`` name; multi-plane recordings get one store per
-        plane: ``fov_{k}_z{j}.ome.zarr``.
+        Single-plane recordings (n_planes == 1) are named ``fov_{k}.ome.zarr``;
+        multi-plane recordings get one store per plane: ``fov_{k}_z{j}.ome.zarr``.
         """
         fov_name = f"fov_{fov_idx}.ome.zarr" if n_planes == 1 else f"fov_{fov_idx}_z{plane_idx}.ome.zarr"
         return os.path.join(self.experiment_path, "recording", f"t{t_idx}", str(region_id), fov_name)

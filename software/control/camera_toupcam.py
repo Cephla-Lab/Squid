@@ -635,8 +635,9 @@ class ToupcamCamera(AbstractCamera):
         (min_exposure, max_exposure, default_exposure) = self._camera.get_ExpTimeRange()
         return min_exposure / 1000.0, max_exposure / 1000.0  # us -> ms
 
-    def _continuous_max_framerate(self) -> float:
-        """Highest frame rate the sensor can sustain in CONTINUOUS (free-run) mode, in fps.
+    def _continuous_max_framerate(self, exposure_time_ms: Optional[float] = None) -> float:
+        """Highest frame rate the sensor can sustain in CONTINUOUS (free-run) mode, in fps, at the
+        given exposure (None: the current one).
 
         In continuous mode the exposure pipelines with sensor readout, so the frame period
         is max(readout, exposure).  This deliberately does NOT use get_total_frame_time()
@@ -645,9 +646,9 @@ class ToupcamCamera(AbstractCamera):
         pure, exposure-independent readout period.  The triggered-mode timing getters
         (get_strobe_time/get_total_frame_time/_calculate_strobe_info) are left untouched.
         """
+        exposure = self.get_exposure_time() if exposure_time_ms is None else float(exposure_time_ms)
         readout_ms = self._strobe_info.strobe_time_us / 1000.0
-        frame_ms = max(readout_ms, self.get_exposure_time())
-        return 1000.0 / frame_ms
+        return 1000.0 / max(readout_ms, exposure)
 
     def _refresh_precise_framerate_range(self) -> Optional[Tuple[int, int]]:
         """Return (min, max) PRECISE_FRAMERATE in tenths of fps, refreshing the cache when possible.
@@ -683,9 +684,7 @@ class ToupcamCamera(AbstractCamera):
         at that exposure, bounded by the cached PRECISE_FRAMERATE maximum when the cache is for
         the current mode.  Within ~1.5% of the SDK's own maximum in every mode measured.
         """
-        exposure = self.get_exposure_time() if exposure_time_ms is None else float(exposure_time_ms)
-        readout_ms = self._strobe_info.strobe_time_us / 1000.0
-        fps = 1000.0 / max(readout_ms, exposure)
+        fps = self._continuous_max_framerate(exposure_time_ms)
         rng = self._precise_framerate_range_tenths
         if rng is not None:
             try:
