@@ -268,8 +268,9 @@ def match_template(image, template_image, scale: float) -> Match:
     specimen; the tests pin it). `runner_up_ratio` compares the peak with the best distinct peak
     outside its own lobe: near 1 for a periodic or featureless scene, None when there is none. The
     search sees only the translations it holds, so `self_similarity` measures, on the whole image and
-    the whole resampled view, whether the sample repeats at any translation up to half their size, and
-    `open_lobe` whether their central peak can be isolated at all.
+    the whole resampled view, whether the sample repeats at any translation up to half their size (a
+    cropped template can only raise it past the limit), and `open_lobe` whether their central peak can
+    be isolated at all.
     """
     img = np.asarray(image, dtype=np.float32)
     view = np.asarray(template_image, dtype=np.float32)
@@ -291,6 +292,13 @@ def match_template(image, template_image, scale: float) -> Match:
     whole_view = (max(2, int(round(view.shape[0] * scale))), max(2, int(round(view.shape[1] * scale))))
     frames = [self_similarity(f) for f in (img_hp, high_pass(_resample_template(view, scale, whole_view), sigma))]
     repeat = max((s for s, _ in frames if s is not None), key=lambda s: s.value, default=None)
+    if (th, tw) != whole_view and repeat is not None and repeat.value < MAX_SELF_SIMILARITY:
+        # A cropped template (equal or near-equal magnifications) can only escalate the frames' verdict: a
+        # periodic patch that fills it but not the whole frames is diluted in the frames' self-similarity
+        # (the final review of C1). The frames' better-sampled result stays whenever it already decides.
+        template_repeat = self_similarity(tpl_hp)[0]
+        if template_repeat is not None and template_repeat.value >= MAX_SELF_SIMILARITY:
+            repeat = template_repeat
     open_lobe = frames[0][1] or frames[1][1]
     dx = px + (tw - 1) / 2 - (w - 1) / 2
     dy = py + (th - 1) / 2 - (h - 1) / 2

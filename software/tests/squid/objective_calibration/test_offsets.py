@@ -9,7 +9,7 @@ from squid.objective_calibration import offsets
 from squid.objective_calibration.engine import CalibrationView
 from squid.objective_calibration.offsets import OffsetsError, register_offsets
 from squid.objective_calibration.registration import MAX_SELF_SIMILARITY, Match, SelfSimilarity
-from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
+from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeGridPatchScene, FakeObjective, FakeScene
 
 ORDERED = ["4x", "10x", "20x"]
 PIXEL_UM = {"4x": 1.6, "10x": 0.64, "20x": 0.32}
@@ -282,3 +282,20 @@ def test_an_objective_without_a_matrix_in_this_cycle_fails():
     view = CalibrationView({"4x": hw.objectives["4x"].matrix_um_per_px, "20x": hw.objectives["20x"].matrix_um_per_px})
     with pytest.raises(OffsetsError, match="no pixel calibration for 10x in this cycle"):
         register_offsets(_images(hw), view, ORDERED)
+
+
+@pytest.mark.parametrize("period", [20.0, 24.0])
+@pytest.mark.parametrize("grid_amp", [0.5, 1.0])
+@pytest.mark.parametrize("noise", [0.0, 0.002])
+def test_a_periodic_patch_is_never_measured_wrong_at_equal_magnification(period, grid_amp, noise):
+    """The final review of C1: a grid patch that fills the matched template but not the whole frame, the
+    second objective one period away, beyond the ±20% search of an equal-magnification pair. The frames'
+    self-similarity is diluted by the texture around the patch; the matched template's is not."""
+    offset = (period, 0.0)
+    scene = FakeGridPatchScene(period, (-30.0, 50.0, -25.0, 25.0), grid_amp=grid_amp)
+    images, view, ordered = _pair({"20x-a": 0.32, "20x-b": 0.32}, offset, scene=scene, noise=noise)
+    try:
+        result = register_offsets(images, view, ordered)
+    except OffsetsError:
+        return  # refused: acceptable
+    assert result.offsets_um["20x-b"] == pytest.approx(offset, abs=0.5)  # never a wrong offset

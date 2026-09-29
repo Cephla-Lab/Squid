@@ -195,6 +195,32 @@ class FakeScene:
         return out
 
 
+def _inside(u: np.ndarray, low: float, high: float) -> np.ndarray:
+    """1 inside [low, high], 0 outside, with 1 um soft edges."""
+    return 1.0 / (1.0 + np.exp(low - u)) / (1.0 + np.exp(u - high))
+
+
+class FakeGridPatchScene(FakeScene):
+    """The broadband specimen with a grid patch (the final review of C1): inside rect_um = (x0, x1, y0, y1),
+    in sample um, a two-dimensional grid of period_um replaces the texture. A periodic region that fills
+    the matched template but not the whole frame, so the frame's own self-similarity is diluted."""
+
+    def __init__(
+        self, period_um: float, rect_um: Tuple[float, float, float, float], grid_amp: float = 1.0, seed: int = 0
+    ):
+        super().__init__(octaves=_octaves(seed))
+        self._grid = FakeScene.grid(period_um)
+        self._rect = rect_um
+        self._grid_amp = grid_amp
+
+    def render(self, ux: np.ndarray, uy: np.ndarray, sigma_um, px_um: float) -> np.ndarray:
+        texture = FakeScene(octaves=self.octaves).render(ux, uy, sigma_um, px_um)
+        grid = 0.1 * self._grid.render(ux, uy, sigma_um, px_um)
+        x0, x1, y0, y1 = self._rect
+        patch = _inside(ux, x0, x1) * _inside(uy, y0, y1)
+        return texture * (1 - patch) + self._grid_amp * grid * patch
+
+
 class FakeCalibrationHardware:
     def __init__(
         self,

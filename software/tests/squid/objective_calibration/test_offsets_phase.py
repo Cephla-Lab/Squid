@@ -449,3 +449,32 @@ def test_the_closure_pair_that_does_not_fit_is_reported_not_measurable():
     assert not closure.measurable
     assert cycle.offsets["20x"].closure_error_um is None
     assert depth_of_field_um(0.8) < aligned_range_um(0.8, (80.0, 0.0)) == pytest.approx(6.6)
+
+
+@pytest.mark.parametrize("noise", [0.0, 0.002])
+def test_an_offsets_only_run_on_a_periodic_patch_saves_no_wrong_offset(noise):
+    """The final review of C1's complete run: two 20x objectives, a 20 um grid patch in textured
+    surroundings, the second objective one period away. It used to finish every cycle with dx +0.02 um."""
+    from squid.objective_calibration.synthetic import FakeGridPatchScene
+
+    period = 20.0
+    objectives = {
+        "20x-air": FakeObjective("20x-air", 20, 0.8, pixel_um=0.32),
+        "20x-water": FakeObjective("20x-water", 20, 1.0, pixel_um=0.32, parcentric_um=(period, 0.0), z_focus_um=3.0),
+    }
+    hw = FakeCalibrationHardware(
+        objectives, FakeGridPatchScene(period, (-30.0, 50.0, -25.0, 25.0), grid_amp=0.5), noise=noise
+    )
+    cfg = RunConfig(
+        [ObjectiveSpec(n, 20, o.na, 0.32) for n, o in objectives.items()],
+        "BF",
+        search_range_um=20.0,
+        cycles=3,
+        measure_pixel_size=False,
+        saved_matrices_um_per_px={n: o.matrix_um_per_px for n, o in objectives.items()},
+    )
+    phase = OffsetsPhase(cfg, fine_metric=lape)
+    run_calibration(hw, cfg, fine_metric=lape, phase2=phase)
+    for name, summary in summarize_offsets(phase.results).items():
+        if name == "20x-water":
+            assert summary.dx_um == pytest.approx(period, abs=0.5), summary  # measured right, or not at all
