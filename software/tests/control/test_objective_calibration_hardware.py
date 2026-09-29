@@ -221,3 +221,90 @@ def test_the_next_snap_waits_for_the_stage_to_settle(scope, monkeypatch):
     hw.move_z_to_um((z_low + z_high) / 2 + 5.0)
     hw.snap(objective, channel)
     assert sleeps[-1] == max(ocht.SETTLE_S, control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+
+
+class _UnverifiedRoiCamera:
+    """A camera driver outside ROI_UNBINNED_DRIVERS (Toupcam, Tucsen, Andor, ...): its ROI units are not
+    verified, so the offset key holds its raw ROI and binning."""
+
+    def __init__(self, roi, binning):
+        self.roi, self.binning = roi, binning
+
+    def get_region_of_interest(self):
+        return self.roi
+
+    def get_binning(self):
+        return self.binning
+
+
+def test_only_verified_drivers_report_an_unbinned_roi_centre(scope):
+    assert ocht.ROI_UNBINNED_DRIVERS == {
+        "control.camera_hamamatsu.HamamatsuCamera",
+        "squid.camera.utils.SimulatedCamera",
+    }
+    hw = _hw(scope)
+    x, y, w, h = scope.camera.get_region_of_interest()
+    assert hw.roi() == (x, y, w, h) and hw.roi_centre_px() == (x + w / 2, y + h / 2)
+    assert ocht.roi_centre_px(_UnverifiedRoiCamera((0, 0, 1024, 1024), (2, 2))) is None
+
+
+def _saved_offsets(hw):
+    """An offset calibration saved with hw's camera key now, and its validity against the key it has later."""
+    from control.models.objective_calibration_config import offset_camera_key, offset_validity
+    from tests.control.test_objective_offset_records import TURRET, _calibrated
+
+    saved = _calibrated(camera=offset_camera_key(hw))
+    return saved, lambda: offset_validity(saved, TURRET, offset_camera_key(hw))
+
+
+def test_on_a_verified_driver_a_binning_change_keeps_xy_valid(scope):
+    scope.camera.set_binning(1, 1)
+    scope.camera.set_region_of_interest(0, 0, 1920, 1080)
+    _, validity = _saved_offsets(_hw(scope))
+    scope.camera.set_binning(2, 2)  # the simulated camera keeps its ROI in unbinned pixels
+    assert (validity().z, validity().xy, validity().reason) == (True, True, "")
+
+
+def test_a_centre_moved_by_an_roi_and_binning_change_together_invalidates_xy(scope):
+    # The external review's case: the old (x + w/2) * binning rule found (1024, 1024) both times
+    scope.camera.set_binning(1, 1)
+    scope.camera.set_region_of_interest(0, 0, 1920, 1080)
+    _, validity = _saved_offsets(_hw(scope))
+    scope.camera.set_binning(2, 2)
+    scope.camera.set_region_of_interest(0, 0, 960, 540)  # unbinned: the centre moves (960, 540) -> (480, 270)
+    assert validity().z and not validity().xy and "camera ROI centre changed" in validity().reason
+
+
+def test_on_an_unverified_driver_a_binning_change_invalidates_xy(scope, monkeypatch):
+    camera = _UnverifiedRoiCamera((0, 0, 1024, 1024), (2, 2))
+    monkeypatch.setattr(scope, "camera", camera)
+    saved, validity = _saved_offsets(_hw(scope))
+    assert saved.offset_calibration.camera_key.roi_centre_px is None and validity().xy
+    camera.binning, camera.roi = (1, 1), (0, 0, 2048, 2048)  # the same centre, were its ROI in binned pixels
+    assert validity().z and not validity().xy and "ROI units are unverified" in validity().reason
+
+
+def test_simulation_hardware_measures_offsets_end_to_end():
+    from squid.objective_calibration.offsets import OffsetsPhase
+
+    specs = [
+        ObjectiveSpec("4x", 4, 0.13, 0.94),
+        ObjectiveSpec("10x", 10, 0.3, 0.376),
+        ObjectiveSpec("20x", 20, 0.8, 0.188),
+    ]
+    hw = simulation_hardware(specs, "20x", 3.76)
+    cfg = RunConfig(specs, "BF", 100.0, 1)
+    phase = OffsetsPhase(cfg, fine_metric=lambda crop: float(calculate_focus_measure(crop, FocusMeasureOperator.LAPE)))
+    result = run_calibration(hw, cfg, fine_metric=phase.fine_metric, phase2=phase)
+    assert result.stopped is None and result.cycles[0].error is None
+    [cycle] = phase.results
+    reference = hw.objectives["4x"]
+    for name in ("10x", "20x"):
+        truth = hw.objectives[name]
+        expected = (
+            truth.parcentric_um[0] - reference.parcentric_um[0],
+            truth.parcentric_um[1] - reference.parcentric_um[1],
+        )
+        assert max(map(abs, expected)) > 1.0  # simulation_hardware injects parcentric offsets to measure
+        assert (cycle.offsets[name].dx_um, cycle.offsets[name].dy_um) == pytest.approx(expected, abs=1.0)
+        assert cycle.offsets[name].dz_um == pytest.approx(truth.z_focus_um - reference.z_focus_um, abs=1.0)
