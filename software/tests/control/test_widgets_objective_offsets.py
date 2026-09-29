@@ -410,3 +410,21 @@ def test_a_repeat_beyond_the_search_is_never_saved_as_a_valid_offset(qtbot, tmp_
     dialog.button_apply.click()
     saved = repo.get_objective_calibration().objectives["20x-long"].offset
     assert saved.dx_um is None or saved.dx_um == pytest.approx(28.0, abs=3.0), dialog.label_offsets.text()
+
+
+def test_clearing_the_pixel_size_before_apply_keeps_the_xy_the_run_measured(qtbot, tmp_path, make_dialog, monkeypatch):
+    """The final review of C1 (M1): an offsets-only run registers with the saved matrices it started with;
+    clearing them before Apply does not change what that run measured, nor its camera orientation."""
+    ConfigRepository(base_path=tmp_path).save_objective_calibration(merge_pixel_records(None, _true_pixel_records()))
+    dialog, _ = make_dialog(pixel_size=False)
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    assert dialog.offsets
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    dialog.button_clear.click()
+    assert all(entry.pixel_size is None for entry in _saved(tmp_path).objectives.values())
+    dialog.button_apply.click()
+    assert ORIENTATION_MESSAGE not in dialog.label_result.text()
+    saved = _saved(tmp_path).objectives
+    assert saved["10x"].offset.dx_um == pytest.approx(PARCENTRIC["10x"][0], abs=0.5), dialog.label_result.text()
+    assert saved["20x"].offset.dx_um is not None

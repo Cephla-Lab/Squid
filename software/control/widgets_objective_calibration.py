@@ -75,12 +75,10 @@ RUNNING_MESSAGE = (
     "A calibration is running. Cancel it and wait for the stage and objective to be put back before closing."
 )
 GUIDANCE = (
-    "Use a flat, textured, non-periodic sample (a stained section, or a region of a USAF target containing "
-    "several bar groups of different sizes: a single group is periodic, and bare glass has no texture), "
-    "roughly in focus on the current objective, with the stage away from its travel limits. "
-    "Offsets need an amplitude target (a USAF target with a group-number label in view, a stained section or a "
-    "printed pattern; not unstained cells in brightfield) that lies level in its holder: a tilt s adds up to "
-    "s × W/2 to the Z offsets, with W half the smallest field of view. "
+    "Use a level stained section with varied texture in both directions, roughly in focus on the current "
+    "objective, with the stage away from its travel limits. Avoid repeating patterns (a grating, a single "
+    "bar group), bare glass and unstained cells in brightfield: they cannot be matched or focused reliably. "
+    "A tilt s adds up to s × W/2 to the Z offsets, with W half the smallest field of view. "
     "Saved calibrations are recorded for review; this version does not apply them yet."
 )
 ORIENTATION_MESSAGE = (
@@ -611,10 +609,10 @@ class ObjectiveCalibrationDialog(QDialog):
 
     def _orientation_matches(self) -> bool:
         """Whether XY may be saved (spec C §5): every matrix the run registered with (this run's, or
-        the saved ones in an offsets-only run) has F = I."""
+        the saved ones it started with in an offsets-only run, even if cleared since) has F = I."""
         if self.result is not None and self.result.pixel_sizes:
             return all(s.orientation_matches_mosaic for s in self.result.pixel_sizes.values())
-        matrices = self._saved_matrices_um_per_px()
+        matrices = self.phase.cfg.saved_matrices_um_per_px if self.phase is not None else {}
         return bool(matrices) and all(np.array_equal(decompose(m)[2], np.eye(2)) for m in matrices.values())
 
     def _show_result(self, result: RunResult):
