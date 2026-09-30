@@ -420,17 +420,21 @@ class SpotDetectionMode(Enum):
     """Specifies which spot to detect when multiple spots are present.
 
     SINGLE: Expect and detect single spot
-    DUAL_RIGHT: In dual-spot case, use rightmost spot
-    DUAL_LEFT: In dual-spot case, use leftmost spot
-    MULTI_RIGHT: In multi-spot case, use rightmost spot
-    MULTI_SECOND_RIGHT: In multi-spot case, use spot immediately left of rightmost spot
+    MULTI_LEFT: Use leftmost spot
+    MULTI_RIGHT: Use rightmost spot
+    MULTI_SECOND_RIGHT: Use spot immediately left of rightmost spot
+
+    A machine's .ini can have the former names dual_left and dual_right, of multi_left and multi_right.
     """
 
     SINGLE = "single"
-    DUAL_RIGHT = "dual_right"
-    DUAL_LEFT = "dual_left"
+    MULTI_LEFT = "multi_left"
     MULTI_RIGHT = "multi_right"
     MULTI_SECOND_RIGHT = "multi_second_right"
+
+    @classmethod
+    def _missing_(cls, value):
+        return {"dual_left": cls.MULTI_LEFT, "dual_right": cls.MULTI_RIGHT}.get(value)
 
 
 class FileSavingOption(Enum):
@@ -933,22 +937,27 @@ LASER_AF_AVERAGING_N = 3
 LASER_AF_DISPLAY_SPOT_IMAGE = True
 LASER_AF_CROP_WIDTH = 1536
 LASER_AF_CROP_HEIGHT = 256
-LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.DUAL_LEFT.value
+LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.MULTI_LEFT.value
 LASER_AF_RANGE = 100
-DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
+DISPLACEMENT_SUCCESS_WINDOW_PIXELS = 300  # Max displacement from reference x to accept detection (pixels)
 SPOT_CROP_SIZE = 100
 CORRELATION_THRESHOLD = 0.7
 PIXEL_TO_UM_CALIBRATION_DISTANCE = 6.0
-LASER_AF_Y_WINDOW = 96
-LASER_AF_X_WINDOW = 20
-LASER_AF_MIN_PEAK_WIDTH = 10
-LASER_AF_MIN_PEAK_DISTANCE = 10
-LASER_AF_MIN_PEAK_PROMINENCE = 0.20
-LASER_AF_SPOT_SPACING = 100
+# Connected component spot detection parameters
+LASER_AF_CC_THRESHOLD = 8  # Intensity threshold for binarization
+LASER_AF_CC_MIN_AREA = 5  # Minimum component area in pixels
+LASER_AF_CC_MAX_AREA = 5000  # Maximum component area in pixels
+LASER_AF_CC_ROW_TOLERANCE = 50  # Allowed deviation from expected row (pixels)
+LASER_AF_CC_MAX_ASPECT_RATIO = 2.5  # Maximum aspect ratio (width/height or height/width)
 SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS = False
-LASER_AF_FILTER_SIGMA = None
+LASER_AF_FILTER_SIGMA = 1  # Sigma for Gaussian filter before spot detection
 LASER_AF_INITIALIZE_CROP_WIDTH = 1200
 LASER_AF_INITIALIZE_CROP_HEIGHT = 800
+
+# When an autofocus move finds no spot, search for it in z, over LASER_AF_RANGE on each side
+LASER_AF_SEARCH_FOR_SPOT = True
+# If True, search downward (smaller z values) first then upward; if False, search upward first
+LASER_AF_SEARCH_DOWN_FIRST = True
 
 MULTIPOINT_REFLECTION_AUTOFOCUS_ENABLE_BY_DEFAULT = False
 MULTIPOINT_CONTRAST_AUTOFOCUS_ENABLE_BY_DEFAULT = False
