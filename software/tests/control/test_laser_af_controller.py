@@ -11,6 +11,7 @@ import pytest
 
 import control._def
 from control._def import SpotDetectionMode
+from control.core.config import ConfigRepository
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.models import LaserAFConfig
 from control.widgets import LaserAutofocusSettingWidget
@@ -220,3 +221,26 @@ def test_settings_panel_offers_every_spot_detection_mode(settings_widget):
         "multi_right",
         "multi_second_right",
     ]
+
+
+def test_laser_af_is_not_initialized_from_a_profile_saved_with_line_profile_detection(tmp_path):
+    from tests.control.core.config.test_repository import LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION
+
+    (tmp_path / "machine_configs").mkdir()
+    profile = tmp_path / "user_profiles" / "default"
+    (profile / "channel_configs").mkdir(parents=True)
+    (profile / "laser_af_configs").mkdir()
+    (profile / "laser_af_configs" / "20x.yaml").write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION)
+    repo = ConfigRepository(base_path=tmp_path)
+    repo.set_profile("default")
+
+    controller = LaserAutofocusController(
+        microcontroller=MagicMock(),
+        camera=MagicMock(),
+        liveController=types.SimpleNamespace(microscope=types.SimpleNamespace(config_repo=repo)),
+        stage=MagicMock(),
+        objectiveStore=types.SimpleNamespace(current_objective="20x"),
+    )
+
+    assert not controller.is_initialized
+    assert not controller.laser_af_properties.has_reference

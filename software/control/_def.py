@@ -424,8 +424,7 @@ class SpotDetectionMode(Enum):
     MULTI_RIGHT: Use rightmost spot
     MULTI_SECOND_RIGHT: Use spot immediately left of rightmost spot
 
-    Saved profiles and .ini files can have the former names dual_left and dual_right, of multi_left and
-    multi_right.
+    A machine's .ini can have the former names dual_left and dual_right, of multi_left and multi_right.
     """
 
     SINGLE = "single"

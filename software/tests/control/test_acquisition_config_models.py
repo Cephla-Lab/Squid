@@ -776,21 +776,22 @@ class TestLaserAFConfig:
         with pytest.raises(ValidationError):
             LaserAFConfig(spot_detection_mode="dual_centre")
 
-    def test_laser_af_config_accepts_retired_line_profile_settings(self):
-        """Profiles saved before connected components detection have these; they load and the settings are dropped."""
-        config = LaserAFConfig(
-            pixel_to_um=0.5,
-            displacement_success_window_um=1.0,
-            y_window=96,
-            x_window=20,
-            min_peak_width=10.0,
-            min_peak_distance=10.0,
-            min_peak_prominence=0.2,
-            spot_spacing=100.0,
-        )
-
-        assert config.pixel_to_um == 0.5
-        assert set(config.model_dump()) == set(LaserAFConfig.model_fields)
+    @pytest.mark.parametrize(
+        "line_profile_setting",
+        [
+            "displacement_success_window_um",
+            "y_window",
+            "x_window",
+            "min_peak_width",
+            "min_peak_distance",
+            "min_peak_prominence",
+            "spot_spacing",
+        ],
+    )
+    def test_laser_af_config_rejects_line_profile_settings(self, line_profile_setting):
+        """A profile saved with them is not converted: laser AF is initialized again."""
+        with pytest.raises(ValidationError, match=line_profile_setting):
+            LaserAFConfig(**{line_profile_setting: 1})
 
     def test_laser_af_config_rejects_unknown_setting(self):
         """A misspelled setting must stay an error: it would otherwise be ignored and its default used."""

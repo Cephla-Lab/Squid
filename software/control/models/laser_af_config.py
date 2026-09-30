@@ -6,34 +6,13 @@ calibration data and detection parameters.
 """
 
 import base64
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
-from pydantic import (
-    BaseModel,
-    Field,
-    SerializationInfo,
-    SerializerFunctionWrapHandler,
-    model_serializer,
-    model_validator,
-)
+from pydantic import BaseModel, Field
 
 import control._def as _def
 from control._def import SpotDetectionMode
-
-# Settings of the line-profile spot detection, which connected components detection replaced.
-# Saved profiles still have them.
-RETIRED_FIELDS = frozenset(
-    {
-        "displacement_success_window_um",
-        "y_window",
-        "x_window",
-        "min_peak_width",
-        "min_peak_distance",
-        "min_peak_prominence",
-        "spot_spacing",
-    }
-)
 
 
 class LaserAFConfig(BaseModel):
@@ -106,7 +85,7 @@ class LaserAFConfig(BaseModel):
         description="Maximum aspect ratio for valid spot",
     )
     filter_sigma: Optional[float] = Field(
-        default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (None or 0: no filter)"
+        default_factory=lambda: _def.LASER_AF_FILTER_SIGMA, description="Gaussian filter sigma (0: no filter)"
     )
 
     # Camera settings
@@ -132,26 +111,6 @@ class LaserAFConfig(BaseModel):
     reference_image_dtype: Optional[str] = Field(None, description="Data type of reference image array")
 
     model_config = {"extra": "forbid"}
-
-    @model_validator(mode="before")
-    @classmethod
-    def load_profile_saved_with_retired_fields(cls, data: Any) -> Any:
-        """Let a profile saved with the retired settings load, keeping its calibration, reference and filter."""
-        if not isinstance(data, dict) or RETIRED_FIELDS.isdisjoint(data):
-            return data
-        kept = {name: value for name, value in data.items() if name not in RETIRED_FIELDS}
-        # The release that saved it had no filter by default, and left "no filter" out of the file
-        if kept.get("filter_sigma") is None:
-            kept["filter_sigma"] = 0.0
-        return kept
-
-    @model_serializer(mode="wrap")
-    def save_no_filter_as_zero(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> Dict[str, Any]:
-        """Saving leaves None out of the file, and a file without filter_sigma loads with the default filter."""
-        data = handler(self)
-        if self.filter_sigma is None and "filter_sigma" not in (info.exclude or ()):
-            data["filter_sigma"] = 0.0
-        return data
 
     def get_spot_detection_mode(self) -> SpotDetectionMode:
         """Get the SpotDetectionMode enum value."""

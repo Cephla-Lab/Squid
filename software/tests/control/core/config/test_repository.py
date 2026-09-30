@@ -2,14 +2,12 @@
 Unit tests for ConfigRepository.
 """
 
-import numpy as np
 import pytest
 import yaml
 from pathlib import Path
 import tempfile
 import shutil
 
-from control._def import SpotDetectionMode
 from control.core.config import ConfigRepository
 from control.models import (
     GeneralChannelConfig,
@@ -17,7 +15,6 @@ from control.models import (
     AcquisitionChannel,
     IlluminationSettings,
     CameraSettings,
-    LaserAFConfig,
 )
 from control.models.camera_registry import CameraRegistryConfig, CameraDefinition
 from control.models.filter_wheel_config import FilterWheelRegistryConfig, FilterWheelDefinition, FilterWheelType
@@ -106,7 +103,7 @@ channels:
 
 
 # As written by the release before connected components spot detection, which had the line-profile settings
-# (displacement_success_window_um, y_window, x_window, min_peak_*, spot_spacing).
+# (displacement_success_window_um, y_window, x_window, min_peak_*, spot_spacing) and the dual_* modes.
 LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION = """
 version: 1
 x_offset: 1032.0
@@ -344,89 +341,14 @@ class TestConfigRepositoryProfileConfigs:
 
         assert "20x" in objectives
 
-    def test_laser_af_config_saved_with_line_profile_detection_keeps_calibration(self, repo_with_profile, temp_dir):
-        """Upgrading must not drop the calibration and reference of a profile saved by the previous release."""
+    def test_laser_af_config_saved_with_line_profile_detection_is_not_loaded(self, repo_with_profile, temp_dir):
+        """Laser AF has to be initialized again after the upgrade."""
         path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
         path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION)
 
-        config = repo_with_profile.get_laser_af_config("20x")
-
-        assert config is not None
-        assert (config.x_offset, config.y_offset) == (1032, 904)
-        assert config.pixel_to_um == 0.2143
-        assert config.calibration_timestamp == "2026-09-01 10:22:03"
-        assert config.focus_camera_exposure_time_ms == 0.8
-        assert config.has_reference is True
-        assert config.x_reference == 1801.7
-        np.testing.assert_array_equal(
-            config.reference_image_cropped, np.arange(12, dtype=np.float32).reshape(3, 4) / 11
-        )
-
-    def test_laser_af_config_saved_with_line_profile_detection_is_saved_without_them(self, repo_with_profile, temp_dir):
-        """The line-profile settings are gone from the file once the profile is saved again."""
-        path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
-        path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION)
-
-        repo_with_profile.save_laser_af_config("default", "20x", repo_with_profile.get_laser_af_config("20x"))
-
-        assert set(yaml.safe_load(path.read_text())) <= set(LaserAFConfig.model_fields)
-
-    @pytest.mark.parametrize(
-        "saved_filter_sigma, filter_sigma",
-        [
-            # no filter was the default, and it was left out of the file
-            ("", None),
-            ("filter_sigma: null", None),
-            # "None" in the settings panel
-            ("filter_sigma: -1.0", None),
-            ("filter_sigma: 2.0", 2.0),
-        ],
-    )
-    def test_laser_af_config_saved_with_line_profile_detection_keeps_its_filter(
-        self, repo_with_profile, temp_dir, saved_filter_sigma, filter_sigma
-    ):
-        """On the launch after the upgrade, and on the one after it: the profile is saved at each launch."""
-        path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
-        path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION + saved_filter_sigma)
-
-        first_launch = repo_with_profile.get_laser_af_config("20x")
-        repo_with_profile.save_laser_af_config("default", "20x", first_launch)
-        second_launch = _reopened(temp_dir).get_laser_af_config("20x")
-
-        assert [_filter_in_use(first_launch), _filter_in_use(second_launch)] == [filter_sigma, filter_sigma]
-        # the settings panel shows the value itself
-        assert first_launch.filter_sigma == second_launch.filter_sigma
-
-    def test_laser_af_config_saved_with_the_former_name_of_its_mode(self, repo_with_profile, temp_dir):
-        """dual_left is multi_left now. The profile is saved with the new name."""
-        path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
-        path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION)
-        assert "spot_detection_mode: dual_left" in path.read_text()
-
-        config = repo_with_profile.get_laser_af_config("20x")
-        repo_with_profile.save_laser_af_config("default", "20x", config)
-
-        assert config.spot_detection_mode == SpotDetectionMode.MULTI_LEFT
-        assert yaml.safe_load(path.read_text())["spot_detection_mode"] == "multi_left"
-        assert _reopened(temp_dir).get_laser_af_config("20x").spot_detection_mode == SpotDetectionMode.MULTI_LEFT
-
-    def test_laser_af_config_without_a_filter_has_none_after_it_is_saved(self, repo_with_profile, temp_dir):
-        """None is left out of the saved file, and a file without the setting gets the default filter."""
-        repo_with_profile.save_laser_af_config("default", "20x", LaserAFConfig(filter_sigma=None))
-
-        assert _filter_in_use(_reopened(temp_dir).get_laser_af_config("20x")) is None
-
-
-def _reopened(base_path):
-    """The repository of the next launch, which has nothing of this one in its cache."""
-    repo = ConfigRepository(base_path=base_path)
-    repo.set_profile("default")
-    return repo
-
-
-def _filter_in_use(config):
-    """The sigma that spot detection filters with, None if it does not filter."""
-    return config.filter_sigma if config.filter_sigma is not None and config.filter_sigma > 0 else None
+        assert repo_with_profile.get_laser_af_config("20x") is None
+        # it is left as it was, for the release that saved it
+        assert path.read_text() == LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION
 
 
 class TestConfigRepositoryCacheManagement:
