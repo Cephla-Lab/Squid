@@ -66,14 +66,6 @@ def test_shortest_slot_delta_on_an_odd_wheel(delta, expected):
     assert SquidFilterWheel._shortest_slot_delta(delta, 7) == expected
 
 
-def test_wrap_is_off_on_firmware_before_1_6():
-    w, mc, _ = _wheel()
-    mc.firmware_version = (1, 5)
-    assert w._wrap_enabled() is False
-    mc.firmware_version = (1, 6)
-    assert w._wrap_enabled() is True
-
-
 def test_eight_to_one_is_one_slot_forward_across_the_flag():
     w, mc, cfg = _wheel()
     w._positions[1] = 8
@@ -206,7 +198,7 @@ def test_wrap_ini_key_off_keeps_every_move_on_the_flag_free_arc(monkeypatch):
     assert expected * TURN > 0, f"target {expected} must have the same sign as a forward turn ({TURN})"
 
 
-@pytest.mark.parametrize("fw, expect_wrap", [((1, 4), False), ((1, 5), False), ((1, 6), True), ((2, 0), True)])
+@pytest.mark.parametrize("fw, expect_wrap", [((1, 5), False), ((1, 6), True), ((2, 0), True)])
 def test_the_default_is_on_from_firmware_1_6_and_off_below(fw, expect_wrap):
     """Crossing the flag was verified on firmware 1.6; below it the wheel keeps the flag-free arc."""
     import control._def
@@ -223,26 +215,18 @@ def test_the_default_is_on_from_firmware_1_6_and_off_below(fw, expect_wrap):
     assert w._turns[1] == (-1 if expect_wrap else 0)
 
 
-@pytest.mark.parametrize(
-    "setting, fw, enabled",
-    [
-        (True, (1, 5), False),
-        (True, (1, 6), True),
-        (False, (1, 6), False),
-        (1, (1, 6), True),  # `squid_filterwheel_wrap = 1` reads as an int
-        (0, (1, 6), False),
-    ],
-)
-def test_wrap_setting_against_firmware(monkeypatch, setting, fw, enabled):
+@pytest.mark.parametrize("setting, enabled", [(1, True), (0, False)])
+def test_wrap_setting_accepts_the_integers_an_ini_yields(monkeypatch, setting, enabled):
+    """`squid_filterwheel_wrap = 1` reaches the wheel as the int 1, not as True."""
     import control._def
 
     monkeypatch.setattr(control._def, "SQUID_FILTERWHEEL_WRAP", setting)
     mc = MagicMock()
-    mc.firmware_version = fw
+    mc.firmware_version = (1, 6)
     assert SquidFilterWheel(mc, _config(), skip_init=True)._wrap_enabled() is enabled
 
 
-@pytest.mark.parametrize("bad", ["off", "yes", "auto", 2, None])
+@pytest.mark.parametrize("bad", ["off", "yes", "auto", 2, 1.0, None])
 def test_a_mistyped_wrap_setting_is_an_error_not_a_silent_on(monkeypatch, bad):
     import control._def
 

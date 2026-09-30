@@ -223,7 +223,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
         # Read through the module rather than the `from control._def import *` binding above:
         # that binding is taken at import time and would not see an ini override.
         wrap = control._def.SQUID_FILTERWHEEL_WRAP
-        if wrap not in (True, False):  # a typo must not silently become "on" (bool("off") is True)
+        # True / False, or the 1 / 0 the ini reader yields for `= 1` / `= 0`. Anything else is refused: a typo
+        # must not silently become "on" (bool("off") is True).
+        if not isinstance(wrap, int) or wrap not in (0, 1):
             raise ValueError(f"squid_filterwheel_wrap must be True or False, not {wrap!r}")
         self.wrap: bool = bool(wrap)
 
@@ -242,10 +244,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 f"command also does not exist on older firmware. Re-flash "
                 f"firmware from firmware/controller."
             )
-        if self.wrap and tuple(fw) < self._WRAP_MIN_FIRMWARE:
+        if self.wrap and not self._wrap_enabled():
             _log.info(
-                f"Shortest-path slot changes need firmware >= {self._WRAP_MIN_FIRMWARE[0]}.{self._WRAP_MIN_FIRMWARE[1]} "
-                f"(this controller runs {fw[0]}.{fw[1]}); slot changes take the flag-free arc"
+                f"Shortest-path slot changes need firmware >= {self._WRAP_MIN_FIRMWARE} "
+                f"(this controller runs {tuple(fw)}); slot changes take the flag-free arc"
             )
 
         # Convert single config to dict format for uniform handling

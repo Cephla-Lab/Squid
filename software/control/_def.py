@@ -1099,8 +1099,7 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
-# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven). Takes effect on
-# firmware >= 1.6, where crossing the flag was verified; older firmware keeps the flag-free arc regardless.
+# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven); firmware >= 1.6 only.
 # False forces the flag-free arc on every firmware.
 SQUID_FILTERWHEEL_WRAP = True
 # > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the last
