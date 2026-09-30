@@ -1119,7 +1119,13 @@ class _ApplyChannelOffsetMixin:
         # Previously this force-unchecked on AF-off but never re-checked on AF-on, so a
         # laser-AF off->on cycle silently dropped the user's opt-in: the checkbox no longer
         # matched what actually happened during acquisition.
-        self.checkbox_applyChannelOffset.setVisible(laser_af_on)
+        #
+        # The host widgets add the checkbox to a layout only when laser AF is supported.
+        # Without that it is parentless, and showing a parentless widget makes it a
+        # top-level window: a stray "Per-channel Z-offset" box that outlives the main
+        # window and keeps the app from quitting - which a cached laser_af=true did on
+        # every machine without laser AF.
+        self.checkbox_applyChannelOffset.setVisible(laser_af_on and SUPPORT_LASER_AUTOFOCUS)
 
     def _on_apply_channel_offset_changed(self, checked: bool):
         self.multipointController.set_apply_channel_offset(checked)
