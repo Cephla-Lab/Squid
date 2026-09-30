@@ -20,7 +20,7 @@ def check_image_from_disk(image_path: str):
     print(f"Loaded image shape: {image.shape}")
 
     # Try different detection modes
-    modes = [SpotDetectionMode.SINGLE, SpotDetectionMode.DUAL_LEFT, SpotDetectionMode.DUAL_RIGHT]
+    modes = [SpotDetectionMode.SINGLE, SpotDetectionMode.MULTI_LEFT, SpotDetectionMode.MULTI_RIGHT]
 
     # Test parameters to try (connected components parameters)
     param_sets = [

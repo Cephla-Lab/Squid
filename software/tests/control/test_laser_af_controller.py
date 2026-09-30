@@ -207,3 +207,16 @@ def test_displacement_is_nan_when_no_frame_can_be_read(make_controller):
 
     assert math.isnan(controller.measure_displacement())
     assert not hardware.laser_is_on
+
+
+def test_settings_panel_offers_every_spot_detection_mode(settings_widget):
+    widget, _ = settings_widget
+    combo = widget.spot_mode_combo
+
+    assert [combo.itemData(index) for index in range(combo.count())] == list(SpotDetectionMode)
+    assert [combo.itemText(index) for index in range(combo.count())] == [
+        "single",
+        "multi_left",
+        "multi_right",
+        "multi_second_right",
+    ]

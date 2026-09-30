@@ -3128,10 +3128,8 @@ class LaserAutofocusSettingWidget(QWidget):
         spot_mode_layout = QHBoxLayout()
         spot_mode_layout.addWidget(QLabel("Spot Detection Mode:"))
         self.spot_mode_combo = QComboBox()
-        _HIDDEN_SPOT_MODES = {SpotDetectionMode.MULTI_SECOND_RIGHT}
         for mode in SpotDetectionMode:
-            if mode not in _HIDDEN_SPOT_MODES:
-                self.spot_mode_combo.addItem(mode.value, mode)
+            self.spot_mode_combo.addItem(mode.value, mode)
         current_index = self.spot_mode_combo.findData(
             self.laserAutofocusController.laser_af_properties.spot_detection_mode
         )

@@ -363,14 +363,14 @@ def find_spot_location(
             if len(valid_spots) > 1:
                 raise ValueError(f"Found {len(valid_spots)} spots but expected single spot")
             selected_spot = valid_spots[0]
-        elif mode == SpotDetectionMode.DUAL_LEFT:
+        elif mode == SpotDetectionMode.MULTI_LEFT:
             selected_spot = valid_spots[0]  # Leftmost
-        elif mode == SpotDetectionMode.DUAL_RIGHT:
-            selected_spot = valid_spots[-1]  # Rightmost
         elif mode == SpotDetectionMode.MULTI_RIGHT:
             selected_spot = valid_spots[-1]  # Rightmost
         elif mode == SpotDetectionMode.MULTI_SECOND_RIGHT:
-            raise NotImplementedError("MULTI_SECOND_RIGHT is not supported")
+            if len(valid_spots) < 2:
+                raise ValueError(f"Found {len(valid_spots)} spot but expected at least two")
+            selected_spot = valid_spots[-2]  # Immediately left of the rightmost
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 

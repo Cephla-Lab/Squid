@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import shutil
 
+from control._def import SpotDetectionMode
 from control.core.config import ConfigRepository
 from control.models import (
     GeneralChannelConfig,
@@ -395,6 +396,19 @@ class TestConfigRepositoryProfileConfigs:
         assert [_filter_in_use(first_launch), _filter_in_use(second_launch)] == [filter_sigma, filter_sigma]
         # the settings panel shows the value itself
         assert first_launch.filter_sigma == second_launch.filter_sigma
+
+    def test_laser_af_config_saved_with_the_former_name_of_its_mode(self, repo_with_profile, temp_dir):
+        """dual_left is multi_left now. The profile is saved with the new name."""
+        path = temp_dir / "user_profiles" / "default" / "laser_af_configs" / "20x.yaml"
+        path.write_text(LASER_AF_PROFILE_SAVED_WITH_LINE_PROFILE_DETECTION)
+        assert "spot_detection_mode: dual_left" in path.read_text()
+
+        config = repo_with_profile.get_laser_af_config("20x")
+        repo_with_profile.save_laser_af_config("default", "20x", config)
+
+        assert config.spot_detection_mode == SpotDetectionMode.MULTI_LEFT
+        assert yaml.safe_load(path.read_text())["spot_detection_mode"] == "multi_left"
+        assert _reopened(temp_dir).get_laser_af_config("20x").spot_detection_mode == SpotDetectionMode.MULTI_LEFT
 
     def test_laser_af_config_without_a_filter_has_none_after_it_is_saved(self, repo_with_profile, temp_dir):
         """None is left out of the saved file, and a file without the setting gets the default filter."""

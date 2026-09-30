@@ -411,7 +411,7 @@ def convert_laser_af_json_to_yaml(json_path: Path) -> Optional[LaserAFConfig]:
         "pixel_to_um_calibration_distance": data.get("pixel_to_um_calibration_distance", 6.0),
         "laser_af_range": data.get("laser_af_range", 100.0),
         "laser_af_averaging_n": data.get("laser_af_averaging_n", 3),
-        "spot_detection_mode": data.get("spot_detection_mode", "dual_right"),
+        "spot_detection_mode": data.get("spot_detection_mode", "multi_right"),
         "spot_crop_size": data.get("spot_crop_size", 100),
         "correlation_threshold": data.get("correlation_threshold", 0.9),
         # Legacy line-profile detection fields (y_window, x_window, min_peak_*, spot_spacing,

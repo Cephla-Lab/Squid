@@ -761,9 +761,20 @@ class TestLaserAFConfig:
         """Test spot detection mode getter."""
         from control._def import SpotDetectionMode
 
-        config = LaserAFConfig(spot_detection_mode="dual_left")
+        config = LaserAFConfig(spot_detection_mode="multi_left")
         mode = config.get_spot_detection_mode()
-        assert mode == SpotDetectionMode.DUAL_LEFT
+        assert mode == SpotDetectionMode.MULTI_LEFT
+
+    @pytest.mark.parametrize("former_name, name", [("dual_left", "multi_left"), ("dual_right", "multi_right")])
+    def test_laser_af_config_reads_the_former_name_of_a_mode_and_saves_the_new_one(self, former_name, name):
+        config = LaserAFConfig(spot_detection_mode=former_name)
+
+        assert config.spot_detection_mode == SpotDetectionMode(name)
+        assert config.model_dump(mode="json")["spot_detection_mode"] == name
+
+    def test_laser_af_config_rejects_unknown_mode(self):
+        with pytest.raises(ValidationError):
+            LaserAFConfig(spot_detection_mode="dual_centre")
 
     def test_laser_af_config_accepts_retired_line_profile_settings(self):
         """Profiles saved before connected components detection have these; they load and the settings are dropped."""

@@ -456,7 +456,7 @@ pixel_to_um_calibration_distance: 6.0
 laser_af_range: 100.0
 search_for_spot: true        # When an autofocus move finds no spot, search in z over laser_af_range
 laser_af_averaging_n: 3
-spot_detection_mode: dual_right
+spot_detection_mode: multi_right   # single, multi_left, multi_right or multi_second_right
 displacement_success_window_pixels: 300.0   # Max distance of the spot from x_reference
 
 # Spot detection
