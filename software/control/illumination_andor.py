@@ -422,6 +422,35 @@ class AndorLaser(LightSource):
         if intensity < 0.0 or intensity > 100.0:
             raise ValueError(f"Invalid intensity {intensity}. Must be 0.0-100.0")
 
+        # Set all the other lines to off and keep only the current line active. This is necessary
+        # when we use Andor controller and active blanking.
+        # First, set all lines in other units to off
+        for other_unit_id in self.units:
+            if other_unit_id != unit_id and self.units[other_unit_id].device_handle:
+                if not self._set_lines_to_off(other_unit_id):
+                    log.warning(f"Failed to set lines to off for unit {other_unit_id}")
+
+        # For the current unit, set only the specified line to on
+        # Create a byte with only the current line bit set to 1
+        shutter_byte = 1 << line  # Set bit at position 'line' to 1
+
+        # Send SET_SHUTTER_STATE command with the packed bits
+        shutter_command = struct.pack(">BB", LaserCommands.SET_SHUTTER_STATE, shutter_byte)
+
+        if not AndorLaser._send_command(unit, shutter_command):
+            log.error(f"Failed to send shutter command to unit {unit_id}")
+            raise RuntimeError(f"Failed to send shutter command to unit {unit_id}")
+
+        # Read shutter command response
+        shutter_response = AndorLaser._read_response(unit, 1)
+        if not shutter_response or shutter_response[0] != LaserCommands.SET_SHUTTER_STATE:
+            if shutter_response and shutter_response[0] == LaserCommands.ERROR_RESPONSE:
+                log.error(f"Error response for shutter command from unit {unit_id}")
+                raise RuntimeError(f"Error response for shutter command from unit {unit_id}")
+            else:
+                log.error(f"Timeout or invalid shutter response from unit {unit_id}")
+                raise RuntimeError(f"Timeout or invalid shutter response from unit {unit_id}")
+
         # Convert percentage to transmission value (0-1000)
         transmission = int(intensity * 10)
 
