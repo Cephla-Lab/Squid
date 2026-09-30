@@ -5,6 +5,9 @@ Microcontroller/Microscope/MultiPointController cleanup is handled suite-wide
 by the autouse fixture in tests/conftest.py.
 """
 
+import os
+import shutil
+
 import pytest
 
 from control.core.core import ImageDisplayWindow
@@ -48,6 +51,55 @@ def firmware_sim_nonstrict():
 def _watchdog_state_to_tmp(tmp_path, monkeypatch):
     # Keep acquisition breadcrumbs out of the real user state dir during tests.
     monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path / "watchdog"))
+
+
+@pytest.fixture
+def catalog_tree(tmp_path, monkeypatch):
+    """Isolated cwd holding the shipped catalog: sidecar writes (machine_configs/,
+    cache/, objective_and_sample_formats/sample_formats_user.yaml) land in tmp,
+    never in the repo. images/ is symlinked read-only for widgets that draw.
+
+    The in-memory format table is pinned to the shipped catalog too: _def
+    loaded it at import from the checkout's cwd, user YAML included, so a plate
+    calibrated on this machine (a 1536 A1 at x = 4.36 mm, say) would otherwise
+    move the reference wells the tests expect. Swapped IN PLACE because
+    widgets.py binds the same dict by name."""
+    import control._def as _def
+
+    repo = os.getcwd()
+    (tmp_path / "objective_and_sample_formats").mkdir()
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "cache").mkdir()
+    for name in ("sample_formats.csv", "objectives.csv"):
+        shutil.copy(
+            os.path.join(repo, "objective_and_sample_formats", name),
+            tmp_path / "objective_and_sample_formats" / name,
+        )
+    os.symlink(os.path.join(repo, "images"), tmp_path / "images")
+    monkeypatch.chdir(tmp_path)
+
+    table = _def.WELLPLATE_FORMAT_SETTINGS
+    original = dict(table)
+    table.clear()
+    table.update(_def.read_sample_formats_csv(str(tmp_path / "objective_and_sample_formats" / "sample_formats.csv")))
+    yield tmp_path
+    table.clear()
+    table.update(original)
+
+
+@pytest.fixture
+def design_travel_limits(monkeypatch):
+    """The stage limits (and zero legacy offset) the design doc's reference
+    rings were derived against - pins reference-well computation regardless of
+    the machine config the tests happen to run under."""
+    import control._def as _def
+
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", 5.0)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_POSITIVE", 115.0)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_NEGATIVE", 4.0)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_POSITIVE", 76.0)
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
 
 
 @pytest.fixture(scope="session")

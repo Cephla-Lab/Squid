@@ -1,0 +1,15 @@
+# Plate holder rotation for THIS machine - one angle, shared by every plate
+# format on the holder. Written by the holder-alignment wizard.
+#
+# Copy to plate_holder.yaml ONLY as a skeleton: rotation_deg is deliberately
+# unset here, and hand-authoring an angle is rejected - a nonzero rotation_deg
+# must carry the measured.points that produced it (run the alignment instead).
+#
+# ABSENT FILE == rotation 0.00 deg == pre-feature behaviour.
+version: 1
+rotation_deg: 0.0
+measured:
+  on: ""            # format the angle was measured on, e.g. "96 well plate"
+  feature: center   # or e.g. corner_top_left - the same feature on every well
+  points: []        # raw well -> stage correspondences; the source of truth
+  timestamp: ""
