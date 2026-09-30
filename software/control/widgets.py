@@ -1508,21 +1508,6 @@ class PreferencesDialog(QDialog):
         self.spinning_disk_checkbox.setChecked(self._get_config_bool("GENERAL", "enable_spinning_disk_confocal", False))
         hw_layout.addRow("Enable Spinning Disk *:", self.spinning_disk_checkbox)
 
-        # Squid filter wheel: shortest path between slots (squid_filterwheel_wrap). The ini values are the
-        # item data; the text is what an operator reads.
-        self.wheel_wrap_combo = QComboBox()
-        for text, value in self._WHEEL_WRAP_CHOICES:
-            self.wheel_wrap_combo.addItem(text, value)
-        self.wheel_wrap_combo.setCurrentIndex(self._wheel_wrap_index(self._get_wheel_wrap_setting()))
-        self.wheel_wrap_combo.setToolTip(
-            "Squid filter wheel only. With the shortest path on, a slot change takes the shorter way round\n"
-            "and may cross the wheel's index flag: 8 -> 1 is one slot instead of seven.\n"
-            "Auto turns it on when the controller runs firmware 1.6 or later, where crossing the flag was verified.\n"
-            "On forces it from firmware 1.4: use it only after checking that a 1 -> 8 change completes.\n"
-            "Off always takes the flag-free way round."
-        )
-        hw_layout.addRow("Filter Wheel Shortest Path *:", self.wheel_wrap_combo)
-
         self.wheel_window_spinbox = QDoubleSpinBox()
         self.wheel_window_spinbox.setRange(0.0, 10.0)
         self.wheel_window_spinbox.setDecimals(1)
@@ -1967,27 +1952,6 @@ class PreferencesDialog(QDialog):
             return default
         return float(value)
 
-    # squid_filterwheel_wrap: (what the operator reads, what goes in the ini)
-    _WHEEL_WRAP_CHOICES = (("Auto (on from firmware 1.6)", "auto"), ("On", "True"), ("Off", "False"))
-
-    def _get_wheel_wrap_setting(self) -> str:
-        """The ini's squid_filterwheel_wrap as one of "auto", "True", "False". A missing key is the default,
-        "auto". Anything the wheel controller refuses is returned as typed, so the change list shows it being
-        replaced.
-
-        Read with the SAME two functions the running software uses (the ini loader's typing, then the wheel
-        controller's own parser), not with a second opinion about what the text means: the controller accepts
-        `1` and `0`, and a dialog that showed those as Auto would turn an explicit Off into On at firmware 1.6 -
-        or an explicit On into Off at 1.4 / 1.5 - the first time anything else was saved."""
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        raw = self._get_config_value("GENERAL", "squid_filterwheel_wrap", "auto")
-        try:
-            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(raw))
-        except ValueError:
-            return raw.split("#")[0].strip()
-        return {"auto": "auto", True: "True", False: "False"}[parsed]
-
     def _get_wheel_window_setting(self) -> float:
         """The ini's squid_filterwheel_completion_window_deg as the running software reads it: through the ini
         loader, which strips an inline comment. float() alone would make `5  # degrees` read as 0 here while the
@@ -1997,10 +1961,6 @@ class PreferencesDialog(QDialog):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             return 0.0
         return float(value)
-
-    def _wheel_wrap_index(self, setting: str) -> int:
-        values = [value for _, value in self._WHEEL_WRAP_CHOICES]
-        return values.index(setting) if setting in values else 0
 
     def _floats_equal(self, a, b, epsilon=1e-4):
         """Compare two floats with epsilon tolerance to avoid precision issues."""
@@ -2099,7 +2059,6 @@ class PreferencesDialog(QDialog):
             "enable_spinning_disk_confocal",
             "true" if self.spinning_disk_checkbox.isChecked() else "false",
         )
-        self.config.set("GENERAL", "squid_filterwheel_wrap", self.wheel_wrap_combo.currentData())
         self.config.set("GENERAL", "squid_filterwheel_completion_window_deg", f"{self.wheel_window_spinbox.value():g}")
         self.config.set("GENERAL", "led_matrix_r_factor", str(self.led_r_factor.value()))
         self.config.set("GENERAL", "led_matrix_g_factor", str(self.led_g_factor.value()))
@@ -2450,12 +2409,6 @@ class PreferencesDialog(QDialog):
         new_val = self.spinning_disk_checkbox.isChecked()
         if old_val != new_val:
             changes.append(("Enable Spinning Disk", str(old_val), str(new_val), True))
-
-        old_val = self._get_wheel_wrap_setting()
-        new_val = self.wheel_wrap_combo.currentData()
-        if old_val != new_val:
-            names = {value: text for text, value in self._WHEEL_WRAP_CHOICES}
-            changes.append(("Filter Wheel Shortest Path", names.get(old_val, old_val), names[new_val], True))
 
         old_val = self._get_wheel_window_setting()
         new_val = self.wheel_window_spinbox.value()

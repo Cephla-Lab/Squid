@@ -1099,11 +1099,10 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
-# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven).
-#   "auto"  on when the controller runs firmware >= 1.6 (where crossing the flag was verified), off below
-#   True    on from firmware 1.4: set it in the machine ini after checking that a 1 -> 8 move completes
-#   False   always the flag-free arc
-SQUID_FILTERWHEEL_WRAP = "auto"
+# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven). Takes effect on
+# firmware >= 1.6, where crossing the flag was verified; older firmware keeps the flag-free arc regardless.
+# False forces the flag-free arc on every firmware.
+SQUID_FILTERWHEEL_WRAP = True
 # > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the last
 # degrees are still travelled, so the exposure can start earlier (firmware >= 1.6, SET_COMPLETION_WINDOW; ignored
 # with a warning on older firmware). 0 = complete at the exact slot with the wheel stopped. Size it from the optics:

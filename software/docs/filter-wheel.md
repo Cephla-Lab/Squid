@@ -5,13 +5,13 @@ Cephla (Squid) filter wheel driven by the controller's W axis. Third-party wheel
 
 | Feature | Needs firmware | Where it is set | Default |
 |---|---|---|---|
-| Shortest-path slot changes | 1.6 (`auto`), or 1.4 if switched on explicitly | `squid_filterwheel_wrap`, Preferences | `auto` |
+| Shortest-path slot changes | 1.6 | on by default; `squid_filterwheel_wrap = False` turns it off | on |
 | Wheel position kept across a GUI restart | any | automatic | on |
 | Completion window | 1.6 | `squid_filterwheel_completion_window_deg`, Preferences | `0` (off) |
 | Verify / Tune (command line and GUI) | 1.6 | Utils menu, `tools/filter_wheel_tuner.py` | - |
 
 Firmware 1.6 is flashed on TMC2240 controllers only for now. A machine on firmware 1.5 gets the position record and
-the Preferences rows; the other features stay off until it is flashed.
+the Preferences row; the other features stay off until it is flashed.
 
 The wheel runs open loop. Its encoder (`has_encoder_w`) is read by the tuner and by encoder reporting; closed loop
 on the wheel is not supported: the former `enable_pid_w` key is ignored, and the firmware refuses the enable
@@ -38,18 +38,10 @@ next normal start.
 The wheel may cross its index flag, so slot 8 to slot 1 is one slot instead of seven. On the bench that took a
 1-to-8 change from 364 ms to 144 ms; the worst case is now a 4-slot move. Adjacent moves are unchanged.
 
-`squid_filterwheel_wrap` takes three values:
-
-| Value | Meaning |
-|---|---|
-| `auto` (default) | On when the controller runs firmware 1.6 or later, off below. This is where crossing the flag was verified. |
-| `True` | On from firmware 1.4, for a machine you have checked yourself. Below 1.4 a warning is logged and moves take the long way. |
-| `False` | Off. Slot changes stay inside one turn, as before. |
-
-`1` and `0` are accepted for `True` and `False`. Anything else stops the software at start with a clear error.
-
-In the GUI: **Preferences > Advanced > Hardware Configuration > Filter Wheel Shortest Path** (Auto / On / Off). A
-change takes effect after the restart the dialog offers.
+It is on whenever the controller runs firmware 1.6 or later, where crossing the flag was verified; on older
+firmware slot changes stay inside one turn, as before. To force the old behaviour on any firmware, set
+`squid_filterwheel_wrap = False` in the machine ini (`1` and `0` are accepted for `True` and `False`; anything else
+stops the software at start with a clear error). There is no row for it in Preferences.
 
 With shortest path on, the filter panel's **Next** at the last slot goes to the first, and **Previous** at the
 first goes to the last.
@@ -131,7 +123,7 @@ to about 20 ms sooner. Motion itself is unchanged; configured settle times are u
 
 | Symptom | Cause and remedy |
 |---|---|
-| Start fails with `squid_filterwheel_wrap must be auto, True or False` | Typo in the ini. Fix the value; the dialog's row writes valid values. |
+| Start fails with `squid_filterwheel_wrap must be True or False` | Typo in the ini. Fix the value or remove the key. |
 | Log: `completion window ... needs firmware >= 1.6; ignored` | The controller runs older firmware. Flash 1.6 or set the window to 0. |
 | Wheel homes at every restart | The record cannot be written: check that `cache/` exists and is writable. |
 | `Filter wheel 1 is being driven directly (filter wheel tuning is running)` | A script or the console tried to move the wheel during a tuning run. Wait for the run to finish or cancel it. |
