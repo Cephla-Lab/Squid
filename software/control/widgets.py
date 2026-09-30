@@ -12318,46 +12318,59 @@ class WellplateCalibration(QDialog):
         corner_row.addWidget(self.holder_corner_combo)
         layout.addLayout(corner_row)
 
+        # One row per reference well, in the order the operator works it:
+        # which well -> drive there -> touch it -> what was recorded.
         wells_grid = QGridLayout()
         self.holder_well_edits = []
+        self.holder_goto_buttons = []
         self.holder_record_buttons = []
         self.holder_well_status = []
         for i in range(4):
             edit = QLineEdit()
             edit.setFixedWidth(60)
             edit.editingFinished.connect(lambda index=i: self._holder_nominate(index))
+            goto = QPushButton("Go to")
+            goto.clicked.connect(lambda checked=False, index=i: self._holder_goto_reference(index))
             record = QPushButton("Set Point")
             record.clicked.connect(lambda checked=False, index=i: self._holder_record(index))
             status = QLabel("")
             wells_grid.addWidget(edit, i, 0)
-            wells_grid.addWidget(record, i, 1)
-            wells_grid.addWidget(status, i, 2)
+            wells_grid.addWidget(goto, i, 1)
+            wells_grid.addWidget(record, i, 2)
+            wells_grid.addWidget(status, i, 3)
             self.holder_well_edits.append(edit)
+            self.holder_goto_buttons.append(goto)
             self.holder_record_buttons.append(record)
             self.holder_well_status.append(status)
-        wells_grid.setColumnStretch(2, 1)
+        wells_grid.setColumnStretch(3, 1)
         layout.addLayout(wells_grid)
 
         self.holder_fit_label = QLabel("")
         self.holder_fit_label.setWordWrap(True)
         layout.addWidget(self.holder_fit_label)
 
-        verify_row = QHBoxLayout()
-        self.holder_holdout_edit = QLineEdit()
-        self.holder_holdout_edit.setFixedWidth(60)
-        self.holder_holdout_edit.setPlaceholderText("well")
-        self.holder_holdout_button = QPushButton("Set Hold-out Point")
-        self.holder_holdout_button.clicked.connect(self._holder_record_holdout)
-        self.holder_test_button = QPushButton("Drive to Test Well")
-        self.holder_test_button.clicked.connect(self._holder_drive_to_test)
-        verify_row.addWidget(self.holder_holdout_edit)
-        verify_row.addWidget(self.holder_holdout_button)
-        verify_row.addWidget(self.holder_test_button)
-        layout.addLayout(verify_row)
+        # Check row: a well the fit did NOT use, same shape as the rows above.
+        # Go to drives to where the fit predicts the feature; Measure Error reports
+        # the measured miss. The worst-predicted well is suggested by default.
+        check_row = QHBoxLayout()
+        check_row.addWidget(QLabel("Check another well at the same point:"))
+        self.holder_check_edit = QLineEdit()
+        self.holder_check_edit.setFixedWidth(60)
+        self.holder_check_edit.setPlaceholderText("well")
+        self._holder_check_suggested = ""
+        self.holder_check_goto_button = QPushButton("Go to")
+        self.holder_check_goto_button.clicked.connect(self._holder_goto_check)
+        self.holder_check_button = QPushButton("Measure Error")
+        self.holder_check_button.clicked.connect(self._holder_record_check)
+        check_row.addWidget(self.holder_check_edit)
+        check_row.addWidget(self.holder_check_goto_button)
+        check_row.addWidget(self.holder_check_button)
+        check_row.addStretch(1)
+        layout.addLayout(check_row)
 
-        self.holder_holdout_label = QLabel("")
-        self.holder_holdout_label.setWordWrap(True)
-        layout.addWidget(self.holder_holdout_label)
+        self.holder_check_label = QLabel("")
+        self.holder_check_label.setWordWrap(True)
+        layout.addWidget(self.holder_check_label)
 
         self.holder_save_button = QPushButton("Save Holder Rotation")
         self.holder_save_button.clicked.connect(self._holder_save)
@@ -12373,17 +12386,18 @@ class WellplateCalibration(QDialog):
         except SessionError as e:
             self.holder_session = None
             self.holder_status_label.setText(str(e))
-            for widget in (self.holder_corner_combo, self.holder_save_button, self.holder_test_button):
+            for widget in (self.holder_corner_combo, self.holder_save_button, *self._holder_check_widgets()):
                 widget.setEnabled(False)
-            for button in self.holder_record_buttons:
+            for button in self.holder_goto_buttons + self.holder_record_buttons:
                 button.setEnabled(False)
             return
 
         session = self.holder_session
-        for widget in (self.holder_save_button, self.holder_test_button):
-            widget.setEnabled(True)
-        for button in self.holder_record_buttons:
+        for button in self.holder_goto_buttons + self.holder_record_buttons:
             button.setEnabled(True)
+        self.holder_check_edit.clear()
+        self._holder_check_suggested = ""
+        self.holder_check_label.clear()
         is_square = session.touches_per_well == 1
         self.holder_corner_label.setVisible(is_square)
         self.holder_corner_combo.setVisible(is_square)
@@ -12423,7 +12437,8 @@ class WellplateCalibration(QDialog):
         if not session.can_fit:
             self.holder_fit_label.setText(f"{session.wells_measured}/4 wells measured (3 minimum to fit).")
             self.holder_save_button.setEnabled(False)
-            self.holder_test_button.setEnabled(False)
+            for widget in self._holder_check_widgets():
+                widget.setEnabled(False)
             return
         result = session.fit()
         residuals = ", ".join(f"{r:.0f}" for r in result.residuals_um)
@@ -12436,7 +12451,15 @@ class WellplateCalibration(QDialog):
             lines.append(("REJECTED: " if gate.level == "reject" else "Check: ") + gate.message)
         self.holder_fit_label.setText("\n".join(lines))
         self.holder_save_button.setEnabled(not result.rejected)
-        self.holder_test_button.setEnabled(not result.rejected)
+        for widget in self._holder_check_widgets():
+            widget.setEnabled(not result.rejected)
+        # Suggest the worst-predicted well, unless the operator typed their own.
+        if self.holder_check_edit.text().strip() in ("", self._holder_check_suggested):
+            self._holder_check_suggested = result.worst_well
+            self.holder_check_edit.setText(result.worst_well)
+
+    def _holder_check_widgets(self):
+        return (self.holder_check_edit, self.holder_check_goto_button, self.holder_check_button)
 
     def _holder_error(self, exc):
         QMessageBox.warning(self, "Holder Alignment", str(exc))
@@ -12475,33 +12498,41 @@ class WellplateCalibration(QDialog):
             return
         self._holder_refresh()
 
-    def _holder_record_holdout(self):
-        if self.holder_session is None or not self.holder_session.can_fit:
-            return
-        pos = self.stage.get_pos()
+    def _holder_move_to(self, target):
+        """Drive to a (x_mm, y_mm) the session produced - every target has been
+        checked against the travel limits there; nothing clamps the move."""
         try:
-            residual = self.holder_session.holdout_residual_um(
-                self.holder_holdout_edit.text().strip(), (pos.x_mm, pos.y_mm)
-            )
-        except SessionError as e:
-            self._holder_error(e)
-            return
-        self.holder_holdout_label.setText(
-            f"Hold-out residual at {self.holder_holdout_edit.text().strip()}: {residual:.0f} um "
-            f"(measured, not modeled)"
-        )
-
-    def _holder_drive_to_test(self):
-        if self.holder_session is None or not self.holder_session.can_fit:
-            return
-        try:
-            result = self.holder_session.fit()
-            x_mm, y_mm = self.holder_session.predicted_touch_mm(result.worst_well)
+            x_mm, y_mm = target()
         except SessionError as e:
             self._holder_error(e)
             return
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
+
+    def _holder_goto_reference(self, index):
+        if self.holder_session is None:
+            return
+        self._holder_move_to(lambda: self.holder_session.reference_center_mm(index))
+
+    def _holder_goto_check(self):
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        well_id = self.holder_check_edit.text().strip()
+        self._holder_move_to(lambda: self.holder_session.predicted_touch_mm(well_id))
+
+    def _holder_record_check(self):
+        if self.holder_session is None or not self.holder_session.can_fit:
+            return
+        well_id = self.holder_check_edit.text().strip()
+        pos = self.stage.get_pos()
+        try:
+            error_um = self.holder_session.holdout_residual_um(well_id, (pos.x_mm, pos.y_mm))
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self.holder_check_label.setText(
+            f"Measured error at {well_id}: {error_um:.0f} um (this well was not in the fit)"
+        )
 
     def _holder_save(self):
         if self.holder_session is None:

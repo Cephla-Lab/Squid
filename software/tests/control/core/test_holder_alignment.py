@@ -101,6 +101,27 @@ def test_nominate_unreachable_refused(tree, monkeypatch):
         session.nominate(0, "A12")
 
 
+def test_reference_center_is_the_current_calibration(tree):
+    """Go-to before touching: the format's A1 (+ any saved rotation), not the
+    fit in progress - which does not exist until this well is touched."""
+    session = HolderAlignmentSession("96 well plate")
+    a1 = _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]
+    assert session.reference_center_mm(0) == (a1["a1_x_mm"], a1["a1_y_mm"])
+    assert session.reference_center_mm(1) == (a1["a1_x_mm"] + 11 * 9.0, a1["a1_y_mm"])  # A12
+
+
+def test_check_targets_go_through_the_travel_check(tree, monkeypatch):
+    session = HolderAlignmentSession("96 well plate")
+    touch_all_round(session)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_POSITIVE", 100.0)
+    with pytest.raises(SessionError, match="travel"):
+        session.predicted_touch_mm("B12")
+    with pytest.raises(SessionError, match="travel"):
+        session.holdout_residual_um("B12", (100.0, 20.0))
+    with pytest.raises(SessionError, match="not a well name"):
+        session.predicted_touch_mm("12B")
+
+
 # ------------------------------------------------------------------- methods
 
 
@@ -278,7 +299,7 @@ def test_holdout_residual_is_zero_for_consistent_touch(tree):
 def test_holdout_rejects_fit_wells(tree):
     session = HolderAlignmentSession("1536 well plate")
     touch_all_square(session)
-    with pytest.raises(SessionError, match="hold-out"):
+    with pytest.raises(SessionError, match="was used in the fit"):
         session.holdout_residual_um("A1", (11.0, 7.0))
 
 

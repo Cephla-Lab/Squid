@@ -139,14 +139,7 @@ class HolderAlignmentSession:
     def nominate(self, index: int, well_id: str):
         """Swap a reference well for one the user prefers (A1 may be empty,
         unreachable, or hard to identify - Micro-Manager's spinner lesson)."""
-        parsed = self._parse_well_id(well_id)
-        if parsed is None:
-            raise SessionError(f"{well_id!r} is not a well name like 'A1' or 'AE47'.")
-        row, col = parsed
-        if not (0 <= row < self.rows and 0 <= col < self.cols):
-            raise SessionError(f"{well_id} is outside the {self.format} grid.")
-        if not self._reachable(plate_transform_for(self.format), row, col):
-            raise SessionError(f"{well_id} is outside the stage travel limits.")
+        row, col = self._resolve_well_id(well_id)
         if any(i != index and w.row == row and w.col == col for i, w in enumerate(self.reference_wells)):
             raise SessionError(f"{well_id} is already one of the reference wells.")
         self.reference_wells[index] = self._make_well(row, col)
@@ -159,6 +152,28 @@ class HolderAlignmentSession:
         if not match:
             return None
         return (control.utils.row_to_index(match.group(1)), int(match.group(2)) - 1)
+
+    def _resolve_well_id(self, well_id: str) -> Tuple[int, int]:
+        """A well the stage can be sent to: named properly, on this plate, and
+        inside the travel limits. Every path that ends in a move goes through
+        here - there is no clamp on the move itself."""
+        parsed = self._parse_well_id(well_id)
+        if parsed is None:
+            raise SessionError(f"{well_id!r} is not a well name like 'A1' or 'AE47'.")
+        row, col = parsed
+        if not (0 <= row < self.rows and 0 <= col < self.cols):
+            raise SessionError(f"{well_id} is outside the {self.format} grid.")
+        if not self._reachable(plate_transform_for(self.format), row, col):
+            raise SessionError(f"{well_id} is outside the stage travel limits.")
+        return row, col
+
+    def reference_center_mm(self, index: int) -> Tuple[float, float]:
+        """Where the CURRENT calibration puts the center of reference well
+        `index` - the place to drive to before touching it. The format's
+        measured A1 and whatever rotation is saved today; the fit in progress
+        is not involved (it needs this well's touch first)."""
+        well = self.reference_wells[index]
+        return plate_transform_for(self.format).well_center_mm(well.row, well.col)
 
     # ---------------------------------------------------------------- touches
 
@@ -249,10 +264,7 @@ class HolderAlignmentSession:
         another same-feature touch is therefore honest. This is a VERIFY tool -
         nothing here is persisted.
         """
-        parsed = self._parse_well_id(well_id)
-        if parsed is None:
-            raise SessionError(f"{well_id!r} is not a well name.")
-        row, col = parsed
+        row, col = self._resolve_well_id(well_id)
         result = self.fit()
         # A fit result IS a placement - evaluate it through the one owner of
         # the well -> stage math instead of re-rolling the trig here.
@@ -268,8 +280,9 @@ class HolderAlignmentSession:
     def holdout_residual_um(self, well_id: str, measured_xy: Tuple[float, float]) -> float:
         """The only number in the report that is not a model: the miss distance
         at a well that was NOT used in the fit."""
-        if any(w.well_id == well_id and w.point_mm is not None for w in self.reference_wells):
-            raise SessionError(f"{well_id} was used in the fit - a hold-out must be a different well.")
+        row, col = self._resolve_well_id(well_id)
+        if any(w.row == row and w.col == col and w.point_mm is not None for w in self.reference_wells):
+            raise SessionError(f"{well_id} was used in the fit - check a well that was not.")
         predicted = self.predicted_touch_mm(well_id)
         return math.hypot(measured_xy[0] - predicted[0], measured_xy[1] - predicted[1]) * 1000.0
 

@@ -120,7 +120,66 @@ def test_nominate_through_the_edit(qapp, tree):
     dialog.close()
 
 
-def test_holdout_records_measured_residual(qapp, tree):
+def test_go_to_reference_well_drives_to_its_calibrated_center(qapp, tree):
+    from control.core.plate_transform import plate_transform_for
+
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    well = dialog.holder_session.reference_wells[3]
+
+    dialog.holder_goto_buttons[3].click()
+
+    expected = plate_transform_for("1536 well plate").well_center_mm(well.row, well.col)
+    stage.move_x_to.assert_called_once_with(pytest.approx(expected[0]))
+    stage.move_y_to.assert_called_once_with(pytest.approx(expected[1]))
+    dialog.close()
+
+
+def test_check_row_is_locked_until_the_fit_exists(qapp, tree):
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    session = dialog.holder_session
+    assert not dialog.holder_check_goto_button.isEnabled()
+    assert not dialog.holder_check_button.isEnabled()
+    assert dialog.holder_check_edit.text() == ""
+
+    for i, well in enumerate(session.reference_wells):
+        set_stage_pos(stage, *synthetic_corner_touch(session, well))
+        dialog.holder_record_buttons[i].click()
+
+    assert dialog.holder_check_goto_button.isEnabled()
+    assert dialog.holder_check_edit.text() == session.fit().worst_well  # suggested
+    dialog.close()
+
+
+def test_check_row_go_to_drives_to_the_prediction_for_the_typed_well(qapp, tree):
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    session = dialog.holder_session
+
+    for i, well in enumerate(session.reference_wells):
+        set_stage_pos(stage, *synthetic_corner_touch(session, well))
+        dialog.holder_record_buttons[i].click()
+
+    # the suggested (worst) well first...
+    worst = session.fit().worst_well
+    dialog.holder_check_goto_button.click()
+    expected = session.predicted_touch_mm(worst)
+    stage.move_x_to.assert_called_once_with(pytest.approx(expected[0]))
+    stage.move_y_to.assert_called_once_with(pytest.approx(expected[1]))
+
+    # ...then one the operator typed, which survives the next refresh
+    stage.reset_mock()
+    dialog.holder_check_edit.setText("P24")
+    dialog.holder_check_goto_button.click()
+    expected = session.predicted_touch_mm("P24")
+    stage.move_x_to.assert_called_once_with(pytest.approx(expected[0]))
+    dialog._holder_refresh()
+    assert dialog.holder_check_edit.text() == "P24"
+    dialog.close()
+
+
+def test_check_row_set_point_reports_the_measured_error(qapp, tree):
     dialog, stage = make_dialog(qapp)
     dialog.holder_rotation_radio.setChecked(True)
     session = dialog.holder_session
@@ -131,26 +190,15 @@ def test_holdout_records_measured_residual(qapp, tree):
 
     fake_well = session._make_well(15, 23)
     set_stage_pos(stage, *synthetic_corner_touch(session, fake_well))
-    dialog.holder_holdout_edit.setText("P24")
-    dialog.holder_holdout_button.click()
-    assert "residual at P24: 0 um" in dialog.holder_holdout_label.text()
-    dialog.close()
+    dialog.holder_check_edit.setText("P24")
+    dialog.holder_check_button.click()
+    assert "Measured error at P24: 0 um" in dialog.holder_check_label.text()
 
-
-def test_drive_to_test_well_moves_stage_to_prediction(qapp, tree):
-    dialog, stage = make_dialog(qapp)
-    dialog.holder_rotation_radio.setChecked(True)
-    session = dialog.holder_session
-
-    for i, well in enumerate(session.reference_wells):
-        set_stage_pos(stage, *synthetic_corner_touch(session, well))
-        dialog.holder_record_buttons[i].click()
-
-    dialog.holder_test_button.click()
-    worst = session.fit().worst_well
-    expected = session.predicted_touch_mm(worst)
-    stage.move_x_to.assert_called_once_with(pytest.approx(expected[0]))
-    stage.move_y_to.assert_called_once_with(pytest.approx(expected[1]))
+    # a reference well is refused - it cannot check itself
+    dialog.holder_check_edit.setText("A1")
+    with patch.object(QMessageBox, "warning") as warn:
+        dialog.holder_check_button.click()
+    assert warn.called
     dialog.close()
 
 
