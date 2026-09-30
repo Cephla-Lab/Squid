@@ -12,22 +12,6 @@ from enum import Enum, auto
 log = squid.logging.get_logger(__name__)
 
 
-# Keys the ini loader no longer knows. It ignores unknown keys, so without this a machine ini that still sets
-# one would be obeyed by nobody and say nothing.
-REMOVED_INI_KEYS = {
-    "enable_pid_w": "closed loop on the Squid filter wheel is not supported; the wheel runs open loop",
-}
-
-
-def warn_about_removed_ini_keys(cfp, path):
-    """Log once per removed key that the machine ini still sets."""
-    if not cfp.has_section("GENERAL"):
-        return
-    for key, why in REMOVED_INI_KEYS.items():
-        if cfp.has_option("GENERAL", key):
-            log.warning(f"{path}: '{key}' is no longer used and is ignored ({why}). Remove the key.")
-
-
 def conf_attribute_reader(string_value):
     """
     :brief: standardized way for reading config entries
@@ -1431,7 +1415,6 @@ if config_files:
     # exec(open(config_files[0]).read())
     cfp = ConfigParser()
     cfp.read(config_files[0])
-    warn_about_removed_ini_keys(cfp, config_files[0])
     var_items = list(locals().keys())
     for var_name in var_items:
         if type(locals()[var_name]) is type:

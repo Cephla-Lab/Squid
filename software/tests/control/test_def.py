@@ -241,27 +241,3 @@ def test_default_image_format_is_tiff():
 
     source = inspect.getsource(control._def.Acquisition)
     assert 'IMAGE_FORMAT = "tiff"' in source
-
-
-def test_a_removed_ini_key_is_warned_about_once_by_the_loader(caplog):
-    """enable_pid_w was removed (closed loop on the wheel is not supported). The loader ignores unknown keys, so it
-    has to say so for keys it used to know."""
-    import logging
-    from configparser import ConfigParser
-
-    import control._def
-
-    cfp = ConfigParser()
-    cfp.read_string("[GENERAL]\nenable_pid_w = True\nmax_velocity_w_mm = 3.19\n")
-    with caplog.at_level(logging.WARNING):
-        control._def.warn_about_removed_ini_keys(cfp, "machine.ini")
-    hits = [r.getMessage() for r in caplog.records if "enable_pid_w" in r.getMessage()]
-    assert len(hits) == 1 and "no longer used" in hits[0]
-
-    caplog.clear()
-    cfp = ConfigParser()
-    cfp.read_string("[GENERAL]\nmax_velocity_w_mm = 3.19\n")
-    with caplog.at_level(logging.WARNING):
-        control._def.warn_about_removed_ini_keys(cfp, "machine.ini")
-        control._def.warn_about_removed_ini_keys(ConfigParser(), "empty.ini")  # no GENERAL section: no error
-    assert not caplog.records
