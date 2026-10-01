@@ -165,7 +165,7 @@ def save(samples: List[Sample], base_dir, objective: str, closed_loop: bool, gai
     mode = "closed_loop" if closed_loop else "open_loop"
     folder = Path(base_dir) / "laser_af_closed_loop" / f"{objective}_{mode}_{datetime.now():%Y-%m-%d_%H-%M-%S}"
     folder.mkdir(parents=True)
-    settings = f"mode={mode}" + (f", gain={gain}" if closed_loop else "") + f", objective={objective}"
+    settings = f"mode={mode}" + (f", gain={gain:g}" if closed_loop else "") + f", objective={objective}"
     summary = summarize(samples)
 
     with open(folder / "z_vs_t.csv", "w", newline="") as f:

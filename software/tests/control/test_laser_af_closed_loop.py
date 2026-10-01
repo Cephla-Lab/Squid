@@ -234,3 +234,12 @@ def test_save_writes_a_csv_and_a_png_in_a_folder_named_for_the_mode(tmp_path):
     assert float(rows[0]["displacement_um"]) == 1.0
     assert math.isnan(float(rows[1]["displacement_um"]))
     assert (folder / "z_vs_t.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_save_labels_the_gain_as_the_operator_set_it(tmp_path):
+    # the GUI's spinbox steps 0.5 down by 0.05 to 0.20000000000000007
+    folder = laser_af_closed_loop.save(
+        [_sample(0.0, 1.0, 0.5)], tmp_path, objective="20x", closed_loop=True, gain=0.20000000000000007
+    )
+
+    assert "gain=0.2," in (folder / "z_vs_t.csv").read_text().splitlines()[0]
