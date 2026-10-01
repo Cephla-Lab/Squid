@@ -61,6 +61,83 @@ class AcquisitionYAMLData:
     skip_saving: bool = False
 
 
+@dataclass
+class RecordZStackYAMLData:
+    """Parsed record/z-stack acquisition YAML data structure."""
+
+    widget_type: str  # "record_zstack"
+    xy_mode: str = "Select Wells"
+
+    objective_name: Optional[str] = None
+    camera_binning: Optional[Tuple[int, int]] = None
+
+    nt: int = 1
+    delta_t_s: float = 0.0
+
+    laser_af: bool = False
+
+    recording_enabled: bool = False
+    recording_channel: Optional[Dict] = None
+    fps: float = 10.0
+    effective_fps: Optional[float] = None  # informational: the rate the saved run was made at
+    duration_s: float = 1.0
+    recording_bottom_z_offset_um: float = 0.0
+    recording_nz: int = 1
+    recording_dz_um: float = 1.0
+
+    zstack_enabled: bool = False
+    zstack_channels: List[Dict] = field(default_factory=list)
+    z_min_um: float = -3.0
+    z_max_um: float = 3.0
+    z_step_um: float = 1.0
+
+    scan_size_mm: Optional[float] = None
+    overlap_percent: float = 10.0
+    wellplate_regions: Optional[List[Dict]] = None
+
+
+def _parse_camera_binning(obj: dict) -> Optional[Tuple[int, int]]:
+    binning = obj.get("camera_binning")
+    if binning and isinstance(binning, list) and len(binning) == 2:
+        return tuple(binning)
+    return None
+
+
+def _parse_record_zstack_yaml_data(data: dict, acq: dict) -> RecordZStackYAMLData:
+    obj = data.get("objective", {})
+    time_series = data.get("time_series", {})
+    autofocus = data.get("autofocus", {})
+    recording = data.get("recording", {})
+    z_stack = data.get("z_stack", {})
+    wellplate_scan = data.get("wellplate_scan", {})
+
+    return RecordZStackYAMLData(
+        widget_type="record_zstack",
+        xy_mode=acq.get("xy_mode", "Select Wells"),
+        objective_name=obj.get("name"),
+        camera_binning=_parse_camera_binning(obj),
+        nt=time_series.get("nt", 1),
+        delta_t_s=time_series.get("delta_t_s", 0.0),
+        laser_af=autofocus.get("laser_af", False),
+        recording_enabled=recording.get("enabled", False),
+        recording_channel=recording.get("channel"),
+        fps=recording.get("fps", 10.0),
+        effective_fps=recording.get("effective_fps"),
+        duration_s=recording.get("duration_s", 1.0),
+        recording_bottom_z_offset_um=recording.get("bottom_z_offset_um", 0.0),
+        recording_nz=recording.get("nz", 1),
+        recording_dz_um=recording.get("dz_um", 1.0),
+        zstack_enabled=z_stack.get("enabled", False),
+        zstack_channels=z_stack.get("channels", []),
+        z_min_um=z_stack.get("z_min_um", -3.0),
+        z_max_um=z_stack.get("z_max_um", 3.0),
+        z_step_um=z_stack.get("z_step_um", 1.0),
+        scan_size_mm=wellplate_scan.get("scan_size_mm"),
+        overlap_percent=wellplate_scan.get("overlap_percent", 10.0),
+        wellplate_regions=wellplate_scan.get("regions"),
+    )
+
+
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     """Parse a saved acquisition.yaml - or a saved acquisition folder containing one.
 
@@ -83,7 +160,8 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     parsed = parse_acquisition_dict(data, source=file_path)
 
     csv_path = os.path.join(folder or os.path.dirname(file_path), "coordinates.csv")
-    regions = parsed.wellplate_regions if parsed.widget_type == "wellplate" else parsed.flexible_positions
+    # record_zstack YAMLs carry wellplate-style regions and no flexible_positions.
+    regions = parsed.flexible_positions if parsed.widget_type == "flexible" else parsed.wellplate_regions
     if regions and any(not r.get("fovs") for r in regions) and os.path.isfile(csv_path):
         try:
             by_name = {r["name"]: r["fovs"] for r in read_coordinates_csv(csv_path)}
@@ -114,17 +192,16 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
     flexible_scan = data.get("flexible_scan", {})
 
     # Validate widget_type
-    VALID_WIDGET_TYPES = ("wellplate", "flexible")
+    VALID_WIDGET_TYPES = ("wellplate", "flexible", "record_zstack")
     widget_type = acq.get("widget_type", "wellplate")
     if widget_type not in VALID_WIDGET_TYPES:
         raise ValueError(f"Invalid widget_type '{widget_type}'. Must be one of: {VALID_WIDGET_TYPES}")
 
+    if widget_type == "record_zstack":
+        return _parse_record_zstack_yaml_data(data, acq)
+
     # Parse camera binning
-    binning = obj.get("camera_binning")
-    if binning and isinstance(binning, list) and len(binning) == 2:
-        camera_binning = tuple(binning)
-    else:
-        camera_binning = None
+    camera_binning = _parse_camera_binning(obj)
 
     # Determine overlap_percent from the appropriate section
     if wellplate_scan:
