@@ -482,48 +482,91 @@ void do_camera_trigger()
   }
 }
 
+// Whether the last joystick_*_apply() left the axis jogging at the joystick's speed: the state of the
+// axis, not of the stick, which the lock-out below needs (a stick centred as a command starts still
+// leaves the jog running until something stops it).
+static bool joystick_jogging_x = false;
+static bool joystick_jogging_y = false;
+
+// Apply the joystick's current deltas to an axis it may drive: the jog speed, or at rest the offset
+// velocity if that is enabled, else a stop. Called by check_joystick() on its tick, and once with the
+// deltas zeroed when the panel lock-out begins.
+void joystick_x_apply()
+{
+  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
+  // an axis that is never commanded to move has nothing for the else-branch
+  // stop to halt, and a stop is itself a write to an unconfigured driver.
+  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
+  {
+    // joystick at motion position
+    joystick_jogging_x = abs(joystick_delta_x) > 0;
+    if (joystick_jogging_x)
+  	  tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x + (joystick_delta_x / 32768.0)*MAX_VELOCITY_X_mm ) );
+    // joystick at rest position
+    else
+    {
+  	  if (enable_offset_velocity)
+  	    tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x ) );
+  	  else
+	    tmc4361A_stop(&tmc4361[x]); // tmc4361A_setSpeed( &tmc4361[x], 0 ) causes problems for zeroing
+    }
+  }
+}
+
+void joystick_y_apply()
+{
+  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
+  {
+    // joystick at motion position
+    joystick_jogging_y = abs(joystick_delta_y) > 0;
+    if (joystick_jogging_y)
+  	  tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y + (joystick_delta_y / 32768.0)*MAX_VELOCITY_Y_mm ) );
+    // joystick at rest position
+    else
+    {
+  	  if (enable_offset_velocity)
+  	    tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y ) );
+  	  else
+  	    tmc4361A_stop(&tmc4361[y]); // tmc4361A_setSpeed( &tmc4361[y], 0 ) causes problems for zeroing
+    }
+  }
+}
+
 void check_joystick()
 {
+  // Panel lock-out (panel_locked_out(), functions.cpp): an axis the joystick is jogging is brought to
+  // rest in the loop pass the lock-out begins in, not at the next tick below, which a command shorter
+  // than interval_send_joystick_update can end before (with the jog still running and the next live
+  // packet keeping it). Decided by the axis's own jog, not by the packets, which may already show the
+  // stick centred. The axis of the commanded move itself is left to the command by joystick_*_apply()'s
+  // own gate.
+  // The deltas are zeroed on EVERY locked pass, not only the first: back-to-back commands can hand over
+  // between two passes of this function (A ends in check_position() after it, B starts in
+  // process_serial_message() before it), so this function sees no unlocked pass, and a deflected packet
+  // taken in between would otherwise reach the tick below during B.
+  static bool locked_out_seen = false;
+  if (panel_locked_out())
+  {
+    joystick_delta_x = 0; joystick_delta_y = 0;
+    if (!locked_out_seen)
+    {
+      locked_out_seen = true;
+      if (joystick_jogging_x)
+        joystick_x_apply();
+      if (joystick_jogging_y)
+        joystick_y_apply();
+    }
+  }
+  else
+    locked_out_seen = false;
+
   if (flag_read_joystick)
   {
 	if (us_since_last_joystick_update > interval_send_joystick_update)
 	{
 	  us_since_last_joystick_update = 0;
-
-	  // read x joystick
-	  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
-	  // an axis that is never commanded to move has nothing for the else-branch
-	  // stop to halt, and a stop is itself a write to an unconfigured driver.
-	  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
-	  {
-	    // joystick at motion position
-	    if (abs(joystick_delta_x) > 0)
-	  	  tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x + (joystick_delta_x / 32768.0)*MAX_VELOCITY_X_mm ) );
-	    // joystick at rest position
-	    else
-	    {
-	  	  if (enable_offset_velocity)
-	  	    tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x ) );
-	  	  else
-		    tmc4361A_stop(&tmc4361[x]); // tmc4361A_setSpeed( &tmc4361[x], 0 ) causes problems for zeroing
-	      }
-	  }
-
-	  // read y joystick
-	  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
-	  {
-	    // joystick at motion position
-	    if (abs(joystick_delta_y) > 0)
-	  	  tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y + (joystick_delta_y / 32768.0)*MAX_VELOCITY_Y_mm ) );
-	    // joystick at rest position
-	    else
-	    {
-	  	  if (enable_offset_velocity)
-	  	    tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y ) );
-	  	  else
-	  	    tmc4361A_stop(&tmc4361[y]); // tmc4361A_setSpeed( &tmc4361[y], 0 ) causes problems for zeroing
-	    }
-	  }
+	  joystick_x_apply();   // read x joystick
+	  joystick_y_apply();   // read y joystick
 	}
 
     // set the read joystick flag to false
@@ -541,7 +584,16 @@ void do_focus_control()
   // the focus wheel (functions.cpp, onJoystickPacketReceived) whether or not Z
   // can be driven, and letting it drift outside the limits would hand Z a wild
   // target the moment the axis is recovered. Only the move is gated.
-  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  //
+  // Not while a commanded Z move is in progress either. This runs every loop, so a wheel ramp
+  // issued before the command's acknowledgement rewrites the ramp target: the counter ends beside
+  // the command's target, check_position() never sees it there and the command stays IN_PROGRESS
+  // for ever (bench 2026-09-20, reproduced on open loop and on the chip PID). The command owns the
+  // axis until check_position() says so: the panel's input is dropped meanwhile (panel_locked_out(),
+  // functions.cpp), and this clause keeps the every-loop re-issue itself off the ramp for the
+  // command's duration, whatever focusPosition holds.
+  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false
+      && !Z_commanded_movement_in_progress)
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
 }
 

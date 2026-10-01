@@ -327,6 +327,13 @@ static const char *load_source(const char *relative_path)
 
         g_source[n] = '\0';
 
+        /* A checkout with core.autocrlf reads "\r\n": the function-body scan wants "\n}\n", so drop every '\r'. */
+        size_t w = 0;
+        for (size_t r = 0; r < n; r++)
+            if (g_source[r] != '\r')
+                g_source[w++] = g_source[r];
+        g_source[w] = '\0';
+
         /* A truncated read would silently undercount the guards. */
         TEST_ASSERT_FALSE_MESSAGE(truncated, "g_source is too small for the file being scanned");
         return g_source;
@@ -372,6 +379,37 @@ static void assert_guard_precedes_motion(const char *source, const char *file_la
                               "written, or the motor commanded, before the check",
              file_label, signature, guard, motion_call);
     TEST_ASSERT_TRUE_MESSAGE(g < m, msg);
+}
+
+/* Body of the function that starts at `sig` in `src`, or NULL. Bounded by the first "\n}\n". */
+static const char *function_body(const char *src, const char *sig, const char **end_out)
+{
+    const char *fn = strstr(src, sig);
+    if (fn == NULL) return NULL;
+    const char *end = strstr(fn, "\n}\n");
+    if (end == NULL) return NULL;
+    *end_out = end;
+    return fn;
+}
+
+/* `guard` must appear inside the body starting at `sig` and before `motion` inside the same body. */
+static void assert_in_body_before(const char *src, const char *file, const char *sig, const char *guard, const char *motion)
+{
+    const char *end = NULL;
+    const char *fn = function_body(src, sig, &end);
+    char msg[256];
+    snprintf(msg, sizeof msg, "%s: %s not found or unbounded", file, sig);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fn, msg);
+    const char *g = strstr(fn, guard);
+    const char *m = strstr(fn, motion);
+    snprintf(msg, sizeof msg, "%s: %s must contain %s before %s", file, sig, guard, motion);
+    TEST_ASSERT_TRUE_MESSAGE(g != NULL && g < end && m != NULL && m < end && g < m, msg);
+    /* A commented-out guard must not satisfy the pin: nothing on the guard's own line before it
+       may be a line comment. */
+    const char *line = g;
+    while (line > fn && line[-1] != '\n') line--;
+    snprintf(msg, sizeof msg, "%s: %s: the guard %s is commented out", file, sig, guard);
+    TEST_ASSERT_TRUE_MESSAGE(strstr(line, "//") == NULL || strstr(line, "//") > g, msg);
 }
 
 void test_stage_commands_guards_every_move_entry_point(void)
@@ -443,10 +481,34 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
         "(The needle carries the ` =` so the prose above the gates, which names "
         "the variable, does not trip this.)");
 
-    assert_guard_precedes_motion(src, "operations.cpp", "void check_joystick()",
+    /* The per-axis joystick blocks live in joystick_x_apply() / joystick_y_apply(), which check_joystick()
+       calls on its tick and when the panel lock-out begins. */
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_x_apply()",
+                                 "tmc_driver_ready(", "tmc4361A_setSpeed(");
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_y_apply()",
                                  "tmc_driver_ready(", "tmc4361A_setSpeed(");
     assert_guard_precedes_motion(src, "operations.cpp", "void do_focus_control()",
                                  "tmc_driver_ready(", "tmc4361A_moveTo(");
+}
+
+/*
+  The joystick panel is locked out while a commanded move or a homing is in
+  progress on any axis (panel_locked_out(), functions.cpp): inside
+  onJoystickPacketReceived() the wheel's travel is dropped before it can reach
+  focusPosition, and the joystick is read as undeflected before the packet is
+  flagged for check_joystick(). A wheel count that got through rewrote the ramp
+  target of a commanded Z move and left the command IN_PROGRESS for ever.
+*/
+void test_functions_locks_the_panel_out_during_commanded_moves(void)
+{
+    const char *fsrc = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL_MESSAGE(fsrc, "could not open src/functions.cpp from any candidate "
+                                       "working directory");
+
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "!panel_locked_out() &&", "focusPosition = focusPosition +");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "joystick_delta_x = 0; joystick_delta_y = 0;", "flag_read_joystick = true;");
+    /* That an axis the joystick is jogging is brought to rest when the lock-out begins is behaviour, not
+       layout: test_panel_lockout runs check_joystick() and onJoystickPacketReceived() themselves. */
 }
 
 /*
@@ -516,6 +578,7 @@ int main(int argc, char **argv) {
     // Driver fail-safe guards (source scan)
     RUN_TEST(test_stage_commands_guards_every_move_entry_point);
     RUN_TEST(test_operations_guards_the_operator_driven_motion_paths);
+    RUN_TEST(test_functions_locks_the_panel_out_during_commanded_moves);
     RUN_TEST(test_commands_guards_the_pid_actuator_path);
 
     return UNITY_END();

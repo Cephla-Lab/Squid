@@ -70,6 +70,7 @@ void turn_off_all_ports();
 /***************************************************************************************************/
 extern PacketSerial joystick_packetSerial;
 
+bool panel_locked_out();   // a commanded move or a homing is in progress: the panel's input is dropped
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size);
 
 /***************************************************************************************************/
