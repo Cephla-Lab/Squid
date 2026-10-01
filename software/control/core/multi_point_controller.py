@@ -623,7 +623,14 @@ class MultiPointController:
             file_id = "test_id"
             test_config = first_config
             size_before = utils.get_directory_disk_usage(pathlib.Path(temp_save_dir))
-            saved_image = utils_acquisition.save_image(test_image, file_id, temp_save_dir, test_config, is_color)
+            saved_image = utils_acquisition.save_image(
+                test_image,
+                file_id,
+                temp_save_dir,
+                test_config,
+                is_color,
+                tiff_compression_level=control._def.TIFF_COMPRESSION_LEVEL,
+            )
             size_after = utils.get_directory_disk_usage(pathlib.Path(temp_save_dir))
 
             size_per_image = size_after - size_before
