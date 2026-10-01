@@ -15,9 +15,17 @@ import os
 import shutil
 import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+# Must run before any control.* import (which pulls in control._def, which reads this path at
+# import time): a real machine_configs/objectives.yaml on a dev/bench machine would otherwise
+# change OBJECTIVES for the whole in-process suite, or sys.exit(1) the collection itself.
+import control.objectives_config as _objectives_config
+
+_objectives_config.OBJECTIVES_YAML_PATH = Path(tempfile.gettempdir()) / "squid-tests-no-objectives.yaml"
 
 import control.microcontroller
 import control.microscope

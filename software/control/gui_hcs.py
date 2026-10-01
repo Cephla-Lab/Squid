@@ -826,6 +826,12 @@ class HighContentScreeningGui(QMainWindow):
         channel_config_action.triggered.connect(self.openChannelConfigurationEditor)
         advanced_menu.addAction(channel_config_action)
 
+        # Objectives (machine_configs/objectives.yaml; takes effect after a restart)
+        objectives_action = QAction("Objectives...", self)
+        objectives_action.setMenuRole(QAction.NoRole)
+        objectives_action.triggered.connect(self.openObjectivesEditor)
+        advanced_menu.addAction(objectives_action)
+
         # Filter Wheel Configuration (only shown if filter wheel is enabled)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_config_action = QAction("Filter Wheel Configuration", self)
@@ -2317,6 +2323,15 @@ class HighContentScreeningGui(QMainWindow):
         """Open the filter wheel configuration dialog"""
         dialog = widgets.FilterWheelConfiguratorDialog(self.microscope.config_repo, self)
         dialog.signal_config_updated.connect(self._refresh_channel_lists)
+        dialog.exec_()
+
+    def openObjectivesEditor(self):
+        """Open the Objectives editor (Settings > Advanced > Objectives...)."""
+        from control.widgets_objectives import ObjectivesEditorDialog
+
+        dialog = ObjectivesEditorDialog.for_current_machine(
+            self.microscope.config_repo, on_restart=self.restart_application, parent=self
+        )
         dialog.exec_()
 
     def _refresh_channel_lists(self):
