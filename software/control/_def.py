@@ -935,6 +935,9 @@ LASER_AF_CROP_WIDTH = 1536
 LASER_AF_CROP_HEIGHT = 256
 LASER_AF_SPOT_DETECTION_MODE = SpotDetectionMode.DUAL_LEFT.value
 LASER_AF_RANGE = 100
+# Lower Z by this much (um) while the stage settles after the XY move, so that the laser autofocus correction
+# is an upward move: one command instead of the two of a downward move. 0 = off. Not used with a piezo.
+LASER_AF_LOWER_Z_BEFORE_UM = 0.0
 DISPLACEMENT_SUCCESS_WINDOW_UM = 1.0
 SPOT_CROP_SIZE = 100
 CORRELATION_THRESHOLD = 0.7
@@ -1277,6 +1280,10 @@ Z_HOME_SAFETY_MARGIN_UM = 100
 X_HOME_SAFETY_POINT = 0
 Y_HOME_SAFETY_POINT = 0
 Z_HOME_SAFETY_POINT = 1200
+
+# A blocking downward Z move goes this far past its target and comes back up, so that Z always rests on the
+# same side of the drive (um). It must exceed the lost motion of the stage.
+Z_BACKLASH_COMPENSATION_UM = 5.0
 
 USE_XERYON = False
 XERYON_SERIAL_NUMBER = "95130303033351E02050"
