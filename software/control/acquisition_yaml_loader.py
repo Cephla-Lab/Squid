@@ -62,6 +62,9 @@ class AcquisitionYAMLData:
     # Per-run opt-in for large acquisition mode. None = the file did not say, so the controller's
     # current flag is left alone (the global setting still applies when the run's parameters are built).
     large_acquisition_mode: Optional[bool] = None
+    # Per-run opt-in for the OME-TIFF per-timepoint split. None = the file did not say, so the
+    # controller's current flag is left alone (the global setting still applies at build_params time).
+    ome_tiff_split_timepoints: Optional[bool] = None
 
 
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
@@ -185,6 +188,9 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         skip_saving=bool(acq.get("skip_saving", False)),
         large_acquisition_mode=(
             None if acq.get("large_acquisition_mode") is None else bool(acq.get("large_acquisition_mode"))
+        ),
+        ome_tiff_split_timepoints=(
+            None if acq.get("ome_tiff_split_timepoints") is None else bool(acq.get("ome_tiff_split_timepoints"))
         ),
     )
 

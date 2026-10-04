@@ -593,3 +593,35 @@ class TestLargeAcquisitionMode:
         )
 
         assert parse_acquisition_yaml(str(tmp_path / "acquisition.yaml")).large_acquisition_mode is True
+
+
+class TestOmeTiffSplitTimepoints:
+    """acquisition.ome_tiff_split_timepoints is a per-run opt-in: absent means 'not specified'."""
+
+    def test_dataclass_default_is_unspecified(self):
+        assert AcquisitionYAMLData(widget_type="wellplate").ome_tiff_split_timepoints is None
+
+    @pytest.mark.parametrize("value,expected", [(True, True), (False, False)])
+    def test_parse_dict_reads_the_key(self, value, expected):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict({"acquisition": {"widget_type": "wellplate", "ome_tiff_split_timepoints": value}})
+
+        assert data.ome_tiff_split_timepoints is expected
+
+    def test_parse_dict_without_the_key_leaves_it_unspecified(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        data = parse_acquisition_dict({"acquisition": {"widget_type": "wellplate"}})
+
+        assert data.ome_tiff_split_timepoints is None
+
+    def test_round_trip_through_a_yaml_file(self, tmp_path):
+        import yaml
+
+        # The same "acquisition" block the controller writes for a run with the split on.
+        (tmp_path / "acquisition.yaml").write_text(
+            yaml.safe_dump({"acquisition": {"widget_type": "wellplate", "ome_tiff_split_timepoints": True}})
+        )
+
+        assert parse_acquisition_yaml(str(tmp_path / "acquisition.yaml")).ome_tiff_split_timepoints is True
