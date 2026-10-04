@@ -71,11 +71,16 @@ class Monitor:
             _log.warning(f"Could not persist alerted set: {e}")
 
     def classify(self, run: Optional[dict], now: float) -> Optional[str]:
-        """Return an alert kind ('crash'|'hang'|<reason>) or None."""
+        """Return an alert kind ('crash'|'hang'|<reason>) or None.
+
+        A "paused" run is treated exactly like a "running" one: the worker keeps
+        heart-beating while paused, so a dead pid is still a crash and a stale
+        heartbeat is still a hang.
+        """
         if not run or run.get("run_id") in self._alerted:
             return None
         status = run.get("status")
-        if status == "running":
+        if status in ("running", "paused"):
             if not pid_alive(run.get("pid")):
                 return "crash"
             if (now - (run.get("heartbeat_at") or 0)) > self._timeout:

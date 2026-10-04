@@ -182,6 +182,14 @@ class BackpressureController:
         with pending_bytes.get_lock():
             return pending_bytes.value / _BYTES_PER_MB
 
+    def get_pending_bytes(self) -> int:
+        """Bytes queued for saving but not yet written. Returns 0 after close()."""
+        pending_bytes = self._pending_bytes
+        if pending_bytes is None:
+            return 0
+        with pending_bytes.get_lock():
+            return pending_bytes.value
+
     def should_throttle(self) -> bool:
         """Check if acquisition should wait (either limit exceeded)."""
         if not self._enabled:

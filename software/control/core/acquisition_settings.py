@@ -185,6 +185,10 @@ def apply_acquisition_settings(
     controller.set_focus_map(None)
     controller.set_region_laser_af_offsets({})
     controller.set_skip_saving(data.skip_saving)
+    if data.large_acquisition_mode is not None:
+        # Only an explicit key opts this run in; absent leaves the controller's flag alone (a pre-flight
+        # dialog may have set it). The global setting is folded in when the run's parameters are built.
+        controller.set_large_acquisition_mode(data.large_acquisition_mode)
     controller.set_widget_type(data.widget_type)
     controller.set_scan_size(float(data.scan_size_mm or 0.0))
     controller.set_overlap_percent(float(data.overlap_percent))

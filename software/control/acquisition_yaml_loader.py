@@ -59,6 +59,9 @@ class AcquisitionYAMLData:
     wellplate_format: Optional[str] = None
     z_range_mm: Optional[Tuple[float, float]] = None
     skip_saving: bool = False
+    # Per-run opt-in for large acquisition mode. None = the file did not say, so the controller's
+    # current flag is left alone (the global setting still applies when the run's parameters are built).
+    large_acquisition_mode: Optional[bool] = None
 
 
 def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
@@ -180,6 +183,9 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         wellplate_format=sample.get("wellplate_format"),
         z_range_mm=z_range_mm,
         skip_saving=bool(acq.get("skip_saving", False)),
+        large_acquisition_mode=(
+            None if acq.get("large_acquisition_mode") is None else bool(acq.get("large_acquisition_mode"))
+        ),
     )
 
 

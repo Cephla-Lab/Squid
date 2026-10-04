@@ -2,6 +2,12 @@
 """On-disk acquisition run-state breadcrumbs, shared by the acquisition engine
 (writer) and the standalone acquisition watchdog (reader).
 
+Run statuses:
+  - "running": the acquisition is in progress and heart-beating.
+  - "paused":  the acquisition is paused but the worker still heart-beats, so a
+               stale heartbeat or a dead pid is still a real failure.
+  - "ended":   terminal; see "reason" ("completed", "user_abort", "error", ...).
+
 Stdlib-only leaf module: must NOT import anything from `control`.
 """
 import json
@@ -22,6 +28,8 @@ _log = squid.logging.get_logger(__name__)
 SCHEMA_VERSION = 1
 HEARTBEAT_INTERVAL_S = 5.0
 RUN_FILE_NAME = "run.json"
+# Statuses a live run may switch between; "ended" is terminal and set by end().
+LIVE_STATUSES = ("running", "paused")
 
 
 def default_state_dir() -> Path:
@@ -121,6 +129,27 @@ class RunStateWriter:
         self._record["heartbeat_at"] = now
         self._flush()
 
+    def set_status(self, status: str) -> None:
+        """Switch a live run between "running" and "paused", flushing immediately.
+
+        A paused run keeps heart-beating, so the watchdog still reports a dead
+        process or a stalled heartbeat; the status only tells it that a quiet
+        run is intentional. Terminal ("ended") records are never reopened.
+        """
+        if status not in LIVE_STATUSES:
+            raise ValueError(f"Invalid run status {status!r}; expected one of {LIVE_STATUSES}")
+        current = self._record.get("status")
+        if current == "ended":
+            _log.warning(f"Ignoring set_status({status!r}) on an already-ended run state record.")
+            return
+        if current == status:
+            return
+        now = time.time()
+        self._record["status"] = status
+        self._record["heartbeat_at"] = now
+        self._last_beat = now
+        self._flush()
+
     def end(self, reason: str, stats: Optional[dict] = None) -> None:
         self._record["status"] = "ended"
         self._record["reason"] = reason
@@ -142,6 +171,9 @@ class NullRunStateWriter:
     run_id = None
 
     def beat(self, progress: Optional[dict] = None, force: bool = False) -> None:
+        pass
+
+    def set_status(self, status: str) -> None:
         pass
 
     def end(self, reason: str, stats: Optional[dict] = None) -> None:

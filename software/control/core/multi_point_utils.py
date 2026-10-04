@@ -8,6 +8,8 @@ from squid.abc import CameraFrame
 
 if TYPE_CHECKING:
     from control.slack_notifier import TimepointStats, AcquisitionStats
+    from control.core.disk_space import DiskStatus
+    from control.core.pause_gate import PauseState
 
 
 @dataclass
@@ -60,6 +62,9 @@ class AcquisitionParameters:
 
     apply_channel_offset: bool = True
     skip_saving: bool = False
+    # Effective large acquisition mode for this run (per-run opt-in OR the global setting), resolved
+    # once by MultiPointController.build_params.
+    large_acquisition_mode: bool = False
 
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate
@@ -151,3 +156,8 @@ class MultiPointControllerFunctions:
     # The waiting callback receives the list of channel keys it's waiting on (e.g. ["470", "55x"]).
     signal_laser_engine_waiting: Callable[[List[str]], None] = lambda *a, **kw: None
     signal_laser_engine_ready: Callable[[], None] = lambda *a, **kw: None
+    # Large acquisition mode pause checkpoints (fired by MultiPointWorker only when the mode is on).
+    # paused: (PauseState, Optional[DiskStatus]) on the pause transition and on every disk re-check
+    # while paused; resumed: seconds spent paused (also fired when an abort ends the pause).
+    signal_acquisition_paused: Callable[["PauseState", Optional["DiskStatus"]], None] = lambda *a, **kw: None
+    signal_acquisition_resumed: Callable[[float], None] = lambda *a, **kw: None

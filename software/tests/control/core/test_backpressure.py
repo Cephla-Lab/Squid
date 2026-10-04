@@ -390,6 +390,18 @@ class TestBackpressureController:
 
         assert controller.get_pending_mb() == 0.0
 
+    def test_get_pending_bytes_tracks_dispatched_bytes_and_zeroes_on_close(self):
+        """get_pending_bytes() reports the raw byte counter, and 0 on a closed controller."""
+        controller = BackpressureController(max_jobs=10, max_mb=500.0)
+        assert controller.get_pending_bytes() == 0
+
+        controller.job_dispatched(1024 * 1024)  # 1 MiB
+        assert controller.get_pending_bytes() == 1024 * 1024
+
+        controller.close()
+
+        assert controller.get_pending_bytes() == 0
+
     def test_get_stats_on_closed_controller_returns_zeroed_stats(self):
         """get_stats() returns zeroed stats on closed controller."""
         controller = BackpressureController(max_jobs=10, max_mb=500.0)
