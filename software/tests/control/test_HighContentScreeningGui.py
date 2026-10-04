@@ -139,3 +139,41 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_timepoint_output_requests_reach_the_mosaic_save_and_are_always_answered(qtbot, monkeypatch, confirm_exit_yes):
+    """The per-timepoint mosaic save hangs off timepoint_outputs_requested in every run. The handler must
+    call the save with the reply's timepoint and answer on the reply (bound to the run that asked), also
+    when there is nothing to save and when the save raises."""
+    import concurrent.futures
+
+    from control.core.pending_outputs import PendingOutputs
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert win.unifiedMosaicWidget is not None
+    assert win.multipointController._timepoint_output_writer_attached
+
+    registry = PendingOutputs()
+    saves = []
+    done = concurrent.futures.Future()
+    done.set_result(None)
+    outcomes = {0: (done, "/exp/0/mosaic_view"), 1: None, 2: RuntimeError("canvas gone")}
+
+    def save_for_timepoint(time_point):
+        saves.append(time_point)
+        outcome = outcomes[time_point]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(win.unifiedMosaicWidget, "save_for_timepoint", save_for_timepoint)
+    for t in (0, 1, 2):
+        # Through the callback the worker uses, i.e. across the real Qt signal.
+        win.multipointController.callbacks.signal_timepoint_outputs_requested(registry.expect(t))
+
+    result = registry.wait(None, timeout_s=5.0)
+    assert saves == [0, 1, 2]
+    assert result.complete, "every request was answered, including the failing save"
+    assert result.outputs == ((0, "/exp/0/mosaic_view"),)
