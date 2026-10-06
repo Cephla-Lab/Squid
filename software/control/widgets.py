@@ -3701,33 +3701,12 @@ class DragonflyConfocalWidget(QWidget):
         self.init_ui()
 
         # Show the unit's current state. Nothing is connected yet, so selecting a dropdown
-        # entry here does not move anything. Each query stands alone: a wheel the unit does
-        # not have (e.g. no port 2 emission filter) must not hide the rest of the state.
-        self.confocal_mode = self._read("modality", self.dragonfly.get_modality, "") == "CONFOCAL"
-        self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
-        for dropdown, what, query in (
-            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
-            (
-                self.dropdown_port1_emission_filter,
-                "port 1 emission filter",
-                partial(self.dragonfly.get_emission_filter, 1),
-            ),
-            (
-                self.dropdown_port2_emission_filter,
-                "port 2 emission filter",
-                partial(self.dragonfly.get_emission_filter, 2),
-            ),
-            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
-        ):
-            dropdown.setCurrentIndex(self._read(what, query, 0) - 1)  # unknown position: no entry selected
-
-        # Set initial button text
-        if self.confocal_mode:
-            self.btn_toggle_confocal.setText("Switch to Widefield")
-        else:
-            self.btn_toggle_confocal.setText("Switch to Confocal")
+        # entry here does not move anything.
+        self.confocal_mode = False
+        self._show_unit_state()
 
         # Connect signals
+        self.btn_refresh.clicked.connect(self.refresh_state)
         self.btn_toggle_confocal.clicked.connect(self.toggle_confocal_mode)
         self.btn_disk_motor.clicked.connect(self.toggle_disk_motor)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -3746,6 +3725,45 @@ class DragonflyConfocalWidget(QWidget):
             self._log.error(f"Could not read the Dragonfly {what}: {e}")
             return default
 
+    def _show_unit_state(self):
+        """Read every setting from the unit into the controls without sending any command.
+
+        Each query stands alone: a wheel the unit does not have (e.g. no port 2 emission
+        filter) must not hide the rest of the state.
+        """
+        self.confocal_mode = self._read("modality", self.dragonfly.get_modality, "") == "CONFOCAL"
+        self.btn_toggle_confocal.setText("Switch to Widefield" if self.confocal_mode else "Switch to Confocal")
+        self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
+        for dropdown, what, query in (
+            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
+            (
+                self.dropdown_port1_emission_filter,
+                "port 1 emission filter",
+                partial(self.dragonfly.get_emission_filter, 1),
+            ),
+            (
+                self.dropdown_port2_emission_filter,
+                "port 2 emission filter",
+                partial(self.dragonfly.get_emission_filter, 2),
+            ),
+            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
+        ):
+            position = self._read(what, query, 0)
+            dropdown.blockSignals(True)  # showing a position must not command a move
+            dropdown.setCurrentIndex(position - 1)  # unknown position: no entry selected
+            dropdown.blockSignals(False)
+
+    def refresh_state(self):
+        """Re-read the unit, e.g. after the live controller moved a filter for a channel."""
+        self.enable_all_buttons(False)
+        try:
+            was_confocal = self.confocal_mode
+            self._show_unit_state()
+            if self.confocal_mode != was_confocal:
+                self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+        finally:
+            self.enable_all_buttons(True)
+
     def init_ui(self):
         main_layout = QVBoxLayout()
 
@@ -3754,6 +3772,8 @@ class DragonflyConfocalWidget(QWidget):
         self.btn_toggle_confocal = QPushButton("Switch to Confocal")
         self.btn_disk_motor = QPushButton("Disk Motor On")
         self.btn_disk_motor.setCheckable(True)
+        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh.setToolTip("Re-read every setting from the Dragonfly")
 
         dichroic_label = QLabel("Port Selection")
         dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -3764,6 +3784,7 @@ class DragonflyConfocalWidget(QWidget):
         layout_confocal.addWidget(self.btn_disk_motor)
         layout_confocal.addWidget(dichroic_label)
         layout_confocal.addWidget(self.dropdown_dichroic)
+        layout_confocal.addWidget(self.btn_refresh)
 
         layout_wheels = QGridLayout()
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
@@ -3797,6 +3818,7 @@ class DragonflyConfocalWidget(QWidget):
         """Enable or disable all controls"""
         self.btn_toggle_confocal.setEnabled(enable)
         self.btn_disk_motor.setEnabled(enable)
+        self.btn_refresh.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
         self.dropdown_port1_emission_filter.setEnabled(enable)
         self.dropdown_port2_emission_filter.setEnabled(enable)
