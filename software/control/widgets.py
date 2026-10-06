@@ -3697,6 +3697,7 @@ class DragonflyConfocalWidget(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.dragonfly = dragonfly
+        self.confocal_mode = False  # what we assume until the unit answers the modality query
 
         self.init_ui()
 
@@ -3728,7 +3729,9 @@ class DragonflyConfocalWidget(QWidget):
         Each query stands alone: a wheel the unit does not have (e.g. no port 2 emission
         filter) must not hide the rest of the state.
         """
-        self.confocal_mode = self._read("modality", self.dragonfly.get_modality, "") == "CONFOCAL"
+        modality = self._read("modality", self.dragonfly.get_modality, None)
+        if modality is not None:  # an unanswered query is not a mode change
+            self.confocal_mode = modality == "CONFOCAL"
         self.btn_toggle_confocal.setText("Switch to Widefield" if self.confocal_mode else "Switch to Confocal")
         self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
         for dropdown, what, query in (

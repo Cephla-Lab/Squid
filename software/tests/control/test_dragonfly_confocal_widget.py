@@ -180,3 +180,21 @@ def test_refresh_reports_a_modality_change_to_the_live_controller(qtbot):
     widget.btn_refresh.click()
 
     assert modes == [True]
+
+
+def test_refresh_keeps_the_known_mode_when_the_modality_read_fails(qtbot):
+    sim = Dragonfly_Simulation()
+    sim.set_modality("CONFOCAL")
+    widget = make_widget(qtbot, sim)
+    modes = []
+    widget.signal_toggle_confocal_widefield.connect(modes.append)
+
+    def unanswered():
+        raise SerialDeviceError("Max attempts reached without receiving response.")
+
+    sim.get_modality = unanswered
+    widget.btn_refresh.click()
+
+    assert widget.get_confocal_mode() is True
+    assert widget.btn_toggle_confocal.text() == "Switch to Widefield"
+    assert modes == []
