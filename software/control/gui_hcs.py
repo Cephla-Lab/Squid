@@ -2865,6 +2865,16 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
+        # Release the Dragonfly serial port so a restarted process can open it
+        if self.dragonfly is not None:
+            try:
+                self.dragonfly.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing Dragonfly during {context}")
+                else:
+                    raise
+
         # Stop laser autofocus
         if SUPPORT_LASER_AUTOFOCUS:
             try:

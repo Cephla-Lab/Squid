@@ -49,6 +49,17 @@ def test_channel_without_a_filter_position_leaves_the_wheel_alone(scope, live):
     assert scope.addons.dragonfly.get_emission_filter(1) == 5
 
 
+def test_an_intermediate_dichroic_leaves_both_wheels_alone(scope, live, caplog):
+    scope.addons.dragonfly.set_port_selection_dichroic(2)
+    live.currentConfiguration = make_channel(filter_position=3)
+
+    live.update_illumination()
+
+    assert scope.addons.dragonfly.get_emission_filter(1) == 1
+    assert scope.addons.dragonfly.get_emission_filter(2) == 1
+    assert any("Unknown camera port" in record.getMessage() for record in caplog.records)
+
+
 def test_closing_the_microscope_closes_the_dragonfly(scope):
     scope.close()
 

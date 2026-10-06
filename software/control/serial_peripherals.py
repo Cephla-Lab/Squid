@@ -525,6 +525,16 @@ class XLight:
         return self.disk_motor_state
 
 
+def dragonfly_camera_port_for_dichroic(dichroic_name: str) -> int:
+    """Which camera port a port-selection dichroic feeds: only the all-pass and all-reflect
+    positions route everything to one port; the real dichroics split by wavelength."""
+    if dichroic_name.endswith("100% Pass"):
+        return 1
+    if dichroic_name.endswith("100% Reflect"):
+        return 2
+    raise ValueError(f"Unknown camera port: {dichroic_name}")
+
+
 class Dragonfly:
 
     def __init__(self, SN: str):
@@ -661,12 +671,7 @@ class Dragonfly:
         if not self.ps_info or not (1 <= self.current_port_selection_dichroic <= len(self.ps_info)):
             raise ValueError(f"Port selection dichroic info does not match current position: {self.ps_info}")
 
-        if self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Pass"):
-            return 1
-        elif self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Reflect"):
-            return 2
-        else:
-            raise ValueError(f"Unknown camera port: {self.ps_info[self.current_port_selection_dichroic - 1]}")
+        return dragonfly_camera_port_for_dichroic(self.ps_info[self.current_port_selection_dichroic - 1])
 
     def set_modality(self, modality: str):
         """Set imaging modality
@@ -852,11 +857,8 @@ class Dragonfly_Simulation:
         return self.dichroic_position
 
     def get_camera_port(self) -> int:
-        """Get current camera port"""
-        if self.dichroic_position == 1:
-            return 1
-        else:
-            return 2
+        """Get current camera port, by the same rule as the hardware driver"""
+        return dragonfly_camera_port_for_dichroic(self.get_port_selection_dichroic_info()[self.dichroic_position - 1])
 
     def set_modality(self, modality: str):
         """Set imaging modality"""

@@ -161,3 +161,23 @@ def test_create_simulated_hcs_with_dragonfly(qtbot, monkeypatch, confirm_exit_ye
     win.spinningDiskConfocalWidget.btn_toggle_confocal.click()
     assert scope.addons.dragonfly.get_modality() == "CONFOCAL"
     assert scope.live_controller.is_confocal_mode() is True
+
+
+def test_gui_cleanup_closes_the_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
+    """closeEvent/restart go through _cleanup_common, which closes devices itself and never
+    calls Microscope.close(); the Dragonfly serial port must be released on that path too."""
+    import control.serial_peripherals
+    from tests.control.spinning_disk_test_utils import enable_spinning_disk
+
+    enable_spinning_disk(monkeypatch, control.gui_hcs, dragonfly=True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    closed = []
+    monkeypatch.setattr(scope.addons.dragonfly, "close", lambda: closed.append("dragonfly"))
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    gui.closeEvent = lambda event: event.accept()  # keep teardown from re-running cleanup
+
+    gui._cleanup_common(for_restart=True)
+
+    assert closed == ["dragonfly"]

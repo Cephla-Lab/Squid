@@ -188,13 +188,31 @@ def test_simulated_field_aperture_round_trips():
     assert sim.get_field_aperture_wheel_position() == 5
 
 
-def test_simulated_camera_port_follows_the_dichroic():
+@pytest.mark.parametrize("position", [2, 3])
+def test_an_intermediate_dichroic_does_not_identify_a_camera_port(dragonfly, position):
+    dragonfly.set_port_selection_dichroic(position)
+
+    with pytest.raises(ValueError, match="Unknown camera port"):
+        dragonfly.get_camera_port()
+
+
+@pytest.mark.parametrize("position, expected", [(1, 1), (4, 2)])
+def test_simulated_camera_port_follows_the_dichroic(position, expected):
     sim = Dragonfly_Simulation()
-    assert sim.get_camera_port() == 1
 
-    sim.set_port_selection_dichroic(4)
+    sim.set_port_selection_dichroic(position)
 
-    assert sim.get_camera_port() == 2
+    assert sim.get_camera_port() == expected
+
+
+@pytest.mark.parametrize("position", [2, 3])
+def test_simulated_intermediate_dichroic_does_not_identify_a_camera_port(position):
+    sim = Dragonfly_Simulation()
+
+    sim.set_port_selection_dichroic(position)
+
+    with pytest.raises(ValueError, match="Unknown camera port"):
+        sim.get_camera_port()
 
 
 def test_simulated_info_lists_match_the_hardware_wheels():
