@@ -1079,6 +1079,8 @@ class Microcontroller:
         microsteps. Afterwards encoder_pos / encoder_deviation / encoder_flags update every packet.
         ENCODER_REPORTING.OFF restores the shipping packet; RESET and INITIALIZE do too.
         """
+        if mode not in (ENCODER_REPORTING.OFF, ENCODER_REPORTING.ENC_IN_THETA, ENCODER_REPORTING.ENC_AS_POSITION):
+            raise ValueError("encoder reporting mode must be ENCODER_REPORTING.OFF, ENC_IN_THETA or ENC_AS_POSITION")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_ENCODER_REPORTING
         cmd[2] = int(axis)
@@ -1717,18 +1719,19 @@ class Microcontroller:
                 self.z_pos = self._payload_to_int(
                     msg[10:14], MicrocontrollerDef.N_BYTES_POS
                 )  # unit: microstep or encoder resolution
-                self.theta_pos = self._payload_to_int(
-                    msg[14:18], MicrocontrollerDef.N_BYTES_POS
-                )  # unit: microstep or encoder resolution
+                theta_field = self._payload_to_int(msg[14:18], MicrocontrollerDef.N_BYTES_POS)
                 # Firmware >= 1.6 with encoder reporting on: the theta field is the reported axis's
-                # ENC_POS, byte 19 its flags and bytes 20-21 the clipped ENC_POS - XACTUAL. With
-                # reporting off (and on older firmware) byte 19 bit 0 is clear.
+                # ENC_POS, byte 19 its flags and bytes 20-21 the clipped ENC_POS - XACTUAL. It is then
+                # not a theta position, so theta_pos keeps its last value (a stage position readback
+                # must not show a wheel encoder as an angle). With reporting off, and on older
+                # firmware, byte 19 bit 0 is clear and the field is theta as it always was.
                 if msg[19] & (1 << ENC_FLAG.REPORTING):
                     self.encoder_flags = msg[19]
-                    self.encoder_pos = self.theta_pos
+                    self.encoder_pos = theta_field
                     self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
                 else:
                     self.encoder_flags = 0
+                    self.theta_pos = theta_field  # unit: microstep or encoder resolution
 
                 self.button_and_switch_state = msg[18]
                 # joystick button
