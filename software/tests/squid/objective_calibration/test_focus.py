@@ -79,6 +79,17 @@ class TestSweep:
             step = abs(level.z_um[1] - level.z_um[0])
             assert level.metric == ("highpass_std" if step > 2 * depth_of_field_um(na) else "fine")
 
+    @pytest.mark.parametrize("z_focus", [70.0, -70.0])
+    def test_low_na_focus_well_inside_the_range_is_not_an_edge(self, z_focus):
+        # Bench 2026-10-05: a 4x whose focus sat 70 um from the 20x's start Z (ordinary parfocality)
+        # was refused as "at the edge" of +-100 um on every cycle, because the 4x coarse step (0.7*DOF
+        # = 22.8 um, 10 samples) put it on sample index 1 and the edge test counted samples.
+        hw = _hw("4x", z_focus=z_focus)
+        result = focus_sweep(
+            hw, objective="4x", channel="BF", na=0.13, center_um=0.0, range_um=100.0, square_px=40, fine_metric=lape
+        )
+        assert result.z_best_um == pytest.approx(z_focus, abs=0.25 * depth_of_field_um(0.13))
+
     def test_narrow_user_range_at_4x_still_works(self):
         hw = _hw("4x", z_focus=8.0)
         result = focus_sweep(
