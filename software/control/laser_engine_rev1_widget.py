@@ -1,22 +1,26 @@
 """GUI tab for the Cephla laser engine, carrier rev 1 (Squid's "Laser Engine" tab; the bench app embeds it too).
 
-Top: the engine state as a coloured pill, the engine buttons, the startup state and the last few notices. Then one row per
+Top: the engine state as a coloured pill, the engine buttons, the startup state and the last notices. Then one row per
 fitted line, and on DF the 560 nm laser box: the operator sets the laser power here (saved in the machine .ini, rulings
 2026-10-06); Squid's 560 intensity drives the AOM; the shutter is safety only.
+Compact, and inside a scroll area: Squid's side panel can be shorter than the tab (it caps the panel at the tab's size
+hint, and the column may have no room left), and a short panel must scroll, never squash the rows.
 """
 
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -112,7 +116,9 @@ class _LineRow:
 
 
 class LaserEngineRev1Widget(QWidget):
-    NOTICES_SHOWN = 4
+    NOTICES_SHOWN = 2  # the latest; NOTICES_KEPT of them in the tooltip
+    NOTICES_KEPT = 10
+    PANE_ALLOWANCE_PX = 12  # Squid caps the panel at this hint + the tab bar, without the tab pane's frame
     COLUMNS = ("Line", "Wavelength", "State", "Set-point", "Max", "Reason")
 
     def __init__(
@@ -123,12 +129,21 @@ class LaserEngineRev1Widget(QWidget):
     ):
         super().__init__(parent)
         self._engine = engine
-        if (
-            save_power is None
-        ):  # a simulated session keeps its power to itself (FakeSource's limits are not the machine's)
+        # a simulated session keeps its power to itself (FakeSource's limits are not the machine's)
+        if save_power is None:
             save_power = _not_saved if getattr(engine, "simulated", False) is True else save_source_power_mw
         self._save_power = save_power  # remembers the 560 power across sessions (the machine .ini)
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._content = QWidget()
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setWidget(self._content)
+        outer.addWidget(self.scroll)
+        layout = QVBoxLayout(self._content)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
 
         top = QHBoxLayout()
         self.state_pill = QLabel()
@@ -162,8 +177,12 @@ class LaserEngineRev1Widget(QWidget):
         self.notice_label.setWordWrap(True)
         layout.addWidget(self.notice_label)
 
-        lines_box = QGroupBox("Lines")
+        lines_box = QFrame()  # the header row names it; a group-box title would cost a row
+        lines_box.setFrameShape(QFrame.StyledPanel)
         grid = QGridLayout(lines_box)
+        grid.setContentsMargins(8, 4, 8, 4)
+        grid.setVerticalSpacing(1)
+        grid.setHorizontalSpacing(14)
         for col, text in enumerate(self.COLUMNS):
             grid.addWidget(QLabel(f"<b>{text}</b>"), 0, col)
         self.rows: Dict[str, _LineRow] = {}
@@ -184,7 +203,7 @@ class LaserEngineRev1Widget(QWidget):
             layout.addWidget(self._build_source_box(limits))
         layout.addStretch(1)
 
-        self._notices = list(engine.notices[-self.NOTICES_SHOWN :])  # e.g. the connect-time reset, before this tab
+        self._notices = list(engine.notices[-self.NOTICES_KEPT :])  # e.g. the connect-time reset, before this tab
         self._show_notices()
         engine.status_updated.connect(self._on_status)
         engine.connection_lost.connect(self._on_lost)
@@ -198,7 +217,6 @@ class LaserEngineRev1Widget(QWidget):
     def _build_source_box(self, limits: Tuple[float, float]) -> QGroupBox:
         engine = self._engine
         self.source_box = QGroupBox("560 nm laser")
-        grid = QGridLayout(self.source_box)
         self.source_state_label = QLabel("—")
         self.source_detail_label = QLabel("")
         self.source_detail_label.setWordWrap(True)
@@ -222,38 +240,33 @@ class LaserEngineRev1Widget(QWidget):
         self.idle_off_spin.valueChanged.connect(lambda v: self._run(lambda: engine.set_source_idle_off_min(v)))
         self.shutter_note = QLabel(SHUTTER_NOTE)
         self.shutter_note.setStyleSheet(f"color: {GREY};")
+        self.source_limits_label.setStyleSheet(f"color: {GREY};")
 
-        state_row = QHBoxLayout()
+        rows = QVBoxLayout(self.source_box)
+        rows.setContentsMargins(8, 4, 8, 4)
+        rows.setSpacing(4)
+        state_row = QHBoxLayout()  # READY  <detail>  measured 200 mW · set 200 mW
         state_row.addWidget(self.source_state_label)
         state_row.addWidget(self.source_detail_label, 1)
-        power_row = QHBoxLayout()
-        power_row.addWidget(self.power_spin)
-        power_row.addWidget(self.power_set_btn)
-        power_row.addStretch(1)
-        idle_row = QHBoxLayout()
-        idle_row.addWidget(self.idle_off_spin)
-        idle_row.addStretch(1)
-        for r, (name, item) in enumerate(
-            (
-                ("State", state_row),
-                ("Power", self.source_power_label),
-                ("Limits", self.source_limits_label),
-                ("Laser power", power_row),
-                ("Idle-off", idle_row),
-            )
-        ):
-            grid.addWidget(QLabel(name), r, 0)
-            if isinstance(item, QHBoxLayout):
-                grid.addLayout(item, r, 1)
-            else:
-                grid.addWidget(item, r, 1)
-        grid.addWidget(self.shutter_note, 5, 0, 1, 2)
-        grid.setColumnStretch(1, 1)
+        state_row.addWidget(self.source_power_label)
+        set_row = QHBoxLayout()  # Laser power [200 mW] [Set] 200 – 1000 mW    Idle-off [60 min]
+        set_row.addWidget(QLabel("Laser power"))
+        set_row.addWidget(self.power_spin)
+        set_row.addWidget(self.power_set_btn)
+        set_row.addWidget(self.source_limits_label)
+        set_row.addSpacing(16)
+        set_row.addWidget(QLabel("Idle-off"))
+        set_row.addWidget(self.idle_off_spin)
+        set_row.addStretch(1)
+        rows.addLayout(state_row)
+        rows.addLayout(set_row)
+        rows.addWidget(self.shutter_note)
         return self.source_box
 
     @staticmethod
     def _startup_text(state: str) -> str:
-        return f"Startup: {state}" if state else ""
+        """Shown while the bring-up runs or when it did not finish; "done" says nothing the pill and the lines do not."""
+        return f"Startup: {state}" if state and state != "done" else ""
 
     @staticmethod
     def _set_line(label: QLabel, text: str) -> None:
@@ -299,11 +312,20 @@ class LaserEngineRev1Widget(QWidget):
 
     # ---- status ------------------------------------------------------------------------------------------------------
     def _on_notice(self, text: str) -> None:
-        self._notices = (self._notices + [text])[-self.NOTICES_SHOWN :]
+        self._notices = (self._notices + [text])[-self.NOTICES_KEPT :]
         self._show_notices()
 
     def _show_notices(self) -> None:
-        self.notice_label.setText("\n".join(self._notices))
+        self.notice_label.setText("\n".join(self._notices[-self.NOTICES_SHOWN :]))
+        self.notice_label.setToolTip("\n".join(self._notices))
+
+    def sizeHint(self) -> QSize:
+        """What the content needs at the tab's width (wrapped notices and reasons add lines; a QScrollArea would cap its own
+        hint at 24 text lines) + the allowance for Squid's tab pane. Squid asks on every tab switch, the tab shown."""
+        hint = self._content.sizeHint()
+        width = self.width() if self.isVisible() else hint.width()
+        height = max(hint.height(), self._content.heightForWidth(width))
+        return QSize(hint.width(), height + self.PANE_ALLOWANCE_PX)
 
     def _show_engine_state(self, status: Optional[EngineRev1Status], lost: bool) -> None:
         text, colour = engine_state(status, lost)

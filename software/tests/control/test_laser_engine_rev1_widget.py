@@ -1,5 +1,5 @@
 import pytest
-from qtpy.QtWidgets import QComboBox, QMessageBox
+from qtpy.QtWidgets import QApplication, QComboBox, QMessageBox, QTabWidget
 
 from control._def import ILLUMINATION_CODE
 from control.laser_engine_rev1 import LaserEngineRev1
@@ -87,6 +87,42 @@ def test_widget_shows_what_the_connect_reset_cleared(qtbot):
     assert "no AOM calibration" in widget.notice_label.text()
     engine.set_source_power_mw(600.0)
     assert "560 nm laser set to 600 mW" in widget.notice_label.text()
+    assert "cleared at connect" not in widget.notice_label.text()  # the latest two are shown ...
+    assert "cleared at connect: hardware fault latch" in widget.notice_label.toolTip()  # ... the older ones are here
+    engine.close()
+
+
+def test_widget_scrolls_instead_of_squashing_in_a_short_panel(qtbot):
+    engine, widget = _widget(qtbot)
+    tabs = QTabWidget()
+    qtbot.addWidget(tabs)
+    tabs.addTab(widget, "Laser Engine")
+    width = widget.sizeHint().width() + 40  # wide enough for the content in this style (no horizontal scrollbar)
+    tabs.resize(width, 400)
+    tabs.show()
+    QApplication.processEvents()
+    tabs.resize(width, widget.sizeHint().height() + tabs.tabBar().height())  # Squid's cap: everything fits
+    QApplication.processEvents()
+    assert not widget.scroll.verticalScrollBar().isVisible()
+    assert not widget.scroll.horizontalScrollBar().isVisible()
+    tabs.resize(width, 200)  # Squid's side panel when its column has no room left
+    QApplication.processEvents()
+    assert widget.scroll.verticalScrollBar().isVisible()
+    assert widget.power_spin.height() >= widget.power_spin.minimumSizeHint().height()  # not squashed
+    engine.close()
+
+
+def test_widget_hides_a_finished_startup(qtbot):
+    engine = build_simulated_engine()
+    engine.open()
+    engine.on_startup()
+    for _ in range(10):
+        engine.source_step()
+        engine.poll_once()
+    assert engine.bringup_state == "done"
+    widget = LaserEngineRev1Widget(engine, save_power=lambda mw: True)
+    qtbot.addWidget(widget)
+    assert widget.startup_label.isHidden()  # the pill and the lines say it
     engine.close()
 
 
