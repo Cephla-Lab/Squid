@@ -1119,6 +1119,12 @@ class Microscope:
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
 
+        if self.addons.dragonfly is not None:
+            try:
+                self.addons.dragonfly.close()
+            except Exception as e:
+                self._log.warning(f"Error closing Dragonfly: {e}")
+
         if self.addons.fluidics is not None:
             try:
                 self.addons.fluidics.close()

@@ -139,3 +139,27 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_create_simulated_hcs_with_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
+    """Regression: with a Dragonfly as the spinning disk unit, GUI construction wired the
+    X-Light-only iris signals onto DragonflyConfocalWidget and raised AttributeError."""
+    import control.core.live_controller
+    import control.widgets
+
+    for module in (control._def, control.gui_hcs, control.core.live_controller, control.widgets):
+        monkeypatch.setattr(module, "ENABLE_SPINNING_DISK_CONFOCAL", True)
+        monkeypatch.setattr(module, "USE_DRAGONFLY", True)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    assert isinstance(win.spinningDiskConfocalWidget, control.widgets.DragonflyConfocalWidget)
+    assert win.cameraTabWidget.indexOf(win.spinningDiskConfocalWidget) >= 0
+
+    # The widget's toggle drives the live controller's confocal mode, as the X-Light one does.
+    assert scope.live_controller.is_confocal_mode() is False
+    win.spinningDiskConfocalWidget.btn_toggle_confocal.click()
+    assert scope.addons.dragonfly.get_modality() == "CONFOCAL"
+    assert scope.live_controller.is_confocal_mode() is True

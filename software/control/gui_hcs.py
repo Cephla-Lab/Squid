@@ -697,7 +697,7 @@ class HighContentScreeningGui(QMainWindow):
 
         # Pre-declare and give types to all our widgets so type hinting tools work.  You should
         # add to this as you add widgets.
-        self.spinningDiskConfocalWidget: Optional[widgets.SpinningDiskConfocalWidget] = None
+        self.spinningDiskConfocalWidget: Optional[QWidget] = None  # X-Light or Dragonfly widget
         self.nl5Wdiget: Optional[NL5Widget] = None
         self.cameraSettingWidget: Optional[widgets.CameraSettingsWidget] = None
         self.profileWidget: Optional[widgets.ProfileWidget] = None
@@ -1623,6 +1623,8 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
+        # Per-channel iris values exist only on the X-Light widget; the Dragonfly has no irises.
+        if isinstance(self.spinningDiskConfocalWidget, widgets.SpinningDiskConfocalWidget):
             # Update iris UI when channel changes
             self.liveControlWidget.signal_live_configuration.connect(
                 self.spinningDiskConfocalWidget.update_iris_from_config
