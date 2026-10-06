@@ -343,4 +343,5 @@ def build_simulated_engine(options=None):
     fake, source = FakeEngine(tok_delay_polls=3), FakeSource()
     engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, options=options)
     engine.sim_engine, engine.sim_source = fake, source  # test / demo access
+    engine.simulated = True  # the fake source's limits must not overwrite the machine's saved 560 power
     return engine

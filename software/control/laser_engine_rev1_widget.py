@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+import squid.logging
 from control.laser_engine_rev1 import save_source_power_mw
 from control.laser_engine_rev1_status import SOURCE_560_LINE, EngineRev1Status, LineInfo, LineState, SourceStatus
 
@@ -92,6 +93,11 @@ class _NoWheelDoubleSpinBox(QDoubleSpinBox):
         event.ignore()
 
 
+def _not_saved(mw: float) -> bool:
+    squid.logging.get_logger(__name__).info(f"simulation: 560 nm laser power {mw:.0f} mW not saved to the machine .ini")
+    return False
+
+
 @dataclass
 class _LineRow:
     line: QLabel
@@ -113,10 +119,14 @@ class LaserEngineRev1Widget(QWidget):
         self,
         engine,
         parent: Optional[QWidget] = None,
-        save_power: Callable[[float], bool] = save_source_power_mw,
+        save_power: Optional[Callable[[float], bool]] = None,
     ):
         super().__init__(parent)
         self._engine = engine
+        if (
+            save_power is None
+        ):  # a simulated session keeps its power to itself (FakeSource's limits are not the machine's)
+            save_power = _not_saved if getattr(engine, "simulated", False) is True else save_source_power_mw
         self._save_power = save_power  # remembers the 560 power across sessions (the machine .ini)
         layout = QVBoxLayout(self)
 
@@ -262,6 +272,7 @@ class LaserEngineRev1Widget(QWidget):
     # ---- 560 nm laser power ----------------------------------------------------------------------------------------------
     def set_source_power(self) -> None:
         """Set: the power goes to the engine (clamped to the laser's limits), then into the machine .ini."""
+        self.power_spin.interpretText()  # a typed value not yet committed (Enter / focus-out; a Mac button takes no focus)
         applied: List[float] = []
         if not self._run(lambda: applied.append(self._engine.set_source_power_mw(self.power_spin.value()))):
             return

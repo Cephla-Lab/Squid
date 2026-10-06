@@ -605,3 +605,55 @@ def test_shutter_closes_on_an_l3_error():
     assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
     engine.source_step()
     assert source.calls[-1] == "disable"
+
+
+def test_shutter_closes_when_the_key_is_turned_off_and_reopens_only_at_ready():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    source.needs_key = True  # the operator turns the 560 key off
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.NEEDS_KEY
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.source_step()
+    engine.poll_once()
+    assert not fake.shut_open and "disable" not in source.calls  # still wanted: the key cycle brings it back
+    source.needs_key = False  # key OFF then ON
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+    assert fake.shut_open and fake.sent.count("SHUT:OPEN 1") == 2
+
+
+def test_shutter_closes_when_the_source_switches_itself_off_and_the_restart_is_behind_it():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    source.enabled = False  # off on its own (its front panel or its own protection)
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.SOURCE_OFF
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.wake_up("L3")  # the next use restarts it
+    engine.source_step()
+    assert source.calls.count("enable") == 2
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING and not fake.shut_open
+    for _ in range(4):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open
+
+
+def test_a_restart_is_queued_only_behind_a_closed_shutter():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    source.enabled = False
+    engine.source_step()
+    _refuse_once(fake, "SHUT:OPEN 0")
+    _refuse_once(fake, "SHUT:OPEN 0")  # both polls' closes are refused: this one and wake_up's own
+    engine.poll_once()
+    assert fake.shut_open
+    engine.wake_up("L3")  # the restart closes the shutter itself before it queues the enable
+    assert not fake.shut_open
+    engine.source_step()
+    assert source.calls.count("enable") == 2

@@ -4,7 +4,7 @@ from qtpy.QtWidgets import QComboBox, QMessageBox
 from control._def import ILLUMINATION_CODE
 from control.laser_engine_rev1 import LaserEngineRev1
 from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine, build_simulated_engine
+from control.laser_engine_rev1_sim import FakeEngine, FakeSource, build_simulated_engine
 from control.laser_engine_rev1_widget import SHUTTER_NOTE, LaserEngineRev1Widget
 
 DF_MAP = {  # a DF machine's illumination port map: one wavelength per engine line
@@ -143,6 +143,39 @@ def test_widget_unsaved_power_is_said(qtbot):
     assert engine.source_power_setpoint_mw == 300.0  # applied for this session
     assert "not saved to the machine .ini" in widget.notice_label.text()
     engine.close()
+
+
+def test_widget_set_takes_a_typed_value_not_yet_committed(qtbot):
+    saved = []
+    engine, widget = _widget(qtbot, saved=saved)
+    widget.power_spin.lineEdit().setText("800")  # typed, no Enter or focus-out (a Mac button click takes no focus)
+    assert widget.power_spin.value() == 200.0  # keyboard tracking off: not committed yet
+    widget.power_set_btn.click()
+    assert engine.source_power_setpoint_mw == 800.0 and saved == [800.0]
+    engine.close()
+
+
+def test_widget_saves_to_the_machine_ini_only_outside_simulation(qtbot, monkeypatch):
+    calls = []
+    monkeypatch.setattr("control.laser_engine_rev1_widget.save_source_power_mw", lambda mw: calls.append(mw) or True)
+    sim = build_simulated_engine()  # FakeSource: 200-1000 mW, not the machine's limits
+    sim.open()
+    widget = LaserEngineRev1Widget(sim)  # the default saver
+    qtbot.addWidget(widget)
+    widget.power_spin.setValue(900.0)
+    widget.power_set_btn.click()
+    assert sim.source_power_setpoint_mw == 900.0 and calls == []
+    assert "not saved to the machine .ini" in widget.notice_label.text()
+    sim.close()
+    fake = FakeEngine(tok_delay_polls=0)
+    real = LaserEngineRev1(link_factory=lambda: EngineLink(fake), source_factory=FakeSource)
+    real.open()
+    widget = LaserEngineRev1Widget(real)
+    qtbot.addWidget(widget)
+    widget.power_spin.setValue(900.0)
+    widget.power_set_btn.click()
+    assert calls == [900.0]
+    real.close()
 
 
 def test_widget_idle_off_control(qtbot):

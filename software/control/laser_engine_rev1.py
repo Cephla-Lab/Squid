@@ -169,6 +169,7 @@ class LaserEngineRev1(QObject):
     SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
     SOURCE_SETTLE_TOL_FRAC = 0.05
     POLL_JOIN_TIMEOUT_S = 4.0  # close(): one STAT? can take the link's 3 s read timeout (EngineLink.open), + 1 s
+    simulated = False  # build_simulated_engine sets it: the Laser Engine tab then saves nothing to the machine .ini
 
     def __init__(
         self,
@@ -677,6 +678,7 @@ class LaserEngineRev1(QObject):
                 return  # the source thread has not run the last enable yet (callers repeat)
             self._source_enable_pending = True
         try:
+            self._set_held_shutter(False, self._latest_raw or {})  # closed before the source starts; opens at READY
             with self._aom_lock:
                 volts = self._aom_volts_for(self._percent.get(SOURCE_560_LINE, 0.0))
                 self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM amplitude; the AOM's on/off input is the D3 TTL
@@ -877,10 +879,15 @@ class LaserEngineRev1(QObject):
             self._set_held_shutter(False, raw)
         elif l3 is not None and l3.state == LineState.READY:
             self._set_held_shutter(True, raw)
+        elif l3 is None or l3.state != LineState.STARTING:
+            # Open only at READY: NEEDS KEY, the source off by itself, line 3 off or paused close it until READY again.
+            # The source stays wanted (the next use restarts it behind the closed shutter). STARTING leaves the shutter
+            # as it is: every AOM LINE3:SET passes through line 3's ramp.
+            self._set_held_shutter(False, raw)
 
     def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
-        """DF, ruling 2026-10-06: the shutter is safety only - open while the 560 is in use (line 3 READY), closed once the
-        source is switched off. Never per exposure: the AOM does exposure on/off (D3 TTL). `raw` = the STAT? just polled.
+        """DF, ruling 2026-10-06: the shutter is safety only - open while the 560 is in use (line 3 READY), closed in every
+        other state. Never per exposure: the AOM does exposure on/off (D3 TTL). `raw` = the latest STAT?.
         """
         if self.variant != "DF" or bool((raw.get("shutter") or {}).get("open")) == want_open:
             return
@@ -1040,8 +1047,10 @@ class LaserEngineRev1(QObject):
 
     def _aom_volts_for(self, percent: float) -> float:
         """560 intensity (% of transmission) -> AOM volts: 5 V x % / 100, or the calibration's volts for that transmission.
-        0 % = 0 V (or the calibration's zero-transmission volts): dark."""
+        0 % = 0 V always: dark even when the calibration's first row transmits (np.interp would clamp to that row)."""
         frac = min(1.0, max(0.0, percent / 100.0))
+        if frac <= 0.0:
+            return 0.0
         cal = self._aom_cal
         if cal is None:
             return AOM_FULL_SCALE_V * frac
@@ -1050,6 +1059,8 @@ class LaserEngineRev1(QObject):
 
     def aom_percent_for_volts(self, volts: float) -> float:
         """The 560 intensity (%) a line 3 set-point gives: the inverse of _aom_volts_for (for display; no I/O)."""
+        if volts <= 0.0:
+            return 0.0
         cal = self._aom_cal
         if cal is None:
             return 100.0 * min(1.0, max(0.0, volts / AOM_FULL_SCALE_V))

@@ -76,13 +76,14 @@ def test_intensity_through_the_aom_calibration(tmp_path):
     assert source.power_mw == power and engine.aom_percent_for_volts(2.25) == pytest.approx(50.0)
 
 
-def test_zero_percent_is_the_calibrated_zero_transmission(tmp_path):
-    (tmp_path / "560_aom.csv").write_text(CAL.replace("\n0,0\n", "\n0.5,0\n"))  # zero transmission at 0.5 V, not 0 V
+def test_zero_percent_is_0_v_even_when_the_calibration_starts_transmitting(tmp_path):
+    (tmp_path / "560_aom.csv").write_text(CAL.replace("\n0,0\n", "\n0.5,0.05\n"))  # the first row already transmits 5 %
     engine, fake, source = _ready_engine(tmp_path)
     engine.set_line_intensity(3, 50.0)
     mark = len(fake.sent)
     engine.set_line_intensity(3, 0.0)
-    assert _aom_sets(fake.sent, mark) == ["LINE3:SET 0.500"]
+    assert _aom_sets(fake.sent, mark) == ["LINE3:SET 0.000"]  # dark, not the first row's 0.5 V
+    assert engine.aom_percent_for_volts(0.0) == 0.0  # and the tab shows 0 %
     assert source.enabled and engine.poll_once().channels["L3"].state == LineState.READY
 
 
