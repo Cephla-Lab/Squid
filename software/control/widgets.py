@@ -14701,11 +14701,11 @@ def _populate_filter_positions_for_combo(
     """
     combo.clear()
 
-    registry = config_repo.get_filter_wheel_registry()
-    has_registry = registry and registry.filter_wheels
+    # Wheels from filter_wheels.yaml and from the confocal unit (confocal_config.yaml) alike
+    wheels = config_repo.get_filter_wheels()
 
     # No filter wheel system at all
-    if not has_registry and not _is_filter_wheel_enabled():
+    if not wheels and not _is_filter_wheel_enabled():
         combo.addItem("N/A", None)
         combo.setEnabled(False)
         return
@@ -14714,16 +14714,16 @@ def _populate_filter_positions_for_combo(
     wheel = None
     if channel_wheel and channel_wheel not in ("(None)", "auto"):
         # Explicit wheel name specified
-        wheel = registry.get_wheel_by_name(channel_wheel) if registry else None
-        if not wheel and registry:
+        wheel = config_repo.get_filter_wheel_by_name(channel_wheel)
+        if not wheel and wheels:
             logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
-    elif has_registry:
+    elif wheels:
         # Auto-select first wheel (works for both single and multi-wheel systems)
-        wheel = registry.get_first_wheel()
+        wheel = wheels[0]
 
     if not wheel:
         # No wheel resolved - check if we should show default positions or N/A
-        if has_registry or _is_filter_wheel_enabled():
+        if wheels or _is_filter_wheel_enabled():
             # Filter wheel enabled but no registry - show default positions
             combo.setEnabled(True)
             for pos in range(1, 9):
