@@ -496,11 +496,20 @@ class ConfigRepository:
         return []
 
     def get_filter_wheel_names(self) -> List[str]:
-        """Get list of available filter wheel names from registry."""
-        registry = self.get_filter_wheel_registry()
-        if registry:
-            return registry.get_wheel_names()
-        return []
+        """Names of every filter wheel the machine declares, standalone and confocal, for UI dropdowns."""
+        return [wheel.name for wheel in self.get_filter_wheels() if wheel.name is not None]
+
+    def get_filter_wheels(self) -> List[FilterWheelDefinition]:
+        """Every filter wheel from every source, standalone (filter_wheels.yaml) before confocal
+        (confocal_config.yaml). Ids and names are only guaranteed unique within one source."""
+        return [wheel for wheels in self.get_all_filter_wheels().values() for wheel in wheels]
+
+    def get_filter_wheel_by_name(self, name: str) -> Optional[FilterWheelDefinition]:
+        """Find a wheel by its user-facing name across every source; the standalone one wins a tie."""
+        matches = [wheel for wheel in self.get_filter_wheels() if wheel.name == name]
+        if len(matches) > 1:
+            logger.warning(f"Filter wheel name '{name}' is declared in more than one source; using the standalone one")
+        return matches[0] if matches else None
 
     # ───────────────────────────────────────────────────────────────────────────
     # v1.1 Hardware Bindings and Filter Wheel Aggregation

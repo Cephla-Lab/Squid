@@ -130,3 +130,71 @@ def test_one_unreadable_wheel_does_not_hide_the_rest_of_the_state(qtbot):
 
     assert widget.dropdown_field_aperture.currentIndex() == 6
     assert widget.btn_disk_motor.isChecked()
+
+
+# ------------------------------------------------------------------ Refresh
+
+
+def test_refresh_shows_positions_changed_outside_the_widget(qtbot):
+    sim = Dragonfly_Simulation()
+    widget = make_widget(qtbot, sim)
+
+    # e.g. the live controller moved the filter for a channel, and someone switched modality
+    sim.set_emission_filter(1, 4)
+    sim.set_field_aperture_wheel_position(7)
+    sim.set_port_selection_dichroic(4)
+    sim.set_modality("CONFOCAL")
+    sim.set_disk_motor_state(True)
+    widget.btn_refresh.click()
+
+    assert widget.dropdown_port1_emission_filter.currentIndex() == 3
+    assert widget.dropdown_field_aperture.currentIndex() == 6
+    assert widget.dropdown_dichroic.currentIndex() == 3
+    assert widget.get_confocal_mode() is True
+    assert widget.btn_toggle_confocal.text() == "Switch to Widefield"
+    assert widget.btn_disk_motor.isChecked()
+
+
+def test_refresh_does_not_move_anything(qtbot):
+    sim = Dragonfly_Simulation()
+    widget = make_widget(qtbot, sim)
+    moved = []
+    for name in ("set_emission_filter", "set_port_selection_dichroic", "set_field_aperture_wheel_position"):
+        setattr(sim, name, lambda *args, name=name: moved.append(name))
+    sim.emission_filter_positions[1] = 5  # changed behind the widget's back
+
+    widget.btn_refresh.click()
+
+    assert moved == []
+    assert widget.dropdown_port1_emission_filter.currentIndex() == 4
+
+
+def test_refresh_reports_a_modality_change_to_the_live_controller(qtbot):
+    sim = Dragonfly_Simulation()
+    widget = make_widget(qtbot, sim)
+    modes = []
+    widget.signal_toggle_confocal_widefield.connect(modes.append)
+
+    widget.btn_refresh.click()  # nothing changed: nothing to report
+    sim.set_modality("CONFOCAL")
+    widget.btn_refresh.click()
+
+    assert modes == [True]
+
+
+def test_refresh_keeps_the_known_mode_when_the_modality_read_fails(qtbot):
+    sim = Dragonfly_Simulation()
+    sim.set_modality("CONFOCAL")
+    widget = make_widget(qtbot, sim)
+    modes = []
+    widget.signal_toggle_confocal_widefield.connect(modes.append)
+
+    def unanswered():
+        raise SerialDeviceError("Max attempts reached without receiving response.")
+
+    sim.get_modality = unanswered
+    widget.btn_refresh.click()
+
+    assert widget.get_confocal_mode() is True
+    assert widget.btn_toggle_confocal.text() == "Switch to Widefield"
+    assert modes == []

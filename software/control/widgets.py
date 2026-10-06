@@ -3697,37 +3697,14 @@ class DragonflyConfocalWidget(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.dragonfly = dragonfly
+        self.confocal_mode = False  # what we assume until the unit answers the modality query
 
         self.init_ui()
 
-        # Show the unit's current state. Nothing is connected yet, so selecting a dropdown
-        # entry here does not move anything. Each query stands alone: a wheel the unit does
-        # not have (e.g. no port 2 emission filter) must not hide the rest of the state.
-        self.confocal_mode = self._read("modality", self.dragonfly.get_modality, "") == "CONFOCAL"
-        self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
-        for dropdown, what, query in (
-            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
-            (
-                self.dropdown_port1_emission_filter,
-                "port 1 emission filter",
-                partial(self.dragonfly.get_emission_filter, 1),
-            ),
-            (
-                self.dropdown_port2_emission_filter,
-                "port 2 emission filter",
-                partial(self.dragonfly.get_emission_filter, 2),
-            ),
-            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
-        ):
-            dropdown.setCurrentIndex(self._read(what, query, 0) - 1)  # unknown position: no entry selected
-
-        # Set initial button text
-        if self.confocal_mode:
-            self.btn_toggle_confocal.setText("Switch to Widefield")
-        else:
-            self.btn_toggle_confocal.setText("Switch to Confocal")
+        self._show_unit_state()
 
         # Connect signals
+        self.btn_refresh.clicked.connect(self.refresh_state)
         self.btn_toggle_confocal.clicked.connect(self.toggle_confocal_mode)
         self.btn_disk_motor.clicked.connect(self.toggle_disk_motor)
         self.dropdown_dichroic.currentIndexChanged.connect(self.set_dichroic)
@@ -3746,6 +3723,42 @@ class DragonflyConfocalWidget(QWidget):
             self._log.error(f"Could not read the Dragonfly {what}: {e}")
             return default
 
+    def _show_unit_state(self):
+        """Read every setting from the unit into the controls without sending any command.
+
+        Each query stands alone: a wheel the unit does not have (e.g. no port 2 emission
+        filter) must not hide the rest of the state.
+        """
+        modality = self._read("modality", self.dragonfly.get_modality, None)
+        if modality is not None:  # an unanswered query is not a mode change
+            self.confocal_mode = modality == "CONFOCAL"
+        self.btn_toggle_confocal.setText("Switch to Widefield" if self.confocal_mode else "Switch to Confocal")
+        self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
+        for dropdown, what, query in (
+            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
+            (
+                self.dropdown_port1_emission_filter,
+                "port 1 emission filter",
+                partial(self.dragonfly.get_emission_filter, 1),
+            ),
+            (
+                self.dropdown_port2_emission_filter,
+                "port 2 emission filter",
+                partial(self.dragonfly.get_emission_filter, 2),
+            ),
+            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
+        ):
+            position = self._read(what, query, 0)
+            with QSignalBlocker(dropdown):  # showing a position must not command a move
+                dropdown.setCurrentIndex(position - 1)  # unknown position: no entry selected
+
+    def refresh_state(self):
+        """Re-read the unit, e.g. after the live controller moved a filter for a channel."""
+        was_confocal = self.confocal_mode
+        self._show_unit_state()
+        if self.confocal_mode != was_confocal:  # the slot re-selects the channel, so only on a real change
+            self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
+
     def init_ui(self):
         main_layout = QVBoxLayout()
 
@@ -3754,6 +3767,8 @@ class DragonflyConfocalWidget(QWidget):
         self.btn_toggle_confocal = QPushButton("Switch to Confocal")
         self.btn_disk_motor = QPushButton("Disk Motor On")
         self.btn_disk_motor.setCheckable(True)
+        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh.setToolTip("Re-read every setting from the Dragonfly")
 
         dichroic_label = QLabel("Port Selection")
         dichroic_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
@@ -3787,6 +3802,7 @@ class DragonflyConfocalWidget(QWidget):
 
         layout_wheels.addWidget(port2_emission_label, 1, 0)
         layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
+        layout_wheels.addWidget(self.btn_refresh, 1, 3)  # under the field aperture dropdown
 
         main_layout.addLayout(layout_confocal)
         main_layout.addLayout(layout_wheels)
@@ -3797,6 +3813,7 @@ class DragonflyConfocalWidget(QWidget):
         """Enable or disable all controls"""
         self.btn_toggle_confocal.setEnabled(enable)
         self.btn_disk_motor.setEnabled(enable)
+        self.btn_refresh.setEnabled(enable)
         self.dropdown_dichroic.setEnabled(enable)
         self.dropdown_port1_emission_filter.setEnabled(enable)
         self.dropdown_port2_emission_filter.setEnabled(enable)
@@ -5811,7 +5828,11 @@ class FilterControllerWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
     def _get_wheel_name(self, wheel_id: int) -> str:
-        """Get display name for a wheel from config or generate default."""
+        """Get display name for a wheel from config or generate default.
+
+        Deliberately reads only filter_wheels.yaml: this panel drives the standalone wheels,
+        and wheel ids are unique only within one source.
+        """
         if self.config_repo:
             try:
                 registry = self.config_repo.get_filter_wheel_registry()
@@ -14701,37 +14722,31 @@ def _populate_filter_positions_for_combo(
     """
     combo.clear()
 
-    registry = config_repo.get_filter_wheel_registry()
-    has_registry = registry and registry.filter_wheels
+    # Wheels from filter_wheels.yaml and from the confocal unit (confocal_config.yaml) alike
+    wheels = config_repo.get_filter_wheels()
 
     # No filter wheel system at all
-    if not has_registry and not _is_filter_wheel_enabled():
+    if not wheels and not _is_filter_wheel_enabled():
         combo.addItem("N/A", None)
         combo.setEnabled(False)
         return
 
-    # Resolve wheel: explicit name, or auto-select first wheel
+    # Resolve wheel: explicit name, or auto-select the first declared wheel (of any type;
+    # standalone wheels come before confocal ones)
     wheel = None
     if channel_wheel and channel_wheel not in ("(None)", "auto"):
         # Explicit wheel name specified
-        wheel = registry.get_wheel_by_name(channel_wheel) if registry else None
-        if not wheel and registry:
-            logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
-    elif has_registry:
-        # Auto-select first wheel (works for both single and multi-wheel systems)
-        wheel = registry.get_first_wheel()
+        wheel = config_repo.get_filter_wheel_by_name(channel_wheel)
+        if not wheel and wheels:
+            logger.warning(f"Filter wheel '{channel_wheel}' not found")
+    elif wheels:
+        wheel = wheels[0]
 
     if not wheel:
-        # No wheel resolved - check if we should show default positions or N/A
-        if has_registry or _is_filter_wheel_enabled():
-            # Filter wheel enabled but no registry - show default positions
-            combo.setEnabled(True)
-            for pos in range(1, 9):
-                combo.addItem(f"Position {pos}", pos)
-        else:
-            combo.addItem("N/A", None)
-            combo.setEnabled(False)
-            return
+        # No wheel resolved but a wheel is enabled in the .ini - show default positions
+        combo.setEnabled(True)
+        for pos in range(1, 9):
+            combo.addItem(f"Position {pos}", pos)
     else:
         # Populate from wheel's actual positions
         combo.setEnabled(True)
