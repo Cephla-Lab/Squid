@@ -635,7 +635,8 @@ class Dragonfly:
             position: Target position
         """
         command = f"AT_PS_POS,1,{position}"
-        response = self._send_command(command)
+        self._send_command(command)
+        self.current_port_selection_dichroic = position  # get_camera_port() reads this
         return position
 
     def get_port_selection_dichroic(self) -> int:
@@ -784,7 +785,7 @@ class Dragonfly:
             return []
         else:
             info = []
-            for i in range(1, 8):  # Assume there are 8 positions on the emission filter wheel
+            for i in range(1, 9):  # There are 8 positions on the emission filter wheel
                 info.append(str(i) + ":" + self._get_component_info("FW", port, i))
             return info
 
@@ -897,10 +898,10 @@ class Dragonfly_Simulation:
         """Set filter wheel rotation speed"""
         self.log.debug(f"Set filter wheel port {port} speed to {speed}")
 
-    def set_field_aperture_wheel_position(self, port: int, position: int):
+    def set_field_aperture_wheel_position(self, position: int):
         """Set aperture position"""
-        self.field_aperture_positions[port] = position
-        self.log.debug(f"Set field aperture port {port} to position {position}")
+        self.field_aperture_positions[1] = position
+        self.log.debug(f"Set field aperture to position {position}")
 
     def get_field_aperture_wheel_position(self) -> int:
         """Get current aperture position"""
@@ -910,14 +911,17 @@ class Dragonfly_Simulation:
         """Get information about a component"""
         return f"Component {component_type} Port {port} - Simulation"
 
+    # Names in the same shape the hardware reports them: the widget lists them verbatim and
+    # get_camera_port() keys on the "100% Pass" / "100% Reflect" dichroic names.
     def get_emission_filter_info(self, port: int) -> list[str]:
-        return [str(i) for i in range(1, 9)]
+        names = ["445/45", "525/50", "600/50", "700/75", "Empty", "Empty", "Empty", "Empty"]
+        return [f"{i}:{name}" for i, name in enumerate(names, start=1)]
 
     def get_field_aperture_info(self) -> list[str]:
-        return [str(i) for i in range(1, 11)]
+        return [f"Aperture {i}" for i in range(1, 11)]
 
     def get_port_selection_dichroic_info(self) -> list[str]:
-        return [str(i) for i in range(1, 5)]
+        return ["100% Pass", "Dichroic 1", "Dichroic 2", "100% Reflect"]
 
     def close(self):
         """Close the simulated connection"""
