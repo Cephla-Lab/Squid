@@ -3700,9 +3700,6 @@ class DragonflyConfocalWidget(QWidget):
 
         self.init_ui()
 
-        # Show the unit's current state. Nothing is connected yet, so selecting a dropdown
-        # entry here does not move anything.
-        self.confocal_mode = False
         self._show_unit_state()
 
         # Connect signals
@@ -3749,20 +3746,15 @@ class DragonflyConfocalWidget(QWidget):
             (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
         ):
             position = self._read(what, query, 0)
-            dropdown.blockSignals(True)  # showing a position must not command a move
-            dropdown.setCurrentIndex(position - 1)  # unknown position: no entry selected
-            dropdown.blockSignals(False)
+            with QSignalBlocker(dropdown):  # showing a position must not command a move
+                dropdown.setCurrentIndex(position - 1)  # unknown position: no entry selected
 
     def refresh_state(self):
         """Re-read the unit, e.g. after the live controller moved a filter for a channel."""
-        self.enable_all_buttons(False)
-        try:
-            was_confocal = self.confocal_mode
-            self._show_unit_state()
-            if self.confocal_mode != was_confocal:
-                self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
-        finally:
-            self.enable_all_buttons(True)
+        was_confocal = self.confocal_mode
+        self._show_unit_state()
+        if self.confocal_mode != was_confocal:  # the slot re-selects the channel, so only on a real change
+            self.signal_toggle_confocal_widefield.emit(self.confocal_mode)
 
     def init_ui(self):
         main_layout = QVBoxLayout()
@@ -5833,7 +5825,11 @@ class FilterControllerWidget(QFrame):
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
 
     def _get_wheel_name(self, wheel_id: int) -> str:
-        """Get display name for a wheel from config or generate default."""
+        """Get display name for a wheel from config or generate default.
+
+        Deliberately reads only filter_wheels.yaml: this panel drives the standalone wheels,
+        and wheel ids are unique only within one source.
+        """
         if self.config_repo:
             try:
                 registry = self.config_repo.get_filter_wheel_registry()
@@ -14732,28 +14728,22 @@ def _populate_filter_positions_for_combo(
         combo.setEnabled(False)
         return
 
-    # Resolve wheel: explicit name, or auto-select first wheel
+    # Resolve wheel: explicit name, or auto-select the first declared wheel (of any type;
+    # standalone wheels come before confocal ones)
     wheel = None
     if channel_wheel and channel_wheel not in ("(None)", "auto"):
         # Explicit wheel name specified
         wheel = config_repo.get_filter_wheel_by_name(channel_wheel)
         if not wheel and wheels:
-            logger.warning(f"Filter wheel '{channel_wheel}' not found in registry")
+            logger.warning(f"Filter wheel '{channel_wheel}' not found")
     elif wheels:
-        # Auto-select first wheel (works for both single and multi-wheel systems)
         wheel = wheels[0]
 
     if not wheel:
-        # No wheel resolved - check if we should show default positions or N/A
-        if wheels or _is_filter_wheel_enabled():
-            # Filter wheel enabled but no registry - show default positions
-            combo.setEnabled(True)
-            for pos in range(1, 9):
-                combo.addItem(f"Position {pos}", pos)
-        else:
-            combo.addItem("N/A", None)
-            combo.setEnabled(False)
-            return
+        # No wheel resolved but a wheel is enabled in the .ini - show default positions
+        combo.setEnabled(True)
+        for pos in range(1, 9):
+            combo.addItem(f"Position {pos}", pos)
     else:
         # Populate from wheel's actual positions
         combo.setEnabled(True)
