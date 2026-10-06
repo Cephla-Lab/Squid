@@ -32,7 +32,7 @@ void turn_on_LED_matrix_pattern(CRGB * matrix, int pattern, uint8_t led_matrix_r
 /***************************************************************************************************/
 /************************************ camera trigger and strobe ************************************/
 /***************************************************************************************************/
-extern bool trigger_output_level[6];
+extern bool trigger_asserted[6];
 extern bool control_strobe[6];
 // bool strobe_output_level[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
 // bool strobe_on[6] = {false, false, false, false, false, false};

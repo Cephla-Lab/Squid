@@ -47,6 +47,21 @@ pio device list
 ```
 If multiple devices appear, disconnect the extras before uploading. The upload tool may not warn you and could flash the wrong board.
 
+### Choosing the controller at upload time
+
+Camera trigger wiring differs between controller generations, so the pin map is selected when
+you flash:
+
+| Controller | Command | Camera trigger | Trigger-ready input |
+|---|---|---|---|
+| Previous controllers (default) | `pio run -e teensy41 -t upload` | pins 29–32 through an inverting stage — the firmware drives the pin LOW to assert | none |
+| New controller | `pio run -e teensy41_newctrl -t upload` | pin 19, wired directly to the GPIO — the firmware drives the pin HIGH to assert | pin 18 (3.3 V max) |
+
+Both present an **active-high** trigger at the camera connector. Flashing the wrong profile is
+not subtle: the camera receives no trigger (wrong pins) and acquisitions time out.
+Arduino IDE: for the new controller add `#define SQUID_CONTROLLER_NEWCTRL` at the top of
+`src/controller_profile.h`.
+
 ### Common Commands
 
 | Command | Description |
