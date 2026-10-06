@@ -359,10 +359,12 @@ class LiveController(QObject):
                     self._log.error(f"Not setting emission iris: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:
-                self.microscope.addons.dragonfly.set_emission_filter(
-                    self.microscope.addons.dragonfly.get_camera_port(),
-                    self.currentConfiguration.emission_filter_position,
-                )
+                if self.currentConfiguration.emission_filter_position:
+                    # The channel's filter position applies to the wheel on the port the camera is on
+                    self.microscope.addons.dragonfly.set_emission_filter(
+                        self.microscope.addons.dragonfly.get_camera_port(),
+                        self.currentConfiguration.emission_filter_position,
+                    )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
 
