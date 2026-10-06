@@ -4437,74 +4437,42 @@ class ProfileWidget(QFrame):
 
 
 class CappedSlider(QSlider):
-    """Slider whose usable range can be capped below its full range, or floored above its start.
+    """Slider whose usable range can be capped below its full range.
 
-    The groove keeps showing the full range so the cap/floor is visible in context: the portion
-    beyond the cap or below the floor is painted gray and values there are clamped back in.
+    The groove keeps showing the full range so the cap is visible in context:
+    the portion beyond the cap is painted gray and values above it are clamped.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._cap: Optional[int] = None
-        self._floor: Optional[int] = None
-
-    def _bounded(self, v: int) -> int:
-        """One clamp, floor winning when the two disagree (e.g. a floor set above the cap): cap first, then floor."""
-        if self._cap is not None:
-            v = min(v, self._cap)
-        if self._floor is not None:
-            v = max(v, self._floor)
-        return v
-
-    def _apply_bounds(self) -> None:
-        target = self._bounded(self.value())
-        if target != self.value():
-            self.setValue(target)
 
     def set_cap(self, cap: float):
         """Cap the usable range at `cap` (slider units)."""
         self._cap = int(cap)
-        self._apply_bounds()
-        self.update()
-
-    def set_floor(self, floor: float):
-        """Floor the usable range at `floor` (slider units): values below it clamp up to it."""
-        self._floor = math.ceil(floor)
-        self._apply_bounds()
+        if self.value() > self._cap:
+            self.setValue(self._cap)
         self.update()
 
     def sliderChange(self, change):
-        if change == QAbstractSlider.SliderValueChange:
-            target = self._bounded(self.value())
-            if target != self.value():
-                self.setValue(target)
-                return
+        if change == QAbstractSlider.SliderValueChange and self._cap is not None and self.value() > self._cap:
+            self.setValue(self._cap)
+            return
         super().sliderChange(change)
 
     def _overlay_region(self) -> Optional[QRegion]:
-        """Union of the region above the cap and the region below the floor to gray out, minus the handle."""
-        cap_active = self._cap is not None and self._cap < self.maximum()
-        floor_active = self._floor is not None and self._floor > self.minimum()
-        if not cap_active and not floor_active:
+        """Region beyond the cap to gray out, minus the handle so it stays visible."""
+        if self._cap is None or self._cap >= self.maximum():
             return None
         opt = QStyleOptionSlider()
         self.initStyleOption(opt)
         groove = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderGroove, self)
         handle = self.style().subControlRect(QStyle.CC_Slider, opt, QStyle.SC_SliderHandle, self)
-        region = QRegion()
-        if cap_active:
-            cap_x = QStyle.sliderPositionFromValue(
-                self.minimum(), self.maximum(), self._cap, groove.width(), opt.upsideDown
-            )
-            region = region.united(
-                QRegion(QRect(groove.x() + cap_x, groove.y(), groove.width() - cap_x, groove.height()))
-            )
-        if floor_active:
-            floor_x = QStyle.sliderPositionFromValue(
-                self.minimum(), self.maximum(), self._floor, groove.width(), opt.upsideDown
-            )
-            region = region.united(QRegion(QRect(groove.x(), groove.y(), floor_x, groove.height())))
-        return region.subtracted(QRegion(handle))
+        cap_x = QStyle.sliderPositionFromValue(
+            self.minimum(), self.maximum(), self._cap, groove.width(), opt.upsideDown
+        )
+        overlay = QRect(groove.x() + cap_x, groove.y(), groove.width() - cap_x, groove.height())
+        return QRegion(overlay).subtracted(QRegion(handle))
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -4919,13 +4887,6 @@ class LiveControlWidget(QFrame):
                 intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
-                # Floor intensity controls at the channel's minimum output (e.g. the DF 560 source, ruling 2026-09-28)
-                # Ceiled once here so the slider (integer units) and the spinbox (2-decimal rounding) agree on the
-                # same floor value - otherwise the two fight each other through their cross-wired valueChanged
-                # signals (a non-integer floor could recurse or spam update_illumination).
-                intensity_floor = math.ceil(self.liveController.get_intensity_floor_percent(self.currentConfiguration))
-                self.slider_illuminationIntensity.set_floor(intensity_floor)
-                self.entry_illuminationIntensity.setMinimum(intensity_floor)
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:

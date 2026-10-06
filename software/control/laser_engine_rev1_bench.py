@@ -3,11 +3,10 @@
 Reusable panels take an engine (LaserEngineRev1ServicePanel, LogPane: for Squid's "Laser Engine" tab later);
 BenchWindow and main() are the standalone app (tools/laser_engine_rev1_bench.py). The bench has no Squid controller,
 so no TTL: the per-line "Gate (bench, no TTL)" checkbox holds the line's gate on in firmware instead. Emission still
-needs the hardware permits.
+needs the hardware permits. The 560 nm laser power is set in the embedded Laser Engine tab.
 """
 
 import logging
-import math
 import re
 import sys
 import time
@@ -37,7 +36,9 @@ from qtpy.QtWidgets import (
 )
 from serial.tools import list_ports
 
+import control._def
 import squid.logging
+from control._def import port_index_to_source_code
 from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, _production_source_factory
 from control.laser_engine_rev1_link import EngineCommandError, EngineLink
 from control.laser_engine_rev1_sim import build_simulated_engine
@@ -52,11 +53,13 @@ from control.laser_engine_rev1_widget import LaserEngineRev1Widget
 
 # bench only: Squid takes the wavelengths from its channel configs
 DF_WAVELENGTHS = {1: 405, 2: 488, 3: 560, 4: 638, 5: 730}
+# the bench's TTL port map (engine line n = port Dn): the tab's wavelength column, and wavelength -> line
+BENCH_TTL_MAP = {wavelength: port_index_to_source_code(n - 1) for n, wavelength in DF_WAVELENGTHS.items()}
 _UNITS = {"WLD": "A", "CHASSIS": "A", "VOLT": "V"}  # set-point unit per line kind (VOLT = DF L3, the AOM input)
 _RAW_GATE = re.compile(r"LINE(\d):GATE\s+([01]|ON|OFF)", re.IGNORECASE)
 L3_GATE_TIP = (
-    "Bench gate on L3 drives the AOM analog path; the shutter follows the TTL3 jack "
-    "(or the MCU in the AOM 'open' mode), so this alone may give no 560 light."
+    "Bench gate on L3 drives the AOM analog path; the AOM's on/off input is the controller's D3 TTL (none on the "
+    "bench) and the shutter opens only while the 560 is in use, so this alone may give no 560 light."
 )
 _TEENSY_VID = 0x16C0  # PJRC: preselected in the port list
 
@@ -120,7 +123,6 @@ class LaserEngineRev1ServicePanel(QWidget):
         super().__init__(parent)
         self._engine = engine
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self._source_request_pct: Optional[float] = None  # the last 560 request sent from this panel
         self._raw_history: List[str] = []
         self._accepted: Dict[str, float] = {}  # per row: the last intensity the engine accepted (or was seeded with)
         self._seeded = False
@@ -153,11 +155,11 @@ class LaserEngineRev1ServicePanel(QWidget):
             self.source_box = QGroupBox("560 nm source")
             form = QFormLayout(self.source_box)
             self.source_state_label = QLabel("")
-            self.source_requested_label = QLabel("—")
+            self.source_setpoint_label = QLabel("—")  # the operator's power (set in the Laser Engine tab)
             self.source_measured_label = QLabel("—")
             self.source_limits_label = QLabel(f"{limits[0]:.0f} – {limits[1]:.0f} mW")
             form.addRow("State", self.source_state_label)
-            form.addRow("Requested", self.source_requested_label)
+            form.addRow("Set-point", self.source_setpoint_label)
             form.addRow("Measured", self.source_measured_label)
             form.addRow("Limits", self.source_limits_label)
             layout.addWidget(self.source_box)
@@ -200,14 +202,9 @@ class LaserEngineRev1ServicePanel(QWidget):
         spin.setDecimals(1)
         spin.setSuffix(" %")
         spin.setKeyboardTracking(False)  # send on Enter / arrows / focus out, not on every keystroke
-        try:
-            floor = math.ceil(self._engine.intensity_floor_percent(wavelength))
-        except Exception as e:
-            self._log.warning(f"{key}: no intensity floor ({e}); 0 %")
-            floor = 0
-        spin.setRange(floor, 100.0)
-        spin.setValue(floor)  # before connecting: building the panel sends nothing (seeded from the status below)
-        self._accepted[key] = floor
+        spin.setRange(0.0, 100.0)
+        spin.setValue(0.0)  # before connecting: building the panel sends nothing (seeded from the status below)
+        self._accepted[key] = 0.0
         spin.valueChanged.connect(lambda pct, n=n, wl=wavelength: self._set_intensity(n, wl, pct))
         wake = QPushButton("Wake")
         wake.clicked.connect(lambda _=False, k=key: self._run(f"{k} wake", lambda: self._engine.wake_up(k)))
@@ -259,18 +256,15 @@ class LaserEngineRev1ServicePanel(QWidget):
             _set_quietly(self.rows[key].spin, self._accepted[key])  # show what the engine still has
             return
         self._accepted[key] = pct
-        if self._is_source_line(n):
-            self._source_request_pct = pct
-            self._update_source_box()
 
     def _seed_from(self, status: EngineRev1Status) -> None:
-        """Show each line's current set-point (% of its ceiling; the 560 at its floor) without sending anything."""
+        """Show each line's current set-point (% of its ceiling; the 560: the AOM's %) without sending anything."""
         for key, row in self.rows.items():
             info = status.channels.get(key)
             if info is None or info.state == LineState.UNUSED:
                 continue
             if self._is_source_line(info.line):
-                value = row.spin.minimum()  # the source starts at its minimum
+                value = self._engine.aom_percent_for_volts(info.target)  # the AOM amplitude, not the laser power
             else:
                 value = 100.0 * info.target / info.max if info.max > 0 else 0.0
             _set_quietly(row.spin, value)
@@ -354,12 +348,8 @@ class LaserEngineRev1ServicePanel(QWidget):
         status = self._engine.source_status
         self.source_state_label.setText(source_state_text(status))
         self.source_measured_label.setText("—" if status is None else f"{status.power_mw:.1f} mW")
-        if self._source_request_pct is not None:
-            mw = self._source_request_pct / 100.0 * limits[1]
-            text = f"{mw:.0f} mW ({self._source_request_pct:.1f} %)"
-            if mw < limits[0]:
-                text += f" - the source runs at its minimum, {limits[0]:.0f} mW"
-            self.source_requested_label.setText(text)
+        setpoint = self._engine.source_power_setpoint_mw
+        self.source_setpoint_label.setText("—" if setpoint is None else f"{setpoint:.0f} mW")
 
 
 class _LogBridge(QObject):
@@ -445,16 +435,6 @@ class BenchWindow(QMainWindow):
 
         defaults = EngineOptions()
         bar2 = QHBoxLayout()
-        self.aom_cb = QCheckBox("AOM in path")
-        self.aom_cb.setChecked(defaults.aom_in_path)
-        bar2.addWidget(self.aom_cb)
-        bar2.addWidget(QLabel("Shutter with AOM"))
-        self.shutter_combo = QComboBox()
-        self.shutter_combo.addItem("gate", "gate")
-        self.shutter_combo.addItem("open", "open")
-        self.shutter_combo.setCurrentIndex(self.shutter_combo.findData(defaults.shutter_with_aom))
-        bar2.addWidget(self.shutter_combo)
-        self.aom_cb.toggled.connect(lambda _: self._update_enabled())
         bar2.addWidget(QLabel("560 idle-off"))
         self.idle_spin = QSpinBox()
         self.idle_spin.setRange(0, 24 * 60)
@@ -501,20 +481,17 @@ class BenchWindow(QMainWindow):
             self.source_sn_edit,
             self.simulate_cb,
             self.bringup_cb,
-            self.aom_cb,
             self.idle_spin,
             self.connect_btn,
         ):
             widget.setEnabled(idle)
-        self.shutter_combo.setEnabled(idle and self.aom_cb.isChecked())
         self.disconnect_btn.setEnabled(not idle)
 
     def _options(self) -> EngineOptions:
-        aom = self.aom_cb.isChecked()
+        """The idle-off from the bar; the 560 power as last set in the tab (the machine .ini, if there is one)."""
         return EngineOptions(
             source_idle_off_min=float(self.idle_spin.value()),
-            aom_in_path=aom,
-            shutter_with_aom=self.shutter_combo.currentData() if aom else "gate",
+            source_power_mw=control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW,
         )
 
     def _build_engine(self, options: EngineOptions) -> LaserEngineRev1:
@@ -537,7 +514,8 @@ class BenchWindow(QMainWindow):
 
     def _zero_set_points(self, engine: LaserEngineRev1) -> None:
         """The engine keeps each line's set-point across a DISARM or a lost host, and the bring-up ramps back to it:
-        start every fitted line at 0 (raw drive, no calibration). Not the DF 560 line: its source starts at its minimum.
+        start every fitted line at 0 (raw drive, no calibration). On DF line 3 that is the AOM at 0 V (dark); the 560
+        laser power is the operator's (the tab), not a set-point here. Without a 560 source line 3 is left alone.
         """
         status = engine.poll_once()
         if status is None:
@@ -546,9 +524,9 @@ class BenchWindow(QMainWindow):
         for key, info in status.channels.items():
             if info.state == LineState.UNUSED:
                 continue
-            if engine.variant == "DF" and info.line == SOURCE_560_LINE and not engine.options.aom_in_path:
-                continue  # no AOM: the source starts at its minimum; nothing to zero
-            try:  # with the AOM in the path, 0 % on the 560 line closes the AOM (analog 0 V)
+            if engine.variant == "DF" and info.line == SOURCE_560_LINE and engine.source_limits_mw is None:
+                continue  # no 560 source: line 3 reads NOT_CONFIGURED and takes no intensity
+            try:
                 engine.set_line_intensity(info.line, 0.0)
             except Exception as e:
                 self._log.error(f"{key} set-point not zeroed at connect: {e}")
@@ -558,6 +536,7 @@ class BenchWindow(QMainWindow):
             return
         try:
             engine = self._build_engine(self._options())
+            engine.ttl_map_provider = lambda: dict(BENCH_TTL_MAP)  # no microscope: the bench's DF wavelengths
         except Exception as e:
             self._connect_failed(f"connect failed: {e}")
             return

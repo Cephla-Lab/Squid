@@ -1,11 +1,12 @@
 import threading
 import time
+from configparser import ConfigParser
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, LaserEngineRev1Error
+import control._def
+from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, LaserEngineRev1Error, save_source_power_mw
 from control.laser_engine_rev1_link import EngineLink
 from control.laser_engine_rev1_sim import FakeEngine, FakeSource
 from control.laser_engine_rev1_status import LineState
@@ -40,11 +41,12 @@ def _to_ready(engine, source):
     assert status.channels["L3"].state == LineState.READY, status.channels["L3"]
 
 
-def test_starts_at_the_source_minimum_then_the_requested_power():
+def test_starts_at_the_source_minimum_then_the_operator_power():
     engine, fake, source = _with_source()
-    engine.set_line_intensity(3, 50.0)  # 500 mW requested before the source is on
+    assert engine.set_source_power_mw(500.0) == 500.0  # set in the tab before the source is on
+    assert source.calls == []  # stored only: the source is off
     _to_ready(engine, source)
-    assert "LINE3:SET 5.000" in fake.sent  # AOM analog full scale; TTL3 gates it (and the shutter)
+    assert "LINE3:SET 0.000" in fake.sent  # the AOM dark: no intensity asked yet
     assert source.calls[:2] == ["power 200.0", "enable"]  # the source's own minimum first
     assert "power 500.0" in source.calls and source.calls.count("enable") == 1
 
@@ -131,83 +133,6 @@ def test_idle_off_minutes_zero_means_24_h():
         engine.set_source_idle_off_min(-1)
 
 
-def test_below_minimum_clamps_and_warns_once():
-    engine, fake, source = _with_source()
-    _to_ready(engine, source)
-    engine.set_line_intensity(3, 5.0)  # 50 mW, below the 200 mW minimum
-    engine.set_line_intensity(3, 0.0)  # no AOM: 0 % runs at the minimum too
-    engine.source_step()
-    assert source.power_mw == pytest.approx(200.0) and source.enabled
-    assert sum("below the 560 nm minimum" in n for n in engine.notices) == 1
-    assert any("(20 % of 1000 mW)" in n for n in engine.notices)  # the minimum as a % of maximum power
-    assert engine.poll_once().channels["L3"].state == LineState.READY  # READY at the clamped power
-
-
-def test_intensity_floor_percent():
-    """Ruling 2026-09-28: the 560 source's own minimum, as a % of maximum power, is the GUI floor - but only when
-    the engine cannot go below it in hardware (no AOM in the path)."""
-    engine, fake, source = _with_source()  # FakeSource 200-1000 mW
-    assert engine.intensity_floor_percent(560) == pytest.approx(20.0)
-    assert engine.intensity_floor_percent(488) == 0.0  # not the 560 source line
-
-    aom_engine, _, _ = _with_source(options=EngineOptions(aom_in_path=True))
-    assert aom_engine.intensity_floor_percent(560) == 0.0  # the AOM closes for 0 %: no floor needed
-
-    no_source_fake = FakeEngine(tok_delay_polls=0)
-    no_source_engine = LaserEngineRev1(link_factory=lambda: EngineLink(no_source_fake), query_interval_s=0.01)
-    no_source_engine.open()
-    assert no_source_engine.intensity_floor_percent(560) == 0.0
-
-    source.max_power_mw = 0.0  # a source that reported no limits: no floor, not a ZeroDivisionError on a channel switch
-    assert engine.intensity_floor_percent(560) == 0.0
-
-
-def test_below_minimum_warns_on_every_api_request():
-    """The tab notice fires once per session, but an API caller must be told on every below-minimum request."""
-    engine, fake, source = _with_source()
-    _to_ready(engine, source)
-    engine._log = MagicMock()
-    engine.set_line_intensity(3, 5.0)  # 50 mW, below the 200 mW minimum
-    engine.set_line_intensity(3, 0.0)  # a second below-minimum request
-    warnings = [c.args[0] for c in engine._log.warning.call_args_list if "below the 560 nm minimum" in c.args[0]]
-    assert len(warnings) == 2
-    assert sum("below the 560 nm minimum" in n for n in engine.notices) == 1
-
-
-def test_zero_percent_without_the_aom_clamps_and_warns_once():
-    engine, fake, source = _with_source()
-    _to_ready(engine, source)
-    engine.set_line_intensity(3, 50.0)
-    engine.source_step()
-    engine.set_line_intensity(3, 0.0)  # the first below-minimum request is 0 %: no AOM, so the minimum + one warning
-    engine.set_line_intensity(3, 0.0)
-    engine.source_step()
-    assert source.power_mw == pytest.approx(200.0) and source.enabled
-    assert [n for n in engine.notices if "below the 560 nm minimum" in n] == [
-        "560 nm: 0 mW requested is below the 560 nm minimum of 200 mW (20 % of 1000 mW) - running at the minimum"
-    ]
-    assert not any(c.startswith("LINE3:SET 0.") for c in fake.sent)  # no AOM: line 3 is never closed
-
-
-def test_zero_percent_with_the_aom_closes_it():
-    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))  # no AOM calibration file
-    _to_ready(engine, source)
-    engine.light_source.set_intensity(560, 50.0)
-    engine.source_step()
-    assert source.power_mw == pytest.approx(500.0)
-    n_sent = len(fake.sent)
-    engine.light_source.set_intensity(560, 0.0)  # the AOM closed: dark at the sample, the source at its minimum
-    engine.source_step()
-    assert "LINE3:SET 0.000" in fake.sent[n_sent:] and source.power_mw == pytest.approx(200.0) and source.enabled
-    assert engine.poll_once().channels["L3"].state == LineState.READY
-    assert not any("below the 560 nm minimum" in n for n in engine.notices)
-    n_sent = len(fake.sent)
-    engine.light_source.set_intensity(560, 50.0)  # 500 mW: the AOM back to full transmission
-    engine.source_step()
-    assert [c for c in fake.sent[n_sent:] if c.startswith("LINE3:SET")] == ["LINE3:SET 5.000"]
-    assert source.power_mw == pytest.approx(500.0)
-
-
 def _refuse_once(fake, command):
     """The engine refuses `command` once (e.g. a transient expander error), then accepts it again."""
     real_reply, left = fake._reply, [1]
@@ -222,8 +147,9 @@ def _refuse_once(fake, command):
 
 
 def test_refused_aom_close_is_sent_again():
-    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))
+    engine, fake, source = _with_source()
     _to_ready(engine, source)
+    engine.set_line_intensity(3, 50.0)
     _refuse_once(fake, "LINE3:SET 0.000")
     with pytest.raises(LaserEngineRev1Error, match="simulated refusal"):
         engine.set_line_intensity(3, 0.0)
@@ -233,15 +159,14 @@ def test_refused_aom_close_is_sent_again():
 
 
 def test_refused_aom_open_is_sent_again():
-    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))
-    _to_ready(engine, source)
-    engine.set_line_intensity(3, 0.0)  # the AOM closed
-    _refuse_once(fake, "LINE3:SET 5.000")
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)  # the AOM at 0 V (nothing asked)
+    _refuse_once(fake, "LINE3:SET 2.500")
     with pytest.raises(LaserEngineRev1Error, match="simulated refusal"):
         engine.set_line_intensity(3, 50.0)
     n_sent = len(fake.sent)
-    engine.set_line_intensity(3, 50.0)  # the AOM never opened: the retry must send full transmission again
-    assert "LINE3:SET 5.000" in fake.sent[n_sent:] and fake.lines[2]["target"] > 0.0
+    engine.set_line_intensity(3, 50.0)  # the AOM never opened: the retry must send it again
+    assert "LINE3:SET 2.500" in fake.sent[n_sent:] and fake.lines[2]["target"] == pytest.approx(2.5)
 
 
 def test_slow_source_does_not_delay_heartbeat():
@@ -256,7 +181,7 @@ def test_slow_source_does_not_delay_heartbeat():
 
 def test_ready_only_once_power_has_settled():
     engine, fake, source = _with_source()
-    engine.set_line_intensity(3, 50.0)  # 500 mW
+    engine.set_source_power_mw(500.0)
     engine.wake_up("L3")
     for _ in range(3):  # enable at 200 mW + starting; starting; ready at 200 mW with 500 mW just applied
         engine.source_step()
@@ -296,8 +221,8 @@ def test_source_found_on_at_connect_is_switched_off():
 
 def test_request_during_the_start_still_starts_at_the_minimum():
     engine, fake, source = _with_source()
-    engine.wake_up("L3")  # enable queued at the 200 mW minimum, nothing requested yet
-    engine.set_line_intensity(3, 50.0)  # 500 mW, before the source thread has run the enable
+    engine.wake_up("L3")  # enable queued at the 200 mW minimum, nothing set yet
+    engine.set_source_power_mw(500.0)  # before the source thread has run the enable
     engine.source_step()
     assert source.calls == ["power 200.0", "enable"]  # not 500 mW during the start-up
     for _ in range(3):
@@ -356,36 +281,6 @@ def test_bring_up_waits_for_the_560_key_cycle():
         engine.source_step()
         engine.poll_once()
     assert engine.poll_once().channels["L3"].state == LineState.READY and engine.bringup_state == "done"
-
-
-def test_shutter_gates_without_the_aom():
-    engine, fake, source = _with_source()
-    _to_ready(engine, source)
-    engine.poll_once()
-    assert "SHUT:SRC TTL" in fake.sent and not any(c.startswith("SHUT:OPEN") for c in fake.sent)
-
-
-def test_shutter_held_open_with_the_aom():
-    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True, shutter_with_aom="open"))
-    assert "SHUT:SRC MCU" in fake.sent
-    _to_ready(engine, source)  # its last poll sees line 3 READY and opens the shutter
-    engine.poll_once()
-    assert fake.sent.count("SHUT:OPEN 1") == 1 and fake.shut_open  # opened once; the AOM gates each exposure
-    engine.source_idle_off_s = 0.0
-    time.sleep(0.01)
-    engine.poll_once()  # idle: the source goes off and the shutter closes
-    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
-
-
-def test_shutter_mode_can_be_switched_in_the_tab():
-    engine, fake, _ = _with_source(options=EngineOptions(aom_in_path=True))  # default mode: the shutter gates too
-    engine.set_shutter_with_aom("open")
-    assert fake.sent[-1] == "SHUT:SRC MCU"
-    engine.set_shutter_with_aom("gate")
-    assert fake.sent[-2:] == ["SHUT:OPEN 0", "SHUT:SRC TTL"]
-    engine2, _, _ = _with_source()
-    with pytest.raises(ValueError, match="no AOM"):
-        engine2.set_shutter_with_aom("open")
 
 
 # ---- a failed disable is retried; an enable is never queued twice -----------------------------------------------------
@@ -451,9 +346,10 @@ def test_concurrent_wake_during_line3_set_enables_once():
 
 
 def test_aom_set_racing_the_wake_line3_set_stays_consistent():
-    """Another thread's AOM set-point (0 % closes the AOM) lands inside the wake's LINE3:SET round-trip. _aom_lock
-    orders the two sends, so the engine ends at the cached value, not at the wake's full transmission."""
-    engine, fake, source = _with_source(options=EngineOptions(aom_in_path=True))
+    """Another thread's AOM set-point (0 V) lands inside the wake's LINE3:SET round-trip (the requested 50 %, 2.5 V).
+    _aom_lock orders the two sends, so the engine ends at the cached value, not at the wake's."""
+    engine, fake, source = _with_source()
+    engine.set_line_intensity(3, 50.0)  # the 560 intensity asked before the source is on: the wake sends 2.5 V
     real_cmd = engine._cmd
     helpers = []
 
@@ -513,3 +409,199 @@ def test_failed_disable_after_link_loss_is_retried():
     for _ in range(3):
         engine.source_step()  # no poll_once() in between: the reconcile must live in source_step, not _after_poll
     assert not source.enabled
+
+
+# ---- the operator's 560 laser power (ruling 2026-10-06) ------------------------------------------------------------------
+
+
+def test_source_power_defaults_to_the_minimum():
+    engine, fake, source = _with_source()
+    assert engine.source_power_setpoint_mw == 200.0
+    _to_ready(engine, source)
+    assert source.power_mw == pytest.approx(200.0) and "power 200.0" in source.calls
+
+
+def test_saved_source_power_is_used_at_the_start():
+    engine, fake, source = _with_source(options=EngineOptions(source_power_mw=600))
+    assert engine.source_power_setpoint_mw == 600.0
+    _to_ready(engine, source)
+    assert source.calls[:2] == ["power 200.0", "enable"] and source.calls[-1] == "power 600.0"
+    assert source.power_mw == pytest.approx(600.0)
+
+
+def test_saved_source_power_outside_the_limits_is_clamped_and_said():
+    engine, fake, source = _with_source(options=EngineOptions(source_power_mw=5000))
+    assert engine.source_power_setpoint_mw == 1000.0
+    assert any("saved 560 nm laser power 5000 mW is outside" in n and "using 1000 mW" in n for n in engine.notices)
+
+
+def test_set_source_power_clamps_to_the_limits():
+    engine, fake, source = _with_source()  # 200-1000 mW
+    assert engine.set_source_power_mw(5000.0) == 1000.0 and engine.source_power_setpoint_mw == 1000.0
+    assert engine.set_source_power_mw(50.0) == 200.0
+    assert engine.notices[-1].startswith("560 nm laser set to 200 mW") and "50 mW is outside" in engine.notices[-1]
+    with pytest.raises(ValueError):
+        engine.set_source_power_mw(float("nan"))
+
+
+def test_set_source_power_is_applied_when_on():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    assert engine.set_source_power_mw(600.0) == 600.0
+    assert engine.notices[-1] == "560 nm laser set to 600 mW"
+    engine.source_step()
+    assert source.calls[-1] == "power 600.0" and source.power_mw == pytest.approx(600.0)
+    assert engine.poll_once().channels["L3"].state == LineState.READY  # settled at the new power
+    mark = len(fake.sent)
+    engine.set_line_intensity(3, 30.0)  # Squid's intensity: the AOM only
+    engine.source_step()
+    assert source.calls[-1] == "power 600.0" and "LINE3:SET 1.500" in fake.sent[mark:]
+
+
+def test_set_source_power_while_starting_is_applied_once_ready():
+    engine, fake, source = _with_source()
+    engine.wake_up("L3")
+    engine.source_step()  # enabled at the minimum, starting
+    engine.set_source_power_mw(700.0)
+    engine.source_step()  # still starting
+    assert source.calls == ["power 200.0", "enable"]  # not during the start-up
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING
+    engine.source_step()  # ready: now the operator's power
+    assert source.calls[-1] == "power 700.0" and source.power_mw == pytest.approx(700.0)
+    engine.source_step()  # its next reading is at 700 mW: settled
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+
+
+def test_set_source_power_while_off_applies_at_the_next_start():
+    engine, fake, source = _with_source()
+    engine.set_source_power_mw(450.0)
+    assert "applies when the 560 is next switched on" in engine.notices[-1] and source.calls == []
+    _to_ready(engine, source)
+    assert source.power_mw == pytest.approx(450.0)
+
+
+def test_set_source_power_without_a_source_raises():
+    fake = FakeEngine(tok_delay_polls=0)
+    engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
+    engine.open()
+    with pytest.raises(LaserEngineRev1Error, match="560 nm source not configured") as e:
+        engine.set_source_power_mw(500.0)
+    assert e.value.channel_key == "L3" and engine.source_power_setpoint_mw is None
+
+
+def test_save_source_power_writes_the_ini_key_and_keeps_the_rest(tmp_path, monkeypatch):
+    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", None)
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text(
+        "[GENERAL]\nuse_laser_engine_rev1 = True\nlaser_engine_rev1_sn = 123\n\n[VIEWS]\nenable_ndviewer = false\n"
+    )
+    assert save_source_power_mw(600.0, path=str(ini)) is True
+    config = ConfigParser()
+    config.read(ini)
+    assert config.get("GENERAL", "laser_engine_rev1_source_power_mw") == "600"
+    assert control._def.conf_attribute_reader(config.get("GENERAL", "laser_engine_rev1_source_power_mw")) == 600
+    assert (
+        config.get("GENERAL", "use_laser_engine_rev1") == "True"
+        and config.get("GENERAL", "laser_engine_rev1_sn") == "123"
+    )
+    assert config.get("VIEWS", "enable_ndviewer") == "false"
+    assert control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW == 600.0  # this session's later connects use it too
+    assert save_source_power_mw(612.5, path=str(ini))  # overwritten, not duplicated
+    config = ConfigParser()
+    config.read(ini)
+    assert config.get("GENERAL", "laser_engine_rev1_source_power_mw") == "612.5"
+
+
+def test_save_source_power_defaults_to_the_cached_ini_and_never_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", None)
+    ini = tmp_path / "configuration_test.ini"
+    ini.write_text("[GENERAL]\nuse_laser_engine_rev1 = True\n")
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(ini))
+    assert save_source_power_mw(300) is True and "laser_engine_rev1_source_power_mw = 300" in ini.read_text()
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(tmp_path / "missing.ini"))
+    assert save_source_power_mw(400) is False  # logged, not raised
+    assert not (tmp_path / "missing.ini").exists() and control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW == 300.0
+    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", None)
+    assert save_source_power_mw(400) is False
+
+
+# ---- the shutter is safety only (ruling 2026-10-06) ----------------------------------------------------------------------
+
+
+def test_shutter_is_mcu_controlled_from_connect():
+    engine, fake, source = _with_source()
+    assert "SHUT:SRC MCU" in fake.sent and fake.shut_src == "MCU"
+    assert not any(c.startswith("SHUT:SRC TTL") for c in fake.sent)
+
+
+def test_shutter_opens_when_l3_is_ready_and_is_never_sent_per_exposure():
+    engine, fake, source = _with_source()
+    engine.wake_up("L3")
+    engine.source_step()
+    engine.poll_once()  # L3 still starting
+    assert not any(c.startswith("SHUT:OPEN") for c in fake.sent)
+    for _ in range(4):
+        engine.source_step()
+    engine.poll_once()  # L3 READY: the shutter opens
+    assert fake.sent.count("SHUT:OPEN 1") == 1 and fake.shut_open
+    for pct in (30.0, 60.0, 0.0, 100.0):  # live view / acquisition: intensity per channel switch
+        engine.light_source.set_intensity(560, pct)
+        engine.note_use(["L3"])
+        engine.poll_once()
+        engine.source_step()
+    engine.set_source_power_mw(800.0)
+    for _ in range(3):
+        engine.source_step()
+        engine.poll_once()
+    assert fake.sent.count("SHUT:OPEN 1") == 1 and "SHUT:OPEN 0" not in fake.sent and fake.shut_open
+
+
+def test_shutter_closes_on_idle_off():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    engine.source_idle_off_s = 0.0
+    time.sleep(0.01)
+    engine.poll_once()  # idle: the source goes off and the shutter closes
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_shutter_closes_on_sleep_and_disarm():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    engine.put_to_sleep("L3")
+    assert not fake.shut_open  # LINE3:EN 0 closes it in the firmware (PERMIT3 needs line 3 on)
+    engine.poll_once()
+    assert fake.sent.count("SHUT:OPEN 1") == 1  # not re-opened
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open and fake.sent.count("SHUT:OPEN 1") == 2
+    engine.disarm()
+    engine.poll_once()
+    assert not fake.shut_open and fake.sent.count("SHUT:OPEN 1") == 2
+
+
+def test_shutter_left_open_with_the_source_off_is_closed_by_the_driver():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    engine.put_to_sleep("L3")
+    fake.shut_open = True  # a firmware that did not close it with line 3
+    engine.poll_once()
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+
+
+def test_shutter_closes_on_an_l3_error():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    fake.faults = ["OVERTEMP"]  # every line, L3 included, reads FAULT
+    engine.poll_once()
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.source_step()
+    assert source.calls[-1] == "disable"

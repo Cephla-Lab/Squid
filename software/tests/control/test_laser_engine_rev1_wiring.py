@@ -33,15 +33,12 @@ def test_build_from_config_without_the_vendor_module_has_no_source(monkeypatch):
 
 
 def test_options_come_from_the_ini_flags(monkeypatch):
-    for name, value in (
-        ("LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN", 0),
-        ("LASER_ENGINE_REV1_AOM_IN_PATH", True),
-        ("LASER_ENGINE_REV1_SHUTTER_WITH_AOM", "open"),
-        ("LASER_ENGINE_REV1_AOM_ATTENUATION", False),
-    ):
-        monkeypatch.setattr(control._def, name, value)
-    assert options_from_def() == EngineOptions(source_idle_off_min=0, aom_in_path=True, shutter_with_aom="open")
-    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SHUTTER_WITH_AOM", "sometimes")
+    for name in ("AOM_IN_PATH", "SHUTTER_WITH_AOM", "AOM_ATTENUATION"):  # the no-AOM options are gone (2026-10-06)
+        assert not hasattr(control._def, f"LASER_ENGINE_REV1_{name}")
+    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN", 0)
+    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", 600)  # as the .ini reader gives it
+    assert options_from_def() == EngineOptions(source_idle_off_min=0, source_power_mw=600.0)
+    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", "lots")
     with pytest.raises(ValueError):
         options_from_def()  # a typo in the .ini fails at startup, not silently
 

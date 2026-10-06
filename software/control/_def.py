@@ -1007,15 +1007,9 @@ LASER_ENGINE_REV1_SOURCE_SN = None  # DF: USB serial number of the engine's 560 
 LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN = (
     30  # DF: 560 source off after this many minutes without use; 0 = 24 h (no "never")
 )
-LASER_ENGINE_REV1_AOM_IN_PATH = (
-    False  # DF: the 560 AOM is aligned into the beam path (changing it needs optical re-alignment)
-)
-LASER_ENGINE_REV1_SHUTTER_WITH_AOM = (
-    "gate"  # with the AOM: "gate" = shutter follows each exposure too; "open" = held open, AOM gates
-)
-LASER_ENGINE_REV1_AOM_ATTENUATION = (
-    False  # dim the 560 below its minimum with the AOM (needs intensity_calibrations/560_aom.csv)
-)
+# DF: 560 nm laser power in mW, set in the Laser Engine tab (which saves it here); None = the source's minimum. Squid's 560
+# intensity drives the AOM (intensity_calibrations/560_aom.csv when present, else linear in AOM volts), not this power.
+LASER_ENGINE_REV1_SOURCE_POWER_MW = None
 
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25

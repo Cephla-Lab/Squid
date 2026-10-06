@@ -29,7 +29,7 @@ def test_open_runs_the_startup_sequence_without_arming():
     assert engine.variant == "DF"
     assert "HOST:TIMEOUT 5" in fake.sent
     assert fake.sent.count("FAULT:RESET") == 1
-    assert "SHUT:SRC TTL" in fake.sent
+    assert "SHUT:SRC MCU" in fake.sent and "SHUT:SRC TTL" not in fake.sent  # the shutter is safety only
     assert all(f"LINE{n}:MOD INT" in fake.sent and f"LINE{n}:GATE 0" in fake.sent for n in range(1, 6))
     assert "ARM" not in fake.sent
 
@@ -136,14 +136,12 @@ def test_no_connect_reset_when_nothing_is_latched():
 
 def test_engine_options_are_validated():
     with pytest.raises(ValueError):
-        EngineOptions(shutter_with_aom="sometimes")
-    with pytest.raises(ValueError):
         EngineOptions(source_idle_off_min=-1)
-    with pytest.raises(ValueError, match="AOM in the beam path"):
-        EngineOptions(aom_attenuation=True)
-    with pytest.raises(ValueError, match="AOM in the beam path"):
-        EngineOptions(shutter_with_aom="open")
-    EngineOptions(aom_in_path=True, shutter_with_aom="open", aom_attenuation=True)
+    for bad in ("lots", float("nan"), True):
+        with pytest.raises(ValueError, match="source_power_mw"):
+            EngineOptions(source_power_mw=bad)
+    assert EngineOptions().source_power_mw is None
+    assert EngineOptions(source_power_mw=600).source_power_mw == 600.0
 
 
 from control._def import ILLUMINATION_CODE
@@ -176,6 +174,21 @@ def test_line_for_wavelength_follows_the_ttl_map():
     }
     assert engine.line_for_wavelength(488) == 4 and engine.line_for_wavelength(640) == 3
     assert engine.line_for_wavelength(700) is None and engine.line_for_wavelength(405) is None
+
+
+def test_wavelengths_for_line_is_the_inverse_of_the_ttl_map():
+    engine, _ = _opened()
+    assert engine.wavelengths_for_line(1) == [405]
+    assert engine.wavelengths_for_line(2) == [470, 488]  # Squid's default map: several wavelengths share a port
+    assert engine.wavelengths_for_line(3) == [545, 550, 555, 560, 561]
+    engine.ttl_map_provider = lambda: {
+        488: ILLUMINATION_CODE.ILLUMINATION_D2,
+        560: ILLUMINATION_CODE.ILLUMINATION_D3,
+        640: ILLUMINATION_CODE.ILLUMINATION_D4,
+        700: 20,  # not a D1-D5 port
+    }
+    assert [engine.wavelengths_for_line(n) for n in range(1, 6)] == [[], [488], [560], [640], []]
+    assert all(engine.line_for_wavelength(w) == n for n in range(1, 6) for w in engine.wavelengths_for_line(n))
 
 
 def test_on_startup_arms_and_brings_every_line_up():

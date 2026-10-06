@@ -5,9 +5,10 @@ from pathlib import Path
 import pytest
 from qtpy.QtWidgets import QMessageBox
 
+import control._def
 import control.laser_engine_rev1_bench as bench
 import squid.logging
-from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, LaserEngineRev1Error
+from control.laser_engine_rev1 import LaserEngineRev1, LaserEngineRev1Error
 from control.laser_engine_rev1_bench import BenchWindow, LaserEngineRev1ServicePanel, LogPane
 from control.laser_engine_rev1_link import EngineLink
 from control.laser_engine_rev1_sim import FakeEngine, FakeSource, build_simulated_engine
@@ -47,16 +48,13 @@ def test_panel_rows_intensity_and_readback(qtbot):
         engine.close()
 
 
-def test_panel_560_floor_follows_the_aom(qtbot):
-    engine, panel = _panel(qtbot)  # FakeSource 200-1000 mW, no AOM: the 560 floor is 20 %
+def test_panel_560_row_is_the_aom_with_no_floor(qtbot):
+    engine, panel = _panel(qtbot)  # FakeSource 200-1000 mW
     try:
-        assert panel.rows["L3"].spin.minimum() == 20
-        assert panel.rows["L2"].spin.minimum() == 0
-    finally:
-        engine.close()
-    engine, panel = _panel(qtbot, EngineOptions(aom_in_path=True))
-    try:
-        assert panel.rows["L3"].spin.minimum() == 0
+        assert all(row.spin.minimum() == 0 for row in panel.rows.values())  # no GUI floor (ruling 2026-10-06)
+        panel.rows["L3"].spin.setValue(50.0)
+        assert "LINE3:SET 2.500" in engine.sim_engine.sent  # 50 % = 2.5 V on the AOM input (no calibration)
+        assert engine.source_power_setpoint_mw == 200.0 and engine.sim_source.calls == []  # the laser power untouched
     finally:
         engine.close()
 
@@ -117,8 +115,11 @@ def test_panel_source_box(qtbot):
         assert panel.source_limits_label.text() == "200 – 1000 mW"
         engine.poll_once()
         assert panel.source_state_label.text().startswith("SOURCE_OFF")
-        panel.rows["L3"].spin.setValue(50.0)
-        assert panel.source_requested_label.text().startswith("500 mW")
+        assert panel.source_setpoint_label.text() == "200 mW"  # unset: the source's minimum
+        panel.rows["L3"].spin.setValue(50.0)  # the AOM: not the laser power
+        engine.set_source_power_mw(500.0)  # what the tab's Set does
+        engine.poll_once()
+        assert panel.source_setpoint_label.text() == "500 mW"
         engine.sim_source.needs_key = True
         engine.source_step()
         engine.poll_once()
@@ -134,7 +135,6 @@ def test_panel_without_a_source_has_no_source_box(qtbot):
         panel = LaserEngineRev1ServicePanel(engine)
         qtbot.addWidget(panel)
         assert panel.source_box is None
-        assert panel.rows["L3"].spin.minimum() == 0  # no source: no floor
     finally:
         engine.close()
 
@@ -185,7 +185,7 @@ def test_bench_window_simulate_connect_disconnect(qtbot, monkeypatch):
     win = BenchWindow()
     qtbot.addWidget(win)
     win.simulate_cb.setChecked(True)
-    assert win.bringup_cb.isChecked() and not win.shutter_combo.isEnabled()  # shutter mode needs the AOM
+    assert win.bringup_cb.isChecked()
     win.connect_btn.click()
     engine = win.engine
     try:
@@ -258,9 +258,9 @@ def test_reconnect_starts_dark_and_the_spinbox_matches(qtbot, monkeypatch):
         mark = len(fake.sent)
         win.connect_btn.click()
         assert "LINE2:SET 0.0000" in fake.sent[mark:] and fake.lines[1]["target"] == 0.0
-        assert not any(s.startswith("LINE3:SET 0") for s in fake.sent[mark:])  # the 560 line is left to its source
+        assert "LINE3:SET 0.000" in fake.sent[mark:]  # the 560 line = the AOM: dark at connect
         assert win.service_panel.rows["L2"].spin.value() == 0.0
-        assert win.service_panel.rows["L3"].spin.value() == 20.0  # the 560 floor (no AOM)
+        assert win.service_panel.rows["L3"].spin.value() == 0.0
     finally:
         win.close()
 
@@ -270,11 +270,12 @@ def test_panel_seeds_the_spinboxes_from_the_engine(qtbot):
     engine.open()
     try:
         engine.sim_engine.lines[3]["target"] = 0.598  # L4 left at 50 % of 1.196 A
+        engine.sim_engine.lines[2]["target"] = 1.25  # the AOM left at 25 % of 5 V
         engine.poll_once()
         panel = LaserEngineRev1ServicePanel(engine)
         qtbot.addWidget(panel)
         assert panel.rows["L4"].spin.value() == 50.0
-        assert panel.rows["L1"].spin.value() == 0.0 and panel.rows["L3"].spin.value() == 20.0
+        assert panel.rows["L1"].spin.value() == 0.0 and panel.rows["L3"].spin.value() == 25.0
         assert not any(s.startswith("LINE4:SET") for s in engine.sim_engine.sent)  # seeding sends nothing
     finally:
         engine.close()
@@ -383,15 +384,33 @@ def test_small_guards(qtbot):
         engine.close()
 
 
-# ---- start dark with the AOM; gate boxes follow the engine ------------------------------------------------------------
-def test_connect_with_the_aom_closes_it(qtbot, monkeypatch):
+# ---- start dark (the AOM at 0 V); no AOM options; gate boxes follow the engine ----------------------------------------
+def test_connect_starts_the_aom_dark(qtbot, monkeypatch):
     fake = _shared_sim(monkeypatch)
     win = _window(qtbot, monkeypatch)
-    win.aom_cb.setChecked(True)
     try:
         win.connect_btn.click()
-        assert "LINE3:SET 0.000" in fake.sent  # with the AOM in the path, the 560 line starts dark
+        assert "LINE3:SET 0.000" in fake.sent  # the 560 line starts dark
         assert win.engine._aom_volts == 0.0 and win.service_panel.rows["L3"].spin.value() == 0.0
+    finally:
+        win.disconnect_btn.click()
+
+
+def test_bench_has_no_aom_options_and_the_tab_sets_the_560_power(qtbot, monkeypatch):
+    from qtpy.QtWidgets import QComboBox
+
+    _shared_sim(monkeypatch)
+    win = _window(qtbot, monkeypatch)
+    try:
+        assert not hasattr(win, "aom_cb") and not hasattr(win, "shutter_combo")
+        assert win.findChildren(QComboBox) == [win.port_combo]  # only the Teensy port choice
+        win.connect_btn.click()
+        tab = win.engine_widget
+        assert tab.source_box is not None and [tab.rows[k].wavelength.text() for k in ("L1", "L3")] == [
+            "405 nm",
+            "560 nm (AOM)",
+        ]  # the bench's DF wavelengths
+        assert win.engine.options.source_power_mw == control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW  # the saved power
     finally:
         win.disconnect_btn.click()
 
