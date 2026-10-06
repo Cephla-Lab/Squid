@@ -3784,7 +3784,6 @@ class DragonflyConfocalWidget(QWidget):
         layout_confocal.addWidget(self.btn_disk_motor)
         layout_confocal.addWidget(dichroic_label)
         layout_confocal.addWidget(self.dropdown_dichroic)
-        layout_confocal.addWidget(self.btn_refresh)
 
         layout_wheels = QGridLayout()
         # Row 2: Camera Port 1 Emission Filter and Field Aperture
@@ -3808,6 +3807,7 @@ class DragonflyConfocalWidget(QWidget):
 
         layout_wheels.addWidget(port2_emission_label, 1, 0)
         layout_wheels.addWidget(self.dropdown_port2_emission_filter, 1, 1)
+        layout_wheels.addWidget(self.btn_refresh, 1, 3)  # under the field aperture dropdown
 
         main_layout.addLayout(layout_confocal)
         main_layout.addLayout(layout_wheels)
