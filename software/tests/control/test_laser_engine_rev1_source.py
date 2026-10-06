@@ -643,17 +643,46 @@ def test_shutter_closes_when_the_source_switches_itself_off_and_the_restart_is_b
     assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open
 
 
-def test_a_restart_is_queued_only_behind_a_closed_shutter():
+def _lose_reply(fake, command, nth=1):
+    """The engine acts on the nth `command` but its reply is lost: the link reports no reply (connection lost)."""
+    real_write, seen = fake.write, [0]
+
+    def write(data):
+        if data.decode().strip() == command:
+            seen[0] += 1
+            if seen[0] == nth:
+                fake.sent.append(command)
+                fake.shut_open = command == "SHUT:OPEN 1"
+                return
+        real_write(data)
+
+    fake.write = write
+
+
+@pytest.mark.parametrize("nth", [1, 2])  # 1: the poll's close (same wake_up), 2: _wake_source's own close
+def test_connection_lost_on_a_restart_close_does_not_start_the_source(nth):
     engine, fake, source = _with_source()
     _to_ready(engine, source)
     engine.poll_once()
-    source.enabled = False
+    source.enabled = False  # off on its own
     engine.source_step()
-    _refuse_once(fake, "SHUT:OPEN 0")
-    _refuse_once(fake, "SHUT:OPEN 0")  # both polls' closes are refused: this one and wake_up's own
+    _lose_reply(fake, "SHUT:OPEN 0", nth)
+    engine.wake_up("L3")  # sees SOURCE_OFF, closes the shutter, restarts the source
+    assert engine.is_connection_lost() and not engine._source_want_on
+    for _ in range(4):
+        engine.source_step()
+    assert source.calls.count("enable") == 1 and not source.enabled  # no second start after the link was lost
+
+
+def test_source_restarting_by_itself_between_polls_closes_the_shutter():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
     engine.poll_once()
     assert fake.shut_open
-    engine.wake_up("L3")  # the restart closes the shutter itself before it queues the enable
-    assert not fake.shut_open
+    source.enable()  # off and on again between two polls (front panel): it reads starting, never off
     engine.source_step()
-    assert source.calls.count("enable") == 2
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    for _ in range(3):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open

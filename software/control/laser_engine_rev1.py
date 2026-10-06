@@ -664,8 +664,10 @@ class LaserEngineRev1(QObject):
     def _wake_source(self) -> None:
         """Set the AOM to the current 560 intensity (0 V = dark until one is asked), then queue one source enable at the
         source's minimum (the operator's power follows once it is ready).
-        The enable_pending check-then-set and the queue/state update run under _source_lock; only the LINE3:SET
-        round-trip runs outside it, so a concurrent _disable_source() cannot interleave with the update. `src` is
+        The shutter is closed first, so the source never starts behind an open one. The enable_pending check-then-set and
+        the queue/state update run under _source_lock; the shutter close and the LINE3:SET round-trips run outside it,
+        so a concurrent _disable_source() cannot interleave with the update. A connection lost on the way (the shutter
+        close swallows it) aborts the enable there: _on_lost has already switched the source off. `src` is
         captured once, so a concurrent _close_source() cannot leave _source_enable_pending set. The AOM read + send +
         cache runs under _aom_lock (not _source_lock), so it cannot interleave with _set_aom_volts on another thread.
         """
@@ -685,6 +687,8 @@ class LaserEngineRev1(QObject):
                 self._aom_volts = volts  # accepted: what the engine now has
             start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the operator's power
             with self._source_lock:
+                if self._lost:  # under the lock: _signal_lost sets _lost before its _disable_source takes the lock
+                    raise LaserEngineRev1Error("L3", "laser engine connection lost")
                 requested = self._source_requested_mw if self._source_requested_mw is not None else start
                 self._source_pending_mw = requested if requested > start else None
                 self._source_want_on = True
@@ -870,6 +874,8 @@ class LaserEngineRev1(QObject):
             self._set_held_shutter(False, raw)  # closed while the source is off; retried every poll while unwanted
             return
         l3 = status.channels.get("L3")
+        st = self._source_status
+        source_starting = st is not None and st.starting and not st.ready
         idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
         not_armed = not status.armed and not self._source_enable_pending  # a STAT? taken just before this thread's ARM
         if not_armed or (l3 is not None and l3.state in ERROR_STATES) or idle:
@@ -879,10 +885,10 @@ class LaserEngineRev1(QObject):
             self._set_held_shutter(False, raw)
         elif l3 is not None and l3.state == LineState.READY:
             self._set_held_shutter(True, raw)
-        elif l3 is None or l3.state != LineState.STARTING:
-            # Open only at READY: NEEDS KEY, the source off by itself, line 3 off or paused close it until READY again.
-            # The source stays wanted (the next use restarts it behind the closed shutter). STARTING leaves the shutter
-            # as it is: every AOM LINE3:SET passes through line 3's ramp.
+        elif l3 is None or l3.state != LineState.STARTING or source_starting:
+            # Open only at READY: NEEDS KEY, the source off or starting (also by itself, between two polls), line 3 off
+            # or paused close it until READY again. The source stays wanted (the next use restarts it behind the closed
+            # shutter). A line-3 ramp with the source ready leaves the shutter as it is: every AOM LINE3:SET ramps.
             self._set_held_shutter(False, raw)
 
     def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
@@ -894,7 +900,7 @@ class LaserEngineRev1(QObject):
         try:
             self._cmd(f"SHUT:OPEN {int(want_open)}")
         except (EngineCommandError, LaserEngineRev1Error) as e:
-            self._log.warning(f"shutter {'open' if want_open else 'close'} not done (retried at the next poll): {e}")
+            self._log.warning(f"shutter {'open' if want_open else 'close'} not done: {e}")
 
     def _on_lost(self) -> None:
         self._disable_source()
