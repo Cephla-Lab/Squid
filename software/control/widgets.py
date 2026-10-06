@@ -5,6 +5,7 @@ import json
 import yaml
 import logging
 import sys
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
@@ -3696,27 +3697,29 @@ class DragonflyConfocalWidget(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
         self.dragonfly = dragonfly
-        self.confocal_mode = False
 
         self.init_ui()
 
         # Show the unit's current state. Nothing is connected yet, so selecting a dropdown
         # entry here does not move anything. Each query stands alone: a wheel the unit does
         # not have (e.g. no port 2 emission filter) must not hide the rest of the state.
-        self.confocal_mode = self._read("modality", self.dragonfly.get_modality, None) == "CONFOCAL"
-        self.dropdown_dichroic.setCurrentIndex(
-            self._read("dichroic", self.dragonfly.get_port_selection_dichroic, 0) - 1
-        )
-        self.dropdown_port1_emission_filter.setCurrentIndex(
-            self._read("port 1 emission filter", lambda: self.dragonfly.get_emission_filter(1), 0) - 1
-        )
-        self.dropdown_port2_emission_filter.setCurrentIndex(
-            self._read("port 2 emission filter", lambda: self.dragonfly.get_emission_filter(2), 0) - 1
-        )
-        self.dropdown_field_aperture.setCurrentIndex(
-            self._read("field aperture", self.dragonfly.get_field_aperture_wheel_position, 0) - 1
-        )
+        self.confocal_mode = self._read("modality", self.dragonfly.get_modality, "") == "CONFOCAL"
         self.btn_disk_motor.setChecked(bool(self._read("disk motor state", self.dragonfly.get_disk_motor_state, False)))
+        for dropdown, what, query in (
+            (self.dropdown_dichroic, "dichroic", self.dragonfly.get_port_selection_dichroic),
+            (
+                self.dropdown_port1_emission_filter,
+                "port 1 emission filter",
+                partial(self.dragonfly.get_emission_filter, 1),
+            ),
+            (
+                self.dropdown_port2_emission_filter,
+                "port 2 emission filter",
+                partial(self.dragonfly.get_emission_filter, 2),
+            ),
+            (self.dropdown_field_aperture, "field aperture", self.dragonfly.get_field_aperture_wheel_position),
+        ):
+            dropdown.setCurrentIndex(self._read(what, query, 0) - 1)  # unknown position: no entry selected
 
         # Set initial button text
         if self.confocal_mode:

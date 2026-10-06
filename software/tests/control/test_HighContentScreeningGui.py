@@ -144,12 +144,10 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
 def test_create_simulated_hcs_with_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: with a Dragonfly as the spinning disk unit, GUI construction wired the
     X-Light-only iris signals onto DragonflyConfocalWidget and raised AttributeError."""
-    import control.core.live_controller
     import control.widgets
+    from tests.control.spinning_disk_test_utils import enable_spinning_disk
 
-    for module in (control._def, control.gui_hcs, control.core.live_controller, control.widgets):
-        monkeypatch.setattr(module, "ENABLE_SPINNING_DISK_CONFOCAL", True)
-        monkeypatch.setattr(module, "USE_DRAGONFLY", True)
+    enable_spinning_disk(monkeypatch, control.gui_hcs, dragonfly=True)
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)

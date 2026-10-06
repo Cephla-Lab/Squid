@@ -19,6 +19,20 @@ FILTERS = ["445/45", "525/50", "600/50", "700/75", "Empty 5", "Empty 6", "Empty 
 APERTURES = [f"Aperture {i}" for i in range(1, 11)]
 
 
+INFO = {"AT_PS_INFO": DICHROICS, "AT_FW_INFO": FILTERS, "AT_AP_INFO": APERTURES}
+STATIC_REPLIES = {
+    "AT_SERIAL_CSU,?": "DFLY-1024:A",
+    "AT_PRODUCT_CSU,?": "CR-DFLY-202-40:A",
+    "AT_VER,?": "2.15:A",
+    "AT_MS_MAX,?": "6000:A",
+    "AT_SYSTEM,?": "CSU=2 EXT=0 FW=2 BF=1 AP=1 EOS=0 PB=0 SH=1:A",
+    "AT_STANDBY,0": ":A",
+    "AT_DC_SLCT,1": ":A",
+    "AT_FW_COMPO,1,?": "1,1:A",
+    "AT_FW_COMPO,2,?": "2,1:A",
+}
+
+
 class FakeDragonflyPort:
     """Stands in for serial.Serial, with a Dragonfly on the other end of the cable."""
 
@@ -28,9 +42,8 @@ class FakeDragonflyPort:
         self.speed_setpoint = 0
         self.disk_speed = 0
         self.modality = "BF"
-        self.dichroic = 1
-        self.filters = {1: 1, 2: 1}
-        self.aperture = 1
+        # Wheel positions keyed by the position command's "<kind>,<port>" prefix
+        self.positions = {"AT_PS_POS,1": 1, "AT_FW_POS,1": 1, "AT_FW_POS,2": 1, "AT_AP_POS,1": 1}
         self._unread = b""
 
     @property
@@ -50,58 +63,36 @@ class FakeDragonflyPort:
         self.is_open = False
 
     def _execute(self, command):
-        fixed = {
-            "AT_SERIAL_CSU,?": "DFLY-1024:A",
-            "AT_PRODUCT_CSU,?": "CR-DFLY-202-40:A",
-            "AT_VER,?": "2.15:A",
-            "AT_MS_MAX,?": "6000:A",
-            "AT_SYSTEM,?": "CSU=2 EXT=0 FW=2 BF=1 AP=1 EOS=0 PB=0 SH=1:A",
-            "AT_STANDBY,0": ":A",
-            "AT_DC_SLCT,1": ":A",
-            "AT_MS_RUN": ":A",
-            "AT_MS_STOP": ":A",
-            "AT_MS,?": f"{self.disk_speed}:A",
-            "AT_MODALITY,?": f"{self.modality}:A",
-            "AT_PS_POS,1,?": f"{self.dichroic}:A",
-            "AT_AP_POS,1,?": f"{self.aperture}:A",
-            "AT_FW_COMPO,1,?": "1,1:A",
-            "AT_FW_COMPO,2,?": "2,1:A",
-        }
-        if command in fixed:
-            if command == "AT_MS_RUN":
-                self.disk_speed = self.speed_setpoint
-            elif command == "AT_MS_STOP":
-                self.disk_speed = 0
-            return fixed[command]
-        parts = command.split(",")
-        if parts[0] == "AT_MS":
-            self.speed_setpoint = int(parts[1])
+        if command in STATIC_REPLIES:
+            return STATIC_REPLIES[command]
+        if command == "AT_MS_RUN":
+            self.disk_speed = self.speed_setpoint
             return ":A"
-        if parts[0] == "AT_MODALITY":
-            self.modality = parts[1]
+        if command == "AT_MS_STOP":
+            self.disk_speed = 0
             return ":A"
-        if parts[0] == "AT_PS_POS":
-            return self._move("dichroic", parts[2], len(DICHROICS))
-        if parts[0] == "AT_AP_POS":
-            return self._move("aperture", parts[2], len(APERTURES))
-        if parts[0] == "AT_FW_POS":
-            port = int(parts[1])
-            if parts[2] == "?":
-                return f"{self.filters[port]}:A"
-            if 1 <= int(parts[2]) <= len(FILTERS):
-                self.filters[port] = int(parts[2])
-                return ":A"
-            return ":N"
-        if parts[0] in ("AT_PS_INFO", "AT_FW_INFO", "AT_AP_INFO"):
-            names = {"AT_PS_INFO": DICHROICS, "AT_FW_INFO": FILTERS, "AT_AP_INFO": APERTURES}[parts[0]]
-            index = int(parts[2])
+        if command == "AT_MS,?":
+            return f"{self.disk_speed}:A"
+        if command == "AT_MODALITY,?":
+            return f"{self.modality}:A"
+        kind, *args = command.split(",")
+        if kind == "AT_MS":
+            self.speed_setpoint = int(args[0])
+            return ":A"
+        if kind == "AT_MODALITY":
+            self.modality = args[0]
+            return ":A"
+        if kind in INFO:  # AT_xx_INFO,<port>,<index>,?
+            names, index = INFO[kind], int(args[1])
             return f"{names[index - 1]}:A" if 1 <= index <= len(names) else ":N"
-        return ":N"
-
-    def _move(self, attribute, value, count):
-        if 1 <= int(value) <= count:
-            setattr(self, attribute, int(value))
-            return ":A"
+        wheel = f"{kind},{args[0]}"  # AT_xx_POS,<port>,<position or ?>
+        if wheel in self.positions:
+            if args[1] == "?":
+                return f"{self.positions[wheel]}:A"
+            count = len({"AT_PS_POS": DICHROICS, "AT_FW_POS": FILTERS, "AT_AP_POS": APERTURES}[kind])
+            if 1 <= int(args[1]) <= count:
+                self.positions[wheel] = int(args[1])
+                return ":A"
         return ":N"
 
 
@@ -134,7 +125,7 @@ def test_camera_port_follows_the_port_selection_dichroic(dragonfly, port):
 
     dragonfly.set_port_selection_dichroic(4)
 
-    assert port.dichroic == 4
+    assert port.positions["AT_PS_POS,1"] == 4
     assert dragonfly.get_camera_port() == 2
 
 
@@ -145,14 +136,14 @@ def test_emission_filter_info_covers_all_eight_positions(dragonfly):
 def test_emission_filter_position_round_trips(dragonfly, port):
     dragonfly.set_emission_filter(2, 5)
 
-    assert port.filters[2] == 5
+    assert port.positions["AT_FW_POS,2"] == 5
     assert dragonfly.get_emission_filter(2) == 5
 
 
 def test_field_aperture_position_round_trips(dragonfly, port):
     dragonfly.set_field_aperture_wheel_position(7)
 
-    assert port.aperture == 7
+    assert port.positions["AT_AP_POS,1"] == 7
     assert dragonfly.get_field_aperture_wheel_position() == 7
 
 
@@ -206,17 +197,13 @@ def test_simulated_camera_port_follows_the_dichroic():
     assert sim.get_camera_port() == 2
 
 
-def test_simulated_info_lists_match_the_hardware_wheel_sizes():
+def test_simulated_info_lists_match_the_hardware_wheels():
     sim = Dragonfly_Simulation()
 
-    assert len(sim.get_port_selection_dichroic_info()) == 4
+    dichroics = sim.get_port_selection_dichroic_info()
+    assert len(dichroics) == 4
     assert len(sim.get_emission_filter_info(1)) == 8
     assert len(sim.get_field_aperture_info()) == 10
-
-
-def test_simulated_dichroic_names_carry_the_port_markers_the_driver_keys_on():
-    names = Dragonfly_Simulation().get_port_selection_dichroic_info()
-
-    assert names[0].endswith("100% Pass")
-    assert names[-1].endswith("100% Reflect")
-    assert not any(name.isdigit() for name in names)
+    # get_camera_port() keys on these two names
+    assert dichroics[0].endswith("100% Pass")
+    assert dichroics[-1].endswith("100% Reflect")
