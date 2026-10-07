@@ -47,6 +47,7 @@ from control.core.job_processing import (
     JobRunner,
     JobResult,
 )
+from control.core.in_process_zarr_runner import InProcessZarrRunner
 from control.core.mosaic_utils import (
     calculate_overlap_pixels,
     parse_well_id,
@@ -311,15 +312,26 @@ class MultiPointWorker:
                 mode_str = "per-FOV 5D (OME-NGFF compliant)"
             self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
 
-        # Use pre-warmed job runner if available, otherwise create new ones.
-        # IMPORTANT: Only use pre-warmed runner if BOTH runner AND backpressure values
+        # Zarr is saved in this process; the TIFF formats keep the save subprocess.
+        # Use the pre-warmed subprocess if available, otherwise create new ones.
+        # IMPORTANT: Only use the pre-warmed runner if BOTH runner AND backpressure values
         # are available. Using a runner without matching backpressure values would cause
         # the BackpressureController to track different counters than the JobRunner.
         can_use_prewarmed = prewarmed_job_runner is not None and prewarmed_bp_values is not None
         used_prewarmed = False
         for job_class in job_classes:
             job_runner = None
-            if Acquisition.USE_MULTIPROCESSING:
+            if job_class is SaveZarrJob:
+                job_runner = self._create_in_process_zarr_runner(zarr_writer_info)
+                if can_use_prewarmed and not used_prewarmed:
+                    # Nothing here will use the subprocess the controller handed over.
+                    self._log.info("Zarr v3 saves in-process; releasing the pre-warmed save subprocess")
+                    try:
+                        prewarmed_job_runner.shutdown(timeout_s=1.0)
+                    except Exception as e:
+                        self._log.error(f"Error shutting down the unused pre-warmed runner: {e}")
+                    can_use_prewarmed = False
+            elif Acquisition.USE_MULTIPROCESSING:
                 # Try to use pre-warmed runner for the first job class
                 if can_use_prewarmed and not used_prewarmed:
                     if prewarmed_job_runner.is_ready():
@@ -433,6 +445,19 @@ class MultiPointWorker:
             next(iter(grid_sizes)),
         )
         return True
+
+    def _create_in_process_zarr_runner(self, zarr_writer_info: Optional[ZarrWriterInfo]) -> InProcessZarrRunner:
+        """Zarr is saved in this process (see in_process_zarr_runner.py); the runner shares our backpressure counters."""
+        runner = InProcessZarrRunner(
+            zarr_writer_info=zarr_writer_info,
+            bp_values=(
+                self._backpressure.pending_jobs_value,
+                self._backpressure.pending_bytes_value,
+                self._backpressure.capacity_event,
+            ),
+        )
+        runner.start()
+        return runner
 
     def _abort_due_to_error(self) -> None:
         """Abort the run due to an internal error (vs a user abort).
@@ -698,9 +723,18 @@ class MultiPointWorker:
             except Exception as e:
                 log.error(f"Error shutting down job runner in background: {e}")
 
-        self._log.info("Shutting down job runners (non-blocking)...")
+        self._log.info("Shutting down job runners...")
         remaining_time = time_left()
+        aborted = bool(self.abort_requested_fn())
         for job_class, job_runner in active_runners:
+            if getattr(job_runner, "runs_in_process", False):
+                # Its shutdown seals the stores (aborted ones as aborted); do it here so the
+                # acquisition is not reported finished before the metadata says so.
+                try:
+                    job_runner.shutdown(remaining_time, aborted=aborted)
+                except Exception as e:
+                    log.error(f"Error shutting down the in-process Zarr runner: {e}")
+                continue
             t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
             t.start()
 
@@ -1418,6 +1452,8 @@ class MultiPointWorker:
                                 return
                         else:
                             try:
+                                # In-process fallback (multiprocessing off) for the TIFF job classes;
+                                # SaveZarrJob always has an InProcessZarrRunner.
                                 # NOTE(imo): We don't have any way of people using results, so for now just
                                 # grab and ignore it.
                                 result = job.run()

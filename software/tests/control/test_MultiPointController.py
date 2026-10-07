@@ -723,3 +723,80 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
         mpc.thread.join(10)
 
     assert tt.image_count == mpc.get_acquisition_image_count()
+
+
+def _zarr_jsons_with_squid(mpc):
+    """The _squid attributes of every OME group zarr.json of the run just finished (array zarr.json files carry none)."""
+    import json
+    from pathlib import Path
+
+    out = []
+    for p in (Path(mpc.base_path) / mpc.experiment_ID).rglob("zarr.json"):
+        attrs = json.load(open(p)).get("attributes", {}).get("_squid")
+        if attrs is not None:
+            out.append(attrs)
+    return out
+
+
+def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
+    """A Zarr v3 multipoint run saves through the in-process runner and ends with acquisition_complete=True."""
+    pytest.importorskip("tensorstore")
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(120)
+    assert isinstance(mpc.multiPointWorker._job_runners[0][1], InProcessZarrRunner)
+    attrs = _zarr_jsons_with_squid(mpc)
+    assert attrs and all(a["acquisition_complete"] is True for a in attrs)
+
+
+def test_zarr_is_sealed_with_multiprocessing_off(monkeypatch):
+    """The in-process fallback used to leave the store unsealed; it must not any more."""
+    pytest.importorskip("tensorstore")
+
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    monkeypatch.setattr(control._def.Acquisition, "USE_MULTIPROCESSING", False)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(120)
+    attrs = _zarr_jsons_with_squid(mpc)
+    assert attrs and all(a["acquisition_complete"] is True for a in attrs)
+
+
+def test_abort_mid_zarr_run_seals_store_aborted(monkeypatch):
+    """Stop during a Zarr run: the run ends promptly and the stores say aborted, not complete."""
+    pytest.importorskip("tensorstore")
+    import time
+
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc.set_NZ(5)
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.run_acquisition()
+    assert tt.started_event.wait(30)
+    deadline = time.monotonic() + 30
+    while tt.image_count < 3 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert tt.image_count >= 3
+    t_abort = time.monotonic()
+    mpc.request_abort_aquisition()
+    assert tt.finished_event.wait(60)
+    assert time.monotonic() - t_abort < 30, "abort must not wait out the job timeouts"
+    attrs = _zarr_jsons_with_squid(mpc)
+    assert attrs and all(a["acquisition_complete"] is False and a.get("aborted") is True for a in attrs)
