@@ -743,12 +743,14 @@ class TestMultiPointControllerCloseMethod:
     def test_close_terminates_live_job_runners(self):
         """close() terminates job runners that are still alive."""
         from unittest.mock import MagicMock
+        from control.core.job_processing import JobRunner
         from control.core.multi_point_controller import MultiPointController
 
         controller = self._create_mock_controller()
         controller.acquisition_in_progress.return_value = False
 
-        mock_job_runner = MagicMock()
+        # spec=JobRunner: a save subprocess (a bare MagicMock would answer runs_in_process truthily)
+        mock_job_runner = MagicMock(spec=JobRunner)
         mock_job_runner.is_alive.side_effect = [True, False]
         controller.multiPointWorker = MagicMock()
         controller.multiPointWorker._job_runners = [(SlowJob, mock_job_runner)]
@@ -761,12 +763,14 @@ class TestMultiPointControllerCloseMethod:
     def test_close_force_kills_stubborn_runners(self):
         """close() force kills job runners that don't respond to terminate."""
         from unittest.mock import MagicMock
+        from control.core.job_processing import JobRunner
         from control.core.multi_point_controller import MultiPointController
 
         controller = self._create_mock_controller()
         controller.acquisition_in_progress.return_value = False
 
-        mock_job_runner = MagicMock()
+        # spec=JobRunner: a save subprocess (a bare MagicMock would answer runs_in_process truthily)
+        mock_job_runner = MagicMock(spec=JobRunner)
         mock_job_runner.is_alive.side_effect = [True, True, False]
         controller.multiPointWorker = MagicMock()
         controller.multiPointWorker._job_runners = [(SlowJob, mock_job_runner)]
