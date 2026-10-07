@@ -2,6 +2,8 @@
 placement they were computed under, and loading under a different placement
 says so instead of silently replaying stale positions."""
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -52,6 +54,7 @@ def test_csv_round_trip_with_stamp(tree):
     assert stamp["format"] == "96 well plate"
     assert stamp["rotation_deg"] == 0.21
     assert stamp["rotation_source"] == "holder"
+    assert (stamp["well_spacing_x_mm"], stamp["well_spacing_y_mm"]) == (9.0, 9.0)
     # unchanged placement -> no warning
     assert staleness_warning(stamp, "96 well plate") is None
 
@@ -169,13 +172,59 @@ def test_vanished_format_is_flagged(tree):
     assert msg is not None and "not in the current catalog" in msg
 
 
-def test_garbage_stamp_is_ignored(tree):
+def test_well_spacing_change_is_flagged(tree, monkeypatch):
+    """A1 and rotation untouched, spacing edited: every other well moved."""
+    import control._def as _def_mod
+
+    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    edited = dict(_def_mod.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
+    edited.update(well_spacing_mm=9.1, well_spacing_x_mm=9.1, well_spacing_y_mm=9.1)
+    monkeypatch.setitem(_def_mod.WELLPLATE_FORMAT_SETTINGS, "96 well plate", edited)
+
+    _, stamp = read_scan_coordinates_csv("coords.csv")
+    msg = staleness_warning(stamp, "96 well plate")
+    assert msg is not None and "well spacing changed from 9.000 mm at save time to 9.100 mm now" in msg
+
+
+def test_stamp_without_spacing_skips_that_check(tree):
+    """Stamps written before the spacing was recorded still validate and load."""
+    stamp = make_stamp("96 well plate")
+    del stamp["well_spacing_x_mm"], stamp["well_spacing_y_mm"]
+    line = STAMP_PREFIX + json.dumps(stamp)
+    assert parse_stamp(line) == stamp
+    assert staleness_warning(stamp, "96 well plate") is None
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda stamp: stamp.pop("a1_y_mm"),
+        lambda stamp: stamp.update(rotation_deg="0.21"),
+        lambda stamp: stamp.update(well_spacing_x_mm=True),
+        lambda stamp: stamp.pop("format"),
+    ],
+)
+def test_stamp_with_missing_or_mistyped_field_is_ignored(tree, damage):
+    """Validated at parse time, so the staleness check cannot raise after the
+    coordinates were already loaded and registered."""
+    stamp = make_stamp("96 well plate")
+    damage(stamp)
+    with open("damaged.csv", "w") as f:
+        f.write(STAMP_PREFIX + json.dumps(stamp) + "\n")
+        df_fixture().to_csv(f, index=False)
+
+    df, parsed = read_scan_coordinates_csv("damaged.csv")
+    assert parsed is None
+    pd.testing.assert_frame_equal(df, df_fixture())  # the data still loads
+
+
+def test_garbage_stamp_is_ignored_and_the_data_still_loads(tree):
     with open("bad.csv", "w") as f:
         f.write(STAMP_PREFIX + "{not json\n")
         df_fixture().to_csv(f, index=False)
-    # unparseable stamp -> treated as a plain comment-less file would be...
+    # the prefix marks the line as a stamp; an unparseable one is ignored, not
+    # handed to pandas as a header
     df, stamp = read_scan_coordinates_csv("bad.csv")
     assert stamp is None
-    # ...which means pandas sees the malformed first line; the widget's
-    # column validation rejects it with its normal error path.
+    pd.testing.assert_frame_equal(df, df_fixture())
     assert parse_stamp("region,x (mm),y (mm)") is None
