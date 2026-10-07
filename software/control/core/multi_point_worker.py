@@ -699,12 +699,17 @@ class MultiPointWorker:
             time.sleep(0.1)
         else:
             # Timed out - kill any runners that still have pending jobs
+            abandoned = False
             for job_class, job_runner in active_runners:
                 if job_runner.has_pending():
                     self._log.error(
                         f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
                     )
                     job_runner.kill()
+                    abandoned = True
+            if abandoned:
+                # Data is missing, so the run ends as an error (and the Zarr stores are sealed as aborted).
+                self._abort_due_to_error()
 
         # Drain results before shutdown
         self._summarize_runner_outputs(drain_all=True)
