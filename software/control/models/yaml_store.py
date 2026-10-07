@@ -2,6 +2,11 @@
 
 - guarded load: absent -> None; damage -> log the caller's message loudly and
   return None (the app keeps running on defaults rather than refusing to start)
+- schema version: a model with a `version` field declares, through that field's
+  default, the one version this build reads. A file declaring another version
+  is refused (logged, None) rather than validated under the wrong reading -
+  pydantic ignores unknown keys, so it would otherwise load as an empty or
+  misread record. A file without the key is taken to be the current version.
 - atomic save: tmp file + fsync + os.replace, so an interrupted write can never
   leave a truncated file behind.
 
@@ -57,7 +62,10 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str, *, copy:
     try:
         with open(path, "r") as f:
             data = yaml.safe_load(f)
-        model = model_cls.model_validate(data) if data is not None else None
+        if _declares_another_version(path, model_cls, data):
+            model = None
+        else:
+            model = model_cls.model_validate(data) if data is not None else None
     except Exception:
         log.exception(damage_message)
         model = None
@@ -65,6 +73,21 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str, *, copy:
     if model is None:
         return None
     return model.model_copy(deep=True) if copy else model
+
+
+def _declares_another_version(path: str, model_cls: Type[BaseModel], data) -> bool:
+    field = model_cls.model_fields.get("version")
+    if field is None or not isinstance(data, dict):
+        return False
+    declared = data.get("version", field.default)
+    if declared == field.default:
+        return False
+    log.error(
+        f"{path} declares version {declared!r}, but this build reads version {field.default} - IGNORING THE FILE "
+        f"rather than silently misreading it; ITS CONTENTS ARE NOT BEING APPLIED. Restore a build that reads "
+        f"version {declared!r}, or move the file aside and re-create it."
+    )
+    return True
 
 
 def save_yaml_model_atomic(model: BaseModel, path: str) -> None:

@@ -40,7 +40,7 @@ from control.core.holder_alignment import (
     SessionError,
 )
 from control.core.plate_fit import circumcenter, PlateFitError
-from control.core.plate_transform import plate_transform_for, PlateTransform, WellplateSettings
+from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
@@ -11965,15 +11965,6 @@ class WellplateFormatWidget(QWidget):
             return None
         return settings
 
-    def add_custom_format(self, name, settings):
-        """Register only. Selecting it is the caller's job, ONCE the definition
-        is saved (select_format_silently in _finish_calibration): repopulating
-        here with signals live emitted -1, index 0 and the target, then
-        wellplateChanged emitted the target again - all before the save, so a
-        machine with a wellplate_offset briefly applied it to the measured A1.
-        """
-        WELLPLATE_FORMAT_SETTINGS[name] = settings
-
     def save_formats_to_csv(self):
         # Atomic, so an interrupted write cannot leave a cache that load_formats()
         # chokes on at import time. Column order lives with the reader in _def.
@@ -12339,13 +12330,10 @@ class WellplateCalibration(QDialog):
     def populate_existing_formats(self):
         self.existing_format_combo.clear()
         for format_ in WELLPLATE_FORMAT_SETTINGS:
-            settings = control._def.get_wellplate_settings(format_)
-            if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
-                # The glass slide anchors at the current stage position - there is
-                # no grid to calibrate, and its definition could not be saved
-                # (the user-format model requires a positive spacing).
-                continue
-            self.existing_format_combo.addItem(self._format_display_name(format_), format_)
+            # nothing to calibrate on a glass slide, and the user-format model
+            # could not save it anyway (spacing must be positive)
+            if has_well_grid(control._def.get_wellplate_settings(format_)):
+                self.existing_format_combo.addItem(self._format_display_name(format_), format_)
 
     def toggle_input_mode(self):
         # The mode radios share an exclusive QButtonGroup: exactly one is true.
@@ -12916,10 +12904,11 @@ class WellplateCalibration(QDialog):
             "cols": self.colsInput.value(),
         }
 
-        self.wellplateFormatWidget.add_custom_format(name, new_format)
-
         # Same writer as every other calibration: a complete definition, with
-        # the measured A1 stored absolutely and its provenance alongside.
+        # the measured A1 stored absolutely and its provenance alongside. It
+        # writes the format table too; the combo is selected once, after the
+        # save, in _finish_calibration (selecting before the save applied a
+        # machine's wellplate_offset to the measured A1 for a moment).
         self._save_format_definition(name, new_format, measured=self._measurement_record(a1_x_mm, a1_y_mm))
         self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
 

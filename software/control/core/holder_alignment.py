@@ -22,7 +22,7 @@ import control._def
 import control.utils
 from control.core.mosaic_utils import format_well_id
 from control.core.plate_fit import circumcenter as _circumcenter, fit_plate_placement, PlateFitError, PlateFitResult
-from control.core.plate_transform import PlateTransform, plate_transform_for, resolve_rotation_deg
+from control.core.plate_transform import has_well_grid, PlateTransform, plate_transform_for, resolve_rotation_deg
 from control.models.sample_format_config import load_user_sample_formats, save_user_sample_formats
 from control.models.plate_holder import (
     clear_plate_holder,
@@ -76,7 +76,7 @@ class HolderAlignmentSession:
 
     def __init__(self, format_: str):
         settings = control._def.get_wellplate_settings(format_)
-        if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
+        if not has_well_grid(settings):
             raise SessionError(f"{format_} anchors at the current stage position - there is no grid to calibrate.")
         self.format = format_
         self.pitch_x_mm = settings["well_spacing_x_mm"]
@@ -187,6 +187,10 @@ class HolderAlignmentSession:
         well = self.reference_wells[index]
         if len(well.touches) >= self.touches_per_well:
             raise SessionError(f"{well.well_id} already has its {self.touches_per_well} touch(es) - undo first.")
+        if not (math.isfinite(x_mm) and math.isfinite(y_mm)):
+            # The fit refuses NaN too, but that would surface as a traceback at
+            # the next refresh; here it is the dialog's own message, at the click.
+            raise SessionError(f"The stage reported no position for {well.well_id} - try the touch again.")
         well.touches.append((float(x_mm), float(y_mm)))
         if len(well.touches) == self.touches_per_well:
             if self.touches_per_well == 3:

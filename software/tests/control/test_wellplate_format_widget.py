@@ -115,24 +115,3 @@ def test_dialog_opened_from_the_dropdown_sees_the_loaded_plate(qtbot, catalog_tr
     (dialog,) = opened
     assert dialog.holder_session.format == "96 well plate"
     assert [edit.text() for edit in dialog.holder_well_edits] == ["A1", "A12", "H1", "H12"]
-
-
-def test_add_custom_format_registers_without_emitting(qtbot):
-    """Selection happens once, in _finish_calibration, after the definition is
-    saved; registering used to repopulate with signals live and emit four times."""
-    widget = _make_widget(qtbot)
-    _select_data(widget, "96 well plate")
-    emissions = []
-    widget.signalWellplateSettings.connect(lambda settings: emissions.append(settings.format))
-
-    settings = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
-    widget.add_custom_format("my plate", settings)
-    try:
-        assert emissions == []
-        assert widget.wellplate_format == "96 well plate"
-        assert "my plate" in _def.WELLPLATE_FORMAT_SETTINGS
-
-        index = widget.select_format_silently("my plate")  # what _finish_calibration does
-        assert index >= 0 and emissions == ["my plate"]
-    finally:
-        _def.WELLPLATE_FORMAT_SETTINGS.pop("my plate", None)

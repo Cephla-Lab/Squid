@@ -111,7 +111,7 @@ def test_derived_geometry_broadcasts_and_shapes():
 
 
 def test_runtime_added_custom_format_gets_derived_defaults():
-    """add_custom_format inserts plain dicts; access must fill the defaults."""
+    """A plain dict inserted at runtime: access must fill the derived defaults."""
     _def.WELLPLATE_FORMAT_SETTINGS["oracle custom"] = {
         "a1_x_mm": 15.0,
         "a1_y_mm": 12.0,

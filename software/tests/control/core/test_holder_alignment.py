@@ -364,3 +364,12 @@ def test_clear_leaves_format_overrides_unless_asked(tree):
     clear_holder_rotation(clear_overrides=("96 well plate",))
     assert resolve_rotation_deg("96 well plate") == (0.0, "none")
     assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 11.41  # the measured a1 survives
+
+
+def test_non_finite_reading_is_refused_at_the_touch(tree):
+    """Refused where the operator is - as the dialog's own message - not three
+    wells later as a PlateFitError out of a refresh."""
+    session = HolderAlignmentSession("1536 well plate")
+    with pytest.raises(SessionError, match="reported no position"):
+        session.record_touch(0, float("nan"), 7.87)
+    assert session.reference_wells[0].touches == []

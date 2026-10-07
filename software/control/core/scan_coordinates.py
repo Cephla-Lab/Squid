@@ -338,22 +338,17 @@ class ScanCoordinates:
                 row.reverse()
             scan_coordinates.extend(row)
 
-        # Region coordinates are already centered since center_x, center_y is grid center
-        if scan_coordinates:  # Only add region if there are valid coordinates
-            # travel is the only filter above, so the drop count is derivable
-            self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
-            self._log.info(f"Added Flexible Region: {region_id}")
-            self.region_centers[region_id] = [center_x, center_y, center_z]
-            self.region_shapes[region_id] = "Square"
-            self.region_fov_coordinates[region_id] = scan_coordinates
-            self._update_callback(
-                AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
-            )
-        else:
-            # A region that moved fully out of range must not keep its old
-            # coordinates active, and its drops are as real as a partial one's.
-            self.remove_region(region_id)
-            self._register_travel_drops(region_id, Nx * Ny, 0)
+        # Region coordinates are already centered since center_x, center_y is grid center.
+        # Stored even when every FOV was dropped, like the wells and template
+        # planners: a planned region always exists (possibly empty), so a
+        # recompute replaces its predecessor and the drops are on record.
+        # travel is the only filter above, so the drop count is derivable
+        self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
+        self._log.info(f"Added Flexible Region: {region_id}")
+        self.region_centers[region_id] = [center_x, center_y, center_z]
+        self.region_shapes[region_id] = "Square"
+        self.region_fov_coordinates[region_id] = scan_coordinates
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
 
     def add_single_fov_region(self, region_id, center_x, center_y, center_z):
         if not self.validate_coordinates(center_x, center_y):
@@ -414,21 +409,14 @@ class ScanCoordinates:
                     row.append((x, y))
             scan_coordinates.extend(row)
 
-        if scan_coordinates:  # Only add region if there are valid coordinates
-            # travel is the only filter above, so the drop count is derivable
-            self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
-            self._log.info(f"Added Flexible Region: {region_id}")
-            self.region_centers[region_id] = [center_x, center_y, center_z]
-            self.region_shapes[region_id] = "Square"
-            self.region_fov_coordinates[region_id] = scan_coordinates
-            self._update_callback(
-                AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
-            )
-        else:
-            # A region that moved fully out of range must not keep its old
-            # coordinates active, and its drops are as real as a partial one's.
-            self.remove_region(region_id)
-            self._register_travel_drops(region_id, Nx * Ny, 0)
+        # Stored even when every FOV was dropped - see add_flexible_region.
+        # travel is the only filter above, so the drop count is derivable
+        self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
+        self._log.info(f"Added Flexible Region: {region_id}")
+        self.region_centers[region_id] = [center_x, center_y, center_z]
+        self.region_shapes[region_id] = "Square"
+        self.region_fov_coordinates[region_id] = scan_coordinates
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
 
     def get_points_for_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""

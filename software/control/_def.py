@@ -1230,7 +1230,7 @@ def _with_derived_geometry(format_key, settings):
     """Fill the derived per-axis/shape keys, idempotently.
 
     Applied on CSV load AND in get_wellplate_settings, so runtime-added custom
-    formats (add_custom_format inserts plain dicts) get defaults too.
+    formats and format "0" (plain dicts) get defaults too.
     """
     settings.setdefault("well_spacing_x_mm", settings["well_spacing_mm"])
     settings.setdefault("well_spacing_y_mm", settings["well_spacing_mm"])

@@ -36,10 +36,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic
 
-import squid.logging
-
-log = squid.logging.get_logger(__name__)
-
 USER_SAMPLE_FORMATS_PATH = os.path.join("objective_and_sample_formats", "sample_formats_user.yaml")
 
 
@@ -177,11 +173,11 @@ class SampleFormat(BaseModel):
 
 
 class UserSampleFormats(BaseModel):
-    version: int = 2  # v1 carried overrides + custom_formats; v2 is one map
+    # v1 carried overrides + custom_formats; v2 is one map. The default is the
+    # version this build reads: yaml_store refuses a file declaring another.
+    version: int = 2
     formats: Dict[str, SampleFormat] = Field(default_factory=dict)
 
-
-SCHEMA_VERSION = 2
 
 _DAMAGE_MESSAGE = (
     "User sample formats at {path} are unreadable; ignoring the file - "
@@ -193,18 +189,7 @@ _DAMAGE_MESSAGE = (
 def load_user_sample_formats(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[UserSampleFormats]:
     """None when absent (shipped examples only). Damage logs loudly and returns
     None rather than raising - this runs at import time via load_formats()."""
-    loaded = load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path))
-    if loaded is not None and loaded.version != SCHEMA_VERSION:
-        # pydantic ignores unknown keys, so a file from another schema would
-        # otherwise load as ZERO formats and silently discard every definition.
-        log.error(
-            f"User sample formats at {path} declare version {loaded.version}, but this build reads version "
-            f"{SCHEMA_VERSION} - IGNORING THE FILE rather than silently dropping its contents. "
-            f"YOUR FORMAT DEFINITIONS AND CALIBRATIONS ARE NOT BEING APPLIED. Move the file aside and "
-            f"re-create your formats, or restore a build that reads version {loaded.version}."
-        )
-        return None
-    return loaded
+    return load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path))
 
 
 def load_user_sample_formats_readonly(path: str = USER_SAMPLE_FORMATS_PATH) -> Optional[UserSampleFormats]:
@@ -212,12 +197,7 @@ def load_user_sample_formats_readonly(path: str = USER_SAMPLE_FORMATS_PATH) -> O
 
     For hot read-only paths (the rotation resolver). NEVER mutate the result.
     """
-    from control.models.yaml_store import load_yaml_model
-
-    loaded = load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path), copy=False)
-    if loaded is not None and loaded.version != SCHEMA_VERSION:
-        return None
-    return loaded
+    return load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path), copy=False)
 
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:

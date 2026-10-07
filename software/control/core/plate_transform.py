@@ -46,6 +46,14 @@ def legacy_offset_for(settings, apply_legacy_offset: bool = True) -> Tuple[float
     return control._def.WELLPLATE_OFFSET_X_mm, control._def.WELLPLATE_OFFSET_Y_mm
 
 
+def has_well_grid(settings) -> bool:
+    """False for the pitchless 1x1 formats (glass slide, '0'): their only well
+    anchors at the current stage position, so there is nothing to rotate,
+    calibrate or invert. Takes the settings dict like legacy_offset_for, so
+    every site can apply the rule without a disk read."""
+    return settings["well_spacing_x_mm"] != 0.0 and settings["well_spacing_y_mm"] != 0.0
+
+
 def rotate_deg(theta_deg: float, x: float, y: float) -> Tuple[float, float]:
     """R(theta) applied to (x, y): + = CCW in the stage XY math frame.
 
@@ -206,7 +214,7 @@ def _resolve_rotation(settings, definition) -> Tuple[float, str]:
     planner) cannot drift on it - drift would mean a provenance stamp records
     a rotation the transform does not apply.
     """
-    if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
+    if not has_well_grid(settings):
         return 0.0, "none"  # a 1x1 grid's only well IS the pivot
     if definition is not None and definition.rotation_deg is not None:
         return definition.rotation_deg, "measured"

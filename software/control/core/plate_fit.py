@@ -14,10 +14,12 @@ Closed form (no SVD, structurally incapable of returning a reflection):
     num  = sum(p~x*q~y - p~y*q~x)        # cross products
     den  = sum(p~x*q~x + p~y*q~y)        # dot products
     S_pp = sum(|p~|^2)                   # squared lever arm
+    S_qq = sum(|q~|^2)
 
     theta     = atan2(num, den)          # rounded to 0.01 deg HERE, before t
     s         = hypot(num, den) / S_pp   # QC only, never applied
     t_applied = q_bar - R(theta) @ p_bar # the LS translation for s = 1
+    SSR_sim   = S_qq - (num^2 + den^2) / S_pp   # the similarity's residual, closed form
 
 ``p`` must be A1-RELATIVE plate coordinates (col * pitch_x, row * pitch_y), so
 ``t_applied`` IS the measured stage position of A1. theta and s are invariant
@@ -145,6 +147,7 @@ def fit_plate_placement(
     num = float(np.sum(pt[:, 0] * qt[:, 1] - pt[:, 1] * qt[:, 0]))
     den = float(np.sum(pt[:, 0] * qt[:, 0] + pt[:, 1] * qt[:, 1]))
     s_pp = float(np.sum(pt**2))
+    s_qq = float(np.sum(qt**2))
     if s_pp == 0.0:
         raise PlateFitError("reference wells are all at the same nominal position")
 
@@ -167,13 +170,11 @@ def fit_plate_placement(
     residuals = np.linalg.norm(q - applied, axis=1)
 
     # sigma-hat from the SIMILARITY residual (k = 4): the only estimator of the
-    # click noise unpolluted by the scale the hybrid discards - so it uses the
-    # UNROUNDED rotation the similarity was fitted with; the rounded `rot` is
-    # for what gets applied and stored, and would leak up to half a quantum of
-    # rotation into the residual as fake click noise.
-    rot_fitted = np.array([[math.cos(theta), -math.sin(theta)], [math.sin(theta), math.cos(theta)]])
-    sim = (scale * (rot_fitted @ pt.T)).T + q_bar
-    ssr_sim = float(np.sum((q - sim) ** 2))
+    # click noise unpolluted by the scale the hybrid discards. Closed form in
+    # the UNROUNDED fit (clamped: exact data lands a hair below zero) - using
+    # the rounded `rot` here would leak up to half a quantum of rotation into
+    # the residual as fake click noise.
+    ssr_sim = max(0.0, s_qq - (num**2 + den**2) / s_pp)
     dof = 2 * n - 4
     sigma_hat_mm = math.sqrt(ssr_sim / dof) if dof > 0 else float("nan")
 

@@ -2,8 +2,6 @@
 placement they were computed under, and loading under a different placement
 says so instead of silently replaying stale positions."""
 
-import json
-
 import pandas as pd
 import pytest
 
@@ -51,10 +49,11 @@ def test_csv_round_trip_with_stamp(tree):
 
     df, stamp = read_scan_coordinates_csv("coords.csv")
     pd.testing.assert_frame_equal(df, df_fixture())
-    assert stamp["format"] == "96 well plate"
-    assert stamp["rotation_deg"] == 0.21
-    assert stamp["rotation_source"] == "holder"
-    assert (stamp["well_spacing_x_mm"], stamp["well_spacing_y_mm"]) == (9.0, 9.0)
+    assert stamp.format == "96 well plate"
+    assert stamp.rotation_deg == 0.21
+    assert stamp.rotation_source == "holder"
+    assert [w.well for w in stamp.wells] == ["A1", "A12", "H1"]  # the corners that fix the grid
+    assert (stamp.wells[0].x_mm, stamp.wells[0].y_mm) == (11.31, 10.75)
     # unchanged placement -> no warning
     assert staleness_warning(stamp, "96 well plate") is None
 
@@ -74,7 +73,9 @@ def test_rotation_change_is_flagged(tree):
     _, stamp = read_scan_coordinates_csv("coords.csv")
     msg = staleness_warning(stamp, "96 well plate")
     assert msg is not None
-    assert "0.21" in msg and "0.34" in msg and "rotation" in msg
+    # the rotation pivots on A1: the far corners move, A1 does not
+    assert "A1 by" not in msg and "A12 by" in msg and "H1 by" in msg
+    assert "(rotation 0.21 deg at save time, 0.34 deg now)" in msg
 
 
 def test_a1_change_is_flagged(tree, monkeypatch):
@@ -115,7 +116,8 @@ def test_a1_change_is_flagged(tree, monkeypatch):
     )
     _, stamp = read_scan_coordinates_csv("coords.csv")
     msg = staleness_warning(stamp, "96 well plate")
-    assert msg is not None and "A1 position changed" in msg
+    assert msg is not None and "wells moved since the file was saved: A1 by 500 um, A12 by 500 um, H1 by 500 um" in msg
+    assert "rotation" not in msg  # unchanged, so not mentioned; the positions carry the report
 
 
 def test_sub_tolerance_drift_is_not_flagged(tree, monkeypatch):
@@ -167,7 +169,7 @@ def test_format_mismatch_is_flagged(tree):
 
 def test_vanished_format_is_flagged(tree):
     stamp = make_stamp("96 well plate")
-    stamp["format"] = "my old custom plate"
+    stamp.format = "my old custom plate"
     msg = staleness_warning(stamp, "my old custom plate")
     assert msg is not None and "not in the current catalog" in msg
 
@@ -183,39 +185,29 @@ def test_well_spacing_change_is_flagged(tree, monkeypatch):
 
     _, stamp = read_scan_coordinates_csv("coords.csv")
     msg = staleness_warning(stamp, "96 well plate")
-    assert msg is not None and "well spacing changed from 9.000 mm at save time to 9.100 mm now" in msg
-
-
-def test_stamp_without_spacing_skips_that_check(tree):
-    """Stamps written before the spacing was recorded still validate and load."""
-    stamp = make_stamp("96 well plate")
-    del stamp["well_spacing_x_mm"], stamp["well_spacing_y_mm"]
-    line = STAMP_PREFIX + json.dumps(stamp)
-    assert parse_stamp(line) == stamp
-    assert staleness_warning(stamp, "96 well plate") is None
+    assert msg is not None
+    assert "A1 by" not in msg and "A12 by 1100 um" in msg and "H1 by 700 um" in msg  # 11 and 7 steps of 0.1 mm
 
 
 @pytest.mark.parametrize(
     "damage",
     [
-        lambda stamp: stamp.pop("a1_y_mm"),
-        lambda stamp: stamp.update(rotation_deg="0.21"),
-        lambda stamp: stamp.update(well_spacing_x_mm=True),
-        lambda stamp: stamp.pop("format"),
+        lambda d: d["wells"][0].pop("y_mm"),
+        lambda d: d.update(rotation_deg="0.21"),
+        lambda d: d["wells"][1].update(x_mm=True),
+        lambda d: d.pop("format"),
+        lambda d: d["wells"][2].update(row="7"),
     ],
+    ids=["missing y_mm", "string rotation", "bool x_mm", "missing format", "string row"],
 )
 def test_stamp_with_missing_or_mistyped_field_is_ignored(tree, damage):
-    """Validated at parse time, so the staleness check cannot raise after the
-    coordinates were already loaded and registered."""
-    stamp = make_stamp("96 well plate")
-    damage(stamp)
-    with open("damaged.csv", "w") as f:
-        f.write(STAMP_PREFIX + json.dumps(stamp) + "\n")
-        df_fixture().to_csv(f, index=False)
+    """Validated at parse time (strict), so the staleness check cannot raise
+    after the coordinates were already loaded and registered."""
+    import json
 
-    df, parsed = read_scan_coordinates_csv("damaged.csv")
-    assert parsed is None
-    pd.testing.assert_frame_equal(df, df_fixture())  # the data still loads
+    data = make_stamp("96 well plate").model_dump()
+    damage(data)
+    assert parse_stamp(STAMP_PREFIX + json.dumps(data)) is None
 
 
 def test_garbage_stamp_is_ignored_and_the_data_still_loads(tree):
