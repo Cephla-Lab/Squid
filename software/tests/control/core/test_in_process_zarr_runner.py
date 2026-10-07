@@ -52,6 +52,21 @@ def _results(runner, n, timeout=10.0):
     return out
 
 
+def _wait_settled(runner, bp_values=None, timeout=5.0):
+    # The drain thread queues the JobResult before its finally lowers the counters and sets capacity.
+    def settled():
+        if runner.has_pending():
+            return False
+        if bp_values is None:
+            return True
+        pending_jobs, pending_bytes, capacity = bp_values
+        return pending_jobs.value == 0 and pending_bytes.value == 0 and capacity.is_set()
+
+    deadline = time.monotonic() + timeout
+    while not settled() and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+
 def _squid_attrs(info):
     # The OME group metadata (with _squid) lives in the group above the "0" array (ZarrWriter._get_metadata_zarr_json_path).
     group_json = os.path.join(os.path.dirname(info.get_output_path("A1", 0)), "zarr.json")
@@ -90,6 +105,7 @@ def test_counters_follow_jobrunner_contract(tmp_path):
     runner.dispatch(_job(0))
     runner.dispatch(_job(1))
     _results(runner, 2)
+    _wait_settled(runner, (pending_jobs, pending_bytes, capacity))
     assert not runner.has_pending()
     assert pending_jobs.value == 0 and pending_bytes.value == 0
     assert capacity.is_set()
@@ -122,9 +138,11 @@ def test_failed_write_reaches_output_queue_as_exception(tmp_path, monkeypatch):
     pending_jobs, pending_bytes, capacity = create_backpressure_values()
     runner = InProcessZarrRunner(zarr_writer_info=_info(tmp_path), bp_values=(pending_jobs, pending_bytes, capacity))
     runner.start()
+    capacity.clear()
     runner.dispatch(_job(0))
     (result,) = _results(runner, 1)
     assert isinstance(result.exception, RuntimeError) and result.result is None
+    _wait_settled(runner, (pending_jobs, pending_bytes, capacity))
     assert pending_jobs.value == 0 and pending_bytes.value == 0
     runner.shutdown()
 
@@ -141,6 +159,7 @@ def test_submit_failure_is_reported_not_raised(tmp_path, monkeypatch):
     assert runner.dispatch(_job(0)) is True
     (result,) = _results(runner, 1)
     assert isinstance(result.exception, OSError)
+    _wait_settled(runner)
     assert not runner.has_pending()
     runner.shutdown()
 

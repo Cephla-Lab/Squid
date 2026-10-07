@@ -11,7 +11,7 @@ backpressure counters, and puts the JobResult on the output queue the worker pol
 
 import queue
 import threading
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 import squid.logging
 from control.core.backpressure import BackpressureValues
@@ -36,6 +36,8 @@ class InProcessZarrRunner:
         self._output: "queue.Queue" = queue.Queue()
         self._pending = 0
         self._pending_lock = threading.Lock()
+        # dispatch and shutdown exclude each other, so no job lands behind the drain thread's sentinel
+        self._state_lock = threading.Lock()
         self._thread = threading.Thread(target=self._drain, name="InProcessZarrRunner", daemon=True)
         self._started = False
         self._finished = False
@@ -65,25 +67,26 @@ class InProcessZarrRunner:
     # ---- the hot path: called from the camera frame callback
 
     def dispatch(self, job: SaveZarrJob) -> bool:
-        """Submit the write and return; False once shutdown() has sealed the stores (the worker aborts)."""
-        if self._finished:
-            self._log.warning(f"Job {job.job_id} dispatched after shutdown; refusing it")
-            return False
-        if self._zarr_writer_info is None:
-            raise ValueError("Cannot dispatch SaveZarrJob: InProcessZarrRunner has no zarr_writer_info")
-        job.zarr_writer_info = self._zarr_writer_info
-        job.registry = self.registry
-        image_bytes = job.capture_image.image_array.nbytes if job.capture_image.image_array is not None else 0
-        self._count_dispatched(image_bytes)
-        try:
-            future, result = job.submit()
-        except Exception as e:
-            # Same outcome as a failed write: the worker sees the exception on the output queue.
-            self._log.exception(f"Job {job.job_id} could not be submitted")
-            self._submitted.put_nowait((job, _FailedFuture(e), image_bytes, None))
+        """Submit the write and return True; return False, leaving the job untouched, once shutdown() has run."""
+        with self._state_lock:
+            if self._finished:
+                self._log.warning(f"Job {job.job_id} dispatched after shutdown; refusing it")
+                return False
+            if self._zarr_writer_info is None:
+                raise ValueError("Cannot dispatch SaveZarrJob: InProcessZarrRunner has no zarr_writer_info")
+            job.zarr_writer_info = self._zarr_writer_info
+            job.registry = self.registry
+            image_bytes = job.capture_image.image_array.nbytes if job.capture_image.image_array is not None else 0
+            self._count_dispatched(image_bytes)
+            try:
+                future, result = job.submit()
+            except Exception as e:
+                # Same outcome as a failed write: the worker sees the exception on the output queue.
+                self._log.exception(f"Job {job.job_id} could not be submitted")
+                self._submitted.put_nowait((job, _FailedFuture(e), image_bytes, None))
+                return True
+            self._submitted.put_nowait((job, future, image_bytes, result))
             return True
-        self._submitted.put_nowait((job, future, image_bytes, result))
-        return True
 
     def output_queue(self) -> "queue.Queue":
         return self._output
@@ -93,7 +96,7 @@ class InProcessZarrRunner:
             return self._pending > 0
 
     def kill(self) -> None:
-        """Stop tracking the outstanding writes; shutdown() then seals the stores as aborted."""
+        """Mark the run aborted; shutdown() then seals the stores as aborted."""
         self._killed = True
 
     def shutdown(self, timeout_s: float = 1.0, aborted: bool = False) -> None:
@@ -103,10 +106,11 @@ class InProcessZarrRunner:
         when it was aborted (by the user or by an error) or after kill(). Captured frames are
         written either way.
         """
-        if not self._started or self._finished:
-            return
-        self._finished = True
-        self._submitted.put_nowait(_SENTINEL)
+        with self._state_lock:
+            if not self._started or self._finished:
+                return
+            self._finished = True
+            self._submitted.put_nowait(_SENTINEL)
         self._thread.join(timeout=max(timeout_s, 1.0))
         if self._thread.is_alive():
             self._log.warning("drain thread still waiting on a write after the shutdown timeout; sealing anyway")
