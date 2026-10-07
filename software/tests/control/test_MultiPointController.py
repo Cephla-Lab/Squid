@@ -800,3 +800,46 @@ def test_abort_mid_zarr_run_seals_store_aborted(monkeypatch):
     assert time.monotonic() - t_abort < 30, "abort must not wait out the job timeouts"
     attrs = _zarr_jsons_with_squid(mpc)
     assert attrs and all(a["acquisition_complete"] is False and a.get("aborted") is True for a in attrs)
+
+
+def test_zarr_v3_run_leaves_the_warm_subprocess_for_tiff(monkeypatch):
+    """A Zarr v3 acquisition neither consumes nor restarts the pre-warmed subprocess, and starts none of its own."""
+    pytest.importorskip("tensorstore")
+    from control.core import job_processing
+
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    warm_before = mpc._prewarmed_job_runner
+    assert warm_before is not None
+    started = []  # only subprocesses started from here on count; the controller's own pre-warm is above
+    monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(120)
+    assert started == [], "a Zarr v3 run must not start a save subprocess"
+    assert mpc._prewarmed_job_runner is warm_before
+
+
+def test_three_zarr_runs_in_one_session_all_sealed(monkeypatch):
+    """Back-to-back Zarr runs in one process each get fresh writers and each store is sealed complete."""
+    pytest.importorskip("tensorstore")
+
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    for i in range(3):
+        tt.started_event.clear()
+        tt.finished_event.clear()
+        mpc.start_new_experiment(f"zarr_session_{i}")
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(120), f"run {i} did not finish"
+        attrs = _zarr_jsons_with_squid(mpc)
+        assert attrs and all(a["acquisition_complete"] is True for a in attrs), f"run {i}"

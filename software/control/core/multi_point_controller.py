@@ -23,6 +23,7 @@ from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
+from control.core.job_processing import SaveSettings
 from control.core.objective_store import ObjectiveStore
 from control.core.memory_profiler import MemoryMonitor, log_memory
 from control.microcontroller import Microcontroller
@@ -308,20 +309,21 @@ class MultiPointController:
                 self._log.error(f"Error shutting down pre-warmed runner {context}: {e}")
 
     def get_prewarmed_job_runner(self) -> Tuple[Optional["JobRunner"], Optional["BackpressureValues"]]:
-        """Get the pre-warmed job runner and its shared backpressure values.
+        """The pre-warmed save subprocess and its backpressure values for the acquisition about to start.
 
-        Returns:
-            Tuple of (runner, bp_values) where:
-            - runner: JobRunner instance or None if not available
-            - bp_values: BackpressureValues tuple or None
-
-        The runner and values are cleared (so they're only used once).
+        Zarr v3 is saved in the acquisition process (InProcessZarrRunner), so a Zarr run gets
+        (None, None) and the warm subprocess stays ready for a later TIFF run. Any other format
+        consumes it (the references are cleared so it is only used once) and a fresh one starts
+        warming for the next acquisition.
 
         Usage:
             runner, bp_values = controller.get_prewarmed_job_runner()
             worker = MultiPointWorker(..., prewarmed_job_runner=runner,
                                       prewarmed_bp_values=bp_values)
         """
+        if SaveSettings().file_saving_option == control._def.FileSavingOption.ZARR_V3:
+            return None, None
+
         runner = self._prewarmed_job_runner
         bp_values = self._prewarmed_bp_values
 
