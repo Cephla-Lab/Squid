@@ -905,6 +905,32 @@ def test_dead_tiff_subprocess_aborts_acquisition(caplog):
     assert any("save subprocess exited" in r.getMessage() for r in caplog.records)
 
 
+def test_close_shuts_down_in_process_runner_instead_of_terminating_it():
+    """close() on an abnormal shutdown must seal an in-process runner's stores, not treat it as a process."""
+    import logging
+    from unittest.mock import MagicMock
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+    from control.core.job_processing import SaveZarrJob
+    from control.core.multi_point_controller import MultiPointController
+
+    mpc = MultiPointController.__new__(MultiPointController)  # close() only needs the fields set below
+    mpc._log = logging.getLogger("squid.MultiPointController")
+    mpc._prewarmed_job_runner = None
+    mpc._prewarmed_bp_values = None
+    mpc._memory_monitor = None
+    mpc.thread = None
+    runner = MagicMock(spec=InProcessZarrRunner)
+    runner.runs_in_process = True
+    runner.is_alive.return_value = True
+    runner.terminate = MagicMock()  # not part of InProcessZarrRunner; present only to prove it is not called
+    worker = MagicMock()
+    worker._job_runners = [(SaveZarrJob, runner)]
+    mpc.multiPointWorker = worker
+    mpc.close()
+    runner.shutdown.assert_called_once_with(timeout_s=MultiPointController._PROCESS_TERMINATE_TIMEOUT_S, aborted=True)
+    runner.terminate.assert_not_called()
+
+
 def test_zarr_write_error_surfacing_at_the_end_ends_the_run_as_error(monkeypatch, caplog):
     """A failed Zarr write that only _finish_jobs' final drain sees must end the run as an error, store incomplete.
 

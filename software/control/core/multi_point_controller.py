@@ -1234,6 +1234,13 @@ class MultiPointController:
             for job_class, job_runner in job_runners:
                 try:
                     if job_runner is not None and job_runner.is_alive():
+                        if getattr(job_runner, "runs_in_process", False):
+                            # Not a process: shut it down so its open stores are sealed (as aborted).
+                            self._log.warning(
+                                f"Shutting down {job_class.__name__} in-process runner (abnormal shutdown)"
+                            )
+                            job_runner.shutdown(timeout_s=self._PROCESS_TERMINATE_TIMEOUT_S, aborted=True)
+                            continue
                         self._log.warning(f"Terminating {job_class.__name__} job runner (abnormal shutdown)")
                         job_runner.terminate()
                         job_runner.join(timeout=self._PROCESS_TERMINATE_TIMEOUT_S)
