@@ -16,7 +16,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import control._def
 import control.utils
@@ -29,6 +29,7 @@ from control.models.plate_holder import (
     HolderMeasuredPoint,
     HolderMeasurement,
     load_plate_holder,
+    plate_holder_record_exists,  # re-exported: the dialog's one import for the saved angle
     PlateHolder,
     save_plate_holder,
 )
@@ -144,23 +145,17 @@ class HolderAlignmentSession:
             raise SessionError(f"{well_id} is already one of the reference wells.")
         self.reference_wells[index] = self._make_well(row, col)
 
-    def _parse_well_id(self, well_id: str) -> Optional[Tuple[int, int]]:
+    def _resolve_well_id(self, well_id: str) -> Tuple[int, int]:
+        """A well the stage can be sent to: named properly, on this plate, and
+        inside the travel limits. Every path that ends in a move goes through
+        here - there is no clamp on the move itself."""
         # Stricter than mosaic_utils.parse_well_id on purpose: that parser
         # accepts interleaved forms like "12A"; a typo here must not silently
         # resolve to a well.
         match = re.match(r"^([A-Za-z]+)(\d+)$", well_id.strip())
         if not match:
-            return None
-        return (control.utils.row_to_index(match.group(1)), int(match.group(2)) - 1)
-
-    def _resolve_well_id(self, well_id: str) -> Tuple[int, int]:
-        """A well the stage can be sent to: named properly, on this plate, and
-        inside the travel limits. Every path that ends in a move goes through
-        here - there is no clamp on the move itself."""
-        parsed = self._parse_well_id(well_id)
-        if parsed is None:
             raise SessionError(f"{well_id!r} is not a well name like 'A1' or 'AE47'.")
-        row, col = parsed
+        row, col = control.utils.row_to_index(match.group(1)), int(match.group(2)) - 1
         if not (0 <= row < self.rows and 0 <= col < self.cols):
             raise SessionError(f"{well_id} is outside the {self.format} grid.")
         if not self._reachable(plate_transform_for(self.format), row, col):
@@ -288,13 +283,7 @@ class HolderAlignmentSession:
 
     # ------------------------------------------------------------------- save
 
-    def formats_with_measured_overrides(self) -> List[str]:
-        """Formats whose definition carries a rotation measured under the
-        PREVIOUS mounting - offered for clearing at save time (the write-time
-        staleness handling; there is no counter to expire them otherwise)."""
-        return formats_with_rotation_overrides()
-
-    def save(self, confirm_warnings: bool = False, clear_overrides: Tuple[str, ...] = ()) -> PlateHolder:
+    def save(self, confirm_warnings: bool = False, clear_overrides: Sequence[str] = ()) -> PlateHolder:
         """Write the minimal holder record. Nothing else is written: the
         fitted translation dies here by design."""
         result = self.fit()
@@ -335,7 +324,8 @@ class HolderAlignmentSession:
 
 
 # ------------------------------------------------------- the saved angle
-# Module level, not session methods: the saved angle belongs to the machine.
+# Module level, not session methods: the saved angle belongs to the machine, so
+# these must work whatever plate is loaded (glass slide included).
 
 
 def formats_with_rotation_overrides() -> List[str]:
@@ -347,7 +337,7 @@ def formats_with_rotation_overrides() -> List[str]:
     return sorted(fmt for fmt, d in stored.formats.items() if d.rotation_deg is not None)
 
 
-def clear_rotation_overrides(formats: Tuple[str, ...]):
+def clear_rotation_overrides(formats: Sequence[str]):
     stored = load_user_sample_formats()
     if stored is None:
         return
@@ -360,21 +350,35 @@ def clear_rotation_overrides(formats: Tuple[str, ...]):
     save_user_sample_formats(stored)
 
 
-def clear_holder_rotation(clear_overrides: Tuple[str, ...] = ()) -> bool:
+def saved_rotation_summary() -> Optional[str]:
+    """The saved record in one operator-facing phrase ("0.37 deg, measured on
+    1536 well plate"); "an unreadable record" when the file exists but does not
+    parse; None when there is nothing saved."""
+    holder = load_plate_holder()
+    if holder is None:
+        return "an unreadable record" if plate_holder_record_exists() else None
+    summary = f"{holder.rotation_deg:.2f} deg"
+    if holder.measured.on:
+        summary += f", measured on {holder.measured.on}"
+    return summary
+
+
+def clear_holder_rotation(clear_overrides: Sequence[str] = ()) -> bool:
     """Remove the machine's holder record: every format that inherits it is
-    positioned with 0.00 deg again. Not a session method - the angle belongs to
-    the machine, so clearing must work whatever plate is loaded (glass slide
-    included). The removed points are logged: they are the only copy."""
+    positioned with 0.00 deg again. The removed points are logged: they were
+    the only copy."""
     holder = load_plate_holder()
     removed = clear_plate_holder()
-    if removed and holder is not None:
-        points = ", ".join(f"{p.well}=({p.x_mm}, {p.y_mm})" for p in holder.measured.points)
-        log.info(
-            f"Holder rotation cleared: was {holder.rotation_deg:.2f} deg, measured on {holder.measured.on!r} "
-            f"at {holder.measured.timestamp} from [{points}]. 0.00 deg now applies."
-        )
-    elif removed:
-        log.info("Unreadable holder record removed. 0.00 deg now applies.")
+    if removed:
+        if holder is None:
+            was = "unreadable record removed"
+        else:
+            points = ", ".join(f"{p.well}=({p.x_mm}, {p.y_mm})" for p in holder.measured.points)
+            was = (
+                f"was {holder.rotation_deg:.2f} deg, measured on {holder.measured.on!r} "
+                f"at {holder.measured.timestamp} from [{points}]"
+            )
+        log.info(f"Holder rotation cleared: {was}. 0.00 deg now applies.")
     if clear_overrides:
         clear_rotation_overrides(clear_overrides)
     return removed

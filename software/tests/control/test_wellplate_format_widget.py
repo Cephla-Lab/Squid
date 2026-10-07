@@ -94,3 +94,24 @@ def test_select_format_silently_never_emits_the_first_dict_entry(qtbot):
 
     assert first_format not in emissions
     assert emissions == [target]
+
+
+def test_dialog_opened_from_the_dropdown_sees_the_loaded_plate(qtbot, catalog_tree, design_travel_limits):
+    """ "calibrate format..." is an action, not a format: while the dialog is open,
+    wellplate_format must still name the loaded plate. The holder-rotation mode
+    reads it to know which plate to measure on - it used to get "custom"."""
+    widget = _make_widget(qtbot)
+    _select_data(widget, "96 well plate")
+    opened = []
+
+    def operator_selects_holder_mode(dialog):
+        dialog.holder_rotation_radio.setChecked(True)
+        opened.append(dialog)
+        return QDialog.Rejected
+
+    with patch.object(control.widgets.WellplateCalibration, "exec_", operator_selects_holder_mode):
+        _select_data(widget, "custom")
+
+    (dialog,) = opened
+    assert dialog.holder_session.format == "96 well plate"
+    assert [edit.text() for edit in dialog.holder_well_edits] == ["A1", "A12", "H1", "H12"]

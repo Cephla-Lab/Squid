@@ -7,6 +7,7 @@ by the autouse fixture in tests/conftest.py.
 
 import os
 import shutil
+from unittest.mock import patch
 
 import pytest
 
@@ -59,11 +60,10 @@ def catalog_tree(tmp_path, monkeypatch):
     cache/, objective_and_sample_formats/sample_formats_user.yaml) land in tmp,
     never in the repo. images/ is symlinked read-only for widgets that draw.
 
-    The in-memory format table is pinned to the shipped catalog too: _def
-    loaded it at import from the checkout's cwd, user YAML included, so a plate
-    calibrated on this machine (a 1536 A1 at x = 4.36 mm, say) would otherwise
-    move the reference wells the tests expect. Swapped IN PLACE because
-    widgets.py binds the same dict by name."""
+    The in-memory format table is pinned to the shipped catalog too: _def loaded
+    it at import from the checkout's cwd, user YAML included, so a plate
+    calibrated on this machine would move the reference wells the tests expect.
+    patch.dict swaps it in place, because widgets.py binds the dict by name."""
     import control._def as _def
 
     repo = os.getcwd()
@@ -78,13 +78,9 @@ def catalog_tree(tmp_path, monkeypatch):
     os.symlink(os.path.join(repo, "images"), tmp_path / "images")
     monkeypatch.chdir(tmp_path)
 
-    table = _def.WELLPLATE_FORMAT_SETTINGS
-    original = dict(table)
-    table.clear()
-    table.update(_def.read_sample_formats_csv(str(tmp_path / "objective_and_sample_formats" / "sample_formats.csv")))
-    yield tmp_path
-    table.clear()
-    table.update(original)
+    _objectives, shipped = _def.load_formats()  # the production loader, on the tmp tree: no user layer
+    with patch.dict(_def.WELLPLATE_FORMAT_SETTINGS, shipped, clear=True):
+        yield tmp_path
 
 
 @pytest.fixture

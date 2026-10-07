@@ -35,10 +35,11 @@ from control.core.holder_alignment import (
     CORNER_FEATURES,
     formats_with_rotation_overrides,
     HolderAlignmentSession,
+    plate_holder_record_exists,
+    saved_rotation_summary,
     SessionError,
 )
 from control.core.plate_fit import circumcenter, PlateFitError
-from control.models.plate_holder import load_plate_holder, PLATE_HOLDER_PATH
 from control.core.plate_transform import plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
@@ -12429,14 +12430,11 @@ class WellplateCalibration(QDialog):
         layout.addWidget(self.holder_fit_label)
 
         # Check row: a well the fit did NOT use, same shape as the rows above.
-        # Go to drives to where the fit predicts the feature; Measure Error reports
-        # the measured miss. The worst-predicted well is suggested by default.
         check_row = QHBoxLayout()
         check_row.addWidget(QLabel("Check another well at the same point:"))
         self.holder_check_edit = QLineEdit()
         self.holder_check_edit.setFixedWidth(60)
         self.holder_check_edit.setPlaceholderText("well")
-        self._holder_check_suggested = ""
         self.holder_check_goto_button = QPushButton("Go to")
         self.holder_check_goto_button.clicked.connect(self._holder_goto_check)
         self.holder_check_button = QPushButton("Measure Error")
@@ -12455,27 +12453,37 @@ class WellplateCalibration(QDialog):
         self.holder_save_button.clicked.connect(self._holder_save)
         layout.addWidget(self.holder_save_button)
 
+        # Everything that needs a fit - enabled and disabled as one.
+        self.holder_fit_widgets = (
+            self.holder_save_button,
+            self.holder_check_edit,
+            self.holder_check_goto_button,
+            self.holder_check_button,
+        )
+
     def _enter_holder_mode(self):
         """(Re)create the session for the CURRENTLY selected plate format."""
         format_ = self.wellplateFormatWidget.wellplate_format
         # The saved angle belongs to the machine: clearable whatever is loaded.
-        self.holder_clear_button.setEnabled(os.path.exists(PLATE_HOLDER_PATH))
+        self.holder_clear_button.setEnabled(plate_holder_record_exists())
         try:
             self.holder_session = HolderAlignmentSession(format_)
         except SessionError as e:
             self.holder_session = None
             self.holder_status_label.setText(str(e))
-            for widget in (self.holder_corner_combo, self.holder_save_button, *self._holder_check_widgets()):
+            for widget in (
+                self.holder_corner_combo,
+                *self.holder_fit_widgets,
+                *self.holder_goto_buttons,
+                *self.holder_record_buttons,
+            ):
                 widget.setEnabled(False)
-            for button in self.holder_goto_buttons + self.holder_record_buttons:
-                button.setEnabled(False)
             return
 
         session = self.holder_session
         for button in self.holder_goto_buttons + self.holder_record_buttons:
             button.setEnabled(True)
-        self.holder_check_edit.clear()
-        self._holder_check_suggested = ""
+        self.holder_check_edit.setText("")  # setText, not clear(): it also resets isModified
         self.holder_check_label.clear()
         is_square = session.touches_per_well == 1
         self.holder_corner_label.setVisible(is_square)
@@ -12499,7 +12507,6 @@ class WellplateCalibration(QDialog):
     def _holder_refresh(self):
         session = self.holder_session
         self.holder_status_label.setText(session.status_line())
-        self.holder_clear_button.setEnabled(os.path.exists(PLATE_HOLDER_PATH))
         for i, well in enumerate(session.reference_wells):
             done = well.point_mm is not None
             if done:
@@ -12515,8 +12522,7 @@ class WellplateCalibration(QDialog):
 
         if not session.can_fit:
             self.holder_fit_label.setText(f"{session.wells_measured}/4 wells measured (3 minimum to fit).")
-            self.holder_save_button.setEnabled(False)
-            for widget in self._holder_check_widgets():
+            for widget in self.holder_fit_widgets:
                 widget.setEnabled(False)
             return
         result = session.fit()
@@ -12529,16 +12535,12 @@ class WellplateCalibration(QDialog):
         for gate in result.gates:
             lines.append(("REJECTED: " if gate.level == "reject" else "Check: ") + gate.message)
         self.holder_fit_label.setText("\n".join(lines))
-        self.holder_save_button.setEnabled(not result.rejected)
-        for widget in self._holder_check_widgets():
+        for widget in self.holder_fit_widgets:
             widget.setEnabled(not result.rejected)
-        # Suggest the worst-predicted well, unless the operator typed their own.
-        if self.holder_check_edit.text().strip() in ("", self._holder_check_suggested):
-            self._holder_check_suggested = result.worst_well
+        # Suggest the worst-predicted well unless the operator typed their own:
+        # isModified is Qt's own record of that, and setText resets it.
+        if not self.holder_check_edit.isModified():
             self.holder_check_edit.setText(result.worst_well)
-
-    def _holder_check_widgets(self):
-        return (self.holder_check_edit, self.holder_check_goto_button, self.holder_check_button)
 
     def _holder_error(self, exc):
         QMessageBox.warning(self, "Holder Alignment", str(exc))
@@ -12577,27 +12579,25 @@ class WellplateCalibration(QDialog):
             return
         self._holder_refresh()
 
-    def _holder_move_to(self, target):
-        """Drive to a (x_mm, y_mm) the session produced - every target has been
-        checked against the travel limits there; nothing clamps the move."""
-        try:
-            x_mm, y_mm = target()
-        except SessionError as e:
-            self._holder_error(e)
-            return
+    def _holder_move_to(self, x_mm, y_mm):
+        # Targets come from the session, which refuses wells outside travel.
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
 
     def _holder_goto_reference(self, index):
         if self.holder_session is None:
             return
-        self._holder_move_to(lambda: self.holder_session.reference_center_mm(index))
+        self._holder_move_to(*self.holder_session.reference_center_mm(index))
 
     def _holder_goto_check(self):
         if self.holder_session is None or not self.holder_session.can_fit:
             return
-        well_id = self.holder_check_edit.text().strip()
-        self._holder_move_to(lambda: self.holder_session.predicted_touch_mm(well_id))
+        try:
+            target = self.holder_session.predicted_touch_mm(self.holder_check_edit.text().strip())
+        except SessionError as e:
+            self._holder_error(e)
+            return
+        self._holder_move_to(*target)
 
     def _holder_record_check(self):
         if self.holder_session is None or not self.holder_session.can_fit:
@@ -12612,6 +12612,20 @@ class WellplateCalibration(QDialog):
         self.holder_check_label.setText(
             f"Measured error at {well_id}: {error_um:.0f} um (this well was not in the fit)"
         )
+
+    def _holder_ask_clear_overrides(self, title, question):
+        """Formats carrying their own measured rotation do not follow the holder
+        record; offer to clear them. `question` names {n} and {formats}."""
+        overrides = formats_with_rotation_overrides()
+        if not overrides:
+            return ()
+        answer = QMessageBox.question(
+            self,
+            title,
+            question.format(n=len(overrides), formats=", ".join(overrides)),
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        return overrides if answer == QMessageBox.Yes else ()
 
     def _holder_save(self):
         if self.holder_session is None:
@@ -12637,24 +12651,17 @@ class WellplateCalibration(QDialog):
                 return
             confirm = True
 
-        clear = ()
-        stale = session.formats_with_measured_overrides()
-        if stale:
-            answer = QMessageBox.question(
-                self,
-                "Stale rotation overrides",
-                f"{len(stale)} format(s) carry a rotation measured under the previous mounting: "
-                f"{', '.join(stale)}. Clear them to inherit the new angle?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if answer == QMessageBox.Yes:
-                clear = tuple(stale)
-
+        clear = self._holder_ask_clear_overrides(
+            "Stale rotation overrides",
+            "{n} format(s) carry a rotation measured under the previous mounting: {formats}. "
+            "Clear them to inherit the new angle?",
+        )
         try:
             holder = session.save(confirm_warnings=confirm, clear_overrides=clear)
         except SessionError as e:
             self._holder_error(e)
             return
+        self.holder_clear_button.setEnabled(True)
         self._holder_refresh()
         QMessageBox.information(
             self,
@@ -12664,41 +12671,23 @@ class WellplateCalibration(QDialog):
         )
 
     def _holder_clear(self):
-        holder = load_plate_holder()
-        if holder is None:
-            saved = "an unreadable record"
-        else:
-            saved = f"{holder.rotation_deg:.2f} deg"
-            if holder.measured.on:
-                saved += f", measured on {holder.measured.on}"
         answer = QMessageBox.question(
             self,
             "Clear holder rotation",
-            f"Clear the saved holder rotation ({saved})? Plates are positioned with 0.00 deg "
-            f"until a new rotation is measured. Points set in this dialog are kept.",
+            f"Clear the saved holder rotation ({saved_rotation_summary()})? Plates are positioned with "
+            f"0.00 deg until a new rotation is measured. Points set in this dialog are kept.",
             QMessageBox.Yes | QMessageBox.No,
         )
         if answer != QMessageBox.Yes:
             return
-
-        clear = ()
-        overrides = formats_with_rotation_overrides()
-        if overrides:
-            answer = QMessageBox.question(
-                self,
-                "Format rotation overrides",
-                f"{len(overrides)} format(s) carry their own measured rotation and keep it: "
-                f"{', '.join(overrides)}. Clear those too?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if answer == QMessageBox.Yes:
-                clear = tuple(overrides)
-
+        clear = self._holder_ask_clear_overrides(
+            "Format rotation overrides",
+            "{n} format(s) carry their own measured rotation and keep it: {formats}. Clear those too?",
+        )
         clear_holder_rotation(clear_overrides=clear)
+        self.holder_clear_button.setEnabled(False)
         if self.holder_session is not None:
             self._holder_refresh()
-        else:
-            self.holder_clear_button.setEnabled(False)
 
     def load_existing_format_values(self):
         """Load current values from selected existing format into the parameter inputs."""
@@ -13159,8 +13148,9 @@ class WellplateCalibration(QDialog):
             self.liveController.stop_live()
 
         # Deliberately NO dropdown revert here: WellplateFormatWidget.wellplateChanged
-        # owns the Rejected-revert (it captured the previous format before opening
-        # this dialog). The revert that used to live here parsed
+        # owns the Rejected-revert (wellplate_format still names the loaded plate
+        # while this dialog is open; the widget reverts the combo to it). The
+        # revert that used to live here parsed
         # navigationViewer.sample to an int, which findData() could never match
         # against the string item data - it silently did nothing, or worse fought
         # the widget's own revert.

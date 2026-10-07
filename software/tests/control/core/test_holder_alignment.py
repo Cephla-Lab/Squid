@@ -60,6 +60,23 @@ def touch_all_round(session, theta_deg=0.21, a1=(11.31, 10.75)):
             session.record_touch(i, cx + radius * math.cos(phi), cy + radius * math.sin(phi))
 
 
+def ninety_six_with_rotation_override(**fields) -> SampleFormat:
+    """A 96-well definition carrying its own measured 0.5 deg rotation (which
+    wins over the holder record until cleared)."""
+    return SampleFormat(
+        rows=8,
+        cols=12,
+        well_spacing_mm=9.0,
+        well_size_mm=6.21,
+        rotation_deg=0.5,
+        rotation_measured=FormatMeasurement(
+            points=[MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0), MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0)],
+            timestamp="2026-08-16T00:00:00",
+        ),
+        **fields,
+    )
+
+
 # ------------------------------------------------------------- reference wells
 
 
@@ -249,30 +266,13 @@ def test_save_offers_and_clears_stale_overrides(tree):
     save_user_sample_formats(
         UserSampleFormats(
             formats={
-                "96 well plate": SampleFormat(
-                    rows=8,
-                    cols=12,
-                    well_spacing_mm=9.0,
-                    well_size_mm=6.21,
-                    a1_x_mm=11.41,
-                    rotation_deg=0.5,
-                    rotation_measured=FormatMeasurement(
-                        points=[
-                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
-                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
-                        ],
-                        timestamp="2026-08-16T00:00:00",
-                    ),
-                    measured=FormatMeasurement(
-                        points=[MeasuredPoint(well="A1", x_mm=11.31, y_mm=10.75)], timestamp="2026-08-16T00:00:00"
-                    ),
-                ),
+                "96 well plate": ninety_six_with_rotation_override(a1_x_mm=11.41),
                 "384 well plate": SampleFormat(rows=16, cols=24, well_spacing_mm=4.5, well_size_mm=3.3, a1_x_mm=12.25),
             }
         )
     )
     session = HolderAlignmentSession("1536 well plate")
-    assert session.formats_with_measured_overrides() == ["96 well plate"]
+    assert formats_with_rotation_overrides() == ["96 well plate"]
 
     touch_all_square(session, theta_deg=0.37)
     session.save(clear_overrides=("96 well plate",))
@@ -315,59 +315,11 @@ def test_status_line_tracks_provenance(tree):
     other.save()
     assert "0.37 deg (holder record)" in session.status_line()
 
-    save_user_sample_formats(
-        UserSampleFormats(
-            formats={
-                "96 well plate": SampleFormat(
-                    rows=8,
-                    cols=12,
-                    well_spacing_mm=9.0,
-                    well_size_mm=6.21,
-                    a1_x_mm=11.31,
-                    a1_y_mm=10.75,
-                    rotation_deg=0.5,
-                    rotation_measured=FormatMeasurement(
-                        points=[
-                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
-                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
-                        ],
-                        timestamp="2026-08-16T00:00:00",
-                    ),
-                    measured=FormatMeasurement(
-                        points=[MeasuredPoint(well="A1", x_mm=11.31, y_mm=10.75)], timestamp="2026-08-16T00:00:00"
-                    ),
-                )
-            }
-        )
-    )
+    save_user_sample_formats(UserSampleFormats(formats={"96 well plate": ninety_six_with_rotation_override()}))
     assert "0.50 deg (measured for this format)" in session.status_line()
 
 
 # --------------------------------------------------------------------- clear
-
-
-def save_96_with_rotation_override(rotation_deg=0.5):
-    save_user_sample_formats(
-        UserSampleFormats(
-            formats={
-                "96 well plate": SampleFormat(
-                    rows=8,
-                    cols=12,
-                    well_spacing_mm=9.0,
-                    well_size_mm=6.21,
-                    a1_x_mm=11.41,
-                    rotation_deg=rotation_deg,
-                    rotation_measured=FormatMeasurement(
-                        points=[
-                            MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
-                            MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
-                        ],
-                        timestamp="2026-08-16T00:00:00",
-                    ),
-                )
-            }
-        )
-    )
 
 
 def test_clear_removes_the_saved_angle_and_keeps_the_session(tree):
@@ -398,7 +350,9 @@ def test_clear_removes_an_unreadable_record(tree):
 
 
 def test_clear_leaves_format_overrides_unless_asked(tree):
-    save_96_with_rotation_override(0.5)
+    save_user_sample_formats(
+        UserSampleFormats(formats={"96 well plate": ninety_six_with_rotation_override(a1_x_mm=11.41)})
+    )
     session = HolderAlignmentSession("1536 well plate")
     touch_all_square(session, theta_deg=0.37)
     session.save()

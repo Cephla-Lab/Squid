@@ -77,6 +77,12 @@ def save_plate_holder(holder: PlateHolder, path: str = PLATE_HOLDER_PATH) -> Non
     save_yaml_model_atomic(holder, path)
 
 
+def plate_holder_record_exists(path: str = PLATE_HOLDER_PATH) -> bool:
+    """Is there a record to remove - readable or not? (An unreadable file still
+    needs clearing, so this is a file-level question, unlike load's.)"""
+    return os.path.exists(path)
+
+
 def clear_plate_holder(path: str = PLATE_HOLDER_PATH) -> bool:
     """Remove the record (absent file == rotation 0.00 deg). False when there
     was nothing to remove."""

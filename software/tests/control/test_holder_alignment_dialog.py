@@ -5,7 +5,7 @@ import math
 from unittest.mock import MagicMock, patch
 
 import pytest
-from qtpy.QtWidgets import QDialog, QMessageBox
+from qtpy.QtWidgets import QMessageBox
 
 import control._def as _def
 from control.models.plate_holder import load_plate_holder
@@ -45,6 +45,20 @@ def set_stage_pos(stage, x, y):
     stage.get_pos.return_value = pos
 
 
+def record_all_wells(dialog, stage):
+    """Touch the four reference wells at a consistent synthetic pose."""
+    session = dialog.holder_session
+    for i, well in enumerate(session.reference_wells):
+        set_stage_pos(stage, *synthetic_corner_touch(session, well))
+        dialog.holder_record_buttons[i].click()
+
+
+def save_a_rotation(dialog, stage):
+    record_all_wells(dialog, stage)
+    with patch.object(QMessageBox, "information"):
+        dialog.holder_save_button.click()
+
+
 def test_holder_mode_shows_computed_ring_and_square_method(qapp, tree):
     dialog, _ = make_dialog(qapp)
     dialog.holder_rotation_radio.setChecked(True)
@@ -65,9 +79,7 @@ def test_record_fit_save_flow(qapp, tree):
     session = dialog.holder_session
 
     assert not dialog.holder_save_button.isEnabled()  # nothing measured yet
-    for i, well in enumerate(session.reference_wells):
-        set_stage_pos(stage, *synthetic_corner_touch(session, well))
-        dialog.holder_record_buttons[i].click()
+    record_all_wells(dialog, stage)
 
     assert "Rotation 0.37 deg" in dialog.holder_fit_label.text()
     assert "REJECTED" not in dialog.holder_fit_label.text()
@@ -143,23 +155,19 @@ def test_check_row_is_locked_until_the_fit_exists(qapp, tree):
     assert not dialog.holder_check_button.isEnabled()
     assert dialog.holder_check_edit.text() == ""
 
-    for i, well in enumerate(session.reference_wells):
-        set_stage_pos(stage, *synthetic_corner_touch(session, well))
-        dialog.holder_record_buttons[i].click()
+    record_all_wells(dialog, stage)
 
     assert dialog.holder_check_goto_button.isEnabled()
     assert dialog.holder_check_edit.text() == session.fit().worst_well  # suggested
     dialog.close()
 
 
-def test_check_row_go_to_drives_to_the_prediction_for_the_typed_well(qapp, tree):
+def test_check_row_go_to_drives_to_the_prediction_for_the_typed_well(qapp, qtbot, tree):
     dialog, stage = make_dialog(qapp)
     dialog.holder_rotation_radio.setChecked(True)
     session = dialog.holder_session
 
-    for i, well in enumerate(session.reference_wells):
-        set_stage_pos(stage, *synthetic_corner_touch(session, well))
-        dialog.holder_record_buttons[i].click()
+    record_all_wells(dialog, stage)
 
     # the suggested (worst) well first...
     worst = session.fit().worst_well
@@ -170,7 +178,8 @@ def test_check_row_go_to_drives_to_the_prediction_for_the_typed_well(qapp, tree)
 
     # ...then one the operator typed, which survives the next refresh
     stage.reset_mock()
-    dialog.holder_check_edit.setText("P24")
+    dialog.holder_check_edit.selectAll()
+    qtbot.keyClicks(dialog.holder_check_edit, "P24")
     dialog.holder_check_goto_button.click()
     expected = session.predicted_touch_mm("P24")
     stage.move_x_to.assert_called_once_with(pytest.approx(expected[0]))
@@ -184,9 +193,7 @@ def test_check_row_set_point_reports_the_measured_error(qapp, tree):
     dialog.holder_rotation_radio.setChecked(True)
     session = dialog.holder_session
 
-    for i, well in enumerate(session.reference_wells):
-        set_stage_pos(stage, *synthetic_corner_touch(session, well))
-        dialog.holder_record_buttons[i].click()
+    record_all_wells(dialog, stage)
 
     fake_well = session._make_well(15, 23)
     set_stage_pos(stage, *synthetic_corner_touch(session, fake_well))
@@ -221,43 +228,6 @@ def test_round_plate_hides_corner_picker_and_uses_rim_method(qapp, tree):
     assert not dialog.holder_corner_combo.isVisibleTo(dialog.holder_widget)
     assert "3 points on the rim" in dialog.holder_method_label.text()
     dialog.close()
-
-
-def test_opened_from_the_dropdown_measures_the_loaded_plate(qapp, tree):
-    """The one real way in: 'calibrate format...' in the Sample Format dropdown.
-    Every other test here hands the dialog a mock that already names a plate;
-    the real widget used to name "custom" while the dialog was open."""
-    import control.widgets
-
-    live_controller = MagicMock()
-    live_controller.is_live = True
-    widget = control.widgets.WellplateFormatWidget(MagicMock(), MagicMock(), MagicMock(), live_controller)
-    widget.comboBox.setCurrentIndex(widget.comboBox.findData("96 well plate"))
-
-    seen = {}
-
-    def operator_selects_holder_mode(dialog):
-        dialog.holder_rotation_radio.setChecked(True)
-        seen["format"] = dialog.holder_session.format
-        seen["wells"] = [edit.text() for edit in dialog.holder_well_edits]
-        seen["method"] = dialog.holder_method_label.text()
-        return QDialog.Rejected
-
-    with patch.object(control.widgets.WellplateCalibration, "exec_", operator_selects_holder_mode):
-        widget.comboBox.setCurrentIndex(widget.comboBox.findData("custom"))
-
-    assert seen["format"] == "96 well plate"
-    assert seen["wells"] == ["A1", "A12", "H1", "H12"]
-    assert "96 well plate: touch 3 points on the rim" in seen["method"]
-    assert widget.comboBox.currentData() == "96 well plate"  # cancel still reverts
-
-
-def save_a_rotation(dialog, stage):
-    for i, well in enumerate(dialog.holder_session.reference_wells):
-        set_stage_pos(stage, *synthetic_corner_touch(dialog.holder_session, well))
-        dialog.holder_record_buttons[i].click()
-    with patch.object(QMessageBox, "information"):
-        dialog.holder_save_button.click()
 
 
 def test_clear_rotation_is_disabled_until_something_is_saved(qapp, tree):
