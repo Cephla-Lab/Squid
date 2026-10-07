@@ -708,8 +708,12 @@ class MultiPointWorker:
 
         # Drain results before shutdown
         self._summarize_runner_outputs(drain_all=True)
+        if self._acquisition_error_count > 0 and self._abort_on_failed_job:
+            self._log.error(f"{self._acquisition_error_count} save job(s) failed; the acquisition ends as an error")
+            self._abort_due_to_error()
 
-        # Shut down all job runners in parallel (in background to avoid blocking on subprocess termination).
+        # Shut down the save subprocesses in parallel (in background to avoid blocking on subprocess termination);
+        # the in-process Zarr runner is shut down inline below, because its shutdown seals the stores.
         # Using daemon threads is safe here because:
         # 1. All jobs are complete and results are already drained
         # 2. The subprocess termination is best-effort cleanup only
@@ -725,7 +729,8 @@ class MultiPointWorker:
 
         self._log.info("Shutting down job runners...")
         remaining_time = time_left()
-        aborted = bool(self.abort_requested_fn())
+        # A user Stop, an error abort, or a crash out of run(): the store must not claim completeness.
+        aborted = bool(self.abort_requested_fn()) or self._run_state_fatal
         for job_class, job_runner in active_runners:
             if getattr(job_runner, "runs_in_process", False):
                 # Its shutdown seals the stores (aborted ones as aborted); do it here so the
@@ -897,6 +902,12 @@ class MultiPointWorker:
             if out_queue is None:
                 # Queue was cleared during shutdown
                 continue
+            if not drain_all and not job_runner.is_alive() and job_runner.has_pending():
+                self._log.error(
+                    f"{job_class.__name__} save subprocess exited (exit code {getattr(job_runner, 'exitcode', None)}) "
+                    f"with jobs pending; aborting the acquisition"
+                )
+                self._abort_due_to_error()
             while True:
                 try:
                     job_result: JobResult = out_queue.get_nowait()

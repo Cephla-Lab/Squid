@@ -843,3 +843,63 @@ def test_three_zarr_runs_in_one_session_all_sealed(monkeypatch):
         assert tt.finished_event.wait(120), f"run {i} did not finish"
         attrs = _zarr_jsons_with_squid(mpc)
         assert attrs and all(a["acquisition_complete"] is True for a in attrs), f"run {i}"
+
+
+def test_zarr_write_error_ends_the_run_as_error(monkeypatch, caplog):
+    """A failed Zarr write must end the run as an error and seal the store incomplete, not finish quietly."""
+    pytest.importorskip("tensorstore")
+    import logging
+    from control.core.job_processing import SaveZarrJob
+
+    class _FailingFuture:
+        def result(self):
+            raise RuntimeError("disk full")
+
+    real_submit = SaveZarrJob.submit
+
+    def failing_submit(self):
+        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
+        if future is not None:
+            future.result()
+        return _FailingFuture(), result
+
+    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    with caplog.at_level(logging.ERROR):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(120)
+    assert mpc.multiPointWorker._abort_cause == "error"
+    assert any("disk full" in r.getMessage() for r in caplog.records)
+    attrs = _zarr_jsons_with_squid(mpc)
+    assert attrs and all(a["acquisition_complete"] is False for a in attrs)
+
+
+def test_dead_tiff_subprocess_aborts_acquisition(caplog):
+    """A save subprocess that dies with jobs pending must abort the run, not let it finish with data missing."""
+    import logging
+    import queue
+    from unittest.mock import MagicMock
+    from control.core.job_processing import SaveImageJob
+    from control.core.multi_point_worker import MultiPointWorker
+
+    worker = MultiPointWorker.__new__(MultiPointWorker)  # only _summarize_runner_outputs' own fields are needed
+    worker._log = logging.getLogger("squid.MultiPointWorker")
+    worker._acquisition_error_count = 0
+    worker._slack_notifier = None
+    runner = MagicMock()
+    runner.output_queue.return_value = MagicMock(get_nowait=MagicMock(side_effect=queue.Empty))
+    runner.is_alive.return_value = False
+    runner.has_pending.return_value = True
+    runner.exitcode = -6
+    worker._job_runners = [(SaveImageJob, runner)]
+    worker._abort_due_to_error = MagicMock()
+    with caplog.at_level(logging.ERROR):
+        worker._summarize_runner_outputs()
+    worker._abort_due_to_error.assert_called_once()
+    assert any("save subprocess exited" in r.getMessage() for r in caplog.records)
