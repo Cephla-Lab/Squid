@@ -36,7 +36,10 @@ class Level:
 def plan_coarse_level(na: float, range_um: float, center_um: float) -> Level:
     dof = depth_of_field_um(na)
     r_eff = max(range_um, 3 * dof)
-    step = min(max(0.7 * dof, 2 * r_eff / 40), 2 * r_eff / 6)
+    # At least 21 samples: the edge gate refuses the two outermost samples on each side, so a coarser
+    # grid turns a large slice of the range into a refusal zone (a 4x at 0.7*DOF = 22.8 um over
+    # +-100 um lost 46% of it and refused a focus 70 um from the centre, bench 2026-10-05).
+    step = min(max(0.7 * dof, 2 * r_eff / 40), 2 * r_eff / 20)
     return Level(center_um, r_eff, step)
 
 
