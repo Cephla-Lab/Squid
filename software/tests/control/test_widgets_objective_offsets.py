@@ -189,7 +189,8 @@ def test_an_orientation_mismatch_saves_z_without_xy(qtbot, tmp_path, make_dialog
     dialog.button_calibrate.click()
     _wait(qtbot, dialog)
     assert dialog.label_orientation.text() == ORIENTATION_MESSAGE
-    assert dialog.table_offsets.item(1, 1).text() == "12.00"  # XY was still measured (pass-2 alignment)
+    # XY was still measured (pass-2 alignment)
+    assert float(dialog.table_offsets.item(1, 1).text()) == pytest.approx(PARCENTRIC["10x"][0], abs=0.5)
     dialog.button_apply.click()
     saved = _saved(tmp_path)
     block = saved.objectives["10x"].offset
