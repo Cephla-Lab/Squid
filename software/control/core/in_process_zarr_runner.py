@@ -2,8 +2,8 @@
 
 tensorstore compresses and writes on its own threads and hands back a future, so a save
 subprocess buys nothing for Zarr and costs a copy of every image through a pipe. It also
-cannot be fork()ed once this process has used tensorstore (the Record + Z-Stack recording
-writer does), because tensorstore aborts such a child on its first use. This runner presents
+cannot be fork()ed once this process has used tensorstore (the NDViewer does; a recording
+writer will), because tensorstore aborts such a child on its first use. This runner presents
 the part of JobRunner's interface the workers use and runs SaveZarrJob here instead: dispatch
 submits the write and returns; a drain thread waits for each write in order, keeps the
 backpressure counters, and puts the JobResult on the output queue the worker polls.

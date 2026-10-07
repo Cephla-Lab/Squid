@@ -543,8 +543,9 @@ class ZarrWriterRegistry:
 class SaveZarrJob(Job):
     """Job for saving images to Zarr v3 format using TensorStore.
 
-    Uses a process-local ZarrWriter that is initialized lazily on first write.
-    The zarr_writer_info field is injected by JobRunner.dispatch() before the job runs.
+    Writes through its registry's ZarrWriter for the store (an InProcessZarrRunner's own
+    registry, or default_registry in the save subprocess), initialized lazily on first write.
+    The zarr_writer_info field is injected by whichever runner dispatches the job.
     """
 
     _log: ClassVar = squid.logging.get_logger("SaveZarrJob")
@@ -616,9 +617,9 @@ class SaveZarrJob(Job):
         """
         if self.zarr_writer_info is None:
             raise ValueError(
-                "SaveZarrJob.run() requires zarr_writer_info but it is None. "
-                "This job must be dispatched via JobRunner.dispatch(), which injects zarr_writer_info. "
-                "If running directly, set job.zarr_writer_info before calling run()."
+                "SaveZarrJob.submit()/run() requires zarr_writer_info but it is None. "
+                "The runner that dispatches it injects zarr_writer_info. "
+                "If running directly, set job.zarr_writer_info before calling submit() or run()."
             )
 
         from control.core.io_simulation import is_simulation_enabled, simulated_zarr_write
