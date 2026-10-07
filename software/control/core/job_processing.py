@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Any, ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -602,6 +602,18 @@ class SaveZarrJob(Job):
             self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
 
     def run(self) -> ZarrWriteResult:
+        """Write the frame and wait for it: what the save subprocess does, one job at a time."""
+        future, result = self.submit()
+        if future is not None:
+            future.result()
+        return result
+
+    def submit(self) -> Tuple[Optional[Any], ZarrWriteResult]:
+        """Submit the frame write without waiting for it.
+
+        Returns the tensorstore future (None in simulated-I/O mode, where the write already
+        happened) and the ZarrWriteResult to report once the future completes.
+        """
         if self.zarr_writer_info is None:
             raise ValueError(
                 "SaveZarrJob.run() requires zarr_writer_info but it is None. "
@@ -667,13 +679,13 @@ class SaveZarrJob(Job):
                 f"SaveZarrJob {self.job_id}: simulated write of {bytes_written} bytes "
                 f"to {output_path} (image shape={image.shape})"
             )
-            return result
+            return None, result
 
-        self._save_zarr(image, info, output_path)
-        return result
+        future = self._submit_write(image, info, output_path)
+        return future, result
 
-    def _save_zarr(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> None:
-        """Write image to zarr dataset using TensorStore.
+    def _submit_write(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> Any:
+        """Submit the image write to the zarr dataset using TensorStore; returns the write future.
 
         Args:
             image: Image array to write
@@ -760,13 +772,12 @@ class SaveZarrJob(Job):
         z = info.z_index
 
         if is_hcs or not use_6d_fov:
-            # 5D write
-            writer.write_frame(image, t=t, c=c, z=z)
-            self._log.debug(f"Wrote frame t={t}, c={c}, z={z} to {output_path}")
+            future = writer.submit_frame(image, t=t, c=c, z=z)  # 5D
+            self._log.debug(f"Submitted frame t={t}, c={c}, z={z} to {output_path}")
         else:
-            # 6D write with FOV index
-            writer.write_frame(image, t=t, c=c, z=z, fov=fov)
-            self._log.debug(f"Wrote frame t={t}, c={c}, z={z}, fov={fov} to {output_path}")
+            future = writer.submit_frame(image, t=t, c=c, z=z, fov=fov)  # 6D with FOV index
+            self._log.debug(f"Submitted frame t={t}, c={c}, z={z}, fov={fov} to {output_path}")
+        return future
 
 
 # These are debugging jobs - they should not be used in normal usage!
