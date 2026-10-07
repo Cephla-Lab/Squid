@@ -187,3 +187,21 @@ def test_shutdown_is_idempotent_and_before_start_is_safe(tmp_path):
     runner.shutdown()
     runner.shutdown()
     assert not runner.is_alive()
+
+
+def test_dispatch_after_shutdown_is_refused(tmp_path):
+    """A frame after the stores are sealed must not reopen a writer or raise the counters."""
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+
+    info = _info(tmp_path)
+    pending_jobs, pending_bytes, capacity = create_backpressure_values()
+    runner = InProcessZarrRunner(zarr_writer_info=info, bp_values=(pending_jobs, pending_bytes, capacity))
+    runner.start()
+    runner.shutdown()
+    job = _job(0)
+    assert runner.dispatch(job) is False
+    assert job.zarr_writer_info is None and job.registry is None
+    assert not runner.has_pending()
+    assert pending_jobs.value == 0 and pending_bytes.value == 0
+    assert runner.registry.writers == {}
+    assert not os.path.exists(info.base_path)

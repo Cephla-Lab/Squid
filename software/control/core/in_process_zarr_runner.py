@@ -65,6 +65,10 @@ class InProcessZarrRunner:
     # ---- the hot path: called from the camera frame callback
 
     def dispatch(self, job: SaveZarrJob) -> bool:
+        """Submit the write and return; False once shutdown() has sealed the stores (the worker aborts)."""
+        if self._finished:
+            self._log.warning(f"Job {job.job_id} dispatched after shutdown; refusing it")
+            return False
         if self._zarr_writer_info is None:
             raise ValueError("Cannot dispatch SaveZarrJob: InProcessZarrRunner has no zarr_writer_info")
         job.zarr_writer_info = self._zarr_writer_info
