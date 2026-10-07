@@ -350,7 +350,10 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            self._log.warning(f"Region {region_id!r} not added: every planned FOV is outside the stage travel limits.")
+            # A region that moved fully out of range must not keep its old
+            # coordinates active, and its drops are as real as a partial one's.
+            self.remove_region(region_id)
+            self._register_travel_drops(region_id, Nx * Ny, 0)
 
     def add_single_fov_region(self, region_id, center_x, center_y, center_z):
         if not self.validate_coordinates(center_x, center_y):
@@ -422,7 +425,10 @@ class ScanCoordinates:
                 AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
             )
         else:
-            self._log.warning(f"Region {region_id!r} not added: every planned FOV is outside the stage travel limits.")
+            # A region that moved fully out of range must not keep its old
+            # coordinates active, and its drops are as real as a partial one's.
+            self.remove_region(region_id)
+            self._register_travel_drops(region_id, Nx * Ny, 0)
 
     def get_points_for_manual_region(self, shape_coords, overlap_percent):
         """Add region from manually drawn polygon shape"""

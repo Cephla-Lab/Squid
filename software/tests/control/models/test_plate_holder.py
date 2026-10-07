@@ -147,3 +147,15 @@ def test_example_skeleton_parses():
     data = yaml.safe_load(open("machine_configs/plate_holder.yaml.example"))
     holder = PlateHolder.model_validate(data)
     assert holder.rotation_deg == 0.0  # deliberately unset in the example
+
+
+def test_unknown_schema_version_is_refused_loudly(holder_tree, caplog):
+    """A record from a newer build is not applied under this one's reading."""
+    (holder_tree / "machine_configs" / "plate_holder.yaml").write_text(
+        "version: 2\nrotation_deg: 0.4\nmeasured:\n  points:\n"
+        "  - {well: A1, x_mm: 1.0, y_mm: 1.0}\n  - {well: H12, x_mm: 2.0, y_mm: 2.0}\n"
+    )
+    with caplog.at_level(logging.ERROR):
+        assert load_plate_holder() is None
+    assert any("NOT BEING APPLIED" in r.getMessage() for r in caplog.records)
+    assert resolve_rotation_deg("96 well plate") == (0.0, "none")

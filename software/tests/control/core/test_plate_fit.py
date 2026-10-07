@@ -244,3 +244,23 @@ def test_collinear_points_are_fine_for_rigid():
     fit = fit_plate_placement(nominal, measured, well_size_mm=6.21, pitch_x_mm=9.0, pitch_y_mm=9.0)
     assert fit.rotation_deg == pytest.approx(0.5, abs=0.011)
     assert fit.fitted_axis_angle_deg == 90.0  # rank-deficient affine: not fabricated
+
+
+def test_non_finite_reading_is_refused():
+    nominal, s = nominal_ring("96 well plate")
+    measured = apply_pose(nominal, 0.2, 1.0, 11.3, 10.7)
+    measured[2][1] = float("nan")  # one NaN stage reading
+    with pytest.raises(PlateFitError, match="non-finite"):
+        fit_plate_placement(nominal, measured, well_size_mm=s["well_size_mm"], pitch_x_mm=9.0, pitch_y_mm=9.0)
+
+
+def test_exact_measurement_between_quanta_reports_no_click_noise():
+    """sigma-hat comes from the similarity residual, fitted with the UNROUNDED
+    angle; rounding the stored angle to 0.01 deg must not show up as noise."""
+    nominal, s = nominal_ring("96 well plate")
+    measured = apply_pose(nominal, 0.123, 1.0, 11.3, 10.7)  # mid-quantum
+    result = fit_plate_placement(nominal, measured, well_size_mm=s["well_size_mm"], pitch_x_mm=9.0, pitch_y_mm=9.0)
+    assert result.rotation_deg == pytest.approx(0.12)
+    assert result.sigma_hat_um == pytest.approx(0.0, abs=1e-6)
+    # ...while the APPLIED residuals do carry the rounding, by design
+    assert max(result.residuals_um) > 1.0

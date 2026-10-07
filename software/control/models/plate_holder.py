@@ -42,8 +42,13 @@ class HolderMeasurement(BaseModel):
     reload_spread_deg: Optional[float] = None
 
 
+SCHEMA_VERSION = 1
+
+
 class PlateHolder(BaseModel):
-    version: int = 1
+    # Checked, not just recorded: a record from a newer schema is refused rather
+    # than having its angle applied under this build's interpretation.
+    version: int = Field(SCHEMA_VERSION, ge=SCHEMA_VERSION, le=SCHEMA_VERSION)
     rotation_deg: float = 0.0  # + = CCW in the stage XY math frame; pivot = A1
     measured: HolderMeasurement = Field(default_factory=HolderMeasurement)
 

@@ -277,3 +277,13 @@ def test_clear_rotation_works_with_a_glass_slide_loaded(qapp, tree):
     assert load_plate_holder() is None
     assert not dialog.holder_clear_button.isEnabled()
     dialog.close()
+
+
+def test_calibrate_existing_format_combo_skips_formats_without_a_grid(qapp, tree):
+    """The glass slide anchors at the current stage position: nothing to
+    calibrate, and its definition cannot be saved (spacing must be positive)."""
+    dialog, _ = make_dialog(qapp)
+    offered = [dialog.existing_format_combo.itemData(i) for i in range(dialog.existing_format_combo.count())]
+    assert "glass slide" not in offered
+    assert "96 well plate" in offered and "1536 well plate" in offered
+    dialog.close()

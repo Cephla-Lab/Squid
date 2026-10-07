@@ -98,6 +98,10 @@ def _as_arrays(points: Sequence[Tuple[float, float]]) -> np.ndarray:
     a = np.asarray(points, dtype=float)
     if a.ndim != 2 or a.shape[1] != 2:
         raise PlateFitError("points must be (x, y) pairs")
+    if not np.all(np.isfinite(a)):
+        # A NaN stage reading would sail through the fit: every gate compares
+        # against NaN, stays False, and a NaN rotation could be saved.
+        raise PlateFitError("points contain a non-finite coordinate (a NaN or infinite stage reading)")
     return a
 
 
@@ -163,8 +167,12 @@ def fit_plate_placement(
     residuals = np.linalg.norm(q - applied, axis=1)
 
     # sigma-hat from the SIMILARITY residual (k = 4): the only estimator of the
-    # click noise unpolluted by the scale the hybrid discards.
-    sim = (scale * (rot @ pt.T)).T + q_bar
+    # click noise unpolluted by the scale the hybrid discards - so it uses the
+    # UNROUNDED rotation the similarity was fitted with; the rounded `rot` is
+    # for what gets applied and stored, and would leak up to half a quantum of
+    # rotation into the residual as fake click noise.
+    rot_fitted = np.array([[math.cos(theta), -math.sin(theta)], [math.sin(theta), math.cos(theta)]])
+    sim = (scale * (rot_fitted @ pt.T)).T + q_bar
     ssr_sim = float(np.sum((q - sim) ** 2))
     dof = 2 * n - 4
     sigma_hat_mm = math.sqrt(ssr_sim / dof) if dof > 0 else float("nan")

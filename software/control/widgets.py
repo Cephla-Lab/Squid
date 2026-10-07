@@ -11966,12 +11966,13 @@ class WellplateFormatWidget(QWidget):
         return settings
 
     def add_custom_format(self, name, settings):
+        """Register only. Selecting it is the caller's job, ONCE the definition
+        is saved (select_format_silently in _finish_calibration): repopulating
+        here with signals live emitted -1, index 0 and the target, then
+        wellplateChanged emitted the target again - all before the save, so a
+        machine with a wellplate_offset briefly applied it to the measured A1.
+        """
         WELLPLATE_FORMAT_SETTINGS[name] = settings
-        self.populate_combo_box()
-        index = self.comboBox.findData(name)
-        if index >= 0:
-            self.comboBox.setCurrentIndex(index)
-        self.wellplateChanged(index)
 
     def save_formats_to_csv(self):
         # Atomic, so an interrupted write cannot leave a cache that load_formats()
@@ -12338,6 +12339,12 @@ class WellplateCalibration(QDialog):
     def populate_existing_formats(self):
         self.existing_format_combo.clear()
         for format_ in WELLPLATE_FORMAT_SETTINGS:
+            settings = control._def.get_wellplate_settings(format_)
+            if settings["well_spacing_x_mm"] == 0.0 or settings["well_spacing_y_mm"] == 0.0:
+                # The glass slide anchors at the current stage position - there is
+                # no grid to calibrate, and its definition could not be saved
+                # (the user-format model requires a positive spacing).
+                continue
             self.existing_format_combo.addItem(self._format_display_name(format_), format_)
 
     def toggle_input_mode(self):

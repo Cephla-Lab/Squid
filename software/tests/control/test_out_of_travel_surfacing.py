@@ -108,3 +108,21 @@ def test_manual_region_warns_on_drops(scan, caplog):
     assert any(
         "Manual region" in r.getMessage() and "outside the stage travel" in r.getMessage() for r in caplog.records
     )
+
+
+def test_fully_dropped_flexible_region_is_recorded_and_replaces_its_predecessor(scan, caplog):
+    """A region recomputed entirely out of range: the old coordinates must not
+    stay active under the same ID, and all Nx*Ny drops are recorded."""
+    scan.add_flexible_region("roi", center_x=5.0, center_y=5.0, center_z=0.0, Nx=2, Ny=2, overlap_percent=10)
+    assert len(scan.region_fov_coordinates["roi"]) == 4
+
+    with caplog.at_level(logging.WARNING):
+        scan.add_flexible_region("roi", center_x=50.0, center_y=50.0, center_z=0.0, Nx=2, Ny=2, overlap_percent=10)
+
+    assert "roi" not in scan.region_fov_coordinates
+    assert "roi" not in scan.region_centers
+    assert scan.out_of_travel["roi"] == 4
+    assert "4 of 4 planned FOVs" in caplog.text
+
+    scan.add_flexible_region_with_step_size("roi2", center_x=50.0, center_y=50.0, center_z=0.0, Nx=3, Ny=2, dx=1, dy=1)
+    assert scan.out_of_travel["roi2"] == 6 and "roi2" not in scan.region_fov_coordinates
