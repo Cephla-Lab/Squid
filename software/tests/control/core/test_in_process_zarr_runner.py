@@ -224,3 +224,43 @@ def test_dispatch_after_shutdown_is_refused(tmp_path):
     assert pending_jobs.value == 0 and pending_bytes.value == 0
     assert runner.registry.writers == {}
     assert not os.path.exists(info.base_path)
+
+
+def test_two_runs_dispatched_from_one_persistent_thread(tmp_path):
+    # A real camera delivers every acquisition's frames on one read thread that lives as long as the camera.
+    import threading
+
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+
+    requests: "queue.Queue" = queue.Queue()
+
+    def _camera_thread():
+        while True:
+            item = requests.get()
+            if item is None:
+                return
+            runner, job, done = item
+            try:
+                done.put(runner.dispatch(job))
+            except BaseException as e:
+                done.put(e)
+
+    thread = threading.Thread(target=_camera_thread, name="camera-callback", daemon=True)
+    thread.start()
+    try:
+        for run in (1, 2):
+            info = _info(tmp_path / f"run{run}")
+            runner = InProcessZarrRunner(zarr_writer_info=info)
+            runner.start()
+            for z in (0, 1):
+                done: "queue.Queue" = queue.Queue()
+                requests.put((runner, _job(z, value=run), done))
+                assert done.get(timeout=10) is True
+            results = _results(runner, 2)
+            runner.shutdown()
+            assert len(results) == 2
+            assert [r.exception for r in results] == [None, None]
+            assert _squid_attrs(info)["acquisition_complete"] is True
+    finally:
+        requests.put(None)
+        thread.join(timeout=10)

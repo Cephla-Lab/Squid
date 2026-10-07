@@ -2220,3 +2220,63 @@ class TestSaveZarrJobSubmit:
         job, _ = self._job(tmp_path, 0)
         future, result = job.submit()
         assert future is None and isinstance(result, ZarrWriteResult)
+
+
+class TestZarrWriterAcrossThreads:
+    """A camera's frame callback thread outlives an acquisition: the writer must not leave per-thread state behind."""
+
+    def test_initialize_on_persistent_thread_after_finalize_elsewhere(self, tmp_path):
+        import queue
+        import threading
+
+        import tensorstore as ts
+
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        requests: "queue.Queue" = queue.Queue()
+
+        def _camera_thread():
+            while True:
+                item = requests.get()
+                if item is None:
+                    return
+                work, reply = item
+                try:
+                    reply.put((work(), None))
+                except BaseException as e:  # hand the failure to the main thread
+                    reply.put((None, e))
+
+        thread = threading.Thread(target=_camera_thread, name="camera-callback", daemon=True)
+        thread.start()
+
+        def _on_camera_thread(work):
+            reply: "queue.Queue" = queue.Queue()
+            requests.put((work, reply))
+            value, error = reply.get(timeout=60)
+            if error is not None:
+                raise error
+            return value
+
+        def _open_and_write(path, value):
+            config = ZarrAcquisitionConfig(
+                output_path=path, shape=(1, 1, 1, 16, 16), dtype=np.uint16, pixel_size_um=1.0
+            )
+            writer = ZarrWriter(config)
+            writer.initialize()
+            writer.write_frame(np.full((16, 16), value, dtype=np.uint16), t=0, c=0, z=0)
+            return writer
+
+        try:
+            paths = [str(tmp_path / "run1.zarr"), str(tmp_path / "run2.zarr")]
+            for value, path in enumerate(paths, start=1):
+                writer = _on_camera_thread(lambda: _open_and_write(path, value))
+                writer.finalize()  # end of the run: finalized on another thread
+        finally:
+            requests.put(None)
+            thread.join(timeout=60)
+
+        for value, path in enumerate(paths, start=1):
+            with open(os.path.join(path, "zarr.json")) as f:
+                assert json.load(f)["attributes"]["_squid"]["acquisition_complete"] is True
+            written = ts.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": path}}).result()
+            assert int(written[0, 0, 0, 0, 0].read().result()) == value
