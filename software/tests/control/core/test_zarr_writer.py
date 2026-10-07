@@ -1705,8 +1705,8 @@ class TestHCSWorkflowIntegration:
         # Well metadata should be written exactly once (even with 3 FOVs)
         # The tracking set should have exactly one entry for this well
         assert (
-            len(SaveZarrJob._hcs_wells_written) == 1
-        ), f"Well metadata should be tracked once, got {len(SaveZarrJob._hcs_wells_written)}"
+            len(SaveZarrJob.default_registry.wells_written) == 1
+        ), f"Well metadata should be tracked once, got {len(SaveZarrJob.default_registry.wells_written)}"
 
         # Verify the actual file exists
         plate_path = os.path.join(temp_dir, "plate.ome.zarr")
@@ -2082,3 +2082,57 @@ def test_save_zarr_job_uses_the_settings_it_carries(tmp_path, monkeypatch):
         written = json.load(f)["attributes"]["_squid"]
     assert written["chunk_mode"] == ZarrChunkMode.TILED_256.value
     assert written["compression"] == ZarrCompression.BEST.value
+
+
+class TestZarrWriterRegistry:
+    def test_registry_is_per_instance(self, tmp_path):
+        """Two registries never see each other's writers or HCS bookkeeping."""
+        from control.core.job_processing import ZarrWriterRegistry
+
+        a, b = ZarrWriterRegistry(), ZarrWriterRegistry()
+        a.plates_written.add("/plate")
+        assert "/plate" not in b.plates_written
+        assert a.writers is not b.writers
+
+    def test_job_writes_through_its_registry(self, tmp_path):
+        from control.core.job_processing import ZarrWriterRegistry
+
+        registry = ZarrWriterRegistry()
+        info = ZarrWriterInfo(base_path=str(tmp_path / "acq"), t_size=1, c_size=1, z_size=1)
+        job = SaveZarrJob(
+            capture_info=make_test_capture_info(region_id="A1", fov=0),
+            capture_image=JobImage(image_array=np.full((16, 16), 3, dtype=np.uint16)),
+            zarr_writer_info=info,
+            registry=registry,
+        )
+        job.run()
+        assert list(registry.writers) == [info.get_output_path("A1", 0)]
+        assert SaveZarrJob.default_registry.writers == {}
+        assert registry.finalize_all() is True
+        import tensorstore as ts
+
+        written = ts.open(
+            {"driver": "zarr3", "kvstore": {"driver": "file", "path": info.get_output_path("A1", 0)}}
+        ).result()
+        assert np.array_equal(written[0, 0, 0].read().result(), np.full((16, 16), 3, dtype=np.uint16))
+
+    def test_abort_all_seals_open_stores_incomplete(self, tmp_path):
+        import json
+        from control.core.job_processing import ZarrWriterRegistry
+
+        registry = ZarrWriterRegistry()
+        info = ZarrWriterInfo(base_path=str(tmp_path / "acq"), t_size=2, c_size=1, z_size=1)
+        job = SaveZarrJob(
+            capture_info=make_test_capture_info(region_id="A1", fov=0),
+            capture_image=JobImage(image_array=np.zeros((16, 16), dtype=np.uint16)),
+            zarr_writer_info=info,
+            registry=registry,
+        )
+        job.run()
+        registry.abort_all()
+        # The OME group metadata lives in the group above the "0" array (see _get_metadata_zarr_json_path).
+        group_json = os.path.join(os.path.dirname(info.get_output_path("A1", 0)), "zarr.json")
+        with open(group_json) as f:
+            attrs = json.load(f)["attributes"]["_squid"]
+        assert attrs["acquisition_complete"] is False and attrs["aborted"] is True
+        assert registry.writers == {}

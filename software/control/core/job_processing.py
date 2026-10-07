@@ -491,6 +491,55 @@ class ZarrWriteResult:
 
 
 @dataclass
+class ZarrWriterRegistry:
+    """The open ZarrWriters of one acquisition, keyed by writer_key, plus the HCS metadata already written.
+
+    Each acquisition gets its own registry (the in-process runner owns one); the save subprocess
+    uses SaveZarrJob.default_registry, which lives as long as the subprocess does.
+    """
+
+    writers: Dict[str, "ZarrWriter"] = field(default_factory=dict)
+    plates_written: Set[str] = field(default_factory=set)
+    wells_written: Set[str] = field(default_factory=set)
+
+    _log: ClassVar = squid.logging.get_logger("ZarrWriterRegistry")
+
+    def finalize_all(self) -> bool:
+        """Finalize every open writer. Returns False if any failed. Empties the writers (HCS bookkeeping is kept)."""
+        failed = []
+        for path, writer in list(self.writers.items()):
+            if writer.is_initialized and not writer.is_finalized:
+                try:
+                    writer.finalize()
+                    self._log.info(f"Finalized zarr writer: {path}")
+                except Exception as e:
+                    self._log.error(f"Error finalizing writer {path}: {e}")
+                    failed.append(path)
+        self.writers.clear()
+        if failed:
+            self._log.error(f"Failed to finalize {len(failed)} zarr writers: {failed}")
+            return False
+        return True
+
+    def abort_all(self) -> None:
+        """Seal every open writer as aborted. Empties the registry even if a writer fails to abort."""
+        try:
+            for writer in list(self.writers.values()):
+                if writer.is_initialized and not writer.is_finalized:
+                    try:
+                        writer.abort()
+                    except Exception as e:
+                        self._log.warning(f"Error aborting writer during clear: {e}")
+        finally:
+            self._clear()
+
+    def _clear(self) -> None:
+        self.writers.clear()
+        self.plates_written.clear()
+        self.wells_written.clear()
+
+
+@dataclass
 class SaveZarrJob(Job):
     """Job for saving images to Zarr v3 format using TensorStore.
 
@@ -500,67 +549,31 @@ class SaveZarrJob(Job):
 
     _log: ClassVar = squid.logging.get_logger("SaveZarrJob")
     zarr_writer_info: Optional[ZarrWriterInfo] = field(default=None)
+    # The acquisition's writers. None = default_registry (the save subprocess, which has one acquisition
+    # per process). The in-process runner injects its own, as JobRunner.dispatch injects zarr_writer_info.
+    registry: Optional["ZarrWriterRegistry"] = field(default=None)
 
-    # Class-level writer storage keyed by output_path.
-    # SAFETY: JobRunner runs in a multiprocessing.Process (not threads), so each
-    # worker process has its own independent copy of this class variable.
-    # WARNING: This dict is NOT thread-safe. DO NOT use SaveZarrJob with threading
-    # (e.g., ThreadPoolExecutor) - it will cause race conditions and data corruption.
-    _zarr_writers: ClassVar[Dict[str, "ZarrWriter"]] = {}
+    default_registry: ClassVar["ZarrWriterRegistry"] = ZarrWriterRegistry()
 
-    # Track HCS metadata that has been written (plate path -> True, well path -> True)
-    _hcs_plate_written: ClassVar[Set[str]] = set()
-    _hcs_wells_written: ClassVar[Set[str]] = set()
+    @property
+    def _registry(self) -> "ZarrWriterRegistry":
+        return self.registry if self.registry is not None else SaveZarrJob.default_registry
 
     @classmethod
     def clear_writers(cls) -> None:
-        """Clear all zarr writers, aborting any that are still active.
-
-        Call at start of new acquisition to ensure clean state.
-        Uses try-finally to guarantee dictionaries are cleared even if abort fails.
-        """
-        try:
-            for writer in list(cls._zarr_writers.values()):
-                if writer.is_initialized and not writer.is_finalized:
-                    try:
-                        writer.abort()
-                    except Exception as e:
-                        cls._log.warning(f"Error aborting writer during clear: {e}")
-        finally:
-            # Always clear dictionaries, even if abort loop fails
-            cls._zarr_writers.clear()
-            cls._hcs_plate_written.clear()
-            cls._hcs_wells_written.clear()
+        """Abort and forget the default registry's writers (start of an acquisition in the subprocess)."""
+        cls.default_registry.abort_all()
 
     @classmethod
     def finalize_all_writers(cls) -> bool:
-        """Finalize all active zarr writers.
-
-        Call at end of acquisition to ensure all data is written.
-
-        Returns:
-            True if all writers finalized successfully, False if any failed.
-        """
-        failed_paths = []
-        for path, writer in list(cls._zarr_writers.items()):
-            if writer.is_initialized and not writer.is_finalized:
-                try:
-                    writer.finalize()
-                    cls._log.info(f"Finalized zarr writer: {path}")
-                except Exception as e:
-                    cls._log.error(f"Error finalizing writer {path}: {e}")
-                    failed_paths.append(path)
-        cls._zarr_writers.clear()
-        if failed_paths:
-            cls._log.error(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
-            return False
-        return True
+        """Finalize the default registry's writers (end of the subprocess). Returns False if any failed."""
+        return cls.default_registry.finalize_all()
 
     def _write_hcs_metadata_if_needed(self, region_id: str, fov: int) -> None:
         """Write HCS plate and well metadata if not already written.
 
         Called when a new writer is initialized for an HCS acquisition.
-        Uses class-level sets to track which plate/well metadata has been written.
+        Uses the registry's sets to track which plate/well metadata has been written.
 
         Args:
             region_id: Well ID (e.g., "A1", "B12")
@@ -572,20 +585,20 @@ class SaveZarrJob(Job):
 
         # Write plate metadata (once per acquisition)
         plate_path = info.get_plate_path()
-        if plate_path not in self._hcs_plate_written:
+        if plate_path not in self._registry.plates_written:
             rows, cols, wells = info.get_hcs_structure()
             write_plate_metadata(plate_path, rows, cols, wells, plate_name="plate")
-            self._hcs_plate_written.add(plate_path)
+            self._registry.plates_written.add(plate_path)
             self._log.info(f"Wrote HCS plate metadata: {len(wells)} wells")
 
         # Write well metadata (once per well)
         well_path = info.get_well_path(region_id)
-        if well_path not in self._hcs_wells_written:
+        if well_path not in self._registry.wells_written:
             # Get FOV count for this well
             fov_count = info.get_fov_count(region_id)
             fields = list(range(fov_count))
             write_well_metadata(well_path, fields)
-            self._hcs_wells_written.add(well_path)
+            self._registry.wells_written.add(well_path)
             self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
 
     def run(self) -> ZarrWriteResult:
@@ -684,7 +697,7 @@ class SaveZarrJob(Job):
         else:
             writer_key = output_path  # Unique per FOV
 
-        if writer_key not in self._zarr_writers:
+        if writer_key not in self._registry.writers:
             if is_hcs or not use_6d_fov:
                 # 5D shape: (T, C, Z, Y, X) - one writer per FOV
                 shape = (
@@ -728,7 +741,7 @@ class SaveZarrJob(Job):
             except Exception as e:
                 self._log.error(f"Failed to initialize zarr writer for {output_path}: {e}")
                 raise
-            self._zarr_writers[writer_key] = writer
+            self._registry.writers[writer_key] = writer
             if is_hcs:
                 mode_str = "HCS 5D"
                 # Write HCS plate and well metadata
@@ -739,7 +752,7 @@ class SaveZarrJob(Job):
                 mode_str = "non-HCS 5D per-FOV"
             self._log.info(f"Initialized zarr writer ({mode_str}): {output_path}")
 
-        writer = self._zarr_writers[writer_key]
+        writer = self._registry.writers[writer_key]
 
         # Write frame
         t = info.time_point or 0
