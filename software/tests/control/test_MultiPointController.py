@@ -903,3 +903,51 @@ def test_dead_tiff_subprocess_aborts_acquisition(caplog):
         worker._summarize_runner_outputs()
     worker._abort_due_to_error.assert_called_once()
     assert any("save subprocess exited" in r.getMessage() for r in caplog.records)
+
+
+def test_zarr_write_error_surfacing_at_the_end_ends_the_run_as_error(monkeypatch, caplog):
+    """A failed Zarr write that only _finish_jobs' final drain sees must end the run as an error, store incomplete.
+
+    Why this test exists: the per-FOV poll already aborts on a failure it sees; this one checks the failure that only
+    the final drain sees, by holding every result back from the per-FOV poll (drain_all=False).
+    """
+    pytest.importorskip("tensorstore")
+    import logging
+    from control.core.job_processing import SaveZarrJob
+    from control.core.multi_point_worker import MultiPointWorker, SummarizeResult
+
+    class _FailingFuture:
+        def result(self):
+            raise RuntimeError("disk full")
+
+    real_submit = SaveZarrJob.submit
+
+    def failing_submit(self):
+        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
+        if future is not None:
+            future.result()
+        return _FailingFuture(), result
+
+    real_summarize = MultiPointWorker._summarize_runner_outputs
+
+    def final_drain_only(self, drain_all=False):
+        if not drain_all:  # the per-FOV poll in the acquisition loop sees nothing
+            return SummarizeResult(none_failed=True, had_results=False)
+        return real_summarize(self, drain_all=drain_all)
+
+    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
+    monkeypatch.setattr(MultiPointWorker, "_summarize_runner_outputs", final_drain_only)
+    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    tt = TestAcquisitionTracker()
+    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    add_some_coordinates(mpc)
+    select_some_configs(mpc, scope.objective_store.current_objective)
+    with caplog.at_level(logging.ERROR):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(120)
+    assert mpc.multiPointWorker._abort_cause == "error"
+    assert any("save job(s) failed; the acquisition ends as an error" in r.getMessage() for r in caplog.records)
+    attrs = _zarr_jsons_with_squid(mpc)
+    assert attrs and all(a["acquisition_complete"] is False for a in attrs)
