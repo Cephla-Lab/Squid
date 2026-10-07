@@ -2136,3 +2136,87 @@ class TestZarrWriterRegistry:
             attrs = json.load(f)["attributes"]["_squid"]
         assert attrs["acquisition_complete"] is False and attrs["aborted"] is True
         assert registry.writers == {}
+
+
+class TestZarrWriterSubmitFrame:
+    def _writer(self, tmp_path):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        config = ZarrAcquisitionConfig(
+            output_path=str(tmp_path / "store.zarr"), shape=(1, 1, 2, 16, 16), dtype=np.uint16, pixel_size_um=1.0
+        )
+        writer = ZarrWriter(config)
+        writer.initialize()
+        return writer
+
+    def test_submit_frame_returns_the_write_future(self, tmp_path):
+        writer = self._writer(tmp_path)
+        future = writer.submit_frame(np.full((16, 16), 9, dtype=np.uint16), t=0, c=0, z=1)
+        assert future is not None
+        future.result()
+        writer.finalize()
+        import tensorstore as ts
+
+        written = ts.open(
+            {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(tmp_path / "store.zarr")}}
+        ).result()
+        assert int(written[0, 0, 1, 0, 0].read().result()) == 9
+
+    def test_submit_frame_validates_like_write_frame(self, tmp_path):
+        writer = self._writer(tmp_path)
+        with pytest.raises(ValueError):
+            writer.submit_frame(np.zeros((16, 16), dtype=np.uint16), t=0, c=0, z=2)
+        writer.finalize()
+        with pytest.raises(RuntimeError):
+            writer.submit_frame(np.zeros((16, 16), dtype=np.uint16), t=0, c=0, z=0)
+
+
+class TestSaveZarrJobSubmit:
+    def _job(self, tmp_path, value):
+        from control.core.job_processing import ZarrWriterRegistry
+
+        info = ZarrWriterInfo(
+            base_path=str(tmp_path / "acq"), t_size=1, c_size=1, z_size=2, channel_names=["BF"], pixel_size_um=1.0
+        )
+        return (
+            SaveZarrJob(
+                capture_info=make_test_capture_info(region_id="A1", fov=0, z_index=value),
+                capture_image=JobImage(image_array=np.full((16, 16), value + 1, dtype=np.uint16)),
+                zarr_writer_info=info,
+                registry=ZarrWriterRegistry(),
+            ),
+            info,
+        )
+
+    def test_submit_returns_a_future_and_the_result_to_report(self, tmp_path):
+        job, info = self._job(tmp_path, 0)
+        future, result = job.submit()
+        assert isinstance(result, ZarrWriteResult) and result.z_index == 0
+        future.result()  # the write completes without run() ever waiting for it
+        import tensorstore as ts
+
+        written = ts.open(
+            {"driver": "zarr3", "kvstore": {"driver": "file", "path": info.get_output_path("A1", 0)}}
+        ).result()
+        assert int(written[0, 0, 0, 0, 0].read().result()) == 1
+
+    def test_run_is_submit_then_wait(self, tmp_path, monkeypatch):
+        job, _ = self._job(tmp_path, 1)
+        waited = []
+
+        class _Future:
+            def result(self):
+                waited.append(True)
+
+        expected = ZarrWriteResult(fov=0, time_point=0, z_index=1, channel_name="c", region_idx=0)
+        monkeypatch.setattr(job, "submit", lambda: (_Future(), expected))
+        result = job.run()
+        assert waited == [True] and result.z_index == 1
+
+    def test_submit_in_simulated_io_mode_returns_no_future(self, tmp_path, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "SIMULATED_DISK_IO_ENABLED", True)
+        job, _ = self._job(tmp_path, 0)
+        future, result = job.submit()
+        assert future is None and isinstance(result, ZarrWriteResult)
