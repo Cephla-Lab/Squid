@@ -978,7 +978,8 @@ class MultiPointController:
                 self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
 
             # Get pre-warmed job runner and its shared backpressure values
-            # (starts a new one warming for next acquisition)
+            # (TIFF formats: starts a new one warming for next acquisition; a Zarr v3 run gets
+            # (None, None) and leaves the warm subprocess in place)
             prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
 
             # Worker creation can fail - ensure runner is cleaned up on error
@@ -1002,8 +1003,9 @@ class MultiPointController:
                 )
             except Exception:
                 # Clean up pre-warmed runner if worker creation failed.
-                # Note: get_prewarmed_job_runner() already started a NEW pre-warmed runner,
-                # so we're cleaning up the one that was handed off to us.
+                # Note: for TIFF formats get_prewarmed_job_runner() already started a NEW pre-warmed
+                # runner, so we're cleaning up the one that was handed off to us. A Zarr v3 run got
+                # (None, None) and left the warm subprocess in place, so there is nothing to clean up.
                 self._cleanup_prewarmed_runner(
                     prewarmed_runner,
                     context="after worker creation failure",

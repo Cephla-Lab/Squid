@@ -732,7 +732,8 @@ def _zarr_jsons_with_squid(mpc):
 
     out = []
     for p in (Path(mpc.base_path) / mpc.experiment_ID).rglob("zarr.json"):
-        attrs = json.load(open(p)).get("attributes", {}).get("_squid")
+        with open(p) as f:
+            attrs = json.load(f).get("attributes", {}).get("_squid")
         if attrs is not None:
             out.append(attrs)
     return out
