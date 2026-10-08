@@ -1,6 +1,6 @@
 """Bench GUI for the Cephla laser engine v2: test the engine through the Squid driver without a microscope.
 
-    python3 tools/laser_engine_v2_bench.py      (from software/ or anywhere; Qt binding from QT_API, e.g. pyqt5)
+python3 tools/laser_engine_v2_bench.py      (from software/ or anywhere; Qt binding from QT_API, e.g. pyqt5)
 """
 
 import os
