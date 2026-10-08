@@ -1,3 +1,5 @@
+import unittest.mock
+
 import pytest
 
 import control._def
@@ -6,6 +8,8 @@ import control.gui_hcs
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
+import squid.abc
+import squid.stage.utils
 
 
 @pytest.fixture
@@ -181,3 +185,58 @@ def test_gui_cleanup_closes_the_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
     gui._cleanup_common(for_restart=True)
 
     assert closed == ["dragonfly"]
+
+
+def _set_z_flags(monkeypatch, *, homing_z, pi_focus):
+    """Microscope.home_xyz and squid.stage.utils read the flags through control._def; gui_hcs star-imports
+    them, so its module-level bindings are patched too."""
+    for module in (control._def, control.gui_hcs):
+        monkeypatch.setattr(module, "HOMING_ENABLED_Z", homing_z)
+        monkeypatch.setattr(module, "USE_PI_FOCUS_STAGE", pi_focus)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Y", True)
+    if pi_focus:
+        monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True)
+
+
+def _build_gui_with_cached_position(qtbot, monkeypatch, cached):
+    """Build the GUI as if `cached` were in cache/last_coords.txt, with the stage's absolute moves mocked
+    so a test can assert what startup commanded."""
+    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    moves = {axis: unittest.mock.MagicMock(name=f"move_{axis}_to") for axis in ("x", "y", "z")}
+    for axis, mock in moves.items():
+        monkeypatch.setattr(scope.stage, f"move_{axis}_to", mock)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    return gui, moves
+
+
+def test_startup_restores_cached_xy_but_not_z_when_z_is_not_referenced(qtbot, monkeypatch, confirm_exit_yes):
+    """An XY-only Cephla stage (e.g. the Aries/Dragonfly config) runs with homing_enabled_z = False: its
+    cached X/Y must still be restored, and its meaningless cached Z must not be commanded."""
+    _set_z_flags(monkeypatch, homing_z=False, pi_focus=False)
+    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=1.5, theta_rad=None)
+
+    _, moves = _build_gui_with_cached_position(qtbot, monkeypatch, cached)
+
+    moves["x"].assert_called_once_with(cached.x_mm)
+    moves["y"].assert_called_once_with(cached.y_mm)
+    moves["z"].assert_not_called()
+
+
+def test_pi_focus_stage_is_a_referenced_z_even_without_cephla_z_homing(qtbot, monkeypatch, confirm_exit_yes):
+    """A Cephla XY stage with a PI V-308 as its Z has no Cephla Z to home, so it runs with homing_enabled_z
+    off; Z is still restored at startup and validated at shutdown."""
+    _set_z_flags(monkeypatch, homing_z=False, pi_focus=True)
+    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=0.3, theta_rad=None)
+    gui, moves = _build_gui_with_cached_position(qtbot, monkeypatch, cached)
+    moves["z"].assert_called_once_with(cached.z_mm)
+
+    cache_position = unittest.mock.MagicMock()
+    monkeypatch.setattr(squid.stage.utils, "cache_position", cache_position)
+    gui.closeEvent = lambda event: event.accept()  # keep teardown from re-running cleanup
+    gui._cleanup_common(for_restart=True)
+
+    cache_position.assert_called_once()
+    assert cache_position.call_args.kwargs["validate_z"] is True

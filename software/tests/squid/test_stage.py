@@ -2,6 +2,7 @@ import builtins
 import logging
 import pytest
 import tempfile
+import unittest.mock
 
 import squid.stage.cephla
 import squid.stage.prior
@@ -9,6 +10,8 @@ import squid.stage.utils
 import squid.stage.pi
 import squid.config
 import squid.abc
+import control._def
+import control.microscope
 from tests.control.test_microcontroller import get_test_micro
 
 
@@ -137,6 +140,69 @@ def test_cache_position_keeps_the_previous_position_when_the_write_fails(tmp_pat
     monkeypatch.undo()
 
     assert squid.stage.utils.get_cached_position(cache_path=cache_path) == already_cached
+
+
+def _pos_within_limits(stage_config, **overrides):
+    """A Pos in the middle of every axis' travel, with any coordinate overridden."""
+    mid = {
+        f"{axis}_mm": (cfg.MIN_POSITION + cfg.MAX_POSITION) / 2
+        for axis, cfg in (("x", stage_config.X_AXIS), ("y", stage_config.Y_AXIS), ("z", stage_config.Z_AXIS))
+    }
+    return squid.abc.Pos(theta_rad=None, **{**mid, **overrides})
+
+
+def test_cache_position_skips_the_z_soft_limits_when_z_is_not_validated(tmp_path):
+    """An XY-only Cephla stage reports the raw firmware Z (0 at boot, below the Z soft floor); with
+    validate_z=False that must not block caching X/Y."""
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    pos = _pos_within_limits(stage_config, z_mm=stage_config.Z_AXIS.MIN_POSITION - 1.0)
+
+    squid.stage.utils.cache_position(pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=False)
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) == pos
+
+
+def test_cache_position_still_validates_x_and_y_when_z_is_not(tmp_path):
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    pos = _pos_within_limits(stage_config, x_mm=stage_config.X_AXIS.MIN_POSITION - 1.0)
+
+    with pytest.raises(ValueError, match="not cacheable"):
+        squid.stage.utils.cache_position(pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=False)
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) is None
+
+
+@pytest.mark.parametrize(
+    "homing_enabled_z, use_pi_focus_stage",
+    [
+        pytest.param(True, False, id="cephla-z-homed"),
+        pytest.param(False, False, id="xy-only-cephla-stage"),
+        pytest.param(False, True, id="pi-focus-stage-without-cephla-z-homing"),
+    ],
+)
+def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_focus_stage):
+    """z_is_referenced() must be True exactly when Microscope.home_xyz homes Z, or the position cache
+    drifts from the homing logic it describes."""
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", homing_enabled_z)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", use_pi_focus_stage)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False)  # only the Z part of home_xyz matters here
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)  # an objective changer retracts Z at startup
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    try:
+        home = unittest.mock.MagicMock()
+        monkeypatch.setattr(scope.stage, "home", home)
+
+        scope.home_xyz()
+
+        z_homed = any(call.kwargs.get("z") for call in home.call_args_list)
+        assert squid.stage.utils.z_is_referenced() is z_homed
+    finally:
+        scope.close()
 
 
 # --- PI V-308 / C-414 focus stage --------------------------------------------
