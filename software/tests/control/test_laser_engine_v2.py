@@ -469,3 +469,18 @@ def test_illumination_controller_software_intensity_ttl_shutter_and_wake():
     )  # the controller selects D2 for 488
     ctrl.turn_on_illumination(488)
     mcu.turn_on_illumination.assert_called_once()
+
+
+def test_the_variant_is_read_again_once_the_expanders_answer():
+    from control.laser_engine_v2_sim import FakeSource
+
+    fake = FakeEngine(tok_delay_polls=0)
+    fake.i2c_fail_count = 1  # cold power-up: VAR? reads UNPROGRAMMED until the expanders answer (firmware readStraps)
+    opened = []
+    engine, _ = _engine(fake, source_factory=lambda: opened.append(1) or FakeSource())
+    engine.open()
+    try:
+        assert engine.variant == "DF" and "SHUT:SRC MCU" in fake.sent and opened == [1]
+        assert engine.poll_once().channels["L3"].state != LineState.NOT_CONFIGURED
+    finally:
+        engine.close()

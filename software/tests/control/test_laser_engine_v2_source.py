@@ -648,3 +648,78 @@ def test_source_restarting_by_itself_between_polls_closes_the_shutter():
     for _ in range(3):
         engine.source_step()
     assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open
+
+
+def _pause_a_poll_before_its_decisions(engine):
+    """Start a poll on another thread and hold it after its STAT? (it has read the state) until resume is set."""
+    captured, resume = threading.Event(), threading.Event()
+    original = engine._after_poll
+
+    def held(status, gen=None):
+        if threading.current_thread().name == "held-poll":
+            captured.set()
+            assert resume.wait(2)
+        original(status, gen)
+
+    engine._after_poll = held
+    thread = threading.Thread(target=engine.poll_once, name="held-poll")
+    thread.start()
+    assert captured.wait(2)
+    return thread, resume
+
+
+def test_a_ready_poll_older_than_a_restart_does_not_reopen_the_shutter():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # the heartbeat has just read L3 READY ...
+    source.enabled = False  # ... then the source goes off by itself
+    engine.source_step()
+    engine.wake_up("L3")  # another caller restarts it behind a closed shutter
+    engine.source_step()
+    assert engine.source_status.starting and not fake.shut_open
+    resume.set()
+    thread.join(2)
+    assert not thread.is_alive() and not fake.shut_open  # the old READY did not reopen it over a starting source
+    for _ in range(4):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open  # a fresh READY does
+
+
+def test_live_use_from_the_provider_keeps_the_source_on():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    in_use = [560]
+    engine.in_use_provider = lambda: list(in_use)  # Squid's live view, polled every heartbeat
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61  # live has run past the idle-off with no other call into the engine
+    engine.poll_once()
+    engine.source_step()
+    assert source.enabled and fake.shut_open
+    in_use.clear()  # live stopped
+    engine._source_last_use -= 61
+    engine.poll_once()
+    engine.source_step()
+    assert not source.enabled and not fake.shut_open
+
+
+def test_a_failing_provider_is_logged_once_and_idle_off_still_works(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    warnings = []
+    monkeypatch.setattr(engine._log, "warning", lambda msg, *a, **k: warnings.append(msg))
+
+    def broken():
+        raise RuntimeError("live controller gone")
+
+    engine.in_use_provider = broken
+    engine.poll_once()
+    engine.poll_once()
+    assert len([w for w in warnings if "live-view use not counted" in w]) == 1
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61
+    engine.poll_once()
+    engine.source_step()
+    assert not source.enabled

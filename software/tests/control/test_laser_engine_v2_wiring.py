@@ -164,3 +164,90 @@ def test_old_engine_has_on_startup():
     from control.squid_laser_engine import SquidLaserEngine_Simulation
 
     SquidLaserEngine_Simulation(query_interval_s=0.01).on_startup()  # = wake_up_all(); must not raise
+
+
+def _ready_df_engine():
+    from control.laser_engine_v2_link import EngineLink
+    from control.laser_engine_v2_sim import FakeEngine, FakeSource
+    from control.laser_engine_v2_status import LineState
+
+    fake, source = FakeEngine(tok_delay_polls=0), FakeSource()
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, query_interval_s=0.001)
+    engine.open()
+    engine.wake_up("L3")
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+    return engine, fake, source
+
+
+def test_live_view_counts_as_560_use_through_the_live_controller(monkeypatch):
+    from types import SimpleNamespace
+
+    from control._def import TriggerMode
+    from control.core.live_controller import LiveController
+    from control.laser_engine_v2_link import EngineLink
+
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    engine, fake, source = _ready_df_engine()
+    try:
+        micro, camera = MagicMock(), MagicMock()
+        micro.is_busy.return_value = False
+        camera.get_ready_for_trigger.return_value = True
+        scope = SimpleNamespace(
+            addons=SimpleNamespace(squid_laser_engine=engine, sci_microscopy_led_array=None),
+            illumination_controller=MagicMock(),
+            low_level_drivers=SimpleNamespace(microcontroller=micro),
+        )
+        live = LiveController(scope, camera)
+        live._get_illumination_wavelength = lambda: 560
+        live.trigger_mode = TriggerMode.HARDWARE
+        live._start_triggerred_acquisition = lambda: None  # frames are not needed: use is polled, not per frame
+        engine.in_use_provider = live.illumination_wavelengths_in_use  # what gui_hcs wires
+        assert live.illumination_wavelengths_in_use() == []
+        live.start_live()
+        assert live.illumination_wavelengths_in_use() == [560]
+        engine.source_idle_off_s = 60
+        engine._source_last_use -= 61  # live has run past the idle-off
+        engine.poll_once()
+        engine.source_step()
+        assert source.enabled  # live is use
+        live.stop_live()
+        assert live.illumination_wavelengths_in_use() == []
+    finally:
+        engine.close()
+
+
+def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(monkeypatch):
+    from types import SimpleNamespace
+
+    from control._def import ILLUMINATION_CODE
+    from control.laser_engine_v2_link import EngineLink
+    from control.lighting import IlluminationController, LightSourceType
+
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    engine, fake, _ = _ready_df_engine()
+    try:
+        fake.tok = [True] * 5
+        micro = MagicMock()
+        controller = IlluminationController(
+            micro,
+            IntensityControlMode.Software,
+            ShutterControlMode.TTL,
+            LightSourceType.CephlaLaserEngineV2,
+            engine.light_source,
+        )
+        ttl_map = {488: ILLUMINATION_CODE.ILLUMINATION_D2}
+        controller.config_repo = MagicMock()
+        illumination_config = controller.config_repo.get_illumination_config.return_value
+        illumination_config.channels = [SimpleNamespace(wavelength_nm=488)]
+        illumination_config.get_source_code.side_effect = lambda channel: ttl_map[channel.wavelength_nm]
+        engine.ttl_map_provider = lambda: controller.channel_mappings_TTL
+        controller.set_intensity(488, 40)
+        assert fake.lines[1]["target"] > 0
+        ttl_map[488] = ILLUMINATION_CODE.ILLUMINATION_D4  # the operator remaps 488 nm to D4 (engine line 4)
+        controller.set_intensity(488, 40)  # same intensity
+        assert micro.set_illumination.call_args.args[0] == ILLUMINATION_CODE.ILLUMINATION_D4
+        assert fake.lines[3]["target"] > 0  # line 4 got the set-point too
+    finally:
+        engine.close()

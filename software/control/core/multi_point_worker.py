@@ -1455,6 +1455,7 @@ class MultiPointWorker:
     def acquire_camera_image(
         self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
     ):
+        self._note_laser_engine_use()  # per image too: a single FOV (long z-stack) can outlast the 560 idle-off
         self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame

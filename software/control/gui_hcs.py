@@ -978,6 +978,10 @@ class HighContentScreeningGui(QMainWindow):
             from control.laser_engine_v2_widget import LaserEngineV2Widget
 
             self.laserEngineWidget = LaserEngineV2Widget(self.microscope.addons.squid_laser_engine)
+            # live has no per-frame call into the engine: let it see what live is using (the 560 idle-off)
+            self.microscope.addons.squid_laser_engine.in_use_provider = (
+                self.liveController.illumination_wavelengths_in_use
+            )
 
         self.recordingControlWidget = widgets.RecordingWidget(
             self.streamHandler,

@@ -112,6 +112,14 @@ class LiveController(QObject):
     # Squid laser engine readiness (warn-only)
     # ─────────────────────────────────────────────────────────────────────────────
 
+    def illumination_wavelengths_in_use(self) -> List[int]:
+        """The wavelength live is illuminating with right now; [] when live is off or the channel has none (LED matrix).
+        The laser engine v2 polls this from its own thread, so a long live session counts as use of its lines."""
+        if not self.is_live:
+            return []
+        wavelength = self._get_illumination_wavelength()
+        return [] if wavelength is None else [wavelength]
+
     def _check_laser_engine_warn_only(self) -> None:
         """Warn (don't block) at Live start if the channel isn't yet ACTIVE."""
         engine = getattr(self.microscope.addons, "squid_laser_engine", None)

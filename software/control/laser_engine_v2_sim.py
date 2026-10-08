@@ -192,8 +192,8 @@ class FakeEngine:
         arg = arg.strip()
         if key == "*IDN?":
             return "Cephla,LaserEngineCarrier-rev1,sim"
-        if key == "VAR?":
-            return "DF"
+        if key == "VAR?":  # like the firmware: the straps are read when the expanders first answer
+            return "UNPROGRAMMED" if self.i2c_fail_count > 0 else "DF"
         if key == "STAT?":
             return self._stat()
         if key == "HOST:TIMEOUT":
