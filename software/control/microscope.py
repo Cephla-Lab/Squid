@@ -228,18 +228,17 @@ class MicroscopeAddons:
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
         laser_engine = None
-        if control._def.USE_SQUID_LASER_ENGINE:
+        if control._def.LASER_ENGINE == "v1":
             laser_engine = (
-                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+                squid_laser_engine.SquidLaserEngine(sn=control._def.LASER_ENGINE_SN)
                 if not simulated
                 else squid_laser_engine.SquidLaserEngine_Simulation()
             )
-        if control._def.USE_LASER_ENGINE_REV1:
+        if control._def.LASER_ENGINE == "v2":
             options = laser_engine_v2.options_from_def()
             laser_engine = (
                 laser_engine_v2.build_from_config(
-                    sn=control._def.LASER_ENGINE_REV1_SN,
-                    source_sn=control._def.LASER_ENGINE_REV1_SOURCE_SN,
+                    sn=control._def.LASER_ENGINE_SN,
                     options=options,
                 )
                 if not simulated
@@ -310,9 +309,9 @@ class MicroscopeAddons:
             self.piezo_stage.home()
         if self.squid_laser_engine:
             # start() may raise if the USB device is missing — intentional hard fail
-            # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
+            # when a laser engine is configured so we don't silently disable it.
             self.squid_laser_engine.start()
-            self.squid_laser_engine.on_startup()  # old engine: wake all (TEC warm-up); v2: TECs on, arm, bring every line up
+            self.squid_laser_engine.on_startup()  # v1: wake all (TEC warm-up); v2: TECs on, arm, bring every line up
 
 
 class LowLevelDrivers:
@@ -449,7 +448,7 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
-        elif control._def.USE_LASER_ENGINE_REV1 and addons.squid_laser_engine is not None:
+        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,

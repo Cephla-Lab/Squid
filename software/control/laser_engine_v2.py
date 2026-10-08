@@ -1161,12 +1161,15 @@ class LaserEngineV2LightSource(LightSource):
         self._engine.close()
 
 
-def _production_source_factory(source_sn: Optional[str]):
+def _production_source_factory() -> Optional[Callable[[], SourceDriver]]:
+    """open_560_source from control.laser_engine_v2_560_driver: the DF 560 nm source driver, which finds the source by
+    its own USB IDs. That module is not in this repository (it is supplied separately); without it this returns None
+    and line 3 reads NOT_CONFIGURED, the other lines are unaffected."""
     try:
-        from control.laser_engine_v2_l3_driver import open_l3_source  # Task 10; absent from builds without it
+        from control.laser_engine_v2_560_driver import open_560_source
     except ImportError:
         return None
-    return lambda: open_l3_source(sn=source_sn)
+    return open_560_source
 
 
 def options_from_def() -> EngineOptions:
@@ -1206,9 +1209,11 @@ def save_source_power_mw(mw: float, path: Optional[str] = None) -> bool:
     return True
 
 
-def build_from_config(sn: Optional[str], source_sn: Optional[str], options: EngineOptions) -> LaserEngineV2:
+def build_from_config(sn: Optional[str], options: EngineOptions) -> LaserEngineV2:
+    """The engine on the USB device with serial number `sn` (the .ini's laser_engine_sn), and the 560 source when the
+    build has its driver."""
     return LaserEngineV2(
         link_factory=lambda: EngineLink.open(sn=sn),
-        source_factory=_production_source_factory(source_sn),
+        source_factory=_production_source_factory(),
         options=options,
     )

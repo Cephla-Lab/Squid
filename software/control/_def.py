@@ -991,14 +991,15 @@ ANDOR_LASER_PID = 0x0300
 # When True, software opens a USB-serial connection to the laser engine, polls
 # per-channel status (state/temperature/ΔT/TTL), and gates acquisition on
 # channels reaching ACTIVE state.
+# Legacy keys of this (v1) engine, still read: set laser_engine = v1 and laser_engine_sn (below) instead.
 USE_SQUID_LASER_ENGINE = False
 SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER_ENGINE is True
 
-# Cephla laser engine, carrier rev 1 (Teensy 4.1 text protocol, laser-engine-firmware). One light source: intensity over USB,
-# exposure timing on the Squid controller TTL lines D1-D5. Mutually exclusive with USE_SQUID_LASER_ENGINE.
-USE_LASER_ENGINE_REV1 = False
-LASER_ENGINE_REV1_SN = None  # Teensy USB serial number (all digits is fine: matched as text)
-LASER_ENGINE_REV1_SOURCE_SN = None  # DF: USB serial number of the engine's 560 nm source
+# Cephla laser engine (docs/laser-engine.md): laser_engine = v1 (the engine above) or v2 (control/laser_engine_v2.py:
+# intensity over USB, exposure timing on the Squid controller TTL lines D1-D5); blank or None = no laser engine.
+# Resolved at startup together with the legacy keys above (_resolve_laser_engine); the code reads only these two.
+LASER_ENGINE = None
+LASER_ENGINE_SN = None  # the engine's USB serial number, every version (all digits is fine: matched as text)
 LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN = (
     30  # DF: 560 source off after this many minutes without use; 0 = 24 h (no "never")
 )
@@ -1343,11 +1344,32 @@ def _validate_objective_changer_flags(use_xeryon: bool, use_turret: bool) -> Non
         )
 
 
-def _validate_laser_engine_flags(use_old: bool, use_rev1: bool) -> None:
-    if use_old and use_rev1:
+def _resolve_laser_engine(laser_engine, laser_engine_sn, use_squid_laser_engine, squid_laser_engine_sn) -> tuple:
+    """(LASER_ENGINE, LASER_ENGINE_SN) from the machine .ini: laser_engine = v1 | v2 (blank / none = no engine) and
+    laser_engine_sn, plus the legacy v1 keys use_squid_laser_engine / squid_laser_engine_sn. Raises ValueError for an
+    unknown laser_engine and for use_squid_laser_engine = True together with laser_engine = v2."""
+    engine = None if laser_engine is None else str(laser_engine).strip().lower()
+    if engine in ("", "none"):
+        engine = None
+    if engine is not None and engine not in ("v1", "v2"):
         raise ValueError(
-            "USE_SQUID_LASER_ENGINE and USE_LASER_ENGINE_REV1 are mutually exclusive (set only one to True in the machine .ini)"
+            f"laser_engine = {laser_engine!r} in the machine .ini: use v1, v2, or leave it blank (no laser engine)"
         )
+    if use_squid_laser_engine:
+        if engine == "v2":
+            raise ValueError(
+                "use_squid_laser_engine = True (the v1 engine) contradicts laser_engine = v2 in the machine .ini: "
+                "remove use_squid_laser_engine"
+            )
+        if engine is None:
+            log.warning(
+                "use laser_engine = v1 (and laser_engine_sn) instead of use_squid_laser_engine (and squid_laser_engine_sn)"
+            )
+            engine = "v1"
+    sn = None if laser_engine_sn in (None, "") else laser_engine_sn
+    if sn is None and engine == "v1":
+        sn = squid_laser_engine_sn
+    return engine, sn
 
 
 # fluidics
@@ -1476,7 +1498,9 @@ if config_files:
         populate_class_from_dict(myclass, pop_items)
 
     _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
-    _validate_laser_engine_flags(USE_SQUID_LASER_ENGINE, USE_LASER_ENGINE_REV1)
+    LASER_ENGINE, LASER_ENGINE_SN = _resolve_laser_engine(
+        LASER_ENGINE, LASER_ENGINE_SN, USE_SQUID_LASER_ENGINE, SQUID_LASER_ENGINE_SN
+    )
 
     with open("cache/config_file_path.txt", "w") as file:
         file.write(config_files[0])
@@ -1491,7 +1515,9 @@ else:
         log.info("load machine-specific configuration")
         exec(open(config_files[0]).read())
         _validate_objective_changer_flags(USE_XERYON, USE_OBJECTIVE_TURRET)
-        _validate_laser_engine_flags(USE_SQUID_LASER_ENGINE, USE_LASER_ENGINE_REV1)
+        LASER_ENGINE, LASER_ENGINE_SN = _resolve_laser_engine(
+            LASER_ENGINE, LASER_ENGINE_SN, USE_SQUID_LASER_ENGINE, SQUID_LASER_ENGINE_SN
+        )
     else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)

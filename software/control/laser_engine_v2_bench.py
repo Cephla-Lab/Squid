@@ -415,11 +415,6 @@ class BenchWindow(QMainWindow):
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.clicked.connect(lambda _=False: self.refresh_ports())
         bar1.addWidget(self.refresh_btn)
-        bar1.addWidget(QLabel("560 source SN"))
-        self.source_sn_edit = QLineEdit()
-        self.source_sn_edit.setPlaceholderText("optional")
-        self.source_sn_edit.setToolTip("Blank = no serial number given to the 560 source driver")
-        bar1.addWidget(self.source_sn_edit)
         self.simulate_cb = QCheckBox("Simulate (no hardware)")
         bar1.addWidget(self.simulate_cb)
         self.bringup_cb = QCheckBox("Bring up on connect")
@@ -478,7 +473,6 @@ class BenchWindow(QMainWindow):
         for widget in (
             self.port_combo,
             self.refresh_btn,
-            self.source_sn_edit,
             self.simulate_cb,
             self.bringup_cb,
             self.idle_spin,
@@ -500,10 +494,9 @@ class BenchWindow(QMainWindow):
         device = self.port_combo.currentData()
         if not device:
             raise RuntimeError("no Teensy port selected (Refresh, or tick Simulate)")
-        sn = self.source_sn_edit.text().strip()
-        source_factory = _production_source_factory(sn or None)
+        source_factory = _production_source_factory()
         if source_factory is None:
-            self._log.warning("no 560 driver in this build: L3 reads NOT_CONFIGURED")
+            self._log.warning("no 560 nm source driver in this build (supplied separately): L3 reads NOT_CONFIGURED")
         return LaserEngineV2(
             link_factory=lambda: EngineLink.open(device=device), source_factory=source_factory, options=options
         )

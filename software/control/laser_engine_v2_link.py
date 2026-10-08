@@ -45,7 +45,7 @@ class EngineLink:
             if path is None:
                 raise EngineLinkError(f"laser engine: no USB device with serial number {sn!r}")
         if path is None:
-            raise EngineLinkError("laser engine: set LASER_ENGINE_REV1_SN (or give a device path)")
+            raise EngineLinkError("laser engine: set laser_engine_sn in the machine .ini (or give a device path)")
         return cls(serial.Serial(path, baudrate=cls.BAUDRATE, timeout=timeout_s, write_timeout=timeout_s))
 
     def resync(self) -> None:

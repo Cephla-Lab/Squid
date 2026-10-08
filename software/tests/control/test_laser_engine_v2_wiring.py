@@ -1,3 +1,5 @@
+from unittest.mock import MagicMock
+
 import pytest
 
 import control._def
@@ -11,25 +13,89 @@ from control.laser_engine_v2 import (
 from control.lighting import IntensityControlMode, ShutterControlMode
 
 
-def test_flags_are_mutually_exclusive():
-    with pytest.raises(ValueError, match="USE_SQUID_LASER_ENGINE and USE_LASER_ENGINE_REV1"):
-        control._def._validate_laser_engine_flags(True, True)
-    control._def._validate_laser_engine_flags(False, True)
+@pytest.fixture
+def resolve(monkeypatch):
+    """_def._resolve_laser_engine with _def's logger captured: returns (resolve(...), the logger mock)."""
+    log = MagicMock()
+    monkeypatch.setattr(control._def, "log", log)
+
+    def call(laser_engine=None, laser_engine_sn=None, use_squid_laser_engine=False, squid_laser_engine_sn=None):
+        return control._def._resolve_laser_engine(
+            laser_engine, laser_engine_sn, use_squid_laser_engine, squid_laser_engine_sn
+        )
+
+    return call, log
 
 
-def test_build_from_config_without_the_vendor_module_has_no_source(monkeypatch):
+def test_the_ini_has_one_engine_selector_and_one_serial_number_key():
+    assert control._def.LASER_ENGINE in (None, "v1", "v2")
+    for name in ("USE_LASER_ENGINE_REV1", "LASER_ENGINE_REV1_SN", "LASER_ENGINE_REV1_SOURCE_SN"):
+        assert not hasattr(control._def, name)
+    assert hasattr(control._def, "USE_SQUID_LASER_ENGINE") and hasattr(control._def, "SQUID_LASER_ENGINE_SN")
+
+
+def test_resolver_selects_v2_or_v1_by_laser_engine(resolve):
+    call, log = resolve
+    assert call("v2", "123") == ("v2", "123")
+    assert call("V1 ", 12345670) == ("v1", 12345670)  # normalised; an all-digit serial number reads as an int
+    for blank in (None, "", "none", "None"):
+        assert call(blank) == (None, None)
+    assert call("v1", use_squid_laser_engine=True) == ("v1", None)  # both say v1: fine
+    log.warning.assert_not_called()
+
+
+def test_resolver_legacy_key_alone_selects_v1_with_one_warning(resolve):
+    call, log = resolve
+    assert call(use_squid_laser_engine=True, squid_laser_engine_sn="ABC") == ("v1", "ABC")
+    log.warning.assert_called_once()
+    assert (
+        "use laser_engine = v1 (and laser_engine_sn) instead of use_squid_laser_engine (and squid_laser_engine_sn)"
+        in (log.warning.call_args[0][0])
+    )
+
+
+def test_resolver_refuses_a_contradiction_and_an_unknown_engine(resolve):
+    call, _ = resolve
+    with pytest.raises(ValueError, match="contradicts laser_engine = v2"):
+        call("v2", use_squid_laser_engine=True)
+    for bad in ("v3", "rev1", True, 2):
+        with pytest.raises(ValueError, match="laser_engine = .* use v1, v2, or leave it blank"):
+            call(bad)
+
+
+def test_resolver_serial_number_falls_back_to_the_legacy_key_for_v1_only(resolve):
+    call, _ = resolve
+    assert call("v1", None, squid_laser_engine_sn="OLD") == ("v1", "OLD")
+    assert call("v1", "", squid_laser_engine_sn="OLD") == ("v1", "OLD")  # a blank key is unset
+    assert call("v1", "NEW", squid_laser_engine_sn="OLD") == ("v1", "NEW")
+    assert call("v2", None, squid_laser_engine_sn="OLD") == ("v2", None)  # the v1 serial number never opens a v2
+
+
+def test_build_from_config_without_the_560_driver_module_has_no_source(monkeypatch):
+    """The 560 source driver is supplied separately: without it, line 3 reads NOT_CONFIGURED and nothing else breaks."""
     import builtins
 
     real_import = builtins.__import__
 
-    def no_l3_driver(name, *a, **kw):
-        if name == "control.laser_engine_v2_l3_driver":
+    def no_560_driver(name, *a, **kw):
+        if name == "control.laser_engine_v2_560_driver":
             raise ImportError("not in this build")
         return real_import(name, *a, **kw)
 
-    monkeypatch.setattr(builtins, "__import__", no_l3_driver)
-    engine = build_from_config(sn="X", source_sn=None, options=EngineOptions())
+    monkeypatch.setattr(builtins, "__import__", no_560_driver)
+    engine = build_from_config(sn="X", options=EngineOptions())
     assert isinstance(engine, LaserEngineV2) and engine._source_factory is None
+
+
+def test_build_from_config_uses_the_560_driver_module_when_present(monkeypatch):
+    import sys
+    import types
+
+    module = types.ModuleType("control.laser_engine_v2_560_driver")
+    module.open_560_source = lambda: "source"  # takes no arguments: the driver finds the source by its USB IDs
+    monkeypatch.setitem(sys.modules, "control.laser_engine_v2_560_driver", module)
+    engine = build_from_config(sn="X", options=EngineOptions())
+    assert engine._source_factory is module.open_560_source and engine._source_factory() == "source"
 
 
 def test_options_come_from_the_ini_flags(monkeypatch):
@@ -46,8 +112,7 @@ def test_options_come_from_the_ini_flags(monkeypatch):
 def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
     import control.microscope
 
-    monkeypatch.setattr(control._def, "USE_LASER_ENGINE_REV1", True)
-    monkeypatch.setattr(control._def, "USE_SQUID_LASER_ENGINE", False)
+    monkeypatch.setattr(control._def, "LASER_ENGINE", "v2")
     scope = control.microscope.Microscope.build_from_global_config(simulated=True)
     try:
         engine = scope.addons.squid_laser_engine
@@ -61,6 +126,19 @@ def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
             "TEC1:OUT 1" in engine.sim_engine.sent and "ARM" in engine.sim_engine.sent
         )  # prepare_for_use -> on_startup
         assert engine.bringup_state in ("running", "done")
+    finally:
+        scope.close()
+
+
+def test_simulated_microscope_uses_the_v1_engine_for_laser_engine_v1(monkeypatch):
+    import control.microscope
+    from control.squid_laser_engine import SquidLaserEngine_Simulation
+
+    monkeypatch.setattr(control._def, "LASER_ENGINE", "v1")
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+    try:
+        assert isinstance(scope.addons.squid_laser_engine, SquidLaserEngine_Simulation)
+        assert not isinstance(scope.illumination_controller.light_source, LaserEngineV2LightSource)
     finally:
         scope.close()
 

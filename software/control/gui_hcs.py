@@ -971,10 +971,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
 
-        if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
+        if LASER_ENGINE == "v1" and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
 
-        if USE_LASER_ENGINE_REV1 and self.microscope.addons.squid_laser_engine is not None:
+        if LASER_ENGINE == "v2" and self.microscope.addons.squid_laser_engine is not None:
             from control.laser_engine_v2_widget import LaserEngineV2Widget
 
             self.laserEngineWidget = LaserEngineV2Widget(self.microscope.addons.squid_laser_engine)
