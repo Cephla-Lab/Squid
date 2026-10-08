@@ -37,6 +37,9 @@ class FakeEngine:
         self.shut_open = False
         self._shut_resume = False
         self.i2c_fail_count = 0
+        # replies after the I2C writes start working during which the firmware has not yet initialised its expanders and
+        # read the ID straps (its 1 s initMissing tick): chips.mcp 0, VAR? and STAT? var UNPROGRAMMED
+        self.straps_delay_replies = 0
         self.arm_refusals: List[str] = []
         self._unplugged = False
         self._emit_s = [0.0] * 5  # hour meter per line, seconds (STAT? "hours"; stays 0 here, as TAP3 does on DF)
@@ -169,21 +172,31 @@ class FakeEngine:
             {
                 "t": self.t_ms,
                 "fw": "sim",
-                "var": "DF",
+                "var": self._variant_name(),
                 "armed": int(self.armed),
                 "suspended": int(self.suspended),
                 "faults": len(self.faults),
                 "fault_names": list(self.faults),
                 "last_event": self.last_event,
                 "host_timeout_ms": self.host_timeout_ms,
-                "chips": dict(mcp=1, dac=1, adc_imon=1, adc_pd=1, fan_a=1, fan_b=1),
+                "chips": dict(mcp=int(self._expanders_up()), dac=1, adc_imon=1, adc_pd=1, fan_a=1, fan_b=1),
                 "in": inputs,
                 "lines": lines,
                 "shutter": dict(present=1, src=self.shut_src, open=int(self.shut_open), fb_v=0.0),
             }
         )
 
+    def _expanders_up(self) -> bool:
+        """Like the firmware: the expanders answer (I2C writes work) a little before they are initialised and the ID
+        straps read; until then the variant is UNPROGRAMMED."""
+        return self.i2c_fail_count == 0 and self.straps_delay_replies == 0
+
+    def _variant_name(self) -> str:
+        return "DF" if self._expanders_up() else "UNPROGRAMMED"
+
     def _reply(self, cmd: str) -> str:
+        if self.i2c_fail_count == 0 and self.straps_delay_replies > 0:
+            self.straps_delay_replies -= 1
         head, _, arg = cmd.partition(" ")
         h = head.upper()
         word = h.split(":")[0]
@@ -192,8 +205,8 @@ class FakeEngine:
         arg = arg.strip()
         if key == "*IDN?":
             return "Cephla,LaserEngineCarrier-rev1,sim"
-        if key == "VAR?":  # like the firmware: the straps are read when the expanders first answer
-            return "UNPROGRAMMED" if self.i2c_fail_count > 0 else "DF"
+        if key == "VAR?":
+            return self._variant_name()
         if key == "STAT?":
             return self._stat()
         if key == "HOST:TIMEOUT":

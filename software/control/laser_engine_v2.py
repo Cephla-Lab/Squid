@@ -29,14 +29,15 @@ from control._def import source_code_to_port_index
 from control.laser_engine_v2_settings import load_settings
 from control.laser_engine_v2_link import EngineCommandError, EngineLink, EngineLinkError
 from control.laser_engine_v2_status import (
+    EngineV2Status,
     ERROR_STATES,
+    is_560_line,
+    LineState,
+    parse_status,
     REFUSE_STATES,
     SOURCE_560_LINE,
-    EngineV2Status,
-    LineState,
+    _source_state,
     SourceStatus,
-    is_560_line,
-    parse_status,
 )
 from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL, IntensityControlMode, ShutterControlMode
 from squid.abc import LightSource
@@ -164,6 +165,7 @@ class LaserEngineV2(QObject):
     DEFAULT_QUERY_INTERVAL_S = 1.0  # every STAT? is the heartbeat: must stay well under HOST_TIMEOUT_S
     HOST_TIMEOUT_S = 5
     CONFIG_RETRY_S = 3.0  # expanders come up within ~1 s of a cold power-up (firmware retries them once a second)
+    EXPANDER_INIT_WAIT_S = 2.5  # then the straps: the firmware initialises its expanders on a 1 s tick (2 ticks)
     SOURCE_ENABLE_ATTEMPTS = 3  # consecutive enable failures before the source is reported as a fault
     SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
     SOURCE_SETTLE_TOL_FRAC = 0.05
@@ -231,10 +233,10 @@ class LaserEngineV2(QObject):
         # _on_lost -> _disable_source), never the reverse: nothing holding either of those waits for _aom_lock
         self._aom_lock = threading.Lock()
         self._source_lock = threading.Lock()  # guards the check-then-act source fields shared between the two threads
-        # The shutter's open decision + send, a restart's enable-pending + close and a switch-off share _shutter_lock
-        # (lock order: _aom_lock, _shutter_lock, _source_lock; reentrant, since a lost link inside the shutter command
-        # runs _disable_source on the same thread). _shutter_gen counts restarts and switch-offs: a poll whose snapshot is older
-        # than the latest one never opens the shutter (it may have read READY just before the source went down).
+        # The shutter's open decision + send and a restart's enable-pending + close share _shutter_lock (lock order:
+        # _aom_lock, _shutter_lock, _source_lock; reentrant, since a lost link inside a shutter command runs
+        # _disable_source on the same thread). _shutter_gen (changed under _source_lock) counts restarts and switch-offs:
+        # a poll whose snapshot is older than the latest one never opens the shutter or switches the source off.
         self._shutter_lock = threading.RLock()
         self._shutter_gen = 0
         # Squid's live view: wavelengths it is illuminating with right now (polled every heartbeat; live has no
@@ -301,8 +303,9 @@ class LaserEngineV2(QObject):
                 for n in range(1, 6):
                     self._link.command(f"LINE{n}:MOD INT")  # set-point from the engine DAC (USB), never the analog jack
                     self._link.command(f"LINE{n}:GATE 0")  # exposure timing = Squid controller TTL
-                # The firmware reads the variant straps when its expanders first answer, which is also when the line
-                # commands above start to succeed: at a cold power-up the VAR? in open() can still say UNPROGRAMMED.
+                # At a cold power-up the VAR? in open() can still say UNPROGRAMMED: read it again once the firmware
+                # has initialised its expanders and read the ID straps.
+                self._wait_for_expanders(time.monotonic() + self.EXPANDER_INIT_WAIT_S)
                 self.variant = self._link.query("VAR?")
                 if self.variant == "DF":
                     # the shutter is safety only: held open while the 560 is in use, never per exposure
@@ -312,6 +315,17 @@ class LaserEngineV2(QObject):
                 if time.monotonic() >= deadline:
                     raise LaserEngineV2Error("engine", f"cannot configure the lines: {e.reason}") from e
                 time.sleep(0.2)
+
+    def _wait_for_expanders(self, deadline: float) -> None:
+        """The firmware reads the ID straps when it initialises its expanders (STAT? chips.mcp turns 1), on a 1 s tick:
+        the line writes in _configure_lines can succeed up to a second before that."""
+        while not self._link.status().get("chips", {}).get("mcp"):
+            if time.monotonic() >= deadline:
+                self._log.warning(
+                    "laser engine expanders not initialised at connect: its variant may read UNPROGRAMMED"
+                )
+                return
+            time.sleep(0.2)
 
     def _notice(self, text: str, warn: bool = True) -> None:
         (self._log.warning if warn else self._log.info)(text)
@@ -693,9 +707,10 @@ class LaserEngineV2(QObject):
                 if self._source_enable_pending:
                     return  # the source thread has not run the last enable yet (callers repeat)
                 self._source_enable_pending = True
-            self._shutter_gen += 1
+                self._shutter_gen += 1
             try:
-                self._set_held_shutter(False, self._latest_raw or {})  # closed before the source starts; opens at READY
+                # always sent: the cached STAT? may be older than an open, and closing twice is harmless
+                self._set_held_shutter(False, self._latest_raw or {}, force=True)
             except Exception:
                 with self._source_lock:
                     self._source_enable_pending = False
@@ -723,14 +738,15 @@ class LaserEngineV2(QObject):
     def _disable_source(self) -> None:
         if self._source is None:
             return
-        with self._shutter_lock:  # a poll deciding to open right now either finishes first or sees the switch-off
-            with self._source_lock:
-                if not self._source_want_on:
-                    return
-                self._source_want_on = False
-                self._source_pending_mw = None
-                self._source_disable_pending = True  # source_step clears it once the disable has run
-                self._source_queue.put(("disable", None))
+        # Not under _shutter_lock: a switch-off must not wait for a shutter round trip in flight. An open racing it is
+        # harmless (the source is going off; the next poll closes the shutter).
+        with self._source_lock:
+            if not self._source_want_on:
+                return
+            self._source_want_on = False
+            self._source_pending_mw = None
+            self._source_disable_pending = True  # source_step clears it once the disable has run
+            self._source_queue.put(("disable", None))
             self._shutter_gen += 1
 
     def _touch_source(self) -> None:
@@ -900,7 +916,8 @@ class LaserEngineV2(QObject):
         st = self._source_status
         source_starting = st is not None and st.starting and not st.ready
         idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
-        not_armed = not status.armed and not self._source_enable_pending  # a STAT? taken just before this thread's ARM
+        current = gen is None or gen == self._shutter_gen  # no restart / switch-off since this snapshot
+        not_armed = not status.armed and not self._source_enable_pending and current  # not a STAT? from before an ARM
         if not_armed or (l3 is not None and l3.state in ERROR_STATES) or idle:
             if idle:
                 self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
@@ -924,9 +941,7 @@ class LaserEngineV2(QObject):
                 gen != self._shutter_gen  # a restart or switch-off since the snapshot: the next poll decides
                 or not self._source_want_on
                 or self._source_enable_pending
-                or st is None
-                or not st.ready
-                or st.starting
+                or _source_state(st)[0] != LineState.READY  # the same READY test that L3's state uses
             ):
                 return
             self._set_held_shutter(True, self._latest_raw or {})
@@ -943,14 +958,15 @@ class LaserEngineV2(QObject):
                 self._in_use_provider_failed = True
                 self._log.warning(f"live-view use not counted (the 560 source may idle off during live): {e}")
             return
+        self._in_use_provider_failed = False
         self.channel_keys_for_wavelengths(wavelengths)  # notes their use
 
-    def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
+    def _set_held_shutter(self, want_open: bool, raw: dict, force: bool = False) -> None:
         """DF: the shutter is a safety device only - open while the 560 is in use (line 3 READY), closed in every other
         state, so the beam is blocked whenever the source is not known to be ready. Never per exposure: the AOM does
         exposure on/off (D3 TTL). `raw` = the latest STAT?.
         """
-        if self.variant != "DF" or bool((raw.get("shutter") or {}).get("open")) == want_open:
+        if self.variant != "DF" or (not force and bool((raw.get("shutter") or {}).get("open")) == want_open):
             return
         try:
             self._cmd(f"SHUT:OPEN {int(want_open)}")

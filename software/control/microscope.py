@@ -532,6 +532,9 @@ class Microscope:
             )
 
         self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
+        if control._def.LASER_ENGINE == "v2" and self.addons.squid_laser_engine is not None:
+            # live has no per-frame call into the engine: let it see what live is using (the 560 idle-off)
+            self.addons.squid_laser_engine.in_use_provider = self.live_controller.illumination_wavelengths_in_use
 
         # Sync confocal mode from hardware (must be after LiveController creation)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:

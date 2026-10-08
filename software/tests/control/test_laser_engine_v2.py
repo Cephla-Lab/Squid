@@ -484,3 +484,17 @@ def test_the_variant_is_read_again_once_the_expanders_answer():
         assert engine.poll_once().channels["L3"].state != LineState.NOT_CONFIGURED
     finally:
         engine.close()
+
+
+def test_the_variant_waits_for_the_straps_after_the_expanders_answer():
+    from control.laser_engine_v2_sim import FakeSource
+
+    fake = FakeEngine(tok_delay_polls=0)
+    fake.straps_delay_replies = 15  # line writes already work; the 1 s firmware tick has not read the straps yet
+    opened = []
+    engine, _ = _engine(fake, source_factory=lambda: opened.append(1) or FakeSource())
+    engine.open()
+    try:
+        assert engine.variant == "DF" and "SHUT:SRC MCU" in fake.sent and opened == [1]
+    finally:
+        engine.close()

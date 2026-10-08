@@ -126,6 +126,7 @@ def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
         assert ic.intensity_control_mode == IntensityControlMode.Software
         assert ic.shutter_control_mode == ShutterControlMode.TTL
         assert engine._ttl_map() == ic.channel_mappings_TTL  # one wavelength map for intensity and exposure
+        assert engine.in_use_provider == scope.live_controller.illumination_wavelengths_in_use  # live counts as use
         assert (
             "TEC1:OUT 1" in engine.sim_engine.sent and "ARM" in engine.sim_engine.sent
         )  # prepare_for_use -> on_startup
@@ -203,7 +204,7 @@ def test_live_view_counts_as_560_use_through_the_live_controller(monkeypatch):
         live._get_illumination_wavelength = lambda: 560
         live.trigger_mode = TriggerMode.HARDWARE
         live._start_triggerred_acquisition = lambda: None  # frames are not needed: use is polled, not per frame
-        engine.in_use_provider = live.illumination_wavelengths_in_use  # what gui_hcs wires
+        engine.in_use_provider = live.illumination_wavelengths_in_use  # what Microscope wires
         assert live.illumination_wavelengths_in_use() == []
         live.start_live()
         assert live.illumination_wavelengths_in_use() == [560]

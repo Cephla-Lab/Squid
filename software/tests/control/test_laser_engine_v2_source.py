@@ -501,11 +501,13 @@ def test_shutter_opens_when_l3_is_ready_and_is_never_sent_per_exposure():
     engine.wake_up("L3")
     engine.source_step()
     engine.poll_once()  # L3 still starting
-    assert not any(c.startswith("SHUT:OPEN") for c in fake.sent)
+    shutter = [c for c in fake.sent if c.startswith("SHUT:OPEN")]
+    assert shutter == ["SHUT:OPEN 0"] and not fake.shut_open  # only the restart's close, always sent
     for _ in range(4):
         engine.source_step()
     engine.poll_once()  # L3 READY: the shutter opens
     assert fake.sent.count("SHUT:OPEN 1") == 1 and fake.shut_open
+    opened_at = len(fake.sent)
     for pct in (30.0, 60.0, 0.0, 100.0):  # live view / acquisition: intensity per channel switch
         engine.light_source.set_intensity(560, pct)
         engine.note_use(["L3"])
@@ -515,7 +517,7 @@ def test_shutter_opens_when_l3_is_ready_and_is_never_sent_per_exposure():
     for _ in range(3):
         engine.source_step()
         engine.poll_once()
-    assert fake.sent.count("SHUT:OPEN 1") == 1 and "SHUT:OPEN 0" not in fake.sent and fake.shut_open
+    assert not any(c.startswith("SHUT:OPEN") for c in fake.sent[opened_at:]) and fake.shut_open  # never per exposure
 
 
 def test_shutter_closes_on_idle_off():
@@ -723,3 +725,70 @@ def test_a_failing_provider_is_logged_once_and_idle_off_still_works(monkeypatch)
     engine.poll_once()
     engine.source_step()
     assert not source.enabled
+
+
+def test_a_restart_closes_the_shutter_even_when_the_cached_status_says_closed():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    stale = dict(engine._latest_raw)
+    stale["shutter"] = dict(stale["shutter"], open=0)
+    engine._latest_raw = stale  # a STAT? taken before the open, assigned last by a slow caller
+    source.enabled = False  # the source goes off by itself
+    engine.source_step()
+    engine._wake_source()  # what the next use does on SOURCE_OFF
+    assert not fake.shut_open  # closed although the cache said it already was
+    engine.source_step()
+    assert source.calls.count("enable") == 2 and not fake.shut_open  # the restart is behind the closed shutter
+
+
+def test_a_switch_off_does_not_wait_for_a_shutter_command_in_flight():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    held, release = threading.Event(), threading.Event()
+
+    def shutter_round_trip():  # e.g. a slow SHUT:OPEN on a failing link
+        with engine._shutter_lock:
+            held.set()
+            release.wait(2)
+
+    thread = threading.Thread(target=shutter_round_trip)
+    thread.start()
+    assert held.wait(1)
+    t0 = time.monotonic()
+    engine._disable_source()
+    waited = time.monotonic() - t0
+    release.set()
+    thread.join(2)
+    assert waited < 0.5 and not engine._source_want_on
+
+
+def test_a_not_armed_snapshot_from_before_a_restart_does_not_switch_the_new_start_off():
+    engine, fake, source = _with_source()  # connected, not armed
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # this poll has read "not armed" ...
+    engine.wake_up("L3")  # ... then another caller arms, enables line 3 and starts the source
+    for _ in range(2):
+        engine.source_step()
+    resume.set()
+    thread.join(2)
+    assert not thread.is_alive() and engine._source_want_on and "disable" not in source.calls
+
+
+def test_a_ready_poll_older_than_a_completed_restart_waits_for_a_fresh_one():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # read READY ...
+    source.enabled = False
+    engine.source_step()
+    engine.put_to_sleep("L3")  # ... the shutter closes with line 3 ...
+    engine.wake_up("L3")  # ... and the 560 is restarted
+    for _ in range(4):
+        engine.source_step()
+    assert engine.source_status.ready and not engine._source_enable_pending  # ready again, as the old snapshot said
+    mark = len(fake.sent)
+    resume.set()
+    thread.join(2)
+    assert "SHUT:OPEN 1" not in fake.sent[mark:]  # only the snapshot's age (the generation) stops this open
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open  # a fresh READY opens it
