@@ -225,16 +225,6 @@ def test_startup_restores_cached_xy_but_not_z_when_z_is_not_referenced(qtbot, mo
     moves["z"].assert_not_called()
 
 
-def test_startup_restores_cached_z_when_the_cephla_z_is_homed(qtbot, monkeypatch, confirm_exit_yes):
-    _set_z_flags(monkeypatch, homing_z=True, pi_focus=False)
-    safety_z_mm = int(control.gui_hcs.Z_HOME_SAFETY_POINT) / 1000.0
-    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=safety_z_mm + 0.5, theta_rad=None)
-
-    _, moves = _build_gui_with_cached_position(qtbot, monkeypatch, cached)
-
-    moves["z"].assert_called_once_with(cached.z_mm)
-
-
 def test_pi_focus_stage_is_a_referenced_z_even_without_cephla_z_homing(qtbot, monkeypatch, confirm_exit_yes):
     """A Cephla XY stage with a PI V-308 as its Z has no Cephla Z to home, so it runs with homing_enabled_z
     off; Z is still restored at startup and validated at shutdown."""

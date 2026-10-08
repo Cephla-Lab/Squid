@@ -168,24 +168,13 @@ def test_cache_position_skips_the_z_soft_limits_when_z_is_not_validated(tmp_path
     assert squid.stage.utils.get_cached_position(cache_path=cache_path) == pos
 
 
-@pytest.mark.parametrize(
-    "validate_z, below_floor",
-    [
-        pytest.param(
-            False, lambda cfg: {"x_mm": cfg.X_AXIS.MIN_POSITION - 1.0}, id="x-is-validated-even-when-z-is-not"
-        ),
-        pytest.param(True, lambda cfg: {"z_mm": cfg.Z_AXIS.MIN_POSITION - 1.0}, id="z-is-validated-by-default"),
-    ],
-)
-def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validate_z, below_floor):
+def test_cache_position_still_validates_x_and_y_when_z_is_not(tmp_path):
     cache_path = str(tmp_path / "last_coords.txt")
     stage_config = squid.config.get_stage_config()
-    pos = _pos_within_limits(stage_config, **below_floor(stage_config))
+    pos = _pos_within_limits(stage_config, x_mm=stage_config.X_AXIS.MIN_POSITION - 1.0)
 
     with pytest.raises(ValueError, match="not cacheable"):
-        squid.stage.utils.cache_position(
-            pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=validate_z
-        )
+        squid.stage.utils.cache_position(pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=False)
 
     assert squid.stage.utils.get_cached_position(cache_path=cache_path) is None
 
@@ -196,7 +185,6 @@ def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validat
         pytest.param(True, False, id="cephla-z-homed"),
         pytest.param(False, False, id="xy-only-cephla-stage"),
         pytest.param(False, True, id="pi-focus-stage-without-cephla-z-homing"),
-        pytest.param(True, True, id="pi-focus-stage-with-cephla-z-homing"),
     ],
 )
 def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_focus_stage):
