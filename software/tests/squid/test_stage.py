@@ -186,6 +186,24 @@ def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validat
     assert squid.stage.utils.get_cached_position(cache_path=cache_path) is None
 
 
+@pytest.mark.parametrize(
+    "homing_enabled_z, use_pi_focus_stage, expected",
+    [
+        pytest.param(True, False, True, id="cephla-z-homed"),
+        pytest.param(False, True, True, id="pi-focus-stage-is-referenced-even-without-cephla-z-homing"),
+        pytest.param(False, False, False, id="xy-only-cephla-stage"),
+    ],
+)
+def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_focus_stage, expected):
+    """A Cephla Z is referenced only when it is homed; a PI V-308 is referenced at every start."""
+    import control._def
+
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", homing_enabled_z)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", use_pi_focus_stage)
+
+    assert squid.stage.utils.z_is_referenced() is expected
+
+
 # --- PI V-308 / C-414 focus stage --------------------------------------------
 
 

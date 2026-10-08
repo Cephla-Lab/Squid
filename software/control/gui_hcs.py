@@ -771,8 +771,8 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-            # Z is only restored when it is homed; otherwise its reading is a raw step count (see cache_position).
-            if HOMING_ENABLED_Z:
+            # Z is only restored when it is referenced; otherwise its reading is a raw step count.
+            if squid.stage.utils.z_is_referenced():
                 if not cached_pos:
                     self.log.info("Cache position is not exists.  Moving Z axis to safety position")
                     squid.stage.utils.move_z_axis_to_safety_position(self.stage)
@@ -2781,10 +2781,12 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
-        # Cache position and settings.  Z is only validated (and, at startup, restored) when it is homed.
+        # Cache position and settings.  Z is only validated (and, at startup, restored) when it is referenced.
         try:
             squid.stage.utils.cache_position(
-                pos=self.stage.get_pos(), stage_config=self.stage.get_config(), validate_z=HOMING_ENABLED_Z
+                pos=self.stage.get_pos(),
+                stage_config=self.stage.get_config(),
+                validate_z=squid.stage.utils.z_is_referenced(),
             )
         except ValueError as e:
             # ValueError is expected when position is out of bounds

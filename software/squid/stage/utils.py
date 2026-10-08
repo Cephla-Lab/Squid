@@ -54,14 +54,25 @@ def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
     return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=None)
 
 
+def z_is_referenced() -> bool:
+    """Whether the Z reading is an absolute position, i.e. worth validating at shutdown and restoring at startup.
+
+    Mirrors Microscope.home_xyz: a Cephla Z is homed only when HOMING_ENABLED_Z is set, while a PI V-308
+    focus stage is referenced at every start regardless of that flag (a Cephla XY stage with a V-308 as
+    its Z has no Cephla Z to home, so such a system runs with homing_enabled_z off).  Without either, the
+    Z reading is the raw firmware step count: 0 at boot on an XY-only Cephla stage, or wherever Z happened
+    to be on a system that never homes it.
+    """
+    return _def.HOMING_ENABLED_Z or _def.USE_PI_FOCUS_STAGE
+
+
 def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH, validate_z: bool = True):
     """Write out the current x, y, z position, in mm, so we can use it later as a cached position.
 
     Raises ValueError instead of writing when a validated axis is outside its soft limits.  X and Y are
-    always validated.  Pass validate_z=False when Z is not homed (an XY-only Cephla stage, or a system
-    that never homes Z): its reading is then the raw firmware step count, 0 at boot, which sits below
-    the usual Z floor and would otherwise stop X/Y from ever being cached.  Startup does not restore Z
-    in that case either, so the cached Z is never commanded.
+    always validated.  Pass validate_z=False when Z is not referenced (see z_is_referenced): its reading
+    is then a raw step count that sits below the usual Z floor at boot and would otherwise stop X/Y from
+    ever being cached.  Startup does not restore Z in that case either, so the cached Z is never commanded.
     """
     if stage_config is not None:  # StageConfig not implemented for Prior stage
         validated = {"x": (stage_config.X_AXIS, pos.x_mm), "y": (stage_config.Y_AXIS, pos.y_mm)}
