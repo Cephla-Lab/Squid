@@ -456,7 +456,7 @@ def test_illumination_controller_software_intensity_ttl_shutter_and_wake():
             get_illumination_config=lambda: None
         ),  # Squid's default TTL map, whatever YAML is on this machine
     )
-    engine.ttl_map_provider = lambda: ctrl.channel_mappings_TTL  # as Task 7 wires it
+    engine.ttl_map_provider = lambda: ctrl.channel_mappings_TTL  # as Microscope wires it
     assert "ARM" not in fake.sent  # building the controller only opens the engine
     fake.tok = [True] * 5
     ctrl.set_intensity(488, 25.0)

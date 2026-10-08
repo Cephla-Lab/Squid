@@ -1,4 +1,5 @@
-"""Cephla laser engine v2 — Squid driver.
+"""Cephla laser engine v2 — Squid driver. Variants (firmware VAR?): 400R / 400HP (400 µm fiber) and DF (50 µm fiber, for
+the Dragonfly; adds a 560 nm fiber laser with an AOM on line 3).
 
 One object owns the engine link (and, on DF, the engine's 560 nm source). It polls STAT? once a second, which is also the heartbeat the
 firmware needs to stay armed; publishes per-line readiness; arms and brings every line up at Squid startup, and re-arms on use after
@@ -7,7 +8,7 @@ any disarm; and sets intensities. Exposure timing is NOT here: the Squid control
 
 DF 560 nm: the laser runs at the operator's power (Laser Engine tab, remembered in cache/laser_engine_v2.yaml);
 Squid's 560 intensity drives the AOM amplitude (line 3 analog); the AOM's on/off input is the controller's D3 TTL; the
-shutter is safety only - held open while the 560 is in use, closed whenever the source is switched off.
+shutter is safety only - open only while line 3 is READY, closed in every other state and before any source restart.
 """
 
 import math
@@ -80,7 +81,7 @@ AOM_FULL_SCALE_V = 5.0  # GATED3 = the AOM driver's analog input, 0-5 V; full sc
 
 
 def idle_off_seconds(minutes: float) -> float:
-    """Ruling 4: the 560 source idle-off time; 0 means 24 h (the source is never left on indefinitely)."""
+    """Seconds before an unused 560 source is switched off; 0 minutes = 24 h, so it is never left on indefinitely."""
     if minutes < 0:
         raise ValueError("idle-off minutes must be >= 0 (0 = 24 h)")
     return float(minutes if minutes > 0 else 24 * 60) * 60.0
@@ -193,14 +194,13 @@ class LaserEngineV2(QObject):
         self._lost_lock = threading.Lock()
         self._running = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._percent: Dict[int, float] = {}  # last commanded drive per line, % of its ceiling (Task 5)
-        self._light_source = None  # LaserEngineV2LightSource, created on first use (Task 5)
-        self._source = None  # engine-owned 560 nm source (Task 6)
+        self._percent: Dict[int, float] = {}  # last commanded drive per line, % of its ceiling
+        self._light_source = None  # LaserEngineV2LightSource, created on first use
+        self._source = None  # the engine's own 560 nm source (DF), when its driver is present
         self._source_status: Optional[SourceStatus] = None
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.ttl_map_provider: Optional[Callable[[], Dict[int, int]]] = (
-            None  # Task 7: IlluminationController.channel_mappings_TTL
-        )
+        # wavelength -> TTL port code: Microscope sets it to IlluminationController.channel_mappings_TTL
+        self.ttl_map_provider: Optional[Callable[[], Dict[int, int]]] = None
         self._bringup_state = ""  # "", "running", "done", "cancelled: ..."
         self._bringup_keys: List[str] = []
         self._bringup_armed = False  # the bring-up has seen the engine armed (a later disarm cancels it)
@@ -263,7 +263,8 @@ class LaserEngineV2(QObject):
         self._open_source()
 
     def _reset_at_connect(self, raw: dict) -> None:
-        """Ruling 2: one FAULT:RESET at connect, never retried, and say what it cleared (the engine latches at every power-up)."""
+        """One FAULT:RESET at connect (the engine latches at every power-up), never retried, saying what it cleared:
+        a fault from before Squid connected must stay visible to the operator."""
         latched = []
         if not raw["in"].get("latch_ok", 1):
             latched.append("hardware fault latch")
@@ -359,7 +360,8 @@ class LaserEngineV2(QObject):
             time.sleep(self.query_interval_s)
 
     def poll_once(self) -> Optional[EngineV2Status]:
-        """One STAT? round-trip. Never does source I/O (that runs on the source thread, Task 6)."""
+        """One STAT? round-trip. Never does source I/O: only the source thread does, so a slow source cannot delay this
+        heartbeat."""
         link = self._link  # close() on another thread may clear it
         if self._lost or link is None:
             return None
@@ -375,8 +377,8 @@ class LaserEngineV2(QObject):
         status = parse_status(raw, source=self._source_status, has_source=self._source is not None)
         with self._status_lock:
             self._latest, self._latest_raw = status, raw
-        self._after_poll(status)  # Task 6: the 560 source decisions (and the held-open shutter)
-        self._bringup_step(status)  # Task 4: the startup bring-up, one non-blocking step per poll
+        self._after_poll(status)  # the 560 source decisions (and the held-open shutter)
+        self._bringup_step(status)  # the startup bring-up, one non-blocking step per poll
         self.status_updated.emit(status)
         return status
 
@@ -406,7 +408,7 @@ class LaserEngineV2(QObject):
         "PG_BUCKS low",
     )
 
-    # ---- wavelength -> line: the same map that selects the TTL port (ruling 5) ---------------------------------------
+    # ---- wavelength -> line: the map that selects the TTL port, so intensity and exposure use one line ---------------
     def _ttl_map(self) -> Dict[int, int]:
         provider = self.ttl_map_provider
         return provider() if provider is not None else _DEFAULT_CHANNEL_MAPPINGS_TTL
@@ -442,7 +444,7 @@ class LaserEngineV2(QObject):
     def _line_of(channel_key: str) -> int:
         return int(channel_key.lstrip("L"))
 
-    # ---- startup bring-up (ruling 1) -------------------------------------------------------------------------------------
+    # ---- startup bring-up: every fitted line ready without the operator asking ---------------------------------------
     @property
     def bringup_state(self) -> str:
         if self._bringup_state == "running" and self._arm_wait_reason:
@@ -451,7 +453,8 @@ class LaserEngineV2(QObject):
 
     def on_startup(self) -> None:
         """Once, from MicroscopeAddons.prepare_for_use: TECs on, then ARM and bring every line up, the 560 included.
-        Runs one step per STAT? poll, so Squid's startup never waits for the TECs. TEC auto-on in firmware: to-do (§3.5d).
+        Runs one step per STAT? poll, so Squid's startup never waits for the TECs. The TECs are switched on here
+        because the firmware does not switch them on by itself at power-up.
         """
         raw = self._stat()
         for i, ln in enumerate(raw["lines"]):
@@ -646,7 +649,7 @@ class LaserEngineV2(QObject):
                 return False
             time.sleep(self.query_interval_s)
 
-    # ---- engine-owned source hooks used above (Task 6 implements them) ---------------------------------------------
+    # ---- the engine's 560 source: checks and requests used above -----------------------------------------------------
     def _check_source_usable(self, channel_key: str) -> None:
         if self._source is None:
             raise LaserEngineV2Error(channel_key, "560 nm source not configured")
@@ -680,7 +683,7 @@ class LaserEngineV2(QObject):
                 volts = self._aom_volts_for(self._percent.get(SOURCE_560_LINE, 0.0))
                 self._cmd(f"LINE3:SET {volts:.3f}")  # the AOM amplitude; the AOM's on/off input is the D3 TTL
                 self._aom_volts = volts  # accepted: what the engine now has
-            start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the operator's power
+            start = src.min_power_mw  # the source starts at its own minimum; the operator's power follows at ready
             with self._source_lock:
                 if self._lost:  # under the lock: _signal_lost sets _lost before its _disable_source takes the lock
                     raise LaserEngineV2Error("L3", "laser engine connection lost")
@@ -712,7 +715,7 @@ class LaserEngineV2(QObject):
     def _clear_source_error(self) -> None:
         self._source_error, self._source_failures = None, 0
 
-    # ---- hooks: engine-owned source (Task 6) ------------------------------------------------------------------------
+    # ---- the engine's 560 source: open, source thread, close ---------------------------------------------------------
     def _open_source(self) -> None:
         if self.variant != "DF" or self._source_factory is None:
             return
@@ -887,8 +890,9 @@ class LaserEngineV2(QObject):
             self._set_held_shutter(False, raw)
 
     def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
-        """DF, ruling 2026-10-06: the shutter is safety only - open while the 560 is in use (line 3 READY), closed in every
-        other state. Never per exposure: the AOM does exposure on/off (D3 TTL). `raw` = the latest STAT?.
+        """DF: the shutter is a safety device only - open while the 560 is in use (line 3 READY), closed in every other
+        state, so the beam is blocked whenever the source is not known to be ready. Never per exposure: the AOM does
+        exposure on/off (D3 TTL). `raw` = the latest STAT?.
         """
         if self.variant != "DF" or bool((raw.get("shutter") or {}).get("open")) == want_open:
             return
@@ -900,7 +904,7 @@ class LaserEngineV2(QObject):
     def _on_lost(self) -> None:
         self._disable_source()
 
-    # ---- intensity (Task 5; DF 560 = the AOM, rulings 2026-10-06) -------------------------------------------------------
+    # ---- intensity (DF 560: the AOM amplitude, not the laser power) --------------------------------------------------
     SETTLE_TIMEOUT_S = 1.0  # firmware ramps 0 -> ceiling in 0.5 s
 
     def set_line_intensity(self, line: int, percent: float) -> None:
@@ -945,7 +949,8 @@ class LaserEngineV2(QObject):
         return 100.0 * float(ln["target"]) / float(ln["max"]) if ln["max"] else 0.0
 
     def set_wavelength_intensity(self, wavelength: int, percent: float) -> None:
-        """Squid's intensity (ruling 3): % of optical power, on the line whose TTL port this wavelength uses."""
+        """Squid's intensity, % of optical power as for its other light sources, on the line whose TTL port this
+        wavelength uses."""
         line = self.line_for_wavelength(wavelength)
         if line is None:
             raise LaserEngineV2Error(f"{wavelength} nm", "not on an engine port (D1-D5) in the illumination port map")
@@ -997,7 +1002,7 @@ class LaserEngineV2(QObject):
         return float(mw) if mw is not None else float(src.min_power_mw)
 
     def set_source_power_mw(self, mw: float) -> float:
-        """Ruling 2026-10-06: the 560 nm laser power, set by the operator (Laser Engine tab), clamped to the source's limits.
+        """The 560 nm laser power, set by the operator (Laser Engine tab), clamped to the source's limits.
         Applied now when the source is on, once it has started when it is starting, else at its next start. Returns the
         power applied. Only queues (the source thread does the I/O). Squid's intensity never changes it."""
         src = self._source  # local: close() can clear self._source on another thread
@@ -1027,11 +1032,11 @@ class LaserEngineV2(QObject):
     @staticmethod
     def _source_power_for(mw: float, src) -> float:
         """The laser power for a setting: clamped to the source's limits. `src` is the caller's source (close() may clear
-        self._source meanwhile). The AOM is not touched here: it does the intensity (ruling 2026-10-06)."""
+        self._source meanwhile). The AOM is not touched here: it does the intensity."""
         return max(float(src.min_power_mw), min(float(mw), float(src.max_power_mw)))
 
     def _read_aom_calibration(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
-        """Ruling 2026-10-06: <calibration dir>/560_aom.csv, when present, maps the 560 intensity to AOM volts; else linear.
+        """<calibration dir>/560_aom.csv, when present, maps the 560 intensity to AOM volts; else linear.
         Read once, at open (before any thread runs)."""
         path = self._calibration_dir / AOM_CAL_FILE
         if not path.is_file():
@@ -1093,7 +1098,7 @@ class LaserEngineV2(QObject):
 
 
 class _SameKey(dict):
-    """IlluminationController's channel map for this source: every wavelength maps to itself (ruling 5). The engine resolves the
+    """IlluminationController's channel map for this source: every wavelength maps to itself. The engine resolves the
     line at call time from the TTL port map, so intensity and exposure always use the same port."""
 
     def __missing__(self, key):

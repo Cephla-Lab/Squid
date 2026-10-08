@@ -1,4 +1,4 @@
-"""DF 560 nm intensity = the AOM amplitude (line 3 analog, 0-5 V), rulings 2026-10-06: linear in volts by default,
+"""DF 560 nm intensity = the AOM amplitude (line 3 analog, 0-5 V): linear in volts by default,
 through intensity_calibrations/560_aom.csv when it exists. The laser power is the operator's and never changes here."""
 
 from pathlib import Path

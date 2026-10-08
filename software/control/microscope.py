@@ -456,8 +456,8 @@ class Microscope:
                 LightSourceType.CephlaLaserEngineV2,
                 addons.squid_laser_engine.light_source,
             )
-            # ruling 5: the engine line for a wavelength is the port its TTL uses, read live (follows port-map edits and the
-            # Microscope.config_repo setter, which replaces illumination_controller.config_repo)
+            # the engine line for a wavelength is the port its TTL uses, so intensity and exposure reach the same line;
+            # read live (follows port-map edits and the Microscope.config_repo setter, which replaces its config_repo)
             addons.squid_laser_engine.ttl_map_provider = lambda: illumination_controller.channel_mappings_TTL
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)

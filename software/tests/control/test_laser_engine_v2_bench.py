@@ -59,7 +59,7 @@ def test_panel_rows_intensity_and_readback(qtbot):
 def test_panel_560_row_is_the_aom_with_no_floor(qtbot):
     engine, panel = _panel(qtbot)  # FakeSource 200-1000 mW
     try:
-        assert all(row.spin.minimum() == 0 for row in panel.rows.values())  # no GUI floor (ruling 2026-10-06)
+        assert all(row.spin.minimum() == 0 for row in panel.rows.values())  # no floor: 0 % is the AOM at 0 V
         panel.rows["L3"].spin.setValue(50.0)
         assert "LINE3:SET 2.500" in engine.sim_engine.sent  # 50 % = 2.5 V on the AOM input (no calibration)
         assert engine.source_power_setpoint_mw == 200.0 and engine.sim_source.calls == []  # the laser power untouched
@@ -228,7 +228,7 @@ def test_bench_window_connect_error_stays_disconnected(qtbot, monkeypatch):
         win.log_pane.detach()
 
 
-# ---- fix round 1 -----------------------------------------------------------------------------------------------------
+# ---- reconnects, refusals and shutdown ------------------------------------------------------------------------------
 def _shared_sim(monkeypatch):
     """Every simulated connect talks to one fake engine; it keeps set-points across a DISARM, as the firmware does."""
     fake, source = FakeEngine(tok_delay_polls=0), FakeSource()

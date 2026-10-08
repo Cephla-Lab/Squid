@@ -63,8 +63,8 @@ def test_out_of_step_reply_resyncs_and_retries_once():
 
 
 def test_fake_enable_during_a_pause_joins_the_resume_set():
-    """Mirrors the firmware fix (made in parallel, firmware repo): LINE<n>:EN 1 during a cover pause joins the
-    resume set - reply OK, the line stays OFF - instead of the old refusal or an immediate RAMP."""
+    """Mirrors the firmware: LINE<n>:EN 1 during a cover pause joins the resume set - reply OK, the line stays OFF
+    until the cover closes - instead of being refused or ramping at once."""
     fake = FakeEngine(tok_delay_polls=0)
     fake.latch_ok = True  # skip FAULT:RESET; ARM needs the hardware fault latch clear
     fake.tok = [True] * 5

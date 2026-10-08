@@ -125,7 +125,7 @@ def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
         assert isinstance(ic.light_source, LaserEngineV2LightSource)
         assert ic.intensity_control_mode == IntensityControlMode.Software
         assert ic.shutter_control_mode == ShutterControlMode.TTL
-        assert engine._ttl_map() == ic.channel_mappings_TTL  # one wavelength map for intensity and exposure (ruling 5)
+        assert engine._ttl_map() == ic.channel_mappings_TTL  # one wavelength map for intensity and exposure
         assert (
             "TEC1:OUT 1" in engine.sim_engine.sent and "ARM" in engine.sim_engine.sent
         )  # prepare_for_use -> on_startup
@@ -156,7 +156,7 @@ def test_multipoint_notes_engine_use_every_fov():
     worker._laser_engine, worker._laser_channels_needed = MagicMock(), ["L3"]
     worker._note_laser_engine_use()
     worker._laser_engine.note_use.assert_called_once_with(["L3"])
-    worker._laser_engine = object()  # the 2024/25 engine has no note_use
+    worker._laser_engine = object()  # the v1 engine has no note_use
     worker._note_laser_engine_use()  # must not raise
 
 

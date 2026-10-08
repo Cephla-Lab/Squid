@@ -18,7 +18,7 @@ def _fast_resync(monkeypatch):
 
 
 def _with_source(source=None, options=None):
-    source = source or FakeSource()  # 200-1000 mW, like the DF unit's limits
+    source = source or FakeSource()  # 200-1000 mW, like a DF engine's 560 source
     fake = FakeEngine(tok_delay_polls=0)
     engine = LaserEngineV2(
         link_factory=lambda: EngineLink(fake),
@@ -409,7 +409,7 @@ def test_failed_disable_after_link_loss_is_retried():
     assert not source.enabled
 
 
-# ---- the operator's 560 laser power (ruling 2026-10-06) ------------------------------------------------------------------
+# ---- the operator's 560 laser power (the AOM does the intensity) ----------------------------------------------------
 
 
 def test_source_power_defaults_to_the_minimum():
@@ -487,7 +487,7 @@ def test_set_source_power_without_a_source_raises():
     assert e.value.channel_key == "L3" and engine.source_power_setpoint_mw is None
 
 
-# ---- the shutter is safety only (ruling 2026-10-06) ----------------------------------------------------------------------
+# ---- the shutter is safety only -------------------------------------------------------------------------------------
 
 
 def test_shutter_is_mcu_controlled_from_connect():
