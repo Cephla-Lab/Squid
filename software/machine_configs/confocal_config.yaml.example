@@ -11,3 +11,32 @@ filter_wheels:
       3: "BP 600/50"
       4: "BP 700/75"
       5: "LP 650"
+
+# ---------------------------------------------------------------------------
+# Andor Dragonfly
+#
+# Enable the unit in the .ini:
+#   enable_spinning_disk_confocal = True
+#   use_dragonfly = True
+#   dragonfly_serial_number = "<USB serial number of the Dragonfly>"
+#
+# The Dragonfly has no irises, so `model: dragonfly` generates no objective-specific
+# properties. A channel's filter position is applied to the emission wheel on whichever
+# camera port the port-selection dichroic currently feeds, so list that wheel's slots:
+#
+# version: 1
+# model: dragonfly
+#
+# filter_wheels:
+#   - name: "Emission Wheel"
+#     id: 1
+#     type: emission
+#     positions:
+#       1: "445/45"
+#       2: "525/50"
+#       3: "600/50"
+#       4: "700/75"
+#       5: "Empty"
+#       6: "Empty"
+#       7: "Empty"
+#       8: "Empty"

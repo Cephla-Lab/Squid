@@ -698,13 +698,12 @@ MAX_ACCELERATION_W_mm = 300
 HAS_ENCODER_X = False
 HAS_ENCODER_Y = False
 HAS_ENCODER_Z = False
-HAS_ENCODER_W = False
+HAS_ENCODER_W = False  # the wheel's encoder is for reporting and the tuner; closed loop on the wheel is not supported
 
 # enable PID control
 ENABLE_PID_X = False
 ENABLE_PID_Y = False
 ENABLE_PID_Z = False
-ENABLE_PID_W = False
 
 # PID arguments
 PID_P_X = int(1 << 12)
@@ -718,10 +717,6 @@ PID_D_Y = int(0)
 PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
 PID_D_Z = int(1)
-
-PID_P_W = int(1 << 12)
-PID_I_W = int(1)
-PID_D_W = int(1)
 
 # flip direction True or False
 ENCODER_FLIP_DIR_X = True
@@ -1036,10 +1031,9 @@ NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 6
 LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
-USE_NAPARI_FOR_LIVE_VIEW = False
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
-USE_NAPARI_WELL_SELECTION = False
-USE_NAPARI_FOR_LIVE_CONTROL = False
+
+# Live view only (no acquisition tabs)
 LIVE_ONLY_MODE = False
 
 # NDViewer integration
@@ -1117,11 +1111,9 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
-# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven).
-#   "auto"  on when the controller runs firmware >= 1.6 (where crossing the flag was verified), off below
-#   True    on from firmware 1.4: set it in the machine ini after checking that a 1 -> 8 move completes
-#   False   always the flag-free arc
-SQUID_FILTERWHEEL_WRAP = "auto"
+# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven); firmware >= 1.6 only.
+# False forces the flag-free arc on every firmware.
+SQUID_FILTERWHEEL_WRAP = True
 # > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the last
 # degrees are still travelled, so the exposure can start earlier (firmware >= 1.6, SET_COMPLETION_WINDOW; ignored
 # with a warning on older firmware). 0 = complete at the exact slot with the wheel stopped. Size it from the optics:

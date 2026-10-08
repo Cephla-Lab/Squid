@@ -525,6 +525,16 @@ class XLight:
         return self.disk_motor_state
 
 
+def dragonfly_camera_port_for_dichroic(dichroic_name: str) -> int:
+    """Which camera port a port-selection dichroic feeds: only the all-pass and all-reflect
+    positions route everything to one port; the real dichroics split by wavelength."""
+    if dichroic_name.endswith("100% Pass"):
+        return 1
+    if dichroic_name.endswith("100% Reflect"):
+        return 2
+    raise ValueError(f"Unknown camera port: {dichroic_name}")
+
+
 class Dragonfly:
 
     def __init__(self, SN: str):
@@ -635,7 +645,8 @@ class Dragonfly:
             position: Target position
         """
         command = f"AT_PS_POS,1,{position}"
-        response = self._send_command(command)
+        self._send_command(command)
+        self.current_port_selection_dichroic = position  # get_camera_port() reads this
         return position
 
     def get_port_selection_dichroic(self) -> int:
@@ -660,12 +671,7 @@ class Dragonfly:
         if not self.ps_info or not (1 <= self.current_port_selection_dichroic <= len(self.ps_info)):
             raise ValueError(f"Port selection dichroic info does not match current position: {self.ps_info}")
 
-        if self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Pass"):
-            return 1
-        elif self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Reflect"):
-            return 2
-        else:
-            raise ValueError(f"Unknown camera port: {self.ps_info[self.current_port_selection_dichroic - 1]}")
+        return dragonfly_camera_port_for_dichroic(self.ps_info[self.current_port_selection_dichroic - 1])
 
     def set_modality(self, modality: str):
         """Set imaging modality
@@ -784,7 +790,7 @@ class Dragonfly:
             return []
         else:
             info = []
-            for i in range(1, 8):  # Assume there are 8 positions on the emission filter wheel
+            for i in range(1, 9):  # There are 8 positions on the emission filter wheel
                 info.append(str(i) + ":" + self._get_component_info("FW", port, i))
             return info
 
@@ -851,11 +857,8 @@ class Dragonfly_Simulation:
         return self.dichroic_position
 
     def get_camera_port(self) -> int:
-        """Get current camera port"""
-        if self.dichroic_position == 1:
-            return 1
-        else:
-            return 2
+        """Get current camera port, by the same rule as the hardware driver"""
+        return dragonfly_camera_port_for_dichroic(self.get_port_selection_dichroic_info()[self.dichroic_position - 1])
 
     def set_modality(self, modality: str):
         """Set imaging modality"""
@@ -897,10 +900,10 @@ class Dragonfly_Simulation:
         """Set filter wheel rotation speed"""
         self.log.debug(f"Set filter wheel port {port} speed to {speed}")
 
-    def set_field_aperture_wheel_position(self, port: int, position: int):
+    def set_field_aperture_wheel_position(self, position: int):
         """Set aperture position"""
-        self.field_aperture_positions[port] = position
-        self.log.debug(f"Set field aperture port {port} to position {position}")
+        self.field_aperture_positions[1] = position
+        self.log.debug(f"Set field aperture to position {position}")
 
     def get_field_aperture_wheel_position(self) -> int:
         """Get current aperture position"""
@@ -910,14 +913,17 @@ class Dragonfly_Simulation:
         """Get information about a component"""
         return f"Component {component_type} Port {port} - Simulation"
 
+    # Names in the same shape the hardware reports them: the widget lists them verbatim and
+    # get_camera_port() keys on the "100% Pass" / "100% Reflect" dichroic names.
     def get_emission_filter_info(self, port: int) -> list[str]:
-        return [str(i) for i in range(1, 9)]
+        names = ["445/45", "525/50", "600/50", "700/75", "Empty", "Empty", "Empty", "Empty"]
+        return [f"{i}:{name}" for i, name in enumerate(names, start=1)]
 
     def get_field_aperture_info(self) -> list[str]:
-        return [str(i) for i in range(1, 11)]
+        return [f"Aperture {i}" for i in range(1, 11)]
 
     def get_port_selection_dichroic_info(self) -> list[str]:
-        return [str(i) for i in range(1, 5)]
+        return ["100% Pass", "Dichroic 1", "Dichroic 2", "100% Reflect"]
 
     def close(self):
         """Close the simulated connection"""
