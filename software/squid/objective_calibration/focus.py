@@ -4,6 +4,17 @@ Micro-Manager JAF(H&P) (Autofocus.java, UCSF 2007): a coarse grid over ±search 
 operator's hand focus, then finer grids around the best sample. The two refusals, a flat curve and a
 peak at the edge of the range, follow OpenFlexure check_stack_result (openflexure-microscope-server,
 things/autofocus.py).
+
+Contract. Precondition: the operator has hand-focused on the sample, and each objective's focus lies
+within ±range of that Z. Guarantee: a returned Z is the maximum of the contrast curve measured over
+that range, inside it with EDGE_SAMPLES on each side; otherwise a FocusError states what was observed
+(flat curve, peak at the edge, too few samples inside the Z limits, peak moved between levels). Not
+promised: that the peak is the sample rather than dust or a coverslip.
+
+Hardware verification so far: an H&E section in bright-field only (Squid+, 4x/10x/20x, 2026-10-05
+and the PR #683 bench). Fluorescence, unstained bright-field (phase objects: contrast is lowest at
+focus), sparse fields, thick samples and NA > 0.8 are untested; PEAK_SIGMAS and the single-peak
+assumption were checked only against that slide and synthetic noise.
 """
 
 from dataclasses import dataclass
