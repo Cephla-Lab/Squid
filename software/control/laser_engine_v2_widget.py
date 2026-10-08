@@ -97,6 +97,13 @@ class _NoWheelDoubleSpinBox(QDoubleSpinBox):
         event.ignore()
 
 
+class _NoWheelSpinBox(QSpinBox):
+    """Never takes the mouse wheel: scrolling the tab must not change (and save) the 560 idle-off."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
 def _not_saved_in_simulation(setting: str) -> Callable[[float], bool]:
     """A simulated engine keeps its settings to itself: the fake source's limits are not the machine's."""
 
@@ -249,7 +256,8 @@ class LaserEngineV2Widget(QWidget):
         self.power_spin.setValue(engine.source_power_setpoint_mw or limits[0])
         self.power_set_btn = QPushButton("Set")
         self.power_set_btn.clicked.connect(lambda _=False: self.set_source_power())
-        self.idle_off_spin = QSpinBox()
+        self.idle_off_spin = _NoWheelSpinBox()
+        self.idle_off_spin.setFocusPolicy(Qt.StrongFocus)
         self.idle_off_spin.setRange(0, 24 * 60)
         self.idle_off_spin.setSuffix(" min")
         self.idle_off_spin.setSpecialValueText("24 h")  # shown at 0: there is no "never off"

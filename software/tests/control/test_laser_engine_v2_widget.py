@@ -265,3 +265,31 @@ def test_widget_shows_the_startup_state_at_once(qtbot):
     assert widget.startup_label.text().startswith("Startup: ")
     assert widget.rows["L1"].state.text() != "—"  # seeded from the latest status
     engine.close()
+
+
+def _wheel(widget, steps=3):
+    from qtpy.QtCore import QPoint, QPointF, Qt
+    from qtpy.QtGui import QWheelEvent
+
+    centre = QPointF(widget.width() / 2, widget.height() / 2)
+    event = QWheelEvent(
+        centre, centre, QPoint(0, 0), QPoint(0, 120 * steps), Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False
+    )
+    QApplication.sendEvent(widget, event)
+
+
+def test_widget_560_spinboxes_ignore_the_mouse_wheel(qtbot):
+    idle_saved = []
+    engine = build_simulated_engine()
+    engine.open()
+    widget = LaserEngineV2Widget(
+        engine, save_power=lambda mw: True, save_idle_off=lambda m: idle_saved.append(m) or True
+    )
+    qtbot.addWidget(widget)
+    widget.show()
+    power, idle = widget.power_spin.value(), widget.idle_off_spin.value()
+    for spin in (widget.power_spin, widget.idle_off_spin):  # scrolling the tab past them must change nothing
+        _wheel(spin)
+    assert (widget.power_spin.value(), widget.idle_off_spin.value()) == (power, idle)
+    assert idle_saved == [] and engine.source_power_setpoint_mw == 200.0
+    engine.close()
