@@ -771,7 +771,6 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-            # Z is only restored when it is referenced (see squid.stage.utils.z_is_referenced).
             if squid.stage.utils.z_is_referenced():
                 if not cached_pos:
                     self.log.info("No cached position.  Moving Z axis to safety position")

@@ -68,7 +68,7 @@ def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACH
     """Write out the current x, y, z position, in mm, so we can use it later as a cached position.
 
     Raises ValueError, writing nothing, when a validated axis is outside its soft limits.  X and Y are always
-    validated; pass validate_z=False for an unreferenced Z (see z_is_referenced), which startup never restores.
+    validated; Z is skipped when validate_z=False (see z_is_referenced).
     """
     if stage_config is not None:  # StageConfig not implemented for Prior stage
         axes = [("x", stage_config.X_AXIS, pos.x_mm), ("y", stage_config.Y_AXIS, pos.y_mm)]

@@ -144,21 +144,16 @@ def test_cache_position_keeps_the_previous_position_when_the_write_fails(tmp_pat
 
 def _pos_within_limits(stage_config, **overrides):
     """A Pos in the middle of every axis' travel, with any coordinate overridden."""
-    coords = dict(
-        x_mm=(stage_config.X_AXIS.MIN_POSITION + stage_config.X_AXIS.MAX_POSITION) / 2,
-        y_mm=(stage_config.Y_AXIS.MIN_POSITION + stage_config.Y_AXIS.MAX_POSITION) / 2,
-        z_mm=(stage_config.Z_AXIS.MIN_POSITION + stage_config.Z_AXIS.MAX_POSITION) / 2,
-        theta_rad=None,
-    )
-    coords.update(overrides)
-    return squid.abc.Pos(**coords)
+    mid = {
+        f"{axis}_mm": (cfg.MIN_POSITION + cfg.MAX_POSITION) / 2
+        for axis, cfg in (("x", stage_config.X_AXIS), ("y", stage_config.Y_AXIS), ("z", stage_config.Z_AXIS))
+    }
+    return squid.abc.Pos(theta_rad=None, **{**mid, **overrides})
 
 
 def test_cache_position_skips_the_z_soft_limits_when_z_is_not_validated(tmp_path):
-    """An XY-only Cephla stage runs with homing_enabled_z = False and reports the raw firmware Z step
-    count: 0 at boot, which sits below the usual 0.05 mm Z soft floor.  Startup never restores Z on
-    such a system, so the caller passes validate_z=False and an out-of-range Z must not stop X/Y from
-    being cached."""
+    """An XY-only Cephla stage reports the raw firmware Z (0 at boot, below the Z soft floor); with
+    validate_z=False that must not block caching X/Y."""
     cache_path = str(tmp_path / "last_coords.txt")
     stage_config = squid.config.get_stage_config()
     pos = _pos_within_limits(stage_config, z_mm=stage_config.Z_AXIS.MIN_POSITION - 1.0)
