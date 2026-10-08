@@ -1,8 +1,8 @@
 """GUI tab for the Cephla laser engine v2 (Squid's "Laser Engine" tab; the bench app embeds it too).
 
 Top: the engine state as a coloured pill, the engine buttons, the startup state and the last notices. Then one row per
-fitted line, and on DF the 560 nm laser box: the operator sets the laser power here (saved in the machine .ini, rulings
-2026-10-06); Squid's 560 intensity drives the AOM; the shutter is safety only.
+fitted line, and on DF the 560 nm laser box: the operator sets the laser power and the idle-off here (saved in
+cache/laser_engine_v2.yaml); Squid's 560 intensity drives the AOM; the shutter is safety only.
 Compact, and inside a scroll area: Squid's side panel can be shorter than the tab (it caps the panel at the tab's size
 hint, and the column may have no room left), and a short panel must scroll, never squash the rows.
 """
@@ -27,7 +27,7 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
-from control.laser_engine_v2 import save_source_power_mw
+from control import laser_engine_v2_settings
 from control.laser_engine_v2_status import SOURCE_560_LINE, EngineV2Status, LineInfo, LineState, SourceStatus
 
 GREEN, AMBER, RED, GREY = "#1e8449", "#b9770e", "#c0392b", "#707b7c"
@@ -97,9 +97,14 @@ class _NoWheelDoubleSpinBox(QDoubleSpinBox):
         event.ignore()
 
 
-def _not_saved(mw: float) -> bool:
-    squid.logging.get_logger(__name__).info(f"simulation: 560 nm laser power {mw:.0f} mW not saved to the machine .ini")
-    return False
+def _not_saved_in_simulation(setting: str) -> Callable[[float], bool]:
+    """A simulated engine keeps its settings to itself: the fake source's limits are not the machine's."""
+
+    def not_saved(value: float) -> bool:
+        squid.logging.get_logger(__name__).info(f"simulation: {setting} {value:g} not saved")
+        return False
+
+    return not_saved
 
 
 @dataclass
@@ -126,13 +131,25 @@ class LaserEngineV2Widget(QWidget):
         engine,
         parent: Optional[QWidget] = None,
         save_power: Optional[Callable[[float], bool]] = None,
+        save_idle_off: Optional[Callable[[float], bool]] = None,
     ):
         super().__init__(parent)
         self._engine = engine
-        # a simulated session keeps its power to itself (FakeSource's limits are not the machine's)
+        simulated = getattr(engine, "simulated", False) is True
         if save_power is None:
-            save_power = _not_saved if getattr(engine, "simulated", False) is True else save_source_power_mw
-        self._save_power = save_power  # remembers the 560 power across sessions (the machine .ini)
+            save_power = (
+                _not_saved_in_simulation("560 nm laser power (mW)")
+                if simulated
+                else laser_engine_v2_settings.save_power_560_mw
+            )
+        if save_idle_off is None:
+            save_idle_off = (
+                _not_saved_in_simulation("560 nm idle-off (min)")
+                if simulated
+                else laser_engine_v2_settings.save_idle_off_560_min
+            )
+        self._save_power = save_power  # these two remember the 560 settings across sessions (the cache)
+        self._save_idle_off = save_idle_off
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self._content = QWidget()
@@ -237,7 +254,7 @@ class LaserEngineV2Widget(QWidget):
         self.idle_off_spin.setSuffix(" min")
         self.idle_off_spin.setSpecialValueText("24 h")  # shown at 0: there is no "never off"
         self.idle_off_spin.setValue(round(engine.source_idle_off_s / 60) % (24 * 60))
-        self.idle_off_spin.valueChanged.connect(lambda v: self._run(lambda: engine.set_source_idle_off_min(v)))
+        self.idle_off_spin.valueChanged.connect(self.set_source_idle_off)
         self.shutter_note = QLabel(SHUTTER_NOTE)
         self.shutter_note.setStyleSheet(f"color: {GREY};")
         self.source_limits_label.setStyleSheet(f"color: {GREY};")
@@ -282,17 +299,24 @@ class LaserEngineV2Widget(QWidget):
             return False
         return True
 
-    # ---- 560 nm laser power ----------------------------------------------------------------------------------------------
+    # ---- 560 nm laser power and idle-off -----------------------------------------------------------------------------
     def set_source_power(self) -> None:
-        """Set: the power goes to the engine (clamped to the laser's limits), then into the machine .ini."""
+        """Set: the power goes to the engine (clamped to the laser's limits), then into the cache."""
         self.power_spin.interpretText()  # a typed value not yet committed (Enter / focus-out; a Mac button takes no focus)
         applied: List[float] = []
         if not self._run(lambda: applied.append(self._engine.set_source_power_mw(self.power_spin.value()))):
             return
         self.power_spin.setValue(applied[0])
         if not self._save_power(applied[0]):
-            self._on_notice("560 nm laser power not saved to the machine .ini (see the log): this session only")
+            self._on_notice("560 nm laser power not saved (see the log): this session only")
         self._update_source_box()
+
+    def set_source_idle_off(self, minutes: int) -> None:
+        """The idle-off spinbox changed: the time goes to the engine, then into the cache."""
+        if not self._run(lambda: self._engine.set_source_idle_off_min(minutes)):
+            return
+        if not self._save_idle_off(minutes):
+            self._on_notice("560 nm idle-off not saved (see the log): this session only")
 
     def _update_source_box(self) -> None:
         if self.source_box is None:

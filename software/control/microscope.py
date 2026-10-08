@@ -235,7 +235,7 @@ class MicroscopeAddons:
                 else squid_laser_engine.SquidLaserEngine_Simulation()
             )
         if control._def.LASER_ENGINE == "v2":
-            options = laser_engine_v2.options_from_def()
+            options = laser_engine_v2.options_from_cache()  # the 560 settings last set in the Laser Engine tab
             laser_engine = (
                 laser_engine_v2.build_from_config(
                     sn=control._def.LASER_ENGINE_SN,

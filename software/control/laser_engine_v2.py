@@ -5,17 +5,15 @@ firmware needs to stay armed; publishes per-line readiness; arms and brings ever
 any disarm; and sets intensities. Exposure timing is NOT here: the Squid controller's TTL lines gate the lines in hardware
 (IlluminationController, ShutterControlMode.TTL).
 
-DF 560 nm (rulings 2026-10-06): the laser runs at the operator's power (Laser Engine tab, remembered in the machine .ini);
+DF 560 nm: the laser runs at the operator's power (Laser Engine tab, remembered in cache/laser_engine_v2.yaml);
 Squid's 560 intensity drives the AOM amplitude (line 3 analog); the AOM's on/off input is the controller's D3 TTL; the
 shutter is safety only - held open while the 560 is in use, closed whenever the source is switched off.
 """
 
 import math
-import os
 import queue
 import threading
 import time
-from configparser import ConfigParser
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
@@ -26,6 +24,7 @@ from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control._def import source_code_to_port_index
+from control.laser_engine_v2_settings import load_settings
 from control.laser_engine_v2_link import EngineCommandError, EngineLink, EngineLinkError
 from control.laser_engine_v2_status import (
     ERROR_STATES,
@@ -53,7 +52,7 @@ class LaserEngineV2Error(RuntimeError):
 
 @dataclass(frozen=True)
 class EngineOptions:
-    """Machine options, from the .ini (options_from_def). Rulings of 2026-09-27 and 2026-10-06."""
+    """The engine's options at build: the Laser Engine tab's saved 560 settings (options_from_cache)."""
 
     source_idle_off_min: float = 30.0  # DF 560 source off after this long without use; 0 = 24 h (there is no "never")
     source_power_mw: Optional[float] = None  # DF: 560 laser power (mW) set by the operator; None = the source's minimum
@@ -137,8 +136,6 @@ def calibrated_drive_percent(lut: Tuple[np.ndarray, np.ndarray], percent: float)
 
 
 AOM_CAL_FILE = "560_aom.csv"  # columns "AOM Volts", "Transmission" (any scale)
-# the operator's 560 power in the machine .ini, [GENERAL] (read at startup as _def.LASER_ENGINE_REV1_SOURCE_POWER_MW)
-SOURCE_POWER_INI_KEY = "laser_engine_rev1_source_power_mw"
 
 
 def load_aom_calibration(path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
@@ -169,7 +166,7 @@ class LaserEngineV2(QObject):
     SOURCE_SETTLE_TOL_MW = 2.0  # READY needs the measured power within max(this, SOURCE_SETTLE_TOL_FRAC x request)
     SOURCE_SETTLE_TOL_FRAC = 0.05
     POLL_JOIN_TIMEOUT_S = 4.0  # close(): one STAT? can take the link's 3 s read timeout (EngineLink.open), + 1 s
-    simulated = False  # build_simulated_engine sets it: the Laser Engine tab then saves nothing to the machine .ini
+    simulated = False  # build_simulated_engine sets it: the Laser Engine tab then saves nothing to the cache
 
     def __init__(
         self,
@@ -214,9 +211,7 @@ class LaserEngineV2(QObject):
         self._requested: Dict[int, float] = {}  # last requested intensity per wavelength, % of optical power
         self._luts: Optional[Dict[int, Tuple[np.ndarray, np.ndarray]]] = None  # loaded on first use
         self._linear_logged: set = set()
-        self.source_idle_off_s = idle_off_seconds(
-            self.options.source_idle_off_min
-        )  # the tab can change it (session only)
+        self.source_idle_off_s = idle_off_seconds(self.options.source_idle_off_min)  # the tab changes it
         self._source_queue: "queue.Queue" = queue.Queue()
         self._source_thread: Optional[threading.Thread] = None
         self._source_running = threading.Event()
@@ -1087,7 +1082,7 @@ class LaserEngineV2(QObject):
         self._wait_line_settled(SOURCE_560_LINE)  # the AOM input ramps like any set-point (at once while line 3 is off)
 
     def set_source_idle_off_min(self, minutes: float) -> None:
-        """Tab control, this session only (the .ini sets the default). 0 = 24 h."""
+        """The Laser Engine tab's idle-off (the tab also saves it for the next session). 0 = 24 h."""
         self.source_idle_off_s = idle_off_seconds(minutes)
 
     @property
@@ -1172,45 +1167,14 @@ def _production_source_factory() -> Optional[Callable[[], SourceDriver]]:
     return open_560_source
 
 
-def options_from_def() -> EngineOptions:
-    import control._def as d  # read at call time: the .ini has been applied by then
-
-    return EngineOptions(
-        source_idle_off_min=d.LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN,
-        source_power_mw=d.LASER_ENGINE_REV1_SOURCE_POWER_MW,
-    )
-
-
-def save_source_power_mw(mw: float, path: Optional[str] = None) -> bool:
-    """Remember the operator's 560 nm laser power in the machine .ini, [GENERAL] laser_engine_rev1_source_power_mw (read /
-    set / write with ConfigParser, as PreferencesDialog saves its settings), and in control._def for this session.
-    `path` defaults to control._def.CACHED_CONFIG_FILE_PATH. Never raises: False (and logged) when it was not saved."""
-    import control._def as d
-
-    target = str(path if path is not None else (d.CACHED_CONFIG_FILE_PATH or "")).strip()
-    try:
-        value = float(mw)
-        if not math.isfinite(value):
-            raise ValueError(f"{mw!r} is not a number of mW")
-        if not target or not os.path.isfile(target):
-            raise FileNotFoundError(f"no machine .ini at {target!r}")
-        config = ConfigParser()
-        if not config.read(target):
-            raise OSError(f"cannot read {target}")
-        if not config.has_section("GENERAL"):
-            config.add_section("GENERAL")
-        config.set("GENERAL", SOURCE_POWER_INI_KEY, f"{value:g}")
-        with open(target, "w") as f:
-            config.write(f)
-    except Exception as e:
-        squid.logging.get_logger(__name__).error(f"560 nm laser power not saved to the machine .ini: {e}")
-        return False
-    d.LASER_ENGINE_REV1_SOURCE_POWER_MW = value
-    return True
+def options_from_cache(cache_path: Optional[Path] = None) -> EngineOptions:
+    """The 560 power and idle-off as last set in the Laser Engine tab (cache/laser_engine_v2.yaml; defaults when absent)."""
+    settings = load_settings(cache_path)
+    return EngineOptions(source_idle_off_min=settings.idle_off_560_min, source_power_mw=settings.power_560_mw)
 
 
 def build_from_config(sn: Optional[str], options: EngineOptions) -> LaserEngineV2:
-    """The engine on the USB device with serial number `sn` (the .ini's laser_engine_sn), and the 560 source when the
+    """The engine on the USB device with serial number `sn` (laser_engine_sn in the machine .ini), and the 560 source when the
     build has its driver."""
     return LaserEngineV2(
         link_factory=lambda: EngineLink.open(sn=sn),

@@ -8,7 +8,7 @@ import sys
 
 software_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(software_dir)
-os.chdir(software_dir)  # control._def reads the machine .ini from the working directory
+os.chdir(software_dir)  # the machine .ini (control._def) and cache/ are read from the working directory
 
 from control.laser_engine_v2_bench import main
 

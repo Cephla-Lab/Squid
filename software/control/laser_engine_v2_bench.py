@@ -3,7 +3,8 @@
 Reusable panels take an engine (LaserEngineV2ServicePanel, LogPane: for Squid's "Laser Engine" tab later);
 BenchWindow and main() are the standalone app (tools/laser_engine_v2_bench.py). The bench has no Squid controller,
 so no TTL: the per-line "Gate (bench, no TTL)" checkbox holds the line's gate on in firmware instead. Emission still
-needs the hardware permits. The 560 nm laser power is set in the embedded Laser Engine tab.
+needs the hardware permits. The 560 nm laser power and idle-off are set in the embedded Laser Engine tab, which
+saves them in cache/laser_engine_v2.yaml (the file Squid reads too).
 """
 
 import logging
@@ -29,17 +30,15 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QSplitter,
     QVBoxLayout,
     QWidget,
 )
 from serial.tools import list_ports
 
-import control._def
 import squid.logging
 from control._def import port_index_to_source_code
-from control.laser_engine_v2 import EngineOptions, LaserEngineV2, _production_source_factory
+from control.laser_engine_v2 import EngineOptions, LaserEngineV2, _production_source_factory, options_from_cache
 from control.laser_engine_v2_link import EngineCommandError, EngineLink
 from control.laser_engine_v2_sim import build_simulated_engine
 from control.laser_engine_v2_status import (
@@ -428,15 +427,7 @@ class BenchWindow(QMainWindow):
         bar1.addWidget(self.disconnect_btn)
         layout.addLayout(bar1)
 
-        defaults = EngineOptions()
         bar2 = QHBoxLayout()
-        bar2.addWidget(QLabel("560 idle-off"))
-        self.idle_spin = QSpinBox()
-        self.idle_spin.setRange(0, 24 * 60)
-        self.idle_spin.setSuffix(" min")
-        self.idle_spin.setSpecialValueText("24 h")  # 0 = 24 h: there is no "never off"
-        self.idle_spin.setValue(int(defaults.source_idle_off_min))
-        bar2.addWidget(self.idle_spin)
         bar2.addStretch(1)
         self.link_label = QLabel("")
         self.link_label.setStyleSheet("color: #c0392b; font-weight: bold;")
@@ -475,18 +466,14 @@ class BenchWindow(QMainWindow):
             self.refresh_btn,
             self.simulate_cb,
             self.bringup_cb,
-            self.idle_spin,
             self.connect_btn,
         ):
             widget.setEnabled(idle)
         self.disconnect_btn.setEnabled(not idle)
 
     def _options(self) -> EngineOptions:
-        """The idle-off from the bar; the 560 power as last set in the tab (the machine .ini, if there is one)."""
-        return EngineOptions(
-            source_idle_off_min=float(self.idle_spin.value()),
-            source_power_mw=control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW,
-        )
+        """The 560 power and idle-off as last set in the Laser Engine tab (cache/laser_engine_v2.yaml), as in Squid."""
+        return options_from_cache()
 
     def _build_engine(self, options: EngineOptions) -> LaserEngineV2:
         if self.simulate_cb.isChecked():

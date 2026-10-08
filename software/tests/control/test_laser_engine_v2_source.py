@@ -1,12 +1,10 @@
 import threading
 import time
-from configparser import ConfigParser
 from pathlib import Path
 
 import pytest
 
-import control._def
-from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2Error, save_source_power_mw
+from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2Error
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine, FakeSource
 from control.laser_engine_v2_status import LineState
@@ -487,42 +485,6 @@ def test_set_source_power_without_a_source_raises():
     with pytest.raises(LaserEngineV2Error, match="560 nm source not configured") as e:
         engine.set_source_power_mw(500.0)
     assert e.value.channel_key == "L3" and engine.source_power_setpoint_mw is None
-
-
-def test_save_source_power_writes_the_ini_key_and_keeps_the_rest(tmp_path, monkeypatch):
-    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", None)
-    ini = tmp_path / "configuration_test.ini"
-    ini.write_text(
-        "[GENERAL]\nuse_laser_engine_rev1 = True\nlaser_engine_rev1_sn = 123\n\n[VIEWS]\nenable_ndviewer = false\n"
-    )
-    assert save_source_power_mw(600.0, path=str(ini)) is True
-    config = ConfigParser()
-    config.read(ini)
-    assert config.get("GENERAL", "laser_engine_rev1_source_power_mw") == "600"
-    assert control._def.conf_attribute_reader(config.get("GENERAL", "laser_engine_rev1_source_power_mw")) == 600
-    assert (
-        config.get("GENERAL", "use_laser_engine_rev1") == "True"
-        and config.get("GENERAL", "laser_engine_rev1_sn") == "123"
-    )
-    assert config.get("VIEWS", "enable_ndviewer") == "false"
-    assert control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW == 600.0  # this session's later connects use it too
-    assert save_source_power_mw(612.5, path=str(ini))  # overwritten, not duplicated
-    config = ConfigParser()
-    config.read(ini)
-    assert config.get("GENERAL", "laser_engine_rev1_source_power_mw") == "612.5"
-
-
-def test_save_source_power_defaults_to_the_cached_ini_and_never_raises(tmp_path, monkeypatch):
-    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", None)
-    ini = tmp_path / "configuration_test.ini"
-    ini.write_text("[GENERAL]\nuse_laser_engine_rev1 = True\n")
-    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(ini))
-    assert save_source_power_mw(300) is True and "laser_engine_rev1_source_power_mw = 300" in ini.read_text()
-    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", str(tmp_path / "missing.ini"))
-    assert save_source_power_mw(400) is False  # logged, not raised
-    assert not (tmp_path / "missing.ini").exists() and control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW == 300.0
-    monkeypatch.setattr(control._def, "CACHED_CONFIG_FILE_PATH", None)
-    assert save_source_power_mw(400) is False
 
 
 # ---- the shutter is safety only (ruling 2026-10-06) ----------------------------------------------------------------------

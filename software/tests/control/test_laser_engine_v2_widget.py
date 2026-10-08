@@ -1,4 +1,5 @@
 import pytest
+import yaml
 from qtpy.QtWidgets import QApplication, QComboBox, QMessageBox, QTabWidget
 
 from control._def import ILLUMINATION_CODE
@@ -19,6 +20,14 @@ DF_MAP = {  # a DF machine's illumination port map: one wavelength per engine li
 @pytest.fixture(autouse=True)
 def _no_message_boxes(monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(f"unexpected message box: {a[2:]}"))
+
+
+@pytest.fixture(autouse=True)
+def cache_file(tmp_path, monkeypatch):
+    """The tab's 560 settings file, in a temporary directory: these tests never write Squid's cache/."""
+    path = tmp_path / "cache" / "laser_engine_v2.yaml"
+    monkeypatch.setattr("control.laser_engine_v2_settings.DEFAULT_CACHE_PATH", path)
+    return path
 
 
 def _widget(qtbot, saved=None, ttl_map=None):
@@ -177,7 +186,7 @@ def test_widget_unsaved_power_is_said(qtbot):
     widget.power_spin.setValue(300.0)
     widget.power_set_btn.click()
     assert engine.source_power_setpoint_mw == 300.0  # applied for this session
-    assert "not saved to the machine .ini" in widget.notice_label.text()
+    assert "560 nm laser power not saved (see the log): this session only" in widget.notice_label.text()
     engine.close()
 
 
@@ -191,34 +200,49 @@ def test_widget_set_takes_a_typed_value_not_yet_committed(qtbot):
     engine.close()
 
 
-def test_widget_saves_to_the_machine_ini_only_outside_simulation(qtbot, monkeypatch):
-    calls = []
-    monkeypatch.setattr("control.laser_engine_v2_widget.save_source_power_mw", lambda mw: calls.append(mw) or True)
-    sim = build_simulated_engine()  # FakeSource: 200-1000 mW, not the machine's limits
-    sim.open()
-    widget = LaserEngineV2Widget(sim)  # the default saver
-    qtbot.addWidget(widget)
-    widget.power_spin.setValue(900.0)
-    widget.power_set_btn.click()
-    assert sim.source_power_setpoint_mw == 900.0 and calls == []
-    assert "not saved to the machine .ini" in widget.notice_label.text()
-    sim.close()
+def test_widget_saves_both_560_settings_to_the_cache(qtbot, cache_file):
     fake = FakeEngine(tok_delay_polls=0)
     real = LaserEngineV2(link_factory=lambda: EngineLink(fake), source_factory=FakeSource)
     real.open()
-    widget = LaserEngineV2Widget(real)
+    widget = LaserEngineV2Widget(real)  # the default savers: cache/laser_engine_v2.yaml
     qtbot.addWidget(widget)
+    assert not cache_file.exists()  # building the tab saves nothing
     widget.power_spin.setValue(900.0)
     widget.power_set_btn.click()
-    assert calls == [900.0]
+    widget.idle_off_spin.setValue(45)
+    assert yaml.safe_load(cache_file.read_text()) == {"power_560_mw": 900.0, "idle_off_560_min": 45.0}
+    assert real.source_idle_off_s == 45 * 60
+    widget.idle_off_spin.setValue(0)  # 24 h
+    assert yaml.safe_load(cache_file.read_text())["idle_off_560_min"] == 0.0
     real.close()
 
 
-def test_widget_idle_off_control(qtbot):
-    engine, widget = _widget(qtbot)
-    assert widget.idle_off_spin.value() == 30
-    widget.idle_off_spin.setValue(0)
-    assert widget.idle_off_spin.text() == "24 h" and engine.source_idle_off_s == 24 * 3600
+def test_widget_never_saves_a_simulated_engine(qtbot, cache_file):
+    sim = build_simulated_engine()  # FakeSource: 200-1000 mW, not the machine's limits
+    sim.open()
+    widget = LaserEngineV2Widget(sim)  # the default savers
+    qtbot.addWidget(widget)
+    widget.power_spin.setValue(900.0)
+    widget.power_set_btn.click()
+    widget.idle_off_spin.setValue(10)
+    assert sim.source_power_setpoint_mw == 900.0 and sim.source_idle_off_s == 10 * 60  # this session only
+    assert not cache_file.exists()
+    assert "560 nm idle-off not saved (see the log): this session only" in widget.notice_label.text()
+    assert "560 nm laser power not saved (see the log)" in widget.notice_label.toolTip()
+    sim.close()
+
+
+def test_widget_idle_off_saved_and_unsaved(qtbot):
+    saved = []
+    engine = build_simulated_engine()
+    engine.open()
+    widget = LaserEngineV2Widget(engine, save_power=lambda mw: True, save_idle_off=lambda m: saved.append(m) or True)
+    qtbot.addWidget(widget)
+    widget.idle_off_spin.setValue(20)
+    assert saved == [20] and "idle-off not saved" not in widget.notice_label.text()
+    widget._save_idle_off = lambda m: False
+    widget.idle_off_spin.setValue(25)
+    assert engine.source_idle_off_s == 25 * 60 and "560 nm idle-off not saved" in widget.notice_label.text()
     engine.close()
 
 

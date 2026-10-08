@@ -1000,12 +1000,6 @@ SQUID_LASER_ENGINE_SN = None  # USB serial number; required when USE_SQUID_LASER
 # Resolved at startup together with the legacy keys above (_resolve_laser_engine); the code reads only these two.
 LASER_ENGINE = None
 LASER_ENGINE_SN = None  # the engine's USB serial number, every version (all digits is fine: matched as text)
-LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN = (
-    30  # DF: 560 source off after this many minutes without use; 0 = 24 h (no "never")
-)
-# DF: 560 nm laser power in mW, set in the Laser Engine tab (which saves it here); None = the source's minimum. Squid's 560
-# intensity drives the AOM (intensity_calibrations/560_aom.csv when present, else linear in AOM volts), not this power.
-LASER_ENGINE_REV1_SOURCE_POWER_MW = None
 
 XLIGHT_SERIAL_NUMBER = "B00031BE"
 XLIGHT_SLEEP_TIME_FOR_WHEEL = 0.25

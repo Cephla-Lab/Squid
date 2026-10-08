@@ -5,12 +5,12 @@ from pathlib import Path
 import pytest
 from qtpy.QtWidgets import QMessageBox
 
-import control._def
 import control.laser_engine_v2_bench as bench
 import squid.logging
-from control.laser_engine_v2 import LaserEngineV2, LaserEngineV2Error
+from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2Error
 from control.laser_engine_v2_bench import BenchWindow, LaserEngineV2ServicePanel, LogPane
 from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_settings import save_idle_off_560_min, save_power_560_mw
 from control.laser_engine_v2_sim import FakeEngine, FakeSource, build_simulated_engine
 
 NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
@@ -19,6 +19,14 @@ NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 @pytest.fixture(autouse=True)
 def _fast_resync(monkeypatch):
     monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def cache_file(tmp_path, monkeypatch):
+    """The tab's 560 settings file, in a temporary directory: these tests never read or write Squid's cache/."""
+    path = tmp_path / "cache" / "laser_engine_v2.yaml"
+    monkeypatch.setattr("control.laser_engine_v2_settings.DEFAULT_CACHE_PATH", path)
+    return path
 
 
 def _panel(qtbot, options=None):
@@ -396,21 +404,28 @@ def test_connect_starts_the_aom_dark(qtbot, monkeypatch):
         win.disconnect_btn.click()
 
 
-def test_bench_has_no_aom_options_and_the_tab_sets_the_560_power(qtbot, monkeypatch):
-    from qtpy.QtWidgets import QComboBox
+def test_bench_has_no_aom_or_560_options_and_the_tab_sets_them(qtbot, monkeypatch, cache_file):
+    from qtpy.QtWidgets import QComboBox, QLineEdit, QSpinBox
 
     _shared_sim(monkeypatch)
+    assert save_power_560_mw(600) and save_idle_off_560_min(45)  # as the Laser Engine tab left them
     win = _window(qtbot, monkeypatch)
     try:
         assert not hasattr(win, "aom_cb") and not hasattr(win, "shutter_combo")
+        assert not hasattr(win, "source_sn_edit") and not hasattr(win, "idle_spin")  # the 560 is found by its USB IDs
         assert win.findChildren(QComboBox) == [win.port_combo]  # only the Teensy port choice
+        assert not win.findChildren(QSpinBox)
+        assert [e for e in win.findChildren(QLineEdit) if e is not win.port_combo.lineEdit()] == []
         win.connect_btn.click()
         tab = win.engine_widget
         assert tab.source_box is not None and [tab.rows[k].wavelength.text() for k in ("L1", "L3")] == [
             "405 nm",
             "560 nm (AOM)",
         ]  # the bench's DF wavelengths
-        assert win.engine.options.source_power_mw == control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW  # the saved power
+        assert win.engine.options == EngineOptions(source_idle_off_min=45, source_power_mw=600)  # from the cache
+        assert tab.power_spin.value() == 600.0 and tab.idle_off_spin.value() == 45
+        tab.idle_off_spin.setValue(50)  # the bench's tab saves like Squid's (this engine is not marked simulated)
+        assert "idle_off_560_min: 50.0" in cache_file.read_text()
     finally:
         win.disconnect_btn.click()
 

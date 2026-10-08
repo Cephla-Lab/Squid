@@ -8,9 +8,15 @@ from control.laser_engine_v2 import (
     LaserEngineV2,
     LaserEngineV2LightSource,
     build_from_config,
-    options_from_def,
 )
+from control.laser_engine_v2_settings import save_idle_off_560_min, save_power_560_mw
 from control.lighting import IntensityControlMode, ShutterControlMode
+
+
+@pytest.fixture(autouse=True)
+def _cache_in_tmp(tmp_path, monkeypatch):
+    """The 560 settings file in a temporary directory: these tests never read or write Squid's cache/."""
+    monkeypatch.setattr("control.laser_engine_v2_settings.DEFAULT_CACHE_PATH", tmp_path / "laser_engine_v2.yaml")
 
 
 @pytest.fixture
@@ -98,25 +104,23 @@ def test_build_from_config_uses_the_560_driver_module_when_present(monkeypatch):
     assert engine._source_factory is module.open_560_source and engine._source_factory() == "source"
 
 
-def test_options_come_from_the_ini_flags(monkeypatch):
-    for name in ("AOM_IN_PATH", "SHUTTER_WITH_AOM", "AOM_ATTENUATION"):  # the no-AOM options are gone (2026-10-06)
-        assert not hasattr(control._def, f"LASER_ENGINE_REV1_{name}")
-    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_IDLE_OFF_MIN", 0)
-    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", 600)  # as the .ini reader gives it
-    assert options_from_def() == EngineOptions(source_idle_off_min=0, source_power_mw=600.0)
-    monkeypatch.setattr(control._def, "LASER_ENGINE_REV1_SOURCE_POWER_MW", "lots")
-    with pytest.raises(ValueError):
-        options_from_def()  # a typo in the .ini fails at startup, not silently
+def test_the_560_settings_are_not_machine_ini_keys():
+    for name in ("SOURCE_POWER_MW", "SOURCE_IDLE_OFF_MIN", "AOM_IN_PATH", "SHUTTER_WITH_AOM", "AOM_ATTENUATION"):
+        assert not hasattr(control._def, f"LASER_ENGINE_REV1_{name}") and not hasattr(
+            control._def, f"LASER_ENGINE_V2_{name}"
+        )
 
 
 def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
     import control.microscope
 
     monkeypatch.setattr(control._def, "LASER_ENGINE", "v2")
+    assert save_power_560_mw(600) and save_idle_off_560_min(45)  # as the Laser Engine tab left them
     scope = control.microscope.Microscope.build_from_global_config(simulated=True)
     try:
         engine = scope.addons.squid_laser_engine
         assert isinstance(engine, LaserEngineV2)
+        assert engine.options == EngineOptions(source_idle_off_min=45, source_power_mw=600)  # from the cache
         ic = scope.illumination_controller
         assert isinstance(ic.light_source, LaserEngineV2LightSource)
         assert ic.intensity_control_mode == IntensityControlMode.Software
