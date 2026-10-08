@@ -64,7 +64,7 @@ def test_resolver_refuses_a_contradiction_and_an_unknown_engine(resolve):
     call, _ = resolve
     with pytest.raises(ValueError, match="contradicts laser_engine = v2"):
         call("v2", use_squid_laser_engine=True)
-    for bad in ("v3", "rev1", True, 2):
+    for bad in ("v3", "v0", True, 2):
         with pytest.raises(ValueError, match="laser_engine = .* use v1, v2, or leave it blank"):
             call(bad)
 
