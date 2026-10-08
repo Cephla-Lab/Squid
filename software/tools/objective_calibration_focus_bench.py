@@ -14,7 +14,9 @@ random  each trial starts at z_ref + a seeded random offset in ±1.5 x range, so
         trials must be refused "at the edge" (the contract) and the rest must focus.
         figure: page 1 time vs |offset| and found Z - z_ref vs offset; pages 2+ before | after frames.
 repeat  every run starts at z_ref (approached from below) and focuses again.
-        figure: Z per run, histogram of Z, time per run; the title carries the Z std and the DOF.
+        figure: Z per run with a straight-line fit, histogram of Z, time per run. The title carries
+        the raw Z std, the drift (the fit's slope) and the std about the fit: a stage that creeps
+        during the run is reported as drift, not charged to the sweep.
 Every record carries, per run, the coarse sweep's peak_sigmas and peak_rise, the values that decide
 the flat-field refusal, so a new sample class can be judged from the numbers.
 """
@@ -68,6 +70,23 @@ def to_png(image, path, crop_px=600):
     crop8 = np.clip((crop - lo) / max(hi - lo, 1.0) * 255.0, 0, 255).astype(np.uint8)
     cv2.imwrite(path, crop8)
     return crop8
+
+
+def linear_drift(runs):
+    """Straight-line fit of focus Z against the time each run started, over the focused runs: drift in
+    um/min, raw std, and std about the fit. None with fewer than 3 runs."""
+    ok = [t for t in runs if not t["error"]]
+    if len(ok) < 3:
+        return None
+    t_min = np.array([t["t_s"] for t in ok]) / 60.0
+    z = np.array([t["z_um"] for t in ok])
+    slope, intercept = np.polyfit(t_min, z, 1)
+    return {
+        "um_per_min": float(slope),
+        "intercept_um": float(intercept),
+        "raw_std_um": float(z.std(ddof=1)),
+        "detrended_std_um": float((z - (slope * t_min + intercept)).std(ddof=1)),
+    }
 
 
 class Bench:
@@ -144,6 +163,8 @@ class Bench:
         images = os.path.join(a.out, "images")
         os.makedirs(images, exist_ok=True)
 
+        t_start = time.perf_counter()
+
         def focus(label):
             t0 = time.perf_counter()
             try:
@@ -157,6 +178,7 @@ class Bench:
                     "frames": sum(len(lv.values) for lv in result.levels),
                     "levels": [[lv.metric, lv.z_um, lv.values] for lv in result.levels],
                     "error": None,
+                    "t_s": t0 - t_start,
                 }
                 print(
                     f"{label}: focus {result.z_best_um:.2f} um in {out['elapsed_s']:.1f} s "
@@ -164,7 +186,7 @@ class Bench:
                     flush=True,
                 )
             except FocusError as e:
-                out = {"z_um": hw.get_z_um(), "elapsed_s": time.perf_counter() - t0, "error": str(e)}
+                out = {"z_um": hw.get_z_um(), "elapsed_s": time.perf_counter() - t0, "error": str(e), "t_s": t0 - t_start}
                 print(f"{label}: REFUSED after {out['elapsed_s']:.1f} s: {e}", flush=True)
             return out
 
@@ -209,6 +231,11 @@ class Bench:
 
         go_to(z_ref)
         hw.restore_mode()
+        if a.mode == "repeat":
+            self.record["drift"] = linear_drift(self.record["runs"])
+            if self.record["drift"]:
+                d = self.record["drift"]
+                print(f"Z drift {d['um_per_min']:+.3f} um/min; std {d['raw_std_um']:.3f} um raw, {d['detrended_std_um']:.3f} um about the fit", flush=True)
         self.record["finished"] = datetime.now().isoformat(timespec="seconds")
 
     # ---------------------------------------------------------------- figure
@@ -281,14 +308,19 @@ class Bench:
 
     def _figure_repeat(self, pdf, plt, runs, ok, bad, head, dof_um):
         z = np.array([t["z_um"] for t in ok])
+        drift = self.record.get("drift") or {}
         fig, axes = plt.subplots(1, 3, figsize=(14, 4.5))
         axes[0].plot([t["run"] for t in ok], z, "o-", ms=3)
+        if drift:
+            t_min = np.array([t["t_s"] for t in ok]) / 60.0
+            axes[0].plot([t["run"] for t in ok], drift["um_per_min"] * t_min + drift["intercept_um"], "--", color="0.4", lw=1)
         axes[0].set_xlabel("run")
         axes[0].set_ylabel("focus Z (µm)")
-        axes[0].set_title("Z per run")
+        axes[0].set_title("Z per run" + (f": drift {drift['um_per_min']:+.3f} µm/min" if drift else ""))
         axes[1].hist(z, bins=min(20, max(5, len(z) // 3)))
         axes[1].set_xlabel("focus Z (µm)")
-        axes[1].set_title(f"std {z.std(ddof=1) if len(z) > 1 else 0:.3f} µm, DOF {dof_um:.2f} µm")
+        std = z.std(ddof=1) if len(z) > 1 else 0
+        axes[1].set_title(f"std {std:.3f} µm raw" + (f", {drift['detrended_std_um']:.3f} about the fit" if drift else "") + f"; DOF {dof_um:.2f} µm")
         axes[2].plot([t["run"] for t in ok], [t["elapsed_s"] for t in ok], "o-", ms=3)
         axes[2].set_xlabel("run")
         axes[2].set_ylabel("time (s)")

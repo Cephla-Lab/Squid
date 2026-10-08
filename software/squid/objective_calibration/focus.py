@@ -15,6 +15,22 @@ Hardware verification so far: an H&E section in bright-field only (Squid+, 4x/10
 and the PR #683 bench). Fluorescence, unstained bright-field (phase objects: contrast is lowest at
 focus), sparse fields, thick samples and NA > 0.8 are untested; PEAK_SIGMAS and the single-peak
 assumption were checked only against that slide and synthetic noise.
+
+TODO before this becomes the acquisition's contrast autofocus (bench 2026-10-08, Squid+ 4x/10x/20x):
+- Entry for routine use: start at a fine level of about ±3 DOF around the current Z (10-15 frames)
+  and run the 41-sample coarse pass only when that level ends at its edge. Today every call is the
+  full ladder: 88 frames / 16 s at 20x, 55 / 11 s at 10x, 41 / 9 s at 4x, at 0.17-0.28 s per frame
+  with the software trigger. Measure the frame time with the hardware trigger; it sets the budget.
+- Refusals must come back as a result, not FocusError: an acquisition keeps the last good Z or the
+  focus-plane fit and goes on. "Peak at the edge" should widen once, then keep Z. FocusError is the
+  right contract for the dialog, where an operator can refocus.
+- Decide what "no peak" means in a well. The noise-relative test accepts the well-bottom surface
+  (a 3-18 % bump on blank glass passed it on every objective): right for adherent cells, so do not
+  add a contrast floor; define the empty-well policy instead.
+- Flat fields: the first 3-4 coarse samples after the descent to the first target read 2-4 % high
+  and decay (stage/illumination settling), which turns "no peak" into "at the edge" there. Frames
+  at a fixed Z agree to 0.1 %, so a warm-up frame does not help; a settle after the pre-move would.
+- Z creeps 0.04-0.07 um/min on this unit (4 DOF per hour at 20x): per-FOV or periodic refocus.
 """
 
 from dataclasses import dataclass
