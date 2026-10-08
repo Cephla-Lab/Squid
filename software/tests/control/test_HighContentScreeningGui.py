@@ -1,3 +1,5 @@
+import unittest.mock
+
 import pytest
 
 import control._def
@@ -6,6 +8,8 @@ import control.gui_hcs
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
+import squid.abc
+import squid.stage.utils
 
 
 @pytest.fixture
@@ -181,3 +185,54 @@ def test_gui_cleanup_closes_the_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
     gui._cleanup_common(for_restart=True)
 
     assert closed == ["dragonfly"]
+
+
+def _stub_stage_moves(monkeypatch, stage):
+    """Replace the stage's absolute moves with mocks, so a test can assert what startup commanded."""
+    mocks = {axis: unittest.mock.MagicMock(name=f"move_{axis}_to") for axis in ("x", "y", "z")}
+    for axis, mock in mocks.items():
+        monkeypatch.setattr(stage, f"move_{axis}_to", mock)
+    return mocks
+
+
+def test_startup_restores_cached_xy_but_not_z_when_z_homing_is_disabled(qtbot, monkeypatch, confirm_exit_yes):
+    """An XY-only Cephla stage (e.g. the Aries/Dragonfly config) runs with homing_enabled_z = False.
+    Its cached X/Y must still be restored at startup. Z is never homed there, so the cached Z has
+    no absolute meaning and must not be commanded."""
+    # Microscope.home_xyz reads the flag through control._def; gui_hcs star-imports the flags, so
+    # its module-level bindings are patched separately before construction.
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Y", True)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Z", False)
+    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=1.5, theta_rad=None)
+    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    moves = _stub_stage_moves(monkeypatch, scope.stage)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    moves["x"].assert_any_call(cached.x_mm)
+    moves["y"].assert_any_call(cached.y_mm)
+    moves["z"].assert_not_called()
+
+
+def test_startup_restores_cached_z_when_z_homing_is_enabled(qtbot, monkeypatch, confirm_exit_yes):
+    """The other half of the startup gate: with Z homed, a cached Z above Z_HOME_SAFETY_POINT is
+    restored as before."""
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Y", True)
+    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Z", True)
+    monkeypatch.setattr(control.gui_hcs, "USE_PI_FOCUS_STAGE", False)
+    safety_z_mm = int(control.gui_hcs.Z_HOME_SAFETY_POINT) / 1000.0
+    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=safety_z_mm + 0.5, theta_rad=None)
+    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    moves = _stub_stage_moves(monkeypatch, scope.stage)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    moves["z"].assert_any_call(cached.z_mm)

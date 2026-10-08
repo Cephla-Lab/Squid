@@ -763,32 +763,35 @@ class HighContentScreeningGui(QMainWindow):
                     self.stage.move_z_to(target_z_mm)
             else:
                 self.log.info("Skipping cached position restoration (--skip-init flag set)")
-        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
+        elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
-            if cached_pos := squid.stage.utils.get_cached_position():
-                self.log.info(
-                    f"Cache position exists.  Moving to: ({cached_pos.x_mm},{cached_pos.y_mm},{cached_pos.z_mm}) [mm]"
-                )
+            cached_pos = squid.stage.utils.get_cached_position()
+            if cached_pos:
+                self.log.info(f"Cache position exists.  Moving X/Y to: ({cached_pos.x_mm},{cached_pos.y_mm}) [mm]")
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-                if USE_PI_FOCUS_STAGE:
+            # Z is only restored when it is homed; otherwise its reading is a raw step count (see cache_position).
+            if HOMING_ENABLED_Z:
+                if not cached_pos:
+                    self.log.info("Cache position is not exists.  Moving Z axis to safety position")
+                    squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+                elif USE_PI_FOCUS_STAGE:
                     # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
                     # The PI driver clamps every move to the configured Z limits, so a stale
                     # cached Z cannot command an out-of-range move.
                     self.stage.move_z_to(cached_pos.z_mm)
-                elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
-                    self.stage.move_z_to(cached_pos.z_mm)
                 else:
-                    self.log.info(f"Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT")
-                    self.stage.move_z_to(int(Z_HOME_SAFETY_POINT) / 1000.0)
-            else:
-                self.log.info(f"Cache position is not exists.  Moving Z axis to safety position")
-                squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+                    if cached_pos.z_mm < safety_z_mm:
+                        self.log.info(
+                            "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
+                        )
+                    self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
 
-            if ENABLE_WELLPLATE_MULTIPOINT:
-                self.wellplateMultiPointWidget.init_z()
-            self.flexibleMultiPointWidget.init_z()
+                if ENABLE_WELLPLATE_MULTIPOINT:
+                    self.wellplateMultiPointWidget.init_z()
+                self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -2778,9 +2781,11 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
-        # Cache position and settings
+        # Cache position and settings.  Z is only validated (and, at startup, restored) when it is homed.
         try:
-            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
+            squid.stage.utils.cache_position(
+                pos=self.stage.get_pos(), stage_config=self.stage.get_config(), validate_z=HOMING_ENABLED_Z
+            )
         except ValueError as e:
             # ValueError is expected when position is out of bounds
             self.log.error(f"Couldn't cache position while closing for {context}. Error: {e}")

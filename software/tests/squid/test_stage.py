@@ -139,6 +139,53 @@ def test_cache_position_keeps_the_previous_position_when_the_write_fails(tmp_pat
     assert squid.stage.utils.get_cached_position(cache_path=cache_path) == already_cached
 
 
+def _pos_within_limits(stage_config, **overrides):
+    """A Pos in the middle of every axis' travel, with any coordinate overridden."""
+    coords = dict(
+        x_mm=(stage_config.X_AXIS.MIN_POSITION + stage_config.X_AXIS.MAX_POSITION) / 2,
+        y_mm=(stage_config.Y_AXIS.MIN_POSITION + stage_config.Y_AXIS.MAX_POSITION) / 2,
+        z_mm=(stage_config.Z_AXIS.MIN_POSITION + stage_config.Z_AXIS.MAX_POSITION) / 2,
+        theta_rad=None,
+    )
+    coords.update(overrides)
+    return squid.abc.Pos(**coords)
+
+
+def test_cache_position_skips_the_z_soft_limits_when_z_is_not_validated(tmp_path):
+    """An XY-only Cephla stage runs with homing_enabled_z = False and reports the raw firmware Z step
+    count: 0 at boot, which sits below the usual 0.05 mm Z soft floor.  Startup never restores Z on
+    such a system, so the caller passes validate_z=False and an out-of-range Z must not stop X/Y from
+    being cached."""
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    pos = _pos_within_limits(stage_config, z_mm=stage_config.Z_AXIS.MIN_POSITION - 1.0)
+
+    squid.stage.utils.cache_position(pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=False)
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) == pos
+
+
+@pytest.mark.parametrize(
+    "validate_z, out_of_range_axis",
+    [
+        pytest.param(False, "x", id="x-is-validated-even-when-z-is-not"),
+        pytest.param(True, "z", id="z-is-validated-by-default"),
+    ],
+)
+def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validate_z, out_of_range_axis):
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    axis_config = getattr(stage_config, f"{out_of_range_axis.upper()}_AXIS")
+    pos = _pos_within_limits(stage_config, **{f"{out_of_range_axis}_mm": axis_config.MIN_POSITION - 1.0})
+
+    with pytest.raises(ValueError, match="not cacheable"):
+        squid.stage.utils.cache_position(
+            pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=validate_z
+        )
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) is None
+
+
 # --- PI V-308 / C-414 focus stage --------------------------------------------
 
 
