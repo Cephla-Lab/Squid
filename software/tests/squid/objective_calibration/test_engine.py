@@ -137,10 +137,10 @@ def test_declined_switch_cancels_and_restores():
 def test_a_failed_focus_returns_z_so_the_next_objectives_still_succeed():
     hw, cfg = _machine()
     cfg.cycles = 1
-    hw.objectives["4x"].z_focus_um = 92.0  # at the edge of 4x's ±97.5 um sweep: "widen the range"
+    hw.objectives["4x"].z_focus_um = 110.0  # past 4x's ±97.5 um sweep: refused at the edge
     result = run_calibration(hw, cfg, fine_metric=lape)
     cycle = result.cycles[0]
-    assert "widen the range" in cycle.objectives["4x"].error
+    assert "at the edge" in cycle.objectives["4x"].error
     assert cycle.objectives["10x"].error is None and cycle.objectives["20x"].error is None
     assert set(result.pixel_sizes) == {"10x", "20x"}
     _assert_restored(hw)
@@ -177,12 +177,12 @@ def test_a_failed_xy_restore_still_restores_z_and_the_objective():
 def test_cycle_report_has_one_line_per_objective_per_cycle_with_the_gate_values():
     hw, cfg = _machine()
     cfg.cycles = 1
-    hw.objectives["4x"].z_focus_um = 92.0  # 4x fails; 10x and 20x succeed
+    hw.objectives["4x"].z_focus_um = 110.0  # 4x is refused at the edge; 10x and 20x succeed
     result = run_calibration(hw, cfg, fine_metric=lape)
     assert not result.restore_failed
     lines = cycle_report(result)
     assert len(lines) == 3
-    assert lines[0].startswith("cycle 1 4x: ") and "widen the range" in lines[0]
+    assert lines[0].startswith("cycle 1 4x: ") and "at the edge" in lines[0]
     for line in lines[1:]:
         for field in ("focus", "rise", "µm/px", "rotation", "anisotropy", "residual", "drift"):
             assert field in line, (field, line)
