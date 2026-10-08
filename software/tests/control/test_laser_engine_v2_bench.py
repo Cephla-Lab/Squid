@@ -180,12 +180,19 @@ def test_log_pane_shows_squid_records_from_any_thread(qtbot):
     assert pane.handler not in squid.logging.get_logger().handlers
 
 
-def test_log_pane_detaches_when_destroyed(qtbot):
+def test_a_destroyed_log_pane_goes_quiet_and_the_next_pane_removes_its_handler(qtbot):
     pane = LogPane()
     handler = pane.handler
-    assert handler in squid.logging.get_logger().handlers
-    pane.deleteLater()
-    qtbot.waitUntil(lambda: handler not in squid.logging.get_logger().handlers, timeout=2000)
+    assert handler in squid.logging.get_logger().handlers and handler.alive()
+    pane.deleteLater()  # destroyed without detach(): no Python hook may run during the C++ destruction
+    qtbot.waitUntil(lambda: not handler.alive(), timeout=2000)
+    squid.logging.get_logger("x").warning("after the pane is gone")  # dropped, no crash
+    pane2 = LogPane()
+    qtbot.addWidget(pane2)
+    try:
+        assert handler not in squid.logging.get_logger().handlers and pane2.handler.alive()
+    finally:
+        pane2.detach()
 
 
 def test_bench_window_simulate_connect_disconnect(qtbot, monkeypatch):

@@ -11,9 +11,11 @@ import logging
 import re
 import sys
 import time
+import weakref
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from qtpy.compat import isalive
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import (
     QApplication,
@@ -356,14 +358,24 @@ class _LogBridge(QObject):
 
 
 class QtLogHandler(logging.Handler):
-    """Forwards log records (from any thread) as text through a Qt signal: queued to the GUI thread's receivers."""
+    """Forwards log records (from any thread) as text through a Qt signal: queued to the GUI thread's receivers.
+    With an owner widget it goes quiet once the owner is destroyed (alive() is False); LogPane prunes such handlers."""
 
-    def __init__(self, level: int = logging.INFO):
+    def __init__(self, level: int = logging.INFO, owner: Optional[QWidget] = None):
         super().__init__(level)
         self.bridge = _LogBridge()
+        self._owner = weakref.ref(owner) if owner is not None else None
         self.setFormatter(logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%H:%M:%S"))
 
+    def alive(self) -> bool:
+        if self._owner is None:
+            return True
+        owner = self._owner()
+        return owner is not None and isalive(owner)
+
     def emit(self, record: logging.LogRecord) -> None:
+        if not self.alive():
+            return
         try:
             self.bridge.text.emit(self.format(record))
         except RuntimeError:
@@ -382,12 +394,16 @@ class LogPane(QPlainTextEdit):
         self.setReadOnly(True)
         self.setMaximumBlockCount(self.MAX_LINES)
         self.setStyleSheet("font-family: monospace;")
-        self.handler = QtLogHandler(level)
+        self.handler = QtLogHandler(level, owner=self)
         self.handler.bridge.text.connect(self.appendPlainText)
         root = squid.logging.get_logger()
+        # No hook on our own `destroyed` signal: PyQt can free a Python slot before Qt calls it, and the call then
+        # crashes (a deferred delete during a later event loop). Handlers of panes destroyed without detach() went
+        # quiet on their own; remove them here instead.
+        for old in list(root.handlers):
+            if isinstance(old, QtLogHandler) and not old.alive():
+                root.removeHandler(old)
         root.addHandler(self.handler)
-        handler = self.handler  # the lambda must not hold the pane: it runs while the pane is being destroyed
-        self.destroyed.connect(lambda *_: root.removeHandler(handler))
 
     def detach(self) -> None:
         squid.logging.get_logger().removeHandler(self.handler)
