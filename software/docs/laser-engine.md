@@ -108,7 +108,8 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
   0 V up to the voltage of peak transmission, is used: 100 % is the peak (4 V above), not 5 V. 0 % is always 0 V,
   even when the first row already transmits. The tab says at connect whether the file was loaded, missing or
   unreadable.
-- **Shutter**: safety only, never per exposure. It opens only while line 3 is READY and is closed in every other
+- **Shutter**: safety only, never per exposure. It opens when line 3 is READY and stays open while line 3 ramps to
+  a new AOM set-point (every 560 intensity change) as long as the source reads ready. It is closed in every other
   state (key not cycled, source off or starting, line 3 off or paused, a fault, disarm) and before any source
   restart; a restart is abandoned if the engine link is lost on the way.
 - **Idle-off**: the 560 laser switches off after this many minutes without use (an acquisition using the 560 counts

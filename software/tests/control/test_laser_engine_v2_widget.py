@@ -293,3 +293,19 @@ def test_widget_560_spinboxes_ignore_the_mouse_wheel(qtbot):
     assert (widget.power_spin.value(), widget.idle_off_spin.value()) == (power, idle)
     assert idle_saved == [] and engine.source_power_setpoint_mw == 200.0
     engine.close()
+
+
+def test_widget_idle_off_applies_a_typed_value_only_when_committed(qtbot):
+    idle_saved = []
+    engine = build_simulated_engine()
+    engine.open()
+    widget = LaserEngineV2Widget(
+        engine, save_power=lambda mw: True, save_idle_off=lambda m: idle_saved.append(m) or True
+    )
+    qtbot.addWidget(widget)
+    assert not widget.idle_off_spin.keyboardTracking()
+    widget.idle_off_spin.lineEdit().setText("120")  # typed: not 1, 12, 120 to the engine and the cache
+    assert idle_saved == []
+    widget.idle_off_spin.interpretText()  # Enter / focus-out
+    assert idle_saved == [120] and engine.source_idle_off_s == 120 * 60
+    engine.close()

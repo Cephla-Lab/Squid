@@ -258,6 +258,7 @@ class LaserEngineV2Widget(QWidget):
         self.power_set_btn.clicked.connect(lambda _=False: self.set_source_power())
         self.idle_off_spin = _NoWheelSpinBox()
         self.idle_off_spin.setFocusPolicy(Qt.StrongFocus)
+        self.idle_off_spin.setKeyboardTracking(False)  # typing "120" applies (and saves) 120 on Enter, not 1, 12, 120
         self.idle_off_spin.setRange(0, 24 * 60)
         self.idle_off_spin.setSuffix(" min")
         self.idle_off_spin.setSpecialValueText("24 h")  # shown at 0: there is no "never off"

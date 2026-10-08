@@ -38,7 +38,12 @@ def _path(cache_path: Optional[Path]) -> Path:
 
 
 def _is_number(value) -> bool:
-    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an int too large for a float
+        return False
 
 
 def _read(path: Path) -> dict:
@@ -48,7 +53,7 @@ def _read(path: Path) -> dict:
     try:
         with open(path, "r") as f:
             data = yaml.safe_load(f)
-    except (OSError, yaml.YAMLError) as e:
+    except Exception as e:  # any unreadable file (I/O, YAML, not UTF-8, ...): Squid must still start
         _log.error(f"laser engine settings {path} not read ({e}): using the defaults")
         return {}
     if data is None:

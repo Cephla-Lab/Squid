@@ -8,7 +8,8 @@ any disarm; and sets intensities. Exposure timing is NOT here: the Squid control
 
 DF 560 nm: the laser runs at the operator's power (Laser Engine tab, remembered in cache/laser_engine_v2.yaml);
 Squid's 560 intensity drives the AOM amplitude (line 3 analog); the AOM's on/off input is the controller's D3 TTL; the
-shutter is safety only - open only while line 3 is READY, closed in every other state and before any source restart.
+shutter is safety only - it opens at line 3 READY and stays open through the line-3 ramp of an AOM set-point while the
+source reads ready; it is closed in every other state and before any source restart.
 """
 
 import math

@@ -90,3 +90,17 @@ def test_save_failure_returns_false_and_never_raises(tmp_path):
     assert save_idle_off_560_min(-1, cache_path=tmp_path / "x.yaml") is False
     assert save_power_560_mw("lots", cache_path=tmp_path / "x.yaml") is False
     assert not (tmp_path / "x.yaml").exists()
+
+
+def test_a_file_that_is_not_utf8_gives_the_defaults_and_the_next_save_replaces_it(cache):
+    cache.parent.mkdir(parents=True)
+    cache.write_bytes(b"power_560_mw: \xff\xfe 700\n")  # e.g. a copy from another tool: Squid must still start
+    assert load_settings() == LaserEngineV2Settings()
+    assert save_power_560_mw(650.0)
+    assert load_settings().power_560_mw == 650.0
+
+
+def test_a_number_too_large_for_a_float_falls_back_to_its_default(cache):
+    cache.parent.mkdir(parents=True)
+    cache.write_text(f"power_560_mw: {10 ** 400}\nidle_off_560_min: 45\n")
+    assert load_settings() == LaserEngineV2Settings(power_560_mw=None, idle_off_560_min=45.0)
