@@ -771,10 +771,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-            # Z is only restored when it is referenced; otherwise its reading is a raw step count.
+            # Z is only restored when it is referenced (see squid.stage.utils.z_is_referenced).
             if squid.stage.utils.z_is_referenced():
                 if not cached_pos:
-                    self.log.info("Cache position is not exists.  Moving Z axis to safety position")
+                    self.log.info("No cached position.  Moving Z axis to safety position")
                     squid.stage.utils.move_z_axis_to_safety_position(self.stage)
                 elif USE_PI_FOCUS_STAGE:
                     # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
@@ -2781,7 +2781,7 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
-        # Cache position and settings.  Z is only validated (and, at startup, restored) when it is referenced.
+        # Cache position and settings
         try:
             squid.stage.utils.cache_position(
                 pos=self.stage.get_pos(),

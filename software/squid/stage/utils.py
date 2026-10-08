@@ -55,13 +55,11 @@ def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
 
 
 def z_is_referenced() -> bool:
-    """Whether the Z reading is an absolute position, i.e. worth validating at shutdown and restoring at startup.
+    """True when Z is an absolute position: the Cephla Z is homed, or a PI V-308 is the Z.
 
-    Mirrors Microscope.home_xyz: a Cephla Z is homed only when HOMING_ENABLED_Z is set, while a PI V-308
-    focus stage is referenced at every start regardless of that flag (a Cephla XY stage with a V-308 as
-    its Z has no Cephla Z to home, so such a system runs with homing_enabled_z off).  Without either, the
-    Z reading is the raw firmware step count: 0 at boot on an XY-only Cephla stage, or wherever Z happened
-    to be on a system that never homes it.
+    Mirrors Microscope.home_xyz, which references the V-308 at every start regardless of HOMING_ENABLED_Z
+    (a Cephla XY stage with a V-308 has no Cephla Z to home, so it runs with homing_enabled_z off).
+    Otherwise Z is the raw firmware step count: 0 at boot on an XY-only Cephla stage.
     """
     return _def.HOMING_ENABLED_Z or _def.USE_PI_FOCUS_STAGE
 
@@ -69,19 +67,17 @@ def z_is_referenced() -> bool:
 def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH, validate_z: bool = True):
     """Write out the current x, y, z position, in mm, so we can use it later as a cached position.
 
-    Raises ValueError instead of writing when a validated axis is outside its soft limits.  X and Y are
-    always validated.  Pass validate_z=False when Z is not referenced (see z_is_referenced): its reading
-    is then a raw step count that sits below the usual Z floor at boot and would otherwise stop X/Y from
-    ever being cached.  Startup does not restore Z in that case either, so the cached Z is never commanded.
+    Raises ValueError, writing nothing, when a validated axis is outside its soft limits.  X and Y are always
+    validated; pass validate_z=False for an unreferenced Z (see z_is_referenced), which startup never restores.
     """
     if stage_config is not None:  # StageConfig not implemented for Prior stage
-        validated = {"x": (stage_config.X_AXIS, pos.x_mm), "y": (stage_config.Y_AXIS, pos.y_mm)}
+        axes = [("x", stage_config.X_AXIS, pos.x_mm), ("y", stage_config.Y_AXIS, pos.y_mm)]
         if validate_z:
-            validated["z"] = (stage_config.Z_AXIS, pos.z_mm)
+            axes.append(("z", stage_config.Z_AXIS, pos.z_mm))
         out_of_range = [
-            f"{axis}={value} not in ({axis_config.MIN_POSITION}, {axis_config.MAX_POSITION})"
-            for axis, (axis_config, value) in validated.items()
-            if not axis_config.MIN_POSITION <= value <= axis_config.MAX_POSITION
+            f"{name}={value} not in ({axis.MIN_POSITION}, {axis.MAX_POSITION})"
+            for name, axis, value in axes
+            if not axis.MIN_POSITION <= value <= axis.MAX_POSITION
         ]
         if out_of_range:
             raise ValueError(f"Position {pos} is not cacheable, outside of the axis min/max: {'; '.join(out_of_range)}")

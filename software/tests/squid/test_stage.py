@@ -2,6 +2,7 @@ import builtins
 import logging
 import pytest
 import tempfile
+import unittest.mock
 
 import squid.stage.cephla
 import squid.stage.prior
@@ -9,6 +10,8 @@ import squid.stage.utils
 import squid.stage.pi
 import squid.config
 import squid.abc
+import control._def
+import control.microscope
 from tests.control.test_microcontroller import get_test_micro
 
 
@@ -166,17 +169,18 @@ def test_cache_position_skips_the_z_soft_limits_when_z_is_not_validated(tmp_path
 
 
 @pytest.mark.parametrize(
-    "validate_z, out_of_range_axis",
+    "validate_z, below_floor",
     [
-        pytest.param(False, "x", id="x-is-validated-even-when-z-is-not"),
-        pytest.param(True, "z", id="z-is-validated-by-default"),
+        pytest.param(
+            False, lambda cfg: {"x_mm": cfg.X_AXIS.MIN_POSITION - 1.0}, id="x-is-validated-even-when-z-is-not"
+        ),
+        pytest.param(True, lambda cfg: {"z_mm": cfg.Z_AXIS.MIN_POSITION - 1.0}, id="z-is-validated-by-default"),
     ],
 )
-def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validate_z, out_of_range_axis):
+def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validate_z, below_floor):
     cache_path = str(tmp_path / "last_coords.txt")
     stage_config = squid.config.get_stage_config()
-    axis_config = getattr(stage_config, f"{out_of_range_axis.upper()}_AXIS")
-    pos = _pos_within_limits(stage_config, **{f"{out_of_range_axis}_mm": axis_config.MIN_POSITION - 1.0})
+    pos = _pos_within_limits(stage_config, **below_floor(stage_config))
 
     with pytest.raises(ValueError, match="not cacheable"):
         squid.stage.utils.cache_position(
@@ -187,21 +191,35 @@ def test_cache_position_rejects_an_out_of_range_validated_axis(tmp_path, validat
 
 
 @pytest.mark.parametrize(
-    "homing_enabled_z, use_pi_focus_stage, expected",
+    "homing_enabled_z, use_pi_focus_stage",
     [
-        pytest.param(True, False, True, id="cephla-z-homed"),
-        pytest.param(False, True, True, id="pi-focus-stage-is-referenced-even-without-cephla-z-homing"),
-        pytest.param(False, False, False, id="xy-only-cephla-stage"),
+        pytest.param(True, False, id="cephla-z-homed"),
+        pytest.param(False, False, id="xy-only-cephla-stage"),
+        pytest.param(False, True, id="pi-focus-stage-without-cephla-z-homing"),
+        pytest.param(True, True, id="pi-focus-stage-with-cephla-z-homing"),
     ],
 )
-def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_focus_stage, expected):
-    """A Cephla Z is referenced only when it is homed; a PI V-308 is referenced at every start."""
-    import control._def
-
+def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_focus_stage):
+    """z_is_referenced() must be True exactly when Microscope.home_xyz homes Z, or the position cache
+    drifts from the homing logic it describes."""
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", homing_enabled_z)
     monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", use_pi_focus_stage)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False)  # only the Z part of home_xyz matters here
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)  # an objective changer retracts Z at startup
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    try:
+        home = unittest.mock.MagicMock()
+        monkeypatch.setattr(scope.stage, "home", home)
 
-    assert squid.stage.utils.z_is_referenced() is expected
+        scope.home_xyz()
+
+        z_homed = any(call.kwargs.get("z") for call in home.call_args_list)
+        assert squid.stage.utils.z_is_referenced() is z_homed
+    finally:
+        scope.close()
 
 
 # --- PI V-308 / C-414 focus stage --------------------------------------------
