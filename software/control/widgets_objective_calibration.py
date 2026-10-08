@@ -7,10 +7,13 @@ machine_configs/objective_calibration.yaml. This version records the calibration
 yet.
 """
 
+import time
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
 
+import numpy as np
 from qtpy.QtCore import QMetaObject, Qt, QThread, Signal, Slot
+from qtpy.QtGui import QImage, QPixmap
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -73,6 +76,7 @@ class CalibrationWorker(QThread):
     ended the run, comes back through signal_finished."""
 
     signal_progress = Signal(str)
+    signal_frame = Signal(str, object)  # objective, the frame the engine just took (a few per second)
     signal_finished = Signal(object)
 
     def __init__(self, hardware, config: RunConfig, fine_metric, after_run=None, parent=None):
@@ -120,6 +124,46 @@ class _PromptedSwitch:
         if name != self._hardware.current_objective() and not self._ask(name):
             raise RunCancelled("Objective switch declined")
         self._hardware.switch_objective(name)
+
+
+class _FrameForwarding:
+    """The hardware, with every frame the engine snaps also handed to on_frame, at most every
+    FRAME_INTERVAL_S, so the dialog can show what the run is looking at. Nothing else changes."""
+
+    FRAME_INTERVAL_S = 0.25
+
+    def __init__(self, hardware, on_frame: Callable[[str, np.ndarray], None]):
+        self._hardware = hardware
+        self._on_frame = on_frame
+        self._last = 0.0
+
+    def __getattr__(self, name):
+        return getattr(self._hardware, name)
+
+    def snap(self, objective: str, channel: str) -> np.ndarray:
+        image = self._hardware.snap(objective, channel)
+        now = time.monotonic()
+        if now - self._last >= self.FRAME_INTERVAL_S:
+            self._last = now
+            self._on_frame(objective, image)
+        return image
+
+
+FRAME_VIEW_PX = 320  # the longer side of the frame shown in the dialog
+
+
+def frame_pixmap(image: np.ndarray, longer_side_px: int = FRAME_VIEW_PX) -> QPixmap:
+    """A camera frame as an 8-bit grey pixmap no larger than longer_side_px, stretched between its
+    0.5th and 99.5th percentiles so a dim bright-field frame is still visible."""
+    stride = max(1, int(np.ceil(max(image.shape[:2]) / longer_side_px)))
+    small = np.asarray(image[::stride, ::stride], dtype=np.float32)
+    if small.ndim == 3:
+        small = small.mean(axis=2)
+    lo, hi = np.percentile(small, (0.5, 99.5))
+    grey = np.ascontiguousarray(np.clip((small - lo) / max(hi - lo, 1.0) * 255.0, 0, 255).astype(np.uint8))
+    h, w = grey.shape
+    qimage = QImage(grey.data, w, h, w, QImage.Format_Grayscale8)
+    return QPixmap.fromImage(qimage.copy())  # copy: QImage does not own the numpy buffer
 
 
 class ObjectiveCalibrationDialog(QDialog):
@@ -211,6 +255,11 @@ class ObjectiveCalibrationDialog(QDialog):
             self.validity_labels[name] = label
             saved_layout.addWidget(label)
 
+        self.frame_view = QLabel("The frames the run takes appear here.")
+        self.frame_view.setAlignment(Qt.AlignCenter)
+        self.frame_view.setMinimumHeight(FRAME_VIEW_PX // 2)
+        self.frame_caption = QLabel("")
+        self.frame_caption.setAlignment(Qt.AlignCenter)
         self.table = QTableWidget(0, len(COLUMNS))
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
@@ -247,6 +296,8 @@ class ObjectiveCalibrationDialog(QDialog):
             inputs,
             guidance,
             saved_box,
+            self.frame_view,
+            self.frame_caption,
             self.table,
             self.label_orientation,
             self.label_result,
@@ -336,11 +387,17 @@ class ObjectiveCalibrationDialog(QDialog):
         self.label_orientation.setText("")
         self.log_view.clear()
         self._say("Calibrating...")
-        self.worker = CalibrationWorker(hardware, config, self.fine_metric, after_run=self.after_run, parent=self)
+        forwarding = _FrameForwarding(hardware, lambda objective, image: self.worker.signal_frame.emit(objective, image))
+        self.worker = CalibrationWorker(forwarding, config, self.fine_metric, after_run=self.after_run, parent=self)
         self.worker.signal_progress.connect(self.log_view.append)
+        self.worker.signal_frame.connect(self._show_frame)
         self.worker.signal_finished.connect(self._finished)
         self._set_running(True)
         self.worker.start()
+
+    def _show_frame(self, objective: str, image):
+        self.frame_view.setPixmap(frame_pixmap(image))
+        self.frame_caption.setText(f"{objective}, {datetime.now():%H:%M:%S}")
 
     def _ask_switch(self, name: str) -> bool:
         """Called from the worker thread; blocks until the operator answers on the GUI thread."""

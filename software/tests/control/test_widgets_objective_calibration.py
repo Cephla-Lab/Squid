@@ -214,3 +214,14 @@ def test_the_log_shows_every_objective_of_every_cycle(qtbot, make_dialog):
     _wait(qtbot, dialog)
     log = dialog.log_view.toPlainText()
     assert "cycle 1 4x: focus" in log and "cycle 1 10x: focus" in log
+
+
+def test_the_run_shows_the_frames_it_takes(qtbot, make_dialog):
+    dialog, hw = make_dialog()
+    assert dialog.frame_view.pixmap() is None or dialog.frame_view.pixmap().isNull()
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    pixmap = dialog.frame_view.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+    assert max(pixmap.width(), pixmap.height()) <= woc.FRAME_VIEW_PX
+    assert dialog.frame_caption.text().split(",")[0] in ("4x", "10x")
