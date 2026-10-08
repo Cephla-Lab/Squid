@@ -164,6 +164,28 @@ class TestSweep:
             _sweep(hw, "20x", range_um=20.0)
 
 
+class TestComputedRange:
+    """C1 pass 2 (offsets.py _aligned_focus): a computed range widens once about the same centre."""
+
+    def test_computed_range_widens_once(self):
+        hw = _hw("20x", z_focus=16.0)  # 1 um past the ±15 um computed range
+        result = _sweep(hw, "20x", range_um=15.0, range_is_computed=True)
+        coarse = [lv for lv in result.levels if lv.metric == "highpass_std"]
+        assert len(coarse) == 2
+        assert max(coarse[1].z_um) == pytest.approx(30.0)  # doubled, still centred on 0
+        assert result.z_best_um == pytest.approx(16.0, abs=0.25)
+
+    def test_a_second_edge_hit_is_too_uneven(self):
+        hw = _hw("4x", z_focus=250.0)  # past ±100 and past the widened ±200
+        with pytest.raises(FocusError, match="too uneven"):
+            _sweep(hw, "4x", range_um=100.0, range_is_computed=True)
+
+    def test_a_user_range_never_widens(self):
+        hw = _hw("20x", z_focus=16.0)
+        with pytest.raises(FocusError, match="at the edge of ±15 µm"):
+            _sweep(hw, "20x", range_um=15.0)
+
+
 class TestFlatTest:
     """_is_peak compares the sweep's peak to its own noise: no absolute contrast threshold."""
 

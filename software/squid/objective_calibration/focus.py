@@ -167,31 +167,43 @@ def focus_sweep(
     range_um: float,
     square_px: float,
     fine_metric: Callable[[np.ndarray], float],
+    range_is_computed: bool = False,
 ) -> FocusResult:
+    """Coarse sweep over ±range_um around center_um, then the fine ladder. With range_is_computed (C1's
+    pass 2, offsets.py: the centre is a predicted focus and the range max(3 DOF, 5 um + 2 % of the
+    displacement), spec C §6.2) a coarse peak at the edge doubles the range once about the same
+    centre; a second edge hit fails as "too uneven" (spec C §6.3 amendment, 2026-09-28)."""
     run = dict(objective=objective, channel=channel, na=na, square_px=square_px, fine_metric=fine_metric)
     levels: List[SweepLevel] = []
 
-    # One coarse sweep over ±search range around the hand focus, scored with the high-passed std: the
-    # fine metric is flat noise a few DOF from focus, so it can neither see a focus across the range
-    # nor refuse a blank field.
+    # The coarse sweep is scored with the high-passed std: the fine metric is flat noise a few DOF
+    # from focus, so it can neither see a focus across the range nor refuse a blank field.
     level = plan_coarse_level(na, range_um, center_um)
-    swept = _run_level(hw, level, coarse=True, **run)
-    levels.append(swept)
-    # Reported, not gated on: (max - floor) / floor with the floor the mean of the lowest quartile.
-    ordered = np.sort(np.asarray(swept.values))
-    floor = float(np.mean(ordered[: max(1, len(ordered) // 4)]))
-    peak_rise = (float(ordered[-1]) - floor) / max(floor, _EPS)
-    if not _is_peak(swept.values):  # before the edge test: a flat curve has its maximum anywhere
-        raise FocusError(
-            f"No focus peak within ±{level.search_range_um:g} µm of {level.center_um:.1f} µm "
-            f"(contrast rise {peak_rise:.0%}); move to a textured area, or refocus and widen the range."
-        )
-    best = int(np.argmax(swept.values))
-    if _peak_at_edge(swept.values):
-        raise FocusError(
-            f"Sharpest sample at the edge of ±{level.search_range_um:g} µm, {swept.z_um[best]:.1f} µm; "
-            "refocus by hand, or widen the range."
-        )
+    for widened in (False, True):
+        swept = _run_level(hw, level, coarse=True, **run)
+        levels.append(swept)
+        # Reported, not gated on: (max - floor) / floor with the floor the mean of the lowest quartile.
+        ordered = np.sort(np.asarray(swept.values))
+        floor = float(np.mean(ordered[: max(1, len(ordered) // 4)]))
+        peak_rise = (float(ordered[-1]) - floor) / max(floor, _EPS)
+        if not _is_peak(swept.values):  # before the edge test: a flat curve has its maximum anywhere
+            raise FocusError(
+                f"No focus peak within ±{level.search_range_um:g} µm of {level.center_um:.1f} µm "
+                f"(contrast rise {peak_rise:.0%}); move to a textured area, or refocus and widen the range."
+            )
+        best = int(np.argmax(swept.values))
+        if not _peak_at_edge(swept.values):
+            break
+        if not range_is_computed:
+            raise FocusError(
+                f"Sharpest sample at the edge of ±{level.search_range_um:g} µm, {swept.z_um[best]:.1f} µm; "
+                "refocus by hand, or widen the range."
+            )
+        if widened:
+            raise FocusError(
+                "Focus is outside the computed search range; the target is too uneven. Use a flatter target."
+            )
+        level = plan_coarse_level(na, 2 * level.search_range_um, center_um)
 
     current, current_best = level, best
     nxt = plan_next_level(current, swept.z_um[best], na)
