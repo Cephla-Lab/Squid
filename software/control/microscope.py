@@ -21,6 +21,8 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
+import control.laser_engine_v2 as laser_engine_v2
+import control.laser_engine_v2_sim as laser_engine_v2_sim
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
@@ -226,11 +228,21 @@ class MicroscopeAddons:
             sci_microscopy_led_array.set_NA(control._def.SCIMICROSCOPY_LED_ARRAY_DEFAULT_NA)
 
         laser_engine = None
-        if control._def.USE_SQUID_LASER_ENGINE:
+        if control._def.LASER_ENGINE == "v1":
             laser_engine = (
-                squid_laser_engine.SquidLaserEngine(sn=control._def.SQUID_LASER_ENGINE_SN)
+                squid_laser_engine.SquidLaserEngine(sn=control._def.LASER_ENGINE_SN)
                 if not simulated
                 else squid_laser_engine.SquidLaserEngine_Simulation()
+            )
+        if control._def.LASER_ENGINE == "v2":
+            options = laser_engine_v2.options_from_cache()  # the 560 settings last set in the Laser Engine tab
+            laser_engine = (
+                laser_engine_v2.build_from_config(
+                    sn=control._def.LASER_ENGINE_SN,
+                    options=options,
+                )
+                if not simulated
+                else laser_engine_v2_sim.build_simulated_engine(options=options)
             )
 
         return MicroscopeAddons(
@@ -297,9 +309,9 @@ class MicroscopeAddons:
             self.piezo_stage.home()
         if self.squid_laser_engine:
             # start() may raise if the USB device is missing — intentional hard fail
-            # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
+            # when a laser engine is configured so we don't silently disable it.
             self.squid_laser_engine.start()
-            self.squid_laser_engine.wake_up_all()  # fire-and-forget
+            self.squid_laser_engine.on_startup()  # v1: wake all (TEC warm-up); v2: TECs on, arm, bring every line up
 
 
 class LowLevelDrivers:
@@ -436,6 +448,17 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
+        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
+            illumination_controller = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                ShutterControlMode.TTL,
+                LightSourceType.CephlaLaserEngineV2,
+                addons.squid_laser_engine.light_source,
+            )
+            # the engine line for a wavelength is the port its TTL uses, so intensity and exposure reach the same line;
+            # read live (follows port-map edits and the Microscope.config_repo setter, which replaces its config_repo)
+            addons.squid_laser_engine.ttl_map_provider = lambda: illumination_controller.channel_mappings_TTL
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
 
@@ -509,6 +532,9 @@ class Microscope:
             )
 
         self.live_controller: LiveController = LiveController(microscope=self, camera=self.camera)
+        if control._def.LASER_ENGINE == "v2" and self.addons.squid_laser_engine is not None:
+            # live has no per-frame call into the engine: let it see what live is using (the 560 idle-off)
+            self.addons.squid_laser_engine.in_use_provider = self.live_controller.illumination_wavelengths_in_use
 
         # Sync confocal mode from hardware (must be after LiveController creation)
         if control._def.ENABLE_SPINNING_DISK_CONFOCAL:

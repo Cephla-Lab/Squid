@@ -21,6 +21,7 @@ _DEFAULT_CHANNEL_MAPPINGS_TTL = {
     545: ILLUMINATION_CODE.ILLUMINATION_D3,
     550: ILLUMINATION_CODE.ILLUMINATION_D3,
     555: ILLUMINATION_CODE.ILLUMINATION_D3,
+    560: ILLUMINATION_CODE.ILLUMINATION_D3,
     561: ILLUMINATION_CODE.ILLUMINATION_D3,
     638: ILLUMINATION_CODE.ILLUMINATION_D4,
     640: ILLUMINATION_CODE.ILLUMINATION_D4,
@@ -38,6 +39,7 @@ class LightSourceType(Enum):
     VersaLase = 4
     SCI = 5
     AndorLaser = 6
+    CephlaLaserEngineV2 = 7
 
 
 class IntensityControlMode(Enum):
@@ -119,6 +121,7 @@ class IlluminationController:
         self.channel_mappings_software = {}
         self.is_on = {}
         self.intensity_settings = {}
+        self._intensity_ttl_ports = {}  # channel -> TTL port when its intensity was last sent (see set_intensity)
         self.current_channel = None
         self.intensity_luts = {}  # Store LUTs for each wavelength
         self.max_power = {}  # Store max power for each wavelength
@@ -254,13 +257,18 @@ class IlluminationController:
         if channel not in self.intensity_settings:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
-            if intensity != self.intensity_settings[channel]:
+            # The TTL port is part of the cached identity: a light source that picks its line from the port map (laser
+            # engine v2) must be told again after a remap, even at the same intensity.
+            ttl_map = self.channel_mappings_TTL if self.shutter_control_mode == ShutterControlMode.TTL else {}
+            ttl_port = ttl_map.get(channel)
+            if intensity != self.intensity_settings[channel] or ttl_port != self._intensity_ttl_ports.get(channel):
                 self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
                 self.intensity_settings[channel] = intensity
+                self._intensity_ttl_ports[channel] = ttl_port
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
+                self.microcontroller.set_illumination(ttl_map[channel], intensity)
         else:
             if channel in self.intensity_luts:
                 # Apply LUT to convert power percentage to DAC percent (0-100)
