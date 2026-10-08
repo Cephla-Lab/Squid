@@ -839,8 +839,10 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
-        # Utils: per-instrument procedures that drive the hardware, not settings.
-        utils_menu = menubar.addMenu("Utils")
+        # Utils: per-instrument procedures that drive the hardware, not settings. main_hcs.py adds its
+        # stage/turret/workflow actions to this same menu.
+        self.utils_menu = menubar.addMenu("Utils")
+        utils_menu = self.utils_menu
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)

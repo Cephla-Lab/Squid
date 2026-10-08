@@ -112,7 +112,7 @@ if __name__ == "__main__":
         skip_init=args.skip_init,
     )
 
-    microscope_utils_menu = QMenu("Utils", win)
+    microscope_utils_menu = win.utils_menu  # the Utils menu the window already built; a second one showed twice
 
     stage_utils_action = QAction("Stage Utils", win)
     stage_utils_action.triggered.connect(win.stageUtils.show)
@@ -128,7 +128,6 @@ if __name__ == "__main__":
     microscope_utils_menu.addAction(workflow_runner_action)
 
     menu_bar = win.menuBar()
-    menu_bar.addMenu(microscope_utils_menu)
 
     # Show startup warning if simulated disk I/O mode is enabled
     if control._def.SIMULATED_DISK_IO_ENABLED:
