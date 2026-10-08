@@ -58,6 +58,8 @@ def make_dialog(qtbot, tmp_path):
             **kw,
         )
         qtbot.addWidget(dialog)
+        for box in dialog.checkboxes.values():  # unticked by default; the tests calibrate both objectives
+            box.setChecked(True)
         dialog.spin_cycles.setValue(1)
         dialog.spin_range.setValue(20.0)
         return dialog, hw
@@ -225,3 +227,15 @@ def test_the_run_shows_the_frames_it_takes(qtbot, make_dialog):
     assert pixmap is not None and not pixmap.isNull()
     assert max(pixmap.width(), pixmap.height()) <= woc.FRAME_VIEW_PX
     assert dialog.frame_caption.text().split(",")[0] in ("4x", "10x")
+
+
+def test_no_objective_is_selected_by_default(qtbot, tmp_path):
+    dialog = ObjectiveCalibrationDialog(
+        _fake(), SPECS, ["BF"], ConfigRepository(base_path=tmp_path), tube_lens_mm=180.0,
+        get_declared=lambda name: DECLARED[name], fine_metric=lape,
+    )
+    qtbot.addWidget(dialog)
+    assert not any(box.isChecked() for box in dialog.checkboxes.values())
+    dialog.button_calibrate.click()
+    assert "Select at least one objective" in dialog.label_result.text()
+    assert not dialog._running()

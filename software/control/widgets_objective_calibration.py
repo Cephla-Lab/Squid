@@ -216,7 +216,7 @@ class ObjectiveCalibrationDialog(QDialog):
         self.checkboxes: Dict[str, QCheckBox] = {}
         for name in sorted(self.specs, key=lambda n: self.specs[n].magnification):
             box = QCheckBox(name)
-            box.setChecked(True)
+            box.setChecked(False)  # the operator picks what to calibrate; nothing runs by accident
             self.checkboxes[name] = box
             row.addWidget(box)
         form.addRow("Objectives", row)
