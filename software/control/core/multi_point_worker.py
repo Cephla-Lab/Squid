@@ -631,7 +631,7 @@ class MultiPointWorker:
             )
 
     def _note_laser_engine_use(self) -> None:
-        """Tell the laser engine its channels are in use (the rev 1 engine switches an idle source off; the 2024/25 one ignores it)."""
+        """Tell the laser engine its channels are in use (laser engine v2 switches an idle source off; v1 has no note_use)."""
         note_use = getattr(self._laser_engine, "note_use", None)
         if note_use is not None and self._laser_channels_needed:
             note_use(self._laser_channels_needed)

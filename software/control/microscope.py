@@ -21,8 +21,8 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
-import control.laser_engine_rev1 as laser_engine_rev1
-import control.laser_engine_rev1_sim as laser_engine_rev1_sim
+import control.laser_engine_v2 as laser_engine_v2
+import control.laser_engine_v2_sim as laser_engine_v2_sim
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
@@ -235,15 +235,15 @@ class MicroscopeAddons:
                 else squid_laser_engine.SquidLaserEngine_Simulation()
             )
         if control._def.USE_LASER_ENGINE_REV1:
-            options = laser_engine_rev1.options_from_def()
+            options = laser_engine_v2.options_from_def()
             laser_engine = (
-                laser_engine_rev1.build_from_config(
+                laser_engine_v2.build_from_config(
                     sn=control._def.LASER_ENGINE_REV1_SN,
                     source_sn=control._def.LASER_ENGINE_REV1_SOURCE_SN,
                     options=options,
                 )
                 if not simulated
-                else laser_engine_rev1_sim.build_simulated_engine(options=options)
+                else laser_engine_v2_sim.build_simulated_engine(options=options)
             )
 
         return MicroscopeAddons(
@@ -312,7 +312,7 @@ class MicroscopeAddons:
             # start() may raise if the USB device is missing — intentional hard fail
             # when USE_SQUID_LASER_ENGINE=True so we don't silently disable it.
             self.squid_laser_engine.start()
-            self.squid_laser_engine.on_startup()  # old engine: wake all (TEC warm-up); rev 1: TECs on, arm, bring every line up
+            self.squid_laser_engine.on_startup()  # old engine: wake all (TEC warm-up); v2: TECs on, arm, bring every line up
 
 
 class LowLevelDrivers:
@@ -454,7 +454,7 @@ class Microscope:
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,
                 ShutterControlMode.TTL,
-                LightSourceType.CephlaLaserEngineRev1,
+                LightSourceType.CephlaLaserEngineV2,
                 addons.squid_laser_engine.light_source,
             )
             # ruling 5: the engine line for a wavelength is the port its TTL uses, read live (follows port-map edits and the

@@ -1,4 +1,4 @@
-"""GUI tab for the Cephla laser engine, carrier rev 1 (Squid's "Laser Engine" tab; the bench app embeds it too).
+"""GUI tab for the Cephla laser engine v2 (Squid's "Laser Engine" tab; the bench app embeds it too).
 
 Top: the engine state as a coloured pill, the engine buttons, the startup state and the last notices. Then one row per
 fitted line, and on DF the 560 nm laser box: the operator sets the laser power here (saved in the machine .ini, rulings
@@ -27,8 +27,8 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
-from control.laser_engine_rev1 import save_source_power_mw
-from control.laser_engine_rev1_status import SOURCE_560_LINE, EngineRev1Status, LineInfo, LineState, SourceStatus
+from control.laser_engine_v2 import save_source_power_mw
+from control.laser_engine_v2_status import SOURCE_560_LINE, EngineV2Status, LineInfo, LineState, SourceStatus
 
 GREEN, AMBER, RED, GREY = "#1e8449", "#b9770e", "#c0392b", "#707b7c"
 
@@ -49,7 +49,7 @@ _UNITS = {"WLD": "A", "CHASSIS": "A", "VOLT": "V"}  # set-point unit per line ki
 SHUTTER_NOTE = "Shutter: safety only — open while the 560 is in use"
 
 
-def engine_state(status: Optional[EngineRev1Status], lost: bool) -> Tuple[str, str]:
+def engine_state(status: Optional[EngineV2Status], lost: bool) -> Tuple[str, str]:
     """(pill text, colour) for the engine as a whole."""
     if lost:
         return "Connection lost", RED
@@ -115,7 +115,7 @@ class _LineRow:
         return [self.line, self.wavelength, self.state, self.setpoint, self.max, self.reason]
 
 
-class LaserEngineRev1Widget(QWidget):
+class LaserEngineV2Widget(QWidget):
     NOTICES_SHOWN = 2  # the latest; NOTICES_KEPT of them in the tooltip
     NOTICES_KEPT = 10
     PANE_ALLOWANCE_PX = 12  # Squid caps the panel at this hint + the tab bar, without the tab pane's frame
@@ -327,7 +327,7 @@ class LaserEngineRev1Widget(QWidget):
         height = max(hint.height(), self._content.heightForWidth(width))
         return QSize(hint.width(), height + self.PANE_ALLOWANCE_PX)
 
-    def _show_engine_state(self, status: Optional[EngineRev1Status], lost: bool) -> None:
+    def _show_engine_state(self, status: Optional[EngineV2Status], lost: bool) -> None:
         text, colour = engine_state(status, lost)
         self.state_pill.setText(text)
         self.state_pill.setStyleSheet(
@@ -349,7 +349,7 @@ class LaserEngineRev1Widget(QWidget):
             setpoint += f" ({self._engine.aom_percent_for_volts(info.target):.0f} %)"
         return setpoint, f"{info.max:.{digits}f} {unit}".strip()
 
-    def _on_status(self, status: EngineRev1Status) -> None:
+    def _on_status(self, status: EngineV2Status) -> None:
         self._show_engine_state(status, self._engine.is_connection_lost())
         self._set_line(self.startup_label, self._startup_text(self._engine.bringup_state))
         self._set_line(self.event_label, f"Last engine event: {status.last_event}" if status.last_event else "")

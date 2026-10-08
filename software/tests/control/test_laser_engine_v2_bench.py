@@ -6,12 +6,12 @@ import pytest
 from qtpy.QtWidgets import QMessageBox
 
 import control._def
-import control.laser_engine_rev1_bench as bench
+import control.laser_engine_v2_bench as bench
 import squid.logging
-from control.laser_engine_rev1 import LaserEngineRev1, LaserEngineRev1Error
-from control.laser_engine_rev1_bench import BenchWindow, LaserEngineRev1ServicePanel, LogPane
-from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine, FakeSource, build_simulated_engine
+from control.laser_engine_v2 import LaserEngineV2, LaserEngineV2Error
+from control.laser_engine_v2_bench import BenchWindow, LaserEngineV2ServicePanel, LogPane
+from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_sim import FakeEngine, FakeSource, build_simulated_engine
 
 NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 
@@ -24,7 +24,7 @@ def _fast_resync(monkeypatch):
 def _panel(qtbot, options=None):
     engine = build_simulated_engine(options=options)
     engine.open()  # no threads: the tests call poll_once()
-    panel = LaserEngineRev1ServicePanel(engine)
+    panel = LaserEngineV2ServicePanel(engine)
     qtbot.addWidget(panel)
     return engine, panel
 
@@ -129,10 +129,10 @@ def test_panel_source_box(qtbot):
 
 
 def test_panel_without_a_source_has_no_source_box(qtbot):
-    engine = LaserEngineRev1(link_factory=lambda: EngineLink(FakeEngine()))
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(FakeEngine()))
     engine.open()
     try:
-        panel = LaserEngineRev1ServicePanel(engine)
+        panel = LaserEngineV2ServicePanel(engine)
         qtbot.addWidget(panel)
         assert panel.source_box is None
     finally:
@@ -149,7 +149,7 @@ def test_source_accessors():
     finally:
         engine.close()
     assert engine.source_limits_mw is None and engine.source_status is None  # the source is closed with the engine
-    bare = LaserEngineRev1(link_factory=lambda: EngineLink(FakeEngine()))
+    bare = LaserEngineV2(link_factory=lambda: EngineLink(FakeEngine()))
     bare.open()
     try:
         assert bare.source_limits_mw is None and bare.source_status is None
@@ -199,7 +199,7 @@ def test_bench_window_simulate_connect_disconnect(qtbot, monkeypatch):
         assert fake.sent[-1] == "DISARM"  # the poll thread has stopped: nothing after the DISARM
         assert "LINE1:GATE 0" in fake.sent[fake.sent.index("LINE1:GATE 1") :]  # gate released before the DISARM
         assert win.engine is None and win.connect_btn.isEnabled()
-        with pytest.raises(LaserEngineRev1Error, match="not open"):
+        with pytest.raises(LaserEngineV2Error, match="not open"):
             engine.link
     finally:
         engine.close()
@@ -226,7 +226,7 @@ def _shared_sim(monkeypatch):
     fake, source = FakeEngine(tok_delay_polls=0), FakeSource()
 
     def build(options=None):
-        engine = LaserEngineRev1(
+        engine = LaserEngineV2(
             link_factory=lambda: EngineLink(fake),
             source_factory=lambda: source,
             options=options,
@@ -272,7 +272,7 @@ def test_panel_seeds_the_spinboxes_from_the_engine(qtbot):
         engine.sim_engine.lines[3]["target"] = 0.598  # L4 left at 50 % of 1.196 A
         engine.sim_engine.lines[2]["target"] = 1.25  # the AOM left at 25 % of 5 V
         engine.poll_once()
-        panel = LaserEngineRev1ServicePanel(engine)
+        panel = LaserEngineV2ServicePanel(engine)
         qtbot.addWidget(panel)
         assert panel.rows["L4"].spin.value() == 50.0
         assert panel.rows["L1"].spin.value() == 0.0 and panel.rows["L3"].spin.value() == 25.0
@@ -352,7 +352,7 @@ def test_failed_panel_build_closes_the_engine(qtbot, monkeypatch):
     def broken(engine):
         raise RuntimeError("panel bug")
 
-    monkeypatch.setattr(bench, "LaserEngineRev1ServicePanel", broken)
+    monkeypatch.setattr(bench, "LaserEngineV2ServicePanel", broken)
     win.connect_btn.click()
     assert win.engine is None and shown and "panel bug" in shown[0]
     assert fake.sent[-1] == "DISARM" and win.connect_btn.isEnabled() and not win.disconnect_btn.isEnabled()

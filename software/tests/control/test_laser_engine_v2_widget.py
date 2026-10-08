@@ -2,10 +2,10 @@ import pytest
 from qtpy.QtWidgets import QApplication, QComboBox, QMessageBox, QTabWidget
 
 from control._def import ILLUMINATION_CODE
-from control.laser_engine_rev1 import LaserEngineRev1
-from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine, FakeSource, build_simulated_engine
-from control.laser_engine_rev1_widget import SHUTTER_NOTE, LaserEngineRev1Widget
+from control.laser_engine_v2 import LaserEngineV2
+from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_sim import FakeEngine, FakeSource, build_simulated_engine
+from control.laser_engine_v2_widget import SHUTTER_NOTE, LaserEngineV2Widget
 
 DF_MAP = {  # a DF machine's illumination port map: one wavelength per engine line
     405: ILLUMINATION_CODE.ILLUMINATION_D1,
@@ -27,7 +27,7 @@ def _widget(qtbot, saved=None, ttl_map=None):
         engine.ttl_map_provider = lambda: dict(ttl_map)
     engine.open()
     saver = (lambda mw: saved.append(mw) or True) if saved is not None else (lambda mw: True)
-    widget = LaserEngineRev1Widget(engine, save_power=saver)
+    widget = LaserEngineV2Widget(engine, save_power=saver)
     qtbot.addWidget(widget)
     return engine, widget
 
@@ -120,7 +120,7 @@ def test_widget_hides_a_finished_startup(qtbot):
         engine.source_step()
         engine.poll_once()
     assert engine.bringup_state == "done"
-    widget = LaserEngineRev1Widget(engine, save_power=lambda mw: True)
+    widget = LaserEngineV2Widget(engine, save_power=lambda mw: True)
     qtbot.addWidget(widget)
     assert widget.startup_label.isHidden()  # the pill and the lines say it
     engine.close()
@@ -172,7 +172,7 @@ def test_widget_560_box_follows_the_source(qtbot):
 def test_widget_unsaved_power_is_said(qtbot):
     engine = build_simulated_engine()
     engine.open()
-    widget = LaserEngineRev1Widget(engine, save_power=lambda mw: False)
+    widget = LaserEngineV2Widget(engine, save_power=lambda mw: False)
     qtbot.addWidget(widget)
     widget.power_spin.setValue(300.0)
     widget.power_set_btn.click()
@@ -193,10 +193,10 @@ def test_widget_set_takes_a_typed_value_not_yet_committed(qtbot):
 
 def test_widget_saves_to_the_machine_ini_only_outside_simulation(qtbot, monkeypatch):
     calls = []
-    monkeypatch.setattr("control.laser_engine_rev1_widget.save_source_power_mw", lambda mw: calls.append(mw) or True)
+    monkeypatch.setattr("control.laser_engine_v2_widget.save_source_power_mw", lambda mw: calls.append(mw) or True)
     sim = build_simulated_engine()  # FakeSource: 200-1000 mW, not the machine's limits
     sim.open()
-    widget = LaserEngineRev1Widget(sim)  # the default saver
+    widget = LaserEngineV2Widget(sim)  # the default saver
     qtbot.addWidget(widget)
     widget.power_spin.setValue(900.0)
     widget.power_set_btn.click()
@@ -204,9 +204,9 @@ def test_widget_saves_to_the_machine_ini_only_outside_simulation(qtbot, monkeypa
     assert "not saved to the machine .ini" in widget.notice_label.text()
     sim.close()
     fake = FakeEngine(tok_delay_polls=0)
-    real = LaserEngineRev1(link_factory=lambda: EngineLink(fake), source_factory=FakeSource)
+    real = LaserEngineV2(link_factory=lambda: EngineLink(fake), source_factory=FakeSource)
     real.open()
-    widget = LaserEngineRev1Widget(real)
+    widget = LaserEngineV2Widget(real)
     qtbot.addWidget(widget)
     widget.power_spin.setValue(900.0)
     widget.power_set_btn.click()
@@ -223,9 +223,9 @@ def test_widget_idle_off_control(qtbot):
 
 
 def test_widget_without_a_source_has_no_560_box(qtbot):
-    engine = LaserEngineRev1(link_factory=lambda: EngineLink(FakeEngine()))
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(FakeEngine()))
     engine.open()
-    widget = LaserEngineRev1Widget(engine, save_power=lambda mw: True)
+    widget = LaserEngineV2Widget(engine, save_power=lambda mw: True)
     qtbot.addWidget(widget)
     engine.poll_once()
     assert widget.source_box is None and widget.rows["L3"].state.text() == "NOT CONFIGURED"
@@ -236,7 +236,7 @@ def test_widget_shows_the_startup_state_at_once(qtbot):
     engine = build_simulated_engine()
     engine.open()
     engine.on_startup()  # the bring-up is now running: the sim TECs need 3 polls
-    widget = LaserEngineRev1Widget(engine)  # no poll_once() in between: the tab must not wait for the next status
+    widget = LaserEngineV2Widget(engine)  # no poll_once() in between: the tab must not wait for the next status
     qtbot.addWidget(widget)
     assert widget.startup_label.text().startswith("Startup: ")
     assert widget.rows["L1"].state.text() != "—"  # seeded from the latest status

@@ -1,4 +1,4 @@
-"""Per-line readiness of the rev 1 laser engine from one STAT? reply (+ the engine's own 560 nm source on DF). Pure, no I/O."""
+"""Per-line readiness of laser engine v2 from one STAT? reply (+ the engine's own 560 nm source on DF). Pure, no I/O."""
 
 import time
 from dataclasses import dataclass
@@ -66,7 +66,7 @@ class LineInfo:
 
 
 @dataclass(frozen=True)
-class EngineRev1Status:
+class EngineV2Status:
     channels: Dict[str, LineInfo]
     armed: bool
     suspended: bool
@@ -137,7 +137,7 @@ def _line_state(stat: dict, i: int, ln: dict, system_faults, source, has_source)
 
 def parse_status(
     stat: dict, source: Optional[SourceStatus] = None, has_source: bool = False, timestamp_s: float = 0.0
-) -> EngineRev1Status:
+) -> EngineV2Status:
     system_faults = [
         f for f in stat.get("fault_names", []) if f != "TOK_LOST"
     ]  # TOK_LOST is per line (the blocked flag)
@@ -157,7 +157,7 @@ def parse_status(
             max=float(ln["max"] or 0.0),
             gate=bool(ln.get("gate", 0)),
         )
-    return EngineRev1Status(
+    return EngineV2Status(
         channels=channels,
         armed=bool(stat["armed"]),
         suspended=bool(stat.get("suspended")),

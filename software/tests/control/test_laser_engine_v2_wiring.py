@@ -1,10 +1,10 @@
 import pytest
 
 import control._def
-from control.laser_engine_rev1 import (
+from control.laser_engine_v2 import (
     EngineOptions,
-    LaserEngineRev1,
-    LaserEngineRev1LightSource,
+    LaserEngineV2,
+    LaserEngineV2LightSource,
     build_from_config,
     options_from_def,
 )
@@ -23,13 +23,13 @@ def test_build_from_config_without_the_vendor_module_has_no_source(monkeypatch):
     real_import = builtins.__import__
 
     def no_l3_driver(name, *a, **kw):
-        if name == "control.laser_engine_rev1_l3_driver":
+        if name == "control.laser_engine_v2_l3_driver":
             raise ImportError("not in this build")
         return real_import(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", no_l3_driver)
     engine = build_from_config(sn="X", source_sn=None, options=EngineOptions())
-    assert isinstance(engine, LaserEngineRev1) and engine._source_factory is None
+    assert isinstance(engine, LaserEngineV2) and engine._source_factory is None
 
 
 def test_options_come_from_the_ini_flags(monkeypatch):
@@ -43,7 +43,7 @@ def test_options_come_from_the_ini_flags(monkeypatch):
         options_from_def()  # a typo in the .ini fails at startup, not silently
 
 
-def test_simulated_microscope_uses_the_rev1_engine(monkeypatch):
+def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
     import control.microscope
 
     monkeypatch.setattr(control._def, "USE_LASER_ENGINE_REV1", True)
@@ -51,9 +51,9 @@ def test_simulated_microscope_uses_the_rev1_engine(monkeypatch):
     scope = control.microscope.Microscope.build_from_global_config(simulated=True)
     try:
         engine = scope.addons.squid_laser_engine
-        assert isinstance(engine, LaserEngineRev1)
+        assert isinstance(engine, LaserEngineV2)
         ic = scope.illumination_controller
-        assert isinstance(ic.light_source, LaserEngineRev1LightSource)
+        assert isinstance(ic.light_source, LaserEngineV2LightSource)
         assert ic.intensity_control_mode == IntensityControlMode.Software
         assert ic.shutter_control_mode == ShutterControlMode.TTL
         assert engine._ttl_map() == ic.channel_mappings_TTL  # one wavelength map for intensity and exposure (ruling 5)

@@ -1,7 +1,7 @@
 import json
 
-from control.laser_engine_rev1_sim import FakeEngine
-from control.laser_engine_rev1_status import LineState, SourceStatus, parse_status
+from control.laser_engine_v2_sim import FakeEngine
+from control.laser_engine_v2_status import LineState, SourceStatus, parse_status
 
 
 def _stat(fake):

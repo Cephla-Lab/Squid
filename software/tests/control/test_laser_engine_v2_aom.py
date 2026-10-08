@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from control.laser_engine_rev1 import LaserEngineRev1, LaserEngineRev1Error, load_aom_calibration
-from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine, FakeSource
-from control.laser_engine_rev1_status import LineState
+from control.laser_engine_v2 import LaserEngineV2, LaserEngineV2Error, load_aom_calibration
+from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_sim import FakeEngine, FakeSource
+from control.laser_engine_v2_status import LineState
 
 CAL = "AOM Volts,Transmission\n0,0\n1,0.1\n2,0.4\n3,0.8\n4,1.0\n5,0.95\n"  # peak at 4 V
 NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
@@ -21,7 +21,7 @@ def _fast_resync(monkeypatch):
 
 def _engine(calibration_dir=NO_CALIBRATIONS):
     fake, source = FakeEngine(tok_delay_polls=0), FakeSource()  # 200-1000 mW
-    engine = LaserEngineRev1(
+    engine = LaserEngineV2(
         link_factory=lambda: EngineLink(fake),
         source_factory=lambda: source,
         query_interval_s=0.01,
@@ -111,8 +111,8 @@ def test_wake_sets_the_aom_to_the_requested_intensity_dark_until_asked():
 
 def test_intensity_without_a_source_is_refused():
     fake = FakeEngine(tok_delay_polls=0)
-    engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
     engine.open()
-    with pytest.raises(LaserEngineRev1Error, match="560 nm source not configured"):
+    with pytest.raises(LaserEngineV2Error, match="560 nm source not configured"):
         engine.set_line_intensity(3, 50.0)
     assert not _aom_sets(fake.sent)

@@ -1,4 +1,4 @@
-"""Cephla laser engine, carrier rev 1 — Squid driver.
+"""Cephla laser engine v2 — Squid driver.
 
 One object owns the engine link (and, on DF, the engine's 560 nm source). It polls STAT? once a second, which is also the heartbeat the
 firmware needs to stay armed; publishes per-line readiness; arms and brings every line up at Squid startup, and re-arms on use after
@@ -26,12 +26,12 @@ from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control._def import source_code_to_port_index
-from control.laser_engine_rev1_link import EngineCommandError, EngineLink, EngineLinkError
-from control.laser_engine_rev1_status import (
+from control.laser_engine_v2_link import EngineCommandError, EngineLink, EngineLinkError
+from control.laser_engine_v2_status import (
     ERROR_STATES,
     REFUSE_STATES,
     SOURCE_560_LINE,
-    EngineRev1Status,
+    EngineV2Status,
     LineState,
     SourceStatus,
     is_560_line,
@@ -44,7 +44,7 @@ IDN_PREFIX = "Cephla,LaserEngineCarrier-rev1,"
 DEFAULT_CALIBRATION_DIR = Path(__file__).resolve().parent.parent / "machine_configs" / "intensity_calibrations"
 
 
-class LaserEngineRev1Error(RuntimeError):
+class LaserEngineV2Error(RuntimeError):
     def __init__(self, channel_key: str, message: str, needs_operator: bool = False):
         super().__init__(f"[{channel_key}] {message}")
         self.channel_key = channel_key
@@ -156,8 +156,8 @@ def load_aom_calibration(path: Path) -> Optional[Tuple[np.ndarray, np.ndarray]]:
     return rising, volts[: peak + 1]
 
 
-class LaserEngineRev1(QObject):
-    status_updated = Signal(object)  # EngineRev1Status
+class LaserEngineV2(QObject):
+    status_updated = Signal(object)  # EngineV2Status
     connection_lost = Signal(str)
     notice_added = Signal(str)  # an operator-facing message for the Laser Engine tab (also logged)
 
@@ -188,7 +188,7 @@ class LaserEngineRev1(QObject):
         self.notices: List[str] = []
         self._link: Optional[EngineLink] = None
         self.variant = ""
-        self._latest: Optional[EngineRev1Status] = None
+        self._latest: Optional[EngineV2Status] = None
         self._latest_raw: Optional[dict] = None
         self._last_event = ""
         self._status_lock = threading.Lock()
@@ -197,7 +197,7 @@ class LaserEngineRev1(QObject):
         self._running = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._percent: Dict[int, float] = {}  # last commanded drive per line, % of its ceiling (Task 5)
-        self._light_source = None  # LaserEngineRev1LightSource, created on first use (Task 5)
+        self._light_source = None  # LaserEngineV2LightSource, created on first use (Task 5)
         self._source = None  # engine-owned 560 nm source (Task 6)
         self._source_status: Optional[SourceStatus] = None
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -242,7 +242,7 @@ class LaserEngineRev1(QObject):
     @property
     def link(self) -> EngineLink:
         if self._link is None:
-            raise LaserEngineRev1Error("engine", "not open")
+            raise LaserEngineV2Error("engine", "not open")
         return self._link
 
     def open(self) -> None:
@@ -254,7 +254,7 @@ class LaserEngineRev1(QObject):
         idn = link.query("*IDN?")
         if not idn.startswith(IDN_PREFIX):
             link.close()
-            raise RuntimeError(f"{idn!r} is not a rev 1 laser engine")
+            raise RuntimeError(f"{idn!r} is not a Cephla laser engine v2")
         self._link = link
         try:
             self.variant = link.query("VAR?")
@@ -300,7 +300,7 @@ class LaserEngineRev1(QObject):
                 return
             except EngineCommandError as e:
                 if time.monotonic() >= deadline:
-                    raise LaserEngineRev1Error("engine", f"cannot configure the lines: {e.reason}") from e
+                    raise LaserEngineV2Error("engine", f"cannot configure the lines: {e.reason}") from e
                 time.sleep(0.2)
 
     def _notice(self, text: str, warn: bool = True) -> None:
@@ -313,7 +313,7 @@ class LaserEngineRev1(QObject):
         if self._running.is_set():
             return
         self._running.set()
-        self._thread = threading.Thread(target=self._poll_loop, name="LaserEngineRev1Poll", daemon=True)
+        self._thread = threading.Thread(target=self._poll_loop, name="LaserEngineV2Poll", daemon=True)
         self._thread.start()
         self._start_source_thread()
 
@@ -339,14 +339,14 @@ class LaserEngineRev1(QObject):
             raise
         except EngineLinkError as e:
             self._signal_lost(str(e))
-            raise LaserEngineRev1Error("engine", f"connection lost: {e}") from e
+            raise LaserEngineV2Error("engine", f"connection lost: {e}") from e
 
     def _stat(self) -> dict:
         try:
             raw = self.link.status()
         except EngineLinkError as e:
             self._signal_lost(str(e))
-            raise LaserEngineRev1Error("engine", f"connection lost: {e}") from e
+            raise LaserEngineV2Error("engine", f"connection lost: {e}") from e
         with self._status_lock:
             self._latest_raw = raw
         return raw
@@ -363,7 +363,7 @@ class LaserEngineRev1(QObject):
                 return
             time.sleep(self.query_interval_s)
 
-    def poll_once(self) -> Optional[EngineRev1Status]:
+    def poll_once(self) -> Optional[EngineV2Status]:
         """One STAT? round-trip. Never does source I/O (that runs on the source thread, Task 6)."""
         link = self._link  # close() on another thread may clear it
         if self._lost or link is None:
@@ -385,7 +385,7 @@ class LaserEngineRev1(QObject):
         self.status_updated.emit(status)
         return status
 
-    def get_latest_status(self) -> Optional[EngineRev1Status]:
+    def get_latest_status(self) -> Optional[EngineV2Status]:
         with self._status_lock:
             return self._latest
 
@@ -483,7 +483,7 @@ class LaserEngineRev1(QObject):
         else:
             self._notice(f"startup bring-up {result}")
 
-    def _bringup_step(self, status: EngineRev1Status) -> None:
+    def _bringup_step(self, status: EngineV2Status) -> None:
         if self._bringup_state != "running" or not self._bringup_lock.acquire(blocking=False):
             return
         try:
@@ -508,7 +508,7 @@ class LaserEngineRev1(QObject):
             for key in pending:
                 try:
                     self._ensure_ready_step(key, status)
-                except LaserEngineRev1Error as e:
+                except LaserEngineV2Error as e:
                     if e.channel_key == "engine":  # a real ARM refusal (key off, fault latched) or the link: give up
                         self._end_bringup(f"cancelled: {e} - lines come up on use")
                         return
@@ -531,7 +531,7 @@ class LaserEngineRev1(QObject):
         try:
             self._cmd("ARM")
         except EngineCommandError as e:
-            raise LaserEngineRev1Error("engine", f"cannot arm: {e.reason}") from e
+            raise LaserEngineV2Error("engine", f"cannot arm: {e.reason}") from e
 
     def _try_arm(self) -> bool:
         """True when armed; False on a transient refusal (retried at the next step); raises on a real refusal."""
@@ -544,7 +544,7 @@ class LaserEngineRev1(QObject):
                 self._arm_wait_reason = e.reason
                 return False
             self._arm_wait_reason = None
-            raise LaserEngineRev1Error("engine", f"cannot arm: {e.reason}") from e
+            raise LaserEngineV2Error("engine", f"cannot arm: {e.reason}") from e
         self._arm_wait_reason = None
         return True
 
@@ -559,18 +559,18 @@ class LaserEngineRev1(QObject):
         try:
             self._cmd("FAULT:RESET")
         except EngineCommandError as e:
-            raise LaserEngineRev1Error("engine", f"fault reset refused: {e.reason}") from e
+            raise LaserEngineV2Error("engine", f"fault reset refused: {e.reason}") from e
 
     # ---- enable on use ---------------------------------------------------------------------------------------------------
-    def _ensure_ready_step(self, channel_key: str, status: EngineRev1Status, tec_retried: Optional[set] = None) -> None:
-        """One non-blocking step towards READY for one line. Raises LaserEngineRev1Error for error/operator states."""
+    def _ensure_ready_step(self, channel_key: str, status: EngineV2Status, tec_retried: Optional[set] = None) -> None:
+        """One non-blocking step towards READY for one line. Raises LaserEngineV2Error for error/operator states."""
         info = status.channels[channel_key]
         n = self._line_of(channel_key)
         is560 = is_560_line(self._latest_raw or {}, n)
         if is560:
             self._touch_source()
         if info.state in REFUSE_STATES:
-            raise LaserEngineRev1Error(channel_key, info.reason, needs_operator=info.state == LineState.NEEDS_KEY)
+            raise LaserEngineV2Error(channel_key, info.reason, needs_operator=info.state == LineState.NEEDS_KEY)
         if info.state == LineState.NOT_ARMED:
             if self._try_arm():
                 self._bringup_armed = True  # a disarm after this (even before the next poll) ends a running bring-up
@@ -589,7 +589,7 @@ class LaserEngineRev1(QObject):
             except EngineCommandError as e:
                 if e.reason.startswith("TOK low"):
                     return
-                raise LaserEngineRev1Error(channel_key, e.reason) from e
+                raise LaserEngineV2Error(channel_key, e.reason) from e
             if is560:
                 self._wake_source()
         elif info.state == LineState.SOURCE_OFF:
@@ -607,7 +607,7 @@ class LaserEngineRev1(QObject):
                 return
             try:
                 self._ensure_ready_step(channel_key, status)
-            except (LaserEngineRev1Error, EngineCommandError) as e:
+            except (LaserEngineV2Error, EngineCommandError) as e:
                 self._log.warning(f"laser engine wake_up({channel_key}): {e}")
                 return
 
@@ -642,9 +642,9 @@ class LaserEngineRev1(QObject):
                 return True
             for key in channel_keys:
                 if key not in status.channels:
-                    raise LaserEngineRev1Error(key, "no such line")
+                    raise LaserEngineV2Error(key, "no such line")
                 if status.channels[key].state == LineState.UNUSED:
-                    raise LaserEngineRev1Error(key, "nothing on this line in this variant")
+                    raise LaserEngineV2Error(key, "nothing on this line in this variant")
                 if not status.channels[key].is_ready:
                     self._ensure_ready_step(key, status, tec_retried)
             if time.monotonic() >= deadline:
@@ -654,12 +654,12 @@ class LaserEngineRev1(QObject):
     # ---- engine-owned source hooks used above (Task 6 implements them) ---------------------------------------------
     def _check_source_usable(self, channel_key: str) -> None:
         if self._source is None:
-            raise LaserEngineRev1Error(channel_key, "560 nm source not configured")
+            raise LaserEngineV2Error(channel_key, "560 nm source not configured")
         st = self._source_status
         if st is not None and st.needs_key:
-            raise LaserEngineRev1Error(channel_key, "turn the 560 key OFF then ON", needs_operator=True)
+            raise LaserEngineV2Error(channel_key, "turn the 560 key OFF then ON", needs_operator=True)
         if st is not None and (st.fault or not st.link_ok):
-            raise LaserEngineRev1Error(channel_key, f"560 nm source not usable: {st.detail or 'not responding'}")
+            raise LaserEngineV2Error(channel_key, f"560 nm source not usable: {st.detail or 'not responding'}")
 
     def _wake_source(self) -> None:
         """Set the AOM to the current 560 intensity (0 V = dark until one is asked), then queue one source enable at the
@@ -688,7 +688,7 @@ class LaserEngineRev1(QObject):
             start = src.min_power_mw  # ruling 4: start at the source's own minimum, then the operator's power
             with self._source_lock:
                 if self._lost:  # under the lock: _signal_lost sets _lost before its _disable_source takes the lock
-                    raise LaserEngineRev1Error("L3", "laser engine connection lost")
+                    raise LaserEngineV2Error("L3", "laser engine connection lost")
                 requested = self._source_requested_mw if self._source_requested_mw is not None else start
                 self._source_pending_mw = requested if requested > start else None
                 self._source_want_on = True
@@ -696,8 +696,8 @@ class LaserEngineRev1(QObject):
         except Exception as e:
             with self._source_lock:
                 self._source_enable_pending = False
-            if isinstance(e, EngineCommandError):  # callers (wait_until_ready) raise only LaserEngineRev1Error
-                raise LaserEngineRev1Error("L3", e.reason) from e
+            if isinstance(e, EngineCommandError):  # callers (wait_until_ready) raise only LaserEngineV2Error
+                raise LaserEngineV2Error("L3", e.reason) from e
             raise
 
     def _disable_source(self) -> None:
@@ -753,7 +753,7 @@ class LaserEngineRev1(QObject):
         if self._source is None or self._source_running.is_set():
             return
         self._source_running.set()
-        self._source_thread = threading.Thread(target=self._source_loop, name="LaserEngineRev1Source", daemon=True)
+        self._source_thread = threading.Thread(target=self._source_loop, name="LaserEngineV2Source", daemon=True)
         self._source_thread.start()
 
     def _source_loop(self) -> None:
@@ -862,7 +862,7 @@ class LaserEngineRev1(QObject):
                 self._log.exception("560 nm source shutdown")
         self._source = None
 
-    def _after_poll(self, status: EngineRev1Status) -> None:
+    def _after_poll(self, status: EngineV2Status) -> None:
         """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter.
         Retrying a disable that did not take is source_step's job (it keeps running after the engine link is lost);
         the shutter needs the engine link, so it is handled here. Sleep (LINE3:EN 0) and DISARM close the shutter in
@@ -899,7 +899,7 @@ class LaserEngineRev1(QObject):
             return
         try:
             self._cmd(f"SHUT:OPEN {int(want_open)}")
-        except (EngineCommandError, LaserEngineRev1Error) as e:
+        except (EngineCommandError, LaserEngineV2Error) as e:
             self._log.warning(f"shutter {'open' if want_open else 'close'} not done: {e}")
 
     def _on_lost(self) -> None:
@@ -913,12 +913,12 @@ class LaserEngineRev1(QObject):
         (linear in volts, or through 560_aom.csv when present); the 560 laser power is the operator's, never changed here.
         """
         if self._lost:
-            raise LaserEngineRev1Error(f"L{line}", "laser engine connection lost")
+            raise LaserEngineV2Error(f"L{line}", "laser engine connection lost")
         percent = max(0.0, min(100.0, float(percent)))
         raw = self._stat()  # fresh: whether to wait for the ramp depends on the line's state now
         if is_560_line(raw, line):
             if self._source is None:
-                raise LaserEngineRev1Error(f"L{line}", "560 nm source not configured")
+                raise LaserEngineV2Error(f"L{line}", "560 nm source not configured")
             self._touch_source()  # an intensity request is use: keeps the source from idling off
             self._percent[line] = percent
             self._set_aom_volts(self._aom_volts_for(percent))
@@ -934,7 +934,7 @@ class LaserEngineRev1(QObject):
         deadline = time.monotonic() + self.SETTLE_TIMEOUT_S
         while time.monotonic() < deadline:
             if self.poll_once() is None:
-                raise LaserEngineRev1Error(f"L{line}", "laser engine connection lost")
+                raise LaserEngineV2Error(f"L{line}", "laser engine connection lost")
             if self._latest_raw["lines"][line - 1]["st"] != "RAMP":
                 return
             time.sleep(0.02)
@@ -953,7 +953,7 @@ class LaserEngineRev1(QObject):
         """Squid's intensity (ruling 3): % of optical power, on the line whose TTL port this wavelength uses."""
         line = self.line_for_wavelength(wavelength)
         if line is None:
-            raise LaserEngineRev1Error(f"{wavelength} nm", "not on an engine port (D1-D5) in the illumination port map")
+            raise LaserEngineV2Error(f"{wavelength} nm", "not on an engine port (D1-D5) in the illumination port map")
         percent = max(0.0, min(100.0, float(percent)))
         self._requested[wavelength] = percent
         if self.variant == "DF" and line == SOURCE_560_LINE:
@@ -1007,7 +1007,7 @@ class LaserEngineRev1(QObject):
         power applied. Only queues (the source thread does the I/O). Squid's intensity never changes it."""
         src = self._source  # local: close() can clear self._source on another thread
         if src is None:
-            raise LaserEngineRev1Error("L3", "560 nm source not configured")
+            raise LaserEngineV2Error("L3", "560 nm source not configured")
         asked = float(mw)
         if not math.isfinite(asked):
             raise ValueError(f"560 nm laser power {mw!r}: not a number of mW")
@@ -1082,7 +1082,7 @@ class LaserEngineRev1(QObject):
             try:
                 self._cmd(f"LINE3:SET {volts:.3f}")
             except EngineCommandError as e:
-                raise LaserEngineRev1Error("L3", e.reason) from e
+                raise LaserEngineV2Error("L3", e.reason) from e
             self._aom_volts = volts  # cached only once the engine has accepted it: a refused set is sent again
         self._wait_line_settled(SOURCE_560_LINE)  # the AOM input ramps like any set-point (at once while line 3 is off)
 
@@ -1091,9 +1091,9 @@ class LaserEngineRev1(QObject):
         self.source_idle_off_s = idle_off_seconds(minutes)
 
     @property
-    def light_source(self) -> "LaserEngineRev1LightSource":
+    def light_source(self) -> "LaserEngineV2LightSource":
         if self._light_source is None:
-            self._light_source = LaserEngineRev1LightSource(self)
+            self._light_source = LaserEngineV2LightSource(self)
         return self._light_source
 
 
@@ -1105,10 +1105,10 @@ class _SameKey(dict):
         return key
 
 
-class LaserEngineRev1LightSource(LightSource):
+class LaserEngineV2LightSource(LightSource):
     """IlluminationController's view of the engine: intensity over USB; on/off = Squid controller TTL (hardware-timed)."""
 
-    def __init__(self, engine: LaserEngineRev1):
+    def __init__(self, engine: LaserEngineV2):
         self._engine = engine
         self.channel_mappings = _SameKey()  # empty: constructing the controller reads nothing from the engine
         self._unmapped_warned: set = set()
@@ -1120,22 +1120,20 @@ class LaserEngineRev1LightSource(LightSource):
 
     def set_intensity_control_mode(self, mode):
         if mode != IntensityControlMode.Software:
-            raise ValueError("the rev 1 laser engine takes its set-point over USB (IntensityControlMode.Software)")
+            raise ValueError("laser engine v2 takes its set-point over USB (IntensityControlMode.Software)")
 
     def get_intensity_control_mode(self):
         return IntensityControlMode.Software
 
     def set_shutter_control_mode(self, mode):
         if mode != ShutterControlMode.TTL:  # a software gate would hold a line emitting between exposures
-            raise ValueError(
-                "the rev 1 laser engine is gated by the Squid controller TTL lines (ShutterControlMode.TTL)"
-            )
+            raise ValueError("laser engine v2 is gated by the Squid controller TTL lines (ShutterControlMode.TTL)")
 
     def get_shutter_control_mode(self):
         return ShutterControlMode.TTL
 
     def set_shutter_state(self, channel, on):
-        raise ValueError("the rev 1 laser engine is gated by the Squid controller TTL lines, not by software")
+        raise ValueError("laser engine v2 is gated by the Squid controller TTL lines, not by software")
 
     def get_shutter_state(self, channel):
         return False  # no software gate; exposure is the TTL line
@@ -1165,7 +1163,7 @@ class LaserEngineRev1LightSource(LightSource):
 
 def _production_source_factory(source_sn: Optional[str]):
     try:
-        from control.laser_engine_rev1_l3_driver import open_l3_source  # Task 10; absent from builds without it
+        from control.laser_engine_v2_l3_driver import open_l3_source  # Task 10; absent from builds without it
     except ImportError:
         return None
     return lambda: open_l3_source(sn=source_sn)
@@ -1208,8 +1206,8 @@ def save_source_power_mw(mw: float, path: Optional[str] = None) -> bool:
     return True
 
 
-def build_from_config(sn: Optional[str], source_sn: Optional[str], options: EngineOptions) -> LaserEngineRev1:
-    return LaserEngineRev1(
+def build_from_config(sn: Optional[str], source_sn: Optional[str], options: EngineOptions) -> LaserEngineV2:
+    return LaserEngineV2(
         link_factory=lambda: EngineLink.open(sn=sn),
         source_factory=_production_source_factory(source_sn),
         options=options,

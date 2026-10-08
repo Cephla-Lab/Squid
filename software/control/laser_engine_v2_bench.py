@@ -1,7 +1,7 @@
-"""Bench GUI for the Cephla laser engine, carrier rev 1: drive the engine through the Squid driver, no microscope.
+"""Bench GUI for the Cephla laser engine v2: drive the engine through the Squid driver, no microscope.
 
-Reusable panels take an engine (LaserEngineRev1ServicePanel, LogPane: for Squid's "Laser Engine" tab later);
-BenchWindow and main() are the standalone app (tools/laser_engine_rev1_bench.py). The bench has no Squid controller,
+Reusable panels take an engine (LaserEngineV2ServicePanel, LogPane: for Squid's "Laser Engine" tab later);
+BenchWindow and main() are the standalone app (tools/laser_engine_v2_bench.py). The bench has no Squid controller,
 so no TTL: the per-line "Gate (bench, no TTL)" checkbox holds the line's gate on in firmware instead. Emission still
 needs the hardware permits. The 560 nm laser power is set in the embedded Laser Engine tab.
 """
@@ -39,17 +39,17 @@ from serial.tools import list_ports
 import control._def
 import squid.logging
 from control._def import port_index_to_source_code
-from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, _production_source_factory
-from control.laser_engine_rev1_link import EngineCommandError, EngineLink
-from control.laser_engine_rev1_sim import build_simulated_engine
-from control.laser_engine_rev1_status import (
+from control.laser_engine_v2 import EngineOptions, LaserEngineV2, _production_source_factory
+from control.laser_engine_v2_link import EngineCommandError, EngineLink
+from control.laser_engine_v2_sim import build_simulated_engine
+from control.laser_engine_v2_status import (
     SOURCE_560_LINE,
-    EngineRev1Status,
+    EngineV2Status,
     LineState,
     SourceStatus,
     _source_state,
 )
-from control.laser_engine_rev1_widget import LaserEngineRev1Widget
+from control.laser_engine_v2_widget import LaserEngineV2Widget
 
 # bench only: Squid takes the wavelengths from its channel configs
 DF_WAVELENGTHS = {1: 405, 2: 488, 3: 560, 4: 638, 5: 730}
@@ -114,12 +114,12 @@ class _LineRow:
         return [self.name, self.state, self.spin, self.readback, self.wake, self.sleep, self.gate]
 
 
-class LaserEngineRev1ServicePanel(QWidget):
+class LaserEngineV2ServicePanel(QWidget):
     """Per-line intensity / wake / sleep / bench gate, the engine's 560 source, and a raw command line."""
 
     RAW_HISTORY = 5
 
-    def __init__(self, engine: LaserEngineRev1, parent: Optional[QWidget] = None):
+    def __init__(self, engine: LaserEngineV2, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._engine = engine
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -257,7 +257,7 @@ class LaserEngineRev1ServicePanel(QWidget):
             return
         self._accepted[key] = pct
 
-    def _seed_from(self, status: EngineRev1Status) -> None:
+    def _seed_from(self, status: EngineV2Status) -> None:
         """Show each line's current set-point (% of its ceiling; the 560: the AOM's %) without sending anything."""
         for key, row in self.rows.items():
             info = status.channels.get(key)
@@ -322,7 +322,7 @@ class LaserEngineRev1ServicePanel(QWidget):
         return reply
 
     # ---- status ----------------------------------------------------------------------------------------------------
-    def _on_status(self, status: EngineRev1Status) -> None:
+    def _on_status(self, status: EngineV2Status) -> None:
         if not self._seeded:
             self._seed_from(status)
         for key, row in self.rows.items():
@@ -399,11 +399,11 @@ class BenchWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Laser engine rev 1 - bench")
+        self.setWindowTitle("Laser engine v2 - bench")
         self._log = squid.logging.get_logger(self.__class__.__name__)
-        self.engine: Optional[LaserEngineRev1] = None
-        self.engine_widget: Optional[LaserEngineRev1Widget] = None
-        self.service_panel: Optional[LaserEngineRev1ServicePanel] = None
+        self.engine: Optional[LaserEngineV2] = None
+        self.engine_widget: Optional[LaserEngineV2Widget] = None
+        self.service_panel: Optional[LaserEngineV2ServicePanel] = None
 
         central = QWidget()
         layout = QVBoxLayout(central)
@@ -494,7 +494,7 @@ class BenchWindow(QMainWindow):
             source_power_mw=control._def.LASER_ENGINE_REV1_SOURCE_POWER_MW,
         )
 
-    def _build_engine(self, options: EngineOptions) -> LaserEngineRev1:
+    def _build_engine(self, options: EngineOptions) -> LaserEngineV2:
         if self.simulate_cb.isChecked():
             return build_simulated_engine(options)
         device = self.port_combo.currentData()
@@ -504,7 +504,7 @@ class BenchWindow(QMainWindow):
         source_factory = _production_source_factory(sn or None)
         if source_factory is None:
             self._log.warning("no 560 driver in this build: L3 reads NOT_CONFIGURED")
-        return LaserEngineRev1(
+        return LaserEngineV2(
             link_factory=lambda: EngineLink.open(device=device), source_factory=source_factory, options=options
         )
 
@@ -512,7 +512,7 @@ class BenchWindow(QMainWindow):
         self._log.error(text)
         QMessageBox.warning(self, "Laser engine", text)
 
-    def _zero_set_points(self, engine: LaserEngineRev1) -> None:
+    def _zero_set_points(self, engine: LaserEngineV2) -> None:
         """The engine keeps each line's set-point across a DISARM or a lost host, and the bring-up ramps back to it:
         start every fitted line at 0 (raw drive, no calibration). On DF line 3 that is the AOM at 0 V (dark); the 560
         laser power is the operator's (the tab), not a set-point here. Without a 560 source line 3 is left alone.
@@ -547,8 +547,8 @@ class BenchWindow(QMainWindow):
                 engine.on_startup()
             engine.poll_once()  # the panel seeds its spinboxes from the latest status
             self.engine = engine
-            self.engine_widget = LaserEngineRev1Widget(engine)
-            self.service_panel = LaserEngineRev1ServicePanel(engine)
+            self.engine_widget = LaserEngineV2Widget(engine)
+            self.service_panel = LaserEngineV2ServicePanel(engine)
             self.panel_splitter.addWidget(self.engine_widget)
             self.panel_splitter.addWidget(self.service_panel)
             engine.connection_lost.connect(self._on_link_lost)

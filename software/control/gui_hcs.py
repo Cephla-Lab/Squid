@@ -975,9 +975,9 @@ class HighContentScreeningGui(QMainWindow):
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
 
         if USE_LASER_ENGINE_REV1 and self.microscope.addons.squid_laser_engine is not None:
-            from control.laser_engine_rev1_widget import LaserEngineRev1Widget
+            from control.laser_engine_v2_widget import LaserEngineV2Widget
 
-            self.laserEngineWidget = LaserEngineRev1Widget(self.microscope.addons.squid_laser_engine)
+            self.laserEngineWidget = LaserEngineV2Widget(self.microscope.addons.squid_laser_engine)
 
         self.recordingControlWidget = widgets.RecordingWidget(
             self.streamHandler,

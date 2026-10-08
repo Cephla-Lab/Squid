@@ -1,7 +1,7 @@
 import pytest
 
-from control.laser_engine_rev1_link import EngineCommandError, EngineLink, EngineLinkError
-from control.laser_engine_rev1_sim import FakeEngine
+from control.laser_engine_v2_link import EngineCommandError, EngineLink, EngineLinkError
+from control.laser_engine_v2_sim import FakeEngine
 
 
 def test_query_returns_one_line():
@@ -44,7 +44,7 @@ def test_resync_drops_a_stale_reply():
 
 
 def test_open_matches_a_numeric_serial_number(monkeypatch):
-    import control.laser_engine_rev1_link as link_mod
+    import control.laser_engine_v2_link as link_mod
 
     port = type("Port", (), {"device": "/dev/ttyACM7", "serial_number": "12345670"})()
     monkeypatch.setattr(link_mod.list_ports, "comports", lambda: [port])

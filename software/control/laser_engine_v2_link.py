@@ -1,4 +1,4 @@
-"""USB-serial link to the Cephla laser engine, carrier rev 1 (Teensy 4.1 text protocol, laser-engine-firmware).
+"""USB-serial link to the Cephla laser engine v2 (Teensy 4.1 text protocol, laser-engine-firmware).
 
 One text line in, exactly one line back: "OK [value]", "ERR <reason>", a bare value, or one JSON object.
 """

@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, LaserEngineRev1Error
-from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine
-from control.laser_engine_rev1_status import LineState
+from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2Error
+from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_sim import FakeEngine
+from control.laser_engine_v2_status import LineState
 
 NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"  # tests never read this machine's calibration CSVs
 
@@ -20,7 +20,7 @@ def _engine(fake=None, **kw):
     fake = fake or FakeEngine(tok_delay_polls=0)
     kw.setdefault("query_interval_s", 0.01)
     kw.setdefault("calibration_dir", NO_CALIBRATIONS)
-    return LaserEngineRev1(link_factory=lambda: EngineLink(fake), **kw), fake
+    return LaserEngineV2(link_factory=lambda: EngineLink(fake), **kw), fake
 
 
 def test_open_runs_the_startup_sequence_without_arming():
@@ -45,7 +45,7 @@ def test_open_rejects_a_foreign_device():
     fake = FakeEngine()
     fake._reply = lambda cmd: "SomeOtherDevice,1.0"
     engine, _ = _engine(fake)
-    with pytest.raises(RuntimeError, match="not a rev 1 laser engine"):
+    with pytest.raises(RuntimeError, match="not a Cephla laser engine v2"):
         engine.open()
 
 
@@ -79,7 +79,7 @@ def test_connection_lost_on_serial_error():
 
 
 def test_poll_thread_error_is_reported_as_connection_lost(monkeypatch, qtbot):
-    import control.laser_engine_rev1 as rev1
+    import control.laser_engine_v2 as v2
 
     def unexpected_shape(*a, **kw):
         raise KeyError("lines")  # e.g. a STAT? reply of an unexpected shape
@@ -87,7 +87,7 @@ def test_poll_thread_error_is_reported_as_connection_lost(monkeypatch, qtbot):
     engine, fake = _engine()
     lost = []
     engine.connection_lost.connect(lost.append)
-    monkeypatch.setattr(rev1, "parse_status", unexpected_shape)
+    monkeypatch.setattr(v2, "parse_status", unexpected_shape)
     engine.start()
     qtbot.waitUntil(lambda: len(lost) > 0, timeout=2000)  # emitted on the poll thread, delivered by the Qt event loop
     qtbot.wait(50)  # nothing else queued behind it
@@ -278,7 +278,7 @@ def test_warming_up_resends_tec_on_once():
 def test_key_off_raises_with_the_firmware_reason():
     engine, fake = _opened()
     fake.key_on = False
-    with pytest.raises(LaserEngineRev1Error, match="key switch off"):
+    with pytest.raises(LaserEngineV2Error, match="key switch off"):
         engine.wait_until_ready(["L1"], timeout_s=1.0)
 
 
@@ -295,7 +295,7 @@ def test_unused_line_raises_at_once():
     engine, _ = _engine(fake)
     engine.open()
     t0 = time.monotonic()
-    with pytest.raises(LaserEngineRev1Error, match="nothing on this line"):
+    with pytest.raises(LaserEngineV2Error, match="nothing on this line"):
         engine.wait_until_ready(["L5"], timeout_s=5.0)
     assert time.monotonic() - t0 < 1.0  # refused at once, not after the timeout
 
@@ -305,7 +305,7 @@ def test_blocked_line_raises():
     engine.on_startup()
     assert engine.wait_until_ready(["L1"], timeout_s=2.0)
     fake.set_tok(1, False)
-    with pytest.raises(LaserEngineRev1Error, match="FAULT:RESET"):
+    with pytest.raises(LaserEngineV2Error, match="FAULT:RESET"):
         engine.wait_until_ready(["L1"], timeout_s=1.0)
 
 
@@ -394,7 +394,7 @@ def test_set_intensity_after_connection_loss_raises_and_signals():
     lost = []
     engine.connection_lost.connect(lost.append)
     fake.unplug()
-    with pytest.raises(LaserEngineRev1Error, match="connection lost"):
+    with pytest.raises(LaserEngineV2Error, match="connection lost"):
         engine.set_line_intensity(1, 10.0)
     assert len(lost) == 1
 
@@ -450,7 +450,7 @@ def test_illumination_controller_software_intensity_ttl_shutter_and_wake():
         mcu,
         IntensityControlMode.Software,
         ShutterControlMode.TTL,
-        LightSourceType.CephlaLaserEngineRev1,
+        LightSourceType.CephlaLaserEngineV2,
         engine.light_source,
         config_repo=MagicMock(
             get_illumination_config=lambda: None

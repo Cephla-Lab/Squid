@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 
 import control._def
-from control.laser_engine_rev1 import EngineOptions, LaserEngineRev1, LaserEngineRev1Error, save_source_power_mw
-from control.laser_engine_rev1_link import EngineLink
-from control.laser_engine_rev1_sim import FakeEngine, FakeSource
-from control.laser_engine_rev1_status import LineState
+from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2Error, save_source_power_mw
+from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_sim import FakeEngine, FakeSource
+from control.laser_engine_v2_status import LineState
 
 NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 
@@ -22,7 +22,7 @@ def _fast_resync(monkeypatch):
 def _with_source(source=None, options=None):
     source = source or FakeSource()  # 200-1000 mW, like the DF unit's limits
     fake = FakeEngine(tok_delay_polls=0)
-    engine = LaserEngineRev1(
+    engine = LaserEngineV2(
         link_factory=lambda: EngineLink(fake),
         source_factory=lambda: source,
         query_interval_s=0.01,
@@ -55,7 +55,7 @@ def test_key_not_cycled_raises_without_touching_line3_or_source():
     source = FakeSource()
     source.needs_key = True
     engine, fake, _ = _with_source(source)
-    with pytest.raises(LaserEngineRev1Error, match="560 key OFF then ON"):
+    with pytest.raises(LaserEngineV2Error, match="560 key OFF then ON"):
         engine.wait_until_ready(["L3"], timeout_s=30.0)
     assert "LINE3:EN 1" not in fake.sent and "enable" not in source.calls
 
@@ -151,7 +151,7 @@ def test_refused_aom_close_is_sent_again():
     _to_ready(engine, source)
     engine.set_line_intensity(3, 50.0)
     _refuse_once(fake, "LINE3:SET 0.000")
-    with pytest.raises(LaserEngineRev1Error, match="simulated refusal"):
+    with pytest.raises(LaserEngineV2Error, match="simulated refusal"):
         engine.set_line_intensity(3, 0.0)
     n_sent = len(fake.sent)
     engine.set_line_intensity(3, 0.0)  # the AOM never closed: the retry must send the close again
@@ -162,7 +162,7 @@ def test_refused_aom_open_is_sent_again():
     engine, fake, source = _with_source()
     _to_ready(engine, source)  # the AOM at 0 V (nothing asked)
     _refuse_once(fake, "LINE3:SET 2.500")
-    with pytest.raises(LaserEngineRev1Error, match="simulated refusal"):
+    with pytest.raises(LaserEngineV2Error, match="simulated refusal"):
         engine.set_line_intensity(3, 50.0)
     n_sent = len(fake.sent)
     engine.set_line_intensity(3, 50.0)  # the AOM never opened: the retry must send it again
@@ -237,7 +237,7 @@ def test_refusing_source_becomes_a_fault_until_reset():
     for _ in range(engine.SOURCE_ENABLE_ATTEMPTS):
         engine.wake_up("L3")
         engine.source_step()
-    with pytest.raises(LaserEngineRev1Error, match="enable failed"):
+    with pytest.raises(LaserEngineV2Error, match="enable failed"):
         engine.wait_until_ready(["L3"], timeout_s=5.0)
     engine.fault_reset()  # the operator's reset also clears the source error
     engine.source_step()
@@ -246,11 +246,11 @@ def test_refusing_source_becomes_a_fault_until_reset():
 
 def test_no_source_is_not_an_error_until_requested():
     fake = FakeEngine(tok_delay_polls=0)
-    engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
     engine.open()
     status = engine.poll_once()
     assert status.channels["L3"].state == LineState.NOT_CONFIGURED and not status.any_error()
-    with pytest.raises(LaserEngineRev1Error, match="not configured"):
+    with pytest.raises(LaserEngineV2Error, match="not configured"):
         engine.wait_until_ready(["L3"], timeout_s=1.0)
 
 
@@ -482,9 +482,9 @@ def test_set_source_power_while_off_applies_at_the_next_start():
 
 def test_set_source_power_without_a_source_raises():
     fake = FakeEngine(tok_delay_polls=0)
-    engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
     engine.open()
-    with pytest.raises(LaserEngineRev1Error, match="560 nm source not configured") as e:
+    with pytest.raises(LaserEngineV2Error, match="560 nm source not configured") as e:
         engine.set_source_power_mw(500.0)
     assert e.value.channel_key == "L3" and engine.source_power_setpoint_mw is None
 

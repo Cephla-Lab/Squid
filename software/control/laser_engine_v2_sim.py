@@ -1,10 +1,10 @@
-"""Simulated rev 1 laser engine and its 560 nm source, for tests and Squid's simulation mode (no vendor protocol here)."""
+"""Simulated laser engine v2 and its 560 nm source, for tests and Squid's simulation mode (no vendor protocol here)."""
 
 import json
 import time as _time
 from typing import List, Optional
 
-from control.laser_engine_rev1_status import SourceStatus
+from control.laser_engine_v2_status import SourceStatus
 
 # DF variant table (laser-engine-firmware firmware/src/variant.h): (label, kind, max, tok_required)
 _DF_LINES = [
@@ -337,11 +337,11 @@ class FakeSource:
 
 
 def build_simulated_engine(options=None):
-    from control.laser_engine_rev1 import LaserEngineRev1
-    from control.laser_engine_rev1_link import EngineLink
+    from control.laser_engine_v2 import LaserEngineV2
+    from control.laser_engine_v2_link import EngineLink
 
     fake, source = FakeEngine(tok_delay_polls=3), FakeSource()
-    engine = LaserEngineRev1(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, options=options)
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, options=options)
     engine.sim_engine, engine.sim_source = fake, source  # test / demo access
     engine.simulated = True  # the fake source's limits must not overwrite the machine's saved 560 power
     return engine
