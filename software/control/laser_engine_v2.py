@@ -735,19 +735,24 @@ class LaserEngineV2(QObject):
                 raise LaserEngineV2Error("L3", e.reason) from e
             raise
 
-    def _disable_source(self) -> None:
+    def _disable_source(self, gen: Optional[int] = None) -> bool:
+        """Queue the source switch-off. With `gen` (the generation of the poll that decided it), only while no restart or
+        switch-off has happened since that poll: returns False when it was obsolete and nothing was done."""
         if self._source is None:
-            return
+            return True
         # Not under _shutter_lock: a switch-off must not wait for a shutter round trip in flight. An open racing it is
         # harmless (the source is going off; the next poll closes the shutter).
         with self._source_lock:
+            if gen is not None and gen != self._shutter_gen:
+                return False
             if not self._source_want_on:
-                return
+                return True
             self._source_want_on = False
             self._source_pending_mw = None
             self._source_disable_pending = True  # source_step clears it once the disable has run
             self._source_queue.put(("disable", None))
             self._shutter_gen += 1
+        return True
 
     def _touch_source(self) -> None:
         self._source_last_use = time.monotonic()
@@ -917,12 +922,19 @@ class LaserEngineV2(QObject):
         source_starting = st is not None and st.starting and not st.ready
         idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
         current = gen is None or gen == self._shutter_gen  # no restart / switch-off since this snapshot
-        not_armed = not status.armed and not self._source_enable_pending and current  # not a STAT? from before an ARM
-        if not_armed or (l3 is not None and l3.state in ERROR_STATES) or idle:
+        not_armed = not status.armed and not self._source_enable_pending  # not a STAT? from before this thread's ARM
+        error = l3 is not None and l3.state in ERROR_STATES
+        if idle or ((not_armed or error) and current):
             if idle:
                 self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
-            self._disable_source()
+            # A fault / not-armed snapshot switches off only while still current, checked again where the disable is
+            # queued: a fault reset + restart on another thread since this poll must not be cancelled by it. Idle-off is
+            # measured now, not from the snapshot.
+            if not self._disable_source(None if idle else gen):
+                return
             self._set_held_shutter(False, raw)
+        elif not_armed or error:
+            return  # an obsolete fault / not-armed snapshot: the next poll decides on a fresh one
         elif l3 is not None and l3.state == LineState.READY:
             self._open_held_shutter(self._shutter_gen if gen is None else gen)
         elif l3 is None or l3.state != LineState.STARTING or source_starting:

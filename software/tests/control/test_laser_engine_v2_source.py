@@ -792,3 +792,38 @@ def test_a_ready_poll_older_than_a_completed_restart_waits_for_a_fresh_one():
     thread.join(2)
     assert "SHUT:OPEN 1" not in fake.sent[mark:]  # only the snapshot's age (the generation) stops this open
     assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open  # a fresh READY opens it
+
+
+def test_a_fault_poll_older_than_a_reset_and_restart_does_not_switch_the_recovered_source_off():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    engine.in_use_provider = lambda: [560]  # live keeps using the 560 through the fault and after it
+    fake.faults = ["OVERTEMP"]  # the firmware's fault teardown: latched, disarmed, every line off
+    fake.armed = False
+    for i in range(5):
+        fake._line_off(i)
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # this poll has read L3 FAULT ...
+    engine.fault_reset()  # ... the cause cleared; the operator resets and the 560 is used again
+    engine.wake_up("L3")
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and source.enabled and fake.shut_open
+    resume.set()
+    thread.join(3)
+    assert not thread.is_alive()
+    for _ in range(5):
+        engine.source_step()
+        engine.poll_once()
+    assert engine._source_want_on and source.enabled and fake.shut_open  # the old FAULT did not cancel the recovery
+    assert engine.get_latest_status().channels["L3"].state == LineState.READY
+
+
+def test_a_current_fault_still_switches_the_source_off():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    fake.faults = ["OVERTEMP"]
+    engine.poll_once()
+    engine.source_step()
+    assert not engine._source_want_on and source.calls[-1] == "disable" and not fake.shut_open
