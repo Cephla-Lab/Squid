@@ -352,7 +352,6 @@ class ZarrWriter:
         """
         self._config = config
         self._dataset = None
-        self._pending_futures: List[Any] = []
         self._initialized = False
         self._finalized = False
 
@@ -670,52 +669,8 @@ class ZarrWriter:
         return self._dataset[fov, t, c, z, :, :].write(image)
 
     def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
-        """Write a single frame and block until the TensorStore write completes.
-
-        This submits the write via :meth:`submit_frame` and waits on the resulting future before
-        returning, so the data is visible to other processes reading the same zarr store once this
-        returns. Callers that write many frames back-to-back should prefer :meth:`submit_frame`
-        with a bounded number of futures in flight.
-
-        Args:
-            image: 2D image array (Y, X)
-            t: Time point index
-            c: Channel index
-            z: Z-slice index
-            fov: FOV index (required for 6D datasets, ignored for 5D)
-        """
+        """submit_frame() and wait for it, so the data is on disk for other readers once this returns."""
         self.submit_frame(image, t, c, z, fov).result()
-        if self._config.ndim == 5:
-            log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
-        else:
-            log.debug(f"Write complete for frame fov={fov}, t={t}, c={c}, z={z}")
-
-    def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
-        """Wait for pending writes (blocking).
-
-        Args:
-            timeout_s: Optional timeout in seconds (not currently enforced)
-
-        Returns:
-            Number of writes completed
-        """
-        if not self._pending_futures:
-            return 0
-
-        count = len(self._pending_futures)
-        log.debug(f"Waiting for {count} pending writes...")
-
-        for future in self._pending_futures:
-            future.result()
-
-        self._pending_futures.clear()
-        log.debug(f"Completed {count} pending writes")
-        return count
-
-    @property
-    def pending_write_count(self) -> int:
-        """Number of writes currently pending."""
-        return len(self._pending_futures)
 
     def finalize(self) -> None:
         """Finalize the dataset (blocking)."""
@@ -724,9 +679,6 @@ class ZarrWriter:
             return
 
         log.info("Finalizing Zarr v3 dataset...")
-
-        # Wait for all pending writes
-        self.wait_for_pending()
 
         # Update metadata with completion status (in zarr.json attributes)
         zarr_json_path = self._get_metadata_zarr_json_path()
@@ -756,8 +708,6 @@ class ZarrWriter:
         log.warning("Aborting Zarr writer...")
 
         try:
-            # Clear pending futures (don't wait for them)
-            self._pending_futures.clear()
 
             # Mark as incomplete in metadata (in zarr.json attributes)
             zarr_json_path = self._get_metadata_zarr_json_path()

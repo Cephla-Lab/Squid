@@ -940,10 +940,6 @@ class TestZarrWriterMultipleFrames:
                     test_image = np.ones((32, 32), dtype=np.uint16) * (t * 100 + c * 10 + z)
                     writer.write_frame(test_image, t=t, c=c, z=z)
 
-        # Wait for all writes
-        completed = writer.wait_for_pending()
-        assert completed >= 0
-
         writer.finalize()
         assert writer.is_finalized
 
@@ -967,7 +963,6 @@ class TestZarrWriterMultipleFrames:
         # Write a known pattern
         test_image = np.arange(32 * 32, dtype=np.uint16).reshape((32, 32))
         writer.write_frame(test_image, t=0, c=0, z=0)
-        writer.wait_for_pending()
         writer.finalize()
 
         # Read back and verify
@@ -1141,7 +1136,6 @@ class TestSixDimensionalSupport:
             test_image = np.ones((32, 32), dtype=np.uint16) * (fov + 1) * 100
             writer.write_frame(test_image, t=0, c=0, z=0, fov=fov)
 
-        writer.wait_for_pending()
         writer.finalize()
         assert writer.is_finalized
 
@@ -1170,7 +1164,6 @@ class TestSixDimensionalSupport:
             test_images.append(test_image)
             writer.write_frame(test_image, t=0, c=0, z=0, fov=fov)
 
-        writer.wait_for_pending()
         writer.finalize()
 
         # Read back and verify each FOV - 6D indexing: [fov, t, c, z, y, x]
@@ -1430,7 +1423,6 @@ class TestZarrWriterDtypeAutoConversion:
         # Write image with different dtype
         image = np.ones((32, 32), dtype=source_dtype) * 100
         writer.write_frame(image, t=0, c=0, z=0)
-        writer.wait_for_pending()
         writer.finalize()
 
         # Read back and verify dtype

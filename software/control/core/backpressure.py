@@ -32,6 +32,8 @@ __all__ = [
     "BackpressureController",
     "BackpressureStats",
     "BackpressureValues",
+    "note_job_dispatched",
+    "note_job_completed",
     "create_backpressure_values",
 ]
 
@@ -51,6 +53,28 @@ class BackpressureStats:
     max_pending_jobs: int
     max_pending_mb: float
     is_throttled: bool
+
+
+def note_job_dispatched(pending_jobs, pending_bytes, image_bytes: int) -> None:
+    """Raise the shared counters for one dispatched job. No-op when the runner was built without them."""
+    if pending_jobs is None:
+        return
+    with pending_jobs.get_lock():
+        pending_jobs.value += 1
+    with pending_bytes.get_lock():
+        pending_bytes.value += image_bytes
+
+
+def note_job_completed(pending_jobs, pending_bytes, capacity_event, image_bytes: int) -> None:
+    """Lower the shared counters for one finished job (success or failure) and wake a throttled producer."""
+    if pending_jobs is None:
+        return
+    with pending_jobs.get_lock():
+        pending_jobs.value = max(0, pending_jobs.value - 1)
+    with pending_bytes.get_lock():
+        pending_bytes.value = max(0, pending_bytes.value - image_bytes)
+    if capacity_event is not None:
+        capacity_event.set()
 
 
 def create_backpressure_values() -> BackpressureValues:

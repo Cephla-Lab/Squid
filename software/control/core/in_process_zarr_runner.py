@@ -9,20 +9,19 @@ submits the write and returns; a drain thread waits for each write in order, kee
 backpressure counters, and puts the JobResult on the output queue the worker polls.
 """
 
+import concurrent.futures
 import queue
 import threading
-from typing import Any, Optional
+from typing import Optional
 
 import squid.logging
-from control.core.backpressure import BackpressureValues
+from control.core.backpressure import BackpressureValues, note_job_completed, note_job_dispatched
 from control.core.job_processing import AcquisitionInfo, JobResult, SaveZarrJob, ZarrWriterInfo, ZarrWriterRegistry
 
 _SENTINEL = object()
 
 
 class InProcessZarrRunner:
-    runs_in_process = True
-
     def __init__(
         self,
         zarr_writer_info: Optional[ZarrWriterInfo] = None,
@@ -32,8 +31,9 @@ class InProcessZarrRunner:
         self._zarr_writer_info = zarr_writer_info
         self._bp_pending_jobs, self._bp_pending_bytes, self._bp_capacity_event = bp_values or (None, None, None)
         self.registry = ZarrWriterRegistry()
-        self._submitted: "queue.Queue" = queue.Queue()  # (job, future, image_bytes, result), in submission order
+        self._submitted: "queue.Queue" = queue.Queue()  # (job_id, future, image_bytes, result), in submission order
         self._output: "queue.Queue" = queue.Queue()
+        # Counted up before the submit, as JobRunner does, so has_pending() never says False mid-flight.
         self._pending = 0
         self._pending_lock = threading.Lock()
         # dispatch and shutdown exclude each other, so no job lands behind the drain thread's sentinel
@@ -41,7 +41,7 @@ class InProcessZarrRunner:
         self._thread = threading.Thread(target=self._drain, name="InProcessZarrRunner", daemon=True)
         self._started = False
         self._finished = False
-        self._killed = False
+        self._aborted = False
 
     # ---- lifecycle, as JobRunner has it
 
@@ -77,15 +77,18 @@ class InProcessZarrRunner:
             job.zarr_writer_info = self._zarr_writer_info
             job.registry = self.registry
             image_bytes = job.capture_image.image_array.nbytes if job.capture_image.image_array is not None else 0
-            self._count_dispatched(image_bytes)
+            with self._pending_lock:
+                self._pending += 1
+            note_job_dispatched(self._bp_pending_jobs, self._bp_pending_bytes, image_bytes)
             try:
                 future, result = job.submit()
             except Exception as e:
                 # Same outcome as a failed write: the worker sees the exception on the output queue.
                 self._log.exception(f"Job {job.job_id} could not be submitted")
-                self._submitted.put_nowait((job, _FailedFuture(e), image_bytes, None))
-                return True
-            self._submitted.put_nowait((job, future, image_bytes, result))
+                future, result = concurrent.futures.Future(), None
+                future.set_exception(e)
+            # Only the id goes to the drain thread: tensorstore has copied the frame, so nothing keeps it alive.
+            self._submitted.put_nowait((job.job_id, future, image_bytes, result))
             return True
 
     def output_queue(self) -> "queue.Queue":
@@ -97,27 +100,30 @@ class InProcessZarrRunner:
 
     def kill(self) -> None:
         """Mark the run aborted; shutdown() then seals the stores as aborted."""
-        self._killed = True
+        self._aborted = True
 
-    def shutdown(self, timeout_s: float = 1.0, aborted: bool = False) -> None:
-        """Wait for the outstanding writes, then seal every store.
+    def shutdown(self, timeout_s: float = 1.0, aborted: bool = False) -> bool:
+        """Wait for the outstanding writes, then seal every store. Returns False if a write was still in flight.
 
         Complete when the acquisition ran to its end; `acquisition_complete: False, aborted: True`
-        when it was aborted (by the user or by an error) or after kill(). Captured frames are
-        written either way.
+        when it was aborted (by the user or by an error), after kill(), or when the writes did not
+        finish within the timeout (a store is never stamped complete over a write still in flight).
+        Captured frames are written either way.
         """
         with self._state_lock:
             if not self._started or self._finished:
-                return
+                return True
             self._finished = True
             self._submitted.put_nowait(_SENTINEL)
         self._thread.join(timeout=max(timeout_s, 1.0))
-        if self._thread.is_alive():
-            self._log.warning("drain thread still waiting on a write after the shutdown timeout; sealing anyway")
-        if self._killed or aborted:
+        drained = not self._thread.is_alive()
+        if not drained:
+            self._log.error("a Zarr write is still in flight after the shutdown timeout; sealing the stores as aborted")
+        if self._aborted or aborted or not drained:
             self.registry.abort_all()
         elif not self.registry.finalize_all():
             self._log.error("ZARR FINALIZATION INCOMPLETE - Some data may not be saved correctly")
+        return drained
 
     # ---- the drain thread
 
@@ -126,43 +132,15 @@ class InProcessZarrRunner:
             item = self._submitted.get()
             if item is _SENTINEL:
                 return
-            job, future, image_bytes, result = item
+            job_id, future, image_bytes, result = item
             try:
                 if future is not None:
                     future.result()
-                self._output.put_nowait(JobResult(job_id=job.job_id, result=result, exception=None))
+                self._output.put_nowait(JobResult(job_id=job_id, result=result, exception=None))
             except Exception as e:
-                self._log.exception(f"Job {job.job_id} failed! Returning exception result.")
-                self._output.put_nowait(JobResult(job_id=job.job_id, result=None, exception=e))
+                self._log.exception(f"Job {job_id} failed! Returning exception result.")
+                self._output.put_nowait(JobResult(job_id=job_id, result=None, exception=e))
             finally:
-                self._count_completed(image_bytes)
-
-    def _count_dispatched(self, image_bytes: int) -> None:
-        with self._pending_lock:
-            self._pending += 1
-        if self._bp_pending_jobs is not None:
-            with self._bp_pending_jobs.get_lock():
-                self._bp_pending_jobs.value += 1
-            with self._bp_pending_bytes.get_lock():
-                self._bp_pending_bytes.value += image_bytes
-
-    def _count_completed(self, image_bytes: int) -> None:
-        with self._pending_lock:
-            self._pending -= 1
-        if self._bp_pending_jobs is not None:
-            with self._bp_pending_jobs.get_lock():
-                self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
-            with self._bp_pending_bytes.get_lock():
-                self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
-            if self._bp_capacity_event is not None:
-                self._bp_capacity_event.set()
-
-
-class _FailedFuture:
-    """A write that failed before it was submitted, reported through the same path as a failed write."""
-
-    def __init__(self, error: Exception):
-        self._error = error
-
-    def result(self) -> Any:
-        raise self._error
+                with self._pending_lock:
+                    self._pending -= 1
+                note_job_completed(self._bp_pending_jobs, self._bp_pending_bytes, self._bp_capacity_event, image_bytes)
