@@ -487,19 +487,43 @@ def calibrate_channel(
     return ChannelResult(calibration, tuple(warnings))
 
 
-def backup_existing(path: Path, now: datetime.datetime) -> Optional[Path]:
-    """Move an existing calibration (and its PNG) to backup/<stem>.<timestamp><suffix>; return the CSV's new path."""
-    if not path.exists():
-        return None
+class _FileMoves:
+    """The file moves of one Save, recorded one at a time as each succeeds, so a failure part-way through undoes
+    exactly what was done."""
+
+    def __init__(self) -> None:
+        self._done: List[Tuple[Path, Path]] = []
+
+    def move(self, source: Path, target: Path) -> None:
+        source.replace(target)
+        self._done.append((source, target))
+
+    def undo(self) -> None:
+        """Move everything back, latest first; a move that cannot be undone does not stop the others."""
+        failures = []
+        for source, target in reversed(self._done):
+            try:
+                target.replace(source)
+            except OSError as e:
+                failures.append(e)
+        self._done.clear()
+        if failures:
+            raise failures[0]
+
+
+def backup_existing(path: Path, now: datetime.datetime, moves: _FileMoves) -> Optional[Path]:
+    """Move an existing calibration and its PNG to backup/<stem>.<timestamp><suffix>; return the CSV's new path."""
     stamp = now.strftime("%Y%m%dT%H%M%S")
     backup_dir = path.parent / "backup"
-    backup_dir.mkdir(exist_ok=True)
-    target = backup_dir / f"{path.stem}.{stamp}{path.suffix}"
-    path.replace(target)
-    png = path.with_suffix(".png")
-    if png.exists():
-        png.replace(backup_dir / f"{png.stem}.{stamp}.png")
-    return target
+    backed_up = None
+    for source in (path, path.with_suffix(".png")):
+        if source.exists():
+            backup_dir.mkdir(exist_ok=True)
+            target = backup_dir / f"{source.stem}.{stamp}{source.suffix}"
+            moves.move(source, target)
+            if source == path:
+                backed_up = target
+    return backed_up
 
 
 def write_plot(calibration: IntensityCalibration, path: Path) -> None:
@@ -555,15 +579,18 @@ def stage_calibration_files(calibration: IntensityCalibration, calibrations_dir:
     return csv_staged, png_staged
 
 
-def _restore(published: List[Tuple[Path, Optional[Path]]]) -> None:
-    """Undo a partial publish: remove the new files and move the backed-up ones back, latest first."""
-    for path, backup in reversed(published):
+def _discard_staged(staged: Sequence[Tuple[IntensityCalibration, Path, Path]]) -> None:
+    for _, csv_staged, png_staged in staged:
+        csv_staged.unlink(missing_ok=True)
+        png_staged.unlink(missing_ok=True)
+
+
+def _put_back(path: Path, content: Optional[bytes]) -> None:
+    """Return a file to `content` (None: it did not exist) if it no longer has it - after a partial write."""
+    if content is None:
         path.unlink(missing_ok=True)
-        path.with_suffix(".png").unlink(missing_ok=True)
-        if backup is not None:
-            backup.replace(path)
-            if backup.with_suffix(".png").exists():
-                backup.with_suffix(".png").replace(path.with_suffix(".png"))
+    elif not path.exists() or path.read_bytes() != content:
+        path.write_bytes(content)
 
 
 class CalibrationSession:
@@ -793,33 +820,38 @@ class CalibrationSession:
         now = now or datetime.datetime.now()
         directory = self.calibrations_dir()
         # All or nothing: stage every channel's files first, so a failure (a full disk, a plot error) leaves every
-        # active calibration as it was; then publish, and undo the publish if the config cannot be saved
+        # active calibration as it was; then publish move by move, and undo every move made - and put back the config
+        # file, which is rewritten in place - if any step fails
         staged: List[Tuple[IntensityCalibration, Path, Path]] = []
         try:
             for c in calibrations:
                 staged.append((c, *stage_calibration_files(c, directory)))
         except BaseException:
-            for _, csv_staged, png_staged in staged:
-                csv_staged.unlink(missing_ok=True)
-                png_staged.unlink(missing_ok=True)
+            _discard_staged(staged)
             raise
+        config_path = self.config_repo.machine_configs_path / "illumination_channel_config.yaml"
+        config_before = config_path.read_bytes() if config_path.exists() else None
+        moves = _FileMoves()
         published: List[Tuple[Path, Optional[Path]]] = []
         try:
             for c, csv_staged, png_staged in staged:
                 path = directory / c.file_name
-                published.append((path, backup_existing(path, now)))
-                csv_staged.replace(path)
-                png_staged.replace(path.with_suffix(".png"))
+                published.append((path, backup_existing(path, now, moves)))
+                moves.move(csv_staged, path)
+                moves.move(png_staged, path.with_suffix(".png"))
             for c in calibrations:
                 channels[c.channel].intensity_calibration_file = c.file_name
             self.config_repo.save_illumination_config(config)
         except BaseException as original:
-            try:
-                _restore(published)
-                for _, csv_staged, png_staged in staged:
-                    csv_staged.unlink(missing_ok=True)
-                    png_staged.unlink(missing_ok=True)
-            except Exception as restore_error:
-                _log.error(f"restoring the previous calibrations after '{original}' failed: {restore_error}")
+            # each step on its own: one that fails must not leave the others undone
+            for what, undo in (
+                ("the illumination config", lambda: _put_back(config_path, config_before)),
+                ("the previous calibration files", moves.undo),
+                ("the staged files", lambda: _discard_staged(staged)),
+            ):
+                try:
+                    undo()
+                except Exception as restore_error:
+                    _log.error(f"restoring {what} after '{original}' failed: {restore_error}")
             raise
         return published

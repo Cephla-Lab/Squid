@@ -4,6 +4,7 @@ the code driving the light, bad readings are measured again, real kinks are veri
 channel, and saving is guarded."""
 
 import datetime
+import pathlib
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -560,3 +561,59 @@ def test_a_gap_any_message_sees_fails_every_later_check():
     with pytest.raises(WatchdogDeadlineMissed):
         deadline.check()
     WatchdogDeadline(None, time.clock).check()  # no watchdog of ours to keep: nothing to miss
+
+
+def test_a_failed_move_of_the_old_plot_to_backup_puts_the_old_calibration_back(repo, monkeypatch):
+    # the CSV is already in backup/ when moving its PNG fails: undone move by move, not per calibration
+    session = _session(repo)
+    calibration, path = _saved_once(session)
+    before, before_png = path.read_bytes(), path.with_suffix(".png").read_bytes()
+    real_replace = pathlib.Path.replace
+
+    def replace_fails_for_the_png_backup(source, target):
+        if pathlib.Path(target).parent.name == "backup" and pathlib.Path(target).suffix == ".png":
+            raise OSError("device busy")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", replace_fails_for_the_png_backup)
+    with pytest.raises(OSError, match="device busy"):
+        session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
+    monkeypatch.undo()
+    _unchanged(session, repo, path, before, before_png)
+
+
+def test_a_partly_written_config_is_put_back(repo, monkeypatch):
+    session = _session(repo)
+    calibration, path = _saved_once(session)
+    before, before_png = path.read_bytes(), path.with_suffix(".png").read_bytes()
+    config_path = repo.machine_configs_path / "illumination_channel_config.yaml"
+    config_before = config_path.read_bytes()
+
+    def write_half_then_fail(target, model):
+        target.write_text("version: 1\nchannels:\n  - name: Fluoresc")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(repo, "_save_yaml", write_half_then_fail)
+    with pytest.raises(OSError, match="disk full"):
+        session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
+    assert config_path.read_bytes() == config_before
+    _unchanged(session, repo, path, before, before_png)
+    reloaded = ConfigRepository(base_path=repo.machine_configs_path.parent).get_illumination_config()
+    assert reloaded.channels[1].intensity_calibration_file == "405nm_D1.csv"
+
+
+def test_a_config_that_cannot_be_put_back_does_not_stop_the_files_being_put_back(repo, monkeypatch):
+    session = _session(repo)
+    calibration, path = _saved_once(session)
+    before, before_png = path.read_bytes(), path.with_suffix(".png").read_bytes()
+
+    def write_half_then_lock(target, model):
+        target.write_text("version: 1\nchannels:\n  - name: Fluoresc")
+        target.chmod(0o444)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(repo, "_save_yaml", write_half_then_lock)
+    with pytest.raises(OSError, match="disk full"):
+        session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
+    assert path.read_bytes() == before and path.with_suffix(".png").read_bytes() == before_png
+    assert not list(session.calibrations_dir().glob(".*"))
