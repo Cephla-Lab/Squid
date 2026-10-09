@@ -102,6 +102,29 @@ def strip_format(catalog_tree, monkeypatch):
 
 
 @pytest.fixture
+def aniso_format(catalog_tree, monkeypatch):
+    """The shipped example's anisotropic carrier (ibidi 8 well: 12.5 x 11.2 mm
+    spacing, 10.4 x 9.4 mm wells) in the pinned table, in the production
+    shape (SampleFormat.to_settings). Returns the format key."""
+    import control._def as _def
+    from control.models.sample_format_config import SampleFormat
+
+    carrier = SampleFormat(
+        rows=2,
+        cols=4,
+        well_spacing_x_mm=12.5,
+        well_spacing_y_mm=11.2,
+        well_size_x_mm=10.4,
+        well_size_y_mm=9.4,
+        well_shape="rectangle",
+        a1_x_mm=15.0,
+        a1_y_mm=12.0,
+    )
+    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "ibidi 8 well", carrier.to_settings())
+    return "ibidi 8 well"
+
+
+@pytest.fixture
 def design_travel_limits(monkeypatch):
     """The stage limits (and zero legacy offset) the design doc's reference
     rings were derived against - pins reference-well computation regardless of

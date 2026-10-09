@@ -7,7 +7,6 @@ import pytest
 
 import control._def as _def
 from control.core.holder_alignment import (
-    circumcenter,
     clear_holder_rotation,
     formats_with_rotation_overrides,
     HolderAlignmentSession,
@@ -157,6 +156,8 @@ def test_round_wells_use_three_rim_touches(tree):
 
 
 def test_circumcenter_recovers_center_and_radius(tree):
+    from control.core.plate_fit import circumcenter
+
     center, radius = (40.0, 30.0), 3.105
     points = [(center[0] + radius * math.cos(a), center[1] + radius * math.sin(a)) for a in (0.5, 2.0, 4.5)]
     cx, cy, r = circumcenter(*points)
@@ -164,39 +165,24 @@ def test_circumcenter_recovers_center_and_radius(tree):
     assert r == pytest.approx(radius, abs=1e-9)
 
 
-def test_collinear_rim_touches_rejected_and_undone(tree):
+@pytest.mark.parametrize("third_y", [10.0, 10.000001], ids=["exactly", "a micron off"])
+def test_collinear_rim_touches_rejected_and_not_recorded(tree, third_y):
     session = HolderAlignmentSession("96 well plate")
     session.record_touch(0, 10.0, 10.0)
     session.record_touch(0, 11.0, 10.0)
     with pytest.raises(SessionError, match="in a line"):
-        session.record_touch(0, 12.0, 10.0)
-    # the bad third touch was dropped: the well can be re-touched
-    assert len(session.reference_wells[0].touches) == 2
-
-
-def test_nearly_collinear_rim_touches_rejected(tree):
-    """A micron off a line still "defines" a circle - of a million mm. The
-    cutoff is the triangle's shape, not an absolute epsilon."""
-    session = HolderAlignmentSession("96 well plate")
-    session.record_touch(0, 10.0, 10.0)
-    session.record_touch(0, 11.0, 10.0)
-    with pytest.raises(SessionError, match="in a line"):
-        session.record_touch(0, 12.0, 10.000001)
-    assert len(session.reference_wells[0].touches) == 2
+        session.record_touch(0, 12.0, third_y)
+    assert len(session.reference_wells[0].touches) == 2  # the well can be re-touched
 
 
 def test_rim_touches_of_the_wrong_size_rejected(tree):
-    """Three points on the rim trace the well itself; a circle twice its size
-    means a touch landed on something else."""
     session = HolderAlignmentSession("96 well plate")
     radius = session.well_size_mm  # twice the well's radius
-    for i, phi in enumerate((0.3, 2.4, 4.4)):
-        touch = (40.0 + radius * math.cos(phi), 30.0 + radius * math.sin(phi))
-        if i < 2:
-            session.record_touch(0, *touch)
-        else:
-            with pytest.raises(SessionError, match="mm across, but the well is"):
-                session.record_touch(0, *touch)
+    p1, p2, p3 = [(40.0 + radius * math.cos(phi), 30.0 + radius * math.sin(phi)) for phi in (0.3, 2.4, 4.4)]
+    session.record_touch(0, *p1)
+    session.record_touch(0, *p2)
+    with pytest.raises(SessionError, match="mm across, but the well is"):
+        session.record_touch(0, *p3)
     assert len(session.reference_wells[0].touches) == 2
 
 

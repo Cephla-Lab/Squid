@@ -12798,6 +12798,9 @@ class WellplateCalibration(QDialog):
 
         Returns:
             tuple: (a1_x_mm, a1_y_mm, well_size_mm) or None if validation fails.
+            well_size_mm is None when the method measured no size (Center Point on
+            an existing format: the Format Parameters box has its own writer,
+            Update Parameters, and Calibrate must not be a second, implicit one).
             Displays appropriate warning message if validation fails.
         """
         if self.center_point_radio.isChecked():
@@ -12805,11 +12808,8 @@ class WellplateCalibration(QDialog):
                 QMessageBox.warning(self, "Incomplete Information", "Please set the center point before calibrating.")
                 return None
             a1_x_mm, a1_y_mm = self.center_point
-            # Use appropriate well size input based on mode
-            if self.calibrate_format_radio.isChecked():
-                well_size_mm = self.existing_well_size_input.value()
-            else:
-                well_size_mm = self.center_well_size_input.value()
+            # a new definition needs a size and has no other editor
+            well_size_mm = None if self.calibrate_format_radio.isChecked() else self.center_well_size_input.value()
         else:
             if not all(self.corners):
                 QMessageBox.warning(self, "Incomplete Information", "Please set 3 corner points before calibrating.")
@@ -12878,11 +12878,13 @@ class WellplateCalibration(QDialog):
 
         Supports two modes:
         - New format: Creates a new custom wellplate format with all parameters
-        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm) and well_size_mm
+        - Existing format: Updates position calibration (a1_x_mm, a1_y_mm), plus the well size
+          when the method measured one
 
         Supports two calibration methods:
         - 3 Edge Points: Calculates well center and diameter from 3 points on well edge
-        - Center Point: Uses directly-specified center position with manual well size
+        - Center Point: Uses directly-specified center position (with a manual well size for
+          a new format; an existing format keeps its stored size)
         """
         try:
             if self.new_format_radio.isChecked():
@@ -12952,28 +12954,16 @@ class WellplateCalibration(QDialog):
         if calibration_data is None:
             return
         a1_x_mm, a1_y_mm, well_size_mm = calibration_data
-
-        existing_settings = control._def.get_wellplate_settings(selected_format)
         display_name = self._format_display_name(selected_format)
 
-        print(f"Updating existing format {display_name}")
-        print(
-            f"OLD: 'a1_x_mm': {existing_settings['a1_x_mm']}, 'a1_y_mm': {existing_settings['a1_y_mm']}, "
-            f"'well_size_mm': {existing_settings['well_size_mm']}"
-        )
-        print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
-
-        # Identical treatment to a brand-new format: the measured A1 (and well
-        # size) are stored ABSOLUTELY in a complete definition that replaces the
-        # shipped example. No deltas, no second file.
+        # Same writer as a new format - see _save_format_definition. A measured
+        # size (3 rim points: a circle, so one number for both axes) is written;
+        # Center Point measures none and leaves the stored size - including an
+        # anisotropic carrier's two axes - alone.
         updates = {"a1_x_mm": a1_x_mm, "a1_y_mm": a1_y_mm}
-        # The size is written only when it was measured (3 rim points: a round
-        # well, isotropic by nature) or edited in the box; a placement-only
-        # recalibration must not collapse an anisotropic well to its X size.
-        if self.edge_points_radio.isChecked() or not math.isclose(
-            well_size_mm, existing_settings["well_size_mm"], abs_tol=5e-4
-        ):
+        if well_size_mm is not None:
             updates.update(well_size_mm=well_size_mm, well_size_x_mm=well_size_mm, well_size_y_mm=well_size_mm)
+        print(f"Updating existing format {display_name}: {updates}")
         self._save_format_definition(selected_format, updates, measured=self._measurement_record(a1_x_mm, a1_y_mm))
 
         self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")

@@ -18,20 +18,20 @@ wizard, which handles overrides at write time.
 import os
 from typing import List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
-from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic
+from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic, SidecarModel
 
 PLATE_HOLDER_PATH = os.path.join("machine_configs", "plate_holder.yaml")
 
 
-class HolderMeasuredPoint(BaseModel):
+class HolderMeasuredPoint(SidecarModel):
     well: str
     x_mm: float
     y_mm: float
 
 
-class HolderMeasurement(BaseModel):
+class HolderMeasurement(SidecarModel):
     """The raw facts. Everything else is derivable by re-running the fit."""
 
     on: str = ""  # format the angle was measured on, e.g. "96 well plate"
@@ -42,11 +42,9 @@ class HolderMeasurement(BaseModel):
     reload_spread_deg: Optional[float] = None
 
 
-class PlateHolder(BaseModel):
+class PlateHolder(SidecarModel):
     version: int = 1  # the version this build reads; yaml_store refuses a file declaring another
-    # + = CCW in the stage XY math frame; pivot = A1. YAML accepts .nan, and a
-    # NaN angle would poison every well coordinate: finite only.
-    rotation_deg: float = Field(0.0, allow_inf_nan=False)
+    rotation_deg: float = 0.0  # + = CCW in the stage XY math frame; pivot = A1
     measured: HolderMeasurement = Field(default_factory=HolderMeasurement)
 
     @model_validator(mode="after")

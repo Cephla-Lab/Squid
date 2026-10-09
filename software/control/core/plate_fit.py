@@ -56,6 +56,16 @@ ROTATION_WARN_DEG = 1.0
 # p95 over the noise distribution is ~1.75x the RMS at N=3-4 (empirical factor;
 # the pure-Rayleigh floor is 1.73).
 P95_OVER_RMS = 1.75
+# Three rim touches define a circle only if they are not (nearly) in a line -
+# a matter of the triangle's shape, not of an absolute epsilon: three touches
+# a micron off a line still "define" a circle of a million mm. Refused when
+# the triangle's height is under this fraction of its longest side.
+RIM_TRIANGLE_MIN_HEIGHT_FRACTION = 0.01
+# ...and the circle they define must be the well itself: a radius outside this
+# band of the nominal means a touch landed on something else (conditioning and
+# identity are different guards - a well-conditioned circle can still be the
+# wrong object).
+RIM_RADIUS_BAND = (0.5, 1.5)
 
 
 class PlateFitError(ValueError):
@@ -308,18 +318,26 @@ def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
     ax, ay = p1
     bx, by = p2
     cx, cy = p3
-    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))  # = 4 x the signed triangle area
-    # Collinearity is a matter of shape, not of an absolute epsilon: three
-    # touches a micron off a line still "define" a circle of a million mm.
-    # |d| = 2 * base * height, so this refuses a triangle whose height is under
-    # 1% of its longest side.
-    span_sq = max((ax - bx) ** 2 + (ay - by) ** 2, (bx - cx) ** 2 + (by - cy) ** 2, (cx - ax) ** 2 + (cy - ay) ** 2)
-    if abs(d) < 0.02 * span_sq:
+    cross = _signed_area(p1, p2, p3)  # base x height of the triangle
+    span = max(math.dist(p1, p2), math.dist(p2, p3), math.dist(p3, p1))
+    if abs(cross) < RIM_TRIANGLE_MIN_HEIGHT_FRACTION * span**2:  # the conditioning guard, in the triangle's own units
         raise PlateFitError("the three points are (nearly) collinear - they do not define a circle")
+    d = 2.0 * cross
     ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d
     uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx) + (cx**2 + cy**2) * (bx - ax)) / d
     return ux, uy, math.hypot(ax - ux, ay - uy)
 
 
+def check_rim_radius(radius_mm: float, well_size_mm: float) -> None:
+    """The identity guard: three points on a well's rim trace that well."""
+    low, high = RIM_RADIUS_BAND
+    if not low <= radius_mm / (well_size_mm / 2) <= high:
+        raise PlateFitError(
+            f"the three rim touches fit a circle {2 * radius_mm:.2f} mm across, but the well is {well_size_mm:.2f} mm"
+        )
+
+
 def _signed_area(a, b, c) -> float:
+    # the cross product (b-a) x (c-a): TWICE the signed area; only its sign and
+    # its ratio to a span are ever used
     return float((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))

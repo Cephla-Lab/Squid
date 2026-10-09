@@ -31,13 +31,25 @@ import os
 from typing import Dict, Optional, Tuple, Type, TypeVar
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
 
 M = TypeVar("M", bound=BaseModel)
+
+
+class SidecarModel(BaseModel):
+    """Base for every sidecar model: no number may be NaN or infinite. YAML
+    accepts `.nan`/`.inf`, and a definition replaces the shipped entry (or an
+    angle applies to every plate) wholesale, so one such number would poison
+    every resolved stage position instead of the file being refused. Set here,
+    once, so a new float field cannot forget it - model_config does not reach
+    nested models, hence a base class every point/measurement model inherits."""
+
+    model_config = ConfigDict(allow_inf_nan=False)
+
 
 _cache: Dict[str, Tuple[Tuple[int, int, int], Optional[BaseModel]]] = {}
 

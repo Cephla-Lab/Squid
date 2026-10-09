@@ -32,20 +32,20 @@ WELLPLATE_OFFSET for that format, so exactly one correction is ever live.
 import os
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import Field, model_validator
 
-from control.models.yaml_store import load_yaml_model, load_yaml_model_for_edit, save_yaml_model_atomic
+from control.models.yaml_store import load_yaml_model, load_yaml_model_for_edit, save_yaml_model_atomic, SidecarModel
 
 USER_SAMPLE_FORMATS_PATH = os.path.join("objective_and_sample_formats", "sample_formats_user.yaml")
 
 
-class MeasuredPoint(BaseModel):
+class MeasuredPoint(SidecarModel):
     well: str
     x_mm: float
     y_mm: float
 
 
-class FormatMeasurement(BaseModel):
+class FormatMeasurement(SidecarModel):
     """Raw facts behind a stored A1 (and rotation, when measured per format).
 
     Derived numbers are never stored - they are recomputed from the points.
@@ -59,29 +59,27 @@ class FormatMeasurement(BaseModel):
     note: str = ""
 
 
-class SampleFormat(BaseModel):
+class SampleFormat(SidecarModel):
     """A complete plate definition. Replaces the shipped example, if any."""
 
-    # Every number finite: YAML accepts .nan/.inf, and a definition replaces the
-    # shipped entry wholesale, so one would poison every resolved position.
     rows: int = Field(..., ge=1)
     cols: int = Field(..., ge=1)
-    a1_x_mm: float = Field(0.0, allow_inf_nan=False)
-    a1_y_mm: float = Field(0.0, allow_inf_nan=False)
+    a1_x_mm: float = 0.0
+    a1_y_mm: float = 0.0
     a1_x_pixel: int = 0
     a1_y_pixel: int = 0
     # Scalar OR per-axis; the validator requires exactly one form of each.
-    well_spacing_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
-    well_spacing_x_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
-    well_spacing_y_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
-    well_size_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
-    well_size_x_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
-    well_size_y_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    well_spacing_mm: Optional[float] = Field(None, gt=0)
+    well_spacing_x_mm: Optional[float] = Field(None, gt=0)
+    well_spacing_y_mm: Optional[float] = Field(None, gt=0)
+    well_size_mm: Optional[float] = Field(None, gt=0)
+    well_size_x_mm: Optional[float] = Field(None, gt=0)
+    well_size_y_mm: Optional[float] = Field(None, gt=0)
     well_shape: str = Field("circle", pattern="^(circle|rectangle)$")
     number_of_skip: int = Field(0, ge=0)
     # Per-format rotation override: null/absent => inherit the holder angle.
     # When set it is the ABSOLUTE total angle for this format, never a delta.
-    rotation_deg: Optional[float] = Field(None, allow_inf_nan=False)
+    rotation_deg: Optional[float] = None
     # Provenance, one block per measurement - they come from different
     # gestures and must not overwrite each other: `measured` is the A1 touch,
     # `rotation_measured` the multi-well fit behind rotation_deg.
@@ -176,7 +174,7 @@ class SampleFormat(BaseModel):
         }
 
 
-class UserSampleFormats(BaseModel):
+class UserSampleFormats(SidecarModel):
     # v1 carried overrides + custom_formats; v2 is one map. The default is the
     # version this build reads: yaml_store refuses a file declaring another.
     version: int = 2

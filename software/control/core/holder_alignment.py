@@ -21,7 +21,13 @@ from typing import List, Optional, Sequence, Tuple
 import control._def
 import control.utils
 from control.core.mosaic_utils import format_well_id
-from control.core.plate_fit import circumcenter as _circumcenter, fit_plate_placement, PlateFitError, PlateFitResult
+from control.core.plate_fit import (
+    check_rim_radius,
+    circumcenter as _circumcenter,
+    fit_plate_placement,
+    PlateFitError,
+    PlateFitResult,
+)
 from control.core.plate_transform import has_well_grid, PlateTransform, plate_transform_for, resolve_rotation_deg
 from control.models.sample_format_config import (
     load_user_sample_formats,
@@ -58,15 +64,21 @@ class SessionError(ValueError):
     """The session cannot proceed as asked; .args[0] is user-facing copy."""
 
 
-def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
-    """plate_fit.circumcenter with the wizard's rim-touch copy on failure."""
+def rim_circle(touches, well_size_mm: float) -> Tuple[float, float, float]:
+    """The circle through three rim touches, checked against the well - plate_fit's
+    two guards with the wizard's copy on failure."""
     try:
-        return _circumcenter(p1, p2, p3)
+        cx, cy, radius = _circumcenter(*touches)
     except PlateFitError:
         raise SessionError(
             "These three rim touches are (nearly) in a line - they don't define a circle. "
             "Re-touch the rim at three well-separated points."
         )
+    try:
+        check_rim_radius(radius, well_size_mm)
+    except PlateFitError as e:
+        raise SessionError(f"{e} - re-touch the rim.")
+    return cx, cy, radius
 
 
 @dataclass
@@ -207,25 +219,15 @@ class HolderAlignmentSession:
             # The fit refuses NaN too, but that would surface as a traceback at
             # the next refresh; here it is the dialog's own message, at the click.
             raise SessionError(f"The stage reported no position for {well.well_id} - try the touch again.")
-        well.touches.append((float(x_mm), float(y_mm)))
-        if len(well.touches) == self.touches_per_well:
+        touch = (float(x_mm), float(y_mm))
+        # Every rejection fires BEFORE the touch is recorded: nothing to undo.
+        if len(well.touches) + 1 == self.touches_per_well:
             if self.touches_per_well == 3:
-                try:
-                    cx, cy, radius = circumcenter(*well.touches)
-                    # Three points on the rim trace the well itself; a circle of
-                    # another size means a touch landed elsewhere.
-                    if not 0.5 <= radius / (self.well_size_mm / 2) <= 1.5:
-                        raise SessionError(
-                            f"The three rim touches on {well.well_id} fit a circle {2 * radius:.2f} mm across, but "
-                            f"the well is {self.well_size_mm:.2f} mm - re-touch the rim."
-                        )
-                except SessionError:
-                    well.touches.pop()
-                    raise
-                well.point_mm = (cx, cy)
-                well.fitted_radius_mm = radius
+                cx, cy, radius = rim_circle([*well.touches, touch], self.well_size_mm)
+                well.point_mm, well.fitted_radius_mm = (cx, cy), radius
             else:
-                well.point_mm = well.touches[0]
+                well.point_mm = touch
+        well.touches.append(touch)
 
     def undo_touch(self, index: int):
         well = self.reference_wells[index]
