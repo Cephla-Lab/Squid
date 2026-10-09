@@ -137,8 +137,9 @@ class ThorlabsPowerMeter:
         self._write("SENS:POW:UNIT W")
         self._write(f"SENS:AVER:COUN {int(averaging)}")
         self._write("SENS:POW:RANG:AUTO ON")
-        # A PM16 has its sensor built in and may not answer the sensor queries; the commands above are the ones the
-        # pre-2026-10 tools/PM16.py used with a PM16
+        # A PM16 has its sensor built in and may not answer the sensor queries. The pre-2026-10 tools/PM16.py sent the
+        # averaging and auto-range as the short forms SENS:AVER n / SENS:RANGE:AUTO ON; which forms a PM16 takes is
+        # checked on the bench (spec §12)
         sensor_idn = self._optional_query("SYST:SENS:IDN?")
         known_max_mw, known_range_nm = KNOWN_SENSOR_LIMITS.get(model, (None, None))
         reported_max_mw = self._optional_float("SENS:POW:RANG:UPP? MAX", scale=1000.0)
