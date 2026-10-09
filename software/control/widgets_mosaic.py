@@ -325,7 +325,8 @@ class UnifiedMosaicWidget(QWidget):
         self.signal_shape_drawn.emit(self.shapes_mm)
 
     def _convert_shape_to_mm(self, shape_data):
-        """Pixel-coords-on-canvas → mm in stage coordinate frame."""
+        """Pixel-coords-on-canvas → mm in the reference-objective frame (the Full View world frame; it
+        equals the stage frame for the reference objective and for machines without XY offsets)."""
         result = []
         scale = self.viewer_pixel_size_mm * 1000  # napari layer scale is in um
         for point in shape_data:
@@ -466,8 +467,17 @@ class UnifiedMosaicWidget(QWidget):
             if self.layers_initialized and not math.isclose(self.viewer_pixel_size_mm, target_pixel_size_um / 1000):
                 self._log.info("Mosaic target pixel size changed; clearing canvas.")
                 self.clearAllLayers()
-            image = resample_tile_to_pixel_size(image, live_pixel_size_um, target_pixel_size_um)
+            # The tile's own tag (set at emit time) fixes its scale and its frame shift, not the live store
+            # and camera: a tile drained after an objective or binning change must keep both (spec C §7.3).
+            tile_pixel_size_um = update.pixel_size_um if update.pixel_size_um > 0 else live_pixel_size_um
+            image = resample_tile_to_pixel_size(image, tile_pixel_size_um, target_pixel_size_um)
             image_pixel_size_mm = target_pixel_size_um / 1000
+            # Full View is the reference objective's stage frame: a tile taken by objective k with the stage
+            # at S is drawn centred at S - offset_k (spec C §4), where offset_k is the stage move that keeps
+            # the same sample point centred. Zero for the reference and for uncalibrated objectives.
+            offset_x_mm, offset_y_mm = self.objectiveStore.xy_offset_mm(update.objective)
+            x_mm -= offset_x_mm
+            y_mm -= offset_y_mm
         else:
             # Plate View keeps the integer-factor downsample: the slot geometry in
             # multi_point_worker._emit_plate_layout is sized to match int(round(target/source)),
@@ -657,7 +667,11 @@ class UnifiedMosaicWidget(QWidget):
             if self.viewer_pixel_size_mm and self.top_left_coordinate:
                 x_mm = self.top_left_coordinate[1] + x * self.viewer_pixel_size_mm
                 y_mm = self.top_left_coordinate[0] + y * self.viewer_pixel_size_mm
-                self.signal_coordinates_clicked.emit(x_mm, y_mm)
+                # The canvas is in the reference objective's frame; the current objective images the
+                # clicked point with the stage at click + offset_current (spec C §7.3). Converted here
+                # because move_from_click_mm is shared with the navigation viewer, which is in stage coordinates.
+                offset_x_mm, offset_y_mm = self.objectiveStore.xy_offset_mm(self.objectiveStore.current_objective)
+                self.signal_coordinates_clicked.emit(x_mm + offset_x_mm, y_mm + offset_y_mm)
             return
 
         if self.well_slot_shape[0] == 0 or self.well_slot_shape[1] == 0:
@@ -803,6 +817,15 @@ class UnifiedMosaicWidget(QWidget):
         self._downsample_factor = 1
         self._plate_well_origins_mm.clear()
         self.signal_clear_viewer.emit()
+
+    def clear_for_calibration_change(self):
+        """The effective XY offsets changed (spec C §7.3): every tile was placed, and every shape drawn,
+        in a reference frame that no longer applies, so the image layers AND the Manual ROI layer go
+        (clearAllLayers keeps the latter on purpose). Connected directly in gui_hcs, not through the
+        napari connections that performance mode disconnects."""
+        self.clearAllLayers()
+        self._clear_shape()
+        self.shapes_mm = []
 
     # --- Save (downsampled view) ---
 

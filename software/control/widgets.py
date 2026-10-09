@@ -9245,6 +9245,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_coverage_from_scan_size()
         self.update_coordinates()
 
+    def clear_manual_regions(self):
+        """The effective XY offsets changed (spec C §7.3): the drawn shapes were in a reference frame that
+        no longer applies, so shapes_mm goes, and with it exactly the regions that came from live mosaic
+        drawings (by provenance, not the "Manual" label: imported YAML/CSV regions and well regions stay).
+        No active-tab guard: it runs whatever tab is current, and in performance mode."""
+        self.shapes_mm = None
+        self.scanCoordinates.remove_live_drawn_regions()
+        self._log.info("Cleared the manual ROIs: the objective XY offsets changed")
+
     def update_manual_shape(self, shapes_data_mm):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return

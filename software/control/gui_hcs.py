@@ -428,6 +428,8 @@ class QtMultiPointController(MultiPointController, QObject):
                 well_row=well_row,
                 well_col=well_col,
                 well_origin_mm=self._well_origins_mm.get(region_id),
+                objective=self.objectiveStore.current_objective,
+                pixel_size_um=self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um(),
             )
         )
 

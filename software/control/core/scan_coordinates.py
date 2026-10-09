@@ -80,6 +80,10 @@ class ScanCoordinates:
         self.region_centers = {}  # {region_id: [x, y, z]}
         self.region_shapes = {}  # {region_id: "Square"}
         self.region_fov_coordinates = {}  # {region_id: [(x,y,z), ...]}
+        # The regions created by set_manual_coordinates, the only entry point for shapes drawn live on the
+        # mosaic (spec C §7.3). Tracked by provenance: the "Manual" shape label cannot tell them from
+        # re-applied acquisition YAML or loaded coordinate CSV regions, which register "Manual" too.
+        self.live_drawn_region_ids = set()
 
     def add_well_selector(self, well_selector):
         self.well_selector = well_selector
@@ -173,11 +177,16 @@ class ScanCoordinates:
             self.clear_regions()
 
     def set_manual_coordinates(self, manual_shapes, overlap_percent):
+        """Shapes drawn on the Full View mosaic, in the reference objective's frame, become FOVs in stage
+        coordinates for the store's current objective: a point P of the mosaic is imaged by objective j
+        with the stage at P + offset_j (spec C §4, §7.3). Zero offset without a valid XY calibration."""
         self.clear_regions()
         if manual_shapes is not None:
+            offset_mm = np.asarray(self.objectiveStore.xy_offset_mm(self.objectiveStore.current_objective), dtype=float)
             # Handle manual ROIs
             scan_coordinates = None
             for i, shape_coords in enumerate(manual_shapes):
+                shape_coords = np.asarray(shape_coords, dtype=float) + offset_mm
                 scan_coordinates = self.get_points_for_manual_region(shape_coords, overlap_percent)
                 if scan_coordinates:
                     if len(manual_shapes) <= 1:
@@ -188,6 +197,7 @@ class ScanCoordinates:
                     self.region_centers[region_name] = [center[0], center[1]]
                     self.region_shapes[region_name] = "Manual"
                     self.region_fov_coordinates[region_name] = scan_coordinates
+                    self.live_drawn_region_ids.add(region_name)
                     self._log.info(f"Added Manual Region: {region_name}")
                     self._update_callback(
                         AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
@@ -285,10 +295,18 @@ class ScanCoordinates:
         self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
         self._log.info(f"Added Region: {well_id}")
 
+    def remove_live_drawn_regions(self):
+        """Remove exactly the regions that came from live mosaic drawings (spec C §7.3); imported plans and
+        well regions stay, whatever their shape label."""
+        for region_id in sorted(self.live_drawn_region_ids):
+            self.remove_region(region_id)
+        self.live_drawn_region_ids.clear()
+
     def remove_region(self, well_id):
         if well_id in self.region_centers:
             removed_fov_centers: List[FovCenter] = []
             del self.region_centers[well_id]
+            self.live_drawn_region_ids.discard(well_id)
 
             if well_id in self.region_shapes:
                 del self.region_shapes[well_id]
@@ -305,6 +323,7 @@ class ScanCoordinates:
         self.region_centers.clear()
         self.region_shapes.clear()
         self.region_fov_coordinates.clear()
+        self.live_drawn_region_ids.clear()
         self._update_callback(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 

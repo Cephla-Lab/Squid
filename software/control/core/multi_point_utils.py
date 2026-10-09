@@ -104,6 +104,11 @@ class MosaicTileUpdate:
     plan. The widget uses this as a stable per-well anchor so tiles arriving
     in arbitrary scan order always land in non-negative offsets within the
     well slot. ``None`` for non-plate scans (plate mode is disabled then).
+
+    objective and pixel_size_um are filled at emit time (objective offset design §7.3): the
+    objective that took the tile and its pixel size in um (the store's factor times the camera's
+    binned pixel). The tile then carries everything that fixed its geometry, so one drained after an
+    objective or binning change keeps its shift and scale. pixel_size_um 0.0 means unknown.
     """
 
     image: "np.ndarray"
@@ -114,6 +119,8 @@ class MosaicTileUpdate:
     well_row: int = 0
     well_col: int = 0
     well_origin_mm: Optional[Tuple[float, float]] = None
+    objective: str = ""
+    pixel_size_um: float = 0.0
 
 
 @dataclass
