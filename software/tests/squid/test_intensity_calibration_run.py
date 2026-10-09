@@ -212,7 +212,8 @@ def test_cancel_stops_with_the_light_off():
 
 def test_drift_is_warned():
     _, _, _, run = _run(LASER, drift_per_read=0.0002)
-    assert any("drifted" in warning for warning in run().warnings)
+    # the bench 561 nm laser drifted 3.2 % and again after warming up: its output depends on its recent power
+    assert any("drifted" in w and "if it repeats" in w for w in run().warnings)
 
 
 def test_a_spiked_top_reading_is_measured_again_and_does_not_set_p_max():

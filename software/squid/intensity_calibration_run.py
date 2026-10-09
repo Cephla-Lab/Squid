@@ -486,7 +486,9 @@ def calibrate_channel(
     warnings = []
     if calibration.drift_fraction > DRIFT_WARN_FRACTION:
         warnings.append(
-            f"source drifted {calibration.drift_fraction * 100:.1f} % during the sweep; let it warm up and re-run"
+            f"source drifted {calibration.drift_fraction * 100:.1f} % between the sweep and a re-measurement after it: "
+            "re-run once it has warmed up; if it repeats, its output depends on its recent power (e.g. a DPSS laser) "
+            "and varies this much in use"
         )
     if droop is not None and abs(droop) > DROOP_WARN_FRACTION:
         warnings.append(
