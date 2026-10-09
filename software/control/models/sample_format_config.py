@@ -51,7 +51,9 @@ class FormatMeasurement(BaseModel):
     Derived numbers are never stored - they are recomputed from the points.
     """
 
-    points: List[MeasuredPoint] = Field(default_factory=list)
+    # At least one: a measurement block with no points would still count as
+    # "measured" and suppress the legacy machine offset for nothing.
+    points: List[MeasuredPoint] = Field(min_length=1)
     method: str = ""  # "3 edge points" | "center point" | "migrated" | ...
     timestamp: str = ""
     note: str = ""
@@ -198,6 +200,16 @@ def load_user_sample_formats_readonly(path: str = USER_SAMPLE_FORMATS_PATH) -> O
     For hot read-only paths (the rotation resolver). NEVER mutate the result.
     """
     return load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path), copy=False)
+
+
+def user_sample_formats_unreadable(path: str = USER_SAMPLE_FORMATS_PATH) -> bool:
+    """The file exists but cannot be loaded (damage, or another schema version).
+
+    load_user_sample_formats returns None for that AND for an absent file; a
+    write path that took the None for "empty store" would replace the damaged
+    file wholesale and lose every definition still recoverable from it.
+    """
+    return os.path.exists(path) and load_user_sample_formats(path) is None
 
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:

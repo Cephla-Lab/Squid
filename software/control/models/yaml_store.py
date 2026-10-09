@@ -62,10 +62,11 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str, *, copy:
     try:
         with open(path, "r") as f:
             data = yaml.safe_load(f)
-        if _declares_another_version(path, model_cls, data):
-            model = None
-        else:
-            model = model_cls.model_validate(data) if data is not None else None
+        if data is None:
+            # The file exists (stat succeeded) but holds nothing: that is damage
+            # to report, not the "absent -> defaults" case.
+            raise ValueError("the file is empty")
+        model = None if _declares_another_version(path, model_cls, data) else model_cls.model_validate(data)
     except Exception:
         log.exception(damage_message)
         model = None

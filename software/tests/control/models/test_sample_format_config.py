@@ -237,3 +237,21 @@ def test_shipped_example_parses():
     data = yaml.safe_load(open(example))
     parsed = UserSampleFormats.model_validate(data)
     assert parsed.formats["ibidi 8 well"].well_shape == "rectangle"
+
+
+def test_measurement_block_needs_at_least_one_point():
+    """`measured: {}` would count as measured and suppress the legacy offset
+    for nothing."""
+    with pytest.raises(ValueError, match="points"):
+        SampleFormat(rows=8, cols=12, well_spacing_mm=9.0, well_size_mm=6.21, measured=FormatMeasurement())
+
+
+def test_unreadable_user_file_is_told_apart_from_an_absent_one(tmp_path):
+    from control.models.sample_format_config import user_sample_formats_unreadable
+
+    path = tmp_path / "sample_formats_user.yaml"
+    assert not user_sample_formats_unreadable(str(path))  # absent: an empty store is fine to write
+    path.write_text("formats: {not yaml\n")
+    assert user_sample_formats_unreadable(str(path))
+    path.write_text("")  # exists but empty: damage too
+    assert user_sample_formats_unreadable(str(path))

@@ -15,6 +15,7 @@ invalidate a measured A1 (rotation pivots ON A1), and re-mounting ends in the
 wizard, which handles overrides at write time.
 """
 
+import math
 import os
 from typing import List, Optional
 
@@ -52,6 +53,8 @@ class PlateHolder(BaseModel):
         # A bare nonzero angle is indistinguishable from a typo or a copied
         # example - per the no-arbitrary-numbers rule, it must carry the raw
         # points that produced it.
+        if not math.isfinite(self.rotation_deg):
+            raise ValueError("rotation_deg is not a finite number (YAML accepts .nan; a plate record must not).")
         if self.rotation_deg != 0.0 and len(self.measured.points) < 2:
             raise ValueError(
                 "rotation_deg is set but 'measured.points' is missing - an angle "

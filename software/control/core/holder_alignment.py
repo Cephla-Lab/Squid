@@ -101,12 +101,15 @@ class HolderAlignmentSession:
     def _in_window(self, row: int, col: int) -> bool:
         return self.skip <= row <= self.rows - 1 - self.skip and self.skip <= col <= self.cols - 1 - self.skip
 
+    @staticmethod
+    def _in_travel(x_mm: float, y_mm: float) -> bool:
+        limits = control._def.SOFTWARE_POS_LIMIT
+        return limits.X_NEGATIVE <= x_mm <= limits.X_POSITIVE and limits.Y_NEGATIVE <= y_mm <= limits.Y_POSITIVE
+
     def _reachable(self, transform: PlateTransform, row: int, col: int) -> bool:
         """Can the stage drive to this well? (Transform hoisted by callers:
         resolving it is file IO, and the reference/query scans loop all wells.)"""
-        x, y = transform.well_center_mm(row, col)
-        limits = control._def.SOFTWARE_POS_LIMIT
-        return limits.X_NEGATIVE <= x <= limits.X_POSITIVE and limits.Y_NEGATIVE <= y <= limits.Y_POSITIVE
+        return self._in_travel(*transform.well_center_mm(row, col))
 
     def _default_reference_indices(self) -> List[Tuple[int, int]]:
         """The extreme reachable corners of the skip window - computed, never
@@ -135,6 +138,10 @@ class HolderAlignmentSession:
             best = max(candidates, key=score)
             if best not in picked:
                 picked.append(best)
+        # A single row or column has only two extrema; the fit wants three.
+        # Pad with whatever candidate is farthest from the ones picked.
+        while len(picked) < 3:
+            picked.append(max(candidates, key=lambda rc: min(abs(rc[0] - r) + abs(rc[1] - c) for r, c in picked)))
         return picked
 
     def nominate(self, index: int, well_id: str):
@@ -274,7 +281,13 @@ class HolderAlignmentSession:
             pitch_y_mm=self.pitch_y_mm,
             rotation_deg=result.rotation_deg,
         )
-        return fitted.well_center_mm(row, col)
+        x_mm, y_mm = fitted.well_center_mm(row, col)
+        # _resolve_well_id checked the CALIBRATED center; this is the fitted
+        # feature (a corner, say), which can sit outside travel while the
+        # center sits inside, and the dialog drives straight to it.
+        if not self._in_travel(x_mm, y_mm):
+            raise SessionError(f"The fit puts that point of {well_id} outside the stage travel limits.")
+        return x_mm, y_mm
 
     def holdout_residual_um(self, well_id: str, measured_xy: Tuple[float, float]) -> float:
         """The only number in the report that is not a model: the miss distance

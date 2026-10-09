@@ -1329,6 +1329,8 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
         MeasuredPoint,
         SampleFormat,
         save_user_sample_formats,
+        USER_SAMPLE_FORMATS_PATH,
+        user_sample_formats_unreadable,
         UserSampleFormats,
     )
 
@@ -1341,6 +1343,11 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
     shipped = read_sample_formats_csv(default_formats_path)
     mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
 
+    if user_sample_formats_unreadable():
+        raise ValueError(
+            f"{USER_SAMPLE_FORMATS_PATH} exists but cannot be read; not migrating over it (its definitions may "
+            f"still be recoverable). Fix or move it aside, then restart."
+        )
     user_formats = load_user_sample_formats() or UserSampleFormats()
     migrated = []
 

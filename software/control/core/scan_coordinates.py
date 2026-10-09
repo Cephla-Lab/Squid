@@ -8,7 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
-from control.core.plate_transform import legacy_offset_for, PlateTransform, WellplateSettings, plate_transform_for
+from control.core.plate_transform import plate_transform_for, plate_transform_from_settings, WellplateSettings
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -748,7 +748,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         self, wellplate_format, well_name, scan_size_mm=None, overlap_percent=10
     ):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-        self.get_selected_well_coordinates(well_name, wellplate_settings)
+        self.get_selected_well_coordinates(well_name, wellplate_settings, wellplate_format)
 
         if wellplate_format in ["384 well plate", "1536 well plate"]:
             well_shape = "Square"
@@ -762,31 +762,18 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
             coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
             self.region_fov_coordinates[k] = coords
 
-    def get_selected_well_coordinates(self, well_names, wellplate_settings):
+    def get_selected_well_coordinates(self, well_names, wellplate_settings, wellplate_format=None):
         """
         Given a comma separated list of well names in A1 format, return the coordinates for the wells (wrt the A1 corner)
         """
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
         descriptions = well_names.split(",")
 
-        # Offsets read LIVE at call time - this path has always disagreed with
-        # ScanCoordinates' snapshot-at-__init__ behaviour, and the golden oracle
-        # pins that disagreement until compute-time resolution unifies them.
-        pitch = wellplate_settings["well_spacing_mm"]
-        # legacy_offset_for applies the SAME suppression rule as the resolver:
-        # once a1 is measured the offset is already accounted for, and adding
-        # it here double-applied it on every calibrated format.
-        offset_x, offset_y = legacy_offset_for(wellplate_settings)
-        transform = PlateTransform(
-            a1_x_mm=wellplate_settings["a1_x_mm"],
-            a1_y_mm=wellplate_settings["a1_y_mm"],
-            # Per-axis when the settings carry it (anisotropic user formats);
-            # the scalar is the legacy fallback for caller-supplied dicts.
-            pitch_x_mm=wellplate_settings.get("well_spacing_x_mm", pitch),
-            pitch_y_mm=wellplate_settings.get("well_spacing_y_mm", pitch),
-            offset_x_mm=offset_x,
-            offset_y_mm=offset_y,
-        )
+        # Offsets and rotation read LIVE at call time, through the same
+        # composition every other producer uses (a hand-built transform here
+        # once dropped the rotation, so remote clients planned unrotated wells).
+        # The format name is what finds a per-format rotation override.
+        transform = plate_transform_from_settings(wellplate_settings, wellplate_format)
 
         for desc in descriptions:
             match = re.match(pattern, desc.strip())

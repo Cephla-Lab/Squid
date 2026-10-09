@@ -23,7 +23,7 @@ calibration-design.md):
 
 import math
 from dataclasses import dataclass, replace
-from typing import Tuple
+from typing import Optional, Tuple
 
 import control._def
 
@@ -243,17 +243,27 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
                         measurement is the whole correction, so exactly one
                         offset is live per format.
     """
-    settings = control._def.get_wellplate_settings(format_)
-    # a1, pitch and the suppression flag all come from the settings dict:
-    # apply_user_sample_formats replaced the example with the user definition
-    # at load time, and to_settings() carries a1_measured along with it.
-    a1_x = settings["a1_x_mm"]
-    a1_y = settings["a1_y_mm"]
-    rotation, _source = _resolve_rotation(settings, _user_format_for(format_))
+    return plate_transform_from_settings(
+        control._def.get_wellplate_settings(format_), format_, apply_legacy_offset=apply_legacy_offset
+    )
+
+
+def plate_transform_from_settings(
+    settings, format_: Optional[str] = None, *, apply_legacy_offset: bool = True
+) -> PlateTransform:
+    """The same composition from an already-resolved settings dict (the SiLA2
+    path hands one in). a1, spacing and the suppression flag come from the
+    dict: apply_user_sample_formats replaced the example with the user
+    definition at load time, and to_settings() carries a1_measured along.
+    The per-format rotation override needs the format NAME to look up; without
+    it only the holder record applies.
+    """
+    settings = control._def._with_derived_geometry(format_ or "", dict(settings))  # tolerate scalar-only dicts
+    rotation, _source = _resolve_rotation(settings, _user_format_for(format_) if format_ is not None else None)
     offset_x, offset_y = legacy_offset_for(settings, apply_legacy_offset)
     return PlateTransform(
-        a1_x_mm=a1_x,
-        a1_y_mm=a1_y,
+        a1_x_mm=settings["a1_x_mm"],
+        a1_y_mm=settings["a1_y_mm"],
         pitch_x_mm=settings["well_spacing_x_mm"],
         pitch_y_mm=settings["well_spacing_y_mm"],
         rotation_deg=rotation,

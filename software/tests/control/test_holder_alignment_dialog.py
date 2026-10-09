@@ -287,3 +287,31 @@ def test_calibrate_existing_format_combo_skips_formats_without_a_grid(qapp, tree
     assert "glass slide" not in offered
     assert "96 well plate" in offered and "1536 well plate" in offered
     dialog.close()
+
+
+def test_three_well_session_disables_the_fourth_row(qapp, tree, monkeypatch):
+    strip = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
+    strip.update(rows=1, cols=8)
+    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "strip 8", strip)
+    dialog, _ = make_dialog(qapp, format_="strip 8")
+    dialog.holder_rotation_radio.setChecked(True)
+
+    assert [e.text() for e in dialog.holder_well_edits] == ["A1", "A8", "A4", ""]
+    assert dialog.holder_record_buttons[2].isEnabled() and not dialog.holder_record_buttons[3].isEnabled()
+    assert not dialog.holder_goto_buttons[3].isEnabled() and not dialog.holder_well_edits[3].isEnabled()
+    dialog.holder_record_buttons[3].click()  # inert, not an IndexError
+    assert "0/3 wells measured" in dialog.holder_fit_label.text()
+    dialog.close()
+
+
+def test_format_save_refuses_to_replace_a_damaged_user_file(qapp, tree):
+    """An unreadable sample_formats_user.yaml may still hold the lab's other
+    formats; a calibration must not overwrite it with a one-format store."""
+    user_path = tree / "objective_and_sample_formats" / "sample_formats_user.yaml"
+    user_path.write_text("formats: {not yaml\n")
+    dialog, _ = make_dialog(qapp, format_="96 well plate")
+
+    with pytest.raises(ValueError, match="cannot be read"):
+        dialog._save_format_definition("96 well plate", {"a1_x_mm": 11.41, "a1_y_mm": 10.75})
+    assert user_path.read_text() == "formats: {not yaml\n"
+    dialog.close()
