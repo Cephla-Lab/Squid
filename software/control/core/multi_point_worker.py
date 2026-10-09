@@ -149,8 +149,10 @@ class MultiPointWorker:
                 self._pixel_size_um = float(pixel_factor) * float(sensor_pixel_um)
             else:
                 self._pixel_size_um = None
+            self._pixel_size_source = self.objectiveStore.pixel_size_source(self.objectiveStore.current_objective)
         except Exception:
             self._pixel_size_um = None
+            self._pixel_size_source = None
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
@@ -297,6 +299,7 @@ class MultiPointWorker:
                 use_6d_fov=control._def.ZARR_USE_6D_FOV_DIMENSION,
                 region_fov_counts=region_fov_counts,
                 pixel_size_um=self._pixel_size_um,
+                pixel_size_source=self._pixel_size_source,
                 z_step_um=self._physical_size_z_um,
                 time_increment_s=self._time_increment_s,
                 channel_names=channel_names,

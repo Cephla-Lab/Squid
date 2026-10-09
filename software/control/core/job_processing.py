@@ -401,6 +401,7 @@ class ZarrWriterInfo:
         use_6d_fov: Use 6D (FOV, T, C, Z, Y, X) instead of per-FOV files (non-standard)
         region_fov_counts: Map of region_id -> num_fovs (for 6D shape calculation)
         pixel_size_um: Physical pixel size in micrometers
+        pixel_size_source: "calibrated" or "nominal" (spec B §4.7 provenance; None when unknown)
         z_step_um: Z step size in micrometers (optional)
         time_increment_s: Time between timepoints in seconds (optional)
         channel_names: List of channel names for metadata
@@ -416,6 +417,7 @@ class ZarrWriterInfo:
     use_6d_fov: bool = False
     region_fov_counts: Dict[str, int] = field(default_factory=dict)
     pixel_size_um: Optional[float] = None
+    pixel_size_source: Optional[str] = None
     z_step_um: Optional[float] = None
     time_increment_s: Optional[float] = None
     channel_names: List[str] = field(default_factory=list)
@@ -713,6 +715,7 @@ class SaveZarrJob(Job):
                 shape=shape,
                 dtype=image.dtype,
                 pixel_size_um=self.zarr_writer_info.pixel_size_um or 1.0,
+                pixel_size_source=self.zarr_writer_info.pixel_size_source,
                 z_step_um=self.zarr_writer_info.z_step_um,
                 time_increment_s=self.zarr_writer_info.time_increment_s,
                 channel_names=self.zarr_writer_info.channel_names,

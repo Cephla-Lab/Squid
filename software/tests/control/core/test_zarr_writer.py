@@ -371,6 +371,37 @@ class TestZarrWriter:
         assert channels[2]["label"] == "Brightfield"
         assert "emission_wavelength" not in channels[2]  # No wavelength for BF
 
+    def test_pixel_size_source_reaches_the_squid_attributes(self, temp_dir):
+        """Spec B §4.7: the Zarr attributes carry pixel_size_um and its provenance."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        output_path = os.path.join(temp_dir, "calibrated.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=0.19364,
+            pixel_size_source="calibrated",
+            channel_names=["BF"],
+        )
+        writer = ZarrWriter(config)
+        writer.initialize()
+        writer.finalize()
+
+        with open(os.path.join(output_path, "zarr.json")) as f:
+            attrs = json.load(f)["attributes"]["_squid"]
+        assert attrs["pixel_size_um"] == pytest.approx(0.19364)
+        assert attrs["pixel_size_source"] == "calibrated"
+
+        # an older caller that gives no provenance records None, not a guess
+        legacy = ZarrAcquisitionConfig(
+            output_path=os.path.join(temp_dir, "legacy.zarr"),
+            shape=(1, 1, 1, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+        )
+        assert legacy.pixel_size_source is None
+
 
 class TestHCSMetadata:
     """Tests for HCS plate metadata functions."""
@@ -462,6 +493,11 @@ class TestZarrWriterInfo:
         assert info.c_size == 3
         assert info.z_size == 10
         assert info.is_hcs is False  # Default
+        assert info.pixel_size_source is None  # Default: unknown provenance (spec B §4.7)
+
+    def test_zarr_writer_info_carries_the_pixel_size_source(self):
+        info = ZarrWriterInfo(base_path="/tmp/e", t_size=1, c_size=1, z_size=1, pixel_size_source="nominal")
+        assert info.pixel_size_source == "nominal"
 
     def test_zarr_writer_info_hcs_output_path(self):
         """Test HCS mode output paths use plate hierarchy."""

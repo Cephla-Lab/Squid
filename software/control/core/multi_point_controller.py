@@ -19,6 +19,7 @@ import control._def
 from control.core.auto_focus_controller import AutoFocusController
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
+from control.core.acquisition_settings import pixel_size_metadata
 from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.microscope import Microscope
@@ -514,9 +515,11 @@ class MultiPointController:
                 acquisition_parameters["objective"]["name"] = control._def.DEFAULT_OBJECTIVE
             except (AttributeError, KeyError) as e:
                 self._log.debug(f"Could not get default objective info: {e}")
-        # TODO: USE OBJECTIVE STORE DATA
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
+        # The effective pixel size and where it came from (spec B §4.7); the stitchers prefer it to
+        # reconstructing a nominal value from the fields above.
+        acquisition_parameters.update(pixel_size_metadata(self.objectiveStore, self.camera))
         acquisition_parameters["confocal_mode"] = self.liveController.is_confocal_mode()
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
@@ -925,12 +928,11 @@ class MultiPointController:
             # Gather objective and camera info for YAML
             current_objective = self.objectiveStore.current_objective
             objective_dict = self.objectiveStore.objectives_dict.get(current_objective, {})
-            pixel_size_um = self.objectiveStore.get_pixel_size_factor() * self.camera.get_pixel_size_binned_um()
             objective_info = {
                 "name": current_objective,
                 "magnification": objective_dict.get("magnification"),
                 "NA": objective_dict.get("NA"),
-                "pixel_size_um": pixel_size_um,
+                **pixel_size_metadata(self.objectiveStore, self.camera),
                 "camera_binning": list(self.camera.get_binning()) if hasattr(self.camera, "get_binning") else None,
                 "sensor_pixel_size_um": self.camera.get_pixel_size_binned_um(),
             }
