@@ -226,3 +226,16 @@ def test_migration_refuses_to_write_over_a_damaged_user_file(migration_tree, cap
         "keeping the legacy cache as-is" in r.getMessage() and "cannot be read" in str(r.exc_info[1])
         for r in caplog.records
     )
+
+
+def test_truncated_cache_is_damage_not_a_shorter_table(migration_tree, caplog):
+    """A write interrupted after some complete rows parses as a plausible table;
+    the missing shipped formats must not silently vanish from the catalog."""
+    write_legacy_cache(migration_tree, lambda formats: formats.pop("384 well plate"))
+
+    with caplog.at_level(logging.ERROR):
+        _, sample_formats = _def.load_formats()
+
+    assert "384 well plate" in sample_formats  # the shipped geometry, not an absent format
+    assert os.path.exists(os.path.join("cache", CSV))  # not renamed .migrated
+    assert any("lack ['384 well plate']" in r.getMessage() for r in caplog.records)

@@ -291,6 +291,13 @@ class ScanCoordinates:
         self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
         self._log.info(f"Added Region: {well_id}")
 
+    def rename_region(self, old_id, new_id):
+        """Move a region under a new ID - every per-region map, so no stale
+        bookkeeping (a travel-drop count, say) is left under the old one."""
+        for mapping in (self.region_centers, self.region_shapes, self.region_fov_coordinates, self.out_of_travel):
+            if old_id in mapping:
+                mapping[new_id] = mapping.pop(old_id)
+
     def remove_region(self, well_id):
         if well_id in self.region_centers:
             removed_fov_centers: List[FovCenter] = []
@@ -354,6 +361,7 @@ class ScanCoordinates:
         if not self.validate_coordinates(center_x, center_y):
             raise ValueError(f"FOV with center (x,y)={center_x},{center_y} is not valid, cannot add region.")
 
+        self._register_travel_drops(region_id, 0, 1)  # also clears a replaced region's count
         self.region_centers[region_id] = [center_x, center_y, center_z]
         self.region_shapes[region_id] = "Square"
         self.region_fov_coordinates[region_id] = [(center_x, center_y)]
@@ -385,6 +393,7 @@ class ScanCoordinates:
         center = [sum(c[0] for c in coords) / len(coords), sum(c[1] for c in coords) / len(coords)]
         if has_z:
             center.append(sum(c[2] for c in coords) / len(coords))
+        self._register_travel_drops(region_id, 0, len(coords))  # also clears a replaced region's count
         self.region_centers[region_id] = center
         self.region_shapes[region_id] = shape
         self.region_fov_coordinates[region_id] = coords
@@ -467,12 +476,8 @@ class ScanCoordinates:
         valid_points = []
         dropped_out_of_travel = 0
         for x_center, y_center in grid_points:
-            if not self.validate_coordinates(x_center, y_center):
-                dropped_out_of_travel += 1
-                self._log.debug(
-                    f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
-                )
-                continue
+            # Membership first: a bounding-box point the polygon never selects
+            # is not a planned FOV, so it must not count as a dropped one.
             if not self._is_in_polygon(x_center, y_center, shape_coords) and not any(
                 [
                     self._is_in_polygon(x_corner, y_corner, shape_coords)
@@ -481,6 +486,12 @@ class ScanCoordinates:
             ):
                 self._log.debug(
                     f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_size_mm)}"
+                )
+                continue
+            if not self.validate_coordinates(x_center, y_center):
+                dropped_out_of_travel += 1
+                self._log.debug(
+                    f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
                 )
                 continue
 

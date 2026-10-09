@@ -1240,6 +1240,13 @@ def _with_derived_geometry(format_key, settings):
     return settings
 
 
+def _missing_shipped_formats(cached, shipped):
+    """A legitimate whole-table cache carries every shipped format (custom rows
+    on top are fine). Missing ones mean damage - a write interrupted after some
+    complete rows parses as a shorter, plausible table."""
+    return [key for key in shipped if key not in cached]
+
+
 def read_sample_formats_csv(file_path):
     sample_formats = {}
     with open(file_path, "r") as csvfile:
@@ -1332,12 +1339,12 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
     )
 
     cached = read_sample_formats_csv(cached_formats_path)
-    if not cached:
-        # A cache that parses to zero formats is damage (a legitimate cache
-        # always carries the full table). Refuse to migrate it so the loader's
-        # loud damaged-cache ERROR path handles it instead.
-        raise ValueError(f"{cached_formats_path} parsed to zero formats; treating as damaged, not migrating")
     shipped = read_sample_formats_csv(default_formats_path)
+    missing = _missing_shipped_formats(cached, shipped)
+    if missing:
+        # Refuse to migrate damage, so the loader's loud damaged-cache ERROR
+        # path handles it instead.
+        raise ValueError(f"{cached_formats_path} lacks {missing}; treating as damaged, not migrating")
     mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
 
     user_formats = load_user_sample_formats_for_edit()  # raises on a damaged file: the cache keeps working
@@ -1424,9 +1431,10 @@ def load_formats():
                 f"recalibrate to clear this."
             )
         else:
-            if not sample_formats:
+            missing = _missing_shipped_formats(sample_formats, read_sample_formats_csv(default_formats_path))
+            if missing:
                 log.error(
-                    f"Cached sample formats at {cached_formats_path} parsed but contained no formats. Falling "
+                    f"Cached sample formats at {cached_formats_path} parsed but lack {missing} (truncated?). Falling "
                     f"back to the shipped geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN "
                     f"THE CACHE IS NOT BEING APPLIED."
                 )

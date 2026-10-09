@@ -87,10 +87,11 @@ def test_valid_cache_calibration_survives_migration(formats_tree, monkeypatch):
 
     shipped = _shipped_96_a1_x(formats_tree)
     calibrated = shipped + 1.234
-    _write_cache(
-        formats_tree,
-        HEADER + f"\n96,{calibrated},10.75,171,135,6.21,9.0,0,8,12",
-    )
+    # A legitimate cache is the WHOLE table (all the legacy writer ever produced);
+    # a shorter one is treated as truncated.
+    table = _def.read_sample_formats_csv(os.path.join(SHIPPED_DIR, CSV_NAME))
+    table["96 well plate"]["a1_x_mm"] = calibrated
+    _def.write_sample_formats_csv(str(formats_tree / CACHE_DIR / CSV_NAME), table)
 
     _, sample_formats = _def.load_formats()
     monkeypatch.setattr(_def, "WELLPLATE_FORMAT_SETTINGS", sample_formats)

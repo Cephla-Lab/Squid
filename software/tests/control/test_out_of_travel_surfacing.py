@@ -132,3 +132,39 @@ def test_fully_dropped_flexible_region_is_stored_empty_with_its_drops(scan, capl
     assert scan.region_centers["roi"][:2] == [50.0, 50.0]
     assert scan.out_of_travel["roi"] == 4
     assert "4 of 4 planned FOVs" in caplog.text
+
+
+def test_drop_counts_follow_renames_and_replacements(scan):
+    scan.add_flexible_region("roi", center_x=0.0, center_y=5.0, center_z=0.0, Nx=3, Ny=3, overlap_percent=10)
+    assert scan.out_of_travel["roi"] == 3
+
+    scan.rename_region("roi", "edge")
+    assert "roi" not in scan.out_of_travel and scan.out_of_travel["edge"] == 3
+    assert "roi" not in scan.region_centers and "edge" in scan.region_fov_coordinates
+
+    scan.add_single_fov_region("edge", 5.0, 5.0, 0.0)  # replaced by a region with nothing dropped
+    assert "edge" not in scan.out_of_travel
+
+    scan.add_flexible_region("fovs", center_x=0.0, center_y=5.0, center_z=0.0, Nx=3, Ny=3, overlap_percent=10)
+    scan.add_region_from_fovs("fovs", [(5.0, 5.0), (6.0, 5.0)])
+    assert "fovs" not in scan.out_of_travel
+
+
+def test_manual_region_counts_only_fovs_the_polygon_selects(scan, caplog):
+    """A triangle crossing the x=0 edge: bounding-box points outside the
+    polygon are not planned FOVs and must not count as dropped ones."""
+
+    def dropped_for(polygon):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            scan.get_points_for_manual_region(polygon, overlap_percent=0)
+        counts = [
+            int(r.getMessage().split("Manual region: ")[1].split()[0])
+            for r in caplog.records
+            if "Manual region" in r.getMessage()
+        ]
+        return counts[0] if counts else 0
+
+    triangle = [(-3.0, 2.0), (3.0, 2.0), (3.0, 8.0)]  # out of travel: only its thin left tip
+    bounding_box = [(-3.0, 2.0), (3.0, 2.0), (3.0, 8.0), (-3.0, 8.0)]  # out of travel: the whole x<0 strip
+    assert 0 < dropped_for(triangle) < dropped_for(bounding_box)

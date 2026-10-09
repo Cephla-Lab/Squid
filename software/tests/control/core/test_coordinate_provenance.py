@@ -45,7 +45,7 @@ def df_fixture():
 
 def test_csv_round_trip_with_stamp(tree):
     save_plate_holder(holder(0.21))
-    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    write_scan_coordinates_csv("coords.csv", df_fixture(), make_stamp("96 well plate"))
 
     df, stamp = read_scan_coordinates_csv("coords.csv")
     pd.testing.assert_frame_equal(df, df_fixture())
@@ -67,7 +67,7 @@ def test_legacy_unstamped_csv_loads_without_stamp(tree):
 
 def test_rotation_change_is_flagged(tree):
     save_plate_holder(holder(0.21))
-    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    write_scan_coordinates_csv("coords.csv", df_fixture(), make_stamp("96 well plate"))
     save_plate_holder(holder(0.34))  # re-measured after the save
 
     _, stamp = read_scan_coordinates_csv("coords.csv")
@@ -79,7 +79,7 @@ def test_rotation_change_is_flagged(tree):
 
 
 def test_a1_change_is_flagged(tree, monkeypatch):
-    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    write_scan_coordinates_csv("coords.csv", df_fixture(), make_stamp("96 well plate"))
 
     from control.models.sample_format_config import (
         FormatMeasurement,
@@ -121,7 +121,7 @@ def test_a1_change_is_flagged(tree, monkeypatch):
 
 
 def test_sub_tolerance_drift_is_not_flagged(tree, monkeypatch):
-    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    write_scan_coordinates_csv("coords.csv", df_fixture(), make_stamp("96 well plate"))
 
     from control.models.sample_format_config import (
         FormatMeasurement,
@@ -161,7 +161,7 @@ def test_sub_tolerance_drift_is_not_flagged(tree, monkeypatch):
 
 
 def test_format_mismatch_is_flagged(tree):
-    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    write_scan_coordinates_csv("coords.csv", df_fixture(), make_stamp("96 well plate"))
     _, stamp = read_scan_coordinates_csv("coords.csv")
     msg = staleness_warning(stamp, "384 well plate")
     assert msg is not None and "96 well plate" in msg and "384 well plate" in msg
@@ -178,7 +178,7 @@ def test_well_spacing_change_is_flagged(tree, monkeypatch):
     """A1 and rotation untouched, spacing edited: every other well moved."""
     import control._def as _def_mod
 
-    write_scan_coordinates_csv("coords.csv", df_fixture(), "96 well plate")
+    write_scan_coordinates_csv("coords.csv", df_fixture(), make_stamp("96 well plate"))
     edited = dict(_def_mod.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
     edited.update(well_spacing_mm=9.1, well_spacing_x_mm=9.1, well_spacing_y_mm=9.1)
     monkeypatch.setitem(_def_mod.WELLPLATE_FORMAT_SETTINGS, "96 well plate", edited)
@@ -220,3 +220,20 @@ def test_garbage_stamp_is_ignored_and_the_data_still_loads(tree):
     assert stamp is None
     pd.testing.assert_frame_equal(df, df_fixture())
     assert parse_stamp("region,x (mm),y (mm)") is None
+
+
+def test_rows_copied_from_a_loaded_file_keep_its_stamp(tree):
+    """Re-saving a loaded (possibly stale) file must not re-label its rows with
+    today's placement - that would silence the warning it just raised."""
+    save_plate_holder(holder(0.21))
+    write_scan_coordinates_csv("old.csv", df_fixture(), make_stamp("96 well plate"))
+    save_plate_holder(holder(0.34))  # the plate was re-measured since
+    df, loaded_stamp = read_scan_coordinates_csv("old.csv")
+
+    write_scan_coordinates_csv("copy.csv", df, loaded_stamp)  # what Save does in Load Coordinates mode
+    _, stamp = read_scan_coordinates_csv("copy.csv")
+    assert stamp == loaded_stamp
+    assert staleness_warning(stamp, "96 well plate") is not None  # still warns
+
+    write_scan_coordinates_csv("legacy_copy.csv", df, None)  # rows of unknown provenance stay unstamped
+    assert read_scan_coordinates_csv("legacy_copy.csv")[1] is None

@@ -26,6 +26,7 @@ from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
 from control.core.coordinate_provenance import (
+    make_stamp,
     read_scan_coordinates_csv,
     staleness_warning,
     write_scan_coordinates_csv,
@@ -7224,6 +7225,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
             # Remove scanCoordinates dictionaries and remove region overlay
             self.scanCoordinates.region_centers.pop(region_id, None)
+            self.scanCoordinates.out_of_travel.pop(region_id, None)
             self.navigationViewer.deregister_fovs_from_image(
                 self.scanCoordinates.region_fov_coordinates.pop(region_id, [])
             )
@@ -7364,13 +7366,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         else:  # ID changed
             new_id = val_edit
             self.location_ids[row] = new_id
-            # Update dictionary keys
-            if region_id in self.scanCoordinates.region_centers:
-                self.scanCoordinates.region_centers[new_id] = self.scanCoordinates.region_centers.pop(region_id)
-            if region_id in self.scanCoordinates.region_fov_coordinates:
-                self.scanCoordinates.region_fov_coordinates[new_id] = self.scanCoordinates.region_fov_coordinates.pop(
-                    region_id
-                )
+            self.scanCoordinates.rename_region(region_id, new_id)
 
         # Update UI
         location_str = f"x:{round(self.location_list[row,0],3)} mm  y:{round(self.location_list[row,1],3)} mm  z:{round(1000*self.location_list[row,2],3)} μm"
@@ -7836,6 +7832,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Cache for loaded coordinates dataframe (restored when switching back to Load Coordinates mode)
         self.cached_loaded_coordinates_df = None
         self.cached_loaded_file_path = None
+        self.cached_loaded_stamp = None
 
         # Add state tracking for Z parameters
         self.stored_z_params = {"dz": None, "nz": None, "z_min": None, "z_max": None, "z_mode": "From Bottom"}
@@ -9697,6 +9694,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.navigationViewer.clear_overlay()
         self.cached_loaded_coordinates_df = None
         self.cached_loaded_file_path = None
+        self.cached_loaded_stamp = None
         self.text_loaded_coordinates.clear()
         self._set_has_loaded_coordinates(False)
 
@@ -9737,9 +9735,10 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             df, stamp = read_scan_coordinates_csv(file_path)
             region_fov_coords, z_dropped = load_coordinate_regions_from_dataframe(self.scanCoordinates, df)
 
-            # Cache the dataframe and file path
+            # Cache the dataframe, file path and the file's own provenance
             self.cached_loaded_coordinates_df = df.copy()
             self.cached_loaded_file_path = file_path
+            self.cached_loaded_stamp = stamp
 
             _register_loaded_fovs(self, region_fov_coords, z_dropped)
 
@@ -9780,8 +9779,13 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
             file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
             # Stamped, not a bare to_csv: these are ABSOLUTE stage positions, so
-            # the file records the placement they were computed under.
-            write_scan_coordinates_csv(file_path, df, self.scanCoordinates.format)
+            # the file records the placement they were computed under. Rows
+            # copied unchanged from a loaded file keep THAT file's label.
+            if self.cached_loaded_coordinates_df is not None:
+                stamp = self.cached_loaded_stamp
+            else:
+                stamp = make_stamp(self.scanCoordinates.format)
+            write_scan_coordinates_csv(file_path, df, stamp)
             self._log.info(f"Saved scan coordinates to {file_path}")
 
         try:
