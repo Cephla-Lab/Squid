@@ -25,12 +25,13 @@ _MAX_QUEUED_ERRORS = 32
 # Every VISA call gives up after this; it bounds how long a stuck read can hold the light on (and stays below the
 # controller's 5 s illumination watchdog, which the calibration feeds before each read).
 METER_TIMEOUT_MS = 3000
-# Wait after the light comes on before reading, per meter family. Placeholders until the bench measures them
-# (spec §12); readings must also converge (squid/intensity_calibration_run.py), so these only set the first wait.
+# Wait after the light comes on before reading, per meter family; readings must also converge
+# (squid/intensity_calibration_run.py), so these only set the first wait. PM16: confirmed on the bench (2026-10-09,
+# PM16-121 on five lasers: 0-3 of 201 sweep points unsettled); PM100/PM400: placeholders until a bench run.
 SETTLE_S_BY_MODEL = {"PM16": 0.3, "PM100": 0.15, "PM400": 0.15}
 SETTLE_S_UNKNOWN_MODEL = 0.5
 # Meter families the calibration has been run with on a bench. Others work, with a warning in the dialog.
-VALIDATED_MODELS: Tuple[str, ...] = ()
+VALIDATED_MODELS: Tuple[str, ...] = ("PM16",)
 # Sensor limits of meters with a built-in sensor, for when the meter does not answer the range queries; when it does,
 # the lower of the two applies. PM16-121 (the first meter used): S121C-type Si photodiode, 400-1100 nm, up to 500 mW,
 # inferred from Thorlabs' naming (PM16-120 = S120C, PM16-122 = S122C). On the bench (2026-10-09, fw 1.6.0) it reports
