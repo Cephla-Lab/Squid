@@ -89,6 +89,10 @@ class PowerMeter(Protocol):
 
     def read_mw(self) -> float: ...
 
+    def hold_range(self, max_mw: float) -> float: ...
+
+    def release_range(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -219,6 +223,19 @@ class ThorlabsPowerMeter:
     def set_wavelength(self, wavelength_nm: float) -> None:
         self._set(f"SENS:CORR:WAV {float(wavelength_nm):g}")
 
+    def hold_range(self, max_mw: float) -> float:
+        """Stop auto-ranging on the lowest range that holds max_mw (the meter rounds up), so a whole sweep is read on
+        one range: the PM16-121's ranges disagree by 5-7 % where they meet. Returns that range's top in mW."""
+        top_mw = self._optional_float("SENS:POW:RANG:UPP? MAX", scale=1000.0)  # it depends on the wavelength set
+        wanted_mw = max_mw if top_mw is None else min(max_mw, top_mw)
+        self._set("SENS:POW:RANG:AUTO OFF")
+        self._set(f"SENS:POW:RANG:UPP {wanted_mw / 1000.0:.6g}")
+        held_mw = self._optional_float("SENS:POW:RANG:UPP?", scale=1000.0)
+        return wanted_mw if held_mw is None else held_mw
+
+    def release_range(self) -> None:
+        self._set("SENS:POW:RANG:AUTO ON")
+
     def read_mw(self) -> float:
         answer = self._query("MEAS:POW?")
         try:
@@ -260,6 +277,10 @@ def simulated_source_mw(wavelength_nm: float, x):
     return simulated_led_mw(x) if wavelength_nm >= 700 else simulated_laser_mw(x)
 
 
+# The PM16-121's ranges at 488 nm (bench 2026-10-09)
+SIMULATED_RANGES_MW = (0.1193, 11.93, 1197.0)
+
+
 class SimulatedPowerMeter:
     """Answers with the power the commanded light would give, from simulated_source_mw."""
 
@@ -283,16 +304,27 @@ class SimulatedPowerMeter:
         self._noise_fraction = noise_fraction
         self._ambient_mw = ambient_mw
         self._rng = np.random.default_rng(seed)
+        self._held_mw: Optional[float] = None  # None while auto-ranging
 
     def set_wavelength(self, wavelength_nm: float) -> None:
         self._wavelength_nm = float(wavelength_nm)
+
+    def hold_range(self, max_mw: float) -> float:
+        self._held_mw = next((r for r in SIMULATED_RANGES_MW if r >= max_mw), SIMULATED_RANGES_MW[-1])
+        return self._held_mw
+
+    def release_range(self) -> None:
+        self._held_mw = None
 
     def read_mw(self) -> float:
         on, x = self._source_state()
         power = float(simulated_source_mw(self._wavelength_nm, x)) if on else 0.0
         noise = self._noise_fraction * self._rng.standard_normal()
         ambient = self._ambient_mw * (1.0 + 0.1 * self._rng.standard_normal())
-        return power * (1.0 + noise) + ambient
+        reading = power * (1.0 + noise) + ambient
+        if self._held_mw is not None and reading > self._held_mw:
+            raise PowerMeterOverrange(f"simulated meter overrange ({reading:g} mW on the {self._held_mw:g} mW range)")
+        return reading
 
     def close(self) -> None:
         pass

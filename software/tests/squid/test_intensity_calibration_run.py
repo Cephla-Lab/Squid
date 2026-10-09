@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from control.core.config import ConfigRepository
-from squid.intensity_calibration import load_calibration
+from squid.intensity_calibration import load_calibration, write_calibration
 from squid.intensity_calibration_run import (
     CalibrationCancelled,
     CalibrationSession,
@@ -25,7 +25,14 @@ from squid.intensity_calibration_run import (
     calibrate_channel,
     measured_in_label,
 )
-from squid.power_meter import PowerMeterError, PowerMeterInfo, SimulatedPowerMeter, simulated_laser_mw, simulated_led_mw
+from squid.power_meter import (
+    PowerMeterError,
+    PowerMeterInfo,
+    PowerMeterOverrange,
+    SimulatedPowerMeter,
+    simulated_laser_mw,
+    simulated_led_mw,
+)
 from tests.squid.calibration_fixtures import FakeMicrocontroller, FakeTime
 
 LASER = ChannelTarget("Fluorescence 405 nm Ex", 405, "D1", 11, 1.0)
@@ -81,9 +88,22 @@ class ModelMeter:
         self.drift_per_read = drift_per_read
         self.reads = 0
         self.info = PowerMeterInfo("Model meter", "Model sensor", 500.0, wavelength_range, 0.0, True)
+        self.held_mw = None  # the range held, None while auto-ranging
+        self.range_events = []  # ("hold", asked mW, held mW) / ("release",)
+        self.lit_reads_by_range = []  # the range each reading with the light on was taken on
 
     def set_wavelength(self, nm):
         pass
+
+    def hold_range(self, max_mw):
+        # the PM16-121's ranges at 488 nm (bench 2026-10-09); it rounds up to the next one
+        self.held_mw = next((r for r in (0.1193, 11.93, 1197.0) if r >= max_mw), 1197.0)
+        self.range_events.append(("hold", max_mw, self.held_mw))
+        return self.held_mw
+
+    def release_range(self):
+        self.held_mw = None
+        self.range_events.append(("release",))
 
     def read_mw(self):
         self.reads += 1
@@ -91,15 +111,19 @@ class ModelMeter:
             raise PowerMeterError("USB disconnected")
         if not self.output.is_on:
             return 0.002
+        self.lit_reads_by_range.append(self.held_mw)
         power = float(self.model(self.output.commanded_percent / 100.0 * FACTOR))
         if self.droop_per_s and self.mcu.on_since is not None:
             power *= 1.0 - self.droop_per_s * (self.time.clock() - self.mcu.on_since)
-        if self.spike_at is not None and abs(self.output.commanded_percent - self.spike_at[0]) < 1e-9:
+        held = self.held_mw is not None  # the spike lands in the sweep, not in the pre-scan
+        if held and self.spike_at is not None and abs(self.output.commanded_percent - self.spike_at[0]) < 1e-9:
             power *= self.spike_at[1]
             self.spike_at = None
         power *= 1.0 + self.drift_per_read * self.reads
         if self.alternate:
             power *= 1.0 + self.alternate * (-1) ** self.reads
+        if self.held_mw is not None and power > self.held_mw:
+            raise PowerMeterOverrange(f"{power:g} mW above the {self.held_mw:g} mW range")
         return power + 0.002
 
     def close(self):
@@ -192,8 +216,9 @@ def test_drift_is_warned():
 
 
 def test_a_spiked_top_reading_is_measured_again_and_does_not_set_p_max():
-    _, _, _, run = _run(LASER, spike_at=(100.0, 1.5))  # 450 mW: under the sensor limit, so it reaches the fit
+    _, _, meter, run = _run(LASER, spike_at=(100.0, 1.5))  # 450 mW: under the sensor limit, so it reaches the fit
     calibration = run().calibration
+    assert meter.spike_at is None  # the spiked reading was taken
     assert calibration.p_max_mw == pytest.approx(300.0, rel=0.01)
     assert calibration.verification == "pass"
 
@@ -617,3 +642,40 @@ def test_a_config_that_cannot_be_put_back_does_not_stop_the_files_being_put_back
         session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
     assert path.read_bytes() == before and path.with_suffix(".png").read_bytes() == before_png
     assert not list(session.calibrations_dir().glob(".*"))
+
+
+def test_a_channel_is_measured_on_the_one_meter_range_that_holds_the_sensor_limit():
+    # auto-ranging stitched the PM16-121's 11.9 mW and 1.2 W ranges, which disagree by 5-7 %, into the 488 nm curve
+    mcu, output, meter, run = _run(LASER, sensor_limit_mw=500.0)
+    calibration = run().calibration
+    assert meter.range_events == [("hold", 500.0, 1197.0), ("release",)]
+    assert meter.lit_reads_by_range and set(meter.lit_reads_by_range) == {1197.0}  # not one reading auto-ranged
+    assert calibration.meter_range_mw == 1197.0
+    assert meter.held_mw is None  # auto-ranging again afterwards
+
+
+def test_a_lower_sensor_limit_picks_a_lower_range():
+    _, _, meter, run = _run(LASER, model=lambda x: simulated_laser_mw(x) / 100.0, sensor_limit_mw=10.0)
+    assert run().calibration.meter_range_mw == 11.93
+    assert meter.range_events[0] == ("hold", 10.0, 11.93)
+
+
+def test_the_meter_goes_back_to_auto_range_when_a_channel_fails():
+    mcu, output, meter, run = _run(LASER, fail_after=60)
+    with pytest.raises(PowerMeterError):
+        run()
+    assert meter.range_events[-1] == ("release",) and meter.held_mw is None
+    _assert_off(mcu, output, LASER.source_code)
+
+
+def test_unsettled_sweep_readings_are_counted_and_saved(tmp_path):
+    clean = _run(LASER)[3]().calibration
+    assert clean.unsettled_readings == 0
+    result = _run(LASER, alternate=0.05)[3]()
+    noisy = result.calibration
+    assert noisy.unsettled_readings > 0
+    assert any("did not settle" in w for w in result.warnings)  # some stayed unsettled when measured again
+    path = tmp_path / noisy.file_name
+    write_calibration(noisy, path)
+    again = load_calibration(path)
+    assert (again.unsettled_readings, again.meter_range_mw) == (noisy.unsettled_readings, noisy.meter_range_mw)

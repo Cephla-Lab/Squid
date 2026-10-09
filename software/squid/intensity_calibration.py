@@ -208,6 +208,8 @@ class IntensityCalibration:
     verification_points: Tuple[Tuple[float, float], ...] = ()  # (requested %, error %)
     hold_s: float = 0.0  # length of the continuous-light check; 0 when not run
     hold_droop_fraction: Optional[float] = None  # (end - start) / start of that check: how live view departs
+    meter_range_mw: Optional[float] = None  # the one meter range the channel was read on; None: auto-ranged
+    unsettled_readings: Optional[int] = None  # sweep points whose readings never agreed (before re-measuring)
 
     @classmethod
     def from_sweep(
@@ -360,6 +362,8 @@ def write_calibration(calibration: IntensityCalibration, path: Path) -> None:
         "pulse_on_s": f"{c.pulse_on_s:.4g}",
         "hold_s": f"{c.hold_s:g}",
         "hold_droop_fraction": "not run" if c.hold_droop_fraction is None else f"{c.hold_droop_fraction:+.5f}",
+        "meter_range_mw": "auto" if c.meter_range_mw is None else f"{c.meter_range_mw:.6g}",
+        "unsettled_readings": "not counted" if c.unsettled_readings is None else str(c.unsettled_readings),
     }
     table = pd.DataFrame(
         {
@@ -404,6 +408,11 @@ def _optional(value: Optional[str], empty: str) -> Optional[str]:
 
 def _optional_float(value: str) -> Optional[float]:
     return None if value == "not run" else float(value)
+
+
+def _optional_number(value: Optional[str], empty: str, kind):
+    """A header number written as `empty` when it does not apply; files from before the key existed lack it."""
+    return None if value in (None, empty) else kind(value)
 
 
 def _validate_lookup_columns(path: Path, dac: np.ndarray, x: np.ndarray, fitted: np.ndarray, factor: float) -> None:
@@ -476,6 +485,8 @@ def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> Intensity
         verification_points=_parse_points(header.get("verification_points", "")),
         hold_s=float(header.get("hold_s", "0")),
         hold_droop_fraction=_optional_float(header.get("hold_droop_fraction", "not run")),
+        meter_range_mw=_optional_number(header.get("meter_range_mw"), "auto", float),
+        unsettled_readings=_optional_number(header.get("unsettled_readings"), "not counted", int),
     )
 
 

@@ -265,3 +265,31 @@ def test_the_resource_name_pyvisa_py_gives_the_bench_pm16_is_found():
     # pyvisa-py names USB resources with decimal IDs and the interface number: 4883 = 0x1313, 32891 = 0x807B
     bench = "USB0::4883::32891::250328410::0::INSTR"
     assert find_thorlabs_resource(["ASRL3::INSTR", bench]) == bench
+
+
+def test_holding_a_range_stops_auto_ranging_on_the_range_that_holds_the_limit():
+    answers = dict(PM16_ANSWERS, **{"SENS:POW:RANG:UPP? MAX": "1.197352E+00\n", "SENS:POW:RANG:UPP?": "1.197352E+00\n"})
+    instrument = FakeInstrument(answers=answers)
+    meter = _meter(instrument)
+    assert meter.hold_range(500.0) == pytest.approx(1197.352)  # the meter rounds up to its next range
+    assert instrument.writes[-2:] == ["SENS:POW:RANG:AUTO OFF", "SENS:POW:RANG:UPP 0.5"]
+    meter.release_range()
+    assert instrument.writes[-1] == "SENS:POW:RANG:AUTO ON"
+
+
+def test_a_limit_above_the_top_range_holds_the_top_range():
+    # the top range depends on the wavelength: 0.703 W at 730 nm on the bench PM16-121
+    answers = dict(PM16_ANSWERS, **{"SENS:POW:RANG:UPP? MAX": "7.030021E-01\n"})
+    instrument = FakeInstrument(answers=answers)
+    assert _meter(instrument).hold_range(900.0) == pytest.approx(703.0021)
+    assert instrument.writes[-1] == "SENS:POW:RANG:UPP 0.703002"
+
+
+def test_the_simulated_meter_overranges_above_the_range_it_holds():
+    state = {"on": True, "x": 0.6}
+    meter = SimulatedPowerMeter(lambda: (state["on"], state["x"]), noise_fraction=0.0, ambient_mw=0.0)
+    assert meter.hold_range(10.0) == 11.93
+    with pytest.raises(PowerMeterOverrange):
+        meter.read_mw()  # 300 mW
+    meter.release_range()
+    assert meter.read_mw() == pytest.approx(300.0)

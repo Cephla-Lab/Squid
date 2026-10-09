@@ -386,6 +386,11 @@ def calibrate_channel(
     def measure_everything():
         meter.set_wavelength(target.wavelength_nm)
         output.safe_off()
+        # Every reading of the channel, the dark included (ranges differ in offset too), is on one meter range: the
+        # lowest that holds the sensor limit, where the sweep stops anyway. Auto-ranging stitched the PM16-121's
+        # 11.9 mW and 1.2 W ranges, which disagree by 5-7 %, into a 488 nm curve (bench 2026-10-09); its 1.2 W range
+        # reads dark to 1 uW, so a lower range only matters for sources under about 0.1 mW (lower the sensor limit).
+        range_mw = meter.hold_range(sensor_limit_mw)
         step("dark")
         dark_start = measure.dark()
         measure.sigma_dark = float(dark_start.std(ddof=1))
@@ -394,6 +399,7 @@ def calibrate_channel(
         for i, percent in enumerate(dac):
             step(f"sweep {i + 1}/{dac.size}")
             raw[i], settled[i] = measure.at(percent)
+        unsettled = int(np.sum(~settled))  # before re-measuring: what says whether the settle time is long enough
         step("dark")
         dark_end = measure.dark()
         sigma_dark = float(np.sqrt((dark_start.var(ddof=1) + dark_end.var(ddof=1)) / 2.0))
@@ -451,17 +457,20 @@ def calibrate_channel(
             start, end = measure.hold(commanded, hold_s, cancelled)
             dark_mw = float(dark_end.mean())
             droop = (end - start) / max(start - dark_mw, 1e-9)
-        return calibration, points, droop, int(np.sum(~settled))
+        return calibration, points, droop, unsettled, int(np.sum(~settled)), range_mw
 
     try:
-        calibration, points, droop, unsettled = measure_everything()
+        calibration, points, droop, unsettled, still_unsettled, range_mw = measure_everything()
     except BaseException as original:
-        try:
-            output.safe_off()
-        except Exception as off_error:
-            _log.error(f"{target.name}: turning the light off after '{original}' failed: {off_error}")
+        # each on its own: a meter that stopped answering must not keep the light on
+        for what, undo in (("turning the light off", output.safe_off), ("auto-ranging the meter", meter.release_range)):
+            try:
+                undo()
+            except Exception as undo_error:
+                _log.error(f"{target.name}: {what} after '{original}' failed: {undo_error}")
         raise
     output.safe_off()
+    meter.release_range()
 
     gated = [error for r, error in points if r >= VERIFY_MIN_GATED_PERCENT]
     verdict = "pass" if all(abs(error) <= VERIFY_REL_TOL * 100.0 for error in gated) else "fail"
@@ -470,6 +479,8 @@ def calibrate_channel(
         verification=verdict,
         verification_points=tuple(points),
         hold_s=float(hold_s if droop is not None else 0.0),
+        meter_range_mw=float(range_mw),
+        unsettled_readings=unsettled,
         hold_droop_fraction=None if droop is None else float(droop),
     )
     warnings = []
@@ -482,8 +493,8 @@ def calibrate_channel(
             f"output changes {droop * 100:+.1f} % after {hold_s:g} s of continuous light: live view departs from "
             "the calibration, short exposures match it"
         )
-    if unsettled:
-        warnings.append(f"{unsettled} readings did not settle (noisy or slow meter)")
+    if still_unsettled:
+        warnings.append(f"{still_unsettled} readings did not settle (noisy or slow meter)")
     return ChannelResult(calibration, tuple(warnings))
 
 
