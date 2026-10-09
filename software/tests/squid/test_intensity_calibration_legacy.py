@@ -163,3 +163,12 @@ def test_intensity_labels():
         "repair": "x",
     }
     assert "repaired (optically unverified): x" in intensity_tooltip(legacy)
+
+
+def test_calibration_status_says_when_the_channel_moved(tmp_path):
+    write_calibration(make_calibration(), tmp_path / "405nm_D1.csv")
+    status = calibration_status(tmp_path, "405nm_D1.csv", 405, 0.6, 1.0, controller_port="D2")
+    assert status.startswith("405nm_D1.csv: not applied:") and "D1" in status and "D2" in status
+    assert calibration_status(tmp_path, "405nm_D1.csv", 405, 0.6, 1.0, controller_port="D1") == (
+        "405nm_D1.csv: calibrated 2026-10-08"
+    )

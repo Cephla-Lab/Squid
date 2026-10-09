@@ -555,7 +555,12 @@ class CalibrationSession:
 
     def current_status(self, target: ChannelTarget) -> str:
         status = calibration_status(
-            self.calibrations_dir(), target.calibration_file, target.wavelength_nm, self.factor, target.max_output
+            self.calibrations_dir(),
+            target.calibration_file,
+            target.wavelength_nm,
+            self.factor,
+            target.max_output,
+            controller_port=target.controller_port,
         )
         return status or "none"
 

@@ -273,6 +273,16 @@ class IntensityCalibration:
         """The slider runs the full range: the ceiling is inside the lookup."""
         return 100.0
 
+    def identity_mismatch(self, wavelength_nm: Optional[int], controller_port: Optional[str]) -> Optional[str]:
+        """Why this calibration does not belong to a channel with this wavelength and port, or None when it does: a
+        lookup measured on one port says nothing about the source on another."""
+        if wavelength_nm == self.wavelength_nm and controller_port == self.controller_port:
+            return None
+        return (
+            f"{self.file_name} was measured for {self.wavelength_nm} nm on {self.controller_port}; the channel is now "
+            f"{wavelength_nm} nm on {controller_port}: recalibrate"
+        )
+
     def describe(self) -> Dict[str, object]:
         description: Dict[str, object] = {
             "intensity_unit": "power_percent",
@@ -534,6 +544,10 @@ class LegacyCalibration:
     def cap_percent(self, max_output: float) -> float:
         return max_output * 100.0
 
+    def identity_mismatch(self, wavelength_nm: Optional[int], controller_port: Optional[str]) -> Optional[str]:
+        """Legacy files record neither wavelength nor port: nothing to compare (they apply by file name, as before)."""
+        return None
+
     def describe(self) -> Dict[str, object]:
         description: Dict[str, object] = {
             "intensity_unit": "power_percent",
@@ -594,6 +608,7 @@ def calibration_status(
     wavelength_nm: Optional[int],
     factor: float,
     max_output: float,
+    controller_port: Optional[str] = None,
 ) -> str:
     """One line for the channel editor and the calibration dialog; "" when the channel has no calibration."""
     path = resolve_calibration_path(calibrations_dir, referenced_file, wavelength_nm)
@@ -603,6 +618,9 @@ def calibration_status(
         calibration = load_calibration(path)
     except CalibrationFileError as e:
         return f"invalid file: {e}"
+    mismatch = calibration.identity_mismatch(wavelength_nm, controller_port) if controller_port else None
+    if mismatch:
+        return f"{path.name}: not applied: {mismatch}"
     return f"{path.name}: {calibration.status(factor, max_output)}"
 
 

@@ -291,7 +291,15 @@ class IlluminationController:
                     logging.ERROR, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {e}"
                 )
             self._calibration_cache[path] = cached
-        return CalibrationLookup(path.name, cached[1], cached[2])
+        calibration = cached[1]
+        if calibration is not None and channel is not None:
+            mismatch = calibration.identity_mismatch(channel.wavelength_nm, channel.controller_port)
+            if mismatch:
+                self._log_once(
+                    logging.WARNING, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {mismatch}"
+                )
+                return CalibrationLookup(path.name, None, mismatch)
+        return CalibrationLookup(path.name, calibration, cached[2])
 
     def get_intensity_cap_percent(self, wavelength, max_output: float) -> float:
         """The highest intensity % the GUI offers: 100 for a new calibration (the ceiling is inside the lookup),

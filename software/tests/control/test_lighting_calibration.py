@@ -192,3 +192,19 @@ def test_lowered_max_output_clamps_the_dac(controller, micro, repo):
     micro.illumination_intensity_factor = 0.6
     controller.set_intensity(488, 100)
     assert _sent(micro) == (12, 30.0)
+
+
+def test_a_calibration_for_another_port_is_not_applied(controller, micro, repo):
+    # measured on D2; the channel was moved to D3 in the channel editor afterwards
+    write_calibration(make_calibration(wavelength_nm=488, port="D2"), _dir(repo) / "488nm_D2.csv")
+    config = repo.get_illumination_config(for_edit=True)
+    config.channels[2].controller_port = "D3"
+    repo.save_illumination_config(config)
+
+    controller.set_intensity(488, 50)
+    controller.set_intensity(488, 50)
+    assert _sent(micro) == (13, 50)
+    assert controller.describe_intensity(488)["intensity_unit"] == "dac_percent"
+    assert controller.get_intensity_cap_percent(488, 0.5) == 50.0
+    mismatch = [w for w in _logged(controller, control.lighting.logging.WARNING) if "D2" in w and "D3" in w]
+    assert len(mismatch) == 1

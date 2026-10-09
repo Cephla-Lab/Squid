@@ -13883,6 +13883,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             channel.wavelength_nm,
             control._def.ILLUMINATION_INTENSITY_FACTOR,
             channel.max_output,
+            controller_port=channel.controller_port,
         )
 
     def _on_type_changed(self, row, new_type):
