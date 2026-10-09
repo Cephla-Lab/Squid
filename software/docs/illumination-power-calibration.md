@@ -34,13 +34,15 @@ pip3 install pyvisa pyvisa-py pyusb
 
 ### Windows
 
-1. Bind the WinUSB driver to the meter with [Zadig](https://zadig.akeo.ie/): Options > List All Devices, pick the
-   Thorlabs meter (USB ID `1313 807B`), select WinUSB, Install Driver. Thorlabs' own software no longer sees the meter
-   until its driver is put back.
-2. `pip install pyvisa pyvisa-py pyusb`
-3. Put `libusb-1.0.dll` on PATH: in a conda environment, `conda install -c conda-forge libusb`; otherwise the x64 DLL
-   from [libusb.info](https://libusb.info) in a directory on PATH. (`pip install libusb-package` alone is not
-   enough: pyusb looks for the DLL on PATH.)
+1. Bind the WinUSB driver to the meter with [Zadig](https://zadig.akeo.ie/) (it needs administrator rights):
+   Options > List All Devices, pick the meter (e.g. PM16-121, USB ID `1313 807B`), select WinUSB, Install Driver.
+   Thorlabs' own software no longer sees the meter until its driver is put back.
+2. `pip install pyvisa pyvisa-py pyusb libusb-package`
+3. Put `libusb-1.0.dll` on PATH. pyusb looks for it only there, so installing libusb-package is not enough by itself:
+   copy `libusb-1.0.dll` from `site-packages\libusb_package\` into a directory on PATH, such as the Python
+   installation directory. In a conda environment, `conda install -c conda-forge libusb` does this instead.
+
+Tested 2026-10-09 with a PM16-121 on Windows, Python 3.12 from python.org.
 
 Alternatively, install NI-VISA and Thorlabs' driver (Optical Power Monitor; its Power Meter Driver Switcher selects
 the NI-VISA driver) and `pip install pyvisa`: pyvisa then uses NI-VISA, and steps 1 and 3 are not needed.
@@ -51,8 +53,9 @@ the NI-VISA driver) and `pip install pyvisa`: pyvisa then uses NI-VISA, and step
 python -c "import pyvisa; print(pyvisa.ResourceManager().list_resources())"
 ```
 
-should list `USB0::0x1313::0x807B::<serial number>::INSTR`. Squid uses the first resource with Thorlabs' vendor ID
-(`0x1313`); `--resource` picks another in the headless tool.
+should list the meter: `USB0::4883::32891::<serial number>::0::INSTR` with pyvisa-py (decimal IDs: 4883 = 0x1313,
+32891 = 0x807B for a PM16-121), `USB0::0x1313::0x807B::<serial number>::INSTR` with NI-VISA. Squid uses the first
+resource with Thorlabs' vendor ID; `--resource` picks another in the headless tool.
 
 ## Running a calibration
 
