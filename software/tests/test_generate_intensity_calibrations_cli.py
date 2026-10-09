@@ -55,3 +55,21 @@ def test_cli_with_no_matching_channel_exits_2(tmp_path, monkeypatch):
     (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
     repo = ConfigRepository(base_path=tmp_path)
     assert _tool().main(["--simulation", "--channels", "nope"], config_repo=repo) == 2
+
+
+def test_cli_saves_a_failed_channel_only_when_told_to(tmp_path, monkeypatch, capsys):
+    # the bench 561 nm laser failed verification and --save saved it with no warning; the GUI asks first
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr("squid.intensity_calibration_run.VERIFY_REL_TOL", 1e-9)  # every channel fails
+    saved = tmp_path / "machine_configs" / "intensity_calibrations" / "405nm_D1.csv"
+    args = ["--simulation", "--settle-s", "0", "--hold-s", "0", "--save"]
+
+    assert _tool().main(args, config_repo=repo) == 1
+    assert not saved.exists() and repo.get_illumination_config().channels[0].intensity_calibration_file is None
+    assert "not saved (failed verification); --save-failed saves it anyway" in capsys.readouterr().out
+
+    assert _tool().main(args + ["--save-failed"], config_repo=repo) == 1
+    assert saved.is_file() and repo.get_illumination_config().channels[0].intensity_calibration_file == "405nm_D1.csv"

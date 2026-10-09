@@ -1,11 +1,13 @@
 """Headless illumination power calibration: Utils > Illumination Power Calibration... without the GUI.
 
 Opens the controller itself, so run it with the Squid GUI closed. Calibrates every DAC-driven epi channel (or the ones
-named with --channels), prints each channel's verification, and with --save writes what the GUI would write
-(machine_configs/intensity_calibrations/<λ>nm_<port>.csv + .png) and points the illumination config at it.
+named with --channels) and prints each channel's verification. --save writes the channels that passed, as the GUI
+would (machine_configs/intensity_calibrations/<λ>nm_<port>.csv + .png), and points the illumination config at them;
+--save-failed also saves the ones that failed, which the dialog does only after asking.
 
     python tools/generate_intensity_calibrations.py --measured-in widefield
     python tools/generate_intensity_calibrations.py --channels "Fluorescence 405 nm Ex" --save
+    python tools/generate_intensity_calibrations.py --save --save-failed   # also save channels that failed
     python tools/generate_intensity_calibrations.py --simulation --settle-s 0 --hold-s 0   # dry run, simulated
 """
 
@@ -36,7 +38,14 @@ def parse_args(argv):
     parser.add_argument("--settle-s", type=float, default=None, help="wait after turning the light on (s)")
     parser.add_argument("--hold-s", type=float, default=None, help="continuous-light check length (s); 0 skips it")
     parser.add_argument("--resource", default=None, help="VISA resource (default: the first Thorlabs meter)")
-    parser.add_argument("--save", action="store_true", help="write the files and point the config at them")
+    parser.add_argument(
+        "--save", action="store_true", help="write the channels that passed verification and point the config at them"
+    )
+    parser.add_argument(
+        "--save-failed",
+        action="store_true",
+        help="with --save, also save channels that failed verification (the dialog asks before it does)",
+    )
     parser.add_argument("--simulation", action="store_true", help="simulated controller and meter")
     return parser.parse_args(argv)
 
@@ -106,9 +115,16 @@ def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
                 print(f"{name}: {c.p_max_mw:.4g} mW, {c.verification_summary()}" + "".join(f"; {e}" for e in extras))
             else:
                 print(f"{name}: not calibrated ({result})")
-        if args.save and calibrations:
-            for path, backup in session.save(calibrations):
-                print(f"saved {path}" + (f" (previous file moved to {backup})" if backup else ""))
+        if args.save:
+            to_save = []
+            for c in calibrations:
+                if c.verification == "pass" or args.save_failed:
+                    to_save.append(c)
+                else:
+                    print(f"{c.channel}: not saved (failed verification); --save-failed saves it anyway")
+            if to_save:
+                for path, backup in session.save(to_save):
+                    print(f"saved {path}" + (f" (previous file moved to {backup})" if backup else ""))
     finally:
         session.disconnect()
         mcu.stop_heartbeat()
