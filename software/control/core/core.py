@@ -1964,7 +1964,10 @@ class NavigationViewer(QFrame):
     def clear_slide(self):
         self.background_image = self.background_image_copy.copy()
         self.background_item.setImage(self.background_image)
-        self.draw_current_fov(self.x_mm, self.y_mm)
+        # No FOV drawn yet (the movement updater has not reported a position): a clear fired by a
+        # calibration change right after startup has nothing to redraw.
+        if self.x_mm is not None and self.y_mm is not None:
+            self.draw_current_fov(self.x_mm, self.y_mm)
 
     def clear_overlay(self):
         self.scan_overlay.fill(0)

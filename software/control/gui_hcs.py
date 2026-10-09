@@ -695,6 +695,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.load_objects(is_simulation=is_simulation)
         self.setup_hardware()
+        # Before the widgets exist: the mosaic and the switch read the store's offsets, and the
+        # offsets-changed listener (make_connections) must not see the load itself.
+        self.load_objective_offset_calibration()
 
         self.setup_movement_updater()
 
@@ -1494,6 +1497,13 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
+        # The saved XY offsets hold only for the camera key they were measured with (spec C §5, §7.1):
+        # re-evaluate on every ROI or binning change made through the GUI.
+        self.cameraSettingWidget.signal_binning_changed.connect(self.refresh_objective_offset_validity)
+        self.cameraSettingWidget.signal_roi_changed.connect(self.refresh_objective_offset_validity)
+        # Dedicated path for a change of the effective XY offsets (spec C §7.3): connected directly, not
+        # through napari_connections (performance mode disconnects those) and with no active-tab guard.
+        self.objectiveStore.add_calibration_listener(self._on_objective_calibration_changed)
         # Sensor mode changes (readout speed) can shift the valid exposure range;
         # refresh the exposure control the user actually sees (LiveControlWidget's),
         # since CameraSettingsWidget's own exposure entry is hidden here
@@ -2384,6 +2394,7 @@ class HighContentScreeningGui(QMainWindow):
             default_channel=current.name if current is not None else None,
             busy_reason=self.objective_calibration_busy_reason,
             after_run=after_run,
+            on_saved=self.set_objective_offset_calibration,
             parent=self,
         )
         dialog.exec_()
@@ -2394,6 +2405,67 @@ class HighContentScreeningGui(QMainWindow):
             dropdown.setCurrentText(self.objectiveStore.current_objective)
             dropdown.blockSignals(False)
             self.objectivesWidget.signal_objective_changed.emit()
+
+    def _objective_offset_camera_key(self):
+        """The camera key the saved offsets are evaluated against now (spec C §5): the same reading the
+        dialog records at a save."""
+        from control.models.objective_calibration_config import offset_camera_key
+        from control.objective_calibration_hardware import CameraKeySource
+
+        return offset_camera_key(CameraKeySource(self.camera, squid.config.get_camera_config()))
+
+    def set_objective_offset_calibration(self, config):
+        """Install `config` (the file as loaded, or as the dialog just wrote it) in the ObjectiveStore,
+        evaluated against the current mountings and camera key (spec C §7.1). Returns the store's
+        CalibrationChange."""
+        from control.core.objective_store import current_mountings, xeryon_pos2_offset_mm
+
+        return self.objectiveStore.set_offset_calibration(
+            config,
+            current_mountings(self.objectiveStore.objectives_dict),
+            self._objective_offset_camera_key(),
+            xeryon_pos2_offset_mm(),
+        )
+
+    def load_objective_offset_calibration(self):
+        """Startup (spec C §7.1): load machine_configs/objective_calibration.yaml into the store and warn
+        once when a saved offset calibration is not applied, in whole or in XY (spec C §4, §5)."""
+        from control.models.objective_calibration_config import ObjectiveCalibrationFileError
+
+        try:
+            config = self.microscope.config_repo.get_objective_calibration()
+        except ObjectiveCalibrationFileError as e:
+            self.log.error(str(e))
+            QMessageBox.warning(self, "Objective Calibration", f"The objective calibration was not loaded.\n{e}")
+            return
+        self.set_objective_offset_calibration(config)
+        validity = self.objectiveStore.offset_validity
+        if config is None or config.offset_calibration is None or (validity.z and validity.xy):
+            return
+        what = (
+            "The saved objective offsets are not applied" if not validity.z else "The saved XY offsets are not applied"
+        )
+        message = f"{what}: {validity.reason}. Recalibrate in Utils > Objective Calibration."
+        self.log.warning(message)
+        QMessageBox.warning(self, "Objective Offsets Not Applied", message)
+
+    def refresh_objective_offset_validity(self):
+        """The camera ROI or binning changed through the GUI: re-evaluate the saved XY offsets (spec C §7.1)."""
+        self.objectiveStore.refresh_offset_camera_key(self._objective_offset_camera_key())
+
+    def _on_objective_calibration_changed(self, change):
+        """The store's effective offsets changed (a save, a clear, or a validity flip). When the XY offsets
+        changed, every mosaic tile and drawn shape sits in a reference frame that no longer applies
+        (spec C §7.3): clear the mosaic's image layers and Manual ROI layer, and the wellplate tab's
+        shapes and live-drawn regions, whatever tab is current and even in performance mode."""
+        if not change.xy_offsets:
+            return
+        reason = f" ({change.reason})" if change.reason else ""
+        self.log.warning(f"Objective XY offsets changed{reason}: clearing the mosaic view and the drawn regions")
+        if self.unifiedMosaicWidget is not None:
+            self.unifiedMosaicWidget.clear_for_calibration_change()
+        if self.wellplateMultiPointWidget is not None:
+            self.wellplateMultiPointWidget.clear_manual_regions()
 
     def objective_calibration_busy_reason(self):
         """Why Utils > Objective Calibration must not start now, or None. An objective switch (the

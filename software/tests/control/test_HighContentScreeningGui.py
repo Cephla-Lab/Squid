@@ -170,3 +170,154 @@ def test_objective_calibration_does_not_open_during_an_objective_switch(qtbot, c
     win.objectivesWidget.dropdown.setEnabled(True)
     win.openObjectiveCalibration()
     assert len(opened) == 1
+
+
+def _offset_calibration_for(win, dx_um, dy_um, dz_um):
+    """A valid offset calibration for this simulated machine: its first two objectives, the current mountings
+    and camera key, so only the offsets differ between two calls."""
+    from control.core.objective_store import current_mountings
+    from control.models.objective_calibration_config import (
+        ObjectiveCalibrationConfig,
+        ObjectiveRecords,
+        OffsetCalibrationSection,
+        OffsetRecord,
+    )
+
+    names = list(win.objectiveStore.objectives_dict)
+    reference, other = names[0], names[1]
+    mountings = current_mountings(names)
+    section = OffsetCalibrationSection(
+        reference_objective=reference,
+        reference_mounting=mountings[reference],
+        measured_at="2026-10-09T10:00:00",
+        channel="BF",
+        cycles=3,
+        camera_key=win._objective_offset_camera_key(),
+    )
+    record = OffsetRecord(
+        mounting=mountings[other],
+        dx_um=dx_um,
+        dy_um=dy_um,
+        dz_um=dz_um,
+        match_score=0.9,
+        runner_up_ratio=0.4,
+        focus_peak_rise=3.0,
+    )
+    return (
+        ObjectiveCalibrationConfig(offset_calibration=section, objectives={other: ObjectiveRecords(offset=record)}),
+        other,
+    )
+
+
+def test_xy_offset_change_clears_mosaic_and_live_regions_with_tab_inactive_in_performance_mode(
+    qtbot, confirm_exit_yes, monkeypatch
+):
+    """Spec C §7.3 / §9 "Calibration change": after a save that changes the effective XY offsets, the mosaic's
+    image layers and Manual ROI shapes are gone, shapes_mm is empty and no live-drawn FOVs remain, while well
+    regions and an imported "Manual" region stay. Both named regression cases at once: the wellplate tab is
+    not current, and performance mode has disconnected the napari connections."""
+    import numpy as np
+
+    from control.widgets_mosaic import MANUAL_ROI_LAYER, DisplayMode
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    mosaic, wellplate, scan = win.unifiedMosaicWidget, win.wellplateMultiPointWidget, win.scanCoordinates
+    assert mosaic is not None and win.objectiveStore.offset_validity.z is False
+
+    win.stage.move_x_to(30.0)  # well inside the XY limits, so the manual region's FOVs are kept
+    win.stage.move_y_to(30.0)
+    pos = win.stage.get_pos()
+    # What the running app would have done by now: the movement updater (a 100 ms timer that has not fired
+    # here) drew the current FOV, and an acquisition fixed the display dtype before its first tile.
+    win.navigationViewer.draw_fov_current_location(pos)
+    win.contrastManager.acquisition_dtype = np.uint16
+
+    config, other = _offset_calibration_for(win, dx_um=12.0, dy_um=-7.0, dz_um=0.0)
+    assert win.set_objective_offset_calibration(config).xy_offsets
+    assert win.objectiveStore.offset_validity.xy
+
+    # A tile and a drawn shape on the Full View, the shape turned into live-drawn FOVs for the current objective
+    win.recordTabWidget.setCurrentWidget(wellplate)
+    mosaic.mode = DisplayMode.MOSAIC
+    wellplate.checkbox_xy.setChecked(True)  # the cached widget settings may have it off
+    mosaic.updateTile(
+        control.gui_hcs.MosaicTileUpdate(
+            image=np.full((64, 64), 1000, dtype=np.uint16),
+            x_mm=pos.x_mm,
+            y_mm=pos.y_mm,
+            channel_name="BF",
+            objective=win.objectiveStore.current_objective,
+            pixel_size_um=win.objectiveStore.get_pixel_size_factor() * win.camera.get_pixel_size_binned_um(),
+        )
+    )
+    mosaic.enable_shape_drawing(True)
+    assert MANUAL_ROI_LAYER in mosaic.viewer.layers
+    half = 4.0  # larger than half a FOV at this objective and binning, so the FOV grid keeps a point
+    square = np.array(
+        [
+            [pos.x_mm - half, pos.y_mm - half],
+            [pos.x_mm + half, pos.y_mm - half],
+            [pos.x_mm + half, pos.y_mm + half],
+            [pos.x_mm - half, pos.y_mm + half],
+        ]
+    )
+    wellplate.combobox_xy_mode.setCurrentText("Manual")
+    wellplate.update_manual_shape([square])
+    assert wellplate.shapes_mm is not None and "manual" in scan.region_centers
+    assert scan.live_drawn_region_ids == {"manual"}
+    # A well region and an imported "Manual" plan next to it
+    scan.add_region("A1", pos.x_mm, pos.y_mm, 1.0, 10, "Square")
+    scan.add_region_from_fovs("manual0", [(pos.x_mm, pos.y_mm), (pos.x_mm + 0.2, pos.y_mm)], shape="Manual")
+
+    # The two regression cases: another tab is current, and performance mode is on
+    win.recordTabWidget.setCurrentWidget(win.flexibleMultiPointWidget)
+    assert win.recordTabWidget.currentWidget() is not wellplate
+    win.performanceModeToggle.setChecked(True)
+    win.togglePerformanceMode()
+    assert win.performance_mode
+    # onTabChanged rebuilt the plan for the flexible tab; put the live-drawn region back as the mosaic path leaves it
+    scan.set_manual_coordinates([square], overlap_percent=10)
+    scan.add_region("A1", pos.x_mm, pos.y_mm, 1.0, 10, "Square")
+    scan.add_region_from_fovs("manual0", [(pos.x_mm, pos.y_mm), (pos.x_mm + 0.2, pos.y_mm)], shape="Manual")
+    wellplate.shapes_mm = [square]
+    assert "BF" in mosaic.viewer.layers and MANUAL_ROI_LAYER in mosaic.viewer.layers
+
+    config, _ = _offset_calibration_for(win, dx_um=20.0, dy_um=-7.0, dz_um=0.0)  # a different XY offset
+    change = win.set_objective_offset_calibration(config)
+    assert change.xy_offsets
+
+    assert "BF" not in mosaic.viewer.layers and MANUAL_ROI_LAYER not in mosaic.viewer.layers
+    assert mosaic.shapes_mm == [] and not mosaic.layers_initialized
+    assert wellplate.shapes_mm is None
+    assert scan.live_drawn_region_ids == set()
+    assert set(scan.region_centers) == {"A1", "manual0"}  # the well region and the imported plan survive
+
+    # A Z-only change clears nothing
+    scan.set_manual_coordinates([square], overlap_percent=10)
+    config, _ = _offset_calibration_for(win, dx_um=20.0, dy_um=-7.0, dz_um=5.0)
+    change = win.set_objective_offset_calibration(config)
+    assert change.z_offsets and not change.xy_offsets
+    assert "manual" in scan.region_centers
+
+
+def test_startup_warns_once_when_the_saved_offsets_are_not_applied(qtbot, confirm_exit_yes, monkeypatch):
+    """Spec C §4 / §9 "Validity": a recorded mounting that differs from the configuration applies nothing
+    and warns at startup; a valid one is silent."""
+    from control.models.objective_calibration_config import Mounting
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a, **k: shown.append((title, text)))
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert shown == []  # no calibration file: nothing to warn about
+
+    config, other = _offset_calibration_for(win, dx_um=12.0, dy_um=-7.0, dz_um=6.0)
+    config.objectives[other].offset.mounting = Mounting(changer="nimotion_turret", position=2)  # not this machine's
+    monkeypatch.setattr(scope.config_repo, "get_objective_calibration", lambda: config)
+    win.load_objective_offset_calibration()
+    assert len(shown) == 1 and "not applied" in shown[0][1] and "remounted" in shown[0][1]
+    assert not win.objectiveStore.offset_validity.z
+    assert win.objectiveStore.z_switch_step_mm(list(win.objectiveStore.objectives_dict)[0], other) == 0.0

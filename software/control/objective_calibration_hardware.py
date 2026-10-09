@@ -61,6 +61,31 @@ def _microstep_um(axis) -> float:
     return 1000.0 * axis.SCREW_PITCH / (axis.MICROSTEPS_PER_STEP * axis.FULL_STEPS_PER_REV)
 
 
+class CameraKeySource:
+    """The camera-key part of CalibrationHardware on the app's camera: what
+    objective_calibration_config.offset_camera_key reads. One source for the key the dialog records at
+    a save and the key the ObjectiveStore evaluates the saved offsets against (spec C §5, §7.1)."""
+
+    def __init__(self, camera, camera_config):
+        self._camera = camera
+        self._camera_config = camera_config
+
+    def binning(self) -> Tuple[int, int]:
+        return tuple(self._camera.get_binning())
+
+    def camera_key(self) -> str:
+        return camera_key(self._camera_config)
+
+    def image_transform(self) -> Tuple[Optional[float], Optional[str]]:
+        return image_transform(self._camera_config)
+
+    def roi(self) -> Tuple[int, int, int, int]:
+        return tuple(int(v) for v in self._camera.get_region_of_interest())
+
+    def roi_centre_px(self) -> Optional[Tuple[float, float]]:
+        return roi_centre_px(self._camera)
+
+
 class MicroscopeCalibrationHardware:
     """Runs in the calibration worker thread; every call blocks until the hardware is done."""
 
@@ -72,6 +97,7 @@ class MicroscopeCalibrationHardware:
         self._objective_store = microscope.objective_store
         self._microcontroller = microscope.low_level_drivers.microcontroller
         self._camera_config = camera_config
+        self._key_source = CameraKeySource(microscope.camera, camera_config)
         self._changer = objective_changer
         self._objective: Optional[str] = microscope.objective_store.current_objective
         self._start_mode = self._live.currentConfiguration
@@ -174,7 +200,7 @@ class MicroscopeCalibrationHardware:
         return self._frame_shape
 
     def binning(self) -> Tuple[int, int]:
-        return tuple(self._camera.get_binning())
+        return self._key_source.binning()
 
     def binned_sensor_pixel_um(self) -> float:
         return self._camera.get_pixel_size_binned_um()
@@ -183,16 +209,16 @@ class MicroscopeCalibrationHardware:
         return self._camera.get_pixel_size_unbinned_um()
 
     def camera_key(self) -> str:
-        return camera_key(self._camera_config)
+        return self._key_source.camera_key()
 
     def image_transform(self) -> Tuple[Optional[float], Optional[str]]:
-        return image_transform(self._camera_config)
+        return self._key_source.image_transform()
 
     def roi(self) -> Tuple[int, int, int, int]:
-        return tuple(int(v) for v in self._camera.get_region_of_interest())
+        return self._key_source.roi()
 
     def roi_centre_px(self) -> Optional[Tuple[float, float]]:
-        return roi_centre_px(self._camera)
+        return self._key_source.roi_centre_px()
 
     def restore_mode(self) -> None:
         """Put the live controller back on the channel it had before the run, and forget which channel

@@ -234,11 +234,15 @@ class ObjectiveCalibrationDialog(QDialog):
         default_channel: Optional[str] = None,
         busy_reason: Optional[Callable[[], Optional[str]]] = None,
         after_run: Optional[Callable[[], None]] = None,
+        on_saved: Optional[Callable[[Optional[ObjectiveCalibrationConfig]], object]] = None,
         parent=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Objective Calibration")
         self.hardware = hardware
+        # Called with the config just written by Apply and save or a Clear (spec C §7.1: the store updates
+        # in place, no restart). It may return the store's CalibrationChange; the dialog says what that cleared.
+        self.on_saved = on_saved
         self.specs = {spec.name: spec for spec in specs}
         self.config_repo = config_repo
         self.tube_lens_mm = tube_lens_mm
@@ -843,9 +847,19 @@ class ObjectiveCalibrationDialog(QDialog):
         self.saved = merged
         self.result = None
         self.offsets = {}
+        notes.extend(self._notify_saved())
         self._refresh_saved()
         self._set_running(False)
         self._say(" ".join([f"Saved {' and '.join(saved_what)}."] + notes))
+
+    def _notify_saved(self) -> List[str]:
+        """Tell the application about the file just written; the notes say what that cleared (spec C §6.8, §7.3)."""
+        if self.on_saved is None:
+            return []
+        change = self.on_saved(self.saved)
+        if getattr(change, "xy_offsets", False):
+            return ["The XY offsets in use changed: the mosaic view and the drawn regions were cleared."]
+        return []
 
     def _clear(self):
         if self._running() or self.file_error or self.saved is None:
@@ -874,8 +888,9 @@ class ObjectiveCalibrationDialog(QDialog):
             self._say(f"Not cleared: {e}")
             return
         self.saved = cleared
+        notes = self._notify_saved()
         self._refresh_saved()
-        self._say(f"Cleared the saved pixel size of {', '.join(names)}.")
+        self._say(" ".join([f"Cleared the saved pixel size of {', '.join(names)}."] + notes))
 
     def _clear_offsets(self):
         """Spec C §5: removes only the offset section and blocks; the pixel-size records stay."""
@@ -894,8 +909,9 @@ class ObjectiveCalibrationDialog(QDialog):
             self._say(f"Not cleared: {e}")
             return
         self.saved = cleared
+        notes = self._notify_saved()
         self._refresh_saved()
-        self._say("Cleared the saved objective offsets.")
+        self._say(" ".join(["Cleared the saved objective offsets."] + notes))
 
     # ---------------------------------------------------------------- Qt
     def reject(self):

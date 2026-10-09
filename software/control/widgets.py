@@ -4019,6 +4019,7 @@ class CameraSettingsWidget(QFrame):
 
     signal_binning_changed = Signal()
     signal_sensor_mode_changed = Signal()
+    signal_roi_changed = Signal()  # after the camera's ROI (size or offset) was set from this widget
 
     def __init__(
         self,
@@ -4305,6 +4306,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_width.value(),
             self.entry_ROI_height.value(),
         )
+        self.signal_roi_changed.emit()
 
     def set_Height(self):
         height = int(self.entry_ROI_height.value() // 8) * 8
@@ -4322,6 +4324,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_width.value(),
             self.entry_ROI_height.value(),
         )
+        self.signal_roi_changed.emit()
 
     def set_ROI_offset(self):
         self.camera.set_region_of_interest(
@@ -4330,6 +4333,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_width.value(),
             self.entry_ROI_height.value(),
         )
+        self.signal_roi_changed.emit()
 
     def set_temperature(self):
         try:
