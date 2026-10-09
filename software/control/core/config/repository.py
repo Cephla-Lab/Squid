@@ -518,9 +518,10 @@ class ConfigRepository:
         return written
 
     def get_objective_calibration(self) -> Optional["objective_calibration_config.ObjectiveCalibrationConfig"]:
-        """Load machine_configs/objective_calibration.yaml (None if absent). Not cached: until B2 the
-        calibration dialog is the only caller. Raises ObjectiveCalibrationFileError for a file that
-        exists but cannot be read; such a file must never be overwritten."""
+        """Load machine_configs/objective_calibration.yaml (None if absent). Not cached: the Microscope
+        reads it once at startup and the calibration dialog on open. Raises
+        ObjectiveCalibrationFileError for a file that exists but cannot be read; such a file must
+        never be overwritten."""
         return objective_calibration_config.load_objective_calibration(
             self.machine_configs_path / "objective_calibration.yaml"
         )

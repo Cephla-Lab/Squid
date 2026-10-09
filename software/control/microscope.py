@@ -11,6 +11,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
+from control.models.objective_calibration_config import ObjectiveCalibrationFileError
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
@@ -473,12 +474,13 @@ class Microscope:
 
         self._simulated = simulated
 
-        self.objective_store: ObjectiveStore = ObjectiveStore()
         self._laser_af_controller = None
 
         # Centralized config management (assigning through the property below also
         # hands the same repository to the illumination controller).
         self.config_repo = ConfigRepository()
+
+        self.objective_store: ObjectiveStore = self._build_objective_store()
 
         # Note: Migration from acquisition_configurations to user_profiles is handled
         # by run_auto_migration() in main_hcs.py before Microscope is created
@@ -1021,6 +1023,26 @@ class Microscope:
             Current Z position in mm.
         """
         return self.stage.get_pos().z_mm
+
+    def _build_objective_store(self) -> ObjectiveStore:
+        """The ObjectiveStore with the saved pixel-size calibration (machine_configs/
+        objective_calibration.yaml) and the camera it is validated against (spec B §4.4-4.5). A file
+        that cannot be read is reported and left alone; every objective is then nominal."""
+        from control.objective_calibration_hardware import current_setup
+
+        camera_config = squid.config.get_camera_config()
+        self.objective_calibration_error = ""
+        try:
+            calibration = self.config_repo.get_objective_calibration()
+        except ObjectiveCalibrationFileError as e:
+            self._log.error(str(e))
+            self.objective_calibration_error = str(e)
+            calibration = None
+        return ObjectiveStore(
+            calibration=calibration,
+            current_setup=lambda: current_setup(camera_config, self.camera, control._def.TUBE_LENS_MM),
+            binned_sensor_pixel_um=self.camera.get_pixel_size_binned_um,
+        )
 
     def get_image_pixel_size_um(self) -> Optional[float]:
         """Return µm per displayed-image pixel for the current objective and camera binning.

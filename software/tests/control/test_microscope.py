@@ -258,3 +258,84 @@ def test_microscope_close_closes_the_fluidics_service():
     scope.close()
     scope.close()  # second close is a no-op
     assert fake.closed == 1
+
+
+# ---------------------------------------------------------------- the pixel-size seam (spec B §4.4-4.5)
+
+
+def _saved_calibration_for(objective_name: str, pixel_size_um: float):
+    """A valid pixel_size record for the simulated camera and `objective_name`, as a saved config."""
+    import numpy as np
+
+    from control.models.objective_calibration_config import ImageTransform, build_pixel_record, merge_pixel_records
+    from control.objective_calibration_hardware import camera_key, image_transform
+    from squid.objective_calibration.engine import PixelSizeSummary
+
+    camera_config = squid.config.get_camera_config()
+    rotate_deg, flip = image_transform(camera_config)
+    summary = PixelSizeSummary(
+        objective=objective_name,
+        cycles=3,
+        pixel_size_um=pixel_size_um,
+        std_pixel_size_um=0.0003,
+        matrix_um_per_px=pixel_size_um * np.eye(2),
+        rotation_deg=0.1,
+        flip=np.eye(2),
+        orientation_matches_mosaic=True,
+        anisotropy=1.0,
+        fit_residual_um=0.3,
+    )
+    record = build_pixel_record(
+        summary,
+        measured_at="2026-09-28T10:00:00",
+        camera_key=camera_key(camera_config),
+        unbinned_sensor_pixel_um=SimulatedCamera.PIXEL_SIZE_UM,
+        binned_sensor_pixel_um=SimulatedCamera.PIXEL_SIZE_UM,
+        binning=1,
+        image_transform=ImageTransform(rotate_deg=rotate_deg, flip=flip),
+        tube_lens_mm=control._def.TUBE_LENS_MM,
+        declared=control._def.get_declared(objective_name),
+    )
+    return merge_pixel_records(None, {objective_name: record})
+
+
+def test_the_microscope_hands_the_saved_calibration_and_camera_to_the_objective_store(monkeypatch):
+    from control.core.config.repository import ConfigRepository
+
+    name = control._def.DEFAULT_OBJECTIVE
+    nominal = control.microscope.ObjectiveStore.calculate_pixel_size_factor(
+        control._def.OBJECTIVES[name], control._def.TUBE_LENS_MM
+    )
+    measured = nominal * SimulatedCamera.PIXEL_SIZE_UM * 1.03  # 3% off nominal, in um/px at 1x
+    monkeypatch.setattr(
+        ConfigRepository, "get_objective_calibration", lambda self: _saved_calibration_for(name, measured)
+    )
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        store = scope.objective_store
+        assert store.pixel_size_source(name) == "calibrated"
+        assert store.get_pixel_size_factor() == pytest.approx(nominal * 1.03)
+        # the test ini runs the camera at 2x2 binning: the factor is binning-free, the image pixel is not
+        binned_um = scope.camera.get_pixel_size_binned_um()
+        assert scope.get_image_pixel_size_um() == pytest.approx(nominal * 1.03 * binned_um)
+        assert store.pixel_matrix(name) is not None
+        assert scope.objective_calibration_error == ""
+    finally:
+        scope.close()
+
+
+def test_an_unreadable_calibration_file_leaves_the_microscope_nominal_and_reports_it(monkeypatch):
+    from control.core.config.repository import ConfigRepository
+    from control.models.objective_calibration_config import ObjectiveCalibrationFileError
+
+    def unreadable(self):
+        raise ObjectiveCalibrationFileError("objective_calibration.yaml cannot be read (bad)")
+
+    monkeypatch.setattr(ConfigRepository, "get_objective_calibration", unreadable)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        name = control._def.DEFAULT_OBJECTIVE
+        assert scope.objective_store.pixel_size_source(name) == "nominal"
+        assert "cannot be read" in scope.objective_calibration_error
+    finally:
+        scope.close()
