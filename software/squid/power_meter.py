@@ -20,6 +20,8 @@ _log = squid.logging.get_logger(__name__)
 THORLABS_USB_VENDOR_ID = 0x1313
 # SCPI instruments answer an overrange or invalid measurement with 9.9e37.
 _OVERRANGE_W = 1e37
+# SCPI error queues hold a bounded number of entries; draining stops after this many
+_MAX_QUEUED_ERRORS = 32
 # Every VISA call gives up after this; it bounds how long a stuck read can hold the light on (and stays below the
 # controller's 5 s illumination watchdog, which the calibration feeds before each read).
 METER_TIMEOUT_MS = 3000
@@ -30,9 +32,13 @@ SETTLE_S_UNKNOWN_MODEL = 0.5
 # Meter families the calibration has been run with on a bench. Others work, with a warning in the dialog.
 VALIDATED_MODELS: Tuple[str, ...] = ()
 # Sensor limits of meters with a built-in sensor, for when the meter does not answer the range queries; when it does,
-# the lower of the two applies. PM16-121 (the first meter used, 2026-10-08): S121C-type Si photodiode, 400-1100 nm,
-# up to 500 mW, inferred from Thorlabs' naming (PM16-120 = S120C, PM16-122 = S122C); confirm on the bench (spec §12).
+# the lower of the two applies. PM16-121 (the first meter used): S121C-type Si photodiode, 400-1100 nm, up to 500 mW,
+# inferred from Thorlabs' naming (PM16-120 = S120C, PM16-122 = S122C). On the bench (2026-10-09, fw 1.6.0) it reports
+# 400-1100 nm and a top range of 703 mW, which is its range ceiling, not a rating: 500 mW applies.
 KNOWN_SENSOR_LIMITS = {"PM16-121": (500.0, (400.0, 1100.0))}
+# Meter families with an averaging command (SENS:AVER:COUN in Thorlabs' PM100D/PM400 command sets). The PM16-121 on
+# the bench (fw 1.6.0) answers -113 to every averaging form, so a PM16 averages as it comes.
+AVERAGING_FAMILIES = ("PM100", "PM400")
 # Making a meter visible to pyvisa (paths relative to software/): the setup steps per OS, and the Linux udev rule that
 # lets a user without root open it
 SETUP_DOC = "docs/illumination-power-calibration.md"
@@ -134,17 +140,19 @@ class ThorlabsPowerMeter:
             raise PowerMeterError(f"could not open the power meter at {resource}: {e}; {setup_hint()}") from e
         idn = [part.strip() for part in self._query("*IDN?").split(",")]
         model = idn[1] if len(idn) > 1 else ""
-        self._write("SENS:POW:UNIT W")
-        self._write(f"SENS:AVER:COUN {int(averaging)}")
-        self._write("SENS:POW:RANG:AUTO ON")
-        # A PM16 has its sensor built in and may not answer the sensor queries. The pre-2026-10 tools/PM16.py sent the
-        # averaging and auto-range as the short forms SENS:AVER n / SENS:RANGE:AUTO ON; which forms a PM16 takes is
-        # checked on the bench (spec §12)
+        family = _model_family(model)
+        # Every setting is checked: readings in another unit or on a fixed range would make a wrong calibration
+        # without any error. (The pre-2026-10 tools/PM16.py sent SENS:AVER n and SENS:RANGE:AUTO ON, which the
+        # PM16-121 rejects: -113, unnoticed.)
+        self._set("SENS:POW:UNIT W")
+        if family in AVERAGING_FAMILIES:
+            self._set(f"SENS:AVER:COUN {int(averaging)}")
+        self._set("SENS:POW:RANG:AUTO ON")
+        # A PM16 has its sensor built in and may not answer the sensor queries
         sensor_idn = self._optional_query("SYST:SENS:IDN?")
         known_max_mw, known_range_nm = KNOWN_SENSOR_LIMITS.get(model, (None, None))
         reported_max_mw = self._optional_float("SENS:POW:RANG:UPP? MAX", scale=1000.0)
         maxima = [value for value in (reported_max_mw, known_max_mw) if value is not None]
-        family = _model_family(model)
         self.info = PowerMeterInfo(
             meter=" ".join(idn[:3]),
             sensor=" ".join(part.strip() for part in sensor_idn.split(",")[:2]) if sensor_idn else f"{model} built-in",
@@ -160,6 +168,27 @@ class ThorlabsPowerMeter:
             self._inst.write(command)
         except Exception as e:  # pyvisa's VisaIOError (timeout, disconnect) and friends
             raise PowerMeterError(f"power meter did not take '{command}': {e}") from e
+
+    def _error(self) -> Tuple[int, str]:
+        """The oldest entry of the meter's error queue: (0, ...) when it is empty."""
+        answer = self._query("SYST:ERR?").strip()
+        try:
+            return int(answer.split(",", 1)[0]), answer
+        except ValueError as e:
+            raise PowerMeterError(f"power meter answered '{answer}' to 'SYST:ERR?'") from e
+
+    def _set(self, command: str) -> None:
+        """Write a setting and confirm the meter took it. Errors already queued - an unanswered optional query, an
+        earlier session - are cleared first, so they are not blamed on this one."""
+        for _ in range(_MAX_QUEUED_ERRORS):
+            code, answer = self._error()
+            if code == 0:
+                break
+            _log.debug(f"power meter error queued before '{command}': {answer}")
+        self._write(command)
+        code, answer = self._error()
+        if code != 0:
+            raise PowerMeterError(f"power meter rejected '{command}': {answer}")
 
     def _query(self, command: str) -> str:
         try:
@@ -188,7 +217,7 @@ class ThorlabsPowerMeter:
         return (low, high) if low is not None and high is not None and low < high else None
 
     def set_wavelength(self, wavelength_nm: float) -> None:
-        self._write(f"SENS:CORR:WAV {float(wavelength_nm):g}")
+        self._set(f"SENS:CORR:WAV {float(wavelength_nm):g}")
 
     def read_mw(self) -> float:
         answer = self._query("MEAS:POW?")

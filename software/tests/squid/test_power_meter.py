@@ -34,18 +34,28 @@ ANSWERS = {
 
 
 class FakeInstrument:
-    def __init__(self, power_w="1.5E-03", answers=None, fail=(), fail_writes=(), fail_close=False):
+    """Like the PM16-121 on the bench (2026-10-09): a command it does not know puts -113 in its error queue (a query
+    also times out), and SYST:ERR? answers the oldest error, or 0 when the queue is empty."""
+
+    def __init__(
+        self, power_w="1.5E-03", answers=None, fail=(), fail_writes=(), fail_close=False, reject_writes=(), errors=()
+    ):
         self.power_w = power_w
         self.answers = dict(ANSWERS if answers is None else answers)
         self.fail = set(fail)
         self.fail_writes = tuple(fail_writes)
+        self.reject_writes = tuple(reject_writes)
+        self.errors = list(errors)
         self.fail_close = fail_close
         self.writes = []
         self.closed = False
         self.timeout = None
 
     def query(self, command):
+        if command == "SYST:ERR?":
+            return (self.errors.pop(0) if self.errors else '+0,"No error"') + "\n"
         if command in self.fail or (command not in self.answers and command != "MEAS:POW?"):
+            self.errors.append('-113,"Undefined header"')
             raise OSError(f"VI_ERROR_TMO ({command})")  # what pyvisa raises looks like this
         return self.answers.get(command, f"{self.power_w}\n")
 
@@ -53,6 +63,8 @@ class FakeInstrument:
         if command.startswith(self.fail_writes) if self.fail_writes else False:
             raise OSError(f"VI_ERROR_CONN_LOST ({command})")
         self.writes.append(command)
+        if self.reject_writes and command.startswith(self.reject_writes):
+            self.errors.append('-113,"Undefined header"')
 
     def close(self):
         if self.fail_close:
@@ -214,3 +226,42 @@ def test_the_udev_rule_and_the_setup_doc_the_messages_name_ship_with_squid():
     rule = (SOFTWARE_DIR / UDEV_RULE).read_text()
     assert 'ATTRS{idVendor}=="1313"' in rule and 'ATTRS{idProduct}=="807b"' in rule
     assert (SOFTWARE_DIR / SETUP_DOC).is_file()
+
+
+PM16_ANSWERS = {"*IDN?": "Thorlabs,PM16-121,250328410,1.6.0\n"}
+
+
+def test_a_pm16_is_sent_no_averaging_command():
+    # the PM16-121 on the bench (fw 1.6.0) answers -113 to SENS:AVER n, SENS:AVER:COUN n and SENS:AVER:COUNT n
+    instrument = FakeInstrument(answers=PM16_ANSWERS, reject_writes=("SENS:AVER",))
+    _meter(instrument)
+    assert not [w for w in instrument.writes if w.startswith("SENS:AVER")]
+    assert instrument.writes == ["SENS:POW:UNIT W", "SENS:POW:RANG:AUTO ON"]
+
+
+@pytest.mark.parametrize("rejected", ["SENS:POW:UNIT W", "SENS:POW:RANG:AUTO ON"])
+def test_a_setting_the_meter_rejects_fails_the_connect(rejected):
+    # readings in the wrong unit, or on a fixed range, would make a wrong calibration without any error
+    with pytest.raises(PowerMeterError, match=f"rejected '{rejected}'.*-113"):
+        _meter(FakeInstrument(reject_writes=(rejected,)))
+
+
+def test_a_wavelength_the_meter_rejects_is_an_error():
+    meter = _meter(FakeInstrument(answers=PM16_ANSWERS))
+    meter._inst.reject_writes = ("SENS:CORR:WAV",)
+    with pytest.raises(PowerMeterError, match="rejected 'SENS:CORR:WAV 405'"):
+        meter.set_wavelength(405)
+
+
+def test_errors_already_queued_are_not_blamed_on_a_setting():
+    # an earlier session's errors, and the -113 a PM16 queues for each sensor query it does not answer
+    instrument = FakeInstrument(answers=PM16_ANSWERS, errors=['-113,"Undefined header"'] * 3)
+    meter = _meter(instrument)
+    meter.set_wavelength(405)
+    assert instrument.writes[-1] == "SENS:CORR:WAV 405"
+
+
+def test_the_resource_name_pyvisa_py_gives_the_bench_pm16_is_found():
+    # pyvisa-py names USB resources with decimal IDs and the interface number: 4883 = 0x1313, 32891 = 0x807B
+    bench = "USB0::4883::32891::250328410::0::INSTR"
+    assert find_thorlabs_resource(["ASRL3::INSTR", bench]) == bench
