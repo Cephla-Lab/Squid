@@ -406,6 +406,24 @@ def _optional_float(value: str) -> Optional[float]:
     return None if value == "not run" else float(value)
 
 
+def _validate_lookup_columns(path: Path, dac: np.ndarray, x: np.ndarray, fitted: np.ndarray, factor: float) -> None:
+    """The lookup runs on these numbers, and its output becomes a DAC command: refuse a file whose DAC axis or fit is
+    unusable, not only one that cannot be parsed."""
+    if not (np.all(np.isfinite(dac)) and np.all(np.isfinite(x))):
+        raise CalibrationFileError(f"{path.name}: blank or invalid DAC values")
+    if np.any(np.diff(x) <= 0):
+        raise CalibrationFileError(f"{path.name}: the DAC column must increase from row to row")
+    if x[0] < 0 or x[-1] > 1:
+        raise CalibrationFileError(f"{path.name}: the DAC column must stay within 0-1 of full scale")
+    if not np.allclose(x, dac / 100.0 * factor, rtol=1e-6, atol=1e-9):
+        raise CalibrationFileError(f"{path.name}: the two DAC columns do not match each other at factor {factor:g}")
+    covered = int(np.sum(np.isfinite(fitted)))
+    if covered < MIN_POINTS or not np.all(np.isfinite(fitted[:covered])):
+        raise CalibrationFileError(f"{path.name}: the fit must cover the sweep from DAC 0 up to its calibrated top")
+    if np.any(np.diff(fitted[:covered]) < 0):
+        raise CalibrationFileError(f"{path.name}: the fitted curve is not monotone")
+
+
 def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> IntensityCalibration:
     table = pd.read_csv(path, comment="#")
     missing = [column for column in _COLUMNS if column not in table.columns]
@@ -415,6 +433,13 @@ def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> Intensity
         raise CalibrationFileError(f"{path.name}: only {len(table)} rows")
     x = table["dac_fraction_of_full_scale"].to_numpy(dtype=float)
     fitted = table["power_mw_fit"].to_numpy(dtype=float)
+    _validate_lookup_columns(
+        path,
+        table["dac_percent_commanded"].to_numpy(dtype=float),
+        x,
+        fitted,
+        float(header["illumination_intensity_factor"]),
+    )
     valid = ~np.isnan(fitted)
     anchor_power, anchor_x = build_anchors(x[valid], fitted[valid], float(header["zero_level_mw"]))
     if anchor_power.size < 2 or not anchor_power[-1] > 0:

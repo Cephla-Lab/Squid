@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from squid.intensity_calibration import (
@@ -95,3 +96,41 @@ def test_unknown_format_and_broken_files_are_rejected(tmp_path):
     truncated.write_text(truncated.read_text().split("dac_percent_commanded")[0] + "dac_percent_commanded\n1\n")
     with pytest.raises(CalibrationFileError, match="b.csv"):
         load_calibration(truncated)
+
+
+def _write_edited(tmp_path, edit):
+    """A valid file whose table was then edited by hand."""
+    calibration = make_calibration()
+    path = tmp_path / calibration.file_name
+    write_calibration(calibration, path)
+    header = "".join(line for line in path.read_text().splitlines(keepends=True) if line.startswith("#"))
+    table = pd.read_csv(path, comment="#")
+    edit(table)
+    path.write_text(header + table.to_csv(index=False))
+    return path
+
+
+def _set(column, row, value):
+    return lambda t: t.__setitem__(column, t[column].where(t.index != row, value))
+
+
+def _scale(column, factor):
+    return lambda t: t.__setitem__(column, t[column] * factor)
+
+
+@pytest.mark.parametrize(
+    "edit, message",
+    [
+        (_set("dac_fraction_of_full_scale", 130, float("nan")), "blank or invalid DAC values"),
+        (_set("dac_percent_commanded", 5, float("nan")), "blank or invalid DAC values"),
+        (_set("dac_fraction_of_full_scale", 50, 0.0), "must increase"),
+        (_scale("dac_fraction_of_full_scale", 2.0), "within 0-1"),
+        (_scale("dac_fraction_of_full_scale", 0.9), "do not match"),
+        (_set("power_mw_fit", 100, float("nan")), "must cover the sweep"),
+        (_set("power_mw_fit", 150, 1.0), "not monotone"),
+    ],
+)
+def test_unusable_lookup_numbers_are_rejected(tmp_path, edit, message):
+    path = _write_edited(tmp_path, edit)
+    with pytest.raises(CalibrationFileError, match=f"405nm_D1.csv: .*{message}"):
+        load_calibration(path)
