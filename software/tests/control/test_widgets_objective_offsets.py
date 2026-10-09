@@ -78,6 +78,8 @@ def make_dialog(qtbot, tmp_path):
             dialog.spin_range.setValue(range_um)
         dialog.checkbox_offsets.setChecked(offsets)
         dialog.checkbox_pixel_size.setChecked(pixel_size)
+        for box in dialog.checkboxes.values():  # unticked by default since 29eb30d0; these tests run every objective
+            box.setChecked(True)
         return dialog, hw
 
     return make
