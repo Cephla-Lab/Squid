@@ -117,7 +117,7 @@ def _channel_switch_stub(cap_percent, qtbot):
     qtbot.addWidget(slider)
     stub.slider_illuminationIntensity = slider
 
-    spin = control.widgets.QDoubleSpinBox()
+    spin = control.widgets.GappedSpinBox()
     spin.setRange(0, 100)
     qtbot.addWidget(spin)
     stub.entry_illuminationIntensity = spin
@@ -210,3 +210,54 @@ def test_live_control_widget_shows_the_intensity_unit(qtbot):
     control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
     assert stub.entry_illuminationIntensity.suffix() == " % power"
     assert "Linear in power" in stub.entry_illuminationIntensity.toolTip()
+
+
+def _gapped(qtbot, lowest):
+    spin = control.widgets.GappedSpinBox()
+    spin.setRange(0, 100)
+    spin.setSingleStep(1)
+    qtbot.addWidget(spin)
+    spin.set_lowest(lowest)
+    return spin
+
+
+def test_the_intensity_box_has_no_values_between_off_and_the_lowest_power(qtbot):
+    # the bench 488 nm laser gives nothing, then 6.7 % of its maximum: there is no 1-6 %
+    spin = _gapped(qtbot, 6.7)
+    spin.setValue(0.0)
+    spin.stepBy(1)
+    assert spin.value() == pytest.approx(6.7)  # up from off: the lowest power
+    spin.stepBy(1)
+    assert spin.value() == pytest.approx(7.7)
+    spin.stepBy(-1)
+    spin.stepBy(-1)
+    assert spin.value() == 0.0  # down from the lowest power: off
+    spin.setValue(3.0)
+    assert spin.value() == pytest.approx(6.7)  # a slider or a saved 3 % shows what it gives
+    assert spin.valueFromText("2") == pytest.approx(6.7)  # typed
+    spin.setValue(50.0)
+    assert spin.value() == pytest.approx(50.0)
+
+
+def test_without_a_lowest_power_the_intensity_box_is_continuous(qtbot):
+    spin = _gapped(qtbot, 0.0)
+    spin.setValue(3.0)
+    assert spin.value() == pytest.approx(3.0)
+    spin.stepBy(-1)
+    assert spin.value() == pytest.approx(2.0)
+
+
+def test_live_control_widget_takes_the_lowest_power_from_the_calibration(qtbot):
+    stub, config = _channel_switch_stub(cap_percent=100.0, qtbot=qtbot)
+    config.illumination_intensity = 3.0  # a setting saved before the calibration
+    stub.liveController.get_intensity_description.return_value = {
+        **make_calibration().describe(),
+        "lowest_percent": 6.7,
+    }
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.value() == pytest.approx(6.7)
+    assert "Lowest non-zero: 6.7 %" in stub.entry_illuminationIntensity.toolTip()
+
+    stub.liveController.get_intensity_description.return_value = {"intensity_unit": "dac_percent"}
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.value() == pytest.approx(3.0)  # another channel: no gap

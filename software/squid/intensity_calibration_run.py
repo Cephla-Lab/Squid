@@ -495,6 +495,11 @@ def calibrate_channel(
         )
     if still_unsettled:
         warnings.append(f"{still_unsettled} readings did not settle (noisy or slow meter)")
+    if calibration.lowest_percent:
+        lowest = f"{calibration.lowest_percent:.1f} %"
+        warnings.append(
+            f"lowest non-zero power is {lowest} of max (the source jumps there from off): requests below it get {lowest}"
+        )
     return ChannelResult(calibration, tuple(warnings))
 
 

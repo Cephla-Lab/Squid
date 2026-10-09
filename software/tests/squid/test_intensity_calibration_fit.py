@@ -14,6 +14,7 @@ from squid.intensity_calibration import (
     x_for_power_fraction,
 )
 from squid.power_meter import simulated_laser_mw, simulated_led_mw
+from tests.squid.calibration_fixtures import bench_488_laser_mw, make_calibration
 
 DAC = np.linspace(0.0, 100.0, 201)
 FACTOR = 0.6
@@ -121,3 +122,22 @@ def test_unusable_measurements_raise():
         fit_curve(DAC, X, np.zeros(DAC.size))
     with pytest.raises(CalibrationError, match="dark noise"):  # every point below the zero level
         fit_curve(DAC, X, simulated_laser_mw(X), sigma_dark=1000.0)
+
+
+def test_a_source_that_jumps_on_has_a_lowest_power_and_a_request_below_it_gets_it():
+    c = make_calibration(model=bench_488_laser_mw)
+    assert c.lowest_percent == pytest.approx(2.12 / 31.7 * 100, rel=0.05)  # about 6.7 % of max
+    lowest_command = c.commanded_percent(c.lowest_percent, 0.6, 1.0)
+    for request in (0.5, 1.0, 3.0, c.lowest_percent * 0.99):
+        assert c.commanded_percent(request, 0.6, 1.0) == lowest_command
+    assert c.commanded_percent(0.0, 0.6, 1.0) == (0.0, False)  # off stays off
+    assert c.commanded_percent(50.0, 0.6, 1.0)[0] > lowest_command[0]
+    assert c.describe()["lowest_percent"] == pytest.approx(c.lowest_percent, abs=0.05)
+    assert f"lowest {c.lowest_percent:.1f} %" in c.status(0.6, 1.0)
+
+
+def test_a_source_that_rises_smoothly_has_no_lowest_power():
+    c = make_calibration()  # the simulated laser rises from its threshold in steps far under 2 % of max
+    assert c.lowest_percent == 0.0
+    assert "lowest_percent" not in c.describe() and "lowest" not in c.status(0.6, 1.0)
+    assert c.commanded_percent(0.5, 0.6, 1.0)[0] < c.commanded_percent(1.0, 0.6, 1.0)[0]

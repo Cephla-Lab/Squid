@@ -20,6 +20,10 @@ ZERO_LEVEL_SIGMAS = 5.0
 ZERO_LEVEL_FRACTION = 1e-3
 VERIFY_SETPOINTS = (1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
 VERIFY_MIN_GATED_PERCENT = 10
+# A source whose first lit sweep point already gives this % of P_max or more jumps on from nothing (a laser's
+# threshold: the bench 488 nm laser gives 6.7 % at the first step above it): nothing between 0 and that power exists,
+# so requests there get it, and the live control steps from 0 straight to it
+LOWEST_PERCENT_MIN = 2.0
 VERIFY_REL_TOL = 0.05
 MIN_POINTS = 3
 FORMAT = "squid-intensity-calibration/1"
@@ -264,8 +268,20 @@ class IntensityCalibration:
             pulse_on_s=float(pulse_on_s),
         )
 
+    @property
+    def lowest_percent(self) -> float:
+        """The lowest non-zero power this channel gives, as % of p_max_mw, when it jumps on from nothing; 0 when it
+        rises from zero in small steps."""
+        if self.anchor_power_mw.size < 2:
+            return 0.0
+        first_lit = float(self.anchor_power_mw[1]) / self.p_max_mw * 100.0
+        return first_lit if first_lit >= LOWEST_PERCENT_MIN else 0.0
+
     def commanded_percent(self, intensity_percent: float, factor: float, max_output: float) -> Tuple[float, bool]:
         """The DAC command (commanded %, before the firmware's factor) for a requested % of p_max_mw."""
+        lowest = self.lowest_percent
+        if 0 < intensity_percent < lowest:
+            intensity_percent = lowest
         x = x_for_power_fraction(self.anchor_power_mw, self.anchor_x, self.p_max_mw, intensity_percent / 100.0)
         if factor <= 0:  # the firmware outputs nothing at factor 0: only "off" is reachable (and no division by 0)
             return (0.0, False) if x == 0 else (max_output * 100.0, True)
@@ -297,6 +313,8 @@ class IntensityCalibration:
         }
         if self.rollover:
             description["rollover"] = self.rollover
+        if self.lowest_percent:
+            description["lowest_percent"] = round(self.lowest_percent, 2)
         description["pulse_on_s"] = round(float(self.pulse_on_s), 3)
         if self.hold_droop_fraction is not None:
             description["continuous_hold_droop_percent"] = round(100.0 * self.hold_droop_fraction, 2)
@@ -319,9 +337,10 @@ class IntensityCalibration:
         notes = self.notes(factor, max_output)
         if notes:
             return f"stale ({date}): " + "; ".join(notes)
+        lowest = f"; lowest {self.lowest_percent:.1f} %" if self.lowest_percent else ""
         if self.verification == "fail":
-            return f"failed verification ({date})"
-        return f"calibrated {date}"
+            return f"failed verification ({date}){lowest}"
+        return f"calibrated {date}{lowest}"
 
     def verification_summary(self) -> str:
         gated = [(r, e) for r, e in self.verification_points if r >= VERIFY_MIN_GATED_PERCENT]
@@ -683,8 +702,11 @@ def intensity_tooltip(description: Dict[str, object]) -> str:
         if "repair" in description:
             text += f"; repaired (optically unverified): {description['repair']}"
         return text + "). Recalibrate with Utils > Illumination Power Calibration."
-    return (
+    text = (
         f"Linear in power: 50 % = half of {float(description['max_power_mw']):.4g} mW "
         f"(measured {description['measured_in']}, {str(description['calibrated_at'])[:10]}, "
         f"{description['calibration_file']})."
     )
+    if "lowest_percent" in description:
+        text += f" Lowest non-zero: {float(description['lowest_percent']):.1f} % (the source jumps there from off)."
+    return text

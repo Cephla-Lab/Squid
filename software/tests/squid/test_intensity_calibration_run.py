@@ -33,7 +33,7 @@ from squid.power_meter import (
     simulated_laser_mw,
     simulated_led_mw,
 )
-from tests.squid.calibration_fixtures import FakeMicrocontroller, FakeTime
+from tests.squid.calibration_fixtures import FakeMicrocontroller, FakeTime, bench_488_laser_mw
 
 LASER = ChannelTarget("Fluorescence 405 nm Ex", 405, "D1", 11, 1.0)
 LED = ChannelTarget("Fluorescence 730 nm Ex", 730, "D5", 15, 1.0)
@@ -679,3 +679,11 @@ def test_unsettled_sweep_readings_are_counted_and_saved(tmp_path):
     write_calibration(noisy, path)
     again = load_calibration(path)
     assert (again.unsettled_readings, again.meter_range_mw) == (noisy.unsettled_readings, noisy.meter_range_mw)
+
+
+def test_a_source_that_jumps_on_is_reported_after_the_run():
+    result = _run(LASER, model=bench_488_laser_mw)[3]()
+    assert result.calibration.lowest_percent > 0
+    lowest = f"{result.calibration.lowest_percent:.1f} %"
+    assert any(f"lowest non-zero power is {lowest} of max" in w and f"get {lowest}" in w for w in result.warnings)
+    assert not any("lowest non-zero" in w for w in _run(LASER)[3]().warnings)  # a smooth source: nothing to say

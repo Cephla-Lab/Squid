@@ -4410,6 +4410,35 @@ class ProfileWidget(QFrame):
         return self.dropdown_profiles.currentText()
 
 
+class GappedSpinBox(QDoubleSpinBox):
+    """An intensity box for a source that jumps on from nothing (a laser's threshold): it gives no power between 0 and
+    its lowest, so a value there - typed, dragged or saved - becomes that lowest power, and stepping down from it
+    goes to 0 (off)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._lowest = 0.0
+
+    def set_lowest(self, lowest: float) -> None:
+        self._lowest = max(0.0, float(lowest))
+        self.setValue(self.value())
+
+    def _snapped(self, value: float) -> float:
+        return self._lowest if 0 < value < self._lowest else value
+
+    def setValue(self, value: float) -> None:
+        super().setValue(self._snapped(value))
+
+    def valueFromText(self, text: str) -> float:
+        return self._snapped(super().valueFromText(text))
+
+    def stepBy(self, steps: int) -> None:
+        if steps < 0 and 0 < self.value() <= self._lowest:
+            self.setValue(0.0)
+        else:
+            self.setValue(self.value() + steps * self.singleStep())
+
+
 class CappedSlider(QSlider):
     """Slider whose usable range can be capped below its full range.
 
@@ -4638,7 +4667,7 @@ class LiveControlWidget(QFrame):
         self.slider_illuminationIntensity.setValue(100)
         self.slider_illuminationIntensity.setSingleStep(2)
 
-        self.entry_illuminationIntensity = QDoubleSpinBox()
+        self.entry_illuminationIntensity = GappedSpinBox()
         self.entry_illuminationIntensity.setKeyboardTracking(False)
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
@@ -4869,6 +4898,9 @@ class LiveControlWidget(QFrame):
                 description = self.liveController.get_intensity_description(self.currentConfiguration)
                 self.entry_illuminationIntensity.setSuffix(intensity_suffix(description))
                 self.entry_illuminationIntensity.setToolTip(intensity_tooltip(description))
+                # A source that jumps on gives nothing between 0 and its lowest power; the lookup sends a request
+                # there to that power, and the box shows it
+                self.entry_illuminationIntensity.set_lowest(float(description.get("lowest_percent", 0.0)))
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
