@@ -76,6 +76,7 @@ class ModelMeter:
         alternate=0.0,
         drift_per_read=0.0,
         wavelength_range=(350.0, 1100.0),
+        memory=None,
     ):
         self.output = output
         self.model = model
@@ -86,6 +87,8 @@ class ModelMeter:
         self.spike_at = spike_at  # (commanded %, factor): the first reading at that DAC is multiplied
         self.alternate = alternate
         self.drift_per_read = drift_per_read
+        self.memory = memory  # (fraction low, seconds) after a reading at DAC >= 90 %: a thermal memory
+        self.last_top_s = None
         self.reads = 0
         self.info = PowerMeterInfo("Model meter", "Model sensor", 500.0, wavelength_range, 0.0, True)
         self.held_mw = None  # the range held, None while auto-ranging
@@ -120,6 +123,12 @@ class ModelMeter:
             power *= self.spike_at[1]
             self.spike_at = None
         power *= 1.0 + self.drift_per_read * self.reads
+        if self.memory is not None:
+            now = self.time.clock()
+            if self.last_top_s is not None and now - self.last_top_s < self.memory[1]:
+                power *= 1.0 - self.memory[0]
+            if self.output.commanded_percent >= 90.0:
+                self.last_top_s = now
         if self.alternate:
             power *= 1.0 + self.alternate * (-1) ** self.reads
         if self.held_mw is not None and power > self.held_mw:
@@ -130,7 +139,15 @@ class ModelMeter:
         pass
 
 
-def _run(target, model=simulated_laser_mw, sensor_limit_mw=500.0, hold_s=10.0, cancelled=lambda: False, **meter_kwargs):
+def _run(
+    target,
+    model=simulated_laser_mw,
+    sensor_limit_mw=500.0,
+    hold_s=10.0,
+    rest_s=None,
+    cancelled=lambda: False,
+    **meter_kwargs,
+):
     time = FakeTime()
     mcu = FakeMicrocontroller(FACTOR, clock=time.clock)
     output = MicrocontrollerDacOutput(mcu, target.source_code)
@@ -145,6 +162,8 @@ def _run(target, model=simulated_laser_mw, sensor_limit_mw=500.0, hold_s=10.0, c
         sleep=time.sleep,
         clock=time.clock,
     )
+    if rest_s is not None:
+        call["rest_s"] = rest_s
     return mcu, output, meter, lambda: calibrate_channel(target, output, meter, FACTOR, **call)
 
 
@@ -271,6 +290,7 @@ def _session(repo, heartbeat_interval_s=None):
     s = CalibrationSession(FakeMicrocontroller(FACTOR, heartbeat_interval_s=heartbeat_interval_s), repo)
     s.settle_s = 0.0
     s.hold_s = 0.0
+    s.rest_s = 0.0
     return s
 
 
@@ -475,6 +495,7 @@ def test_a_watchdog_that_fired_is_armed_again_before_the_next_channel(repo, then
     mcu = OneShotWatchdog(time)
     session = CalibrationSession(mcu, repo)
     session.settle_s, session.hold_s, session.sleep, session.clock = 0.0, 0.0, time.sleep, time.clock
+    session.rest_s = 0.0
     session.meter = _StallingMeter(session, mcu, then_raise)
     results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
     first, second = results["Fluorescence 405 nm Ex"], results["Fluorescence 730 nm Ex"]
@@ -551,6 +572,7 @@ def test_a_pause_outside_a_read_that_outlasts_the_watchdog_fails_the_channel(rep
     session = CalibrationSession(mcu, repo)
     session.settle_s, session.clock = 0.01, time.clock
     session.hold_s = 10.0 if where == "hold" else 0.0
+    session.rest_s = 0.0
     stalled = []
 
     def sleep(seconds):
@@ -688,3 +710,27 @@ def test_a_source_that_jumps_on_is_reported_after_the_run():
     lowest = f"{result.calibration.lowest_percent:.1f} %"
     assert any(f"lowest non-zero power is {lowest} of max" in w and f"get {lowest}" in w for w in result.warnings)
     assert not any("lowest non-zero" in w for w in _run(LASER)[3]().warnings)  # a smooth source: nothing to say
+
+
+def test_the_checks_after_the_sweep_wait_out_a_thermal_memory():
+    # the bench 561 nm laser reads 2-3 % low for several seconds after full power (time constant 5-10 s); the drift
+    # check and the verification came right after the sweep's top end and failed it, twice
+    memory = (0.03, 10.0)
+    hot = _run(LASER, hold_s=0.0, rest_s=0.0, memory=memory)[3]()
+    assert any("drifted" in w for w in hot.warnings)
+    rested = _run(LASER, hold_s=0.0, memory=memory)[3]()  # the default rest
+    assert not any("drifted" in w for w in rested.warnings)
+    assert rested.calibration.verification == "pass"
+
+
+def test_the_rest_keeps_the_watchdog_fed(repo):
+    # 30 s with the light off is six watchdog periods: unfed, the one-shot watchdog would fire and disarm
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = CalibrationSession(mcu, repo)
+    session.settle_s, session.hold_s, session.sleep, session.clock = 0.0, 0.0, time.sleep, time.clock
+    assert session.rest_s == 30.0
+    session.connect()
+    result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
+    assert isinstance(result, ChannelResult)
+    assert mcu.armed and mcu.unprotected_on == 0

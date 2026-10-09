@@ -31,7 +31,9 @@ def test_cli_calibrates_and_saves_in_simulation(tmp_path, monkeypatch, capsys):
     (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
     repo = ConfigRepository(base_path=tmp_path)
 
-    status = _tool().main(["--simulation", "--settle-s", "0", "--hold-s", "0", "--save"], config_repo=repo)
+    status = _tool().main(
+        ["--simulation", "--settle-s", "0", "--hold-s", "0", "--rest-s", "0", "--save"], config_repo=repo
+    )
 
     assert status == 0
     out = capsys.readouterr().out
@@ -65,7 +67,7 @@ def test_cli_saves_a_failed_channel_only_when_told_to(tmp_path, monkeypatch, cap
     repo = ConfigRepository(base_path=tmp_path)
     monkeypatch.setattr("squid.intensity_calibration_run.VERIFY_REL_TOL", 1e-9)  # every channel fails
     saved = tmp_path / "machine_configs" / "intensity_calibrations" / "405nm_D1.csv"
-    args = ["--simulation", "--settle-s", "0", "--hold-s", "0", "--save"]
+    args = ["--simulation", "--settle-s", "0", "--hold-s", "0", "--rest-s", "0", "--save"]
 
     assert _tool().main(args, config_repo=repo) == 1
     assert not saved.exists() and repo.get_illumination_config().channels[0].intensity_calibration_file is None

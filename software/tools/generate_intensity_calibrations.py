@@ -8,7 +8,7 @@ would (machine_configs/intensity_calibrations/<λ>nm_<port>.csv + .png), and poi
     python tools/generate_intensity_calibrations.py --measured-in widefield
     python tools/generate_intensity_calibrations.py --channels "Fluorescence 405 nm Ex" --save
     python tools/generate_intensity_calibrations.py --save --save-failed   # also save channels that failed
-    python tools/generate_intensity_calibrations.py --simulation --settle-s 0 --hold-s 0   # dry run, simulated
+    python tools/generate_intensity_calibrations.py --simulation --settle-s 0 --hold-s 0 --rest-s 0   # dry run
 """
 
 import argparse
@@ -37,6 +37,9 @@ def parse_args(argv):
     )
     parser.add_argument("--settle-s", type=float, default=None, help="wait after turning the light on (s)")
     parser.add_argument("--hold-s", type=float, default=None, help="continuous-light check length (s); 0 skips it")
+    parser.add_argument(
+        "--rest-s", type=float, default=None, help="light off before the drift check and verification (s); 0 skips it"
+    )
     parser.add_argument("--resource", default=None, help="VISA resource (default: the first Thorlabs meter)")
     parser.add_argument(
         "--save", action="store_true", help="write the channels that passed verification and point the config at them"
@@ -71,6 +74,8 @@ def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
         session.settle_s = args.settle_s
     if args.hold_s is not None:
         session.hold_s = args.hold_s
+    if args.rest_s is not None:
+        session.rest_s = args.rest_s
     targets = [t for t in session.targets() if args.channels is None or t.name in args.channels]
     if not targets:
         print("No matching DAC-driven epi-illumination channel in the illumination config.")

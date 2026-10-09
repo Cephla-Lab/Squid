@@ -59,6 +59,10 @@ MAX_REMEASURED_POINTS = 20
 DRIFT_WARN_FRACTION = 0.02
 HOLD_PERCENT = 50.0
 HOLD_S = 10.0
+# Light off this long before the drift check and the verification: they come right after the sweep's top end, and a
+# source with a thermal memory reads low then (the bench 561 nm laser: about 2 % low just after full power, time
+# constant 5-10 s, settled within 30-60 s; it failed both checks twice without the rest)
+REST_BEFORE_CHECKS_S = 30.0
 DROOP_WARN_FRACTION = 0.03
 TEST_BEAM_DEFAULT_PERCENT = 10.0
 TEST_BEAM_MAX_S = 60.0
@@ -287,6 +291,16 @@ class _Measurer:
     def median_at(self, percent: float, repeats: int) -> float:
         return float(np.median([self.at(percent)[0] for _ in range(repeats)]))
 
+    def rest(self, duration_s: float, cancelled: Callable[[], bool]) -> None:
+        """Light off for duration_s, still feeding the watchdog: it disarms itself once it fires."""
+        self.output.off()
+        begin = self.clock()
+        while self.clock() - begin < duration_s:
+            if cancelled():
+                raise CalibrationCancelled("cancelled while resting before the checks")
+            self._feed()
+            self.sleep(min(0.5, duration_s))
+
     def hold(self, percent: float, duration_s: float, cancelled: Callable[[], bool]) -> Tuple[float, float]:
         """Light on continuously at `percent` for duration_s: (reading at the start, reading at the end)."""
         self.output.set_percent(percent)
@@ -344,6 +358,7 @@ def calibrate_channel(
     sensor_limit_mw: float,
     settle_s: Optional[float] = None,
     hold_s: float = HOLD_S,
+    rest_s: float = REST_BEFORE_CHECKS_S,
     progress: Progress = lambda message, done, total: None,
     cancelled: Callable[[], bool] = lambda: False,
     keepalive: Callable[[], None] = lambda: None,
@@ -373,7 +388,7 @@ def calibrate_channel(
     )
     dac = np.linspace(0.0, target.ceiling_percent, int(round(1.0 / SWEEP_STEP_FRACTION)) + 1)
     x = dac / 100.0 * factor
-    total = dac.size + MAX_REMEASURED_POINTS + len(VERIFY_SETPOINTS) + 5
+    total = dac.size + MAX_REMEASURED_POINTS + len(VERIFY_SETPOINTS) + 6
     done = 0
 
     def step(stage: str) -> None:
@@ -437,6 +452,9 @@ def calibrate_channel(
         # Drift: the point where the fit first reaches half of P_max (above a lasing threshold by construction),
         # measured again now and compared with the sweep
         reference = int(np.nonzero(calibration.power_mw_fit >= 0.5 * calibration.p_max_mw)[0][0])
+        if rest_s > 0:
+            step(f"light off for {rest_s:g} s before the checks")
+            measure.rest(rest_s, cancelled)
         step("drift check")
         again, _ = measure.at(dac[reference])
         drift = abs(again - raw[reference]) / max(raw[reference] - dark[reference], 1e-9)
@@ -625,6 +643,7 @@ class CalibrationSession:
         self.dac_driven = dac_driven
         self.settle_s: Optional[float] = None  # None: the meter's own settle time
         self.hold_s = HOLD_S
+        self.rest_s = REST_BEFORE_CHECKS_S
         self.sleep: Callable[[float], None] = time.sleep
         self.clock: Callable[[], float] = time.monotonic
         self.meter: Optional[PowerMeter] = None
@@ -795,6 +814,7 @@ class CalibrationSession:
                         sensor_limit_mw=sensor_limit_mw,
                         settle_s=self.settle_s,
                         hold_s=self.hold_s,
+                        rest_s=self.rest_s,
                         progress=progress,
                         cancelled=lambda: self._cancelled,
                         keepalive=self.feed_watchdog,

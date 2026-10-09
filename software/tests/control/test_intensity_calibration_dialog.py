@@ -44,6 +44,7 @@ def session(repo):
     s = CalibrationSession(get_test_microcontroller(), repo)
     s.settle_s = 0.0
     s.hold_s = 0.0
+    s.rest_s = 0.0
     return s
 
 
