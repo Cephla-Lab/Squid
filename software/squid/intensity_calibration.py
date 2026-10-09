@@ -8,9 +8,11 @@ Design: AI-docs Squid/to-do/2026-10-08-power-linearization-gui-design.md (§5.2 
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import pandas as pd
 
 ROLLOVER_FRACTION = 0.01
 SMOOTHING_WINDOW = 5
@@ -20,6 +22,8 @@ VERIFY_SETPOINTS = (1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
 VERIFY_MIN_GATED_PERCENT = 10
 VERIFY_REL_TOL = 0.05
 MIN_POINTS = 3
+FORMAT = "squid-intensity-calibration/1"
+_CLAMP_EPS = 1e-9
 
 
 class CalibrationError(ValueError):
@@ -155,3 +159,300 @@ def x_for_power_fraction(anchor_power_mw, anchor_x, p_max_mw: float, fraction: f
     if fraction <= 0:
         return 0.0
     return float(np.interp(min(fraction, 1.0) * p_max_mw, anchor_power_mw, anchor_x))
+
+
+def calibration_file_name(wavelength_nm: int, controller_port: str) -> str:
+    return f"{wavelength_nm}nm_{controller_port}.csv"
+
+
+def _clamp_to_ceiling(commanded_percent: float, max_output: float) -> Tuple[float, bool]:
+    """The DAC never goes past Max Output (design Q4: a hardware ceiling). Returns (command, clamped)."""
+    ceiling = max_output * 100.0
+    if commanded_percent > ceiling + _CLAMP_EPS:
+        return ceiling, True
+    return commanded_percent, False
+
+
+@dataclass(frozen=True, eq=False)
+class IntensityCalibration:
+    """A calibration this module wrote: intensity % = % of p_max_mw, stored against the DAC's physical full scale
+    so the illumination intensity factor drops out (design §6.2)."""
+
+    channel: str
+    controller_port: str
+    wavelength_nm: int
+    calibrated_at: str
+    software_commit: str
+    meter: str
+    sensor: str
+    illumination_intensity_factor: float
+    max_output: float
+    measured_in: str
+    dark_mw: Tuple[float, float]
+    drift_fraction: float
+    p_max_mw: float
+    top_dac_percent: float
+    zero_level_mw: float
+    rollover: Optional[str]
+    dac_percent_commanded: np.ndarray
+    dac_fraction_of_full_scale: np.ndarray
+    power_mw_raw: np.ndarray
+    power_mw: np.ndarray
+    power_mw_fit: np.ndarray
+    anchor_power_mw: np.ndarray
+    anchor_x: np.ndarray
+    file_name: str
+    pulse_on_s: float  # how long the light was on per reading: the operating condition this calibration represents
+    verification: Optional[str] = None  # "pass" | "fail" | None before verification
+    verification_points: Tuple[Tuple[float, float], ...] = ()  # (requested %, error %)
+    hold_s: float = 0.0  # length of the continuous-light check; 0 when not run
+    hold_droop_fraction: Optional[float] = None  # (end - start) / start of that check: how live view departs
+
+    @classmethod
+    def from_sweep(
+        cls,
+        *,
+        channel: str,
+        controller_port: str,
+        wavelength_nm: int,
+        calibrated_at: str,
+        software_commit: str,
+        meter: str,
+        sensor: str,
+        factor: float,
+        max_output: float,
+        measured_in: str,
+        dark_mw: Tuple[float, float],
+        drift_fraction: float,
+        dac_percent,
+        power_raw_mw,
+        power_mw,
+        sigma_dark: float,
+        pulse_on_s: float,
+    ) -> "IntensityCalibration":
+        dac = np.asarray(dac_percent, dtype=float)
+        x = dac / 100.0 * factor
+        fit = fit_curve(dac, x, power_mw, sigma_dark)
+        return cls(
+            channel=channel,
+            controller_port=controller_port,
+            wavelength_nm=int(wavelength_nm),
+            calibrated_at=calibrated_at,
+            software_commit=software_commit,
+            meter=meter,
+            sensor=sensor,
+            illumination_intensity_factor=float(factor),
+            max_output=float(max_output),
+            measured_in=measured_in,
+            dark_mw=(float(dark_mw[0]), float(dark_mw[1])),
+            drift_fraction=float(drift_fraction),
+            p_max_mw=fit.p_max_mw,
+            top_dac_percent=float(dac[fit.top_index]),
+            zero_level_mw=fit.zero_level_mw,
+            rollover=fit.rollover,
+            dac_percent_commanded=dac,
+            dac_fraction_of_full_scale=x,
+            power_mw_raw=np.asarray(power_raw_mw, dtype=float),
+            power_mw=np.asarray(power_mw, dtype=float),
+            power_mw_fit=fit.fitted_mw,
+            anchor_power_mw=fit.anchor_power_mw,
+            anchor_x=fit.anchor_x,
+            file_name=calibration_file_name(int(wavelength_nm), controller_port),
+            pulse_on_s=float(pulse_on_s),
+        )
+
+    def commanded_percent(self, intensity_percent: float, factor: float, max_output: float) -> Tuple[float, bool]:
+        """The DAC command (commanded %, before the firmware's factor) for a requested % of p_max_mw."""
+        x = x_for_power_fraction(self.anchor_power_mw, self.anchor_x, self.p_max_mw, intensity_percent / 100.0)
+        if factor <= 0:  # the firmware outputs nothing at factor 0: only "off" is reachable (and no division by 0)
+            return (0.0, False) if x == 0 else (max_output * 100.0, True)
+        return _clamp_to_ceiling(x / factor * 100.0, max_output)
+
+    def cap_percent(self, max_output: float) -> float:
+        """The slider runs the full range: the ceiling is inside the lookup."""
+        return 100.0
+
+    def describe(self) -> Dict[str, object]:
+        description: Dict[str, object] = {
+            "intensity_unit": "power_percent",
+            "calibration_format": FORMAT,
+            "calibration_file": self.file_name,
+            "calibrated_at": self.calibrated_at,
+            "max_power_mw": round(float(self.p_max_mw), 3),
+            "measured_in": self.measured_in,
+            "verification": self.verification or "not run",
+        }
+        if self.rollover:
+            description["rollover"] = self.rollover
+        description["pulse_on_s"] = round(float(self.pulse_on_s), 3)
+        if self.hold_droop_fraction is not None:
+            description["continuous_hold_droop_percent"] = round(100.0 * self.hold_droop_fraction, 2)
+        return description
+
+    def notes(self, factor: float, max_output: float) -> List[str]:
+        """Why this calibration no longer fits the machine (design §6.2 staleness); empty when it does."""
+        notes = []
+        if factor < self.illumination_intensity_factor - _CLAMP_EPS:
+            notes.append(
+                f"Illumination Intensity Factor lowered {self.illumination_intensity_factor:g} -> {factor:g} since "
+                "calibration; the top of the range is unreachable: recalibrate"
+            )
+        if abs(max_output - self.max_output) > _CLAMP_EPS:
+            notes.append(f"Max Output changed {self.max_output:g} -> {max_output:g} since calibration: recalibrate")
+        return notes
+
+    def status(self, factor: float, max_output: float) -> str:
+        date = self.calibrated_at[:10]
+        notes = self.notes(factor, max_output)
+        if notes:
+            return f"stale ({date}): " + "; ".join(notes)
+        if self.verification == "fail":
+            return f"failed verification ({date})"
+        return f"calibrated {date}"
+
+    def verification_summary(self) -> str:
+        gated = [(r, e) for r, e in self.verification_points if r >= VERIFY_MIN_GATED_PERCENT]
+        if not gated:
+            return "not verified"
+        r, e = max(gated, key=lambda point: abs(point[1]))
+        return f"{self.verification}: worst {e:+.1f} % at {r:g} %"
+
+
+_COLUMNS = ["dac_percent_commanded", "dac_fraction_of_full_scale", "power_mw_raw", "power_mw", "power_mw_fit"]
+
+
+def write_calibration(calibration: IntensityCalibration, path: Path) -> None:
+    """`# key: value` header lines, then the table (pandas reads it with comment="#"; Excel opens it)."""
+    c = calibration
+    header = {
+        "format": FORMAT,
+        "intensity_unit": "power_percent",
+        "channel": c.channel,
+        "controller_port": c.controller_port,
+        "wavelength_nm": str(c.wavelength_nm),
+        "calibrated_at": c.calibrated_at,
+        "software_commit": c.software_commit,
+        "meter": c.meter,
+        "sensor": c.sensor,
+        "meter_wavelength_nm": str(c.wavelength_nm),
+        "illumination_intensity_factor": f"{c.illumination_intensity_factor:g}",
+        "max_output": f"{c.max_output:g}",
+        "measured_in": c.measured_in,
+        "dark_mw": f"{c.dark_mw[0]:.6g} / {c.dark_mw[1]:.6g}",
+        "drift_fraction": f"{c.drift_fraction:.6g}",
+        "p_max_mw": f"{c.p_max_mw:.10g}",
+        "top_dac_percent": f"{c.top_dac_percent:.10g}",
+        "zero_level_mw": f"{c.zero_level_mw:.10g}",
+        "rollover": c.rollover or "none",
+        "verification": c.verification or "not run",
+        "verification_points": "; ".join(f"{r:g}:{e:+.4f}" for r, e in c.verification_points),
+        "pulse_on_s": f"{c.pulse_on_s:.4g}",
+        "hold_s": f"{c.hold_s:g}",
+        "hold_droop_fraction": "not run" if c.hold_droop_fraction is None else f"{c.hold_droop_fraction:+.5f}",
+    }
+    table = pd.DataFrame(
+        {
+            "dac_percent_commanded": c.dac_percent_commanded,
+            "dac_fraction_of_full_scale": c.dac_fraction_of_full_scale,
+            "power_mw_raw": c.power_mw_raw,
+            "power_mw": c.power_mw,
+            "power_mw_fit": c.power_mw_fit,
+        }
+    )
+    with open(path, "w", newline="") as f:
+        for key, value in header.items():
+            f.write(f"# {key}: {value}\n")
+        table.to_csv(f, index=False, float_format="%.10g")
+
+
+def read_header(path: Path) -> Dict[str, str]:
+    """The `# key: value` lines at the top of a file; {} for a legacy file."""
+    header: Dict[str, str] = {}
+    with open(path) as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            key, sep, value = line[1:].strip().partition(":")
+            if sep:
+                header[key.strip()] = value.strip()
+    return header
+
+
+def _parse_points(text: str) -> Tuple[Tuple[float, float], ...]:
+    points = []
+    for item in text.split(";"):
+        if item.strip():
+            r, e = item.split(":")
+            points.append((float(r), float(e)))
+    return tuple(points)
+
+
+def _optional(value: Optional[str], empty: str) -> Optional[str]:
+    return None if value in (None, empty) else value
+
+
+def _optional_float(value: str) -> Optional[float]:
+    return None if value == "not run" else float(value)
+
+
+def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> IntensityCalibration:
+    table = pd.read_csv(path, comment="#")
+    missing = [column for column in _COLUMNS if column not in table.columns]
+    if missing:
+        raise CalibrationFileError(f"{path.name}: missing columns {missing}")
+    if len(table) < MIN_POINTS:
+        raise CalibrationFileError(f"{path.name}: only {len(table)} rows")
+    x = table["dac_fraction_of_full_scale"].to_numpy(dtype=float)
+    fitted = table["power_mw_fit"].to_numpy(dtype=float)
+    valid = ~np.isnan(fitted)
+    anchor_power, anchor_x = build_anchors(x[valid], fitted[valid], float(header["zero_level_mw"]))
+    if anchor_power.size < 2 or not anchor_power[-1] > 0:
+        raise CalibrationFileError(f"{path.name}: the fitted curve has no light")
+    dark_start, dark_end = (float(v) for v in header["dark_mw"].split("/"))
+    return IntensityCalibration(
+        channel=header["channel"],
+        controller_port=header["controller_port"],
+        wavelength_nm=int(header["wavelength_nm"]),
+        calibrated_at=header["calibrated_at"],
+        software_commit=header["software_commit"],
+        meter=header["meter"],
+        sensor=header["sensor"],
+        illumination_intensity_factor=float(header["illumination_intensity_factor"]),
+        max_output=float(header["max_output"]),
+        measured_in=header["measured_in"],
+        dark_mw=(dark_start, dark_end),
+        drift_fraction=float(header["drift_fraction"]),
+        p_max_mw=float(anchor_power[-1]),
+        top_dac_percent=float(header["top_dac_percent"]),
+        zero_level_mw=float(header["zero_level_mw"]),
+        rollover=_optional(header.get("rollover"), "none"),
+        dac_percent_commanded=table["dac_percent_commanded"].to_numpy(dtype=float),
+        dac_fraction_of_full_scale=x,
+        power_mw_raw=table["power_mw_raw"].to_numpy(dtype=float),
+        power_mw=table["power_mw"].to_numpy(dtype=float),
+        power_mw_fit=fitted,
+        anchor_power_mw=anchor_power,
+        anchor_x=anchor_x,
+        file_name=path.name,
+        pulse_on_s=float(header["pulse_on_s"]),
+        verification=_optional(header.get("verification"), "not run"),
+        verification_points=_parse_points(header.get("verification_points", "")),
+        hold_s=float(header.get("hold_s", "0")),
+        hold_droop_fraction=_optional_float(header.get("hold_droop_fraction", "not run")),
+    )
+
+
+def load_calibration(path: Path) -> IntensityCalibration:
+    """Read a calibration file. Raises CalibrationFileError, naming the file, when it cannot be used."""
+    path = Path(path)
+    try:
+        header = read_header(path)
+        if "format" not in header:
+            raise CalibrationFileError(f"{path.name}: no calibration header")
+        if header["format"] != FORMAT:
+            raise CalibrationFileError(f"{path.name}: unknown format '{header['format']}'")
+        return _read_intensity_calibration(path, header)
+    except CalibrationFileError:
+        raise
+    except (OSError, ValueError, KeyError, IndexError) as e:  # pandas' ParserError is a ValueError
+        raise CalibrationFileError(f"{path.name}: {e}") from e
