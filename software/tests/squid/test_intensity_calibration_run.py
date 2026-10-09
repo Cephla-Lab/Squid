@@ -375,3 +375,81 @@ def test_a_meter_error_on_set_wavelength_fails_only_that_channel(repo):
     results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
     assert isinstance(results["Fluorescence 405 nm Ex"], PowerMeterError)
     assert isinstance(results["Fluorescence 730 nm Ex"], ChannelResult)
+
+
+class OneShotWatchdog(FakeMicrocontroller):
+    """The firmware's watchdog: armed by set_watchdog_timeout, fed by every message, and after it fires (all ports
+    off) it stays off until armed again. Counts light turned on while it is not armed."""
+
+    def __init__(self, time):
+        super().__init__(FACTOR, heartbeat_interval_s=2.5, clock=time.clock)
+        self.time = time
+        self.armed = False
+        self.fed_at = 0.0
+        self.unprotected_on = 0
+
+    def _fed(self):
+        self.fed_at = self.time.clock()
+
+    def set_watchdog_timeout(self, timeout_s):
+        super().set_watchdog_timeout(timeout_s)
+        self.armed = True
+        self._fed()
+
+    def send_heartbeat(self):
+        super().send_heartbeat()
+        self._fed()
+
+    def set_illumination(self, source, percent):
+        super().set_illumination(source, percent)
+        self._fed()
+
+    def turn_on_illumination(self):
+        super().turn_on_illumination()
+        self._fed()
+        if not self.armed:
+            self.unprotected_on += 1
+
+    def turn_off_all_ports(self):
+        super().turn_off_all_ports()
+        self._fed()
+
+    def stall(self, seconds):
+        self.time.sleep(seconds)
+        if self.armed and self.time.clock() - self.fed_at > 5.0:
+            self.turn_off_all_ports()  # what the firmware does when it fires
+            self.armed = False
+
+
+class _StallingMeter(SimulatedPowerMeter):
+    """Stalls once, for 6 s, at the first reading at or above 50 % DAC; then raises or answers normally."""
+
+    def __init__(self, session, mcu, then_raise):
+        super().__init__(session.source_state, noise_fraction=0.0, ambient_mw=0.0)
+        self.session, self.mcu, self.then_raise, self.stalled = session, mcu, then_raise, False
+
+    def read_mw(self):
+        active = self.session._active
+        if not self.stalled and active is not None and active.is_on and active.commanded_percent >= 50:
+            self.stalled = True
+            self.mcu.stall(6.0)
+            if self.then_raise:
+                raise PowerMeterError("read resumed after a stall")
+        return super().read_mw()
+
+
+@pytest.mark.parametrize("then_raise", [True, False])
+def test_a_watchdog_that_fired_is_armed_again_before_the_next_channel(repo, then_raise):
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = CalibrationSession(mcu, repo)
+    session.settle_s, session.hold_s, session.sleep, session.clock = 0.0, 0.0, time.sleep, time.clock
+    session.meter = _StallingMeter(session, mcu, then_raise)
+    results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
+    first, second = results["Fluorescence 405 nm Ex"], results["Fluorescence 730 nm Ex"]
+    assert isinstance(first, Exception)  # the stalled channel cannot be trusted, whether the read raised or not
+    if not then_raise:
+        assert "watchdog" in str(first)
+    assert isinstance(second, ChannelResult)
+    assert mcu.unprotected_on == 0
+    assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)

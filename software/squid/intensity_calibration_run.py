@@ -73,6 +73,10 @@ class SensorLimitExceeded(RuntimeError):
     """A reading went above the sensor limit or the meter's range; the light is off."""
 
 
+class WatchdogDeadlineMissed(RuntimeError):
+    """A meter read outlasted the controller's watchdog, which may have turned the light off mid-reading."""
+
+
 @dataclass(frozen=True)
 class ChannelTarget:
     """A channel that can be calibrated: epi-illumination, with a wavelength, on a controller DAC port (D1-D8)."""
@@ -178,7 +182,7 @@ class _Measurer:
     """Takes readings with the light pulsed on at a raw DAC level: waits, reads until two readings agree, feeds the
     watchdog before every read, and enforces the sensor limit on every reading."""
 
-    def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive):
+    def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive, watchdog_timeout_s=None):
         self.output = output
         self.meter = meter
         self.sensor_limit_mw = sensor_limit_mw
@@ -186,13 +190,28 @@ class _Measurer:
         self.sleep = sleep
         self.clock = clock
         self.keepalive = keepalive
+        self.watchdog_timeout_s = watchdog_timeout_s
         self.sigma_dark = 0.0
         self.on_times: List[float] = []
 
-    def _read(self, percent: float) -> float:
+    def _fed_read(self) -> float:
+        """Feed the watchdog, read, and fail if the read outlasted the watchdog: it may have turned the light off
+        during the reading (and disarmed itself; the session arms it again before the next channel)."""
         self.keepalive()
+        fed_at = self.clock()
+        reading = self.meter.read_mw()
+        elapsed = self.clock() - fed_at
+        if self.watchdog_timeout_s is not None and elapsed > self.watchdog_timeout_s:
+            raise WatchdogDeadlineMissed(
+                f"a meter read took {elapsed:.1f} s, longer than the controller's {self.watchdog_timeout_s:g} s "
+                "watchdog, which may have turned the light off: this channel's readings cannot be trusted; check the "
+                "meter connection and run it again"
+            )
+        return reading
+
+    def _read(self, percent: float) -> float:
         try:
-            reading = self.meter.read_mw()
+            reading = self._fed_read()
         except PowerMeterOverrange as e:
             raise SensorLimitExceeded(
                 f"meter overrange at DAC {percent:.1f} %: lower Max Output or use a higher-power sensor"
@@ -216,11 +235,7 @@ class _Measurer:
     def dark(self) -> np.ndarray:
         self.output.off()
         self.sleep(self.settle_s)
-        readings = []
-        for _ in range(N_DARK):
-            self.keepalive()
-            readings.append(self.meter.read_mw())
-        return np.array(readings)
+        return np.array([self._fed_read() for _ in range(N_DARK)])
 
     def at(self, percent: float) -> Tuple[float, bool]:
         """A settled reading at `percent` with the light on only for it: (reading, settled)."""
@@ -297,6 +312,7 @@ def calibrate_channel(
     progress: Progress = lambda message, done, total: None,
     cancelled: Callable[[], bool] = lambda: False,
     keepalive: Callable[[], None] = lambda: None,
+    watchdog_timeout_s: Optional[float] = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     now: Optional[datetime.datetime] = None,
@@ -318,6 +334,7 @@ def calibrate_channel(
         sleep,
         clock,
         keepalive,
+        watchdog_timeout_s,
     )
     dac = np.linspace(0.0, target.ceiling_percent, int(round(1.0 / SWEEP_STEP_FRACTION)) + 1)
     x = dac / 100.0 * factor
@@ -509,6 +526,8 @@ class CalibrationSession:
         self.dac_driven = dac_driven
         self.settle_s: Optional[float] = None  # None: the meter's own settle time
         self.hold_s = HOLD_S
+        self.sleep: Callable[[float], None] = time.sleep
+        self.clock: Callable[[], float] = time.monotonic
         self.meter: Optional[PowerMeter] = None
         self._active: Optional[MicrocontrollerDacOutput] = None
         self._cancelled = False
@@ -577,21 +596,29 @@ class CalibrationSession:
         self._cancelled = False
 
     # ---------------------------------------------------------------- watchdog ownership
+    def _arm_watchdog(self) -> None:
+        """Arm the controller's watchdog with a full timeout while this session owns it. It is one-shot: after it
+        fires it stays off until armed again, so it is armed on taking it over, before every channel and on giving
+        it back."""
+        if self._paused_heartbeat_s is not None:
+            self.microcontroller.set_watchdog_timeout(control._def.WATCHDOG_TIMEOUT_S)
+            self.microcontroller.wait_till_operation_is_completed()
+
     def _pause_heartbeat(self) -> None:
         if self._paused_heartbeat_s is None:
             interval = self.microcontroller.heartbeat_interval_s
             if interval is not None:
                 self.microcontroller.stop_heartbeat()
                 self._paused_heartbeat_s = interval
+                self._arm_watchdog()
 
     def _resume_heartbeat(self) -> None:
         """Give the watchdog back to the background heartbeat, re-armed first: the firmware's watchdog is one-shot
         (it disables itself after turning the light off), so if it fired while this session owned it - the code
         driving the light stopped - it would otherwise stay off for the rest of the session."""
         if self._paused_heartbeat_s is not None:
+            self._arm_watchdog()
             interval, self._paused_heartbeat_s = self._paused_heartbeat_s, None
-            self.microcontroller.set_watchdog_timeout(control._def.WATCHDOG_TIMEOUT_S)
-            self.microcontroller.wait_till_operation_is_completed()
             self.microcontroller.start_heartbeat(interval_s=interval)
 
     def feed_watchdog(self) -> None:
@@ -648,6 +675,7 @@ class CalibrationSession:
             for target in targets:
                 if self._cancelled:
                     break
+                self._arm_watchdog()  # in case it fired during the previous channel
                 try:
                     result: Union[ChannelResult, Exception] = calibrate_channel(
                         target,
@@ -662,10 +690,15 @@ class CalibrationSession:
                         progress=progress,
                         cancelled=lambda: self._cancelled,
                         keepalive=self.feed_watchdog,
+                        watchdog_timeout_s=(
+                            control._def.WATCHDOG_TIMEOUT_S if self._paused_heartbeat_s is not None else None
+                        ),
+                        sleep=self.sleep,
+                        clock=self.clock,
                     )
                 except CalibrationCancelled as e:
                     result = e
-                except (SensorLimitExceeded, PowerMeterError, CalibrationError) as e:
+                except (SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError, CalibrationError) as e:
                     _log.warning(f"illumination calibration of {target.name} failed: {e}")
                     result = e
                 results[target.name] = result
