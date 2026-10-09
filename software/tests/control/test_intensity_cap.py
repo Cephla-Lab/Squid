@@ -16,6 +16,8 @@ from control._def import LED_MATRIX_R_FACTOR
 from control.core.config import ConfigRepository
 from control.core.live_controller import LiveController
 from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
+from squid.intensity_calibration import write_calibration
+from tests.squid.calibration_fixtures import make_calibration
 
 ILLUMINATION_YAML = """\
 version: 1
@@ -108,6 +110,7 @@ def _channel_switch_stub(cap_percent, qtbot):
     stub.is_switching_mode = False
     stub.liveController.get_intensity_cap_percent.return_value = cap_percent
     stub.liveController.is_confocal_mode.return_value = False
+    stub.liveController.get_intensity_description.return_value = {"intensity_unit": "dac_percent"}
 
     slider = control.widgets.CappedSlider(control.widgets.Qt.Horizontal)
     slider.setRange(0, 100)
@@ -164,10 +167,6 @@ def test_capped_slider_raising_cap_restores_full_range(qtbot):
     assert slider.value() == 50
 
 
-from squid.intensity_calibration import write_calibration
-from tests.squid.calibration_fixtures import make_calibration
-
-
 def _write_488_calibration(scope, tmp_path):
     calibrations = tmp_path / "machine_configs" / "intensity_calibrations"
     calibrations.mkdir(parents=True, exist_ok=True)
@@ -200,3 +199,14 @@ def test_intensity_description_names_the_unit(scope, live, tmp_path):
         live.get_intensity_description(_acquisition_channel("Fluorescence 488 nm Ex"))["intensity_unit"]
         == "power_percent"
     )
+
+
+def test_live_control_widget_shows_the_intensity_unit(qtbot):
+    stub, config = _channel_switch_stub(cap_percent=100.0, qtbot=qtbot)
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.suffix() == " % DAC"
+
+    stub.liveController.get_intensity_description.return_value = make_calibration().describe()
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.suffix() == " % power"
+    assert "Linear in power" in stub.entry_illuminationIntensity.toolTip()

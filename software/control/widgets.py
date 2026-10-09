@@ -30,6 +30,7 @@ import control._def  # Import module for runtime access to MCP-modifiable settin
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
+from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_suffix, intensity_tooltip
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -4642,7 +4643,7 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
         self.entry_illuminationIntensity.setSingleStep(1)
-        self.entry_illuminationIntensity.setSuffix("%")
+        self.entry_illuminationIntensity.setSuffix(" % power")  # the widest unit; the width below must fit it
         self.entry_illuminationIntensity.setValue(100)
 
         # autolevel
@@ -4654,7 +4655,11 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.setMinimumWidth(self.btn_live.sizeHint().width())
         self.btn_autolevel.setMinimumWidth(self.btn_autolevel.sizeHint().width())
 
-        max_width = max(self.btn_autolevel.minimumWidth(), self.entry_illuminationIntensity.minimumWidth())
+        max_width = max(
+            self.btn_autolevel.minimumWidth(),
+            self.entry_illuminationIntensity.minimumWidth(),
+            self.entry_illuminationIntensity.sizeHint().width(),
+        )
 
         # Set the fixed width for all three widgets
         self.entry_illuminationIntensity.setFixedWidth(max_width)
@@ -4860,6 +4865,10 @@ class LiveControlWidget(QFrame):
                 intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
+                # Say what the % means: power (calibrated), DAC output, or the light source's own scale
+                description = self.liveController.get_intensity_description(self.currentConfiguration)
+                self.entry_illuminationIntensity.setSuffix(intensity_suffix(description))
+                self.entry_illuminationIntensity.setToolTip(intensity_tooltip(description))
                 self.entry_illuminationIntensity.setValue(self.currentConfiguration.illumination_intensity)
                 self.entry_zOffset.setValue(self._safe_z_offset_value(self.currentConfiguration.z_offset_um))
         finally:
@@ -13715,6 +13724,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_WAVELENGTH = 3
     COL_MAX_OUTPUT = 4
     COL_CALIBRATION = 5
+    COL_CALIBRATION_STATUS = 6
 
     def __init__(self, config_repo, parent=None):
         super().__init__(parent)
@@ -13741,9 +13751,17 @@ class IlluminationChannelConfiguratorDialog(QDialog):
 
         # Table for illumination channels
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
+        self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Type", "Controller Port", "Wavelength (nm)", "Max Output", "Calibration File"]
+            [
+                "Name",
+                "Type",
+                "Controller Port",
+                "Wavelength (nm)",
+                "Max Output",
+                "Calibration File",
+                "Calibration Status",
+            ]
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -13850,6 +13868,22 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             full_path = self._get_calibration_full_path(channel.intensity_calibration_file)
             calib_item = QTableWidgetItem(full_path)
             self.table.setItem(row, self.COL_CALIBRATION, calib_item)
+
+            # Calibration status (read-only): which file applies and whether it still fits this machine
+            status_item = QTableWidgetItem(self._calibration_status(channel))
+            status_item.setFlags(status_item.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(row, self.COL_CALIBRATION_STATUS, status_item)
+
+    def _calibration_status(self, channel) -> str:
+        if channel.wavelength_nm is None:
+            return ""
+        return calibration_status(
+            self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME,
+            channel.intensity_calibration_file,
+            channel.wavelength_nm,
+            control._def.ILLUMINATION_INTENSITY_FACTOR,
+            channel.max_output,
+        )
 
     def _on_type_changed(self, row, new_type):
         """Handle type change - update wavelength, max output and controller port defaults"""
