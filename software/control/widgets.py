@@ -12963,20 +12963,18 @@ class WellplateCalibration(QDialog):
         )
         print(f"NEW: 'a1_x_mm': {a1_x_mm}, 'a1_y_mm': {a1_y_mm}, 'well_size_mm': {well_size_mm}")
 
-        # Identical treatment to a brand-new format: the measured A1 and well
-        # size are stored ABSOLUTELY in a complete definition that replaces the
+        # Identical treatment to a brand-new format: the measured A1 (and well
+        # size) are stored ABSOLUTELY in a complete definition that replaces the
         # shipped example. No deltas, no second file.
-        self._save_format_definition(
-            selected_format,
-            {
-                "a1_x_mm": a1_x_mm,
-                "a1_y_mm": a1_y_mm,
-                "well_size_mm": well_size_mm,
-                "well_size_x_mm": well_size_mm,
-                "well_size_y_mm": well_size_mm,
-            },
-            measured=self._measurement_record(a1_x_mm, a1_y_mm),
-        )
+        updates = {"a1_x_mm": a1_x_mm, "a1_y_mm": a1_y_mm}
+        # The size is written only when it was measured (3 rim points: a round
+        # well, isotropic by nature) or edited in the box; a placement-only
+        # recalibration must not collapse an anisotropic well to its X size.
+        if self.edge_points_radio.isChecked() or not math.isclose(
+            well_size_mm, existing_settings["well_size_mm"], abs_tol=5e-4
+        ):
+            updates.update(well_size_mm=well_size_mm, well_size_x_mm=well_size_mm, well_size_y_mm=well_size_mm)
+        self._save_format_definition(selected_format, updates, measured=self._measurement_record(a1_x_mm, a1_y_mm))
 
         self._finish_calibration(selected_format, f"Format '{display_name}' has been successfully recalibrated.")
 

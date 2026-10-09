@@ -212,6 +212,13 @@ class HolderAlignmentSession:
             if self.touches_per_well == 3:
                 try:
                     cx, cy, radius = circumcenter(*well.touches)
+                    # Three points on the rim trace the well itself; a circle of
+                    # another size means a touch landed elsewhere.
+                    if not 0.5 <= radius / (self.well_size_mm / 2) <= 1.5:
+                        raise SessionError(
+                            f"The three rim touches on {well.well_id} fit a circle {2 * radius:.2f} mm across, but "
+                            f"the well is {self.well_size_mm:.2f} mm - re-touch the rim."
+                        )
                 except SessionError:
                     well.touches.pop()
                     raise

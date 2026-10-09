@@ -132,6 +132,23 @@ def test_unknown_schema_version_is_refused_loudly(tmp_path, caplog):
     assert any("version 1" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize(
+    "field", ["a1_x_mm", "a1_y_mm", "well_spacing_mm", "well_size_mm", "rotation_deg"], ids=lambda f: f
+)
+@pytest.mark.parametrize("value", [float("nan"), float("inf")], ids=["nan", "inf"])
+def test_non_finite_numbers_are_rejected(field, value):
+    """YAML accepts .nan and .inf; a definition replaces the shipped entry
+    wholesale, so one such number would poison every resolved position."""
+    fields = dict(rows=8, cols=12, well_spacing_mm=9.0, well_size_mm=6.21)
+    if field == "rotation_deg":
+        fields["rotation_measured"] = FormatMeasurement(
+            points=[MeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0), MeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0)]
+        )
+    fields[field] = value
+    with pytest.raises(ValueError, match="finite"):
+        SampleFormat(**fields)
+
+
 def test_scalar_and_per_axis_together_is_an_error():
     with pytest.raises(ValueError, match="not both"):
         SampleFormat(rows=2, cols=4, well_spacing_mm=9.0, well_spacing_x_mm=9.0, well_size_mm=6.0)

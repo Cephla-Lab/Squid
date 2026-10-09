@@ -331,3 +331,44 @@ def test_format_save_refuses_to_replace_a_damaged_user_file(qapp, tree):
         dialog._save_format_definition("96 well plate", {"a1_x_mm": 11.41, "a1_y_mm": 10.75})
     assert user_path.read_text() == "formats: {not yaml\n"
     dialog.close()
+
+
+def test_placement_recalibration_keeps_an_anisotropic_well_size(qapp, tree, monkeypatch):
+    """Center Point on an existing format writes A1; the size box only shows the
+    X size, so writing it back would collapse 10.4 x 9.4 mm wells to 10.4 x 10.4."""
+    from control.models.sample_format_config import load_user_sample_formats
+
+    carrier = dict(
+        _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"],
+        rows=2,
+        cols=4,
+        well_size_mm=10.4,
+        well_size_x_mm=10.4,
+        well_size_y_mm=9.4,
+        well_shape="rectangle",
+    )
+    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "ibidi 8 well", carrier)
+    dialog, stage = make_dialog(qapp, format_="ibidi 8 well")
+    dialog.calibrate_format_radio.setChecked(True)
+    dialog.existing_format_combo.setCurrentIndex(dialog.existing_format_combo.findData("ibidi 8 well"))
+    dialog.center_point_radio.setChecked(True)
+    set_stage_pos(stage, 12.0, 8.0)
+    dialog.set_center_button.click()
+
+    with patch.object(QMessageBox, "information"):
+        dialog._calibrate_existing_format()
+
+    saved = load_user_sample_formats().formats["ibidi 8 well"]
+    assert (saved.a1_x_mm, saved.a1_y_mm) == (12.0, 8.0)
+    assert (saved.well_size_x_mm, saved.well_size_y_mm) == (10.4, 9.4)  # untouched
+
+    # ...while an edited size is written to both axes, as the one box implies
+    dialog.center_point = None
+    set_stage_pos(stage, 12.0, 8.0)
+    dialog.set_center_button.click()
+    dialog.existing_well_size_input.setValue(11.0)
+    with patch.object(QMessageBox, "information"):
+        dialog._calibrate_existing_format()
+    saved = load_user_sample_formats().formats["ibidi 8 well"]
+    assert (saved.well_size_x_mm, saved.well_size_y_mm) == (11.0, 11.0)
+    dialog.close()

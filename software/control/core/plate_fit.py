@@ -308,8 +308,13 @@ def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
     ax, ay = p1
     bx, by = p2
     cx, cy = p3
-    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
-    if abs(d) < 1e-9:
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))  # = 4 x the signed triangle area
+    # Collinearity is a matter of shape, not of an absolute epsilon: three
+    # touches a micron off a line still "define" a circle of a million mm.
+    # |d| = 2 * base * height, so this refuses a triangle whose height is under
+    # 1% of its longest side.
+    span_sq = max((ax - bx) ** 2 + (ay - by) ** 2, (bx - cx) ** 2 + (by - cy) ** 2, (cx - ax) ** 2 + (cy - ay) ** 2)
+    if abs(d) < 0.02 * span_sq:
         raise PlateFitError("the three points are (nearly) collinear - they do not define a circle")
     ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d
     uy = ((ax**2 + ay**2) * (cx - bx) + (bx**2 + by**2) * (ax - cx) + (cx**2 + cy**2) * (bx - ax)) / d

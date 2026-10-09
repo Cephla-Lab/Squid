@@ -62,24 +62,26 @@ class FormatMeasurement(BaseModel):
 class SampleFormat(BaseModel):
     """A complete plate definition. Replaces the shipped example, if any."""
 
+    # Every number finite: YAML accepts .nan/.inf, and a definition replaces the
+    # shipped entry wholesale, so one would poison every resolved position.
     rows: int = Field(..., ge=1)
     cols: int = Field(..., ge=1)
-    a1_x_mm: float = 0.0
-    a1_y_mm: float = 0.0
+    a1_x_mm: float = Field(0.0, allow_inf_nan=False)
+    a1_y_mm: float = Field(0.0, allow_inf_nan=False)
     a1_x_pixel: int = 0
     a1_y_pixel: int = 0
     # Scalar OR per-axis; the validator requires exactly one form of each.
-    well_spacing_mm: Optional[float] = Field(None, gt=0)
-    well_spacing_x_mm: Optional[float] = Field(None, gt=0)
-    well_spacing_y_mm: Optional[float] = Field(None, gt=0)
-    well_size_mm: Optional[float] = Field(None, gt=0)
-    well_size_x_mm: Optional[float] = Field(None, gt=0)
-    well_size_y_mm: Optional[float] = Field(None, gt=0)
+    well_spacing_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    well_spacing_x_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    well_spacing_y_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    well_size_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    well_size_x_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
+    well_size_y_mm: Optional[float] = Field(None, gt=0, allow_inf_nan=False)
     well_shape: str = Field("circle", pattern="^(circle|rectangle)$")
     number_of_skip: int = Field(0, ge=0)
     # Per-format rotation override: null/absent => inherit the holder angle.
     # When set it is the ABSOLUTE total angle for this format, never a delta.
-    rotation_deg: Optional[float] = None
+    rotation_deg: Optional[float] = Field(None, allow_inf_nan=False)
     # Provenance, one block per measurement - they come from different
     # gestures and must not overwrite each other: `measured` is the A1 touch,
     # `rotation_measured` the multi-well fit behind rotation_deg.
