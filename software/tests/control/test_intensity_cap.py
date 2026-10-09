@@ -162,3 +162,41 @@ def test_capped_slider_raising_cap_restores_full_range(qtbot):
     slider.set_cap(100)
     slider.setValue(50)
     assert slider.value() == 50
+
+
+from squid.intensity_calibration import write_calibration
+from tests.squid.calibration_fixtures import make_calibration
+
+
+def _write_488_calibration(scope, tmp_path):
+    calibrations = tmp_path / "machine_configs" / "intensity_calibrations"
+    calibrations.mkdir(parents=True, exist_ok=True)
+    factor = scope.low_level_drivers.microcontroller.illumination_intensity_factor
+    calibration = make_calibration(
+        wavelength_nm=488, port="D2", channel="Fluorescence 488 nm Ex", max_output=0.5, factor=factor
+    )
+    write_calibration(calibration, calibrations / "488.csv")
+
+
+def test_calibrated_channel_is_not_capped_before_the_lut(scope, live, tmp_path):
+    _write_488_calibration(scope, tmp_path)
+    assert live.get_intensity_cap_percent(_acquisition_channel("Fluorescence 488 nm Ex")) == pytest.approx(100.0)
+    live.currentConfiguration = _acquisition_channel("Fluorescence 488 nm Ex", intensity=80.0)
+    scope.illumination_controller.set_intensity = MagicMock()
+    live.update_illumination()
+    scope.illumination_controller.set_intensity.assert_called_once_with(488, 80.0)
+
+
+def test_intensity_description_names_the_unit(scope, live, tmp_path):
+    assert live.get_intensity_description(_acquisition_channel("BF LED matrix full")) == {
+        "intensity_unit": "dac_percent"
+    }
+    assert (
+        live.get_intensity_description(_acquisition_channel("Fluorescence 405 nm Ex"))["intensity_unit"]
+        == "dac_percent"
+    )
+    _write_488_calibration(scope, tmp_path)
+    assert (
+        live.get_intensity_description(_acquisition_channel("Fluorescence 488 nm Ex"))["intensity_unit"]
+        == "power_percent"
+    )
