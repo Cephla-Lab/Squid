@@ -75,7 +75,7 @@ class SensorLimitExceeded(RuntimeError):
 
 
 class WatchdogDeadlineMissed(RuntimeError):
-    """A meter read outlasted the controller's watchdog, which may have turned the light off mid-reading."""
+    """The controller heard nothing for longer than its watchdog, which may have turned the light off mid-channel."""
 
 
 @dataclass(frozen=True)
@@ -140,35 +140,70 @@ def software_commit() -> str:
         return "unknown"
 
 
+class WatchdogDeadline:
+    """The controller's watchdog turns all illumination off - and disarms itself - when no message reaches it for
+    timeout_s. A stall anywhere in a channel (a slow read, a settle or hold that overslept) can leave such a gap, so
+    every message the channel sends is recorded with sent(), and check() comes before what needs the watchdog to have
+    held: turning the light on (it would be unprotected) and every reading (the light may have gone off under it).
+    Once any message has seen a gap that long, every later check() fails: a message after the watchdog fired does not
+    arm it again. timeout_s None: the watchdog is not ours to keep (the heartbeat runs), nothing is checked."""
+
+    def __init__(self, timeout_s: Optional[float] = None, clock: Callable[[], float] = time.monotonic):
+        self.timeout_s = timeout_s
+        self.clock = clock
+        self._last_message = clock()
+        self._missed_gap_s: Optional[float] = None
+
+    def _note_gap(self) -> None:
+        gap = self.clock() - self._last_message
+        if self.timeout_s is not None and gap > self.timeout_s and self._missed_gap_s is None:
+            self._missed_gap_s = gap
+
+    def sent(self) -> None:
+        self._note_gap()
+        self._last_message = self.clock()
+
+    def check(self) -> None:
+        self._note_gap()
+        if self._missed_gap_s is not None:
+            raise WatchdogDeadlineMissed(
+                f"the controller heard nothing for {self._missed_gap_s:.1f} s, longer than its {self.timeout_s:g} s "
+                "watchdog, which may have turned the light off: this channel's readings cannot be trusted; check the "
+                "meter connection and that the computer is not overloaded, then run it again"
+            )
+
+
 class MicrocontrollerDacOutput:
     """One illumination port driven through the controller DAC at a raw commanded %, bypassing the lookup and the cap.
-    Remembers what it last commanded, which is also what the simulated meter reads."""
+    Remembers what it last commanded, which is also what the simulated meter reads. Light on is refused once the
+    deadline was missed; DAC levels and light off are always sent."""
 
-    def __init__(self, microcontroller, source_code: int):
+    def __init__(self, microcontroller, source_code: int, deadline: Optional[WatchdogDeadline] = None):
         self._mcu = microcontroller
         self._source_code = source_code
+        self._deadline = WatchdogDeadline() if deadline is None else deadline
         # Firmware 1.0+ can turn every port off at once: a port turned on elsewhere must not light the sensor
         self._all_ports = microcontroller.supports_multi_port()
         self.commanded_percent = 0.0
         self.is_on = False
 
-    def set_percent(self, percent: float) -> None:
-        self._mcu.set_illumination(self._source_code, percent)
+    def _send(self, command, *args) -> None:
+        command(*args)
+        self._deadline.sent()
         self._mcu.wait_till_operation_is_completed()
+
+    def set_percent(self, percent: float) -> None:
+        self._send(self._mcu.set_illumination, self._source_code, percent)
         self.commanded_percent = percent
 
     def on(self) -> None:
-        self._mcu.turn_on_illumination()
-        self._mcu.wait_till_operation_is_completed()
+        self._deadline.check()
+        self._send(self._mcu.turn_on_illumination)
         self.is_on = True
 
     def off(self) -> None:
         """All illumination off (every port on firmware 1.0+, the selected source on older firmware)."""
-        if self._all_ports:
-            self._mcu.turn_off_all_ports()
-        else:
-            self._mcu.turn_off_illumination()
-        self._mcu.wait_till_operation_is_completed()
+        self._send(self._mcu.turn_off_all_ports if self._all_ports else self._mcu.turn_off_illumination)
         self.is_on = False
 
     def safe_off(self) -> None:
@@ -181,9 +216,10 @@ class MicrocontrollerDacOutput:
 
 class _Measurer:
     """Takes readings with the light pulsed on at a raw DAC level: waits, reads until two readings agree, feeds the
-    watchdog before every read, and enforces the sensor limit on every reading."""
+    watchdog before every read, checks its deadline around every read, and enforces the sensor limit on every
+    reading."""
 
-    def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive, watchdog_timeout_s=None):
+    def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive, deadline):
         self.output = output
         self.meter = meter
         self.sensor_limit_mw = sensor_limit_mw
@@ -191,23 +227,21 @@ class _Measurer:
         self.sleep = sleep
         self.clock = clock
         self.keepalive = keepalive
-        self.watchdog_timeout_s = watchdog_timeout_s
+        self.deadline = deadline
         self.sigma_dark = 0.0
         self.on_times: List[float] = []
 
-    def _fed_read(self) -> float:
-        """Feed the watchdog, read, and fail if the read outlasted the watchdog: it may have turned the light off
-        during the reading (and disarmed itself; the session arms it again before the next channel)."""
+    def _feed(self) -> None:
+        self.deadline.check()
         self.keepalive()
-        fed_at = self.clock()
+        self.deadline.sent()
+
+    def _fed_read(self) -> float:
+        """Feed the watchdog, read, and fail if the watchdog may have fired before or during the reading (it then
+        stays disarmed; the session arms it again before the next channel)."""
+        self._feed()
         reading = self.meter.read_mw()
-        elapsed = self.clock() - fed_at
-        if self.watchdog_timeout_s is not None and elapsed > self.watchdog_timeout_s:
-            raise WatchdogDeadlineMissed(
-                f"a meter read took {elapsed:.1f} s, longer than the controller's {self.watchdog_timeout_s:g} s "
-                "watchdog, which may have turned the light off: this channel's readings cannot be trusted; check the "
-                "meter connection and run it again"
-            )
+        self.deadline.check()
         return reading
 
     def _read(self, percent: float) -> float:
@@ -264,7 +298,7 @@ class _Measurer:
             while self.clock() - begin < duration_s:
                 if cancelled():
                     raise CalibrationCancelled("cancelled during the continuous hold")
-                self.keepalive()
+                self._feed()
                 self.sleep(min(0.5, duration_s))
             end, _ = self._converged(percent)
         finally:
@@ -313,15 +347,15 @@ def calibrate_channel(
     progress: Progress = lambda message, done, total: None,
     cancelled: Callable[[], bool] = lambda: False,
     keepalive: Callable[[], None] = lambda: None,
-    watchdog_timeout_s: Optional[float] = None,
+    deadline: Optional[WatchdogDeadline] = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     now: Optional[datetime.datetime] = None,
 ) -> ChannelResult:
     """Sweep, check, fit, verify and hold one channel (design §5).
 
-    Raises CalibrationCancelled, SensorLimitExceeded, PowerMeterError or CalibrationError. However it ends, all
-    illumination is off and the DAC at 0 afterwards.
+    Raises CalibrationCancelled, SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError or CalibrationError.
+    However it ends, all illumination is off and the DAC at 0 afterwards. `deadline` is the one `output` sends through.
     """
     if meter_info.wavelength_range_nm is not None:
         low, high = meter_info.wavelength_range_nm
@@ -335,7 +369,7 @@ def calibrate_channel(
         sleep,
         clock,
         keepalive,
-        watchdog_timeout_s,
+        WatchdogDeadline(clock=clock) if deadline is None else deadline,
     )
     dac = np.linspace(0.0, target.ceiling_percent, int(round(1.0 / SWEEP_STEP_FRACTION)) + 1)
     x = dac / 100.0 * factor
@@ -652,9 +686,11 @@ class CalibrationSession:
             self.microcontroller.send_heartbeat()
 
     # ---------------------------------------------------------------- driving the light
-    def _output_for(self, target: ChannelTarget) -> MicrocontrollerDacOutput:
+    def _output_for(
+        self, target: ChannelTarget, deadline: Optional[WatchdogDeadline] = None
+    ) -> MicrocontrollerDacOutput:
         self.hardware_touched = True
-        self._active = MicrocontrollerDacOutput(self.microcontroller, target.source_code)
+        self._active = MicrocontrollerDacOutput(self.microcontroller, target.source_code, deadline)
         return self._active
 
     def test_beam_on(self, target: ChannelTarget, percent_of_ceiling: float) -> None:
@@ -701,10 +737,12 @@ class CalibrationSession:
                 if self._cancelled:
                     break
                 self._arm_watchdog()  # in case it fired during the previous channel
+                owned = self._paused_heartbeat_s is not None
+                deadline = WatchdogDeadline(control._def.WATCHDOG_TIMEOUT_S if owned else None, self.clock)
                 try:
                     result: Union[ChannelResult, Exception] = calibrate_channel(
                         target,
-                        self._output_for(target),
+                        self._output_for(target, deadline),
                         self.meter,
                         self.factor,
                         meter_info=self.meter.info,
@@ -715,9 +753,7 @@ class CalibrationSession:
                         progress=progress,
                         cancelled=lambda: self._cancelled,
                         keepalive=self.feed_watchdog,
-                        watchdog_timeout_s=(
-                            control._def.WATCHDOG_TIMEOUT_S if self._paused_heartbeat_s is not None else None
-                        ),
+                        deadline=deadline,
                         sleep=self.sleep,
                         clock=self.clock,
                     )

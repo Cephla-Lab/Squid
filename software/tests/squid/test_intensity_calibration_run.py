@@ -19,6 +19,8 @@ from squid.intensity_calibration_run import (
     ChannelTarget,
     MicrocontrollerDacOutput,
     SensorLimitExceeded,
+    WatchdogDeadline,
+    WatchdogDeadlineMissed,
     calibrate_channel,
     measured_in_label,
 )
@@ -512,3 +514,49 @@ def test_a_failed_config_save_restores_the_previous_calibration(repo, monkeypatc
     with pytest.raises(OSError, match="read-only"):
         session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
     _unchanged(session, repo, path, before, before_png)
+
+
+@pytest.mark.parametrize("where", ["settle", "hold"])
+def test_a_pause_outside_a_read_that_outlasts_the_watchdog_fails_the_channel(repo, where):
+    # the watchdog can fire during any gap in messages, not only during a meter read
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = CalibrationSession(mcu, repo)
+    session.settle_s, session.clock = 0.01, time.clock
+    session.hold_s = 10.0 if where == "hold" else 0.0
+    stalled = []
+
+    def sleep(seconds):
+        time.sleep(seconds)
+        active = session._active
+        mid_sweep = active is not None and active.is_on and active.commanded_percent >= 50
+        at_settle = where == "settle" and seconds == session.settle_s and mid_sweep
+        in_hold = where == "hold" and seconds == 0.5
+        if not stalled and (at_settle or in_hold):
+            stalled.append(True)
+            mcu.stall(6.0)
+
+    session.sleep = sleep
+    session.connect()
+    results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
+    first, second = results["Fluorescence 405 nm Ex"], results["Fluorescence 730 nm Ex"]
+    assert stalled and isinstance(first, WatchdogDeadlineMissed) and "watchdog" in str(first)
+    assert isinstance(second, ChannelResult)
+    assert mcu.unprotected_on == 0
+
+
+def test_a_gap_any_message_sees_fails_every_later_check():
+    # the watchdog is one-shot: once a gap let it fire, a later message (a feed, light off) does not arm it again
+    time = FakeTime()
+    deadline = WatchdogDeadline(5.0, time.clock)
+    time.sleep(4.0)
+    deadline.check()
+    deadline.sent()
+    time.sleep(6.0)
+    deadline.sent()  # light off, or a feed: never refused, but the gap is remembered
+    with pytest.raises(WatchdogDeadlineMissed, match="6.0 s"):
+        deadline.check()
+    deadline.sent()
+    with pytest.raises(WatchdogDeadlineMissed):
+        deadline.check()
+    WatchdogDeadline(None, time.clock).check()  # no watchdog of ours to keep: nothing to miss
