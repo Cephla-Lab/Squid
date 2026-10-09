@@ -28,6 +28,7 @@ def make_calibration(
     noise=0.0,
     seed=0,
     verification="pass",
+    source_code=None,
 ) -> IntensityCalibration:
     """A calibration as a sweep of `model` would make it (dark already subtracted)."""
     dac = DAC * max_output
@@ -53,7 +54,12 @@ def make_calibration(
         sigma_dark=0.0,
         pulse_on_s=0.1,
     )
-    return replace(calibration, verification=verification, verification_points=((1.0, 0.5), (10.0, -0.4), (100.0, 0.1)))
+    return replace(
+        calibration,
+        verification=verification,
+        verification_points=((1.0, 0.5), (10.0, -0.4), (100.0, 0.1)),
+        source_code=source_code,
+    )
 
 
 def write_legacy_csv(path, dac, power):

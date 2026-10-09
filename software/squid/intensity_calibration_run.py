@@ -499,6 +499,7 @@ def calibrate_channel(
         verification_points=tuple(points),
         hold_s=float(hold_s if droop is not None else 0.0),
         meter_range_mw=float(range_mw),
+        source_code=target.source_code,
         unsettled_readings=unsettled,
         hold_droop_fraction=None if droop is None else float(droop),
     )
@@ -680,6 +681,7 @@ class CalibrationSession:
             self.factor,
             target.max_output,
             controller_port=target.controller_port,
+            source_code=target.source_code,
         )
         return status or "none"
 
@@ -853,10 +855,11 @@ class CalibrationSession:
             if c.channel not in channels
             or channels[c.channel].controller_port != c.controller_port
             or channels[c.channel].wavelength_nm != c.wavelength_nm
+            or config.get_source_code(channels[c.channel]) != c.source_code
         ]
         if changed:
             raise ValueError(
-                f"changed in the illumination config since the run (renamed, removed or re-ported): "
+                f"changed in the illumination config since the run (renamed, removed, re-ported or remapped): "
                 f"{', '.join(changed)}; run the calibration again"
             )
         now = now or datetime.datetime.now()

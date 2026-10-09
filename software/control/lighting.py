@@ -293,7 +293,8 @@ class IlluminationController:
             self._calibration_cache[path] = cached
         calibration = cached[1]
         if calibration is not None and channel is not None:
-            mismatch = calibration.identity_mismatch(channel.wavelength_nm, channel.controller_port)
+            source_code = self.config_repo.get_illumination_config().get_source_code(channel)
+            mismatch = calibration.identity_mismatch(channel.wavelength_nm, channel.controller_port, source_code)
             if mismatch:
                 self._log_once(
                     logging.WARNING, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {mismatch}"

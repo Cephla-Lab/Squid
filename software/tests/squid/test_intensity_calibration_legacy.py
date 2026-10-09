@@ -168,3 +168,19 @@ def test_calibration_status_says_when_the_channel_moved(tmp_path):
     assert calibration_status(tmp_path, "405nm_D1.csv", 405, 0.6, 1.0, controller_port="D1") == (
         "405nm_D1.csv: calibrated 2026-10-08"
     )
+
+
+def test_a_calibration_measured_on_another_controller_source_is_not_applied(tmp_path):
+    # review 4: remapping D2 from source 12 to 13 kept the calibration, sending its DAC values to another source
+    c = make_calibration(wavelength_nm=488, port="D2", channel="Fluorescence 488 nm Ex", source_code=12)
+    path = tmp_path / c.file_name
+    write_calibration(c, path)
+    loaded = load_calibration(path)
+    assert loaded.source_code == 12 and loaded.identity_mismatch(488, "D2", 12) is None
+    mismatch = loaded.identity_mismatch(488, "D2", 13)
+    assert "source 12" in mismatch and "source 13" in mismatch and mismatch.endswith("recalibrate")
+    status = calibration_status(tmp_path, c.file_name, 488, 0.6, 1.0, controller_port="D2", source_code=13)
+    assert status.startswith(f"{c.file_name}: not applied:")
+    # a file written before the source was recorded is compared by wavelength and port, as before
+    path.write_text("".join(line for line in path.read_text().splitlines(True) if "controller_source_code" not in line))
+    assert load_calibration(path).identity_mismatch(488, "D2", 13) is None

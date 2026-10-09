@@ -222,6 +222,9 @@ class IntensityCalibration:
     hold_droop_fraction: Optional[float] = None  # (end - start) / start of that check: how live view departs
     meter_range_mw: Optional[float] = None  # the one meter range the channel was read on; None: auto-ranged
     unsettled_readings: Optional[int] = None  # sweep points whose readings never agreed (before re-measuring)
+    # The controller source its port drove when measured (controller_port_mapping); None in files from before
+    # 2026-10-09, which are compared by wavelength and port only
+    source_code: Optional[int] = None
 
     @classmethod
     def from_sweep(
@@ -299,14 +302,19 @@ class IntensityCalibration:
         """The slider runs the full range: the ceiling is inside the lookup."""
         return 100.0
 
-    def identity_mismatch(self, wavelength_nm: Optional[int], controller_port: Optional[str]) -> Optional[str]:
-        """Why this calibration does not belong to a channel with this wavelength and port, or None when it does: a
-        lookup measured on one port says nothing about the source on another."""
-        if wavelength_nm == self.wavelength_nm and controller_port == self.controller_port:
+    def identity_mismatch(
+        self, wavelength_nm: Optional[int], controller_port: Optional[str], source_code: Optional[int]
+    ) -> Optional[str]:
+        """Why this calibration does not belong to a channel with this wavelength, port and controller source, or None
+        when it does: a lookup measured on one source says nothing about another - also when the port is remapped
+        to another source in controller_port_mapping."""
+        same_source = self.source_code is None or source_code == self.source_code
+        if wavelength_nm == self.wavelength_nm and controller_port == self.controller_port and same_source:
             return None
+        measured = "" if self.source_code is None else f" (controller source {self.source_code})"
         return (
-            f"{self.file_name} was measured for {self.wavelength_nm} nm on {self.controller_port}; the channel is now "
-            f"{wavelength_nm} nm on {controller_port}: recalibrate"
+            f"{self.file_name} was measured for {self.wavelength_nm} nm on {self.controller_port}{measured}; the "
+            f"channel is now {wavelength_nm} nm on {controller_port} (controller source {source_code}): recalibrate"
         )
 
     def describe(self) -> Dict[str, object]:
@@ -391,6 +399,7 @@ def write_calibration(calibration: IntensityCalibration, path: Path) -> None:
         "hold_droop_fraction": "not run" if c.hold_droop_fraction is None else f"{c.hold_droop_fraction:+.5f}",
         "meter_range_mw": "auto" if c.meter_range_mw is None else f"{c.meter_range_mw:.6g}",
         "unsettled_readings": "not counted" if c.unsettled_readings is None else str(c.unsettled_readings),
+        "controller_source_code": "unknown" if c.source_code is None else str(c.source_code),
     }
     table = pd.DataFrame(
         {
@@ -514,6 +523,7 @@ def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> Intensity
         hold_droop_fraction=_optional_float(header.get("hold_droop_fraction", "not run")),
         meter_range_mw=_optional_number(header.get("meter_range_mw"), "auto", float),
         unsettled_readings=_optional_number(header.get("unsettled_readings"), "not counted", int),
+        source_code=_optional_number(header.get("controller_source_code"), "unknown", int),
     )
 
 
@@ -608,7 +618,9 @@ class LegacyCalibration:
     def cap_percent(self, max_output: float) -> float:
         return max_output * 100.0
 
-    def identity_mismatch(self, wavelength_nm: Optional[int], controller_port: Optional[str]) -> Optional[str]:
+    def identity_mismatch(
+        self, wavelength_nm: Optional[int], controller_port: Optional[str], source_code: Optional[int]
+    ) -> Optional[str]:
         """Legacy files record neither wavelength nor port: nothing to compare (they apply by file name, as before)."""
         return None
 
@@ -673,6 +685,7 @@ def calibration_status(
     factor: float,
     max_output: float,
     controller_port: Optional[str] = None,
+    source_code: Optional[int] = None,
 ) -> str:
     """One line for the channel editor and the calibration dialog; "" when the channel has no calibration."""
     path = resolve_calibration_path(calibrations_dir, referenced_file, wavelength_nm)
@@ -682,7 +695,7 @@ def calibration_status(
         calibration = load_calibration(path)
     except CalibrationFileError as e:
         return f"invalid file: {e}"
-    mismatch = calibration.identity_mismatch(wavelength_nm, controller_port) if controller_port else None
+    mismatch = calibration.identity_mismatch(wavelength_nm, controller_port, source_code) if controller_port else None
     if mismatch:
         return f"{path.name}: not applied: {mismatch}"
     return f"{path.name}: {calibration.status(factor, max_output)}"

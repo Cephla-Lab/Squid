@@ -773,3 +773,15 @@ def test_a_stall_while_setting_up_the_test_beam_keeps_it_off(repo):
     assert mcu.unprotected_on == 0
     assert session.source_state() == (False, 0.0)
     assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat is back
+
+
+def test_save_refuses_when_the_port_was_remapped_since_the_run(repo):
+    session = _session(repo)
+    calibration = _calibrated(session)
+    assert calibration.source_code == 11  # D1 in this config
+    config = repo.get_illumination_config(for_edit=True)
+    config.controller_port_mapping["D1"] = 12
+    repo.save_illumination_config(config)
+    with pytest.raises(ValueError, match="run the calibration again"):
+        session.save([calibration])
+    assert not (session.calibrations_dir() / "405nm_D1.csv").exists()
