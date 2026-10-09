@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+import control._def
 import squid.logging
 from control.models.illumination_config import IlluminationChannelConfig, IlluminationType
 from squid.intensity_calibration import (
@@ -555,11 +556,14 @@ class CalibrationSession:
         return self.meter.info
 
     def disconnect(self) -> None:
-        if self.meter is not None:
+        """Never raises: it runs while the dialog closes, which must still turn the beam off and restore the live
+        channel when the meter was unplugged."""
+        meter, self.meter = self.meter, None
+        if meter is not None:
             try:
-                self.meter.close()
-            finally:
-                self.meter = None
+                meter.close()
+            except PowerMeterError as e:
+                _log.warning(f"{e}")
 
     def read_mw(self) -> float:
         if self.meter is None:
@@ -581,8 +585,13 @@ class CalibrationSession:
                 self._paused_heartbeat_s = interval
 
     def _resume_heartbeat(self) -> None:
+        """Give the watchdog back to the background heartbeat, re-armed first: the firmware's watchdog is one-shot
+        (it disables itself after turning the light off), so if it fired while this session owned it - the code
+        driving the light stopped - it would otherwise stay off for the rest of the session."""
         if self._paused_heartbeat_s is not None:
             interval, self._paused_heartbeat_s = self._paused_heartbeat_s, None
+            self.microcontroller.set_watchdog_timeout(control._def.WATCHDOG_TIMEOUT_S)
+            self.microcontroller.wait_till_operation_is_completed()
             self.microcontroller.start_heartbeat(interval_s=interval)
 
     def feed_watchdog(self) -> None:

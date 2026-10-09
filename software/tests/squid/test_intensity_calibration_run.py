@@ -254,7 +254,8 @@ def test_the_run_owns_the_watchdog_and_gives_it_back(repo):
     assert session.watchdog_protected
     session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)
     calls = session.microcontroller.calls
-    assert calls[0] == ("stop_heartbeat",) and calls[-1] == ("start_heartbeat", 2.5)
+    # the watchdog is one-shot: it is re-armed before the heartbeat comes back, in case it fired during the run
+    assert calls[0] == ("stop_heartbeat",) and calls[-2:] == [("set_watchdog_timeout", 5.0), ("start_heartbeat", 2.5)]
     assert calls.count(("heartbeat",)) > 200  # fed before every reading
 
 
@@ -277,7 +278,8 @@ def test_the_test_beam_owns_the_watchdog_while_on(repo):
     assert session.microcontroller.calls[-1] == ("heartbeat",)
     session.test_beam_off(LASER)
     assert session.source_state() == (False, 0.0)
-    assert session.microcontroller.calls[-1] == ("start_heartbeat", 2.5) and session.hardware_touched
+    assert session.microcontroller.calls[-2:] == [("set_watchdog_timeout", 5.0), ("start_heartbeat", 2.5)]
+    assert session.hardware_touched
 
 
 def test_without_a_watchdog_nothing_is_paused_or_fed(repo):
@@ -343,3 +345,33 @@ def test_save_refuses_when_the_channel_changed_since_the_run(repo):
     with pytest.raises(ValueError, match="run the calibration again"):
         session.save([calibration])
     assert not (session.calibrations_dir() / "405nm_D1.csv").exists()
+
+
+class _ClosingFails:
+    info = None
+
+    def close(self):
+        raise PowerMeterError("closing the power meter failed: unplugged")
+
+
+def test_disconnect_never_raises(repo):
+    session = _session(repo)
+    session.meter = _ClosingFails()
+    session.disconnect()
+    assert session.meter is None
+
+
+class _WavelengthFailsFor405(SimulatedPowerMeter):
+    def set_wavelength(self, nm):
+        if nm == 405:
+            raise PowerMeterError("power meter did not take 'SENS:CORR:WAV 405'")
+        super().set_wavelength(nm)
+
+
+def test_a_meter_error_on_set_wavelength_fails_only_that_channel(repo):
+    session = _session(repo)
+    session.connect()
+    session.meter = _WavelengthFailsFor405(session.source_state, seed=0)
+    results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
+    assert isinstance(results["Fluorescence 405 nm Ex"], PowerMeterError)
+    assert isinstance(results["Fluorescence 730 nm Ex"], ChannelResult)

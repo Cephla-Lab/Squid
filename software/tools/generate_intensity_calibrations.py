@@ -56,9 +56,8 @@ def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
         serial_device = microcontroller.get_microcontroller_serial_device(
             version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
         )
-    session = CalibrationSession(
-        microcontroller.Microcontroller(serial_device=serial_device), config_repo or ConfigRepository()
-    )
+    mcu = microcontroller.Microcontroller(serial_device=serial_device)
+    session = CalibrationSession(mcu, config_repo or ConfigRepository())
     if args.settle_s is not None:
         session.settle_s = args.settle_s
     if args.hold_s is not None:
@@ -79,6 +78,18 @@ def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
         session.disconnect()
         return 2
     calibrations = []
+    # Arm the illumination watchdog as the GUI does at startup (Microscope._prepare_for_use); the session owns it while
+    # the light is on, so a hung run turns the light off within the timeout.
+    if mcu.firmware_version >= (1, 1):
+        mcu.set_watchdog_timeout(control._def.WATCHDOG_TIMEOUT_S)
+        mcu.wait_till_operation_is_completed()
+        mcu.start_heartbeat(interval_s=control._def.WATCHDOG_TIMEOUT_S / 2)
+        print(f"Illumination watchdog armed ({control._def.WATCHDOG_TIMEOUT_S:g} s).")
+    else:
+        print(
+            "This controller has no illumination watchdog (firmware before 1.1): if this tool stops responding, "
+            "turn the light off at the controller."
+        )
     try:
         results = session.run(
             targets,
@@ -100,6 +111,7 @@ def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
                 print(f"saved {path}" + (f" (previous file moved to {backup})" if backup else ""))
     finally:
         session.disconnect()
+        mcu.stop_heartbeat()
     all_pass = len(calibrations) == len(targets) and all(c.verification == "pass" for c in calibrations)
     return 0 if all_pass else 1
 

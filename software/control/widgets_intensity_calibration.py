@@ -278,6 +278,8 @@ class IntensityCalibrationDialog(QDialog):
         return self.busy_reason() if self.busy_reason else None
 
     def _connect(self):
+        # the session would stop feeding the watchdog while a slow meter answers Connect
+        self.button_test_beam.setChecked(False)
         try:
             info = self.session.connect()
         except PowerMeterError as e:
@@ -297,10 +299,10 @@ class IntensityCalibrationDialog(QDialog):
         self.reading_timer.start()
 
     def _update_reading(self):
-        if self._running() or self.session.meter is None:
-            return
         if self._test_beam_target is not None:
             self.session.feed_watchdog()
+        if self._running() or self.session.meter is None:
+            return
         try:
             reading = self.session.read_mw()
         except PowerMeterError as e:
@@ -333,7 +335,11 @@ class IntensityCalibrationDialog(QDialog):
             self.test_beam_timer.stop()
             return
         target = self._selected_target()
-        reason = self._busy()
+        reason = self._busy() or (
+            None
+            if self.session.meter is not None
+            else "Connect a power meter first: the test beam is for centering it."
+        )
         if target is None or self._running() or reason or not self._confirm_test_beam(target):
             if reason:
                 self._say(f"Test beam not turned on. {reason}")

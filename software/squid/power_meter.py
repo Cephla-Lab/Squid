@@ -103,13 +103,16 @@ class ThorlabsPowerMeter:
             resource_manager = _open_resource_manager()
         if resource is None:
             resource = find_thorlabs_resource(resource_manager.list_resources())
-        self._inst = resource_manager.open_resource(resource)
-        self._inst.timeout = METER_TIMEOUT_MS
+        try:
+            self._inst = resource_manager.open_resource(resource)
+            self._inst.timeout = METER_TIMEOUT_MS
+        except Exception as e:  # pyvisa's VisaIOError (busy, no permission) and friends
+            raise PowerMeterError(f"could not open the power meter at {resource}: {e}") from e
         idn = [part.strip() for part in self._query("*IDN?").split(",")]
         model = idn[1] if len(idn) > 1 else ""
-        self._inst.write("SENS:POW:UNIT W")
-        self._inst.write(f"SENS:AVER:COUN {int(averaging)}")
-        self._inst.write("SENS:POW:RANG:AUTO ON")
+        self._write("SENS:POW:UNIT W")
+        self._write(f"SENS:AVER:COUN {int(averaging)}")
+        self._write("SENS:POW:RANG:AUTO ON")
         # A PM16 has its sensor built in and may not answer the sensor queries; the commands above are the ones the
         # pre-2026-10 tools/PM16.py used with a PM16
         sensor_idn = self._optional_query("SYST:SENS:IDN?")
@@ -126,6 +129,12 @@ class ThorlabsPowerMeter:
             validated=family in VALIDATED_MODELS,
         )
         _log.info(f"power meter connected: {self.info} ({resource})")
+
+    def _write(self, command: str) -> None:
+        try:
+            self._inst.write(command)
+        except Exception as e:  # pyvisa's VisaIOError (timeout, disconnect) and friends
+            raise PowerMeterError(f"power meter did not take '{command}': {e}") from e
 
     def _query(self, command: str) -> str:
         try:
@@ -154,7 +163,7 @@ class ThorlabsPowerMeter:
         return (low, high) if low is not None and high is not None and low < high else None
 
     def set_wavelength(self, wavelength_nm: float) -> None:
-        self._inst.write(f"SENS:CORR:WAV {float(wavelength_nm):g}")
+        self._write(f"SENS:CORR:WAV {float(wavelength_nm):g}")
 
     def read_mw(self) -> float:
         answer = self._query("MEAS:POW?")
@@ -167,7 +176,10 @@ class ThorlabsPowerMeter:
         return watts * 1000.0
 
     def close(self) -> None:
-        self._inst.close()
+        try:
+            self._inst.close()
+        except Exception as e:  # pyvisa's VisaIOError, e.g. the meter was unplugged
+            raise PowerMeterError(f"closing the power meter failed: {e}") from e
 
 
 # (light on, DAC output as a fraction of the DAC's full scale): what SimulatedPowerMeter asks its source for

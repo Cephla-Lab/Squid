@@ -34,7 +34,9 @@ def test_cli_calibrates_and_saves_in_simulation(tmp_path, monkeypatch, capsys):
     status = _tool().main(["--simulation", "--settle-s", "0", "--hold-s", "0", "--save"], config_repo=repo)
 
     assert status == 0
-    assert "Fluorescence 405 nm Ex: " in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Fluorescence 405 nm Ex: " in out
+    assert "Illumination watchdog armed" in out  # the simulated controller reports firmware 1.1+
     assert (tmp_path / "machine_configs" / "intensity_calibrations" / "405nm_D1.csv").is_file()
     assert repo.get_illumination_config().channels[0].intensity_calibration_file == "405nm_D1.csv"
 

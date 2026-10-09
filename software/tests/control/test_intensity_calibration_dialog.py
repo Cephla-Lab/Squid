@@ -194,3 +194,22 @@ def test_software_light_source_has_nothing_to_calibrate(qtbot, repo, answers):
     dialog = _dialog(qtbot, session)
     assert dialog.table.rowCount() == 0
     assert "light source itself" in dialog.label_note.text()
+
+
+def test_test_beam_needs_a_connected_meter(qtbot, session, answers):
+    # without a meter nothing reads the beam or feeds the watchdog the session takes over
+    dialog = _dialog(qtbot, session)
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "Connect a power meter first" in dialog.label_result.text()
+
+
+def test_connect_turns_the_test_beam_off_first(qtbot, session, answers):
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    assert session.source_state()[0] is True
+    dialog.button_connect.click()
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)

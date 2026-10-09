@@ -102,6 +102,9 @@ class FakeMicrocontroller:
     def send_heartbeat(self):
         self.calls.append(("heartbeat",))
 
+    def set_watchdog_timeout(self, timeout_s):
+        self.calls.append(("set_watchdog_timeout", timeout_s))
+
     def stop_heartbeat(self):
         self.calls.append(("stop_heartbeat",))
         self.heartbeat_interval_s = None

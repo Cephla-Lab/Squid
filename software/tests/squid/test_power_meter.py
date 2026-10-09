@@ -27,10 +27,12 @@ ANSWERS = {
 
 
 class FakeInstrument:
-    def __init__(self, power_w="1.5E-03", answers=None, fail=()):
+    def __init__(self, power_w="1.5E-03", answers=None, fail=(), fail_writes=(), fail_close=False):
         self.power_w = power_w
         self.answers = dict(ANSWERS if answers is None else answers)
         self.fail = set(fail)
+        self.fail_writes = tuple(fail_writes)
+        self.fail_close = fail_close
         self.writes = []
         self.closed = False
         self.timeout = None
@@ -41,9 +43,13 @@ class FakeInstrument:
         return self.answers.get(command, f"{self.power_w}\n")
 
     def write(self, command):
+        if command.startswith(self.fail_writes) if self.fail_writes else False:
+            raise OSError(f"VI_ERROR_CONN_LOST ({command})")
         self.writes.append(command)
 
     def close(self):
+        if self.fail_close:
+            raise OSError("VI_ERROR_CONN_LOST (close)")
         self.closed = True
 
 
@@ -148,3 +154,21 @@ def test_simulated_source_models():
     assert float(simulated_led_mw(0.492)) == pytest.approx(312.0)
     assert float(simulated_led_mw(0.6)) == pytest.approx(290.0)
     assert float(simulated_led_mw(1.0)) == pytest.approx(290.0)
+
+
+class _UnopenableResourceManager(FakeResourceManager):
+    def open_resource(self, name):
+        raise OSError("VI_ERROR_RSRC_BUSY")
+
+
+def test_every_visa_failure_is_a_power_meter_error():
+    with pytest.raises(PowerMeterError, match="could not open"):
+        ThorlabsPowerMeter(
+            resource="USB0::0x1313::0x8072::X::INSTR", resource_manager=_UnopenableResourceManager([], None)
+        )
+    with pytest.raises(PowerMeterError, match="did not take 'SENS:POW:UNIT W'"):
+        _meter(FakeInstrument(fail_writes=("SENS:POW:UNIT",)))
+    with pytest.raises(PowerMeterError, match="did not take 'SENS:CORR:WAV 405'"):
+        _meter(FakeInstrument(fail_writes=("SENS:CORR:WAV",))).set_wavelength(405)
+    with pytest.raises(PowerMeterError, match="closing"):
+        _meter(FakeInstrument(fail_close=True)).close()
