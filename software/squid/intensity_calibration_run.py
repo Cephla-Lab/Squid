@@ -61,7 +61,7 @@ DRIFT_WARN_FRACTION = 0.02
 HOLD_PERCENT = 50.0
 HOLD_S = 10.0
 # Light off this long before the drift check and the verification: they come right after the sweep's top end, and a
-# source with a thermal memory reads low then (the bench 561 nm laser: about 2 % low just after full power, time
+# source with a thermal memory reads low then (the bench 561 nm LED: about 2 % low just after full power, time
 # constant 5-10 s, settled within 30-60 s; it failed both checks twice without the rest)
 REST_BEFORE_CHECKS_S = 30.0
 DROOP_WARN_FRACTION = 0.03
@@ -506,7 +506,7 @@ def calibrate_channel(
     if calibration.drift_fraction > DRIFT_WARN_FRACTION:
         warnings.append(
             f"source drifted {calibration.drift_fraction * 100:.1f} % between the sweep and a re-measurement after it: "
-            "re-run once it has warmed up; if it repeats, its output depends on its recent power (e.g. a DPSS laser) "
+            "re-run once it has warmed up; if it repeats, its output depends on its recent power (it heats up) "
             "and varies this much in use"
         )
     if droop is not None and abs(droop) > DROOP_WARN_FRACTION:

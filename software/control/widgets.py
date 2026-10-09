@@ -4411,7 +4411,7 @@ class ProfileWidget(QFrame):
 
 
 class GappedSpinBox(QDoubleSpinBox):
-    """An intensity box for a source that jumps on from nothing (a laser's threshold): it gives no power between 0 and
+    """An intensity box for a source that jumps on from nothing (a laser's threshold, an LED driver's input offset): it gives no power between 0 and
     its lowest, so a value there - typed, dragged or saved - becomes that lowest power, and stepping down from it
     goes to 0 (off)."""
 

@@ -60,7 +60,7 @@ def test_cli_with_no_matching_channel_exits_2(tmp_path, monkeypatch):
 
 
 def test_cli_saves_a_failed_channel_only_when_told_to(tmp_path, monkeypatch, capsys):
-    # the bench 561 nm laser failed verification and --save saved it with no warning; the GUI asks first
+    # the bench 561 nm LED failed verification and --save saved it with no warning; the GUI asks first
     monkeypatch.chdir(tmp_path)
     (tmp_path / "machine_configs").mkdir()
     (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)

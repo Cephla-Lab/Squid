@@ -27,7 +27,7 @@ _MAX_QUEUED_ERRORS = 32
 METER_TIMEOUT_MS = 3000
 # Wait after the light comes on before reading, per meter family; readings must also converge
 # (squid/intensity_calibration_run.py), so these only set the first wait. PM16: confirmed on the bench (2026-10-09,
-# PM16-121 on five lasers: 0-3 of 201 sweep points unsettled); PM100/PM400: placeholders until a bench run.
+# PM16-121 on five LED channels: 0-3 of 201 sweep points unsettled); PM100/PM400: placeholders until a bench run.
 SETTLE_S_BY_MODEL = {"PM16": 0.3, "PM100": 0.15, "PM400": 0.15}
 SETTLE_S_UNKNOWN_MODEL = 0.5
 # Meter families the calibration has been run with on a bench. Others work, with a warning in the dialog.

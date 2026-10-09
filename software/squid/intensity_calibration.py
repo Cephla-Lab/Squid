@@ -21,7 +21,7 @@ ZERO_LEVEL_FRACTION = 1e-3
 VERIFY_SETPOINTS = (1, 2, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100)
 VERIFY_MIN_GATED_PERCENT = 10
 # A source whose first lit sweep point already gives this % of P_max or more jumps on from nothing (a laser's
-# threshold: the bench 488 nm laser gives 6.7 % at the first step above it): nothing between 0 and that power exists,
+# threshold, an LED driver's input offset: the bench 488 nm LED gives 6.7 % at the first step above it): nothing between 0 and that power exists,
 # so requests there get it, and the live control steps from 0 straight to it
 LOWEST_PERCENT_MIN = 2.0
 

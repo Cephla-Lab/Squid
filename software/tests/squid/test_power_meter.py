@@ -296,6 +296,6 @@ def test_the_simulated_meter_overranges_above_the_range_it_holds():
 
 
 def test_the_pm16_is_validated_and_others_are_not():
-    # bench 2026-10-09: PM16-121 on five lasers, 0-3 of 201 sweep points unsettled at the 0.3 s settle
+    # bench 2026-10-09: PM16-121 on five LED channels, 0-3 of 201 sweep points unsettled at the 0.3 s settle
     assert _meter(FakeInstrument(answers=PM16_ANSWERS)).info.validated
     assert not _meter(FakeInstrument()).info.validated  # a PM100USB: not run on a bench yet

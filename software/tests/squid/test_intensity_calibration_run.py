@@ -33,7 +33,7 @@ from squid.power_meter import (
     simulated_laser_mw,
     simulated_led_mw,
 )
-from tests.squid.calibration_fixtures import FakeMicrocontroller, FakeTime, bench_488_laser_mw
+from tests.squid.calibration_fixtures import FakeMicrocontroller, FakeTime, bench_488_led_mw
 
 LASER = ChannelTarget("Fluorescence 405 nm Ex", 405, "D1", 11, 1.0)
 LED = ChannelTarget("Fluorescence 730 nm Ex", 730, "D5", 15, 1.0)
@@ -231,7 +231,7 @@ def test_cancel_stops_with_the_light_off():
 
 def test_drift_is_warned():
     _, _, _, run = _run(LASER, drift_per_read=0.0002)
-    # the bench 561 nm laser drifted 3.2 % and again after warming up: its output depends on its recent power
+    # the bench 561 nm LED drifted 3.2 % and again after warming up: its output depends on its recent power
     assert any("drifted" in w and "if it repeats" in w for w in run().warnings)
 
 
@@ -705,7 +705,7 @@ def test_unsettled_sweep_readings_are_counted_and_saved(tmp_path):
 
 
 def test_a_source_that_jumps_on_is_reported_after_the_run():
-    result = _run(LASER, model=bench_488_laser_mw)[3]()
+    result = _run(LASER, model=bench_488_led_mw)[3]()
     assert result.calibration.lowest_percent > 0
     lowest = f"{result.calibration.lowest_percent:.1f} %"
     assert any(f"lowest non-zero power is {lowest} of max" in w and f"get {lowest}" in w for w in result.warnings)
@@ -713,7 +713,7 @@ def test_a_source_that_jumps_on_is_reported_after_the_run():
 
 
 def test_the_checks_after_the_sweep_wait_out_a_thermal_memory():
-    # the bench 561 nm laser reads 2-3 % low for several seconds after full power (time constant 5-10 s); the drift
+    # the bench 561 nm LED reads 2-3 % low for several seconds after full power (time constant 5-10 s); the drift
     # check and the verification came right after the sweep's top end and failed it, twice
     memory = (0.03, 10.0)
     hot = _run(LASER, hold_s=0.0, rest_s=0.0, memory=memory)[3]()

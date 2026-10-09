@@ -11,8 +11,8 @@ from squid.power_meter import simulated_laser_mw
 DAC = np.linspace(0.0, 100.0, 201)
 
 
-def bench_488_laser_mw(x):
-    """The bench 488 nm laser (2026-10-09): nothing up to DAC 19.0 %, 2.12 mW at 19.5 % (x 0.117), 31.7 mW at the top:
+def bench_488_led_mw(x):
+    """The bench 488 nm LED (2026-10-09): nothing up to DAC 19.0 %, 2.12 mW at 19.5 % (x 0.117), 31.7 mW at the top:
     it jumps on to 6.7 % of its maximum."""
     x = np.asarray(x, dtype=float)
     return np.where(x < 0.117 - 1e-9, 0.0, 2.12 + (31.7 - 2.12) * (x - 0.117) / (0.6 - 0.117))

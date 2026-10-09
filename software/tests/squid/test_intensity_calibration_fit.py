@@ -17,7 +17,7 @@ from squid.intensity_calibration import (
     x_for_power_fraction,
 )
 from squid.power_meter import simulated_laser_mw, simulated_led_mw
-from tests.squid.calibration_fixtures import bench_488_laser_mw, make_calibration
+from tests.squid.calibration_fixtures import bench_488_led_mw, make_calibration
 
 DAC = np.linspace(0.0, 100.0, 201)
 FACTOR = 0.6
@@ -128,7 +128,7 @@ def test_unusable_measurements_raise():
 
 
 def test_a_source_that_jumps_on_has_a_lowest_power_and_a_request_below_it_gets_it():
-    c = make_calibration(model=bench_488_laser_mw)
+    c = make_calibration(model=bench_488_led_mw)
     assert c.lowest_percent == pytest.approx(2.12 / 31.7 * 100, rel=0.05)  # about 6.7 % of max
     lowest_command = c.commanded_percent(c.lowest_percent, 0.6, 1.0)
     for request in (0.5, 1.0, 3.0, c.lowest_percent * 0.99):
@@ -148,7 +148,7 @@ def test_a_source_that_rises_smoothly_has_no_lowest_power():
 
 def test_the_lowest_power_reads_the_same_everywhere():
     # bench 2026-10-09: 488 nm lowest 6.65 % showed "6.7 %" in the tooltip but "6.6 %" in the status (rounded twice)
-    c = make_calibration(model=bench_488_laser_mw)
+    c = make_calibration(model=bench_488_led_mw)
     c = replace(c, anchor_power_mw=np.r_[0.0, 0.0664999 * c.p_max_mw, c.anchor_power_mw[2:]])
     tooltip = intensity_tooltip(c.describe())
     shown = tooltip.split("Lowest non-zero: ")[1].split(" (")[0]

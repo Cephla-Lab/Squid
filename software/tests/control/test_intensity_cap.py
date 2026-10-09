@@ -225,7 +225,7 @@ def _gapped(qtbot, lowest):
 
 
 def test_the_intensity_box_has_no_values_between_off_and_the_lowest_power(qtbot):
-    # the bench 488 nm laser gives nothing, then 6.7 % of its maximum: there is no 1-6 %
+    # the bench 488 nm LED gives nothing, then 6.7 % of its maximum: there is no 1-6 %
     spin = _gapped(qtbot, 6.7)
     spin.setValue(0.0)
     spin.stepBy(1)
