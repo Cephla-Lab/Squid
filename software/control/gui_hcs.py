@@ -2332,7 +2332,7 @@ class HighContentScreeningGui(QMainWindow):
         (control/widgets_objective_calibration.py). Under --simulation it runs on the synthetic
         microscope: the simulated camera's frames do not follow the stage."""
         from control.objective_calibration_hardware import MicroscopeCalibrationHardware, simulation_hardware
-        from control.widgets_objective_calibration import ObjectiveCalibrationDialog
+        from control.widgets_objective_calibration import FactoryTools, ObjectiveCalibrationDialog
         from squid.objective_calibration.engine import ObjectiveSpec
 
         # Before the adapter is built: it snapshots the current objective, which is stale mid-switch.
@@ -2363,6 +2363,20 @@ class HighContentScreeningGui(QMainWindow):
             hardware, after_run, manual_switch = adapter, adapter.restore_mode, not adapter.has_changer
 
         current = self.liveController.currentConfiguration
+        factory = None
+        if control._def.SHOW_FACTORY_TOOLS:  # spec C §8.1: the ini key alone shows the repeatability group
+
+            def exposure_ms(objective, channel_name):
+                channel = self.liveController.get_channel_by_name(objective, channel_name)
+                return None if channel is None else channel.exposure_time
+
+            ini_path = control._def.CACHED_CONFIG_FILE_PATH
+            factory = FactoryTools(
+                ini_name=os.path.splitext(os.path.basename(ini_path))[0] if ini_path else "no-ini",
+                saving_path=control._def.DEFAULT_SAVING_PATH,
+                squid_commit=control.utils.get_squid_repo_state_description() or "unknown",
+                get_exposure_ms=exposure_ms,
+            )
         dialog = ObjectiveCalibrationDialog(
             hardware,
             specs,
@@ -2382,6 +2396,7 @@ class HighContentScreeningGui(QMainWindow):
             default_channel=current.name if current is not None else None,
             busy_reason=self.objective_calibration_busy_reason,
             after_run=after_run,
+            factory=factory,
             parent=self,
         )
         dialog.exec_()
