@@ -418,7 +418,8 @@ def _validate_lookup_columns(path: Path, dac: np.ndarray, x: np.ndarray, fitted:
     if not np.allclose(x, dac / 100.0 * factor, rtol=1e-6, atol=1e-9):
         raise CalibrationFileError(f"{path.name}: the two DAC columns do not match each other at factor {factor:g}")
     covered = int(np.sum(np.isfinite(fitted)))
-    if covered < MIN_POINTS or not np.all(np.isfinite(fitted[:covered])):
+    # finite values from DAC 0 up to the calibrated top, then only blanks (NaN) above it - never an infinity
+    if covered < MIN_POINTS or not (np.all(np.isfinite(fitted[:covered])) and np.all(np.isnan(fitted[covered:]))):
         raise CalibrationFileError(f"{path.name}: the fit must cover the sweep from DAC 0 up to its calibrated top")
     if np.any(np.diff(fitted[:covered]) < 0):
         raise CalibrationFileError(f"{path.name}: the fitted curve is not monotone")
@@ -440,9 +441,9 @@ def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> Intensity
         fitted,
         float(header["illumination_intensity_factor"]),
     )
-    valid = ~np.isnan(fitted)
+    valid = np.isfinite(fitted)
     anchor_power, anchor_x = build_anchors(x[valid], fitted[valid], float(header["zero_level_mw"]))
-    if anchor_power.size < 2 or not anchor_power[-1] > 0:
+    if anchor_power.size < 2 or not (np.isfinite(anchor_power[-1]) and anchor_power[-1] > 0):
         raise CalibrationFileError(f"{path.name}: the fitted curve has no light")
     dark_start, dark_end = (float(v) for v in header["dark_mw"].split("/"))
     return IntensityCalibration(

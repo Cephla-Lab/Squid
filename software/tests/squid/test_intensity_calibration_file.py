@@ -128,6 +128,8 @@ def _scale(column, factor):
         (_scale("dac_fraction_of_full_scale", 0.9), "do not match"),
         (_set("power_mw_fit", 100, float("nan")), "must cover the sweep"),
         (_set("power_mw_fit", 150, 1.0), "not monotone"),
+        (_set("power_mw_fit", 200, float("inf")), "must cover the sweep"),  # the last fitted value: P_max would be inf
+        (_set("power_mw_fit", 200, float("-inf")), "must cover the sweep"),
     ],
 )
 def test_unusable_lookup_numbers_are_rejected(tmp_path, edit, message):
