@@ -35,6 +35,7 @@ from squid.intensity_calibration import (
     calibration_status,
     fit_curve,
     load_calibration,
+    lowest_percent_text,
     write_calibration,
 )
 from squid.power_meter import (
@@ -516,7 +517,7 @@ def calibrate_channel(
     if still_unsettled:
         warnings.append(f"{still_unsettled} readings did not settle (noisy or slow meter)")
     if calibration.lowest_percent:
-        lowest = f"{calibration.lowest_percent:.1f} %"
+        lowest = lowest_percent_text(calibration.lowest_percent)
         warnings.append(
             f"lowest non-zero power is {lowest} of max (the source jumps there from off): requests below it get {lowest}"
         )

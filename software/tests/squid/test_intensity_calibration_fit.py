@@ -1,9 +1,12 @@
 """The fit behind a calibration (design §5.2): monotone, spike-proof, threshold-aware, and never past a rollover."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from squid.intensity_calibration import (
+    intensity_tooltip,
     VERIFY_SETPOINTS,
     CalibrationError,
     build_anchors,
@@ -141,3 +144,12 @@ def test_a_source_that_rises_smoothly_has_no_lowest_power():
     assert c.lowest_percent == 0.0
     assert "lowest_percent" not in c.describe() and "lowest" not in c.status(0.6, 1.0)
     assert c.commanded_percent(0.5, 0.6, 1.0)[0] < c.commanded_percent(1.0, 0.6, 1.0)[0]
+
+
+def test_the_lowest_power_reads_the_same_everywhere():
+    # bench 2026-10-09: 488 nm lowest 6.65 % showed "6.7 %" in the tooltip but "6.6 %" in the status (rounded twice)
+    c = make_calibration(model=bench_488_laser_mw)
+    c = replace(c, anchor_power_mw=np.r_[0.0, 0.0664999 * c.p_max_mw, c.anchor_power_mw[2:]])
+    tooltip = intensity_tooltip(c.describe())
+    shown = tooltip.split("Lowest non-zero: ")[1].split(" (")[0]
+    assert f"lowest {shown}" in c.status(0.6, 1.0)

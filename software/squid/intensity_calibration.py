@@ -24,6 +24,14 @@ VERIFY_MIN_GATED_PERCENT = 10
 # threshold: the bench 488 nm laser gives 6.7 % at the first step above it): nothing between 0 and that power exists,
 # so requests there get it, and the live control steps from 0 straight to it
 LOWEST_PERCENT_MIN = 2.0
+
+
+def lowest_percent_text(lowest_percent: float) -> str:
+    """The lowest power as every label shows it - status, tooltip, the run's warning: from the 2-decimal value the
+    description and the metadata carry, so the labels never round it differently."""
+    return f"{round(lowest_percent, 2):.1f} %"
+
+
 VERIFY_REL_TOL = 0.05
 MIN_POINTS = 3
 FORMAT = "squid-intensity-calibration/1"
@@ -337,7 +345,7 @@ class IntensityCalibration:
         notes = self.notes(factor, max_output)
         if notes:
             return f"stale ({date}): " + "; ".join(notes)
-        lowest = f"; lowest {self.lowest_percent:.1f} %" if self.lowest_percent else ""
+        lowest = f"; lowest {lowest_percent_text(self.lowest_percent)}" if self.lowest_percent else ""
         if self.verification == "fail":
             return f"failed verification ({date}){lowest}"
         return f"calibrated {date}{lowest}"
@@ -700,5 +708,5 @@ def intensity_tooltip(description: Dict[str, object]) -> str:
         f"{description['calibration_file']})."
     )
     if "lowest_percent" in description:
-        text += f" Lowest non-zero: {float(description['lowest_percent']):.1f} % (the source jumps there from off)."
+        text += f" Lowest non-zero: {lowest_percent_text(float(description['lowest_percent']))} (the source jumps there from off)."
     return text
