@@ -755,7 +755,7 @@ def test_a_stall_while_arming_the_watchdog_fails_the_channel(repo):
     # the arming message - let the watchdog fire unseen, and the channel ran with 220 unprotected light-on commands
     time = FakeTime()
     mcu = OneShotWatchdog(time)
-    mcu.stall_when = lambda call: call[0] == "set_watchdog_timeout"
+    mcu.stall_when = _stall_arms({0, 1})  # both channels' armings; the hand-back's is fine
     session = _owned_session(repo, time, mcu)
     results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
     assert all(isinstance(r, WatchdogDeadlineMissed) for r in results.values())
@@ -785,3 +785,40 @@ def test_save_refuses_when_the_port_was_remapped_since_the_run(repo):
     with pytest.raises(ValueError, match="run the calibration again"):
         session.save([calibration])
     assert not (session.calibrations_dir() / "405nm_D1.csv").exists()
+
+
+def _stall_arms(indices):
+    """A stall_when that stalls the wait after the armings numbered in `indices` (0 = the first)."""
+    arms = []
+
+    def stall_when(call):
+        if call[0] != "set_watchdog_timeout":
+            return False
+        arms.append(call)
+        return len(arms) - 1 in indices
+
+    return stall_when
+
+
+def test_a_stall_while_handing_the_watchdog_back_arms_it_again(repo):
+    # review 5: the hand-back armed the watchdog and discarded the deadline; a 6 s stall in that wait let it fire and
+    # disarm, the heartbeat came back, and a later live-view beam came on unprotected
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = _owned_session(repo, time, mcu)
+    mcu.stall_when = _stall_arms({1})  # the channel's arming is fine; the hand-back's first one stalls
+    result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
+    assert isinstance(result, ChannelResult)  # the measurement itself is unaffected
+    assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
+    mcu.turn_on_illumination()  # live view, after the hand-back
+    assert mcu.unprotected_on == 0
+
+
+def test_a_watchdog_that_cannot_be_armed_again_fails_the_hand_back_loudly(repo):
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = _owned_session(repo, time, mcu)
+    mcu.stall_when = _stall_arms(range(1, 100))  # every arming after the channel's stalls past the watchdog
+    with pytest.raises(WatchdogDeadlineMissed, match="live view"):
+        session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)
+    assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat comes back regardless

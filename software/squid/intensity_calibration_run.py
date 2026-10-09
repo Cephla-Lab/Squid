@@ -64,6 +64,8 @@ HOLD_S = 10.0
 # source with a thermal memory reads low then (the bench 561 nm LED: about 2 % low just after full power, time
 # constant 5-10 s, settled within 30-60 s; it failed both checks twice without the rest)
 REST_BEFORE_CHECKS_S = 30.0
+# Tries at arming the watchdog when giving it back to the heartbeat, each confirmed within the watchdog period
+WATCHDOG_ARM_ATTEMPTS = 3
 DROOP_WARN_FRACTION = 0.03
 TEST_BEAM_DEFAULT_PERCENT = 10.0
 TEST_BEAM_MAX_S = 60.0
@@ -746,11 +748,29 @@ class CalibrationSession:
     def _resume_heartbeat(self) -> None:
         """Give the watchdog back to the background heartbeat, re-armed first: the firmware's watchdog is one-shot
         (it disables itself after turning the light off), so if it fired while this session owned it - the code
-        driving the light stopped - it would otherwise stay off for the rest of the session."""
-        if self._paused_heartbeat_s is not None:
-            self._arm_watchdog()
+        driving the light stopped - it would otherwise stay off for the rest of the session. A heartbeat only feeds
+        it: if the arming's own wait outlasted it, it fired and disarmed again, so it is armed again. The heartbeat
+        comes back however this ends; if the watchdog cannot be armed, the hand-back fails loudly."""
+        if self._paused_heartbeat_s is None:
+            return
+        try:
+            armed = False
+            for _ in range(WATCHDOG_ARM_ATTEMPTS):
+                try:
+                    self._arm_watchdog().check()
+                    armed = True
+                    break
+                except WatchdogDeadlineMissed:
+                    _log.warning("the illumination watchdog fired while being armed for the hand-back; arming it again")
+        finally:
             interval, self._paused_heartbeat_s = self._paused_heartbeat_s, None
             self.microcontroller.start_heartbeat(interval_s=interval)
+        if not armed:
+            raise WatchdogDeadlineMissed(
+                f"the controller's illumination watchdog could not be armed again: {WATCHDOG_ARM_ATTEMPTS} armings each "
+                f"took longer than its {control._def.WATCHDOG_TIMEOUT_S:g} s period, so live view would run without "
+                "it; restart Squid"
+            )
 
     def feed_watchdog(self) -> None:
         """Keep the watchdog alive while this session owns it (the background heartbeat is paused)."""
