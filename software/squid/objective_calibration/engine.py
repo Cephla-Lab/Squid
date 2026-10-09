@@ -265,7 +265,7 @@ def cycle_report(result: RunResult) -> List[str]:
                 continue
             parts = []
             if r.focus is not None:
-                parts.append(f"focus {r.focus.z_best_um:.2f} µm (rise {r.focus.peak_rise:.0%})")
+                parts.append(f"focus {r.focus.z_best_um:.2f} µm (rise {r.focus.peak_rise:.1f}x)")
             if r.pixel is not None:
                 p = r.pixel
                 parts.append(

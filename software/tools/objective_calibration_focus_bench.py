@@ -186,7 +186,12 @@ class Bench:
                     flush=True,
                 )
             except FocusError as e:
-                out = {"z_um": hw.get_z_um(), "elapsed_s": time.perf_counter() - t0, "error": str(e), "t_s": t0 - t_start}
+                out = {
+                    "z_um": hw.get_z_um(),
+                    "elapsed_s": time.perf_counter() - t0,
+                    "error": str(e),
+                    "t_s": t0 - t_start,
+                }
                 print(f"{label}: REFUSED after {out['elapsed_s']:.1f} s: {e}", flush=True)
             return out
 
@@ -235,7 +240,10 @@ class Bench:
             self.record["drift"] = linear_drift(self.record["runs"])
             if self.record["drift"]:
                 d = self.record["drift"]
-                print(f"Z drift {d['um_per_min']:+.3f} um/min; std {d['raw_std_um']:.3f} um raw, {d['detrended_std_um']:.3f} um about the fit", flush=True)
+                print(
+                    f"Z drift {d['um_per_min']:+.3f} um/min; std {d['raw_std_um']:.3f} um raw, {d['detrended_std_um']:.3f} um about the fit",
+                    flush=True,
+                )
         self.record["finished"] = datetime.now().isoformat(timespec="seconds")
 
     # ---------------------------------------------------------------- figure
@@ -313,14 +321,20 @@ class Bench:
         axes[0].plot([t["run"] for t in ok], z, "o-", ms=3)
         if drift:
             t_min = np.array([t["t_s"] for t in ok]) / 60.0
-            axes[0].plot([t["run"] for t in ok], drift["um_per_min"] * t_min + drift["intercept_um"], "--", color="0.4", lw=1)
+            axes[0].plot(
+                [t["run"] for t in ok], drift["um_per_min"] * t_min + drift["intercept_um"], "--", color="0.4", lw=1
+            )
         axes[0].set_xlabel("run")
         axes[0].set_ylabel("focus Z (µm)")
         axes[0].set_title("Z per run" + (f": drift {drift['um_per_min']:+.3f} µm/min" if drift else ""))
         axes[1].hist(z, bins=min(20, max(5, len(z) // 3)))
         axes[1].set_xlabel("focus Z (µm)")
         std = z.std(ddof=1) if len(z) > 1 else 0
-        axes[1].set_title(f"std {std:.3f} µm raw" + (f", {drift['detrended_std_um']:.3f} about the fit" if drift else "") + f"; DOF {dof_um:.2f} µm")
+        axes[1].set_title(
+            f"std {std:.3f} µm raw"
+            + (f", {drift['detrended_std_um']:.3f} about the fit" if drift else "")
+            + f"; DOF {dof_um:.2f} µm"
+        )
         axes[2].plot([t["run"] for t in ok], [t["elapsed_s"] for t in ok], "o-", ms=3)
         axes[2].set_xlabel("run")
         axes[2].set_ylabel("time (s)")

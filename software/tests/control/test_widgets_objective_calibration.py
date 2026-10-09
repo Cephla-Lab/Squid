@@ -231,8 +231,13 @@ def test_the_run_shows_the_frames_it_takes(qtbot, make_dialog):
 
 def test_no_objective_is_selected_by_default(qtbot, tmp_path):
     dialog = ObjectiveCalibrationDialog(
-        _fake(), SPECS, ["BF"], ConfigRepository(base_path=tmp_path), tube_lens_mm=180.0,
-        get_declared=lambda name: DECLARED[name], fine_metric=lape,
+        _fake(),
+        SPECS,
+        ["BF"],
+        ConfigRepository(base_path=tmp_path),
+        tube_lens_mm=180.0,
+        get_declared=lambda name: DECLARED[name],
+        fine_metric=lape,
     )
     qtbot.addWidget(dialog)
     assert not any(box.isChecked() for box in dialog.checkboxes.values())

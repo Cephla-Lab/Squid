@@ -387,7 +387,9 @@ class ObjectiveCalibrationDialog(QDialog):
         self.label_orientation.setText("")
         self.log_view.clear()
         self._say("Calibrating...")
-        forwarding = _FrameForwarding(hardware, lambda objective, image: self.worker.signal_frame.emit(objective, image))
+        forwarding = _FrameForwarding(
+            hardware, lambda objective, image: self.worker.signal_frame.emit(objective, image)
+        )
         self.worker = CalibrationWorker(forwarding, config, self.fine_metric, after_run=self.after_run, parent=self)
         self.worker.signal_progress.connect(self.log_view.append)
         self.worker.signal_frame.connect(self._show_frame)
