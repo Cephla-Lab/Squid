@@ -3,7 +3,13 @@ import pytest
 
 from control._def import FocusMeasureOperator
 from control.utils import calculate_focus_measure
-from squid.objective_calibration.engine import ObjectiveSpec, RunConfig, cycle_report, run_calibration
+from squid.objective_calibration.engine import (
+    ObjectiveSpec,
+    RunConfig,
+    cycle_report,
+    first_cycle_residuals_um,
+    run_calibration,
+)
 from squid.objective_calibration.engine import _restore
 from squid.objective_calibration.hardware import RestoreError, RunCancelled
 from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
@@ -278,3 +284,73 @@ def test_a_failed_switch_back_leaves_z_where_the_changer_left_it():
     assert result.restore_failed and "not confirmed" in result.stopped
     assert z_moves_after_the_fault == []
     assert hw.get_xy_um() == pytest.approx((1000.0, 2000.0))
+
+
+def _coarse_centre_um(cycle, name):
+    """The centre of the objective's coarse sweep: the mean Z of its first level (an even grid)."""
+    return float(np.mean(cycle.objectives[name].focus.levels[0].z_um))
+
+
+@pytest.mark.parametrize("changer_z_um", [None, {"20x": -2000.0}])
+def test_with_no_saved_prediction_the_cycles_after_the_first_centre_on_cycle_1s_focus(changer_z_um):
+    # Spec C §8.2: the 4x focus lies 60 um from the start Z, found by cycle 1's ±100 um search; every
+    # later cycle centres on it (within the hand-focus error, start Z minus the 10x focus = -5 um), so
+    # its search never depends on the cycle before it. A changer that parks 20x 2 mm lower is inside
+    # "Z after the switch" and does not disturb the chain.
+    hw, cfg = _machine(changer_z_um=changer_z_um)
+    hw.objectives["4x"].z_focus_um = 60.0
+    if changer_z_um:
+        hw.objectives["20x"].z_focus_um += changer_z_um["20x"]
+    cfg.search_range_um, cfg.cycles, cfg.predict_from_first_cycle = 100.0, 3, True
+    result = run_calibration(hw, cfg, fine_metric=lape)
+    assert result.stopped is None and all(c.completed for c in result.cycles)
+    assert _coarse_centre_um(result.cycles[0], "4x") == pytest.approx(1.0, abs=0.5)  # the start Z, no prediction
+    for cycle in result.cycles[1:]:
+        assert _coarse_centre_um(cycle, "4x") == pytest.approx(60.0 - 5.0, abs=1.0)
+        for name in ("4x", "10x", "20x"):
+            assert cycle.objectives[name].focus.z_best_um == pytest.approx(hw.objectives[name].z_focus_um, abs=0.5)
+    _assert_restored(hw)
+
+
+def test_a_saved_prediction_is_kept_and_without_the_flag_nothing_is_predicted():
+    hw, cfg = _machine()
+    hw.objectives["4x"].z_focus_um = 60.0
+    cfg.search_range_um, cfg.cycles = 100.0, 2
+    result = run_calibration(hw, cfg, fine_metric=lape)
+    assert [_coarse_centre_um(c, "4x") for c in result.cycles] == pytest.approx([1.0, 1.0], abs=0.5)
+    hw, cfg = _machine()
+    cfg.cycles, cfg.predict_from_first_cycle = 2, True
+    cfg.predicted_residual_um = {"4x": 10.0, "10x": 0.0, "20x": 0.0}  # the saved calibration wins over cycle 1
+    result = run_calibration(hw, cfg, fine_metric=lape)
+    assert [_coarse_centre_um(c, "4x") for c in result.cycles] == pytest.approx([11.0, 11.0], abs=0.5)
+
+
+def test_cycle_1_residuals_need_every_objective_focused():
+    hw, cfg = _machine()
+    cfg.cycles = 1
+    hw.objectives["4x"].z_focus_um = 92.0  # 4x fails its gate; 10x and 20x succeed
+    cycle = run_calibration(hw, cfg, fine_metric=lape).cycles[0]
+    assert cycle.completed and cycle.objectives["4x"].error
+    assert first_cycle_residuals_um(cycle, ["4x", "10x", "20x"]) == {}
+    hw, cfg = _machine()
+    cfg.cycles = 1
+    cycle = run_calibration(hw, cfg, fine_metric=lape).cycles[0]
+    residuals = first_cycle_residuals_um(cycle, ["4x", "10x", "20x"])
+    # The chain is the true parfocal frame up to the hand-focus error (start Z 1 um, 10x focus 6 um):
+    # 4x - 10x should be 0 - 6, 20x - 10x should be -4 - 6
+    assert residuals["4x"] - residuals["10x"] == pytest.approx(-6.0, abs=0.5)
+    assert residuals["20x"] - residuals["10x"] == pytest.approx(-10.0, abs=0.5)
+
+
+def test_an_interrupted_cycle_is_not_completed_and_the_timing_is_recorded():
+    hw, cfg = _machine()
+    result = run_calibration(hw, cfg, fine_metric=lape, should_cancel=lambda: hw.snaps >= 40)
+    assert result.stopped == "cancelled"
+    [cycle] = result.cycles
+    assert not cycle.completed and cycle.started_at > 0
+    hw, cfg = _machine()
+    cfg.cycles = 1
+    [cycle] = run_calibration(hw, cfg, fine_metric=lape).cycles
+    assert cycle.completed
+    for r in cycle.objectives.values():
+        assert r.timestamp >= cycle.started_at and r.z_after_switch_um is not None

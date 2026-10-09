@@ -9,6 +9,7 @@ progress finishes first, then the restore runs.
 """
 
 import math
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -41,6 +42,9 @@ class RunConfig:
     # frame (spec C §4). The first focus of objective k is centred on the Z after the switch plus
     # residual[k] - residual[previous objective]; a missing objective counts as 0 (today's frame).
     predicted_residual_um: Dict[str, float] = field(default_factory=dict)
+    # The factory repeatability run (spec C §8.2): with no saved prediction, cycles 2..N centre their
+    # sweeps on cycle 1's focus (first_cycle_residuals_um), so no cycle's search depends on the one before.
+    predict_from_first_cycle: bool = False
 
 
 @dataclass
@@ -50,6 +54,8 @@ class ObjectiveCycleResult:
     pixel: Optional[PixelSizeResult] = None
     image: Optional[np.ndarray] = None
     error: Optional[str] = None
+    z_after_switch_um: Optional[float] = None  # where the changer left Z, before the sweep
+    timestamp: Optional[float] = None  # time.time() when the focus sweep finished (the report's time axis)
 
 
 @dataclass
@@ -60,6 +66,8 @@ class CycleResult:
     start_objective: Optional[str] = None
     start_xy_um: Tuple[float, float] = (0.0, 0.0)
     start_z_um: float = 0.0
+    started_at: float = 0.0  # time.time()
+    completed: bool = False  # every objective and the phase-2 hook ran; False when cancelled or interrupted
 
 
 class CalibrationView:
@@ -160,6 +168,24 @@ def _restore(hw, objective: str, x: float, y: float, z: float) -> None:
         raise RestoreError(f"Restoring {objective} at ({x:.1f}, {y:.1f}, {z:.1f}) µm failed: " + "; ".join(failures))
 
 
+def first_cycle_residuals_um(cycle: CycleResult, ordered: List[str]) -> Dict[str, float]:
+    """Cycle 1's focus as the prediction for the cycles after it (spec C §8.2). The engine centres
+    objective k on the Z after its switch plus residual[k] - residual[previous]; in cycle 1 that centre
+    was the Z after the switch itself, so residual[k] = residual[previous] + (focus - Z after the switch),
+    chained in the pass-1 order from the start objective at 0. The changer's own Z is inside "Z after the
+    switch", so the chain holds with a Xeryon frame too. Empty unless every objective focused: a chain
+    with a gap would mispredict the objectives after it."""
+    residuals = {cycle.start_objective: 0.0}
+    previous = cycle.start_objective
+    for name in ordered:
+        r = cycle.objectives.get(name)
+        if r is None or r.focus is None or r.z_after_switch_um is None:
+            return {}
+        residuals[name] = residuals[previous] + (r.focus.z_best_um - r.z_after_switch_um)
+        previous = name
+    return residuals
+
+
 def _summarize(name: str, results: List[PixelSizeResult]) -> PixelSizeSummary:
     matrix = np.mean([r.matrix_um_per_px for r in results], axis=0)
     pixel_size, rotation, flip, anisotropy = decompose(matrix)
@@ -198,6 +224,7 @@ def run_calibration(
     cycles: List[CycleResult] = []
     stopped: Optional[str] = None
     restore_failed = False
+    residual = dict(cfg.predicted_residual_um)
 
     for index in range(cfg.cycles):
         if should_cancel():
@@ -205,7 +232,9 @@ def run_calibration(
             break
         start_xy = hw.get_xy_um()
         start = (hw.current_objective(), *start_xy, hw.get_z_um())
-        cycle = CycleResult(index, start_objective=start[0], start_xy_um=start_xy, start_z_um=start[3])
+        cycle = CycleResult(
+            index, start_objective=start[0], start_xy_um=start_xy, start_z_um=start[3], started_at=time.time()
+        )
         cycles.append(cycle)
         previous = start[0]
         try:
@@ -217,7 +246,7 @@ def run_calibration(
                 cycle.objectives[spec.name] = result
                 hw.switch_objective(spec.name)  # a failed switch is a hardware fault, not a quality gate
                 z_after_switch = hw.get_z_um()
-                residual = cfg.predicted_residual_um
+                result.z_after_switch_um = z_after_switch
                 predicted_step = residual.get(spec.name, 0.0) - residual.get(previous, 0.0)
                 try:
                     result.focus = focus_sweep(
@@ -230,6 +259,7 @@ def run_calibration(
                         square_px=side_um / spec.nominal_px_um,
                         fine_metric=fine_metric,
                     )
+                    result.timestamp = time.time()
                     if cfg.measure_pixel_size:
                         result.pixel = measure_pixel_size(
                             hw, objective=spec.name, channel=cfg.channel, nominal_px_um=spec.nominal_px_um
@@ -254,6 +284,7 @@ def run_calibration(
                     phase2(hw, cycle, CalibrationView(matrices))
                 except CalibrationError as e:  # a phase-2 quality gate fails the cycle; the run continues
                     cycle.error = str(e)
+            cycle.completed = True
         except RunCancelled:  # Cancel pressed, or a manual objective switch declined
             stopped = "cancelled"
         except Exception as e:  # a hardware or programming fault: restore, then stop the run
@@ -267,6 +298,8 @@ def run_calibration(
             break
         if stopped:
             break
+        if cfg.predict_from_first_cycle and index == 0 and not residual:
+            residual = first_cycle_residuals_um(cycle, [spec.name for spec in ordered])
 
     by_objective: Dict[str, List[PixelSizeResult]] = {}
     for cycle in cycles:
