@@ -9,7 +9,7 @@ Design: AI-docs Squid/to-do/2026-10-08-power-linearization-gui-design.md (§5.2 
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,7 @@ VERIFY_MIN_GATED_PERCENT = 10
 VERIFY_REL_TOL = 0.05
 MIN_POINTS = 3
 FORMAT = "squid-intensity-calibration/1"
+CALIBRATIONS_DIR_NAME = "intensity_calibrations"
 _CLAMP_EPS = 1e-9
 
 
@@ -442,17 +443,193 @@ def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> Intensity
     )
 
 
-def load_calibration(path: Path) -> IntensityCalibration:
-    """Read a calibration file. Raises CalibrationFileError, naming the file, when it cannot be used."""
+def load_calibration(path: Path) -> "Calibration":  # the alias is defined further down
+    """Read a calibration file of either kind. Raises CalibrationFileError, naming the file, when it cannot be used."""
     path = Path(path)
     try:
         header = read_header(path)
         if "format" not in header:
-            raise CalibrationFileError(f"{path.name}: no calibration header")
+            return LegacyCalibration.from_file(path)
         if header["format"] != FORMAT:
             raise CalibrationFileError(f"{path.name}: unknown format '{header['format']}'")
         return _read_intensity_calibration(path, header)
     except CalibrationFileError:
         raise
-    except (OSError, ValueError, KeyError, IndexError) as e:  # pandas' ParserError is a ValueError
+    except (OSError, ValueError, KeyError, IndexError, UnicodeDecodeError) as e:  # pandas' ParserError is a ValueError
         raise CalibrationFileError(f"{path.name}: {e}") from e
+
+
+class LegacyCalibration:
+    """A file written before 2026-10: "DAC Percent" and "Optical Power (mW)" columns, no header (design §6, §6.3).
+
+    A healthy file keeps the old lookup exactly: normalize to the largest reading, np.interp on the raw curve. A file
+    is repaired, in memory only, when the output falls at the top (rollover) or when the old lookup, replayed against
+    the file's own measurements, misses a setpoint >= 10 % by more than 5 %: the repair is the fit new calibrations
+    use. Either way the command is a DAC percent (these files recorded no factor), the slider cap stays
+    max_output x 100 as before, and the DAC never goes past Max Output.
+    """
+
+    def __init__(self, file_name: str, dac_percent, power_mw):
+        self.file_name = file_name
+        power = np.asarray(power_mw, dtype=float)
+        self._power_mw = power
+        self._max_power = power.max()
+        self._power_percent = power / self._max_power * 100  # same expression and order as master
+        self._dac_percent = np.clip(np.asarray(dac_percent, dtype=float), 0, 100)
+        self.repair_reason = self._find_repair_reason()
+        self._fit = (
+            fit_curve(self._dac_percent, self._dac_percent / 100.0, power) if self.repair_reason is not None else None
+        )
+
+    @classmethod
+    def from_file(cls, path: Path) -> "LegacyCalibration":
+        data = pd.read_csv(path)
+        if "DAC Percent" not in data.columns or "Optical Power (mW)" not in data.columns:
+            raise CalibrationFileError(
+                f"{path.name}: neither a calibration header nor the legacy 'DAC Percent' / 'Optical Power (mW)' columns"
+            )
+        # Blank cells would make every command NaN (a crash in set_illumination); a hand-made file may be out of
+        # order. Both are no-ops for files the old tool wrote, so those stay bit-identical to master.
+        data = data.dropna(subset=["DAC Percent", "Optical Power (mW)"]).sort_values("DAC Percent", kind="stable")
+        if len(data) < MIN_POINTS:
+            raise CalibrationFileError(f"{path.name}: only {len(data)} rows")
+        if not data["Optical Power (mW)"].max() > 0:
+            raise CalibrationFileError(f"{path.name}: no light in the file")
+        return cls(path.name, data["DAC Percent"].values, data["Optical Power (mW)"].values)
+
+    def _old_lookup(self, intensity_percent: float):
+        """Exactly master's IlluminationController._apply_lut."""
+        intensity_percent = np.clip(intensity_percent, 0, 100)
+        dac_percent = np.interp(intensity_percent, self._power_percent, self._dac_percent)
+        return np.clip(dac_percent, 0, 100)
+
+    def _find_repair_reason(self) -> Optional[str]:
+        i_peak = find_rollover_peak(self._power_mw)
+        if i_peak is not None:
+            return f"output falls above DAC {self._dac_percent[i_peak]:.1f} %, calibrated range now ends there"
+        order = np.argsort(self._dac_percent, kind="stable")
+        worst = None
+        for r in VERIFY_SETPOINTS:
+            if r < VERIFY_MIN_GATED_PERCENT:
+                continue
+            dac = self._old_lookup(r)
+            predicted = np.interp(dac, self._dac_percent[order], self._power_mw[order]) / self._max_power * 100
+            error = (predicted - r) / r
+            if abs(error) > VERIFY_REL_TOL and (worst is None or abs(error) > abs(worst[1])):
+                worst = (r, error * 100)
+        if worst is not None:
+            return f"the old lookup is off by {worst[1]:+.1f} % at {worst[0]:g} %"
+        return None
+
+    def commanded_percent(self, intensity_percent: float, factor: float, max_output: float) -> Tuple[float, bool]:
+        if self._fit is None:
+            commanded = float(self._old_lookup(intensity_percent))
+        else:
+            fraction = intensity_percent / 100.0
+            commanded = 100.0 * x_for_power_fraction(
+                self._fit.anchor_power_mw, self._fit.anchor_x, self._fit.p_max_mw, fraction
+            )
+        return _clamp_to_ceiling(commanded, max_output)
+
+    def cap_percent(self, max_output: float) -> float:
+        return max_output * 100.0
+
+    def describe(self) -> Dict[str, object]:
+        description: Dict[str, object] = {
+            "intensity_unit": "power_percent",
+            "calibration_format": "legacy-repaired" if self.repair_reason else "legacy",
+            "calibration_file": self.file_name,
+        }
+        if self.repair_reason:
+            description["repair"] = self.repair_reason
+        return description
+
+    def _clamps_at(self, max_output: float) -> bool:
+        return self.commanded_percent(self.cap_percent(max_output), 1.0, max_output)[1]
+
+    def notes(self, factor: float, max_output: float) -> List[str]:
+        notes = []
+        if self.repair_reason:
+            notes.append(
+                f"legacy calibration repaired (optically unverified): {self.repair_reason}; recalibration recommended"
+            )
+        if self._clamps_at(max_output):
+            notes.append(
+                f"legacy calibration drives the DAC past Max Output near the top; those requests are clamped at "
+                f"{max_output * 100:g} %: recalibrate"
+            )
+        return notes
+
+    def status(self, factor: float, max_output: float) -> str:
+        if self.repair_reason:
+            return f"legacy, repaired (optically unverified): {self.repair_reason}"
+        if self._clamps_at(max_output):
+            return "legacy: clamped at Max Output near the top; recalibrate"
+        return "legacy"
+
+
+Calibration = Union[IntensityCalibration, LegacyCalibration]
+
+
+def resolve_calibration_path(
+    calibrations_dir: Path, referenced_file: Optional[str], wavelength_nm: Optional[int]
+) -> Optional[Path]:
+    """The file that applies to a channel (design §6.1): the one the illumination config references, else
+    <wavelength>.csv (master applies that one whatever the config says). None when neither exists: a reference to a
+    file that was never made is common (the config migration wrote one for every channel) and means uncalibrated."""
+    candidates = []
+    if referenced_file:
+        candidates.append(Path(calibrations_dir) / Path(referenced_file).name)
+    if wavelength_nm is not None:
+        candidates.append(Path(calibrations_dir) / f"{wavelength_nm}.csv")
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def calibration_status(
+    calibrations_dir: Path,
+    referenced_file: Optional[str],
+    wavelength_nm: Optional[int],
+    factor: float,
+    max_output: float,
+) -> str:
+    """One line for the channel editor and the calibration dialog; "" when the channel has no calibration."""
+    path = resolve_calibration_path(calibrations_dir, referenced_file, wavelength_nm)
+    if path is None:
+        return ""
+    try:
+        calibration = load_calibration(path)
+    except CalibrationFileError as e:
+        return f"invalid file: {e}"
+    return f"{path.name}: {calibration.status(factor, max_output)}"
+
+
+INTENSITY_SUFFIX = {"power_percent": " % power", "dac_percent": " % DAC"}
+
+
+def intensity_suffix(description: Dict[str, object]) -> str:
+    """The live intensity control's suffix; software-intensity sources keep the plain " %"."""
+    return INTENSITY_SUFFIX.get(description.get("intensity_unit"), " %")
+
+
+def intensity_tooltip(description: Dict[str, object]) -> str:
+    unit = description.get("intensity_unit")
+    if unit == "dac_percent":
+        return (
+            "Percent of the DAC output, not linear in optical power. "
+            "Utils > Illumination Power Calibration makes it linear."
+        )
+    if unit != "power_percent":
+        return ""
+    if str(description.get("calibration_format", "")).startswith("legacy"):
+        text = f"Linear in power (legacy calibration {description.get('calibration_file')}"
+        if "repair" in description:
+            text += f"; repaired (optically unverified): {description['repair']}"
+        return text + "). Recalibrate with Utils > Illumination Power Calibration."
+    return (
+        f"Linear in power: 50 % = half of {float(description['max_power_mw']):.4g} mW "
+        f"(measured {description['measured_in']}, {str(description['calibrated_at'])[:10]}, "
+        f"{description['calibration_file']})."
+    )
