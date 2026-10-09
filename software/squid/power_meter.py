@@ -7,6 +7,7 @@ calibration is commanding and answers from a source model, with noise and a litt
 """
 
 import math
+import sys
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, Sequence, Tuple
 
@@ -32,6 +33,29 @@ VALIDATED_MODELS: Tuple[str, ...] = ()
 # the lower of the two applies. PM16-121 (the first meter used, 2026-10-08): S121C-type Si photodiode, 400-1100 nm,
 # up to 500 mW, inferred from Thorlabs' naming (PM16-120 = S120C, PM16-122 = S122C); confirm on the bench (spec §12).
 KNOWN_SENSOR_LIMITS = {"PM16-121": (500.0, (400.0, 1100.0))}
+# Making a meter visible to pyvisa (paths relative to software/): the setup steps per OS, and the Linux udev rule that
+# lets a user without root open it
+SETUP_DOC = "docs/illumination-power-calibration.md"
+UDEV_RULE = "drivers and libraries/thorlabs/linux/udev/99-thorlabs-pm16.rules"
+
+
+def setup_hint() -> str:
+    """How to make a meter visible to pyvisa on this OS; every message about a meter Squid cannot reach ends with it."""
+    if sys.platform.startswith("linux"):
+        steps = (
+            f"pip install pyvisa pyvisa-py pyusb, and allow the meter's USB device: sudo cp 'software/{UDEV_RULE}' "
+            "/etc/udev/rules.d, then re-plug the meter"
+        )
+    elif sys.platform == "darwin":
+        steps = "brew install libusb, then pip install pyvisa pyvisa-py pyusb"
+    elif sys.platform.startswith("win"):
+        steps = (
+            "bind the WinUSB driver to the meter with Zadig, pip install pyvisa pyvisa-py pyusb, and put "
+            "libusb-1.0.dll on PATH (or install NI-VISA with Thorlabs' driver instead)"
+        )
+    else:
+        steps = "pip install pyvisa pyvisa-py pyusb"
+    return f"{steps}; see software/{SETUP_DOC}"
 
 
 class PowerMeterError(RuntimeError):
@@ -76,7 +100,7 @@ def find_thorlabs_resource(resources: Sequence[str]) -> str:
             return resource
     raise PowerMeterError(
         f"No Thorlabs power meter found (USB vendor ID 0x1313). VISA sees: {', '.join(resources) or 'nothing'}. "
-        "Check the USB cable; on Linux install pyvisa-py and pyusb and allow the device in udev."
+        f"Check the USB cable and close Thorlabs' own software; {setup_hint()}"
     )
 
 
@@ -84,11 +108,11 @@ def _open_resource_manager():
     try:
         import pyvisa
     except ImportError as e:
-        raise PowerMeterError("pyvisa is not installed: pip install pyvisa pyvisa-py pyusb") from e
+        raise PowerMeterError(f"pyvisa is not installed: {setup_hint()}") from e
     try:
         return pyvisa.ResourceManager()
     except Exception as e:  # pyvisa raises ValueError/OSError when it finds no VISA backend
-        raise PowerMeterError(f"no VISA backend ({e}): pip install pyvisa-py pyusb") from e
+        raise PowerMeterError(f"no VISA backend ({e}): {setup_hint()}") from e
 
 
 def _model_family(model: str) -> Optional[str]:
@@ -107,7 +131,7 @@ class ThorlabsPowerMeter:
             self._inst = resource_manager.open_resource(resource)
             self._inst.timeout = METER_TIMEOUT_MS
         except Exception as e:  # pyvisa's VisaIOError (busy, no permission) and friends
-            raise PowerMeterError(f"could not open the power meter at {resource}: {e}") from e
+            raise PowerMeterError(f"could not open the power meter at {resource}: {e}; {setup_hint()}") from e
         idn = [part.strip() for part in self._query("*IDN?").split(",")]
         model = idn[1] if len(idn) > 1 else ""
         self._write("SENS:POW:UNIT W")

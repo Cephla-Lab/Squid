@@ -1,6 +1,9 @@
 """squid/power_meter.py: finding a Thorlabs meter, talking SCPI to it (with its sensor's limits), and the simulated
 meter."""
 
+import sys
+from pathlib import Path
+
 import pytest
 
 from squid.power_meter import (
@@ -10,12 +13,16 @@ from squid.power_meter import (
     KNOWN_SENSOR_LIMITS,
     PowerMeterError,
     PowerMeterOverrange,
+    SETUP_DOC,
     SimulatedPowerMeter,
     ThorlabsPowerMeter,
+    UDEV_RULE,
     find_thorlabs_resource,
     simulated_laser_mw,
     simulated_led_mw,
 )
+
+SOFTWARE_DIR = Path(__file__).resolve().parents[2]
 
 ANSWERS = {
     "*IDN?": "Thorlabs,PM100USB,P2001234,1.7.0\n",
@@ -172,3 +179,38 @@ def test_every_visa_failure_is_a_power_meter_error():
         _meter(FakeInstrument(fail_writes=("SENS:CORR:WAV",))).set_wavelength(405)
     with pytest.raises(PowerMeterError, match="closing"):
         _meter(FakeInstrument(fail_close=True)).close()
+
+
+@pytest.mark.parametrize(
+    "platform, steps",
+    [
+        ("linux", ["pip install pyvisa pyvisa-py pyusb", "99-thorlabs-pm16.rules"]),
+        ("darwin", ["brew install libusb", "pip install pyvisa pyvisa-py pyusb"]),
+        ("win32", ["pip install pyvisa pyvisa-py pyusb", "libusb-1.0.dll", "Zadig", "WinUSB"]),
+    ],
+)
+def test_a_missing_pyvisa_names_the_setup_steps_for_this_os(monkeypatch, platform, steps):
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setitem(sys.modules, "pyvisa", None)  # `import pyvisa` raises ImportError
+    with pytest.raises(PowerMeterError) as raised:
+        ThorlabsPowerMeter()
+    message = str(raised.value)
+    assert message.startswith("pyvisa is not installed") and SETUP_DOC in message
+    for step in steps:
+        assert step in message
+
+
+def test_a_meter_linux_cannot_see_or_open_points_at_the_udev_rule(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    with pytest.raises(PowerMeterError, match="0x1313.*ASRL1::INSTR.*99-thorlabs-pm16.rules"):
+        find_thorlabs_resource(["ASRL1::INSTR"])
+    with pytest.raises(PowerMeterError, match="could not open.*99-thorlabs-pm16.rules"):
+        ThorlabsPowerMeter(
+            resource="USB0::0x1313::0x807B::X::INSTR", resource_manager=_UnopenableResourceManager([], None)
+        )
+
+
+def test_the_udev_rule_and_the_setup_doc_the_messages_name_ship_with_squid():
+    rule = (SOFTWARE_DIR / UDEV_RULE).read_text()
+    assert 'ATTRS{idVendor}=="1313"' in rule and 'ATTRS{idProduct}=="807b"' in rule
+    assert (SOFTWARE_DIR / SETUP_DOC).is_file()
