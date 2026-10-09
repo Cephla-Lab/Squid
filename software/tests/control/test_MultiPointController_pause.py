@@ -180,3 +180,76 @@ def test_global_setting_enables_mode_without_per_run_flag(fast_disk_polling, mon
     assert tt.finished_event.wait(30)
     mpc.thread.join(10)
     assert mpc.last_end_reason == "completed"
+
+
+def _sim_illumination(scope):
+    """Illumination state as the simulated microcontroller sees it (what the firmware would do)."""
+    serial = scope.low_level_drivers.microcontroller._serial
+    return bool(serial._illumination_is_on) or any(serial.port_is_on)
+
+
+def test_illumination_stays_off_for_the_whole_pause(fast_disk_polling):
+    """A paused run sits on the sample for minutes. The checkpoint is between fields, after the last
+    frame's turn-off, so the illumination must be off from the first paused poll to the resume."""
+    tt = PauseTracker()
+    scope, mpc = _controller(tt)
+    mpc.set_Nt(2)
+    mpc.set_deltat(0.0)
+    mpc.set_large_acquisition_mode(True)
+
+    mpc.run_acquisition()
+    assert tt.started_event.wait(5)
+    assert mpc.request_pause() is True
+    assert tt.paused_event.wait(10)
+
+    samples = []
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        samples.append(_sim_illumination(scope))
+        time.sleep(0.02)
+    assert samples and not any(samples), f"illumination seen ON while paused in {sum(samples)}/{len(samples)} samples"
+
+    assert mpc.request_resume() is True
+    assert tt.finished_event.wait(60)
+    mpc.thread.join(10)
+    assert mpc.last_end_reason == "completed"
+    assert tt.image_count == mpc.get_acquisition_image_count()
+
+
+def test_resume_takes_the_same_autofocus_path_as_every_other_fov(fast_disk_polling, monkeypatch):
+    """After a pause the next field goes through perform_autofocus exactly like any other field: no
+    extra autofocus is run on resume, and none is skipped. Focus drift during a pause is therefore
+    handled the same way as drift during a long timepoint interval (by the run's own AF settings)."""
+    from control.core.multi_point_worker import MultiPointWorker
+
+    calls = []
+    original = MultiPointWorker.perform_autofocus
+
+    def recording(self, region_id, fov):
+        calls.append((self.time_point, region_id, fov))
+        return original(self, region_id, fov)
+
+    monkeypatch.setattr(MultiPointWorker, "perform_autofocus", recording)
+
+    tt = PauseTracker()
+    scope, mpc = _controller(tt)
+    mpc.set_Nt(2)
+    mpc.set_deltat(0.0)
+    mpc.set_large_acquisition_mode(True)
+    n_fovs = sum(len(fovs) for fovs in mpc.scanCoordinates.region_fov_coordinates.values())
+
+    mpc.run_acquisition()
+    assert tt.started_event.wait(5)
+    assert mpc.request_pause() is True
+    assert tt.paused_event.wait(10)
+    calls_at_pause = len(calls)
+    time.sleep(0.5)
+    assert len(calls) == calls_at_pause, "no autofocus while paused"
+    assert mpc.request_resume() is True
+    assert tt.resumed_event.wait(10)
+    assert tt.finished_event.wait(60)
+    mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "completed"
+    assert len(calls) == n_fovs * 2, f"expected one perform_autofocus per field per timepoint, got {calls}"
+    assert len(set(calls)) == len(calls), f"a field was autofocused twice: {calls}"
