@@ -135,8 +135,11 @@ def test_pass_2_removes_the_slope_bias_that_pass_1_alone_carries(name):
     hw, cfg = _machine(ORIENTATIONS[name], DISPLACED_20X, names=("4x", "20x"), start_xy_um=ORIGIN, topography=slope)
     _, unaligned = _run(hw, cfg, align=False)
     truth = -4.0
-    assert unaligned.results[0].offsets["20x"].dz_um == pytest.approx(truth + 2.0, abs=0.5)
-    assert aligned.results[0].offsets["20x"].dz_um == pytest.approx(truth, abs=0.5)
+    # dz is measured against the 4x reference, whose own focus scatter (0.4 um cycle-to-cycle on the
+    # 2026-10-05 bench, 0.7 um between coarse grids on the fake; DOF 32 um) sits inside it. 1.0 um bounds
+    # that and still separates the 2 um slope bias from zero.
+    assert unaligned.results[0].offsets["20x"].dz_um == pytest.approx(truth + 2.0, abs=1.0)
+    assert aligned.results[0].offsets["20x"].dz_um == pytest.approx(truth, abs=1.0)
     assert aligned.results[0].offsets["20x"].dx_um == pytest.approx(100.0, abs=0.5)
 
 
