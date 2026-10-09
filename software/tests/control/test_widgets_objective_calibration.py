@@ -4,7 +4,9 @@ from qtpy.QtWidgets import QMessageBox
 
 from control._def import FocusMeasureOperator
 from control.core.config.repository import ConfigRepository
+from control.core.objective_store import CalibrationChange, ObjectiveStore
 from control.models.objective_calibration_config import (
+    CurrentSetup,
     ImageTransform,
     build_pixel_record,
     merge_pixel_records,
@@ -244,3 +246,80 @@ def test_no_objective_is_selected_by_default(qtbot, tmp_path):
     dialog.button_calibrate.click()
     assert "Select at least one objective" in dialog.label_result.text()
     assert not dialog._running()
+
+
+# ---------------------------------------------------------------- the store follows a save (spec B §4.6)
+
+OBJECTIVES = {
+    "4x": {"magnification": 4, "NA": 0.13, "tube_lens_f_mm": 180},
+    "10x": {"magnification": 10, "NA": 0.3, "tube_lens_f_mm": 180},
+}
+
+
+def _store_on(hw):
+    """An ObjectiveStore validating against the fake hardware the dialog records with."""
+
+    def setup():
+        rotate_deg, flip = hw.image_transform()
+        return CurrentSetup(
+            hw.camera_key(), hw.unbinned_sensor_pixel_um(), 180.0, ImageTransform(rotate_deg=rotate_deg, flip=flip)
+        )
+
+    return ObjectiveStore(
+        OBJECTIVES,
+        "10x",
+        current_setup=setup,
+        get_declared=lambda name: DECLARED[name],
+        binned_sensor_pixel_um=hw.binned_sensor_pixel_um,
+    )
+
+
+def test_apply_and_save_updates_the_store_and_fires_one_notification(qtbot, tmp_path, make_dialog):
+    hw = _fake()
+    store = _store_on(hw)
+    dialog, hw = make_dialog(hw, objective_store=store)
+    changes = []
+    dialog.signal_calibration_changed.connect(changes.append)
+    nominal = store.get_pixel_size_factor()
+    assert store.pixel_size_source("10x") == "nominal"
+
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    assert changes == []  # nothing is applied before Apply and save
+    assert store.get_pixel_size_factor() == nominal
+
+    dialog.button_apply.click()
+    assert changes == [CalibrationChange(quantities=frozenset({"pixel_size"}), validity_flipped=True)]
+    assert store.pixel_size_source("10x") == "calibrated"
+    assert store.get_pixel_size_factor() * hw.binned_sensor_pixel_um() == pytest.approx(0.65 * 0.99, rel=0.005)
+    assert store.pixel_matrix("10x") is not None
+    assert store.pixel_calibration_measured_at("10x") == store._records["10x"].measured_at
+
+
+def test_clear_puts_the_store_back_to_nominal_and_notifies(qtbot, tmp_path, make_dialog, monkeypatch):
+    hw = _fake()
+    repo = ConfigRepository(base_path=tmp_path)
+    px = build_pixel_record(
+        PixelSizeSummary("10x", 1, 0.65 * 0.99, None, 0.65 * 0.99 * np.eye(2), 0.0, np.eye(2), True, 1.0, 0.1),
+        measured_at="2026-09-28T10:00:00",
+        camera_key=hw.camera_key(),
+        unbinned_sensor_pixel_um=hw.unbinned_sensor_pixel_um(),
+        binned_sensor_pixel_um=hw.binned_sensor_pixel_um(),
+        binning=1,
+        image_transform=ImageTransform(),
+        tube_lens_mm=180.0,
+        declared=DECLARED["10x"],
+    )
+    repo.save_objective_calibration(merge_pixel_records(None, {"10x": px}))
+    store = _store_on(hw)
+    store.set_calibration(repo.get_objective_calibration())
+    assert store.pixel_size_source("10x") == "calibrated"
+
+    dialog, hw = make_dialog(hw, objective_store=store)
+    changes = []
+    dialog.signal_calibration_changed.connect(changes.append)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Yes)
+    dialog.button_clear.click()
+    assert changes == [CalibrationChange(quantities=frozenset({"pixel_size"}), validity_flipped=True)]
+    assert store.pixel_size_source("10x") == "nominal"
+    assert repo.get_objective_calibration().objectives == {}

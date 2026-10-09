@@ -3,8 +3,8 @@
 AI-docs objective-pixel-size design §6.1. The engine (squid/objective_calibration) runs in a QThread
 on the hardware adapter; every cycle, however it ends, puts the objective, XY and Z back. Nothing is
 written until "Apply and save", which replaces only the measured objectives' pixel_size blocks in
-machine_configs/objective_calibration.yaml. This version records the calibration; nothing applies it
-yet.
+machine_configs/objective_calibration.yaml, updates the ObjectiveStore and fires one
+signal_calibration_changed with what changed (§4.6); the GUI refreshes what depends on the pixel size.
 """
 
 import time
@@ -56,7 +56,7 @@ GUIDANCE = (
     "Use a flat, textured, non-periodic sample (a stained section, or a region of a USAF target containing "
     "several bar groups of different sizes: a single group is periodic, and bare glass has no texture), "
     "roughly in focus on the current objective, with the stage away from its travel limits. "
-    "Saved calibrations are recorded for review; this version does not apply them yet."
+    "A saved pixel size is used everywhere in place of the nominal one while it stays valid."
 )
 COLUMNS = [
     "Objective",
@@ -167,6 +167,10 @@ def frame_pixmap(image: np.ndarray, longer_side_px: int = FRAME_VIEW_PX) -> QPix
 
 
 class ObjectiveCalibrationDialog(QDialog):
+    # The calibration-changed notification (spec B §4.6): emitted once per Apply and save or Clear,
+    # after the store is updated, with the ObjectiveStore's CalibrationChange payload.
+    signal_calibration_changed = Signal(object)
+
     def __init__(
         self,
         hardware,
@@ -181,6 +185,7 @@ class ObjectiveCalibrationDialog(QDialog):
         default_channel: Optional[str] = None,
         busy_reason: Optional[Callable[[], Optional[str]]] = None,
         after_run: Optional[Callable[[], None]] = None,
+        objective_store=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -188,6 +193,7 @@ class ObjectiveCalibrationDialog(QDialog):
         self.hardware = hardware
         self.specs = {spec.name: spec for spec in specs}
         self.config_repo = config_repo
+        self.objective_store = objective_store  # updated on save; None in tools without a live store
         self.tube_lens_mm = tube_lens_mm
         self._get_declared = get_declared
         self.fine_metric = fine_metric
@@ -542,6 +548,7 @@ class ObjectiveCalibrationDialog(QDialog):
         self._refresh_saved()
         self._set_running(False)
         self._say(" ".join([f"Saved the pixel size of {', '.join(sorted(records))}."] + warnings))
+        self._apply_to_store()
 
     def _clear(self):
         if self._running() or self.file_error or self.saved is None:
@@ -572,6 +579,14 @@ class ObjectiveCalibrationDialog(QDialog):
         self.saved = cleared
         self._refresh_saved()
         self._say(f"Cleared the saved pixel size of {', '.join(names)}.")
+        self._apply_to_store()
+
+    def _apply_to_store(self):
+        """Spec B §4.6: the store follows the saved file, then one notification says what changed."""
+        if self.objective_store is None:
+            return
+        change = self.objective_store.set_calibration(self.saved)
+        self.signal_calibration_changed.emit(change)
 
     # ---------------------------------------------------------------- Qt
     def reject(self):
