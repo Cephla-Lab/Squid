@@ -23,6 +23,7 @@ from control.core.laser_auto_focus_controller import LaserAutofocusController
 from control.core.live_controller import LiveController
 from control.microscope import Microscope
 from control.core.multi_point_worker import MultiPointWorker
+from control.core.in_process_zarr_runner import InProcessZarrRunner
 from control.core.job_processing import SaveSettings
 from control.core.objective_store import ObjectiveStore
 from control.core.memory_profiler import MemoryMonitor, log_memory
@@ -977,9 +978,7 @@ class MultiPointController:
             except Exception as e:
                 self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
 
-            # Get pre-warmed job runner and its shared backpressure values
-            # (TIFF formats: starts a new one warming for next acquisition; a Zarr v3 run gets
-            # (None, None) and leaves the warm subprocess in place)
+            # The pre-warmed save subprocess and its backpressure values (None, None for a Zarr v3 run)
             prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()
 
             # Worker creation can fail - ensure runner is cleaned up on error
@@ -1002,10 +1001,7 @@ class MultiPointController:
                     run_state_writer=self._run_state_writer,
                 )
             except Exception:
-                # Clean up pre-warmed runner if worker creation failed.
-                # Note: for TIFF formats get_prewarmed_job_runner() already started a NEW pre-warmed
-                # runner, so we're cleaning up the one that was handed off to us. A Zarr v3 run got
-                # (None, None) and left the warm subprocess in place, so there is nothing to clean up.
+                # The runner handed to us is ours to clean up; a replacement is already warming (None for Zarr v3).
                 self._cleanup_prewarmed_runner(
                     prewarmed_runner,
                     context="after worker creation failure",
@@ -1236,7 +1232,7 @@ class MultiPointController:
             for job_class, job_runner in job_runners:
                 try:
                     if job_runner is not None and job_runner.is_alive():
-                        if getattr(job_runner, "runs_in_process", False):
+                        if isinstance(job_runner, InProcessZarrRunner):
                             # Not a process: shut it down so its open stores are sealed (as aborted).
                             self._log.warning(
                                 f"Shutting down {job_class.__name__} in-process runner (abnormal shutdown)"

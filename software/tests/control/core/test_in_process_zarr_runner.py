@@ -1,17 +1,18 @@
 """InProcessZarrRunner: SaveZarrJob in this process, with JobRunner's interface and counters."""
 
+import concurrent.futures
 import json
 import os
 import queue
+import threading
 import time
 
 import numpy as np
 import pytest
 
-import squid.abc
 from control.core.backpressure import create_backpressure_values
-from control.core.job_processing import CaptureInfo, JobImage, JobResult, SaveZarrJob, ZarrWriteResult, ZarrWriterInfo
-from control.models import AcquisitionChannel, CameraSettings, IlluminationSettings
+from control.core.job_processing import JobImage, JobResult, SaveZarrJob, ZarrWriteResult, ZarrWriterInfo
+from tests.control.core.test_zarr_writer import make_test_capture_info
 
 pytest.importorskip("tensorstore")
 
@@ -22,24 +23,15 @@ def _info(tmp_path, t_size=1, z_size=2):
 
 def _job(z, value=1):
     return SaveZarrJob(
-        capture_info=CaptureInfo(
-            position=squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=None),
-            z_index=z,
-            capture_time=time.time(),
-            configuration=AcquisitionChannel(
-                name="BF",
-                illumination_settings=IlluminationSettings(illumination_channel="LED", intensity=50.0),
-                camera_settings=CameraSettings(exposure_time_ms=10.0, gain_mode=1.0),
-            ),
-            save_directory="/tmp/unused",
-            file_id=f"f_{z}",
-            region_id="A1",
-            fov=0,
-            configuration_idx=0,
-            time_point=0,
-        ),
+        capture_info=make_test_capture_info(z_index=z),
         capture_image=JobImage(image_array=np.full((8, 8), value, dtype=np.uint16)),
     )
+
+
+def _failed_future(exc):
+    future = concurrent.futures.Future()
+    future.set_exception(exc)
+    return future
 
 
 def _results(runner, n, timeout=10.0):
@@ -130,11 +122,11 @@ def test_dispatch_injects_zarr_writer_info_and_registry(tmp_path):
 def test_failed_write_reaches_output_queue_as_exception(tmp_path, monkeypatch):
     from control.core.in_process_zarr_runner import InProcessZarrRunner
 
-    class _FailingFuture:
-        def result(self):
-            raise RuntimeError("disk full")
-
-    monkeypatch.setattr(SaveZarrJob, "submit", lambda self: (_FailingFuture(), ZarrWriteResult(0, 0, 0, "BF", 0)))
+    monkeypatch.setattr(
+        SaveZarrJob,
+        "submit",
+        lambda self: (_failed_future(RuntimeError("disk full")), ZarrWriteResult(0, 0, 0, "BF", 0)),
+    )
     pending_jobs, pending_bytes, capacity = create_backpressure_values()
     runner = InProcessZarrRunner(zarr_writer_info=_info(tmp_path), bp_values=(pending_jobs, pending_bytes, capacity))
     runner.start()
@@ -264,3 +256,33 @@ def test_two_runs_dispatched_from_one_persistent_thread(tmp_path):
     finally:
         requests.put(None)
         thread.join(timeout=10)
+
+
+def test_shutdown_with_a_write_still_in_flight_seals_aborted_and_reports_it(tmp_path, monkeypatch):
+    """A bounded shutdown must never stamp a store complete over a write it did not see finish."""
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+
+    release = threading.Event()
+    real_submit = SaveZarrJob.submit
+
+    def blocked_submit(self):
+        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
+        future.result()
+        blocked = concurrent.futures.Future()
+        threading.Thread(target=lambda: (release.wait(), blocked.set_result(None)), daemon=True).start()
+        return blocked, result
+
+    monkeypatch.setattr(SaveZarrJob, "submit", blocked_submit)
+    info = _info(tmp_path)
+    runner = InProcessZarrRunner(zarr_writer_info=info)
+    runner.start()
+    runner.dispatch(_job(0))
+    try:
+        assert runner.shutdown(timeout_s=0.1) is False
+        attrs = _squid_attrs(info)
+        assert attrs["acquisition_complete"] is False and attrs["aborted"] is True
+        assert runner.has_pending()
+    finally:
+        release.set()
+    _wait_settled(runner)
+    assert not runner.has_pending()

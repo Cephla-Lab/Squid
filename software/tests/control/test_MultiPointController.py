@@ -739,11 +739,9 @@ def _zarr_jsons_with_squid(mpc):
     return out
 
 
-def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
-    """A Zarr v3 multipoint run saves through the in-process runner and ends with acquisition_complete=True."""
+def _zarr_v3_controller(monkeypatch):
+    """A simulated microscope and controller set up for a Zarr v3 multipoint run, with its tracker."""
     pytest.importorskip("tensorstore")
-    from control.core.in_process_zarr_runner import InProcessZarrRunner
-
     control._def.MERGE_CHANNELS = False
     monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
     scope = control.microscope.Microscope.build_from_global_config(True)
@@ -751,6 +749,32 @@ def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
     mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
+    return mpc, tt
+
+
+def _make_zarr_writes_fail(monkeypatch, message="disk full"):
+    """Every SaveZarrJob opens its store as usual (so there is a zarr.json to inspect) but its write fails."""
+    import concurrent.futures
+    from control.core.job_processing import SaveZarrJob
+
+    real_submit = SaveZarrJob.submit
+
+    def failing_submit(self):
+        future, result = real_submit(self)
+        if future is not None:
+            future.result()
+        failed = concurrent.futures.Future()
+        failed.set_exception(RuntimeError(message))
+        return failed, result
+
+    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
+
+
+def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
+    """A Zarr v3 multipoint run saves through the in-process runner and ends with acquisition_complete=True."""
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+
+    mpc, tt = _zarr_v3_controller(monkeypatch)
     mpc.run_acquisition()
     assert tt.finished_event.wait(120)
     assert isinstance(mpc.multiPointWorker._job_runners[0][1], InProcessZarrRunner)
@@ -760,16 +784,8 @@ def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
 
 def test_zarr_is_sealed_with_multiprocessing_off(monkeypatch):
     """The in-process fallback used to leave the store unsealed; it must not any more."""
-    pytest.importorskip("tensorstore")
-
-    control._def.MERGE_CHANNELS = False
-    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
     monkeypatch.setattr(control._def.Acquisition, "USE_MULTIPROCESSING", False)
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
-    add_some_coordinates(mpc)
-    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc, tt = _zarr_v3_controller(monkeypatch)
     mpc.run_acquisition()
     assert tt.finished_event.wait(120)
     attrs = _zarr_jsons_with_squid(mpc)
@@ -778,17 +794,10 @@ def test_zarr_is_sealed_with_multiprocessing_off(monkeypatch):
 
 def test_abort_mid_zarr_run_seals_store_aborted(monkeypatch):
     """Stop during a Zarr run: the run ends promptly and the stores say aborted, not complete."""
-    pytest.importorskip("tensorstore")
     import time
 
-    control._def.MERGE_CHANNELS = False
-    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc, tt = _zarr_v3_controller(monkeypatch)
     mpc.set_NZ(5)
-    add_some_coordinates(mpc)
-    select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.run_acquisition()
     assert tt.started_event.wait(30)
     deadline = time.monotonic() + 30
@@ -805,20 +814,13 @@ def test_abort_mid_zarr_run_seals_store_aborted(monkeypatch):
 
 def test_zarr_v3_run_leaves_the_warm_subprocess_for_tiff(monkeypatch):
     """A Zarr v3 acquisition neither consumes nor restarts the pre-warmed subprocess, and starts none of its own."""
-    pytest.importorskip("tensorstore")
     from control.core import job_processing
 
-    control._def.MERGE_CHANNELS = False
-    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
+    mpc, tt = _zarr_v3_controller(monkeypatch)
     warm_before = mpc._prewarmed_job_runner
     assert warm_before is not None
     started = []  # only subprocesses started from here on count; the controller's own pre-warm is above
     monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
-    add_some_coordinates(mpc)
-    select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.run_acquisition()
     assert tt.finished_event.wait(120)
     assert started == [], "a Zarr v3 run must not start a save subprocess"
@@ -827,15 +829,7 @@ def test_zarr_v3_run_leaves_the_warm_subprocess_for_tiff(monkeypatch):
 
 def test_three_zarr_runs_in_one_session_all_sealed(monkeypatch):
     """Back-to-back Zarr runs in one process each get fresh writers and each store is sealed complete."""
-    pytest.importorskip("tensorstore")
-
-    control._def.MERGE_CHANNELS = False
-    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
-    add_some_coordinates(mpc)
-    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc, tt = _zarr_v3_controller(monkeypatch)
     for i in range(3):
         tt.started_event.clear()
         tt.finished_event.clear()
@@ -848,30 +842,10 @@ def test_three_zarr_runs_in_one_session_all_sealed(monkeypatch):
 
 def test_zarr_write_error_ends_the_run_as_error(monkeypatch, caplog):
     """A failed Zarr write must end the run as an error and seal the store incomplete, not finish quietly."""
-    pytest.importorskip("tensorstore")
     import logging
-    from control.core.job_processing import SaveZarrJob
 
-    class _FailingFuture:
-        def result(self):
-            raise RuntimeError("disk full")
-
-    real_submit = SaveZarrJob.submit
-
-    def failing_submit(self):
-        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
-        if future is not None:
-            future.result()
-        return _FailingFuture(), result
-
-    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
-    control._def.MERGE_CHANNELS = False
-    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
-    add_some_coordinates(mpc)
-    select_some_configs(mpc, scope.objective_store.current_objective)
+    mpc, tt = _zarr_v3_controller(monkeypatch)
+    _make_zarr_writes_fail(monkeypatch)
     with caplog.at_level(logging.ERROR):
         mpc.run_acquisition()
         assert tt.finished_event.wait(120)
@@ -921,7 +895,6 @@ def test_close_shuts_down_in_process_runner_instead_of_terminating_it():
     mpc._memory_monitor = None
     mpc.thread = None
     runner = MagicMock(spec=InProcessZarrRunner)
-    runner.runs_in_process = True
     runner.is_alive.return_value = True
     runner.terminate = MagicMock()  # not part of InProcessZarrRunner; present only to prove it is not called
     worker = MagicMock()
@@ -938,22 +911,8 @@ def test_zarr_write_error_surfacing_at_the_end_ends_the_run_as_error(monkeypatch
     Why this test exists: the per-FOV poll already aborts on a failure it sees; this one checks the failure that only
     the final drain sees, by holding every result back from the per-FOV poll (drain_all=False).
     """
-    pytest.importorskip("tensorstore")
     import logging
-    from control.core.job_processing import SaveZarrJob
     from control.core.multi_point_worker import MultiPointWorker, SummarizeResult
-
-    class _FailingFuture:
-        def result(self):
-            raise RuntimeError("disk full")
-
-    real_submit = SaveZarrJob.submit
-
-    def failing_submit(self):
-        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
-        if future is not None:
-            future.result()
-        return _FailingFuture(), result
 
     real_summarize = MultiPointWorker._summarize_runner_outputs
 
@@ -962,19 +921,13 @@ def test_zarr_write_error_surfacing_at_the_end_ends_the_run_as_error(monkeypatch
             return SummarizeResult(none_failed=True, had_results=False)
         return real_summarize(self, drain_all=drain_all)
 
-    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
+    mpc, tt = _zarr_v3_controller(monkeypatch)
+    _make_zarr_writes_fail(monkeypatch)
     monkeypatch.setattr(MultiPointWorker, "_summarize_runner_outputs", final_drain_only)
-    control._def.MERGE_CHANNELS = False
-    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.ZARR_V3)
-    scope = control.microscope.Microscope.build_from_global_config(True)
-    tt = TestAcquisitionTracker()
-    mpc = ts.get_test_multi_point_controller(microscope=scope, callbacks=tt.get_callbacks())
-    add_some_coordinates(mpc)
-    select_some_configs(mpc, scope.objective_store.current_objective)
     with caplog.at_level(logging.ERROR):
         mpc.run_acquisition()
         assert tt.finished_event.wait(120)
     assert mpc.multiPointWorker._abort_cause == "error"
-    assert any("save job(s) failed; the acquisition ends as an error" in r.getMessage() for r in caplog.records)
+    assert any("A save job failed, aborting acquisition" in r.getMessage() for r in caplog.records)
     attrs = _zarr_jsons_with_squid(mpc)
     assert attrs and all(a["acquisition_complete"] is False for a in attrs)

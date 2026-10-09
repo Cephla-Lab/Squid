@@ -49,10 +49,7 @@ def benchmark_zarr_write(num_frames: int, image_shape: tuple, detailed: bool = F
             writer.write_frame(image, t=0, c=c, z=0)
         queue_time = time.perf_counter() - queue_start
 
-        # Wait for pending writes
-        wait_start = time.perf_counter()
-        writer.wait_for_pending()
-        wait_time = time.perf_counter() - wait_start
+        wait_time = 0.0  # write_frame() blocks until the write is committed
 
         finalize_start = time.perf_counter()
         writer.finalize()
@@ -114,9 +111,7 @@ def benchmark_zarr_no_compression(num_frames: int, image_shape: tuple, detailed:
             writer.write_frame(image, t=0, c=c, z=0)
         queue_time = time.perf_counter() - queue_start
 
-        wait_start = time.perf_counter()
-        writer.wait_for_pending()
-        wait_time = time.perf_counter() - wait_start
+        wait_time = 0.0  # write_frame() blocks until the write is committed
 
         finalize_start = time.perf_counter()
         writer.finalize()
@@ -186,7 +181,6 @@ def benchmark_zarr_no_sharding(num_frames: int, image_shape: tuple) -> float:
         start = time.perf_counter()
         for c in range(num_frames):
             writer.write_frame(image, t=0, c=c, z=0)
-        writer.wait_for_pending()
         elapsed = time.perf_counter() - start
         return elapsed
 

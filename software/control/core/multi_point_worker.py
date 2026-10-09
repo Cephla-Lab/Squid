@@ -711,11 +711,8 @@ class MultiPointWorker:
                 # Data is missing, so the run ends as an error (and the Zarr stores are sealed as aborted).
                 self._abort_due_to_error()
 
-        # Drain results before shutdown
+        # Drain results before shutdown (a failed job seen here aborts the run too, via _summarize_job_result)
         self._summarize_runner_outputs(drain_all=True)
-        if self._acquisition_error_count > 0 and self._abort_on_failed_job:
-            self._log.error(f"{self._acquisition_error_count} save job(s) failed; the acquisition ends as an error")
-            self._abort_due_to_error()
 
         # Shut down the save subprocesses in parallel (in background to avoid blocking on subprocess termination);
         # the in-process Zarr runner is shut down inline below, because its shutdown seals the stores.
@@ -737,11 +734,12 @@ class MultiPointWorker:
         # A user Stop, an error abort, or a crash out of run(): the store must not claim completeness.
         aborted = bool(self.abort_requested_fn()) or self._run_state_fatal
         for job_class, job_runner in active_runners:
-            if getattr(job_runner, "runs_in_process", False):
+            if isinstance(job_runner, InProcessZarrRunner):
                 # Its shutdown seals the stores (aborted ones as aborted); do it here so the
                 # acquisition is not reported finished before the metadata says so.
                 try:
-                    job_runner.shutdown(remaining_time, aborted=aborted)
+                    if not job_runner.shutdown(remaining_time, aborted=aborted):
+                        self._abort_due_to_error()  # a write was still in flight: the stores were sealed aborted
                 except Exception as e:
                     log.error(f"Error shutting down the in-process Zarr runner: {e}")
                 continue
@@ -935,6 +933,9 @@ class MultiPointWorker:
         if job_result.exception is not None:
             self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
             self._acquisition_error_count += 1
+            if self._abort_on_failed_job:
+                self._log.error("A save job failed, aborting acquisition because abort_on_failed_job=True")
+                self._abort_due_to_error()
 
             # Send Slack error notification
             if self._slack_notifier is not None:
@@ -1120,9 +1121,7 @@ class MultiPointWorker:
                 with self._timing.get_timer("job result summaries"):
                     result = self._summarize_runner_outputs()
                     if not result.none_failed and self._abort_on_failed_job:
-                        self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
-                        self._abort_due_to_error()
-                        return
+                        return  # _summarize_job_result has requested the abort
 
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm, region_id, fov)

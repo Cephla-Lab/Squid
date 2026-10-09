@@ -20,6 +20,7 @@ from control import _def, utils, utils_acquisition
 from control._def import ZProjectionMode, DownsamplingMethod
 import squid.abc
 import squid.logging
+from control.core.backpressure import note_job_completed, note_job_dispatched
 from control.models import AcquisitionChannel
 from control.core import utils_ome_tiff_writer as ome_tiff_writer
 from control.core.memory_profiler import (
@@ -531,12 +532,9 @@ class ZarrWriterRegistry:
                     except Exception as e:
                         self._log.warning(f"Error aborting writer during clear: {e}")
         finally:
-            self._clear()
-
-    def _clear(self) -> None:
-        self.writers.clear()
-        self.plates_written.clear()
-        self.wells_written.clear()
+            self.writers.clear()
+            self.plates_written.clear()
+            self.wells_written.clear()
 
 
 @dataclass
@@ -617,9 +615,8 @@ class SaveZarrJob(Job):
         """
         if self.zarr_writer_info is None:
             raise ValueError(
-                "SaveZarrJob.submit()/run() requires zarr_writer_info but it is None. "
-                "The runner that dispatches it injects zarr_writer_info. "
-                "If running directly, set job.zarr_writer_info before calling submit() or run()."
+                "SaveZarrJob requires zarr_writer_info but it is None; the runner that dispatches the job "
+                "injects it (set job.zarr_writer_info when running one directly)."
             )
 
         from control.core.io_simulation import is_simulation_enabled, simulated_zarr_write
@@ -874,11 +871,7 @@ class JobRunner(multiprocessing.Process):
         # has_pending() to return False while job is still in flight.
         with self._pending_count.get_lock():
             self._pending_count.value += 1
-        if self._bp_pending_jobs is not None:
-            with self._bp_pending_jobs.get_lock():
-                self._bp_pending_jobs.value += 1
-            with self._bp_pending_bytes.get_lock():
-                self._bp_pending_bytes.value += image_bytes
+        note_job_dispatched(self._bp_pending_jobs, self._bp_pending_bytes, image_bytes)
 
         try:
             self._input_queue.put_nowait(job)
@@ -1051,21 +1044,15 @@ class JobRunner(multiprocessing.Process):
                     with self._pending_count.get_lock():
                         self._pending_count.value -= 1
 
-                    # Backpressure tracking: decrement counters immediately when job completes.
-                    # Backpressure tracks queue memory, not subprocess memory.
-                    if self._bp_pending_jobs is not None:
-                        with self._bp_pending_jobs.get_lock():
-                            self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
-
-                        # Decrement image bytes
-                        if job.capture_image and job.capture_image.image_array is not None:
-                            image_bytes = job.capture_image.image_array.nbytes
-                            with self._bp_pending_bytes.get_lock():
-                                self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
-
-                        # Signal capacity available for all job completions
-                        if self._bp_capacity_event is not None:
-                            self._bp_capacity_event.set()
+                    # Backpressure tracks queue memory, not subprocess memory: release this job's share now.
+                    image_bytes = (
+                        job.capture_image.image_array.nbytes
+                        if job.capture_image and job.capture_image.image_array is not None
+                        else 0
+                    )
+                    note_job_completed(
+                        self._bp_pending_jobs, self._bp_pending_bytes, self._bp_capacity_event, image_bytes
+                    )
 
         # Finalize any zarr writers that are still open
         try:
