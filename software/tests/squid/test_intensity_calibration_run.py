@@ -438,9 +438,15 @@ class OneShotWatchdog(FakeMicrocontroller):
         self.armed = False
         self.fed_at = 0.0
         self.unprotected_on = 0
+        self.stall_when = None  # a predicate on the last command: the wait for it to complete stalls 6 s
 
     def _fed(self):
         self.fed_at = self.time.clock()
+
+    def wait_till_operation_is_completed(self, timeout_limit_s=5):
+        super().wait_till_operation_is_completed(timeout_limit_s)
+        if self.stall_when is not None and self.calls and self.stall_when(self.calls[-1]):
+            self.stall(6.0)
 
     def set_watchdog_timeout(self, timeout_s):
         super().set_watchdog_timeout(timeout_s)
@@ -734,3 +740,36 @@ def test_the_rest_keeps_the_watchdog_fed(repo):
     result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
     assert isinstance(result, ChannelResult)
     assert mcu.armed and mcu.unprotected_on == 0
+
+
+def _owned_session(repo, time, mcu):
+    session = CalibrationSession(mcu, repo)
+    session.settle_s, session.hold_s, session.rest_s = 0.0, 0.0, 0.0
+    session.sleep, session.clock = time.sleep, time.clock
+    session.connect()
+    return session
+
+
+def test_a_stall_while_arming_the_watchdog_fails_the_channel(repo):
+    # review 4: the deadline started after the arming wait, so a 6 s stall in it - the firmware already counting from
+    # the arming message - let the watchdog fire unseen, and the channel ran with 220 unprotected light-on commands
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    mcu.stall_when = lambda call: call[0] == "set_watchdog_timeout"
+    session = _owned_session(repo, time, mcu)
+    results = session.run(session.targets(), measured_in="n/a", sensor_limit_mw=500.0)
+    assert all(isinstance(r, WatchdogDeadlineMissed) for r in results.values())
+    assert mcu.unprotected_on == 0
+
+
+def test_a_stall_while_setting_up_the_test_beam_keeps_it_off(repo):
+    # review 4: the test beam had no deadline; a 6 s stall setting the DAC fired the watchdog, then the beam came on
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = _owned_session(repo, time, mcu)
+    mcu.stall_when = lambda call: call[0] == "set" and call[2] > 0
+    with pytest.raises(WatchdogDeadlineMissed):
+        session.test_beam_on(session.targets()[0], 10.0)
+    assert mcu.unprotected_on == 0
+    assert session.source_state() == (False, 0.0)
+    assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat is back

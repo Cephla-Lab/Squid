@@ -720,21 +720,26 @@ class CalibrationSession:
         self._cancelled = False
 
     # ---------------------------------------------------------------- watchdog ownership
-    def _arm_watchdog(self) -> None:
-        """Arm the controller's watchdog with a full timeout while this session owns it. It is one-shot: after it
-        fires it stays off until armed again, so it is armed on taking it over, before every channel and on giving
-        it back."""
-        if self._paused_heartbeat_s is not None:
-            self.microcontroller.set_watchdog_timeout(control._def.WATCHDOG_TIMEOUT_S)
-            self.microcontroller.wait_till_operation_is_completed()
+    def _arm_watchdog(self) -> WatchdogDeadline:
+        """Arm the controller's watchdog with a full timeout while this session owns it, and return the deadline
+        every later message goes through. The watchdog is one-shot - after it fires it stays off until armed again -
+        so it is armed before every channel, before the test beam comes on and on giving it back. The deadline counts
+        from the arming message itself: the firmware does, so a stall in waiting for it to complete counts too."""
+        if self._paused_heartbeat_s is None:
+            return WatchdogDeadline(None, self.clock)
+        deadline = WatchdogDeadline(control._def.WATCHDOG_TIMEOUT_S, self.clock)
+        self.microcontroller.set_watchdog_timeout(control._def.WATCHDOG_TIMEOUT_S)
+        deadline.sent()
+        self.microcontroller.wait_till_operation_is_completed()
+        return deadline
 
     def _pause_heartbeat(self) -> None:
+        """Stop the background heartbeat; whoever then turns the light on arms the watchdog first."""
         if self._paused_heartbeat_s is None:
             interval = self.microcontroller.heartbeat_interval_s
             if interval is not None:
                 self.microcontroller.stop_heartbeat()
                 self._paused_heartbeat_s = interval
-                self._arm_watchdog()
 
     def _resume_heartbeat(self) -> None:
         """Give the watchdog back to the background heartbeat, re-armed first: the firmware's watchdog is one-shot
@@ -764,7 +769,7 @@ class CalibrationSession:
         if self.meter is not None:
             self.meter.set_wavelength(target.wavelength_nm)
         self._pause_heartbeat()
-        output = self._output_for(target)
+        output = self._output_for(target, self._arm_watchdog())
         try:
             output.off()
             output.set_percent(target.ceiling_percent * min(max(percent_of_ceiling, 0.0), 100.0) / 100.0)
@@ -801,9 +806,7 @@ class CalibrationSession:
             for target in targets:
                 if self._cancelled:
                     break
-                self._arm_watchdog()  # in case it fired during the previous channel
-                owned = self._paused_heartbeat_s is not None
-                deadline = WatchdogDeadline(control._def.WATCHDOG_TIMEOUT_S if owned else None, self.clock)
+                deadline = self._arm_watchdog()  # again for every channel, in case it fired during the previous one
                 try:
                     result: Union[ChannelResult, Exception] = calibrate_channel(
                         target,
