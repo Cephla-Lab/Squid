@@ -175,23 +175,8 @@ def test_nan_angle_is_rejected(holder_tree, caplog):
     assert resolve_rotation_deg("96 well plate") == (0.0, "none")
 
 
-def test_empty_record_file_is_damage_not_absence(holder_tree, caplog):
+def test_empty_record_file_is_the_defaults(holder_tree):
+    """Exists but empty: the model's defaults (0.00 deg), like every other YAML
+    loader here - not damage, and not a wall a write path has to climb."""
     (holder_tree / "machine_configs" / "plate_holder.yaml").write_text("")
-    with caplog.at_level(logging.ERROR):
-        assert load_plate_holder() is None
-    assert any("NOT BEING APPLIED" in r.getMessage() for r in caplog.records)
-
-
-def test_sila2_path_carries_the_resolved_rotation(holder_tree):
-    """The headless/remote well path once built its transform by hand without
-    rotation, so remote clients planned unrotated wells."""
-    from unittest.mock import MagicMock
-
-    from control.core.scan_coordinates import ScanCoordinatesSiLA2
-
-    save_plate_holder(PlateHolder(rotation_deg=0.5, measured=measured_96()))
-    sc = ScanCoordinatesSiLA2(
-        objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
-    )
-    sc.get_selected_well_coordinates("H12", _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"], "96 well plate")
-    assert tuple(sc.region_centers["H12"]) == plate_transform_for("96 well plate").well_center_mm(7, 11)
+    assert load_plate_holder() == PlateHolder()

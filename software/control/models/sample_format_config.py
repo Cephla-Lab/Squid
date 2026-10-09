@@ -34,7 +34,7 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, model_validator
 
-from control.models.yaml_store import load_yaml_model, save_yaml_model_atomic
+from control.models.yaml_store import load_yaml_model, load_yaml_model_for_edit, save_yaml_model_atomic
 
 USER_SAMPLE_FORMATS_PATH = os.path.join("objective_and_sample_formats", "sample_formats_user.yaml")
 
@@ -202,14 +202,11 @@ def load_user_sample_formats_readonly(path: str = USER_SAMPLE_FORMATS_PATH) -> O
     return load_yaml_model(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path), copy=False)
 
 
-def user_sample_formats_unreadable(path: str = USER_SAMPLE_FORMATS_PATH) -> bool:
-    """The file exists but cannot be loaded (damage, or another schema version).
-
-    load_user_sample_formats returns None for that AND for an absent file; a
-    write path that took the None for "empty store" would replace the damaged
-    file wholesale and lose every definition still recoverable from it.
-    """
-    return os.path.exists(path) and load_user_sample_formats(path) is None
+def load_user_sample_formats_for_edit(path: str = USER_SAMPLE_FORMATS_PATH) -> UserSampleFormats:
+    """For load->edit->save flows: the store, or an empty one when there is no
+    file; raises YamlStoreDamaged rather than hand back an empty store for a
+    file that exists but cannot be read (saving would replace it wholesale)."""
+    return load_yaml_model_for_edit(path, UserSampleFormats, _DAMAGE_MESSAGE.format(path=path))
 
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:

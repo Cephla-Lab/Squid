@@ -12,6 +12,7 @@ wellplate_offset, where a calibrated format now suppresses that offset instead
 of adding it to a measured a1 (see test_measured_definition_suppresses_legacy_offset).
 """
 
+import logging
 import os
 
 import pytest
@@ -209,8 +210,6 @@ def test_load_formats_survives_migration_failure(migration_tree, monkeypatch):
 def test_migration_refuses_to_write_over_a_damaged_user_file(migration_tree, caplog):
     """An unreadable sample_formats_user.yaml may still hold recoverable
     definitions; the migration must not replace it with a fresh store."""
-    import logging
-
     write_legacy_cache(migration_tree, lambda formats: formats["96 well plate"].update(a1_x_mm=11.41))
     user_path = os.path.join("objective_and_sample_formats", "sample_formats_user.yaml")
     with open(user_path, "w") as f:
@@ -224,6 +223,6 @@ def test_migration_refuses_to_write_over_a_damaged_user_file(migration_tree, cap
     assert sample_formats["96 well plate"]["a1_x_mm"] == 11.41
     # the refusal is raised inside the migration and logged by load_formats' guard
     assert any(
-        "keeping the legacy cache as-is" in r.getMessage() and "not migrating over it" in str(r.exc_text)
+        "keeping the legacy cache as-is" in r.getMessage() and "cannot be read" in str(r.exc_info[1])
         for r in caplog.records
     )

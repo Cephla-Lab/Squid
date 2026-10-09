@@ -84,6 +84,24 @@ def catalog_tree(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def strip_format(catalog_tree, monkeypatch):
+    """A 1xN custom plate in the pinned table: the holder mode's corner picks
+    collapse to two on it. Returns (format key, N)."""
+    import control._def as _def
+
+    def make(cols):
+        key = f"strip {cols}"
+        monkeypatch.setitem(
+            _def.WELLPLATE_FORMAT_SETTINGS,
+            key,
+            dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"], rows=1, cols=cols),
+        )
+        return key
+
+    return make
+
+
+@pytest.fixture
 def design_travel_limits(monkeypatch):
     """The stage limits (and zero legacy offset) the design doc's reference
     rings were derived against - pins reference-well computation regardless of

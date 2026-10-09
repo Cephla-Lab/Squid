@@ -23,7 +23,7 @@ calibration-design.md):
 
 import math
 from dataclasses import dataclass, replace
-from typing import Optional, Tuple
+from typing import Tuple
 
 import control._def
 
@@ -220,7 +220,7 @@ def _resolve_rotation(settings, definition) -> Tuple[float, str]:
         return definition.rotation_deg, "measured"
     from control.models.plate_holder import load_plate_holder
 
-    holder = load_plate_holder()
+    holder = load_plate_holder(copy=False)  # read-only, per stage move: no deep copy
     if holder is not None:
         return holder.rotation_deg, "holder"
     return 0.0, "none"
@@ -243,23 +243,11 @@ def plate_transform_for(format_: str, *, apply_legacy_offset: bool = True) -> Pl
                         measurement is the whole correction, so exactly one
                         offset is live per format.
     """
-    return plate_transform_from_settings(
-        control._def.get_wellplate_settings(format_), format_, apply_legacy_offset=apply_legacy_offset
-    )
-
-
-def plate_transform_from_settings(
-    settings, format_: Optional[str] = None, *, apply_legacy_offset: bool = True
-) -> PlateTransform:
-    """The same composition from an already-resolved settings dict (the SiLA2
-    path hands one in). a1, spacing and the suppression flag come from the
-    dict: apply_user_sample_formats replaced the example with the user
-    definition at load time, and to_settings() carries a1_measured along.
-    The per-format rotation override needs the format NAME to look up; without
-    it only the holder record applies.
-    """
-    settings = control._def._with_derived_geometry(format_ or "", dict(settings))  # tolerate scalar-only dicts
-    rotation, _source = _resolve_rotation(settings, _user_format_for(format_) if format_ is not None else None)
+    settings = control._def.get_wellplate_settings(format_)
+    # a1, spacing and the suppression flag all come from the settings dict:
+    # apply_user_sample_formats replaced the example with the user definition
+    # at load time, and to_settings() carries a1_measured along with it.
+    rotation, _source = _resolve_rotation(settings, _user_format_for(format_))
     offset_x, offset_y = legacy_offset_for(settings, apply_legacy_offset)
     return PlateTransform(
         a1_x_mm=settings["a1_x_mm"],

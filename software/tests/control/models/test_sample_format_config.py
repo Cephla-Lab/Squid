@@ -246,12 +246,16 @@ def test_measurement_block_needs_at_least_one_point():
         SampleFormat(rows=8, cols=12, well_spacing_mm=9.0, well_size_mm=6.21, measured=FormatMeasurement())
 
 
-def test_unreadable_user_file_is_told_apart_from_an_absent_one(tmp_path):
-    from control.models.sample_format_config import user_sample_formats_unreadable
+def test_load_for_edit_tells_a_damaged_file_from_an_absent_one(tmp_path):
+    """Write paths must not take the guarded None for an empty store: saving
+    over a damaged file would lose every definition still recoverable from it."""
+    from control.models.sample_format_config import load_user_sample_formats_for_edit
+    from control.models.yaml_store import YamlStoreDamaged
 
-    path = tmp_path / "sample_formats_user.yaml"
-    assert not user_sample_formats_unreadable(str(path))  # absent: an empty store is fine to write
-    path.write_text("formats: {not yaml\n")
-    assert user_sample_formats_unreadable(str(path))
-    path.write_text("")  # exists but empty: damage too
-    assert user_sample_formats_unreadable(str(path))
+    path = str(tmp_path / "sample_formats_user.yaml")
+    assert load_user_sample_formats_for_edit(path) == UserSampleFormats()  # absent: a fresh store
+    (tmp_path / "sample_formats_user.yaml").write_text("")
+    assert load_user_sample_formats_for_edit(path) == UserSampleFormats()  # empty: the same, writable
+    (tmp_path / "sample_formats_user.yaml").write_text("formats: {not yaml\n")
+    with pytest.raises(YamlStoreDamaged, match="cannot be read"):
+        load_user_sample_formats_for_edit(path)

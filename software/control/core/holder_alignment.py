@@ -23,7 +23,11 @@ import control.utils
 from control.core.mosaic_utils import format_well_id
 from control.core.plate_fit import circumcenter as _circumcenter, fit_plate_placement, PlateFitError, PlateFitResult
 from control.core.plate_transform import has_well_grid, PlateTransform, plate_transform_for, resolve_rotation_deg
-from control.models.sample_format_config import load_user_sample_formats, save_user_sample_formats
+from control.models.sample_format_config import (
+    load_user_sample_formats,
+    load_user_sample_formats_for_edit,
+    save_user_sample_formats,
+)
 from control.models.plate_holder import (
     clear_plate_holder,
     HolderMeasuredPoint,
@@ -42,6 +46,12 @@ log = squid.logging.get_logger(__name__)
 # applied to every well - mixing corners would break the constant-offset
 # cancellation the method depends on).
 CORNER_FEATURES = ("corner_top_left", "corner_top_right", "corner_bottom_left", "corner_bottom_right")
+
+# The dialog has this many reference-well rows; the session fills as many as
+# the plate can offer. Four is the default and three the accepted fallback;
+# two would fit but leaves the mis-click test without residual freedom.
+REFERENCE_WELL_SLOTS = 4
+MIN_WELLS_TO_FIT = 3
 
 
 class SessionError(ValueError):
@@ -101,15 +111,10 @@ class HolderAlignmentSession:
     def _in_window(self, row: int, col: int) -> bool:
         return self.skip <= row <= self.rows - 1 - self.skip and self.skip <= col <= self.cols - 1 - self.skip
 
-    @staticmethod
-    def _in_travel(x_mm: float, y_mm: float) -> bool:
-        limits = control._def.SOFTWARE_POS_LIMIT
-        return limits.X_NEGATIVE <= x_mm <= limits.X_POSITIVE and limits.Y_NEGATIVE <= y_mm <= limits.Y_POSITIVE
-
     def _reachable(self, transform: PlateTransform, row: int, col: int) -> bool:
         """Can the stage drive to this well? (Transform hoisted by callers:
         resolving it is file IO, and the reference/query scans loop all wells.)"""
-        return self._in_travel(*transform.well_center_mm(row, col))
+        return control.utils.within_travel(*transform.well_center_mm(row, col))
 
     def _default_reference_indices(self) -> List[Tuple[int, int]]:
         """The extreme reachable corners of the skip window - computed, never
@@ -122,9 +127,9 @@ class HolderAlignmentSession:
             for c in range(self.cols)
             if self._in_window(r, c) and self._reachable(transform, r, c)
         ]
-        if len(candidates) < 3:
+        if len(candidates) < MIN_WELLS_TO_FIT:
             raise SessionError(
-                f"Fewer than 3 wells of {self.format} are inside the stage travel limits - "
+                f"Fewer than {MIN_WELLS_TO_FIT} wells of {self.format} are inside the stage travel limits - "
                 f"holder alignment cannot be measured on this plate."
             )
         corner_scores = (
@@ -138,10 +143,14 @@ class HolderAlignmentSession:
             best = max(candidates, key=score)
             if best not in picked:
                 picked.append(best)
-        # A single row or column has only two extrema; the fit wants three.
-        # Pad with whatever candidate is farthest from the ones picked.
-        while len(picked) < 3:
-            picked.append(max(candidates, key=lambda rc: min(abs(rc[0] - r) + abs(rc[1] - c) for r, c in picked)))
+        # A single row or column has only two extrema. Fill the remaining slots
+        # with whichever candidate is farthest from the ones picked.
+
+        def gap(rc):
+            return min(abs(rc[0] - r) + abs(rc[1] - c) for r, c in picked)
+
+        while len(picked) < min(REFERENCE_WELL_SLOTS, len(candidates)):
+            picked.append(max(candidates, key=gap))
         return picked
 
     def nominate(self, index: int, well_id: str):
@@ -225,9 +234,7 @@ class HolderAlignmentSession:
 
     @property
     def can_fit(self) -> bool:
-        # Four is the default, three the accepted fallback; two would fit but
-        # leaves the mis-click test without residual degrees of freedom.
-        return self.wells_measured >= 3
+        return self.wells_measured >= MIN_WELLS_TO_FIT
 
     # -------------------------------------------------------------------- fit
 
@@ -238,7 +245,7 @@ class HolderAlignmentSession:
         """Fit rotation from the measured wells. Recomputed fresh on every
         call - quality numbers are never cached, let alone persisted."""
         if not self.can_fit:
-            raise SessionError(f"Only {self.wells_measured} wells measured - at least 3 are required.")
+            raise SessionError(f"Only {self.wells_measured} wells measured - at least {MIN_WELLS_TO_FIT} are required.")
         measured = [w for w in self.reference_wells if w.point_mm is not None]
         # Query only wells the stage can DRIVE to: predicted error at an
         # unreachable well is moot (the planner drops those FOVs), and
@@ -281,13 +288,7 @@ class HolderAlignmentSession:
             pitch_y_mm=self.pitch_y_mm,
             rotation_deg=result.rotation_deg,
         )
-        x_mm, y_mm = fitted.well_center_mm(row, col)
-        # _resolve_well_id checked the CALIBRATED center; this is the fitted
-        # feature (a corner, say), which can sit outside travel while the
-        # center sits inside, and the dialog drives straight to it.
-        if not self._in_travel(x_mm, y_mm):
-            raise SessionError(f"The fit puts that point of {well_id} outside the stage travel limits.")
-        return x_mm, y_mm
+        return fitted.well_center_mm(row, col)
 
     def holdout_residual_um(self, well_id: str, measured_xy: Tuple[float, float]) -> float:
         """The only number in the report that is not a model: the miss distance
@@ -355,9 +356,7 @@ def formats_with_rotation_overrides() -> List[str]:
 
 
 def clear_rotation_overrides(formats: Sequence[str]):
-    stored = load_user_sample_formats()
-    if stored is None:
-        return
+    stored = load_user_sample_formats_for_edit()  # raises on a damaged file rather than save over it
     for fmt in formats:
         definition = stored.formats.get(fmt)
         if definition is not None and definition.rotation_deg is not None:

@@ -8,7 +8,7 @@ import numpy as np
 
 import control._def
 import control.utils
-from control.core.plate_transform import plate_transform_for, plate_transform_from_settings, WellplateSettings
+from control.core.plate_transform import plate_transform_for, WellplateSettings
 from control.core.objective_store import ObjectiveStore
 from squid.abc import AbstractStage, AbstractCamera
 import squid.logging
@@ -586,10 +586,7 @@ class ScanCoordinates:
         return region_id in self.region_centers and region_id in self.region_fov_coordinates
 
     def validate_coordinates(self, x, y):
-        return (
-            control._def.SOFTWARE_POS_LIMIT.X_NEGATIVE <= x <= control._def.SOFTWARE_POS_LIMIT.X_POSITIVE
-            and control._def.SOFTWARE_POS_LIMIT.Y_NEGATIVE <= y <= control._def.SOFTWARE_POS_LIMIT.Y_POSITIVE
-        )
+        return control.utils.within_travel(x, y)
 
     def _register_travel_drops(self, region_id, dropped: int, kept: int):
         """Record and LOUDLY report FOVs skipped for being outside stage travel."""
@@ -748,7 +745,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
         self, wellplate_format, well_name, scan_size_mm=None, overlap_percent=10
     ):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-        self.get_selected_well_coordinates(well_name, wellplate_settings, wellplate_format)
+        self.get_selected_well_coordinates(well_name, wellplate_format)
 
         if wellplate_format in ["384 well plate", "1536 well plate"]:
             well_shape = "Square"
@@ -762,18 +759,18 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
             coords = self.create_region_coordinates(v[0], v[1], scan_size_mm, overlap_percent, well_shape)
             self.region_fov_coordinates[k] = coords
 
-    def get_selected_well_coordinates(self, well_names, wellplate_settings, wellplate_format=None):
+    def get_selected_well_coordinates(self, well_names, wellplate_format):
         """
         Given a comma separated list of well names in A1 format, return the coordinates for the wells (wrt the A1 corner)
         """
         pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
         descriptions = well_names.split(",")
 
-        # Offsets and rotation read LIVE at call time, through the same
-        # composition every other producer uses (a hand-built transform here
-        # once dropped the rotation, so remote clients planned unrotated wells).
-        # The format name is what finds a per-format rotation override.
-        transform = plate_transform_from_settings(wellplate_settings, wellplate_format)
+        # Resolved by NAME at call time through the one composition every
+        # producer uses (a1, spacing, offset suppression, rotation and its
+        # per-format override) - a hand-built transform here once dropped the
+        # rotation, so remote clients planned unrotated wells.
+        transform = plate_transform_for(wellplate_format)
 
         for desc in descriptions:
             match = re.match(pattern, desc.strip())

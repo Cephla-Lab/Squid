@@ -375,27 +375,13 @@ def test_non_finite_reading_is_refused_at_the_touch(tree):
     assert session.reference_wells[0].touches == []
 
 
-def test_fitted_target_outside_travel_is_refused(tree, monkeypatch):
-    """_resolve_well_id checks the calibrated CENTER; the fitted corner can sit
-    outside travel while the center sits inside, and the dialog drives to it."""
-    session = HolderAlignmentSession("1536 well plate")
-    touch_all_square(session, theta_deg=0.0, a1=(11.01, 7.87))  # corner = center - 0.765 in x and y
-    a1_center_x = _def.WELLPLATE_FORMAT_SETTINGS["1536 well plate"]["a1_x_mm"]
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", a1_center_x - 0.1)  # center in, corner out
-    with pytest.raises(SessionError, match="outside the stage travel"):
-        session.predicted_touch_mm("A1")
-    # the same well is fine once the limit admits the corner
-    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", 5.0)
-    assert session.predicted_touch_mm("A1")[0] == pytest.approx(11.01 - 0.5 * session.well_size_mm, abs=0.01)
-
-
-def test_single_row_plate_still_gets_three_reference_wells(tree, monkeypatch):
-    """Four corner picks collapse to two on a 1xN grid; the fit needs three."""
-    strip = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
-    strip.update(rows=1, cols=8)
-    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "strip 8", strip)
-    session = HolderAlignmentSession("strip 8")
-    assert [w.well_id for w in session.reference_wells] == ["A1", "A8", "A4"]  # ends, then the middle
+def test_single_row_plate_still_fills_the_slots(tree, strip_format):
+    """Four corner picks collapse to two on a 1xN grid; the remaining slots are
+    filled with the wells farthest from those picked."""
+    session = HolderAlignmentSession(strip_format(8))
+    assert [w.well_id for w in session.reference_wells] == ["A1", "A8", "A4", "A6"]
     touch_all_round(session, theta_deg=0.3)
-    assert session.can_fit
     assert session.fit().rotation_deg == pytest.approx(0.3, abs=0.011)
+
+    three = HolderAlignmentSession(strip_format(3))  # fewer wells than slots
+    assert [w.well_id for w in three.reference_wells] == ["A1", "A3", "A2"]

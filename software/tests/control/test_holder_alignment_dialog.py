@@ -289,18 +289,34 @@ def test_calibrate_existing_format_combo_skips_formats_without_a_grid(qapp, tree
     dialog.close()
 
 
-def test_three_well_session_disables_the_fourth_row(qapp, tree, monkeypatch):
-    strip = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
-    strip.update(rows=1, cols=8)
-    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "strip 8", strip)
-    dialog, _ = make_dialog(qapp, format_="strip 8")
+def test_three_well_plate_hides_the_fourth_row(qapp, tree, strip_format):
+    dialog, _ = make_dialog(qapp, format_=strip_format(3))
     dialog.holder_rotation_radio.setChecked(True)
 
-    assert [e.text() for e in dialog.holder_well_edits] == ["A1", "A8", "A4", ""]
-    assert dialog.holder_record_buttons[2].isEnabled() and not dialog.holder_record_buttons[3].isEnabled()
-    assert not dialog.holder_goto_buttons[3].isEnabled() and not dialog.holder_well_edits[3].isEnabled()
-    dialog.holder_record_buttons[3].click()  # inert, not an IndexError
+    assert [e.text() for e in dialog.holder_well_edits] == ["A1", "A3", "A2", ""]
+    for widgets in (dialog.holder_well_edits, dialog.holder_goto_buttons, dialog.holder_record_buttons):
+        assert [w.isVisibleTo(dialog.holder_widget) for w in widgets] == [True, True, True, False]
+    assert "each of the 3 wells below" in dialog.holder_method_label.text()
     assert "0/3 wells measured" in dialog.holder_fit_label.text()
+    dialog.close()
+
+
+def test_go_to_refuses_a_fitted_point_outside_travel(qapp, tree, monkeypatch):
+    """The nominated well's CENTER was checked; the fitted corner the check row
+    drives to can sit outside travel while the center sits inside."""
+    dialog, stage = make_dialog(qapp)
+    dialog.holder_rotation_radio.setChecked(True)
+    record_all_wells(dialog, stage)  # corner = center - half a well in x and y
+    s = _def.WELLPLATE_FORMAT_SETTINGS["1536 well plate"]
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", s["a1_x_mm"] - 0.1)  # A1's center in, its corner out
+
+    dialog.holder_check_edit.setText("A1")
+    with patch.object(QMessageBox, "warning") as warn:
+        dialog.holder_check_goto_button.click()
+    assert warn.called and "outside the stage travel" in warn.call_args.args[2]
+    stage.move_x_to.assert_not_called()
+    # measuring there is still allowed: the operator may have jogged to it by hand
+    assert dialog.holder_session.holdout_residual_um("B1", (5.0, 9.0)) > 0
     dialog.close()
 
 

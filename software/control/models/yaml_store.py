@@ -1,7 +1,14 @@
 """Shared YAML persistence for the small pydantic sidecar models.
 
 - guarded load: absent -> None; damage -> log the caller's message loudly and
-  return None (the app keeps running on defaults rather than refusing to start)
+  return None (the app keeps running on defaults rather than refusing to start).
+  An existing but empty file is the model's defaults, as in every other YAML
+  loader here (nothing legitimately depends on an empty sidecar, and nothing
+  is lost by one: the atomic save precludes truncation).
+- load for edit: the write-side question. A load->edit->save flow that took
+  the guarded None for "empty store" would replace a damaged file wholesale
+  and lose every definition still recoverable from it, so write paths ask
+  this variant: absent -> the model's defaults, damaged -> YamlStoreDamaged.
 - schema version: a model with a `version` field declares, through that field's
   default, the one version this build reads. A file declaring another version
   is refused (logged, None) rather than validated under the wrong reading -
@@ -63,9 +70,7 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str, *, copy:
         with open(path, "r") as f:
             data = yaml.safe_load(f)
         if data is None:
-            # The file exists (stat succeeded) but holds nothing: that is damage
-            # to report, not the "absent -> defaults" case.
-            raise ValueError("the file is empty")
+            data = {}  # exists but empty: the defaults, not damage
         model = None if _declares_another_version(path, model_cls, data) else model_cls.model_validate(data)
     except Exception:
         log.exception(damage_message)
@@ -74,6 +79,27 @@ def load_yaml_model(path: str, model_cls: Type[M], damage_message: str, *, copy:
     if model is None:
         return None
     return model.model_copy(deep=True) if copy else model
+
+
+class YamlStoreDamaged(ValueError):
+    """A write path asked for a file that exists but cannot be read; .args[0]
+    is user-facing copy."""
+
+
+def load_yaml_model_for_edit(path: str, model_cls: Type[M], damage_message: str) -> M:
+    """The store to edit and save back: the file's contents, or the model's
+    defaults when there is no file. Raises YamlStoreDamaged when the file
+    exists but does not load - overwriting it would destroy whatever it still
+    holds, and the guarded load already said why it does not load."""
+    loaded = load_yaml_model(path, model_cls, damage_message)
+    if loaded is not None:
+        return loaded
+    if os.path.exists(path):
+        raise YamlStoreDamaged(
+            f"{path} exists but cannot be read; refusing to write over it (its contents may still be "
+            f"recoverable). Fix or move the file aside, then try again."
+        )
+    return model_cls()
 
 
 def _declares_another_version(path: str, model_cls: Type[BaseModel], data) -> bool:

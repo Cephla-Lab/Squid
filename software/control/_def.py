@@ -1325,13 +1325,10 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
 
     from control.models.sample_format_config import (
         FormatMeasurement,
-        load_user_sample_formats,
+        load_user_sample_formats_for_edit,
         MeasuredPoint,
         SampleFormat,
         save_user_sample_formats,
-        USER_SAMPLE_FORMATS_PATH,
-        user_sample_formats_unreadable,
-        UserSampleFormats,
     )
 
     cached = read_sample_formats_csv(cached_formats_path)
@@ -1343,12 +1340,7 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
     shipped = read_sample_formats_csv(default_formats_path)
     mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
 
-    if user_sample_formats_unreadable():
-        raise ValueError(
-            f"{USER_SAMPLE_FORMATS_PATH} exists but cannot be read; not migrating over it (its definitions may "
-            f"still be recoverable). Fix or move it aside, then restart."
-        )
-    user_formats = load_user_sample_formats() or UserSampleFormats()
+    user_formats = load_user_sample_formats_for_edit()  # raises on a damaged file: the cache keeps working
     migrated = []
 
     for format_key, cached_settings in cached.items():

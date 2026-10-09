@@ -92,21 +92,25 @@ def test_scan_coordinates_get_selected_wells(monkeypatch, format_, off):
 # ---- site 2: ScanCoordinatesSiLA2.get_selected_well_coordinates (headless) ----
 
 
+def sila2():
+    return ScanCoordinatesSiLA2(
+        objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
+    )
+
+
 @pytest.mark.parametrize("off", OFFSETS, ids=["offset0", "offsetXY"])
 @pytest.mark.parametrize("format_", PLATE_FORMATS)
 def test_sila2_selected_well_coordinates(monkeypatch, format_, off):
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", off[0])
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", off[1])
 
-    sc = ScanCoordinatesSiLA2(
-        objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
-    )
+    sc = sila2()
     s = _def.WELLPLATE_FORMAT_SETTINGS[format_]
 
     # Range branch (serpentine expansion) over the whole plate. Centers are
     # mutable [x, y] lists here (master normalized every region center for the
     # per-FOV z work), so compare against the oracle tuple element-wise.
-    sc.get_selected_well_coordinates(range_string(s), s)
+    sc.get_selected_well_coordinates(range_string(s), format_)
     assert len(sc.region_centers) == s["rows"] * s["cols"]
     for row, col in all_wells(s):
         well_id = index_to_row_label(row) + str(col + 1)
@@ -116,7 +120,7 @@ def test_sila2_selected_well_coordinates(monkeypatch, format_, off):
     sc.region_centers.clear()
     last_row, last_col = s["rows"] - 1, s["cols"] - 1
     single = index_to_row_label(last_row) + str(last_col + 1)
-    sc.get_selected_well_coordinates(single, s)
+    sc.get_selected_well_coordinates(single, format_)
     assert tuple(sc.region_centers[single]) == expected_xy(s, last_row, last_col, off[0], off[1])
 
 
@@ -128,20 +132,42 @@ def test_sila2_honours_the_offset_suppression_rule(monkeypatch):
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 3.0)
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 3.0)
 
-    sc = ScanCoordinatesSiLA2(
-        objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
-    )
-    measured = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
-    measured["a1_measured"] = True  # what a calibrated definition carries
+    sc = sila2()
+    nominal = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
+    measured = dict(nominal, a1_measured=True)  # what a calibrated definition carries
+    # the path resolves by NAME, so the definition under test goes into the table
+    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "96 well plate", measured)
 
-    sc.get_selected_well_coordinates("A1", measured)
+    sc.get_selected_well_coordinates("A1", "96 well plate")
 
     assert tuple(sc.region_centers["A1"]) == (measured["a1_x_mm"], measured["a1_y_mm"])  # no offset added
     # ...while an uncalibrated format still gets it, exactly as before.
     sc.region_centers.clear()
-    nominal = dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"])
-    sc.get_selected_well_coordinates("A1", nominal)
+    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "96 well plate", nominal)
+    sc.get_selected_well_coordinates("A1", "96 well plate")
     assert tuple(sc.region_centers["A1"]) == (nominal["a1_x_mm"] + 3.0, nominal["a1_y_mm"] + 3.0)
+
+
+def test_sila2_path_carries_the_resolved_rotation(catalog_tree):
+    """The headless/remote well path once built its transform by hand without
+    rotation, so remote clients planned unrotated wells."""
+    from control.core.plate_transform import plate_transform_for
+    from control.models.plate_holder import HolderMeasuredPoint, HolderMeasurement, PlateHolder, save_plate_holder
+
+    save_plate_holder(
+        PlateHolder(
+            rotation_deg=0.5,
+            measured=HolderMeasurement(
+                points=[
+                    HolderMeasuredPoint(well="A1", x_mm=1.0, y_mm=1.0),
+                    HolderMeasuredPoint(well="H12", x_mm=2.0, y_mm=2.0),
+                ]
+            ),
+        )
+    )
+    sc = sila2()
+    sc.get_selected_well_coordinates("H12", "96 well plate")
+    assert tuple(sc.region_centers["H12"]) == plate_transform_for("96 well plate").well_center_mm(7, 11)
 
 
 # ---- site 3: acquisition_settings.parse_wells (MCP/remote + fluidics protocol runner) ----
@@ -241,9 +267,7 @@ def test_offset_read_time_agreement(monkeypatch):
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
 
     sc = ScanCoordinates(objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock())
-    sila = ScanCoordinatesSiLA2(
-        objectiveStore=MagicMock(), stage=MagicMock(), camera=MagicMock(), update_callback=lambda update: None
-    )
+    sila = sila2()
     s = _def.WELLPLATE_FORMAT_SETTINGS["96 well plate"]
     sc.update_wellplate_settings(WellplateSettings.from_format("96 well plate"))
     sc.well_selector = SimpleNamespace(get_selected_cells=lambda: [[0, 0]])
@@ -253,7 +277,7 @@ def test_offset_read_time_agreement(monkeypatch):
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 2.0)
 
     gui_center = sc.get_selected_wells()["A1"]
-    sila.get_selected_well_coordinates("A1", s)
+    sila.get_selected_well_coordinates("A1", "96 well plate")
     sila_center = sila.region_centers["A1"]
 
     expected = (s["a1_x_mm"] + 2.0, s["a1_y_mm"] + 2.0)

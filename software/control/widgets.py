@@ -35,11 +35,14 @@ from control.core.holder_alignment import (
     CORNER_FEATURES,
     formats_with_rotation_overrides,
     HolderAlignmentSession,
+    MIN_WELLS_TO_FIT,
     plate_holder_record_exists,
+    REFERENCE_WELL_SLOTS,
     saved_rotation_summary,
     SessionError,
 )
 from control.core.plate_fit import circumcenter, PlateFitError
+from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
@@ -12400,7 +12403,7 @@ class WellplateCalibration(QDialog):
         self.holder_goto_buttons = []
         self.holder_record_buttons = []
         self.holder_well_status = []
-        for i in range(4):
+        for i in range(REFERENCE_WELL_SLOTS):
             edit = QLineEdit()
             edit.setFixedWidth(60)
             edit.editingFinished.connect(lambda index=i: self._holder_nominate(index))
@@ -12476,17 +12479,20 @@ class WellplateCalibration(QDialog):
             return
 
         session = self.holder_session
-        # Four rows, but a one-row or one-column plate has only three wells to offer.
-        in_use = len(session.reference_wells)
-        for i, (goto, record, edit) in enumerate(
-            zip(self.holder_goto_buttons, self.holder_record_buttons, self.holder_well_edits)
+        # One row per slot; a plate with fewer reachable wells leaves the rest
+        # hidden (zip_longest pads the wells with None).
+        for well, edit, goto, record, status in itertools.zip_longest(
+            session.reference_wells,
+            self.holder_well_edits,
+            self.holder_goto_buttons,
+            self.holder_record_buttons,
+            self.holder_well_status,
         ):
-            goto.setEnabled(i < in_use)
-            record.setEnabled(i < in_use)
-            edit.setEnabled(i < in_use)
-            if i >= in_use:
-                edit.setText("")
-                self.holder_well_status[i].setText("")
+            for widget in (edit, goto, record, status):
+                widget.setVisible(well is not None)
+                widget.setEnabled(well is not None)
+            edit.setText(well.well_id if well else "")
+            status.setText("")  # _holder_refresh fills the live rows
         self.holder_check_edit.setText("")  # setText, not clear(): it also resets isModified
         self.holder_check_label.clear()
         is_square = session.touches_per_well == 1
@@ -12499,13 +12505,12 @@ class WellplateCalibration(QDialog):
         # so an instruction buys what motion choreography would, with no
         # invented backoff constants.
         approach_hint = "Approach every well from the same direction - backlash then cancels out of the fit."
+        n_wells = len(session.reference_wells)
         self.holder_method_label.setText(
-            f"{format_}: touch the SAME corner on each of the 4 wells below.\n{approach_hint}"
+            f"{format_}: touch the SAME corner on each of the {n_wells} wells below.\n{approach_hint}"
             if is_square
-            else f"{format_}: touch 3 points on the rim of each of the 4 wells below.\n{approach_hint}"
+            else f"{format_}: touch 3 points on the rim of each of the {n_wells} wells below.\n{approach_hint}"
         )
-        for i, well in enumerate(session.reference_wells):
-            self.holder_well_edits[i].setText(well.well_id)
         self._holder_refresh()
 
     def _holder_refresh(self):
@@ -12526,7 +12531,8 @@ class WellplateCalibration(QDialog):
 
         if not session.can_fit:
             self.holder_fit_label.setText(
-                f"{session.wells_measured}/{len(session.reference_wells)} wells measured (3 minimum to fit)."
+                f"{session.wells_measured}/{len(session.reference_wells)} wells measured "
+                f"({MIN_WELLS_TO_FIT} minimum to fit)."
             )
             for widget in self.holder_fit_widgets:
                 widget.setEnabled(False)
@@ -12560,6 +12566,9 @@ class WellplateCalibration(QDialog):
             self._holder_error(e)
 
     def _holder_nominate(self, index):
+        # A focused edit emits editingFinished when _enter_holder_mode hides it,
+        # after a shorter session is already in - hence the length check here,
+        # and only here (a hidden button cannot be clicked).
         if self.holder_session is None or index >= len(self.holder_session.reference_wells):
             return
         well = self.holder_session.reference_wells[index]
@@ -12575,7 +12584,7 @@ class WellplateCalibration(QDialog):
         self._holder_refresh()
 
     def _holder_record(self, index):
-        if self.holder_session is None or index >= len(self.holder_session.reference_wells):
+        if self.holder_session is None:
             return
         pos = self.stage.get_pos()
         try:
@@ -12586,12 +12595,18 @@ class WellplateCalibration(QDialog):
         self._holder_refresh()
 
     def _holder_move_to(self, x_mm, y_mm):
-        # Targets come from the session, which refuses wells outside travel.
+        # The one move funnel owns the refusal: a well's calibrated center was
+        # checked when it was nominated, but a fitted corner, say, can sit
+        # outside travel while the center sits inside, and nothing below this
+        # clamps an XY move.
+        if not utils.within_travel(x_mm, y_mm):
+            self._holder_error(SessionError(f"That point is outside the stage travel limits ({x_mm:.3f}, {y_mm:.3f})."))
+            return
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
 
     def _holder_goto_reference(self, index):
-        if self.holder_session is None or index >= len(self.holder_session.reference_wells):
+        if self.holder_session is None:
             return
         self._holder_move_to(*self.holder_session.reference_center_mm(index))
 
@@ -12664,7 +12679,7 @@ class WellplateCalibration(QDialog):
         )
         try:
             holder = session.save(confirm_warnings=confirm, clear_overrides=clear)
-        except SessionError as e:
+        except (SessionError, YamlStoreDamaged) as e:
             self._holder_error(e)
             return
         self.holder_clear_button.setEnabled(True)
@@ -12690,7 +12705,11 @@ class WellplateCalibration(QDialog):
             "Format rotation overrides",
             "{n} format(s) carry their own measured rotation and keep it: {formats}. Clear those too?",
         )
-        clear_holder_rotation(clear_overrides=clear)
+        try:
+            clear_holder_rotation(clear_overrides=clear)
+        except YamlStoreDamaged as e:  # the overrides live in the user-format file
+            self._holder_error(e)
+            return
         self.holder_clear_button.setEnabled(False)
         if self.holder_session is not None:
             self._holder_refresh()
@@ -12990,12 +13009,9 @@ class WellplateCalibration(QDialog):
         what the app currently knows about the format.
         """
         from control.models.sample_format_config import (
-            load_user_sample_formats,
+            load_user_sample_formats_for_edit,
             SampleFormat,
             save_user_sample_formats,
-            USER_SAMPLE_FORMATS_PATH,
-            user_sample_formats_unreadable,
-            UserSampleFormats,
         )
 
         try:
@@ -13004,13 +13020,7 @@ class WellplateCalibration(QDialog):
             settings = {}  # brand-new format: `updates` carries the whole definition
         settings.update(updates)
 
-        if user_sample_formats_unreadable():
-            # calibrate()'s except shows this; nothing was written
-            raise ValueError(
-                f"{USER_SAMPLE_FORMATS_PATH} exists but cannot be read, so saving would replace it and lose "
-                f"the other formats in it. Fix or move the file aside, then calibrate again."
-            )
-        user_formats = load_user_sample_formats() or UserSampleFormats()
+        user_formats = load_user_sample_formats_for_edit()  # raises on a damaged file; calibrate() shows it
         previous = user_formats.formats.get(format_key)
         # Everything measured survives an unrelated edit: a spacing tweak must
         # never erase a calibration. Named once, so a future measurement kind

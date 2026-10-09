@@ -15,7 +15,6 @@ invalidate a measured A1 (rotation pivots ON A1), and re-mounting ends in the
 wizard, which handles overrides at write time.
 """
 
-import math
 import os
 from typing import List, Optional
 
@@ -45,7 +44,9 @@ class HolderMeasurement(BaseModel):
 
 class PlateHolder(BaseModel):
     version: int = 1  # the version this build reads; yaml_store refuses a file declaring another
-    rotation_deg: float = 0.0  # + = CCW in the stage XY math frame; pivot = A1
+    # + = CCW in the stage XY math frame; pivot = A1. YAML accepts .nan, and a
+    # NaN angle would poison every well coordinate: finite only.
+    rotation_deg: float = Field(0.0, allow_inf_nan=False)
     measured: HolderMeasurement = Field(default_factory=HolderMeasurement)
 
     @model_validator(mode="after")
@@ -53,8 +54,6 @@ class PlateHolder(BaseModel):
         # A bare nonzero angle is indistinguishable from a typo or a copied
         # example - per the no-arbitrary-numbers rule, it must carry the raw
         # points that produced it.
-        if not math.isfinite(self.rotation_deg):
-            raise ValueError("rotation_deg is not a finite number (YAML accepts .nan; a plate record must not).")
         if self.rotation_deg != 0.0 and len(self.measured.points) < 2:
             raise ValueError(
                 "rotation_deg is set but 'measured.points' is missing - an angle "
@@ -64,19 +63,25 @@ class PlateHolder(BaseModel):
         return self
 
 
-def load_plate_holder(path: str = PLATE_HOLDER_PATH) -> Optional[PlateHolder]:
+def load_plate_holder(path: str = PLATE_HOLDER_PATH, *, copy: bool = True) -> Optional[PlateHolder]:
     """None when absent (rotation 0.0 - pre-feature behaviour). Damage logs
-    loudly and returns None rather than raising."""
+    loudly and returns None rather than raising. copy=False hands back the
+    cached record itself for read-only callers (the rotation resolver runs
+    per stage move); NEVER mutate that."""
     return load_yaml_model(
         path,
         PlateHolder,
         f"Plate holder record at {path} is unreadable; ignoring the file - "
         f"HOLDER ROTATION IS NOT BEING APPLIED (0.00 deg assumed). Re-run the "
         f"holder alignment or fix the file to clear this.",
+        copy=copy,
     )
 
 
 def save_plate_holder(holder: PlateHolder, path: str = PLATE_HOLDER_PATH) -> None:
+    """Replaces whatever is there, damaged or not - deliberately: this is a
+    single-record store whose damage message says to re-run the alignment,
+    so replacement IS the recovery (unlike the user-formats store)."""
     save_yaml_model_atomic(holder, path)
 
 
