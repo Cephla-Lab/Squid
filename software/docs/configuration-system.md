@@ -15,7 +15,7 @@ software/
 │   ├── hardware_bindings.yaml            # Optional: camera→wheel mappings
 │   ├── confocal_config.yaml              # Optional: confocal settings + wheels
 │   ├── fluidics_config.yaml              # Optional: Squid-Fluidics FluidicsConfig (see docs/fluidics-protocol.md)
-│   └── intensity_calibrations/           # Optional: power calibration CSVs
+│   └── intensity_calibrations/           # Optional: power calibrations (Utils > Illumination Power Calibration)
 │
 └── user_profiles/                      # User preferences (per profile)
     └── {profile_name}/
@@ -110,7 +110,7 @@ channels:
 | `channels[].type` | `epi_illumination` (lasers) or `transillumination` (LED) |
 | `channels[].controller_port` | Port name (D1-D8 for lasers, USB1-USB8 for LED) |
 | `channels[].wavelength_nm` | Wavelength in nm (null for LED) |
-| `channels[].intensity_calibration_file` | CSV file in `intensity_calibrations/` |
+| `channels[].intensity_calibration_file` | File in `intensity_calibrations/` (written by the calibration dialog); `<λ>.csv` is used when this is unset or missing |
 | `channels[].excitation_filter_wheel` | Optional: name of excitation filter wheel |
 | `channels[].excitation_filter_position` | Optional: position in excitation filter wheel |
 
@@ -535,8 +535,8 @@ This file captures the exact settings used, including:
    - Test changes before deploying
 
 2. **Keep intensity calibrations updated**
-   - Re-run calibration if laser power changes
-   - Store calibration CSVs in `machine_configs/intensity_calibrations/`
+   - Re-run Utils > Illumination Power Calibration after changing a light source, Max Output or the Illumination Intensity Factor
+   - The channel editor's Calibration Status column says when a calibration no longer fits
 
 3. **Confocal config presence matters**
    - Create `confocal_config.yaml` only if confocal exists

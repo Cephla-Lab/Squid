@@ -1,129 +1,108 @@
-import time
-import pandas as pd
-import numpy as np
-from pathlib import Path
-import sys
+"""Headless illumination power calibration: Utils > Illumination Power Calibration... without the GUI.
+
+Opens the controller itself, so run it with the Squid GUI closed. Calibrates every DAC-driven epi channel (or the ones
+named with --channels), prints each channel's verification, and with --save writes what the GUI would write
+(machine_configs/intensity_calibrations/<λ>nm_<port>.csv + .png) and points the illumination config at it.
+
+    python tools/generate_intensity_calibrations.py --measured-in widefield
+    python tools/generate_intensity_calibrations.py --channels "Fluorescence 405 nm Ex" --save
+    python tools/generate_intensity_calibrations.py --simulation --settle-s 0 --hold-s 0   # dry run, simulated
+"""
+
+import argparse
 import os
-from typing import List
-import matplotlib.pyplot as plt
+import sys
+from pathlib import Path
+from typing import Optional, Sequence
 
-software_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.append(software_dir)
-os.chdir(software_dir)
-
-from PM16 import PM16
-from control.lighting import IlluminationController, IntensityControlMode, ShutterControlMode
-import control.microcontroller as microcontroller
-from control._def import *
+SOFTWARE_DIR = Path(__file__).resolve().parents[1]
 
 
-def plot_calibration(data: pd.DataFrame, wavelength: int, output_dir: Path):
-    """Generate and save calibration plot."""
-    plt.figure(figsize=(10, 6))
-    plt.plot(data["DAC Percent"], data["Optical Power (mW)"], "bo-", label="Measured Data")
-    plt.xlabel("DAC Percent")
-    plt.ylabel("Optical Power (mW)")
-    plt.title(f"Intensity Calibration - {wavelength}nm")
-    plt.grid(True)
-    plt.legend()
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--channels", nargs="*", default=None, help="illumination channel names (default: all)")
+    parser.add_argument(
+        "--measured-in",
+        choices=["widefield", "confocal", "n/a"],
+        default="n/a",
+        help="imaging mode the light path is in; recorded in each file",
+    )
+    parser.add_argument(
+        "--sensor-limit-mw",
+        type=float,
+        default=None,
+        help="stop at the first reading above this (default and maximum: the sensor's own maximum power)",
+    )
+    parser.add_argument("--settle-s", type=float, default=None, help="wait after turning the light on (s)")
+    parser.add_argument("--hold-s", type=float, default=None, help="continuous-light check length (s); 0 skips it")
+    parser.add_argument("--resource", default=None, help="VISA resource (default: the first Thorlabs meter)")
+    parser.add_argument("--save", action="store_true", help="write the files and point the config at them")
+    parser.add_argument("--simulation", action="store_true", help="simulated controller and meter")
+    return parser.parse_args(argv)
 
-    # Save plot
-    plot_file = output_dir / f"{wavelength}_calibration.png"
-    plt.savefig(plot_file, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Saved calibration plot to {plot_file}")
 
+def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
+    args = parse_args(argv)
+    sys.path.insert(0, str(SOFTWARE_DIR))
+    os.chdir(SOFTWARE_DIR)
+    import control._def
+    import control.microcontroller as microcontroller
+    from control.core.config import ConfigRepository
+    from squid.intensity_calibration_run import CalibrationSession, ChannelResult
 
-def generate_calibration(
-    pm: PM16, controller: IlluminationController, wavelength: int, dac_steps: List[float], early_stop_mW: float = 500
-) -> pd.DataFrame:
-    """Generate calibration data for a specific wavelength."""
-    print(f"\nGenerating calibration for {wavelength}nm...")
-
-    # Set power meter wavelength
-    pm.set_wavelength(wavelength)
-
-    # Initialize data storage
-    dac_values = []
-    power_values = []
-
-    controller.set_intensity(wavelength, 0)
-    time.sleep(0.1)
-
+    if args.simulation:
+        serial_device = microcontroller.SimSerial()
+    else:
+        serial_device = microcontroller.get_microcontroller_serial_device(
+            version=control._def.CONTROLLER_VERSION, sn=control._def.CONTROLLER_SN
+        )
+    session = CalibrationSession(
+        microcontroller.Microcontroller(serial_device=serial_device), config_repo or ConfigRepository()
+    )
+    if args.settle_s is not None:
+        session.settle_s = args.settle_s
+    if args.hold_s is not None:
+        session.hold_s = args.hold_s
+    targets = [t for t in session.targets() if args.channels is None or t.name in args.channels]
+    if not targets:
+        print("No matching DAC-driven epi-illumination channel in the illumination config.")
+        return 2
+    info = session.connect(resource=args.resource)
+    print(f"Power meter: {info.meter}, sensor {info.sensor}" + ("" if info.validated else " (model not validated)"))
+    sensor_limit_mw = args.sensor_limit_mw if args.sensor_limit_mw is not None else info.max_power_mw
+    if sensor_limit_mw is None or sensor_limit_mw <= 0:
+        print("The meter did not report the sensor's maximum power: pass --sensor-limit-mw.")
+        session.disconnect()
+        return 2
+    if info.max_power_mw is not None and sensor_limit_mw > info.max_power_mw:
+        print(f"--sensor-limit-mw {sensor_limit_mw:g} is above the sensor's maximum ({info.max_power_mw:g} mW).")
+        session.disconnect()
+        return 2
+    calibrations = []
     try:
-        # Step through DAC values
-        for dac in dac_steps:
-            # set intensity
-            print(f"Setting DAC to {dac:.1f}%...")
-            controller.set_intensity(wavelength, dac)
-            time.sleep(0.01)
-            # turn on illumination
-            controller.turn_on_illumination(wavelength)
-            time.sleep(0.1)  # Wait for power to stabilize
-            # measure power
-            power = pm.read() * 1000
-            print(f"Measured power: {power:.3f} mW")
-            dac_values.append(dac)
-            power_values.append(power)
-            # turn off illumination
-            controller.turn_off_illumination(wavelength)
-            time.sleep(0.01)
-
-            if power > early_stop_mW:
-                break
-
+        results = session.run(
+            targets,
+            measured_in=args.measured_in,
+            sensor_limit_mw=sensor_limit_mw,
+            progress=lambda message, done, total: print(f"\r{message}", end="", flush=True),
+        )
+        print()
+        for name, result in results.items():
+            if isinstance(result, ChannelResult):
+                c = result.calibration
+                calibrations.append(c)
+                extras = list(result.warnings) + ([c.rollover] if c.rollover else [])
+                print(f"{name}: {c.p_max_mw:.4g} mW, {c.verification_summary()}" + "".join(f"; {e}" for e in extras))
+            else:
+                print(f"{name}: not calibrated ({result})")
+        if args.save and calibrations:
+            for path, backup in session.save(calibrations):
+                print(f"saved {path}" + (f" (previous file moved to {backup})" if backup else ""))
     finally:
-        pass
-
-    # Create DataFrame
-    return pd.DataFrame({"DAC Percent": dac_values, "Optical Power (mW)": power_values})
-
-
-def main():
-    # Calibration parameters
-    WAVELENGTHS = [405, 470, 638]  # Wavelengths to calibrate
-    DAC_STEPS = np.arange(0, 100.1, 0.5)  # DAC values to measure (0, 0.1, 0.2, ..., 100)
-    OUTPUT_DIR = "machine_configs/intensity_calibrations"  # Output directory for calibration files
-    EARLY_STOP_mW = 500  # Early stop at 500 mW
-
-    # Create output directory if it doesn't exist
-    output_dir = Path(OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Initialize power meter
-    print("Initializing power meter...")
-    pm = PM16()
-    pm.set_averaging(5)  # Set averaging
-    pm.set_auto_range(True)  # Enable auto-ranging
-
-    # Initialize illumination controller
-    mcu = microcontroller.Microcontroller(
-        serial_device=microcontroller.get_microcontroller_serial_device(version=CONTROLLER_VERSION, sn=CONTROLLER_SN)
-    )
-    controller = IlluminationController(
-        mcu,
-        intensity_control_mode=IntensityControlMode.SquidControllerDAC,
-        shutter_control_mode=ShutterControlMode.TTL,
-        disable_intensity_calibration=True,
-    )
-
-    # Generate calibrations for each wavelength
-    for wavelength in WAVELENGTHS:
-        print(f"\nCalibrating {wavelength} nm...")
-
-        # Generate calibration data
-        calibration_data = generate_calibration(pm, controller, wavelength, DAC_STEPS, EARLY_STOP_mW)
-
-        # Save to CSV
-        output_file = output_dir / f"{wavelength}.csv"
-        calibration_data.to_csv(output_file, index=False)
-        print(f"Saved calibration to {output_file}")
-
-        # Generate and save calibration plot
-        # plot_calibration(calibration_data, wavelength, output_dir)
-
-    print("\nCalibration complete!")
+        session.disconnect()
+    all_pass = len(calibrations) == len(targets) and all(c.verification == "pass" for c in calibrations)
+    return 0 if all_pass else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
