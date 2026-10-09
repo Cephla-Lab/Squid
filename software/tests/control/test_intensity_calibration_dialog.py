@@ -12,6 +12,7 @@ from control.core.config import ConfigRepository
 from control.widgets_intensity_calibration import IntensityCalibrationDialog
 from squid.intensity_calibration import load_calibration
 from squid.intensity_calibration_run import CalibrationSession, ChannelResult
+from squid.power_meter import PowerMeterError, PowerMeterOverrange
 from tests.tools import get_test_microcontroller
 
 YAML = """\
@@ -213,3 +214,16 @@ def test_connect_turns_the_test_beam_off_first(qtbot, session, answers):
     assert session.source_state()[0] is True
     dialog.button_connect.click()
     assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+
+
+@pytest.mark.parametrize("error", [PowerMeterOverrange("meter overrange"), PowerMeterError("USB disconnected")])
+def test_a_failed_reading_turns_the_test_beam_off(qtbot, session, answers, error):
+    # no reading means no sensor-limit check; an overrange means the sensor is already past its range
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    session.read_mw = MagicMock(side_effect=error)
+    dialog._update_reading()
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "Test beam turned off" in dialog.label_result.text()

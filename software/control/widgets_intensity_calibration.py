@@ -307,6 +307,11 @@ class IntensityCalibrationDialog(QDialog):
             reading = self.session.read_mw()
         except PowerMeterError as e:
             self.label_reading.setText(f"reading failed: {e}")
+            if self._test_beam_target is not None:
+                # without a reading there is no sensor-limit check, and an overrange means the sensor is already
+                # past its range: the beam must not stay on until its timer runs out
+                self.button_test_beam.setChecked(False)
+                self._say(f"Test beam turned off: the meter reading failed ({e}).")
             return
         self.label_reading.setText(f"{reading:.4g} mW")
         limit = self.spin_sensor_limit.value()
