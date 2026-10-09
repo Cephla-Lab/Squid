@@ -34,6 +34,7 @@ from squid.intensity_calibration import (
     IntensityCalibration,
     calibration_status,
     fit_curve,
+    load_calibration,
     write_calibration,
 )
 from squid.power_meter import (
@@ -498,18 +499,37 @@ def write_plot(calibration: IntensityCalibration, path: Path) -> None:
         title += f"; {c.hold_s:g} s continuous: {c.hold_droop_fraction * 100:+.1f} %"
     verify.set_title(title)
     verify.legend()
-    figure.savefig(path, dpi=120, bbox_inches="tight")
+    figure.savefig(path, dpi=120, bbox_inches="tight", format="png")  # explicit: staged files end in .staged
 
 
-def save_calibration_files(
-    calibration: IntensityCalibration, calibrations_dir: Path, now: datetime.datetime
-) -> Tuple[Path, Optional[Path]]:
+def stage_calibration_files(calibration: IntensityCalibration, calibrations_dir: Path) -> Tuple[Path, Path]:
+    """Write the CSV and PNG under hidden temporary names next to their final ones and read the CSV back. Nothing the
+    runtime uses changes (it resolves calibrations by name, and the old pre-2026-10 loader only globs *.csv). On a
+    failure the staged files are removed."""
     calibrations_dir.mkdir(parents=True, exist_ok=True)
-    path = calibrations_dir / calibration.file_name
-    backup = backup_existing(path, now)
-    write_calibration(calibration, path)
-    write_plot(calibration, path.with_suffix(".png"))
-    return path, backup
+    final = calibrations_dir / calibration.file_name
+    csv_staged = final.with_name(f".{final.name}.staged")
+    png_staged = final.with_name(f".{final.stem}.png.staged")
+    try:
+        write_calibration(calibration, csv_staged)
+        load_calibration(csv_staged)
+        write_plot(calibration, png_staged)
+    except BaseException:
+        csv_staged.unlink(missing_ok=True)
+        png_staged.unlink(missing_ok=True)
+        raise
+    return csv_staged, png_staged
+
+
+def _restore(published: List[Tuple[Path, Optional[Path]]]) -> None:
+    """Undo a partial publish: remove the new files and move the backed-up ones back, latest first."""
+    for path, backup in reversed(published):
+        path.unlink(missing_ok=True)
+        path.with_suffix(".png").unlink(missing_ok=True)
+        if backup is not None:
+            backup.replace(path)
+            if backup.with_suffix(".png").exists():
+                backup.with_suffix(".png").replace(path.with_suffix(".png"))
 
 
 class CalibrationSession:
@@ -735,8 +755,35 @@ class CalibrationSession:
                 f"{', '.join(changed)}; run the calibration again"
             )
         now = now or datetime.datetime.now()
-        saved = [save_calibration_files(c, self.calibrations_dir(), now) for c in calibrations]
-        for c in calibrations:
-            channels[c.channel].intensity_calibration_file = c.file_name
-        self.config_repo.save_illumination_config(config)
-        return saved
+        directory = self.calibrations_dir()
+        # All or nothing: stage every channel's files first, so a failure (a full disk, a plot error) leaves every
+        # active calibration as it was; then publish, and undo the publish if the config cannot be saved
+        staged: List[Tuple[IntensityCalibration, Path, Path]] = []
+        try:
+            for c in calibrations:
+                staged.append((c, *stage_calibration_files(c, directory)))
+        except BaseException:
+            for _, csv_staged, png_staged in staged:
+                csv_staged.unlink(missing_ok=True)
+                png_staged.unlink(missing_ok=True)
+            raise
+        published: List[Tuple[Path, Optional[Path]]] = []
+        try:
+            for c, csv_staged, png_staged in staged:
+                path = directory / c.file_name
+                published.append((path, backup_existing(path, now)))
+                csv_staged.replace(path)
+                png_staged.replace(path.with_suffix(".png"))
+            for c in calibrations:
+                channels[c.channel].intensity_calibration_file = c.file_name
+            self.config_repo.save_illumination_config(config)
+        except BaseException as original:
+            try:
+                _restore(published)
+                for _, csv_staged, png_staged in staged:
+                    csv_staged.unlink(missing_ok=True)
+                    png_staged.unlink(missing_ok=True)
+            except Exception as restore_error:
+                _log.error(f"restoring the previous calibrations after '{original}' failed: {restore_error}")
+            raise
+        return published

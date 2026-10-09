@@ -4,6 +4,8 @@ the code driving the light, bad readings are measured again, real kinks are veri
 channel, and saving is guarded."""
 
 import datetime
+from dataclasses import replace
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -453,3 +455,60 @@ def test_a_watchdog_that_fired_is_armed_again_before_the_next_channel(repo, then
     assert isinstance(second, ChannelResult)
     assert mcu.unprotected_on == 0
     assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
+
+
+def _saved_once(session):
+    calibration = _calibrated(session)
+    session.save([calibration], now=datetime.datetime(2026, 10, 8, 14, 30, 12))
+    return calibration, session.calibrations_dir() / "405nm_D1.csv"
+
+
+def _unchanged(session, repo, path, before_bytes, before_png):
+    assert path.read_bytes() == before_bytes and path.with_suffix(".png").read_bytes() == before_png
+    assert repo.get_illumination_config().channels[1].intensity_calibration_file == "405nm_D1.csv"
+    assert not list(session.calibrations_dir().glob(".*"))  # no staged files left behind
+    assert not (session.calibrations_dir() / "backup").exists() or not list(
+        (session.calibrations_dir() / "backup").iterdir()
+    )
+
+
+def test_a_failed_plot_leaves_the_active_calibration_untouched(repo, monkeypatch):
+    session = _session(repo)
+    calibration, path = _saved_once(session)
+    before, before_png = path.read_bytes(), path.with_suffix(".png").read_bytes()
+    monkeypatch.setattr("squid.intensity_calibration_run.write_plot", MagicMock(side_effect=OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
+    _unchanged(session, repo, path, before, before_png)
+
+
+def test_a_failure_on_the_second_channel_publishes_nothing(repo, monkeypatch):
+    session = _session(repo)
+    calibration, path = _saved_once(session)
+    before, before_png = path.read_bytes(), path.with_suffix(".png").read_bytes()
+    session.connect()
+    led = session.run([session.targets()[1]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 730 nm Ex"]
+    from squid import intensity_calibration_run as run_module
+
+    real_plot = run_module.write_plot
+
+    def plot_fails_for_730(c, p):
+        if c.wavelength_nm == 730:
+            raise OSError("disk full")
+        real_plot(c, p)
+
+    monkeypatch.setattr(run_module, "write_plot", plot_fails_for_730)
+    with pytest.raises(OSError):
+        session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00"), led.calibration])
+    _unchanged(session, repo, path, before, before_png)
+    assert not (session.calibrations_dir() / "730nm_D5.csv").exists()
+
+
+def test_a_failed_config_save_restores_the_previous_calibration(repo, monkeypatch):
+    session = _session(repo)
+    calibration, path = _saved_once(session)
+    before, before_png = path.read_bytes(), path.with_suffix(".png").read_bytes()
+    monkeypatch.setattr(repo, "save_illumination_config", MagicMock(side_effect=OSError("read-only file system")))
+    with pytest.raises(OSError, match="read-only"):
+        session.save([replace(calibration, calibrated_at="2026-10-09T00:20:00")])
+    _unchanged(session, repo, path, before, before_png)
