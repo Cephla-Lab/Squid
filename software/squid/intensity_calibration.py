@@ -680,14 +680,6 @@ def calibration_status(
     return f"{path.name}: {calibration.status(factor, max_output)}"
 
 
-INTENSITY_SUFFIX = {"power_percent": " % power", "dac_percent": " % DAC"}
-
-
-def intensity_suffix(description: Dict[str, object]) -> str:
-    """The live intensity control's suffix; software-intensity sources keep the plain " %"."""
-    return INTENSITY_SUFFIX.get(description.get("intensity_unit"), " %")
-
-
 def intensity_tooltip(description: Dict[str, object]) -> str:
     unit = description.get("intensity_unit")
     if unit == "dac_percent":

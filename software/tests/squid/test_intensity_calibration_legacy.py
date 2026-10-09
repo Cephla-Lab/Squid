@@ -8,7 +8,6 @@ from squid.intensity_calibration import (
     CalibrationFileError,
     LegacyCalibration,
     calibration_status,
-    intensity_suffix,
     intensity_tooltip,
     load_calibration,
     resolve_calibration_path,
@@ -148,10 +147,7 @@ def test_calibration_status_for_the_channel_editor(tmp_path):
     assert calibration_status(tmp_path, "405nm_D1.csv", 405, 0.6, 1.0) == "405nm_D1.csv: calibrated 2026-10-08"
 
 
-def test_intensity_labels():
-    assert intensity_suffix({"intensity_unit": "power_percent"}) == " % power"
-    assert intensity_suffix({"intensity_unit": "dac_percent"}) == " % DAC"
-    assert intensity_suffix({"intensity_unit": "source_percent"}) == " %"
+def test_intensity_tooltips():
     assert "not linear" in intensity_tooltip({"intensity_unit": "dac_percent"})
     assert intensity_tooltip({"intensity_unit": "source_percent"}) == ""
     tooltip = intensity_tooltip(make_calibration().describe())

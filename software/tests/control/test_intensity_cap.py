@@ -201,14 +201,17 @@ def test_intensity_description_names_the_unit(scope, live, tmp_path):
     )
 
 
-def test_live_control_widget_shows_the_intensity_unit(qtbot):
+def test_live_control_widget_says_what_the_percent_means_in_its_tooltip(qtbot):
+    # the box keeps a plain "%" (Hongquan, 2026-10-09: no power/DAC label on it); the tooltip says which it is
     stub, config = _channel_switch_stub(cap_percent=100.0, qtbot=qtbot)
+    stub.entry_illuminationIntensity.setSuffix("%")
     control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
-    assert stub.entry_illuminationIntensity.suffix() == " % DAC"
+    assert stub.entry_illuminationIntensity.suffix() == "%"
+    assert "not linear in optical power" in stub.entry_illuminationIntensity.toolTip()
 
     stub.liveController.get_intensity_description.return_value = make_calibration().describe()
     control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
-    assert stub.entry_illuminationIntensity.suffix() == " % power"
+    assert stub.entry_illuminationIntensity.suffix() == "%"
     assert "Linear in power" in stub.entry_illuminationIntensity.toolTip()
 
 

@@ -30,7 +30,7 @@ import control._def  # Import module for runtime access to MCP-modifiable settin
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
 from squid.config import CameraPixelFormat
-from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_suffix, intensity_tooltip
+from squid.intensity_calibration import CALIBRATIONS_DIR_NAME, calibration_status, intensity_tooltip
 
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt5"
@@ -4672,7 +4672,7 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.setMinimum(0)
         self.entry_illuminationIntensity.setMaximum(100)
         self.entry_illuminationIntensity.setSingleStep(1)
-        self.entry_illuminationIntensity.setSuffix(" % power")  # the widest unit; the width below must fit it
+        self.entry_illuminationIntensity.setSuffix("%")
         self.entry_illuminationIntensity.setValue(100)
 
         # autolevel
@@ -4684,11 +4684,7 @@ class LiveControlWidget(QFrame):
         self.entry_illuminationIntensity.setMinimumWidth(self.btn_live.sizeHint().width())
         self.btn_autolevel.setMinimumWidth(self.btn_autolevel.sizeHint().width())
 
-        max_width = max(
-            self.btn_autolevel.minimumWidth(),
-            self.entry_illuminationIntensity.minimumWidth(),
-            self.entry_illuminationIntensity.sizeHint().width(),
-        )
+        max_width = max(self.btn_autolevel.minimumWidth(), self.entry_illuminationIntensity.minimumWidth())
 
         # Set the fixed width for all three widgets
         self.entry_illuminationIntensity.setFixedWidth(max_width)
@@ -4894,9 +4890,8 @@ class LiveControlWidget(QFrame):
                 intensity_cap = self.liveController.get_intensity_cap_percent(self.currentConfiguration)
                 self.slider_illuminationIntensity.set_cap(intensity_cap)
                 self.entry_illuminationIntensity.setMaximum(intensity_cap)
-                # Say what the % means: power (calibrated), DAC output, or the light source's own scale
+                # Say in the tooltip what the % means: power (calibrated), DAC output, or the source's own scale
                 description = self.liveController.get_intensity_description(self.currentConfiguration)
-                self.entry_illuminationIntensity.setSuffix(intensity_suffix(description))
                 self.entry_illuminationIntensity.setToolTip(intensity_tooltip(description))
                 # A source that jumps on gives nothing between 0 and its lowest power; the lookup sends a request
                 # there to that power, and the box shows it
