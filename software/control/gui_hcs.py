@@ -977,7 +977,7 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
-        self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
+        self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer, self.stage)
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
