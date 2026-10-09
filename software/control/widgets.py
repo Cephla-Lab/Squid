@@ -11091,6 +11091,7 @@ class TrackingControllerWidget(QFrame):
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.trackingController = trackingController
         self.objectiveStore = objectiveStore
         self.base_path_is_set = False
@@ -11280,28 +11281,15 @@ class TrackingControllerWidget(QFrame):
         self.trackingController.update_tracker_selection(self.dropdown_tracker.currentText())
 
     def update_pixel_size(self):
-        objective = self.dropdown_objective.currentText()
-        self.trackingController.objective = objective
-        # self.internal_state.data['Objective'] = self.objective
-        # TODO: these pixel size code needs to be updated.
-        pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR] / (
-            TUBE_LENS_MM / (OBJECTIVES[objective]["tube_lens_f_mm"] / OBJECTIVES[objective]["magnification"])
-        )
-        self.trackingController.update_pixel_size(pixel_size_um)
-        print("pixel size is " + str(pixel_size_um) + " μm")
-
-    def update_pixel_size(self):
+        """The tracked image's pixel size, through the ObjectiveStore seam (spec B §4.7): the
+        calibrated or nominal factor x the camera's live binned sensor pixel."""
         objective = self.objectiveStore.current_objective
         self.trackingController.objective = objective
-        objective_info = self.objectiveStore.objectives_dict[objective]
-        magnification = objective_info["magnification"]
-        objective_tube_lens_mm = objective_info["tube_lens_f_mm"]
-        tube_lens_mm = TUBE_LENS_MM
-        # TODO: these pixel size code needs to be updated.
-        pixel_size_um = CAMERA_PIXEL_SIZE_UM[CAMERA_SENSOR]
-        pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
+        pixel_size_xy = (
+            self.objectiveStore.get_pixel_size_factor() * self.trackingController.camera.get_pixel_size_binned_um()
+        )
         self.trackingController.update_pixel_size(pixel_size_xy)
-        print(f"pixel size is {pixel_size_xy:.2f} μm")
+        self._log.debug(f"pixel size is {pixel_size_xy:.4f} um ({self.objectiveStore.pixel_size_source(objective)})")
 
 
 class TriggerControlWidget(QFrame):
