@@ -9177,7 +9177,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
             self.stored_xy_params["Select Wells"]["scan_shape"] = (
-                "Square" if self.scanCoordinates.format in ["384 well plate", "1536 well plate"] else "Circle"
+                "Circle" if self.scanCoordinates.is_round_well else "Square"
             )
 
         # change scan size to single FOV if XY is checked and mode is "Current Position"
@@ -9185,19 +9185,18 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_scan_size.setValue(0.1)
 
     def set_default_shape(self):
-        if self.scanCoordinates.format in ["384 well plate", "1536 well plate"]:
+        # the format's own shape - a custom rectangular carrier is not a circle
+        # because its name is not "384 well plate"
+        if not self.scanCoordinates.is_round_well:
             self.combobox_shape.setCurrentText("Square")
-        # elif self.scanCoordinates.format in ["4 slide"]:
-        #     self.combobox_shape.setCurrentText("Rectangle")
         elif self.scanCoordinates.format != 0:
             self.combobox_shape.setCurrentText("Circle")
 
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
         shape = self.combobox_shape.currentText()
-        is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
         fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
-        return get_effective_well_size(well_size, fov_size_mm, shape, is_round_well)
+        return get_effective_well_size(well_size, fov_size_mm, shape, self.scanCoordinates.is_round_well)
 
     def reset_coordinates(self):
         # Called after acquisition - preserve scan_size, update coverage display
@@ -9240,10 +9239,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             overlap_percent = self.entry_overlap.value()
             fov_size_mm = self.navigationViewer.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
             shape = self.combobox_shape.currentText()
-            is_round_well = self.scanCoordinates.format not in ["384 well plate", "1536 well plate"]
 
             coverage = calculate_well_coverage(
-                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, is_round_well
+                scan_size, fov_size_mm, overlap_percent, shape, well_size_mm, self.scanCoordinates.is_round_well
             )
 
             self.entry_well_coverage.setValue(coverage)

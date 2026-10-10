@@ -73,6 +73,7 @@ class ScanCoordinates:
         # calibration change was silently ignored until a signal re-emit.
         self.format = control._def.WELLPLATE_FORMAT
         self.well_size_mm = control._def.WELL_SIZE_MM
+        self.well_shape = "circle"  # until update_wellplate_settings delivers the format's own
 
         # Centralized region management
         self.region_centers = {}  # {region_id: [x, y, z]}
@@ -93,6 +94,13 @@ class ScanCoordinates:
         # via plate_transform_for(self.format).
         self.format = settings.format
         self.well_size_mm = settings.well_size_mm
+        self.well_shape = settings.well_shape
+
+    @property
+    def is_round_well(self) -> bool:
+        """From the format's definition - a custom rectangular carrier is not a
+        circle because its name is not '384 well plate'."""
+        return self.well_shape == "circle"
 
     @staticmethod
     def _index_to_row(index):
@@ -177,7 +185,7 @@ class ScanCoordinates:
             # Handle manual ROIs
             for i, shape_coords in enumerate(manual_shapes):
                 scan_coordinates, dropped = self.get_points_for_manual_region(shape_coords, overlap_percent)
-                if scan_coordinates:
+                if scan_coordinates or dropped:  # a polygon that lost every FOV to travel is stored empty, loudly
                     region_name = "manual" if len(manual_shapes) <= 1 else f"manual{i}"
                     center = np.mean(shape_coords, axis=0)
                     self._store_region(
@@ -674,11 +682,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
     ):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         self.get_selected_well_coordinates(well_name, wellplate_format)
-
-        if wellplate_format in ["384 well plate", "1536 well plate"]:
-            well_shape = "Square"
-        else:
-            well_shape = "Circle"
+        well_shape = "Circle" if wellplate_settings["well_shape"] == "circle" else "Square"
 
         if scan_size_mm is None:
             scan_size_mm = wellplate_settings["well_size_mm"]

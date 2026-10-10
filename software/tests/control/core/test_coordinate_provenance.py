@@ -233,3 +233,18 @@ def test_the_writer_writes_the_stamp_it_is_given(tree):
 
     write_scan_coordinates_csv("legacy_copy.csv", df_fixture(), None)  # unknown provenance stays unstamped
     assert read_scan_coordinates_csv("legacy_copy.csv")[1] is None
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [lambda d: d["wells"][0].update(x_mm=float("nan")), lambda d: d.update(rotation_deg=float("inf"))],
+    ids=["nan coordinate", "inf rotation"],
+)
+def test_non_finite_stamp_numbers_are_damage(tree, damage):
+    """NaN compares False against everything: such a stamp would pass the
+    staleness check silently. Refused at parse time instead."""
+    import json
+
+    data = make_stamp("96 well plate").model_dump()
+    damage(data)
+    assert parse_stamp(STAMP_PREFIX + json.dumps(data)) is None

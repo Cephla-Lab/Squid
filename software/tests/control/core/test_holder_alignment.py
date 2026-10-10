@@ -165,13 +165,17 @@ def test_circumcenter_recovers_center_and_radius(tree):
     assert r == pytest.approx(radius, abs=1e-9)
 
 
-@pytest.mark.parametrize("third_y", [10.0, 10.000001], ids=["exactly", "a micron off"])
-def test_collinear_rim_touches_rejected_and_not_recorded(tree, third_y):
+@pytest.mark.parametrize(
+    "second, third",
+    [((11.0, 10.0), (12.0, 10.0)), ((11.0, 10.0), (12.0, 10.000001)), ((10.0, 10.0), (10.0, 10.0))],
+    ids=["exactly", "a micron off", "three identical touches"],
+)
+def test_collinear_rim_touches_rejected_and_not_recorded(tree, second, third):
     session = HolderAlignmentSession("96 well plate")
     session.record_touch(0, 10.0, 10.0)
-    session.record_touch(0, 11.0, 10.0)
+    session.record_touch(0, *second)
     with pytest.raises(SessionError, match="in a line"):
-        session.record_touch(0, 12.0, third_y)
+        session.record_touch(0, *third)
     assert len(session.reference_wells[0].touches) == 2  # the well can be re-touched
 
 

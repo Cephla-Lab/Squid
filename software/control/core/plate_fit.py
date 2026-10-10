@@ -320,7 +320,8 @@ def circumcenter(p1, p2, p3) -> Tuple[float, float, float]:
     cx, cy = p3
     cross = _signed_area(p1, p2, p3)  # base x height of the triangle
     span = max(math.dist(p1, p2), math.dist(p2, p3), math.dist(p3, p1))
-    if abs(cross) < RIM_TRIANGLE_MIN_HEIGHT_FRACTION * span**2:  # the conditioning guard, in the triangle's own units
+    # the conditioning guard, in the triangle's own units (<=: a zero span is degenerate too)
+    if abs(cross) <= RIM_TRIANGLE_MIN_HEIGHT_FRACTION * span**2:
         raise PlateFitError("the three points are (nearly) collinear - they do not define a circle")
     d = 2.0 * cross
     ux = ((ax**2 + ay**2) * (by - cy) + (bx**2 + by**2) * (cy - ay) + (cx**2 + cy**2) * (ay - by)) / d

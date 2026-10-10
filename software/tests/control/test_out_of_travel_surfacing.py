@@ -160,3 +160,13 @@ def test_manual_region_counts_only_fovs_the_polygon_selects(scan):
     triangle = [(-3.0, 2.0), (3.0, 2.0), (3.0, 8.0)]  # out of travel: only its thin left tip
     bounding_box = [(-3.0, 2.0), (3.0, 2.0), (3.0, 8.0), (-3.0, 8.0)]  # out of travel: the whole x<0 strip
     assert 0 < dropped_for(triangle) < dropped_for(bounding_box)
+
+
+def test_manual_region_losing_every_fov_is_stored_empty_with_its_drops(scan, caplog):
+    """Like the other planners: the region exists, empty, and the drops are on
+    record - not a silently cleared plan."""
+    with caplog.at_level(logging.WARNING):
+        scan.set_manual_coordinates([[(-4.0, 4.0), (-2.0, 4.0), (-2.0, 6.0), (-4.0, 6.0)]], overlap_percent=0)
+    assert scan.region_fov_coordinates["manual"] == []
+    assert scan.out_of_travel["manual"] > 0
+    assert "outside the stage travel" in caplog.text

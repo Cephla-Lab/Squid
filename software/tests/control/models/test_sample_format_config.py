@@ -274,3 +274,16 @@ def test_load_for_edit_tells_a_damaged_file_from_an_absent_one(tmp_path):
     (tmp_path / "sample_formats_user.yaml").write_text("formats: {not yaml\n")
     with pytest.raises(YamlStoreDamaged, match="cannot be read"):
         load_user_sample_formats_for_edit(path)
+
+
+def test_unknown_key_is_damage_not_a_default(tmp_path, caplog):
+    """A typo in a hand-edited definition must not quietly become the field's
+    default - a1_x_mm 0.0 would move every well of that plate."""
+    path = tmp_path / "sample_formats_user.yaml"
+    path.write_text(
+        "version: 2\nformats:\n  96 well plate:\n    rows: 8\n    cols: 12\n    well_spacing_mm: 9.0\n"
+        "    well_size_mm: 6.21\n    a1_x_mn: 11.41\n"
+    )
+    with caplog.at_level(logging.ERROR):
+        assert load_user_sample_formats(str(path)) is None
+    assert "NOT BEING APPLIED" in caplog.text

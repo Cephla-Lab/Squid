@@ -9,7 +9,7 @@
 version: 1
 rotation_deg: 0.0
 measured:
-  on: ""            # format the angle was measured on, e.g. "96 well plate"
+  'on': ""          # format the angle was measured on, e.g. "96 well plate" (quoted: bare on is YAML's True)
   feature: center   # or e.g. corner_top_left - the same feature on every well
   points: []        # raw well -> stage correspondences; the source of truth
   timestamp: ""
