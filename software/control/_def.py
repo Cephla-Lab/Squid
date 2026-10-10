@@ -1475,18 +1475,99 @@ else:
         log.error("machine-specific configuration not present, the program will exit")
         sys.exit(1)
 
+import control.objectives_config as _objectives_config  # leaf module, see its docstring
+
+
+def _apply_objectives_yaml():
+    """Rebind OBJECTIVES and the changer slot maps from machine_configs/objectives.yaml.
+
+    Runs after the machine .ini is applied (its loop rebinds module globals, so anything
+    derived earlier would be overwritten) and before DEFAULT_OBJECTIVE is resolved.
+    Returns the config, or None when the file is absent: objectives.csv and the .ini maps
+    stay in effect, exactly as before.
+    """
+    global OBJECTIVES, OBJECTIVE_TURRET_POSITIONS, XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2
+    path = _objectives_config.OBJECTIVES_YAML_PATH
+    config = _objectives_config.load_objectives_config(path)
+    if config is None:
+        return None
+    _objectives_config.validate_objectives_config(
+        config, use_xeryon=USE_XERYON, use_turret=USE_OBJECTIVE_TURRET, path=path
+    )
+    OBJECTIVES = _objectives_config.to_objectives_dict(config)
+    if config.changer.kind is _objectives_config.ChangerKind.NIMOTION_TURRET:
+        OBJECTIVE_TURRET_POSITIONS = _objectives_config.to_turret_positions(config)
+    elif config.changer.kind is _objectives_config.ChangerKind.XERYON:
+        XERYON_OBJECTIVE_SWITCHER_POS_1, XERYON_OBJECTIVE_SWITCHER_POS_2 = _objectives_config.to_xeryon_lists(config)
+    log.info(f"objectives from {path}: {list(OBJECTIVES)}; the .ini's objective changer maps are ignored")
+    return config
+
+
+try:
+    OBJECTIVES_CONFIG = _apply_objectives_yaml()
+except _objectives_config.ObjectivesConfigError as e:
+    log.error(f"{e}{_objectives_config.restore_hint(_objectives_config.OBJECTIVES_YAML_PATH)}")
+    sys.exit(1)
+
+
+def _default_objective_fallback(reason="the cached default objective is not mounted"):
+    """Today's literal "20x" without objectives.yaml; with it, the lowest-magnification mounted
+    objective. `reason` must be true for the caller's situation (e.g. there may be no cache file
+    at all, in which case nothing was "not mounted")."""
+    if OBJECTIVES_CONFIG is None:
+        return "20x"
+    fallback = min(OBJECTIVES, key=lambda name: OBJECTIVES[name]["magnification"])
+    log.warning(f"{reason}; starting on {fallback}")
+    return fallback
+
+
+def get_mounting(objective_name):
+    """(changer kind, slot): ("nimotion_turret", 1..4 or None), ("xeryon", 1, 2 or None) or ("none", None).
+
+    Raises KeyError for an objective that is not in OBJECTIVES.
+    """
+    if objective_name not in OBJECTIVES:
+        raise KeyError(objective_name)
+    if USE_OBJECTIVE_TURRET:
+        return ("nimotion_turret", OBJECTIVE_TURRET_POSITIONS.get(objective_name))
+    if USE_XERYON:
+        return ("xeryon", xeryon_objective_position(objective_name))
+    return ("none", None)
+
+
+def get_declared(objective_name):
+    """Declared optics, model and serial (model and serial are "" without objectives.yaml).
+
+    Raises KeyError for an objective that is not in OBJECTIVES.
+    """
+    info = OBJECTIVES[objective_name]
+    declared = {
+        "magnification": info["magnification"],
+        "na": info["NA"],
+        "tube_lens_f_mm": info["tube_lens_f_mm"],
+        "model": "",
+        "serial": "",
+    }
+    if OBJECTIVES_CONFIG is not None:
+        entry = next(o for o in OBJECTIVES_CONFIG.objectives if o.name == objective_name)
+        declared["model"], declared["serial"] = entry.model, entry.serial
+    return declared
+
+
 try:
     with open("cache/objective_and_sample_format.txt", "r") as f:
         cached_settings = json.load(f)
         DEFAULT_OBJECTIVE = (
-            cached_settings.get("objective") if cached_settings.get("objective") in OBJECTIVES else "20x"
+            cached_settings.get("objective")
+            if cached_settings.get("objective") in OBJECTIVES
+            else _default_objective_fallback()
         )
         WELLPLATE_FORMAT = str(cached_settings.get("wellplate_format"))
         WELLPLATE_FORMAT = WELLPLATE_FORMAT + " well plate" if WELLPLATE_FORMAT.isdigit() else WELLPLATE_FORMAT
         if WELLPLATE_FORMAT not in WELLPLATE_FORMAT_SETTINGS:
             WELLPLATE_FORMAT = "96 well plate"
 except (FileNotFoundError, json.JSONDecodeError):
-    DEFAULT_OBJECTIVE = "20x"
+    DEFAULT_OBJECTIVE = _default_objective_fallback("no usable cached default objective")
     WELLPLATE_FORMAT = "96 well plate"
 
 NUMBER_OF_SKIP = WELLPLATE_FORMAT_SETTINGS[WELLPLATE_FORMAT][
