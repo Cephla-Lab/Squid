@@ -170,3 +170,19 @@ def test_objective_calibration_does_not_open_during_an_objective_switch(qtbot, c
     win.objectivesWidget.dropdown.setEnabled(True)
     win.openObjectiveCalibration()
     assert len(opened) == 1
+
+
+def test_a_simulated_calibration_never_touches_the_machine_calibration_file(qtbot, confirm_exit_yes, monkeypatch):
+    """Under --simulation the dialog saves its synthetic calibration apart from machine_configs/: a fake
+    camera key and pixel sizes saved there would replace the real machine's calibration."""
+    import control.widgets_objective_calibration as woc
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    opened = []
+    monkeypatch.setattr(woc.ObjectiveCalibrationDialog, "exec_", lambda self: opened.append(self) or 0)
+    win.openObjectiveCalibration()
+    repo = opened[0].config_repo
+    assert repo.machine_configs_path != scope.config_repo.machine_configs_path
+    assert repo.machine_configs_path.parts[-3:] == ("cache", "simulation", "machine_configs")

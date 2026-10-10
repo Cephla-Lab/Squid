@@ -2361,12 +2361,16 @@ class HighContentScreeningGui(QMainWindow):
             )
             hardware, after_run, manual_switch = adapter, adapter.restore_mode, not adapter.has_changer
 
+        config_repo = self.microscope.config_repo
+        if self.is_simulation:
+            config_repo = config_repo.simulation_calibration_repository()
+
         current = self.liveController.currentConfiguration
         dialog = ObjectiveCalibrationDialog(
             hardware,
             specs,
             [channel.name for channel in self.liveController.get_channels(start_objective)],
-            self.microscope.config_repo,
+            config_repo,
             tube_lens_mm=control._def.TUBE_LENS_MM,
             get_declared=control._def.get_declared,
             fine_metric=lambda crop: float(
