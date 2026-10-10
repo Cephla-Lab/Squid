@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 
 import control._def
+from control.models.objective_calibration_config import CurrentSetup, ImageTransform
 from squid.objective_calibration.engine import ObjectiveSpec
 from squid.objective_calibration.hardware import CalibrationError, check_xy_target, check_z_target
 from squid.objective_calibration.synthetic import FakeCalibrationHardware, FakeObjective, FakeScene
@@ -30,6 +31,18 @@ def image_transform(camera_config) -> Tuple[Optional[float], Optional[str]]:
     """The rotation and flip _process_raw_frame applies to every frame."""
     flip = camera_config.flip.value if camera_config.flip is not None else None
     return (camera_config.rotate_image_angle, flip)
+
+
+def current_setup(camera_config, camera, tube_lens_mm: float) -> CurrentSetup:
+    """What the machine runs now, for the ObjectiveStore's validity checks (spec B §4.4). Raises
+    NotImplementedError for a camera model without a known sensor pixel size (control/camera.py)."""
+    rotate_deg, flip = image_transform(camera_config)
+    return CurrentSetup(
+        camera_key(camera_config),
+        camera.get_pixel_size_unbinned_um(),
+        tube_lens_mm,
+        ImageTransform(rotate_deg=rotate_deg, flip=flip),
+    )
 
 
 def _microstep_um(axis) -> float:

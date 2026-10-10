@@ -2,6 +2,7 @@
 import os
 import sys
 from control._def import *
+from control.core.acquisition_settings import pixel_size_um_from_acquisition_parameters
 from qtpy.QtCore import *
 
 import psutil
@@ -354,14 +355,9 @@ class Stitcher(QThread, QObject):
         # Calculate estimated overlap from acquisition parameters
         dx_mm = self.acquisition_params["dx(mm)"]
         dy_mm = self.acquisition_params["dy(mm)"]
-        obj_mag = self.acquisition_params["objective"]["magnification"]
-        obj_tube_lens_mm = self.acquisition_params["objective"]["tube_lens_f_mm"]
-        sensor_pixel_size_um = self.acquisition_params["sensor_pixel_size_um"]
-        tube_lens_mm = self.acquisition_params["tube_lens_mm"]
-
-        obj_focal_length_mm = obj_tube_lens_mm / obj_mag
-        actual_mag = tube_lens_mm / obj_focal_length_mm
-        self.pixel_size_um = sensor_pixel_size_um / actual_mag
+        # The recorded (calibrated or nominal) pixel size when the JSON has one, else the nominal
+        # reconstruction older datasets need (spec B §4.7).
+        self.pixel_size_um = pixel_size_um_from_acquisition_parameters(self.acquisition_params)
         print("pixel_size_um:", self.pixel_size_um)
 
         dx_pixels = dx_mm * 1000 / self.pixel_size_um
@@ -919,14 +915,9 @@ class CoordinateStitcher(QThread, QObject):
             self.acquisition_params = json.load(file)
 
     def get_pixel_size_from_params(self):
-        obj_mag = self.acquisition_params["objective"]["magnification"]
-        obj_tube_lens_mm = self.acquisition_params["objective"]["tube_lens_f_mm"]
-        sensor_pixel_size_um = self.acquisition_params["sensor_pixel_size_um"]
-        tube_lens_mm = self.acquisition_params["tube_lens_mm"]
-
-        obj_focal_length_mm = obj_tube_lens_mm / obj_mag
-        actual_mag = tube_lens_mm / obj_focal_length_mm
-        self.pixel_size_um = sensor_pixel_size_um / actual_mag
+        # The recorded (calibrated or nominal) pixel size when the JSON has one, else the nominal
+        # reconstruction older datasets need (spec B §4.7).
+        self.pixel_size_um = pixel_size_um_from_acquisition_parameters(self.acquisition_params)
         print("pixel_size_um:", self.pixel_size_um)
 
     def parse_filenames(self):

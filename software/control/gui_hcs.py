@@ -601,6 +601,10 @@ class HighContentScreeningGui(QMainWindow):
     LASER_BASED_FOCUS_TAB_NAME = "Laser-Based Focus"
     FLUIDICS_TAB_NAME = "Fluidics"
     signal_performance_mode_changed = Signal(bool)
+    # The field of view changed size without an objective change (a pixel-size calibration was saved,
+    # cleared or lost its validity). Spec B §4.6: connected to exactly the FOV-size listeners, not to
+    # signal_objective_changed, which also resets laser AF and re-applies live mode.
+    signal_fov_size_changed = Signal()
 
     def __init__(
         self,
@@ -674,6 +678,9 @@ class HighContentScreeningGui(QMainWindow):
         self.performance_mode = False
         self.napari_connections = []
         self.well_selector_visible = False  # Add this line to track well selector visibility
+        # Acquisition tabs whose FOV grid or coverage is stale after a pixel-size change while they were
+        # inactive; refreshed when they become current (spec B §4.6 refresh rule).
+        self._fov_size_dirty_tabs = set()
 
         self.multipointController: QtMultiPointController = None
         self.streamHandler: core.QtStreamHandler = None
@@ -743,6 +750,7 @@ class HighContentScreeningGui(QMainWindow):
         self.load_widgets()
         self.setup_layout()
         self.make_connections()
+        self._warn_about_invalid_pixel_calibration()
 
         # Emit initial performance mode state to sync widgets
         self.signal_performance_mode_changed.emit(self.performance_mode)
@@ -1492,6 +1500,7 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
+        self.make_fov_size_connections()
         # Sensor mode changes (readout speed) can shift the valid exposure range;
         # refresh the exposure control the user actually sees (LiveControlWidget's),
         # since CameraSettingsWidget's own exposure entry is hidden here
@@ -1784,6 +1793,73 @@ class HighContentScreeningGui(QMainWindow):
         self.toggleNapariTabs()
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
+
+    # ---------------------------------------------------------------- pixel-size calibration (spec B §4.4, §4.6)
+    def make_fov_size_connections(self):
+        """signal_fov_size_changed reaches exactly the FOV-size listeners: the navigation FOV, tracking's
+        pixel size and the scan planning of the current acquisition tab (inactive tabs are marked dirty).
+        Camera settings changed through the GUI re-check the calibration's validity."""
+        self.signal_fov_size_changed.connect(self.navigationViewer.redraw_fov)
+        self.signal_fov_size_changed.connect(self._mark_inactive_tabs_fov_size_dirty)
+        if self.trackingControlWidget is not None:
+            self.signal_fov_size_changed.connect(self.trackingControlWidget.update_pixel_size)
+        if ENABLE_WELLPLATE_MULTIPOINT:
+            # refreshes grid and coverage only while its tab is current
+            self.signal_fov_size_changed.connect(self.wellplateMultiPointWidget.handle_objective_change)
+        if ENABLE_FLEXIBLE_MULTIPOINT:
+            # refreshes the grid only while visible
+            self.signal_fov_size_changed.connect(self.flexibleMultiPointWidget.update_fov_positions)
+        self.cameraSettingWidget.signal_binning_changed.connect(self._refresh_pixel_calibration_validity)
+        self.cameraSettingWidget.signal_sensor_mode_changed.connect(self._refresh_pixel_calibration_validity)
+
+    def _on_calibration_changed(self, change):
+        """The calibration-changed notification (an ObjectiveStore.CalibrationChange)."""
+        self.log.info(
+            f"Objective calibration changed: {sorted(change.quantities)}, validity flipped: {change.validity_flipped}"
+        )
+        if "pixel_size" not in change.quantities:
+            return
+        if self.unifiedMosaicWidget is not None:
+            # the tiles were placed at the old scale; drawn shapes are in mm and stay
+            self.unifiedMosaicWidget.clear_image_layers()
+        self.signal_fov_size_changed.emit()
+
+    def _refresh_pixel_calibration_validity(self):
+        """Spec B §4.4 trigger: camera settings changed through the GUI. The factor is binning-free, so
+        a binning change leaves everything in place; only a changed camera setup flips validity."""
+        change = self.objectiveStore.refresh_validity()
+        if change.quantities:
+            self._on_calibration_changed(change)
+
+    def _mark_inactive_tabs_fov_size_dirty(self):
+        """The shared scanCoordinates belongs to the current acquisition tab: the others refresh their
+        grid and coverage when they become current (onTabChanged), never now."""
+        current = self.recordTabWidget.currentWidget()
+        for widget in (self.wellplateMultiPointWidget, self.flexibleMultiPointWidget):
+            if widget is not None and widget is not current:
+                self._fov_size_dirty_tabs.add(widget)
+
+    def _warn_about_invalid_pixel_calibration(self):
+        """Once at startup (spec B §4.4): a saved pixel-size calibration that is not valid for this
+        camera and optics, or a calibration file that cannot be read, is used nominally and said so."""
+        lines = self.objectiveStore.calibration_warnings()
+        file_error = getattr(self.microscope, "objective_calibration_error", "")
+        if file_error:
+            lines.insert(0, file_error)
+        if not lines:
+            return
+        # Not modal: a modal box here would hold construction, and with it a scripted or --start-server start.
+        self._calibration_warning = QMessageBox(
+            QMessageBox.Warning,
+            "Objective Calibration",
+            "The saved objective calibration is not fully in use:\n\n"
+            + "\n".join(lines)
+            + "\n\nRecalibrate under Utils > Objective Calibration.",
+            QMessageBox.Ok,
+            self,
+        )
+        self._calibration_warning.setModal(False)
+        self._calibration_warning.show()
 
     def _on_acquisition_save_target(self, save_target):
         """Route the controller's per-run save dir to the unified widget."""
@@ -2380,8 +2456,11 @@ class HighContentScreeningGui(QMainWindow):
             default_channel=current.name if current is not None else None,
             busy_reason=self.objective_calibration_busy_reason,
             after_run=after_run,
+            objective_store=self.objectiveStore,
             parent=self,
         )
+        # Directly, not through napari_connections: performance mode must not disconnect it (spec B §4.6).
+        dialog.signal_calibration_changed.connect(self._on_calibration_changed)
         dialog.exec_()
         dropdown = self.objectivesWidget.dropdown if self.objectivesWidget is not None else None
         if dropdown is not None and dropdown.currentText() != self.objectiveStore.current_objective:
@@ -2447,6 +2526,12 @@ class HighContentScreeningGui(QMainWindow):
         self.scanCoordinates.clear_regions()
 
         if is_wellplate_acquisition:
+            if self.wellplateMultiPointWidget in self._fov_size_dirty_tabs:
+                # The FOV size changed while this tab was inactive: the grid is regenerated below as on
+                # every activation; the coverage (read-only, from scan size and FOV) needs it too.
+                self._fov_size_dirty_tabs.discard(self.wellplateMultiPointWidget)
+                if self.wellplateMultiPointWidget.combobox_xy_mode.currentText() == "Select Wells":
+                    self.wellplateMultiPointWidget.update_coverage_from_scan_size()
             if self.wellplateMultiPointWidget.combobox_xy_mode.currentText() == "Manual":
                 # trigger manual shape update
                 if self.wellplateMultiPointWidget.shapes_mm:
@@ -2455,7 +2540,8 @@ class HighContentScreeningGui(QMainWindow):
                 # trigger wellplate update
                 self.wellplateMultiPointWidget.update_coordinates()
         elif is_flexible_acquisition:
-            # trigger flexible regions update
+            # trigger flexible regions update (also what a dirty flexible tab needs)
+            self._fov_size_dirty_tabs.discard(self.flexibleMultiPointWidget)
             self.flexibleMultiPointWidget.update_fov_positions()
 
         self.toggleWellSelector(is_wellplate_acquisition and self.wellSelectionWidget.format != "glass slide")

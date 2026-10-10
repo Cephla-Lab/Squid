@@ -51,6 +51,7 @@ class ZarrAcquisitionConfig:
         shape: Full dataset shape as (T, C, Z, Y, X) for 5D or (FOV, T, C, Z, Y, X) for 6D
         dtype: NumPy dtype for the data
         pixel_size_um: Physical pixel size in micrometers
+        pixel_size_source: "calibrated" or "nominal" (spec B §4.7 provenance; None when unknown)
         z_step_um: Z step size in micrometers (optional)
         time_increment_s: Time between timepoints in seconds (optional)
         channel_names: List of channel names for metadata
@@ -64,6 +65,7 @@ class ZarrAcquisitionConfig:
     shape: Tuple[int, ...]  # T, C, Z, Y, X (5D) or FOV, T, C, Z, Y, X (6D)
     dtype: np.dtype
     pixel_size_um: float
+    pixel_size_source: Optional[str] = None
     z_step_um: Optional[float] = None
     time_increment_s: Optional[float] = None
     channel_names: List[str] = field(default_factory=list)
@@ -606,6 +608,7 @@ class ZarrWriter:
             "_squid": {
                 "structure": structure,
                 "pixel_size_um": config.pixel_size_um,
+                "pixel_size_source": config.pixel_size_source,
                 "z_step_um": config.z_step_um,
                 "time_increment_s": config.time_increment_s,
                 "chunk_mode": config.chunk_mode.value,

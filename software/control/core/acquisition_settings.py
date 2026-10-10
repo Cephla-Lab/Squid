@@ -204,18 +204,43 @@ def apply_acquisition_settings(
     )
 
 
+def pixel_size_metadata(objective_store, camera) -> dict:
+    """The effective pixel size of the current objective and its provenance (spec B §4.7), for
+    acquisition parameters.json, the acquisition YAML and the Zarr attributes: `pixel_size_um` is the
+    seam's factor x the binned sensor pixel, `pixel_size_source` is "calibrated" or "nominal", and
+    `pixel_calibration_measured_at` is the calibration's timestamp (None when nominal)."""
+    name = objective_store.current_objective
+    return {
+        "pixel_size_um": objective_store.get_pixel_size_factor() * camera.get_pixel_size_binned_um(),
+        "pixel_size_source": objective_store.pixel_size_source(name),
+        "pixel_calibration_measured_at": objective_store.pixel_calibration_measured_at(name),
+    }
+
+
+def pixel_size_um_from_acquisition_parameters(params: dict) -> float:
+    """The pixel size an acquisition was taken at, from its acquisition parameters.json (spec B §4.7):
+    the recorded `pixel_size_um` when present, else the legacy reconstruction from the nominal optics
+    (sensor pixel x objective focal length / tube lens) that older datasets need."""
+    recorded = params.get("pixel_size_um")
+    if recorded is not None and float(recorded) > 0:
+        return float(recorded)
+    objective = params["objective"]
+    obj_focal_length_mm = objective["tube_lens_f_mm"] / objective["magnification"]
+    actual_mag = params["tube_lens_mm"] / obj_focal_length_mm
+    return params["sensor_pixel_size_um"] / actual_mag
+
+
 def export_acquisition_settings(controller, scan_coordinates, objective_store, camera) -> Tuple[dict, dict]:
     """The controller's current settings and ScanCoordinates as two plain dicts (a protocol's
     `imaging.settings` / `imaging.coordinates` blocks). Read after the widget pushed its controls."""
     current_objective = objective_store.current_objective
     objective_dict = objective_store.objectives_dict.get(current_objective, {})
-    pixel_size_um = objective_store.get_pixel_size_factor() * camera.get_pixel_size_binned_um()
     settings = {
         "objective": {
             "name": current_objective,
             "magnification": objective_dict.get("magnification"),
             "NA": objective_dict.get("NA"),
-            "pixel_size_um": pixel_size_um,
+            **pixel_size_metadata(objective_store, camera),
             "camera_binning": list(camera.get_binning()) if hasattr(camera, "get_binning") else None,
             "sensor_pixel_size_um": camera.get_pixel_size_binned_um(),
         },

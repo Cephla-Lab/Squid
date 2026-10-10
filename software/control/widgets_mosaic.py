@@ -793,6 +793,13 @@ class UnifiedMosaicWidget(QWidget):
 
     def clearAllLayers(self):
         """Clear all layers and reset state. Preserves the Manual ROI layer."""
+        self.clear_image_layers()
+        self.signal_clear_viewer.emit()
+
+    def clear_image_layers(self):
+        """Drop the tiles and the plate boundaries drawn at the old tile scale, and the canvas state
+        that fixes it; the Manual ROI shapes stay (they are in mm). Spec B §4.6: a pixel-size change.
+        Unlike clearAllLayers it leaves the navigation viewer alone."""
         for layer in [lyr for lyr in self.viewer.layers if lyr.name != MANUAL_ROI_LAYER]:
             self.viewer.layers.remove(layer)
         self.viewer_extents = None
@@ -802,7 +809,6 @@ class UnifiedMosaicWidget(QWidget):
         self._pixel_size_um = 0.0
         self._downsample_factor = 1
         self._plate_well_origins_mm.clear()
-        self.signal_clear_viewer.emit()
 
     # --- Save (downsampled view) ---
 

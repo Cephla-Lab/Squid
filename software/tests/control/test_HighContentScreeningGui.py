@@ -172,6 +172,137 @@ def test_objective_calibration_does_not_open_during_an_objective_switch(qtbot, c
     assert len(opened) == 1
 
 
+# ---------------------------------------------------------------- pixel-size calibration changed (spec B §4.6)
+
+
+def _calls(monkeypatch, obj, name):
+    """Replace obj.name with a recorder; returns the list of call argument tuples. For a slot that
+    make_connections binds directly (a bound method), patch the class before construction instead."""
+    calls = []
+    monkeypatch.setattr(obj, name, lambda *args, **kwargs: calls.append(args))
+    return calls
+
+
+def _redraw_fov_calls(monkeypatch):
+    """NavigationViewer.redraw_fov is connected as a bound method, so it is recorded at the class, before
+    the window exists. It also spares the real redraw, which needs a stage position the fresh GUI lacks."""
+    from control.core.core import NavigationViewer
+
+    calls = []
+    monkeypatch.setattr(NavigationViewer, "redraw_fov", lambda self: calls.append(()))
+    return calls
+
+
+def _pixel_size_change():
+    from control.core.objective_store import CalibrationChange
+
+    return CalibrationChange(quantities=frozenset({"pixel_size"}), validity_flipped=True)
+
+
+def test_pixel_size_change_refreshes_the_fov_listeners_and_nothing_else(qtbot, monkeypatch, confirm_exit_yes):
+    """signal_fov_size_changed reaches the navigation FOV and the current acquisition tab's planning,
+    marks the inactive tab dirty, clears the mosaic tiles but keeps drawn shapes, and does not reset
+    laser AF or re-apply live mode (what signal_objective_changed would do). Tracking's listener is
+    covered in test_widgets.py: with ENABLE_TRACKING the GUI does not construct (load_objects builds
+    the TrackingController with imageDisplayWindow before that attribute exists)."""
+    import numpy as np
+
+    from control.widgets_mosaic import MANUAL_ROI_LAYER
+
+    redraws = _redraw_fov_calls(monkeypatch)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert win.laserAutofocusController is not None
+
+    # the flexible tab is current: the wellplate tab is the inactive one, in Select Wells mode
+    win.wellplateMultiPointWidget.combobox_xy_mode.setCurrentText("Select Wells")
+    win.recordTabWidget.setCurrentWidget(win.flexibleMultiPointWidget)
+    win.onTabChanged(win.recordTabWidget.currentIndex())
+    assert not win.scanCoordinates.has_regions()
+
+    redraws.clear()
+    laser_af_resets = _calls(monkeypatch, win.laserAutofocusController, "on_settings_changed")
+    live_mode_reapplied = _calls(monkeypatch, win.liveControlWidget, "select_new_microscope_mode_by_name")
+    coverage_refreshed = _calls(monkeypatch, win.wellplateMultiPointWidget, "update_coverage_from_scan_size")
+
+    mosaic = win.unifiedMosaicWidget
+    assert mosaic is not None
+    mosaic.viewer.add_image(np.zeros((8, 8), dtype=np.uint16), name="BF")
+    mosaic.viewer.add_shapes([[[0, 0], [0, 1], [1, 1], [1, 0]]], shape_type="polygon", name=MANUAL_ROI_LAYER)
+    mosaic.layers_initialized = True
+
+    win._on_calibration_changed(_pixel_size_change())
+
+    assert len(redraws) == 1
+    assert laser_af_resets == [] and live_mode_reapplied == []
+    assert [layer.name for layer in mosaic.viewer.layers] == [MANUAL_ROI_LAYER]
+    assert mosaic.layers_initialized is False
+    # the inactive wellplate tab is dirty and did not refresh or write the shared coordinates
+    assert win.wellplateMultiPointWidget in win._fov_size_dirty_tabs
+    assert win.flexibleMultiPointWidget not in win._fov_size_dirty_tabs
+    assert coverage_refreshed == []
+    assert not win.scanCoordinates.has_regions()
+
+    # activation refreshes the dirty tab's coverage (Select Wells) as well as its grid: once, although
+    # setCurrentWidget already ran onTabChanged through currentChanged before the explicit call
+    win.recordTabWidget.setCurrentWidget(win.wellplateMultiPointWidget)
+    win.onTabChanged(win.recordTabWidget.currentIndex())
+    assert win.wellplateMultiPointWidget not in win._fov_size_dirty_tabs
+    assert len(coverage_refreshed) == 1
+
+    # with the wellplate tab current, the same change refreshes it immediately and dirties the other one
+    win._on_calibration_changed(_pixel_size_change())
+    assert len(coverage_refreshed) == 2
+    assert win.flexibleMultiPointWidget in win._fov_size_dirty_tabs
+    assert win.wellplateMultiPointWidget not in win._fov_size_dirty_tabs
+
+
+def test_a_notification_without_pixel_size_leaves_the_fov_alone(qtbot, monkeypatch, confirm_exit_yes):
+    from control.core.objective_store import CalibrationChange
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    emitted = []
+    win.signal_fov_size_changed.connect(lambda: emitted.append(True))
+    win._on_calibration_changed(CalibrationChange(quantities=frozenset({"xy_offsets"}), validity_flipped=True))
+    win._on_calibration_changed(CalibrationChange(quantities=frozenset(), validity_flipped=False))
+    assert emitted == []
+
+
+def test_camera_settings_changes_recheck_the_calibration_validity(qtbot, monkeypatch, confirm_exit_yes):
+    """Spec B §4.4 trigger. The factor is binning-free, so a binning change is a no-op for the FOV
+    listeners unless validity flipped."""
+    _redraw_fov_calls(monkeypatch)  # signal_binning_changed also redraws the FOV, which needs a position
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    refreshes = []
+    monkeypatch.setattr(win.objectiveStore, "refresh_validity", lambda: refreshes.append(True) or _pixel_size_change())
+    routed = _calls(monkeypatch, win, "_on_calibration_changed")
+    win.cameraSettingWidget.signal_binning_changed.emit()
+    assert len(refreshes) == 1 and len(routed) == 1
+
+
+def test_startup_warns_once_about_an_invalid_saved_calibration(qtbot, monkeypatch, confirm_exit_yes):
+    warnings = []
+    monkeypatch.setattr(
+        QMessageBox, "show", lambda box: warnings.append((box.windowTitle(), box.text(), box.isModal()))
+    )
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    monkeypatch.setattr(
+        scope.objective_store,
+        "calibration_warnings",
+        lambda: ["20x: nominal pixel size in use (camera changed (old -> new))"],
+    )
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Objective Calibration" and "20x: nominal pixel size in use" in warnings[0][1]
+    assert warnings[0][2] is False  # never holds construction (scripted and --start-server starts)
+
+
 def test_a_simulated_calibration_never_touches_the_machine_calibration_file(qtbot, confirm_exit_yes, monkeypatch):
     """Under --simulation the dialog saves its synthetic calibration apart from machine_configs/: a fake
     camera key and pixel sizes saved there would replace the real machine's calibration."""

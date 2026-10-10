@@ -5,6 +5,8 @@ import control.microscope
 import tests.control.test_stubs as ts
 from control.acquisition_yaml_loader import AcquisitionYAMLData
 from control.core.acquisition_settings import (
+    pixel_size_metadata,
+    pixel_size_um_from_acquisition_parameters,
     acquisition_data_from_blocks,
     apply_acquisition_settings,
     export_acquisition_settings,
@@ -150,3 +152,51 @@ def test_apply_rejects_an_unknown_z_stacking_config_before_touching_regions():
     with pytest.raises(ValueError, match="z_stacking_config"):
         apply_acquisition_settings(mpc, mpc.scanCoordinates, scope, data)
     assert "keep" in mpc.scanCoordinates.region_fov_coordinates
+
+
+# ---------------------------------------------------------------- pixel-size traceability (spec B §4.7)
+
+LEGACY_JSON = {
+    # a pre-B2 acquisition parameters.json: 20x, f=180 mm, 180 mm tube lens, 3.76 um binned sensor pixel
+    "objective": {"magnification": 20, "tube_lens_f_mm": 180, "name": "20x"},
+    "sensor_pixel_size_um": 3.76,
+    "tube_lens_mm": 180,
+}
+
+
+def test_stitchers_prefer_the_recorded_pixel_size():
+    recorded = {**LEGACY_JSON, "pixel_size_um": 0.19364, "pixel_size_source": "calibrated"}
+    assert pixel_size_um_from_acquisition_parameters(recorded) == pytest.approx(0.19364)
+
+
+def test_stitchers_fall_back_to_the_nominal_reconstruction_for_older_json():
+    assert pixel_size_um_from_acquisition_parameters(LEGACY_JSON) == pytest.approx(3.76 * 180 / 20 / 180)
+    # a present-but-empty value is not a pixel size either
+    assert pixel_size_um_from_acquisition_parameters({**LEGACY_JSON, "pixel_size_um": None}) == pytest.approx(0.188)
+
+
+def test_pixel_size_metadata_follows_the_seam():
+    scope, mpc = _controller()
+    name = scope.objective_store.current_objective
+    meta = pixel_size_metadata(scope.objective_store, scope.camera)
+    assert meta == {
+        "pixel_size_um": pytest.approx(
+            scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+        ),
+        "pixel_size_source": "nominal",
+        "pixel_calibration_measured_at": None,
+    }
+    assert scope.objective_store.pixel_size_source(name) == "nominal"
+
+
+def test_export_records_the_pixel_size_provenance():
+    scope, mpc = _controller()
+    mpc.set_selected_configurations(_channel_names(scope, mpc))
+    mpc.scanCoordinates.add_region_from_fovs("A1", _some_fovs(mpc))
+    settings, _ = export_acquisition_settings(mpc, mpc.scanCoordinates, scope.objective_store, scope.camera)
+    objective = settings["objective"]
+    assert objective["pixel_size_source"] == "nominal"
+    assert objective["pixel_calibration_measured_at"] is None
+    assert objective["pixel_size_um"] == pytest.approx(
+        scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+    )

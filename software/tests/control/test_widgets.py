@@ -3035,3 +3035,44 @@ def test_flexible_set_acquisition_running_state_dispatches_like_the_wellplate_sl
 
     control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, False)
     fake.acquisition_is_finished.assert_called_once()
+
+
+# ---------------------------------------------------------------- tracking on the pixel-size seam (spec B §4.7)
+
+
+def test_tracking_widget_takes_its_pixel_size_from_the_objective_store_seam(qtbot, monkeypatch):
+    import control.tracking
+
+    # Tracker_Image needs cv2.legacy (opencv-contrib), which the test environment does not have; the
+    # pixel-size path under test never touches the tracker itself.
+    monkeypatch.setattr(control.tracking, "Tracker_Image", MagicMock())
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    live_controller = ts.get_test_live_controller(scope, scope.objective_store.current_objective)
+    autofocus_controller = ts.get_test_autofocus_controller(
+        scope.camera, scope.stage, live_controller, scope.low_level_drivers.microcontroller
+    )
+    tracking_controller = core_module.TrackingController(
+        scope.camera,
+        scope.low_level_drivers.microcontroller,
+        scope.stage,
+        scope.objective_store,
+        live_controller,
+        autofocus_controller,
+        None,
+    )
+    try:
+        widget = control.widgets.TrackingControllerWidget(
+            tracking_controller, scope.objective_store, show_configurations=False
+        )
+        qtbot.addWidget(widget)
+        # the constructor already called update_pixel_size: factor x the live binned sensor pixel
+        expected = scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+        assert tracking_controller.pixel_size_um == pytest.approx(expected)
+        assert tracking_controller.objective == scope.objective_store.current_objective
+
+        # a calibrated factor (what signal_fov_size_changed re-applies) goes straight through
+        scope.objective_store.pixel_size_factor = scope.objective_store.get_pixel_size_factor() * 1.03
+        widget.update_pixel_size()
+        assert tracking_controller.pixel_size_um == pytest.approx(expected * 1.03)
+    finally:
+        scope.close()

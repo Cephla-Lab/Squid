@@ -651,6 +651,13 @@ def test_acquisition_yaml_has_region_fovs_and_the_protocol_section(tmp_path):
     assert data["protocol"] == {"name": "demo", "round": "R01", "step": "image", "run_name": "liver"}
     assert "fluidics" not in data
     assert mpc.protocol_info is None
+    # spec B §4.7: the acquisition YAML carries the effective pixel size and its provenance
+    objective = data["objective"]
+    assert objective["pixel_size_source"] == "nominal"
+    assert objective["pixel_calibration_measured_at"] is None
+    assert objective["pixel_size_um"] == pytest.approx(
+        scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+    )
 
 
 def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
@@ -723,3 +730,25 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
         mpc.thread.join(10)
 
     assert tt.image_count == mpc.get_acquisition_image_count()
+
+
+def test_acquisition_parameters_json_records_the_pixel_size_and_its_source(tmp_path):
+    """Spec B §4.7: the stitchers read pixel_size_um from the JSON; its provenance is next to it."""
+    import json
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    mpc = ts.get_test_multi_point_controller(microscope=scope)
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("R01_image", add_timestamp=False)
+
+    with open(tmp_path / "R01_image" / "acquisition parameters.json", encoding="utf-8") as f:
+        params = json.load(f)
+    assert params["pixel_size_source"] == "nominal"
+    assert params["pixel_calibration_measured_at"] is None
+    assert params["pixel_size_um"] == pytest.approx(
+        scope.objective_store.get_pixel_size_factor() * scope.camera.get_pixel_size_binned_um()
+    )
+    # the legacy fields the fallback reconstruction needs are still there
+    assert params["sensor_pixel_size_um"] == pytest.approx(scope.camera.get_pixel_size_binned_um())
+    assert params["tube_lens_mm"] == control._def.TUBE_LENS_MM
+    assert params["objective"]["name"] == scope.objective_store.current_objective
