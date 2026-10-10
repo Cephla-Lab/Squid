@@ -15,22 +15,32 @@ from control.objective_turret_controller import (
     CW_ENABLE,
     CW_STARTUP,
     CW_RUN_ABSOLUTE,
+    CW_TRIGGER_ABSOLUTE,
     DI1_FUNCTION_ORIGIN_SWITCH,
     EXPECTED_CURRENT_OVERLOAD,
     EXPECTED_CURRENT_RUN,
     EXPECTED_MAX_SPEED,
     EXPECTED_MIN_SPEED,
-    HOMING_FINE_ACCEL,
-    HOMING_SWEEP_SPEED,
+    HOMING_ACCEL,
+    HOMING_METHOD_SEARCH_NEGATIVE,
+    HOMING_METHOD_SEARCH_POSITIVE,
+    HOMING_SEARCH_SPEED,
+    HOMING_ZERO_SPEED,
     MICROSTEP_REG_VALUE,
-    MODE_SPEED,
+    MODE_HOMING,
+    MODE_POSITION,
     REG_ACCEL,
     REG_CONTROL_WORD,
     REG_CURRENT_OVERLOAD,
     REG_CURRENT_POSITION,
     REG_CURRENT_RUN,
-    REG_DIRECTION,
     REG_DI_FUNCTION,
+    REG_DI_POLARITY,
+    REG_DIRECTION,
+    REG_HOMING_ACCEL,
+    REG_HOMING_METHOD,
+    REG_HOMING_SEARCH_SPEED,
+    REG_HOMING_ZERO_SPEED,
     REG_MAX_SPEED,
     REG_MICROSTEP,
     REG_MIN_SPEED,
@@ -38,12 +48,12 @@ from control.objective_turret_controller import (
     REG_SAVE_PARAMS,
     REG_SET_ZERO,
     REG_TARGET_POSITION,
-    REG_TARGET_SPEED,
+    REG_ZERO_RETURN,
     SAVE_PARAMS_MAGIC,
     SET_ZERO_MAGIC,
+    STATUS_BIT_FAULT,
     STATUS_BIT_RUNNING,
-    CW_TRIGGER_ABSOLUTE,
-    CW_TRIGGER_RELATIVE,
+    ZERO_RETURN_ENABLED,
 )
 
 
@@ -233,17 +243,20 @@ class _FakeModbus:
         self.writes = []  # (address, value) in order
         self._position = 0
         self.microstep_raw = MICROSTEP_REG_VALUE  # register value 4 -> 16 microsteps
-        # Scripted values consumed one per status-snapshot read; the last value repeats.
-        self.di_script = []
-        self._di = 0
+        # Scripted status words consumed one per status-snapshot read; the last value repeats.
         self.status_script = []
         self._status = None  # None until a status_script value has been consumed
         # Unscripted status behaves like the drive: RUNNING for one read after a move trigger.
         self._running_reads = 0
-        # Optional deterministic clock (any object with a `now` attribute) advanced by
-        # `snapshot_read_s` on every status-snapshot read.
-        self.clock = None
-        self.snapshot_read_s = 0.0
+        self.alarm = 0  # alarm code reported in every status snapshot
+        self.snapshot_reads = 0
+        # A homing re-bases the drive's counter at the switch (62-63 pulses on the bench) once
+        # the switch is found, i.e. on the read that reports the homing complete; `homes = False`
+        # models a drive that did not run its homing at all.
+        self._run_mode = None
+        self.homes = True
+        self.edge_counter = 63
+        self._rebase_pending = False
 
     def connect(self, port=None, baudrate=None):
         self.connected = True
@@ -275,25 +288,28 @@ class _FakeModbus:
         return 0  # idle, no fault
 
     def read_input_registers(self, slave_id, address, count):
-        # Status snapshot (homing loops and the move wait): DI level at offset 1, status
-        # word at offset 8, and the commanded target as the live position at offsets 10..11
-        # so the move-complete tolerance check passes as soon as RUNNING clears.
-        if self.clock is not None:
-            self.clock.now += self.snapshot_read_s
-        if self.di_script:
-            self._di = self.di_script.pop(0)
+        # Status snapshot (homing wait and move wait): status word at offset 8, the
+        # commanded target as the live position at offsets 10..11 so the move-complete
+        # tolerance check passes as soon as RUNNING clears, alarm code at offset 15.
+        self.snapshot_reads += 1
         vals = [0] * count
-        vals[1] = self._di
         vals[8] = self._next_status_word()
+        if self._rebase_pending and not (vals[8] & STATUS_BIT_RUNNING):
+            self._position = self.edge_counter
+            self._rebase_pending = False
         pos = self._position & 0xFFFFFFFF
         vals[10] = (pos >> 16) & 0xFFFF
         vals[11] = pos & 0xFFFF
+        vals[15] = self.alarm
         return vals
 
     def write_register(self, slave_id, address, value):
         self.writes.append((address, value))
-        if address == REG_CONTROL_WORD and value in (CW_TRIGGER_ABSOLUTE, CW_TRIGGER_RELATIVE):
+        if address == REG_RUN_MODE:
+            self._run_mode = value
+        if address == REG_CONTROL_WORD and value == CW_TRIGGER_ABSOLUTE:
             self._running_reads = 1
+            self._rebase_pending = self._run_mode == MODE_HOMING and self.homes
 
     def write_register_32bit(self, slave_id, address, value, signed=False):
         self.writes.append((address, value))
@@ -331,68 +347,7 @@ def test_move_to_objective_deenergizes_when_idle(monkeypatch):
     controller.close()
 
 
-def _fast_homing(monkeypatch):
-    """Zero out the real-time settle/poll sleeps so homing tests run instantly."""
-    monkeypatch.setattr(otc, "HOMING_SETTLE_MARGIN_S", 0.0)
-    monkeypatch.setattr(otc, "HOMING_STOP_SETTLE_S", 0.0)
-    monkeypatch.setattr(otc, "HOMING_POLL_S", 0.0)
-
-
-def test_home_zeroes_at_edge_and_clamps(monkeypatch):
-    controller, fake = _make_real_controller(monkeypatch)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    # Snapshot sequence: already in the window (1) -> the unconditional backoff jog
-    # carries it clear (0) -> first fine jog lands on the trigger edge (1).
-    fake.di_script = [1, 0, 1]
-    controller.home()
-    # SET_ZERO twice: once at start (travel bound) and once at the trigger edge.
-    assert [v for (a, v) in fake.writes if a == REG_SET_ZERO] == [SET_ZERO_MAGIC, SET_ZERO_MAGIC]
-    # Ends clamped at home (position-mode 0x06/0x07/0x0F, no trigger), not de-energized.
-    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
-    assert controller.current_objective is None
-    controller.close()
-
-
-def test_home_sweeps_in_velocity_mode_when_off_sensor(monkeypatch):
-    controller, fake = _make_real_controller(monkeypatch)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    # Off the window (0) -> sweep polls miss then hit (0, 1) -> the backoff jog
-    # carries it clear on the near side (0) -> fine jog hits the edge (1).
-    fake.di_script = [0, 0, 1, 0, 1]
-    controller.home()
-    assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
-    assert (REG_DIRECTION, 0) in fake.writes  # sweep runs negative, toward the sensor
-    assert (REG_TARGET_SPEED, HOMING_SWEEP_SPEED) in fake.writes
-    controller.close()
-
-
-def test_home_lowers_accel_for_fine_search_and_restores(monkeypatch):
-    # The fine search runs at HOMING_FINE_ACCEL to soften the microstep approach to
-    # the trigger edge; the original acceleration (fake reads 0) is restored after.
-    controller, fake = _make_real_controller(monkeypatch)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    fake.di_script = [1, 0, 1]
-    controller.home()
-    accel_writes = [v for (a, v) in fake.writes if a == REG_ACCEL]
-    assert accel_writes == [HOMING_FINE_ACCEL, 0]
-    controller.close()
-
-
-def test_home_timeout_leaves_motor_deenergized(monkeypatch):
-    controller, fake = _make_real_controller(monkeypatch)
-    _fast_homing(monkeypatch)
-    fake.di_script = [0]  # sensor never triggers; fake position never exceeds travel
-    with pytest.raises(TimeoutError):
-        controller.home(timeout_s=0.2)
-    # Failure cleanup: stopped and de-energized, NOT left clamped.
-    assert fake.control_word_writes()[-1] == CW_DISABLE
-    controller.close()
-
-
-# --- a turret only homes with Z retracted ---
+# --- Z retract around a homing (PR #702's rule: a turret only homes with Z retracted) ---
 
 
 def test_sim_home_retracts_z_and_leaves_it_there(monkeypatch):
@@ -467,9 +422,7 @@ def test_home_retracts_z_before_touching_the_drive_and_leaves_it_retracted(monke
     fake = _FakeModbus()
     stage = _StageOnTheWire(fake, z_mm=3.5)
     controller, fake = _make_real_controller(monkeypatch, fake=fake, stage=stage)
-    _fast_homing(monkeypatch)
     fake.writes.clear()
-    fake.di_script = [1, 0, 1]
     controller.home()
     assert fake.writes[0] == ("Z", OBJECTIVE_RETRACTED_POS_MM)  # before the first register write
     assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]  # ends clamped at home
@@ -484,11 +437,9 @@ def test_reset_restores_z_only_after_the_rotation_back(monkeypatch):
     fake = _FakeModbus()
     stage = _StageOnTheWire(fake, z_mm=3.5)
     controller, fake = _make_real_controller(monkeypatch, fake=fake, stage=stage)
-    _fast_homing(monkeypatch)
     controller.move_to_objective("10x")
     fake.writes.clear()
     stage.z_moves.clear()
-    fake.di_script = [1, 0, 1]
     controller.reset("10x")
     assert fake.writes[0] == ("Z", OBJECTIVE_RETRACTED_POS_MM)
     assert fake.writes[-1] == ("Z", 3.5)
@@ -504,49 +455,13 @@ def test_reset_restores_z_only_after_the_rotation_back(monkeypatch):
 def test_home_failure_leaves_z_retracted(monkeypatch):
     # The turret's position is unknown after a failed homing: Z must not come back to the sample.
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    _deterministic_clock(monkeypatch)
     stage = FakeStage(z_mm=3.5)
     controller, fake = _make_real_controller(monkeypatch, stage=stage)
-    _fast_homing(monkeypatch)
-    fake.di_script = [0]
+    fake.status_script = [STATUS_BIT_RUNNING]  # the last scripted word repeats: never finishes
     with pytest.raises(TimeoutError):
-        controller.home(timeout_s=0.2)
+        controller.home(timeout_s=1.0)
     assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
-    controller.close()
-
-
-class _RestoreRejectingModbus(_FakeModbus):
-    """Once armed, accepts the temporary homing max-speed write (60) but rejects restoring the original (0)."""
-
-    reject_restore = False
-
-    def write_register_32bit(self, slave_id, address, value, signed=False):
-        if self.reject_restore and address == REG_MAX_SPEED and value != otc.HOMING_JOG_SPEED:
-            raise ModbusError("write rejected")
-        super().write_register_32bit(slave_id, address, value, signed)
-
-
-def test_home_raises_when_parameter_restore_fails_after_a_successful_run(monkeypatch):
-    # Silently returning would leave every later move at homing speed / acceleration.
-    controller, fake = _make_real_controller(monkeypatch, fake=_RestoreRejectingModbus())
-    fake.reject_restore = True
-    fake.writes.clear()
-    _fast_homing(monkeypatch)
-    fake.di_script = [1, 0, 1]
-    with pytest.raises(RuntimeError, match="restore"):
-        controller.home()
-    assert fake.control_word_writes()[-1] == CW_DISABLE  # not clamped
-    assert [v for (a, v) in fake.writes if a == REG_ACCEL] == [HOMING_FINE_ACCEL, 0]  # accel restore still attempted
-    controller.close()
-
-
-def test_home_failure_is_not_masked_by_a_failing_restore(monkeypatch):
-    controller, fake = _make_real_controller(monkeypatch, fake=_RestoreRejectingModbus())
-    fake.reject_restore = True
-    _fast_homing(monkeypatch)
-    fake.di_script = [0]  # sensor never triggers
-    with pytest.raises(TimeoutError):
-        controller.home(timeout_s=0.2)
-    assert fake.control_word_writes()[-1] == CW_DISABLE
     controller.close()
 
 
@@ -573,32 +488,110 @@ def _deterministic_clock(monkeypatch):
     return clock
 
 
-def test_sweep_polls_on_a_fixed_period_with_the_read_inside_it(monkeypatch):
-    # A full HOMING_POLL_S gap *after* each read would double the detection lag (see HOMING_POLL_S).
-    clock = _deterministic_clock(monkeypatch)
+# --- homing: the drive runs it (origin-switch method), the host waits ---
+
+
+def test_home_runs_the_drive_homing_mode_then_zeroes_and_clamps(monkeypatch):
     controller, fake = _make_real_controller(monkeypatch)
-    monkeypatch.setattr(otc, "HOMING_SETTLE_MARGIN_S", 0.0)
-    fake.clock = clock
-    fake.snapshot_read_s = 0.015  # each snapshot read eats 15 ms of the 20 ms period
-    # off sensor -> three sweep misses -> hit -> backoff jog clears -> fine jog hits the edge
-    fake.di_script = [0, 0, 0, 0, 1, 0, 1]
+    fake.writes.clear()
     controller.home()
-    remainder = otc.HOMING_POLL_S - fake.snapshot_read_s
-    assert len([s for s in clock.sleeps if abs(s - remainder) < 1e-9]) == 3  # one per missed poll
-    assert not [s for s in clock.sleeps if abs(s - otc.HOMING_POLL_S) < 1e-9]  # never a full-period gap
+    # Homing mode is selected while disabled, then the 0x0F -> 0x1F start the manual
+    # prescribes; no velocity sweep, no relative jogs.
+    assert fake.writes.index((REG_RUN_MODE, MODE_HOMING)) > fake.writes.index((REG_CONTROL_WORD, CW_DISABLE))
+    cws = fake.control_word_writes()
+    assert cws[:5] == [CW_DISABLE, CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE, CW_TRIGGER_ABSOLUTE]
+    # The counter is zeroed once, after the drive has returned to the switch edge.
+    assert [v for (a, v) in fake.writes if a == REG_SET_ZERO] == [SET_ZERO_MAGIC]
+    assert fake.writes.index((REG_SET_ZERO, SET_ZERO_MAGIC)) > fake.writes.index(
+        (REG_CONTROL_WORD, CW_TRIGGER_ABSOLUTE)
+    )
+    # Ends clamped at home in position mode (0x06/0x07/0x0F, no trigger), not de-energized.
+    assert cws[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    assert fake.writes.index((REG_RUN_MODE, MODE_POSITION)) > fake.writes.index((REG_RUN_MODE, MODE_HOMING))
+    assert controller.current_objective is None
     controller.close()
 
 
-def test_sweep_polls_back_to_back_when_the_read_outlasts_the_period(monkeypatch):
+def test_home_does_not_touch_the_move_speed_or_acceleration(monkeypatch):
+    # The software homing lowered max speed / accel for its jogs and had to restore them
+    # afterwards; the drive's homing has its own speed registers, so a home must leave
+    # the move set alone.
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.writes.clear()
+    controller.home()
+    assert not [a for (a, _v) in fake.writes if a in (REG_MAX_SPEED, REG_ACCEL)]
+    controller.close()
+
+
+def test_home_waits_for_running_to_clear(monkeypatch):
     clock = _deterministic_clock(monkeypatch)
     controller, fake = _make_real_controller(monkeypatch)
-    monkeypatch.setattr(otc, "HOMING_SETTLE_MARGIN_S", 0.0)
-    fake.clock = clock
-    fake.snapshot_read_s = 0.03  # slower than the period: poll again immediately
-    fake.di_script = [0, 0, 0, 0, 1, 0, 1]
+    fake.status_script = [STATUS_BIT_RUNNING, STATUS_BIT_RUNNING, STATUS_BIT_RUNNING, 0]
     controller.home()
-    assert clock.sleeps.count(0.0) == 3  # the three misses; _FakeTime rejects negative sleeps
-    assert not [s for s in clock.sleeps if abs(s - otc.HOMING_POLL_S) < 1e-9]
+    assert fake.snapshot_reads == 4  # three RUNNING polls, then the idle word that ends the wait
+    assert clock.now < otc.MOVE_START_GRACE_S
+    controller.close()
+
+
+def test_home_holds_the_idle_verdict_until_running_seen_or_grace(monkeypatch):
+    # A short creep (switch already active) can finish before the drive ever shows RUNNING:
+    # an idle word is only accepted as done after MOVE_START_GRACE_S, as for moves.
+    clock = _deterministic_clock(monkeypatch)
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.status_script = [0]
+    controller.home()
+    assert clock.now >= otc.MOVE_START_GRACE_S
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    controller.close()
+
+
+def test_home_timeout_leaves_motor_deenergized(monkeypatch):
+    _deterministic_clock(monkeypatch)
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.status_script = [STATUS_BIT_RUNNING]  # the last scripted word repeats: never finishes
+    with pytest.raises(TimeoutError):
+        controller.home(timeout_s=1.0)
+    # Failure cleanup: stopped and de-energized, NOT zeroed, NOT left clamped.
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
+    controller.close()
+
+
+def test_home_raises_on_a_drive_alarm(monkeypatch):
+    # An alarm (undervoltage etc.) interrupts the homing; waiting for the timeout would
+    # only hide the cause.
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.alarm = 0xFF0E
+    with pytest.raises(RuntimeError, match="alarm"):
+        controller.home()
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+def test_home_raises_on_the_fault_bit(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.status_script = [STATUS_BIT_FAULT]
+    with pytest.raises(RuntimeError, match="fault"):
+        controller.home()
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+def test_init_calibrates_the_drive_homing_params(monkeypatch):
+    # Fake reads 0 everywhere, so every non-zero homing register must be written, and
+    # before the EEPROM save so it persists with the rest of the factory set.
+    controller, fake = _make_real_controller(monkeypatch)
+    writes = fake.writes
+    save = writes.index((REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC))
+    for row in [
+        (REG_HOMING_METHOD, HOMING_METHOD_SEARCH_NEGATIVE),
+        (REG_HOMING_SEARCH_SPEED, HOMING_SEARCH_SPEED),
+        (REG_HOMING_ZERO_SPEED, HOMING_ZERO_SPEED),
+        (REG_HOMING_ACCEL, HOMING_ACCEL),
+        (REG_ZERO_RETURN, ZERO_RETURN_ENABLED),
+    ]:
+        assert row in writes
+        assert writes.index(row) < save
     controller.close()
 
 
@@ -827,33 +820,13 @@ def test_inverted_position_readback_returns_logical(monkeypatch):
     controller.close()
 
 
-def test_inverted_home_flips_sweep_and_fine_jog_direction_bits(monkeypatch):
+def test_inverted_direction_selects_the_mirror_homing_method(monkeypatch):
+    # The drive's homing methods fix the search direction physically. Method 21 searches
+    # in the physical negative direction; on a motor wired the other way round the
+    # logical-negative search is physical-positive, which is method 19.
     controller, fake = _make_real_controller(monkeypatch, direction_inverted=True)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    # Off the window (0) -> sweep polls miss then hit (0, 1) -> the backoff jog
-    # carries it clear on the near side (0) -> fine jog hits the edge (1).
-    fake.di_script = [0, 0, 1, 0, 1]
-    controller.home()
-    assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
-    # Sweep is logical-negative -> physical bit 1; backoff +60 -> bit 0; fine jog
-    # -2 -> bit 1.
-    assert [v for (a, v) in fake.writes if a == REG_DIRECTION] == [1, 0, 1]
-    controller.close()
-
-
-def test_inverted_backoff_jog_flips_direction_keeps_magnitude(monkeypatch):
-    controller, fake = _make_real_controller(monkeypatch, direction_inverted=True)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    # In the window (1) -> the unconditional backoff jog releases it (0) -> fine jog
-    # hits (1).
-    fake.di_script = [1, 0, 1]
-    controller.home()
-    # Backoff +60 -> physical bit 0; fine -2 -> physical bit 1. The relative-move
-    # register still only ever receives the positive magnitude.
-    assert [v for (a, v) in fake.writes if a == REG_DIRECTION] == [0, 1]
-    assert (otc.REG_TARGET_POSITION, otc.HOMING_BACKOFF_STEP) in fake.writes
+    assert (REG_HOMING_METHOD, HOMING_METHOD_SEARCH_POSITIVE) in fake.writes
+    assert (REG_HOMING_METHOD, HOMING_METHOD_SEARCH_NEGATIVE) not in fake.writes
     controller.close()
 
 
@@ -910,63 +883,55 @@ def test_sim_accepts_direction_inverted_kwarg():
 
 # --- DI polarity inversion (opposite-logic origin switches) ---
 #
-# With di_invert the raw DI level flips meaning: 1 = released, 0 = inside the
-# sensor window (the exact inverse of the default logic). The scripts below are
-# raw levels; the flipped verdicts drive the same state machine as the
-# non-inverted homing tests.
+# The drive runs the homing, so it has to see the switch with the right polarity: the
+# option is applied to the drive's DI polarity register (0x2E, bit 0 = DI1) at connect
+# and persisted with the factory set. Nothing is flipped host-side any more.
 
 
-def test_di_invert_home_from_inside_window_uses_inverted_levels(monkeypatch):
-    # Raw [0, 1, 0] -> verdicts [1, 0, 1]: inside -> the backoff jog releases it ->
-    # fine jog hits the edge. Same flow as the default-polarity case: no velocity
-    # sweep, SET_ZERO at start and at the trigger edge, clamped at home.
+def test_di_invert_sets_the_drive_polarity_bit_for_di1(monkeypatch):
     controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    fake.di_script = [0, 1, 0]
-    controller.home()
-    assert (REG_RUN_MODE, MODE_SPEED) not in fake.writes
-    assert [v for (a, v) in fake.writes if a == REG_SET_ZERO] == [SET_ZERO_MAGIC, SET_ZERO_MAGIC]
-    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    assert (REG_DI_POLARITY, 0x0001) in fake.writes
+    assert fake.writes.index((REG_DI_POLARITY, 0x0001)) < fake.writes.index((REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC))
     controller.close()
 
 
-def test_di_invert_home_sweeps_when_released_level_high(monkeypatch):
-    # Raw level 1 = released -> the sweep starts; the sweep direction bit stays the
-    # same (logical negative, toward the sensor) — only the trigger verdict flips.
-    controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    # released -> sweep polls miss then trigger (0) -> the backoff jog releases it
-    # (1) -> fine jog hits the edge (0).
-    fake.di_script = [1, 1, 0, 1, 0]
-    controller.home()
-    assert (REG_RUN_MODE, MODE_SPEED) in fake.writes
-    assert (REG_DIRECTION, 0) in fake.writes
-    assert (REG_TARGET_SPEED, HOMING_SWEEP_SPEED) in fake.writes
+class _PolarityPresetModbus(_FakeModbus):
+    """Reports a preset DI polarity register, so the DI1 bit must be merged, not overwritten."""
+
+    def __init__(self, polarity: int):
+        super().__init__()
+        self.polarity = polarity
+
+    def read_register(self, slave_id, address):
+        if address == REG_DI_POLARITY:
+            return self.polarity
+        return super().read_register(slave_id, address)
+
+
+def test_di_invert_preserves_the_other_inputs_polarity_bits(monkeypatch):
+    fake = _PolarityPresetModbus(0x0006)  # DI2 and DI3 inverted on this drive
+    controller, fake = _make_real_controller(monkeypatch, fake=fake, di_invert=True, direction_inverted=False)
+    assert (REG_DI_POLARITY, 0x0007) in fake.writes
     controller.close()
 
 
-def test_di_invert_backoff_jog_direction_unchanged(monkeypatch):
-    # Backoff still jogs positive (away from the sensor); the inversion applies to
-    # the trigger verdict only, never to the jog direction.
-    controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    fake.di_script = [0, 1, 0]
-    controller.home()
-    assert (otc.REG_TARGET_POSITION, otc.HOMING_BACKOFF_STEP) in fake.writes
+def test_default_polarity_clears_di1_and_keeps_the_rest(monkeypatch):
+    fake = _PolarityPresetModbus(0x0003)  # DI1 left inverted by an earlier setup, DI2 inverted
+    controller, fake = _make_real_controller(monkeypatch, fake=fake, di_invert=False, direction_inverted=False)
+    assert (REG_DI_POLARITY, 0x0002) in fake.writes
+    controller.close()
+
+
+def test_default_polarity_writes_nothing_on_a_clean_drive(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch, di_invert=False, direction_inverted=False)
+    assert REG_DI_POLARITY not in [a for (a, _v) in fake.writes]
     controller.close()
 
 
 def test_di_invert_falls_back_to_def_when_not_passed(monkeypatch):
     monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_DI_INVERT", True)
     controller, fake = _make_real_controller(monkeypatch, direction_inverted=False)
-    _fast_homing(monkeypatch)
-    fake.writes.clear()
-    fake.di_script = [0, 0, 1, 0]  # raw 0 = inside the window under inverted logic
-    controller.home()
-    assert (REG_RUN_MODE, MODE_SPEED) not in fake.writes  # inside-window path taken
+    assert (REG_DI_POLARITY, 0x0001) in fake.writes
     controller.close()
 
 
@@ -989,3 +954,143 @@ def test_sim_accepts_di_invert_kwarg():
     sim.move_to_objective("10x")
     assert sim.current_objective == "10x"
     sim.close()
+
+
+# --- review findings on the drive-side homing (2026-10-10) ---
+
+
+class _TriggerRejectingModbus(_FakeModbus):
+    """The homing trigger write fails on the wire (reply lost); every other write is recorded."""
+
+    def write_register(self, slave_id, address, value):
+        if address == REG_CONTROL_WORD and value == CW_TRIGGER_ABSOLUTE:
+            raise ModbusError("reply lost")
+        super().write_register(slave_id, address, value)
+
+
+def test_home_start_failure_deenergizes(monkeypatch):
+    # The drive may have accepted the trigger although the reply was lost: a failed start must
+    # end with the motor disabled, like a failed move, not with an unsupervised homing running.
+    controller, fake = _make_real_controller(monkeypatch, fake=_TriggerRejectingModbus())
+    with pytest.raises(ModbusError):
+        controller.home()
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
+    controller.close()
+
+
+class _RunawayModbus(_FakeModbus):
+    """The drive keeps searching: RUNNING forever and the counter moves one step per read."""
+
+    def __init__(self, step):
+        super().__init__()
+        self.step = step
+        self.status_script = [STATUS_BIT_RUNNING]
+
+    def read_input_registers(self, slave_id, address, count):
+        vals = super().read_input_registers(slave_id, address, count)
+        self._position += self.step
+        return vals
+
+
+@pytest.mark.parametrize("step", [-3000, 3000], ids=["negative", "positive"])
+def test_home_raises_when_the_search_exceeds_one_revolution(monkeypatch, step):
+    # A switch the drive never sees (polarity, wiring, a dead sensor) must not spin the turret
+    # for the whole 30 s timeout: the counter is in every snapshot, so bound the travel.
+    _deterministic_clock(monkeypatch)
+    controller, fake = _make_real_controller(monkeypatch, fake=_RunawayModbus(step))
+    with pytest.raises(RuntimeError, match="one revolution"):
+        controller.home()
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
+    controller.close()
+
+
+def test_home_raises_when_the_drive_did_not_reach_the_switch_reference(monkeypatch):
+    # The drive re-bases its counter at the switch (62-63 pulses at the stop on the bench);
+    # an idle drive still at a slot position did not run its homing and must not be zeroed.
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.homes = False
+    fake._position = 6050  # slot 3 on the bench unit
+    with pytest.raises(RuntimeError, match="switch reference"):
+        controller.home()
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+def test_home_accepts_the_bench_edge_counter(monkeypatch):
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.edge_counter = 63
+    controller.home()
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) in fake.writes
+    controller.close()
+
+
+def test_move_raises_on_a_drive_alarm(monkeypatch):
+    # The shared wait raises on an alarm code for moves too (previously only the fault bit).
+    controller, fake = _make_real_controller(monkeypatch)
+    fake.alarm = 0xFF0E
+    with pytest.raises(RuntimeError, match="alarm"):
+        controller.move_to_objective("10x")
+    assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+def test_homing_params_are_keyword_only():
+    # Two booleans swapped silently would select the mirror method by the polarity flag.
+    with pytest.raises(TypeError):
+        otc.homing_params(True, False)  # type: ignore[misc]
+    assert otc.homing_params(direction_inverted=False, di_invert=False)
+
+
+def test_zero_speed_is_not_below_the_start_speed():
+    # The drive's start speed (REG_MIN_SPEED) bounds every homing phase from below; a creep
+    # slower than it cannot happen, so raising EXPECTED_MIN_SPEED must be caught here.
+    assert otc.HOMING_ZERO_SPEED >= otc.EXPECTED_MIN_SPEED
+
+
+def test_init_warns_when_a_per_machine_homing_row_is_changed(monkeypatch):
+    # The .ini wins over whatever the drive carried (e.g. a polarity inverted on the drive by
+    # SingleMotor on a unit whose .ini still says False), so a changed row is said out loud.
+    warnings = []
+    monkeypatch.setattr(otc.logger, "warning", lambda msg, *args: warnings.append(msg % args))
+    controller, fake = _make_real_controller(monkeypatch, di_invert=True, direction_inverted=False)
+    assert any("DI1_polarity" in w and "homing_method" in w for w in warnings), warnings
+    controller.close()
+
+
+def test_init_does_not_warn_when_the_drive_already_matches(monkeypatch):
+    class _ConfiguredModbus(_FakeModbus):
+        def read_register(self, slave_id, address):
+            if address == REG_HOMING_METHOD:
+                return HOMING_METHOD_SEARCH_NEGATIVE
+            if address == REG_ZERO_RETURN:
+                return ZERO_RETURN_ENABLED
+            return super().read_register(slave_id, address)
+
+        def read_register_32bit(self, slave_id, address, signed=False):
+            return {
+                REG_HOMING_SEARCH_SPEED: HOMING_SEARCH_SPEED,
+                REG_HOMING_ZERO_SPEED: HOMING_ZERO_SPEED,
+                REG_HOMING_ACCEL: HOMING_ACCEL,
+            }.get(address, 0)
+
+    warnings = []
+    monkeypatch.setattr(otc.logger, "warning", lambda msg, *args: warnings.append(msg % args))
+    fake = _ConfiguredModbus()
+    fake.status_script = []
+    controller, fake = _make_real_controller(monkeypatch, fake=fake)
+    assert not [w for w in warnings if "homing" in w.lower()], warnings
+    controller.close()
+
+
+def test_home_after_a_failed_search_is_not_tripped_by_the_counter_rebase(monkeypatch):
+    # A search that found no switch leaves the counter beyond one revolution (-10080 here); on the
+    # retry the drive finds the switch and re-bases to 63. That jump is the re-base, not travel.
+    controller, fake = _make_real_controller(monkeypatch)
+    fake._position = -10080
+    controller.home()
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) in fake.writes
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    controller.close()

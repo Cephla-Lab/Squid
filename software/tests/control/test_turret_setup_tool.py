@@ -9,6 +9,7 @@ import types
 
 import pytest
 
+import control._def
 import control.objective_turret_controller as otc
 from control.objective_turret_controller import (
     CLEAR_ERROR_STORAGE_MAGIC,
@@ -16,16 +17,21 @@ from control.objective_turret_controller import (
     CW_DISABLE,
     DI1_FUNCTION_ORIGIN_SWITCH,
     EXPECTED_MAX_SPEED,
-    INIT_PARAMS,
+    HOMING_METHOD_SEARCH_POSITIVE,
     MICROSTEP_REG_VALUE,
-    POWER_CYCLE_PARAMS,
     REG_CLEAR_ERROR_STORAGE,
     REG_CONTROL_WORD,
     REG_DI_FUNCTION,
+    REG_DI_POLARITY,
     REG_DIRECTION,
+    REG_HOMING_ACCEL,
+    REG_HOMING_METHOD,
+    REG_HOMING_SEARCH_SPEED,
+    REG_HOMING_ZERO_SPEED,
     REG_MAX_SPEED,
     REG_MICROSTEP,
     REG_SAVE_PARAMS,
+    REG_ZERO_RETURN,
     SAVE_PARAMS_MAGIC,
 )
 
@@ -64,7 +70,7 @@ class _RegisterMemoryModbus:
 
 def _factory_state() -> dict:
     """A drive that already carries every expected value."""
-    return {addr: expected for addr, expected, _label, _kwargs in POWER_CYCLE_PARAMS + INIT_PARAMS}
+    return {addr: expected for addr, expected, _label, _kwargs in tool.setup_params()}
 
 
 @pytest.fixture
@@ -113,7 +119,7 @@ def test_apply_writes_mismatches_then_saves_and_verifies(no_sleep):
     # EEPROM save comes after the parameter writes and is the last register write.
     assert fake.writes[-1] == (REG_SAVE_PARAMS, SAVE_PARAMS_MAGIC)
     # Exactly two read passes: the report and the verification.
-    assert fake.reads == 2 * len(tool.SETUP_PARAMS)
+    assert fake.reads == 2 * len(tool.setup_params())
     text = " ".join(lines).lower()
     assert "power-cycle" in text and "--check" in text
 
@@ -143,3 +149,28 @@ def test_declined_confirmation_writes_nothing():
     fake = _RegisterMemoryModbus(state)
     assert tool.run(fake, slave_id=1, check_only=False, out=_quiet, confirm=lambda: False) == 2
     assert fake.writes == []
+
+
+def test_setup_params_cover_the_drive_homing_registers():
+    # The drive runs the homing itself, so its homing registers are part of what the
+    # setup tool writes and persists (and what --check verifies after the power cycle).
+    addrs = [addr for (addr, _e, _l, _k) in tool.setup_params()]
+    for addr in (
+        REG_HOMING_METHOD,
+        REG_HOMING_SEARCH_SPEED,
+        REG_HOMING_ZERO_SPEED,
+        REG_HOMING_ACCEL,
+        REG_ZERO_RETURN,
+        REG_DI_POLARITY,
+    ):
+        assert addr in addrs
+
+
+def test_setup_params_follow_the_machine_ini_flags(monkeypatch):
+    # Homing method and DI1 polarity are per machine: the tool reads the same .ini flags
+    # the controller does, at call time, so a flag change is picked up without a restart.
+    monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_DIRECTION_INVERTED", True)
+    monkeypatch.setattr(control._def, "OBJECTIVE_TURRET_DI_INVERT", True)
+    rows = {addr: expected for (addr, expected, _l, _k) in tool.setup_params()}
+    assert rows[REG_HOMING_METHOD] == HOMING_METHOD_SEARCH_POSITIVE
+    assert rows[REG_DI_POLARITY] == 0x0001
