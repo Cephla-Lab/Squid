@@ -1299,8 +1299,11 @@ OBJECTIVE_TURRET_BAUDRATE = 115200
 OBJECTIVE_TURRET_POSITIONS = {"4x": 1, "10x": 2, "20x": 3, "40x": 4}
 # Pulse offset of slot 1 from the homing zero (the origin sensor's trigger edge);
 # the other slots follow at exactly 90-degree spacing. 0 on all normal units; set
-# per machine (may be negative). Software homing (2026-07) moved the zero slightly
-# vs the old driver homing — re-measure after upgrading a machine with an old value.
+# per machine (may be negative). The zero is where the drive's own homing (2026-10)
+# stops on the switch edge. It can differ from the 2026-07 software homing's zero (the
+# edge is approached from the other side), so verify the slots after upgrading a
+# machine with an old value; on the 2026-10-09 bench unit the field at 20x registered
+# identically (< 1/4 pixel) and the value stayed.
 OBJECTIVE_TURRET_OFFSET_PULSES = 0
 # Gear backlash compensation in turret degrees (0..1, 0 disables). When > 0 every
 # slot change first overshoots below the target by this angle and then approaches
@@ -1308,19 +1311,19 @@ OBJECTIVE_TURRET_OFFSET_PULSES = 0
 # backlash cancels out.
 OBJECTIVE_TURRET_BACKLASH_DEG = 0.0
 # Set True for turret motor models wired with the opposite phase order (same
-# commands spin the other way). The controller then negates move targets, jog
-# signs and the homing-sweep direction bit, and flips position readbacks, so
-# slot mapping, offset and backlash logic keep working in the same logical
-# coordinate system — OBJECTIVE_TURRET_OFFSET_PULSES is always logical-coordinate
-# pulses. After toggling on an existing machine, re-home and re-measure the
-# offset: the physical zero moves with the sweep direction.
+# commands spin the other way). The controller then negates move targets, flips
+# position readbacks and selects the mirror-image drive homing method, so slot
+# mapping, offset and backlash logic keep working in the same logical coordinate
+# system — OBJECTIVE_TURRET_OFFSET_PULSES is always logical-coordinate pulses.
+# After toggling on an existing machine, re-home and re-measure the offset: the
+# physical zero moves with the search direction.
 OBJECTIVE_TURRET_DIRECTION_INVERTED = False
 # Set True for objective changers whose origin-switch sensor triggers on the
 # opposite logic level (port of SingleMotor's "原点开关极性取反" option, 2026-08-12).
-# Software homing / distance search then invert the DI1 trigger verdict, so the
-# homing direction and the sweep-backoff-fine-search state machine stay unchanged.
-# Toggling on an existing machine requires re-homing: the sensor edge found by
-# fine search (and thus the physical zero) sits on the other side of the window.
+# Written to the drive's DI1 polarity register at connect (and persisted): the drive
+# runs the homing, so it has to see the switch with the right logic. Toggling on an
+# existing machine requires re-homing and verifying OBJECTIVE_TURRET_OFFSET_PULSES:
+# the edge the drive stops on sits on the other side of the sensor window.
 OBJECTIVE_TURRET_DI_INVERT = False
 
 

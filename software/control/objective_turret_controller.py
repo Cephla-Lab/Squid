@@ -40,23 +40,28 @@ REG_MICROSTEP = 0x001A
 REG_STATUS_WORD = 0x001F  # input-register side; holding side at this address is unrelated
 REG_CURRENT_POSITION = 0x0021
 REG_DI_FUNCTION = 0x002C
+REG_DI_POLARITY = 0x002E  # bit n inverts input DI(n+1); bit 0 = DI1
 REG_RUN_MODE = 0x0039
 REG_SET_ZERO = 0x0047
 REG_CONTROL_WORD = 0x0051
-REG_DIRECTION = 0x0052  # 0=reverse, 1=forward; also sets the sign of relative moves
+REG_DIRECTION = 0x0052  # 0=reverse, 1=forward
 REG_TARGET_POSITION = 0x0053
-REG_TARGET_SPEED = 0x0055
 REG_MAX_SPEED = 0x005B
-REG_MIN_SPEED = 0x005D
+REG_MIN_SPEED = 0x005D  # the drive's start speed: every move and every homing phase begins here
 REG_ACCEL = 0x005F
 REG_DECEL = 0x0061
+REG_HOMING_OFFSET = 0x0069  # pulses; mechanical origin = zero + offset
+REG_HOMING_METHOD = 0x006B  # CiA 402 methods 17..30 (switch based), 31 = internal
+REG_HOMING_SEARCH_SPEED = 0x006C  # Step/s, the fast approach to the switch
+REG_HOMING_ZERO_SPEED = 0x006E  # Step/s, the slow creep that finds the switch edge
+REG_HOMING_ACCEL = 0x0070  # Step/s^2
+REG_ZERO_RETURN = 0x0072  # 1: after the edge is found, run back to it and stop there
 REG_CLEAR_ERROR_STORAGE = 0x0073
 
 # Batch status snapshot (FC 0x04 input registers 0x17..0x26, same block SingleMotor
 # polls): value offsets within the 16-register read.
 STATUS_BLOCK_START = 0x0017
 STATUS_BLOCK_COUNT = 16
-_OFS_DI = 1  # 0x18: raw DI level, bit0 = DI1
 _OFS_STATUS_WORD = 8  # 0x1F
 _OFS_POSITION = 10  # 0x21..0x22, INT32
 _OFS_ALARM = 15  # 0x26
@@ -67,8 +72,6 @@ CW_STARTUP = 0x0006
 CW_ENABLE = 0x0007
 CW_RUN_ABSOLUTE = 0x000F
 CW_TRIGGER_ABSOLUTE = 0x001F
-CW_RUN_RELATIVE = 0x004F
-CW_TRIGGER_RELATIVE = 0x005F
 CW_CLEAR_FAULT = 0x0080
 
 # Magic values
@@ -78,7 +81,7 @@ SET_ZERO_MAGIC = 0x535A
 
 # Run modes
 MODE_POSITION = 1
-MODE_SPEED = 2
+MODE_HOMING = 3
 
 # Status word bits
 STATUS_BIT_FAULT = 1 << 3
@@ -110,34 +113,47 @@ EXPECTED_CURRENT_RUN = 95  # ~3 A (see above)
 # as a limit switch: the turret is a disc with no travel limits, and a limit-mapped
 # sensor faults FF0E whenever a normal move passes it (the pre-2026-07-24 scheme).
 DI1_FUNCTION_ORIGIN_SWITCH = 3
+DI_POLARITY_DI1_MASK = 0x0001  # REG_DI_POLARITY bit 0
 
-# Software homing (ported from SingleMotor HomeSearch, 2026-07-24, params revised
-# 2026-07-28): sweep toward the sensor in velocity mode while polling the DI level,
-# decel-stop on trigger, back off until the switch releases, then fine-step back to
-# the trigger edge and SET_ZERO there. The driver's built-in homing modes are no
-# longer used — the sensed window is only ~50 pulses wide and the sweep speed/poll
-# period pair below guarantees the window cannot be crossed between two polls
-# (52 ms crossing >= 2.6 poll periods). HOMING_POLL_S is a *period* with the Modbus
-# round trip inside it (SingleMotor polls from a 20 ms timer), not a gap after each
-# read: a gap would stretch the period to 20 ms + round trip and roughly double the
-# detection lag. Worst-case overshoot past the trigger edge is then stop distance 29 +
-# detection lag 20 = 49 pulses < HOMING_BACKOFF_STEP, so a single backoff jog normally
-# clears the window (the backoff loop is only a fallback). The overshoot varies per
-# machine and per sweep direction: a turret that coasts further comes to rest past the
-# window's FAR edge with the switch already reading released, and the unconditional
-# first jog in _backoff_off_sensor is what pulls it back. _fine_search_to_edge
-# approaches the same edge either way, so the home reference is unaffected (the
-# trigger edge is hit on the way in, never on the way out).
-HOMING_SWEEP_SPEED = 60  # Step/s, velocity-mode sweep toward the sensor (x16 = 960 pulses/s)
-HOMING_POLL_S = 0.02  # DI poll period during the sweep (the read is inside it, see above)
-HOMING_STOP_SETTLE_S = 0.4  # settle after the sweep decel-stop
-HOMING_BACKOFF_STEP = 60  # pulses per backoff jog (release the switch)
-HOMING_FINE_STEP = 2  # pulses per fine-search jog; sets home repeatability (+/-2)
-HOMING_MAX_TRAVEL = 10000  # pulses; > one turret revolution (8800 at microstep 16)
-HOMING_FINE_TRAVEL_LIMIT = 200  # backoff 60 + window 50 + margin; bounds a bad trigger
-HOMING_JOG_SPEED = 60  # Step/s; max speed is temporarily lowered to this for jogs
-HOMING_FINE_ACCEL = 50  # Step/s^2; accel is temporarily lowered for the fine search
-HOMING_SETTLE_MARGIN_S = 0.3  # fixed margin on top of the per-jog travel-time estimate
+# Homing is run by the drive on the origin switch (CiA 402 "home switch" methods, 2026-10).
+# Method 21: fast search in the physical negative direction until the switch goes active,
+# decelerate, reverse, creep positive at the zero speed until it releases, then (zero
+# return) run back to that edge and stop on it. Method 19 is the mirror image, used when
+# the motor is wired the other way round so that the logical-negative search stays
+# physical-positive. The drive samples the switch in firmware, so the search can run at
+# the full move speed: the ~50-pulse sensor window takes 21 ms to cross at 150 Step/s and
+# the host is not in the loop. (The 2026-07..09 host-driven sweep/backoff/fine-search was
+# paced by Modbus round trips, which capped the sweep at 60 Step/s, and it de-energized
+# and re-energized the motor on every 2-pulse jog of the fine search.)
+HOMING_METHOD_SEARCH_NEGATIVE = 21
+HOMING_METHOD_SEARCH_POSITIVE = 19
+# Search speed and acceleration are a tuned pair (bench 2026-10-09, six start positions): the
+# search overshoots the ~50-pulse window by v^2/2a = 2400^2 / (2 x 16000) ~= 180 pulses and the
+# creep re-enters it on the way back. They equal the move set's values on purpose (150 Step/s is
+# the speed slot moves run at without losing steps) but are deliberately not aliased to them:
+# a move-speed change must not silently change the bench-verified homing profile. The drive
+# caps the search at REG_MAX_SPEED: with 250 written here and max speed 150, homing time and
+# edge counter were identical to 150 (bench 2026-10-10), so a faster search needs the move max
+# speed raised with it, which is a step-loss question for the slot moves first.
+HOMING_SEARCH_SPEED = 150  # Step/s
+HOMING_ZERO_SPEED = 20  # Step/s; the creep that finds the edge (320 pulses/s at microstep 16)
+HOMING_ACCEL = 1000  # Step/s^2
+HOMING_OFFSET_PULSES = 0  # the slot-1 correction lives in OBJECTIVE_TURRET_OFFSET_PULSES, not here
+ZERO_RETURN_ENABLED = 1
+# Every homing phase starts at the drive's start speed (REG_MIN_SPEED), so the creep cannot be
+# slower than it: a higher EXPECTED_MIN_SPEED needs a new HOMING_ZERO_SPEED, not a silent change.
+assert HOMING_ZERO_SPEED >= EXPECTED_MIN_SPEED
+# A switch the drive never sees (polarity, wiring, a dead sensor) must not spin the turret for the
+# whole timeout: the homing wait raises once the counter has travelled more than one revolution
+# (8800 pulses at microstep 16) from where the search started.
+HOMING_MAX_TRAVEL = 10000  # pulses
+# At the end of a homing the drive has re-based its counter at the switch: it read 62-63 pulses on
+# every one of the 119 bench homings that started from a slot, and about -10 when the homing
+# started inside the switch window (no search, only the creep and the return; bench 2026-10-10),
+# so the bound must stay wide enough for both signs. A counter still at a slot position means
+# the drive did not run its homing (run mode / homing registers), and zeroing there would plant
+# a wrong zero.
+HOMING_EDGE_COUNTER_MAX = 500  # pulses
 
 # Polling
 POLL_INTERVAL_S = 0.05
@@ -149,9 +165,9 @@ POLL_INTERVAL_S = 0.05
 MOVE_START_GRACE_S = 0.8
 # At accel=1000/max_speed=150, a worst-case 3-slot move stays well inside 30s.
 DEFAULT_MOVE_TIMEOUT_S = 30.0
-# Software homing worst case: sweep up to one revolution at 960 pulses/s plus tens of
-# ~0.3s fine/backoff jogs. Matches SingleMotor's 120s watchdog.
-DEFAULT_HOME_TIMEOUT_S = 120.0
+# Drive homing worst case: a full revolution at the search speed (8800 pulses at 2400
+# pulses/s = 3.7 s) plus the creep and the zero return.
+DEFAULT_HOME_TIMEOUT_S = 30.0
 
 # Settle time after a control-word transition before the next write.
 CONTROL_WORD_SETTLE_S = 0.1
@@ -176,6 +192,26 @@ INIT_PARAMS = [
 # corrective write would let the next start pass the check while the drive still runs the
 # old scale. tools/turret_setup.py writes them, saves to EEPROM and asks for the power cycle.
 POWER_CYCLE_PARAMS = [(REG_MICROSTEP, MICROSTEP_REG_VALUE, "microstep", {})]
+
+
+def homing_params(*, direction_inverted: bool, di_invert: bool) -> list:
+    """The per-machine rows of the factory table: the drive's homing setup and the DI1
+    polarity. Same shape as INIT_PARAMS; applied and persisted together with it."""
+    method = HOMING_METHOD_SEARCH_POSITIVE if direction_inverted else HOMING_METHOD_SEARCH_NEGATIVE
+    return [
+        (REG_HOMING_METHOD, method, "homing_method", {}),
+        (REG_HOMING_SEARCH_SPEED, HOMING_SEARCH_SPEED, "homing_search_speed", {"is_32bit": True}),
+        (REG_HOMING_ZERO_SPEED, HOMING_ZERO_SPEED, "homing_zero_speed", {"is_32bit": True}),
+        (REG_HOMING_ACCEL, HOMING_ACCEL, "homing_accel", {"is_32bit": True}),
+        (REG_HOMING_OFFSET, HOMING_OFFSET_PULSES, "homing_offset", {"is_32bit": True, "signed": True}),
+        (REG_ZERO_RETURN, ZERO_RETURN_ENABLED, "zero_return", {}),
+        (
+            REG_DI_POLARITY,
+            DI_POLARITY_DI1_MASK if di_invert else 0,
+            "DI1_polarity",
+            {"mask": DI_POLARITY_DI1_MASK},
+        ),
+    ]
 
 
 def read_register_value(
@@ -463,17 +499,17 @@ class ObjectiveTurret4PosController:
             backlash_deg if backlash_deg is not None else OBJECTIVE_TURRET_BACKLASH_DEG
         )
         # Direction inversion for motor models wired with the opposite phase order.
-        # Applied only at the register boundary (move targets, jog signs, sweep
-        # direction bit, position readbacks); everything above works in logical
-        # coordinates, so calibration/backlash/homing logic is inversion-agnostic.
+        # Applied only at the register boundary (move targets, position readbacks,
+        # the choice of the mirror-image drive homing method); everything above works
+        # in logical coordinates, so calibration/backlash logic is inversion-agnostic.
         inverted = direction_inverted if direction_inverted is not None else OBJECTIVE_TURRET_DIRECTION_INVERTED
         if not isinstance(inverted, bool):
             raise ValueError(f"OBJECTIVE_TURRET_DIRECTION_INVERTED must be a boolean, got {inverted!r}")
         self._direction_inverted = inverted
         # Origin-switch (DI1) polarity inversion for changers whose sensor triggers
-        # on the opposite logic level (SingleMotor 2026-08-12). Applied only to the
-        # DI trigger verdict in the status snapshot; the homing state machine,
-        # direction logic and calibration all stay in the same logical frame.
+        # on the opposite logic level (SingleMotor 2026-08-12). Written to the drive's
+        # DI polarity register with the factory set: the drive runs the homing, so it
+        # has to see the switch with the right logic. Nothing is flipped host-side.
         di_inv = di_invert if di_invert is not None else OBJECTIVE_TURRET_DI_INVERT
         if not isinstance(di_inv, bool):
             raise ValueError(f"OBJECTIVE_TURRET_DI_INVERT must be a boolean, got {di_inv!r}")
@@ -537,79 +573,54 @@ class ObjectiveTurret4PosController:
             raise
 
     def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
-        """Software homing, ported from SingleMotor HomeSearch.start_homing.
+        """Home on the origin switch with the drive's own homing mode, zero the counter at
+        the switch edge the drive returned to, and clamp there with holding torque.
 
-        sweep -> backoff -> fine-search, then SET_ZERO at the sensor's trigger edge
-        and clamp at home with holding torque. The driver's built-in homing modes
-        are not used. Repeatability is +/-HOMING_FINE_STEP pulses (hardware-measured
-        0-pulse deviation between runs).
+        The drive runs the whole search / creep / return profile from the registers set
+        up by homing_params(); the host only starts it and waits for it to stop (see
+        HOMING_METHOD_SEARCH_NEGATIVE).
 
-        A turret only homes with Z retracted: the sweep can be most of a revolution,
-        which carries every objective past the sample, so Z goes to
-        OBJECTIVE_RETRACTED_POS_MM first (as for a slot move) and STAYS there. Homing
-        ends at the sensor reference, where no slot is in position and a longer
-        objective can stand under the axis, so restoring another objective's focus
-        height here could drive it into the sample; the caller restores Z once the
-        selected objective is back in position (see reset()). After a failed homing the
-        turret's position is unknown and nothing should approach the sample either.
+        A turret only homes with Z retracted: the search can be a full revolution, which
+        carries every objective past the sample, so Z goes to OBJECTIVE_RETRACTED_POS_MM
+        first (as for a slot move) and STAYS there. Homing ends at the sensor reference,
+        where no slot is in position and a longer objective can stand under the axis, so
+        restoring another objective's focus height here could drive it into the sample;
+        the caller restores Z once the selected objective is back in position (see
+        reset()). After a failed homing the turret's position is unknown and nothing
+        should approach the sample either.
         """
         self._require_open()
         self._retract_z_if_possible()
-        deadline = time.monotonic() + timeout_s
-        # Parameter writes require the disabled state.
-        self._write_control(CW_DISABLE)
-        # Zero the counter at the start so the sweep travel bound is relative to it.
-        self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
-        # Temporarily lower max speed for backoff/fine jog precision; restore after.
-        orig_max_speed = self._modbus.read_register_32bit(self._slave_id, REG_MAX_SPEED)
-        orig_accel = self._modbus.read_register_32bit(self._slave_id, REG_ACCEL)
-        accel_lowered = False
-        if orig_max_speed != HOMING_JOG_SPEED:
-            self._modbus.write_register_32bit(self._slave_id, REG_MAX_SPEED, HOMING_JOG_SPEED)
-        restore_error: Optional[Exception] = None
+        started = time.monotonic()
+        # The start sequence is inside the try: a lost reply to the trigger write may still have
+        # started the homing, and a failed start must end with the motor disabled like a move.
         try:
-            di1, _, _, alarm = self._read_status_snapshot()
-            self._check_alarm(alarm)
-            if not di1:  # off the sensor -> sweep to it; already in the window skips straight to backoff
-                self._sweep_to_sensor(deadline)
-            self._backoff_off_sensor(deadline)
-            # Fine search only: lower the acceleration to soften the microstep approach
-            # to the trigger edge (SingleMotor 2026-07-28); restored in the finally.
-            if orig_accel != HOMING_FINE_ACCEL:
-                self._write_control(CW_DISABLE)  # parameter writes require the disabled state
-                self._modbus.write_register_32bit(self._slave_id, REG_ACCEL, HOMING_FINE_ACCEL)
-                accel_lowered = True
-            self._fine_search_to_edge(deadline)
-            # At the trigger edge: establish the home reference.
+            self._write_control(CW_DISABLE)
+            self._write_holding(REG_RUN_MODE, MODE_HOMING)
+            self._write_control(CW_STARTUP)
+            self._write_control(CW_ENABLE)
+            self._write_control(CW_RUN_ABSOLUTE)
+            self._write_control(CW_TRIGGER_ABSOLUTE)
+            edge_counter = self._wait_until_stopped(timeout_s, "homing", max_travel_pulses=HOMING_MAX_TRAVEL)
+            if abs(edge_counter) > HOMING_EDGE_COUNTER_MAX:
+                raise RuntimeError(
+                    f"Homing ended with the counter at {edge_counter} pulses, not at the switch reference "
+                    f"(within {HOMING_EDGE_COUNTER_MAX}): the drive did not run its homing (run mode / homing "
+                    "registers?)"
+                )
+            # Zero return left the drive on the switch edge: make that the counter's zero.
             self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
             time.sleep(0.05)
         finally:
-            # Stop before restoring parameters (writes are rejected while enabled). Restores
-            # are best-effort here so cleanup never masks the fault/timeout that got us here;
-            # after a successful run a failed restore is raised below instead of being
-            # swallowed, which would leave every later move at homing speed/acceleration.
             self._deenergize()
-            restores = [
-                (REG_MAX_SPEED, orig_max_speed, orig_max_speed != HOMING_JOG_SPEED),
-                (REG_ACCEL, orig_accel, accel_lowered),
-            ]
-            for addr, value, needed in restores:
-                if not needed:
-                    continue
-                try:
-                    self._modbus.write_register_32bit(self._slave_id, addr, value)
-                except Exception as exc:
-                    logger.warning("Failed to restore register 0x%04X to %d after homing: %s", addr, value, exc)
-                    restore_error = restore_error or exc
-        if restore_error is not None:
-            raise RuntimeError(
-                "Homed, but could not restore the drive's max speed/acceleration; moves would run at homing "
-                "speed. Check the drive and home again."
-            ) from restore_error
         # Success: hold the turret at home with torque until the next move.
         self._hold_position_clamp()
         self._current_objective = None
-        logger.info("Homed at sensor edge (repeatability +/-%d pulses)", HOMING_FINE_STEP)
+        logger.info(
+            "Homed by the drive in %.1f s (counter read %d at the switch edge before SET_ZERO)",
+            time.monotonic() - started,
+            edge_counter,
+        )
 
     def reset(self, objective_name: Optional[str] = None, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
         """The operator's reset (GUI Utils -> Reset Objective Turret): clear a fault, re-enable,
@@ -734,121 +745,29 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_ENABLE)
         self._write_control(CW_RUN_ABSOLUTE)
         self._write_control(CW_TRIGGER_ABSOLUTE)
-        self._wait_for_position(target_pulses, timeout_s)
+        self._wait_until_stopped(timeout_s, f"move to {target_pulses} pulses", target_pulses=target_pulses)
 
-    # --- software homing internals ---
+    # --- status polling ---
 
     def _read_status_snapshot(self) -> tuple:
-        """One batched input-register read -> (di1_triggered, status_word, position, alarm).
+        """One batched input-register read -> (status_word, position, alarm).
 
-        A single FC 0x04 frame keeps the poll loops tight and the values consistent with
-        each other (same block SingleMotor polls); used by homing and the move wait."""
+        A single FC 0x04 frame keeps the poll loop tight and the values consistent with
+        each other (same block SingleMotor polls)."""
         vals = self._modbus.read_input_registers(self._slave_id, STATUS_BLOCK_START, STATUS_BLOCK_COUNT)
-        di1 = bool(vals[_OFS_DI] & 1)
-        if self._di_invert:
-            di1 = not di1
         position = (vals[_OFS_POSITION] << 16) | vals[_OFS_POSITION + 1]
         if position >= 0x80000000:
             position -= 0x100000000
         if self._direction_inverted:
             position = -position
-        return di1, vals[_OFS_STATUS_WORD], position, vals[_OFS_ALARM]
+        return vals[_OFS_STATUS_WORD], position, vals[_OFS_ALARM]
 
     @staticmethod
-    def _check_alarm(alarm: int) -> None:
+    def _check_alarm(alarm: int, what: str) -> None:
         # Fail fast: an alarm (undervoltage etc.) interrupts motion, so waiting for
         # the timeout would only hide the cause.
         if alarm != 0:
-            raise RuntimeError(f"Drive alarm 0x{alarm:04X} during homing")
-
-    @staticmethod
-    def _check_deadline(deadline: float, phase: str) -> None:
-        if time.monotonic() > deadline:
-            raise TimeoutError(f"Homing timed out during {phase}")
-
-    def _sweep_to_sensor(self, deadline: float) -> None:
-        """Velocity-mode sweep toward the sensor, polling the DI level; decel-stop on
-        trigger. The sweep-speed/poll-period pairing guarantees the ~50-pulse sensor
-        window cannot be skipped between two polls."""
-        self._write_control(CW_DISABLE)
-        self._write_holding(REG_RUN_MODE, MODE_SPEED)
-        self._write_holding(REG_DIRECTION, self._physical_direction(0))  # logical negative, toward the sensor
-        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_SPEED, HOMING_SWEEP_SPEED)
-        self._write_control(CW_STARTUP)
-        self._write_control(CW_ENABLE)
-        self._write_control(CW_RUN_ABSOLUTE)
-        try:
-            while True:
-                poll_started = time.monotonic()
-                self._check_deadline(deadline, "sweep")
-                di1, _, position, alarm = self._read_status_snapshot()
-                self._check_alarm(alarm)
-                if di1:
-                    return
-                if abs(position) > HOMING_MAX_TRAVEL:
-                    raise RuntimeError("Homing sweep found no sensor within one revolution (direction/wiring?)")
-                time.sleep(max(0.0, HOMING_POLL_S - (time.monotonic() - poll_started)))  # fixed period
-        finally:
-            self._write_control(CW_ENABLE)  # decelerate-stop
-            time.sleep(HOMING_STOP_SETTLE_S)
-
-    def _jog(self, pulses: int) -> None:
-        """Relative move: direction from REG_DIRECTION, REG_TARGET_POSITION takes the
-        positive magnitude only (a negative value is rejected as invalid). Settle is
-        time-based because short jogs do not reliably assert the RUNNING bit.
-        `pulses` is logical; inversion negates it before the direction/magnitude split."""
-        if self._direction_inverted:
-            pulses = -pulses
-        self._write_control(CW_DISABLE)
-        self._write_holding(REG_RUN_MODE, MODE_POSITION)
-        self._write_holding(REG_DIRECTION, 1 if pulses >= 0 else 0)
-        self._modbus.write_register_32bit(self._slave_id, REG_TARGET_POSITION, abs(pulses))
-        self._write_control(CW_STARTUP)
-        self._write_control(CW_ENABLE)
-        self._write_control(CW_RUN_RELATIVE)
-        self._write_control(CW_TRIGGER_RELATIVE)
-        jog_pps = HOMING_JOG_SPEED * self._microstep
-        time.sleep(abs(pulses) / jog_pps * 1.3 + HOMING_SETTLE_MARGIN_S)
-
-    def _backoff_off_sensor(self, deadline: float) -> None:
-        """Back away (positive direction) until the switch releases.
-
-        The first jog is unconditional and precedes the read, matching SingleMotor
-        HomeSearch, whose backoff phase always steps before re-reading the switch.
-        Normally the leg starts inside the window (the sweep only returns on a
-        trigger, and home() only skips the sweep when the switch already reads
-        triggered), so one HOMING_BACKOFF_STEP jog carries the turret out past the
-        near edge. When the decel-stop coast punched through the window's FAR edge
-        instead, that same jog steps back toward the window, so the loop re-enters
-        it and still exits past the near edge: _fine_search_to_edge approaches the
-        same edge and the home reference does not shift. The recovery is bounded: a
-        punch-through deeper than HOMING_BACKOFF_STEP plus the window width (~110
-        pulses) leaves the first read released with the turret still beyond the far
-        edge, and the fine search then walks away from the sensor until it overruns
-        (SingleMotor has the same bound).
-        """
-        while True:
-            self._check_deadline(deadline, "backoff")
-            self._jog(+HOMING_BACKOFF_STEP)
-            di1, _, _, alarm = self._read_status_snapshot()
-            self._check_alarm(alarm)
-            if not di1:
-                return
-
-    def _fine_search_to_edge(self, deadline: float) -> None:
-        """Approach the sensor again in HOMING_FINE_STEP jogs until it triggers; that
-        quantized edge is the home reference."""
-        travel = 0
-        while True:
-            self._check_deadline(deadline, "fine search")
-            self._jog(-HOMING_FINE_STEP)
-            travel += HOMING_FINE_STEP
-            di1, _, _, alarm = self._read_status_snapshot()
-            self._check_alarm(alarm)
-            if di1:
-                return
-            if travel > HOMING_FINE_TRAVEL_LIMIT:
-                raise RuntimeError("Homing fine search overran the sensor window (trigger signal wiring?)")
+            raise RuntimeError(f"Drive alarm 0x{alarm:04X} during {what}")
 
     def _hold_position_clamp(self) -> None:
         """Re-enable to OPERATION_ENABLED in position mode without a trigger bit: no
@@ -869,11 +788,28 @@ class ObjectiveTurret4PosController:
         return calibrate_register(self._modbus, self._slave_id, addr, expected, label, **kwargs)[2]
 
     def _calibrate_init_params(self) -> bool:
-        """Bring every factory parameter in line with INIT_PARAMS; return whether a
-        write happened (i.e. whether the set should be persisted to EEPROM)."""
+        """Bring every factory parameter (INIT_PARAMS plus this machine's homing rows) in
+        line; return whether a write happened (i.e. whether the set should be persisted
+        to EEPROM)."""
         changed = False
         for addr, expected, label, kwargs in INIT_PARAMS:
             changed = self._calibrate_one(addr, expected, label, **kwargs) or changed
+        # The per-machine rows come from the .ini and win over whatever the drive carried (a
+        # polarity or method set on the drive by another tool is overwritten and persisted),
+        # so a rewrite is said out loud rather than buried in the per-register INFO lines.
+        rewritten = []
+        for addr, expected, label, kwargs in homing_params(
+            direction_inverted=self._direction_inverted, di_invert=self._di_invert
+        ):
+            if self._calibrate_one(addr, expected, label, **kwargs):
+                rewritten.append(label)
+        if rewritten:
+            changed = True
+            logger.warning(
+                "Turret drive homing setup rewritten from the machine .ini and persisted: %s "
+                "(OBJECTIVE_TURRET_DIRECTION_INVERTED / OBJECTIVE_TURRET_DI_INVERT decide the method and polarity)",
+                ", ".join(rewritten),
+            )
         return changed
 
     def _write_control(self, value: int) -> None:
@@ -899,29 +835,59 @@ class ObjectiveTurret4PosController:
         if status_word & STATUS_BIT_FAULT:
             raise RuntimeError(f"Motor reported fault (status word=0x{status_word:04X})")
 
-    def _wait_for_position(self, target_pulses: int, timeout_s: float) -> None:
-        # No leading sleep: seen_running gates the stall check and, with MOVE_START_GRACE_S,
-        # the completion verdict, so polling can begin before the motor asserts RUNNING.
+    def _wait_until_stopped(
+        self,
+        timeout_s: float,
+        what: str,
+        target_pulses: Optional[int] = None,
+        max_travel_pulses: Optional[int] = None,
+    ) -> int:
+        """Poll the status snapshot until the drive is idle; return the position read then.
+
+        No leading sleep: seen_running gates the stall check and, with MOVE_START_GRACE_S,
+        the completion verdict, so polling can begin before the motor asserts RUNNING. A
+        fault bit or an alarm code raises at once. With `target_pulses`, idle only counts
+        inside POSITION_TOLERANCE_PULSES of it, and an idle drive that was seen running
+        but is not there has stopped short. With `max_travel_pulses`, a counter that has
+        moved further than that from the first snapshot raises (a homing search that never
+        finds the switch)."""
         started = time.monotonic()
         deadline = started + timeout_s
         seen_running = False
         last_pos: Optional[int] = None
+        start_pos: Optional[int] = None
         while time.monotonic() < deadline:
-            _, status, last_pos, _ = self._read_status_snapshot()
+            status, last_pos, alarm = self._read_status_snapshot()
             self._check_fault(status)
-            running = bool(status & STATUS_BIT_RUNNING)
-            in_tolerance = abs(last_pos - target_pulses) <= POSITION_TOLERANCE_PULSES
+            self._check_alarm(alarm, what)
+            if start_pos is None:
+                start_pos = last_pos
+            # Travel is measured from the first snapshot. The drive re-bases its counter to the
+            # switch reference once it finds the switch (see HOMING_EDGE_COUNTER_MAX), and that
+            # jump can exceed a revolution when the search started from a counter a previous
+            # failed search left far out; a counter inside the reference band is therefore the
+            # re-base, not travel. A runaway search never re-bases and leaves the band for good.
+            if (
+                max_travel_pulses is not None
+                and abs(last_pos) > HOMING_EDGE_COUNTER_MAX
+                and abs(last_pos - start_pos) > max_travel_pulses
+            ):
+                raise RuntimeError(
+                    f"The {what} found no sensor within one revolution ({abs(last_pos - start_pos)} pulses "
+                    "travelled): direction, wiring or switch polarity?"
+                )
+            at_target = target_pulses is None or abs(last_pos - target_pulses) <= POSITION_TOLERANCE_PULSES
 
-            if running:
+            if status & STATUS_BIT_RUNNING:
                 seen_running = True
-            elif in_tolerance and (seen_running or time.monotonic() - started >= MOVE_START_GRACE_S):
-                return  # idle at the target, and not just a pre-RUNNING idle frame
-            elif seen_running and not in_tolerance:
+            elif at_target and (seen_running or time.monotonic() - started >= MOVE_START_GRACE_S):
+                return last_pos  # idle at the target, and not just a pre-RUNNING idle frame
+            elif seen_running and not at_target:
                 raise RuntimeError(
                     f"Motor stopped at {last_pos} pulses, target {target_pulses} "
                     f"(tolerance ±{POSITION_TOLERANCE_PULSES})"
                 )
             time.sleep(POLL_INTERVAL_S)
         raise TimeoutError(
-            f"Move to {target_pulses} pulses timed out after {timeout_s:.1f}s " f"(last position={last_pos})"
+            f"Timed out after {timeout_s:.1f}s waiting for the {what} to finish (last position={last_pos})"
         )
