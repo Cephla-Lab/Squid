@@ -21,6 +21,7 @@ from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
+from control.core.objective_store import default_xeryon_frame_mm
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
@@ -241,23 +242,25 @@ def _register_loaded_fovs(widget, region_fov_coords, z_dropped):
         )
 
 
-def _objective_relative_z_mm(objective_name):
-    """Relative stage-Z frame of an objective under the Xeryon 2-position switcher:
-    the changer parks the stage XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM lower while a
-    position-2 objective is in use (objective_changer_2_pos_controller.moveToPosition2).
-    0 for position-1 objectives, names not in the position lists, and machines without
-    the switcher."""
-    if not control._def.USE_XERYON:
-        return 0.0
-    if control._def.xeryon_objective_position(objective_name) == 2:
-        return -float(control._def.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM)
-    return 0.0
+def _objective_relative_z_mm(objective_name, objective_store=None):
+    """The objective's Z frame (spec C §4): with a store, its z_frame_mm, which is the saved offset
+    calibration's frame while it is valid and today's frame otherwise. Without a store, today's frame:
+    the Xeryon 2-position switcher parks the stage XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM lower
+    while a position-2 objective is in use (objective_changer_2_pos_controller.moveToPosition2);
+    0 for position-1 objectives, names not in the position lists, and machines without the switcher."""
+    if objective_store is not None:
+        return objective_store.z_frame_mm(objective_name)
+    return default_xeryon_frame_mm(objective_name)
 
 
-def parfocal_adjusted_z_mm(current_objective, target_objective, z_mm):
-    """Shift a stage z from the current objective's frame to the target objective's,
-    using the objective switcher's per-machine Z offset (no-op without a switcher)."""
-    return z_mm + (_objective_relative_z_mm(target_objective) - _objective_relative_z_mm(current_objective))
+def parfocal_adjusted_z_mm(current_objective, target_objective, z_mm, objective_store=None):
+    """Shift a stage z from the current objective's frame to the target objective's: the saved offset
+    calibration's frames when `objective_store` holds a valid one, else the objective switcher's
+    per-machine Z offset (no-op without a switcher)."""
+    return z_mm + (
+        _objective_relative_z_mm(target_objective, objective_store)
+        - _objective_relative_z_mm(current_objective, objective_store)
+    )
 
 
 def coordinate_rows_for_save(region_fov_coordinates, z_default_mm):
@@ -3884,10 +3887,13 @@ class DragonflyConfocalWidget(QWidget):
 class ObjectivesWidget(QWidget):
     signal_objective_changed = Signal()
 
-    def __init__(self, objective_store, objective_changer=None):
+    def __init__(self, objective_store, objective_changer=None, stage=None):
         super(ObjectivesWidget, self).__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
+        self.stage = stage  # for the calibrated Z step of spec C §7.2; None means no step can be applied
+        self._z_step_error = ""  # set by the switch thread, read by _on_objective_move_finished
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
         # connected yet and the hardware already sits there.
@@ -3907,13 +3913,24 @@ class ObjectivesWidget(QWidget):
         self.setLayout(layout)
 
     def on_objective_changed(self, objective_name):
-        if self.objective_changer is None:
+        # The calibrated focus step the switch owes after the changer's own mechanical move (spec C
+        # §7.2): 0 on every machine without a valid offset calibration.
+        step_mm = self.objectiveStore.z_switch_step_mm(self.objectiveStore.current_objective, objective_name)
+        if self.objective_changer is None and step_mm == 0.0:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
             return
         # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
         # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
         self.dropdown.setEnabled(False)
+        self._z_step_error = ""
+
+        def switch_objective(objective_name):
+            if self.objective_changer is not None:
+                self.objective_changer.move_to_objective(objective_name)
+            # From here the objective has changed physically: a Z failure is reported apart from a changer failure.
+            if step_mm != 0.0:
+                self._z_step_error = self._apply_z_step(objective_name, step_mm)
 
         def on_finished(success, error_msg):
             QMetaObject.invokeMethod(
@@ -3922,18 +3939,64 @@ class ObjectivesWidget(QWidget):
                 Qt.QueuedConnection,
                 Q_ARG(bool, success),
                 Q_ARG(str, error_msg or ""),
+                Q_ARG(str, self._z_step_error),
             )
 
-        utils.threaded_operation_helper(
-            self.objective_changer.move_to_objective, on_finished, objective_name=objective_name
-        )
+        utils.threaded_operation_helper(switch_objective, on_finished, objective_name=objective_name)
 
-    @Slot(bool, str)
-    def _on_objective_move_finished(self, success, error_msg):
+    def _z_step_refusal(self, step_mm, z_now_mm):
+        """Why the calibrated Z step must not be applied from z_now_mm (spec C §7.2), or None. Both
+        checks refuse, never clamp: the cap is the collision backstop (spec C §4), and move_z_to clamps
+        silently to the Z limits, which would leave Z at an unexplained position."""
+        cap_mm = control._def.MAX_OBJECTIVE_Z_STEP_MM
+        if abs(step_mm) > cap_mm:
+            return (
+                f"the calibrated Z step {step_mm * 1000:+.1f} um exceeds MAX_OBJECTIVE_Z_STEP_MM "
+                f"({cap_mm:g} mm); check the changer configuration and recalibrate"
+            )
+        if self.stage is None:
+            return "this objective selector has no stage to move"
+        axis = self.stage.get_config().Z_AXIS
+        target_mm = z_now_mm + step_mm
+        if not axis.MIN_POSITION <= target_mm <= axis.MAX_POSITION:
+            return (
+                f"the target Z {target_mm:.4f} mm (now {z_now_mm:.4f} mm, step {step_mm * 1000:+.1f} um) "
+                f"is outside the Z limits [{axis.MIN_POSITION:g}, {axis.MAX_POSITION:g}] mm"
+            )
+        return None
+
+    def _apply_z_step(self, objective_name, step_mm):
+        """Runs on the switch thread after the changer. Returns "" on success, else why the step was
+        refused or failed; the exception is kept here so the changer's success still reaches the slot."""
+        try:
+            z_now_mm = self.stage.get_pos().z_mm if self.stage is not None else 0.0
+            refusal = self._z_step_refusal(step_mm, z_now_mm)
+            if refusal is not None:
+                self._log.warning(f"Focus offset for {objective_name} not applied: {refusal}")
+                return refusal
+            self._log.info(f"Applying the calibrated focus offset for {objective_name}: {step_mm * 1000:+.1f} um")
+            self.stage.move_z_to(z_now_mm + step_mm, blocking=True)
+            return ""
+        except Exception as e:
+            self._log.error(f"Focus offset for {objective_name} failed: {e}")
+            return f"the Z move failed: {e}"
+
+    @Slot(bool, str, str)
+    def _on_objective_move_finished(self, changer_ok, error_msg, z_step_error):
+        """Three outcomes (spec C §7.2): the changer raised (revert, as before); the changer succeeded
+        but the Z step was refused or failed (the objective did change physically, so the store and the
+        signal follow it, and a warning says the focus offset was not applied); both succeeded."""
         objective_name = self.dropdown.currentText()  # unchanged since the move started: disabled meanwhile
-        if success:
+        if changer_ok:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
+            if z_step_error:
+                QMessageBox.warning(
+                    self,
+                    "Focus Offset Not Applied",
+                    f"Switched to '{objective_name}', but the calibrated focus offset was not applied: "
+                    f"{z_step_error}.\nRefocus before imaging.",
+                )
         else:
             QMessageBox.warning(
                 self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
@@ -3956,6 +4019,7 @@ class CameraSettingsWidget(QFrame):
 
     signal_binning_changed = Signal()
     signal_sensor_mode_changed = Signal()
+    signal_roi_changed = Signal()  # after the camera's ROI (size or offset) was set from this widget
 
     def __init__(
         self,
@@ -4242,6 +4306,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_width.value(),
             self.entry_ROI_height.value(),
         )
+        self.signal_roi_changed.emit()
 
     def set_Height(self):
         height = int(self.entry_ROI_height.value() // 8) * 8
@@ -4259,6 +4324,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_width.value(),
             self.entry_ROI_height.value(),
         )
+        self.signal_roi_changed.emit()
 
     def set_ROI_offset(self):
         self.camera.set_region_of_interest(
@@ -4267,6 +4333,7 @@ class CameraSettingsWidget(QFrame):
             self.entry_ROI_width.value(),
             self.entry_ROI_height.value(),
         )
+        self.signal_roi_changed.emit()
 
     def set_temperature(self):
         try:
@@ -9182,6 +9249,15 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.update_coverage_from_scan_size()
         self.update_coordinates()
 
+    def clear_manual_regions(self):
+        """The effective XY offsets changed (spec C §7.3): the drawn shapes were in a reference frame that
+        no longer applies, so shapes_mm goes, and with it exactly the regions that came from live mosaic
+        drawings (by provenance, not the "Manual" label: imported YAML/CSV regions and well regions stay).
+        No active-tab guard: it runs whatever tab is current, and in performance mode."""
+        self.shapes_mm = None
+        self.scanCoordinates.remove_live_drawn_regions()
+        self._log.info("Cleared the manual ROIs: the objective XY offsets changed")
+
     def update_manual_shape(self, shapes_data_mm):
         if self.tab_widget and self.tab_widget.currentWidget() != self:
             return
@@ -9733,7 +9809,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         def _save_for_objective(objective_name):
             self.objectiveStore.set_current_objective(objective_name)
             self.update_coordinates()
-            z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm)
+            z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm, self.objectiveStore)
             df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
             file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
             df.to_csv(file_path, index=False)
@@ -11117,7 +11193,7 @@ class TrackingControllerWidget(QFrame):
         # self.dropdown_objective = QComboBox()
         # self.dropdown_objective.addItems(list(OBJECTIVES.keys()))
         # self.dropdown_objective.setCurrentText(DEFAULT_OBJECTIVE)
-        self.objectivesWidget = ObjectivesWidget(self.objectiveStore)
+        self.objectivesWidget = ObjectivesWidget(self.objectiveStore, stage=self.trackingController.stage)
 
         self.dropdown_tracker = QComboBox()
         self.dropdown_tracker.addItems(TRACKERS)

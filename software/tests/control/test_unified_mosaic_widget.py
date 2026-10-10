@@ -58,9 +58,13 @@ class TestCanvasBlit:
 class _FakeObjectiveStore:
     def __init__(self, factor):
         self.factor = factor
+        self.current_objective = "4x"
 
     def get_pixel_size_factor(self):
         return self.factor
+
+    def xy_offset_mm(self, objective_name):
+        return (0.0, 0.0)  # no offset calibration
 
 
 class _FakeCamera:
@@ -86,6 +90,8 @@ def _tile_update(image, x_mm, y_mm, channel="BF", **extra):
         well_id=None,
         well_row=0,
         well_col=0,
+        objective="",
+        pixel_size_um=0.0,  # untagged: the widget falls back to the live store and camera
     )
     for k, v in extra.items():
         setattr(u, k, v)

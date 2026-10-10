@@ -431,3 +431,29 @@ def test_clearing_the_pixel_size_before_apply_keeps_the_xy_the_run_measured(qtbo
     saved = _saved(tmp_path).objectives
     assert saved["10x"].offset.dx_um == pytest.approx(PARCENTRIC["10x"][0], abs=0.5), dialog.label_result.text()
     assert saved["20x"].offset.dx_um is not None
+
+
+def test_apply_and_clear_hand_the_saved_config_to_on_saved(qtbot, tmp_path, monkeypatch, make_dialog):
+    """Spec C §7.1: the store updates in place after Apply and save and after Clear offsets, through the
+    dialog's on_saved hook, and the dialog says what the change cleared (spec C §6.8)."""
+    from control.core.objective_store import CalibrationChange
+
+    handed = []
+
+    def on_saved(config):
+        handed.append(config)
+        return CalibrationChange(xy_offsets=True, z_offsets=True)
+
+    dialog, hw = make_dialog(on_saved=on_saved)
+    for box in dialog.checkboxes.values():
+        box.setChecked(True)  # no objective is ticked by default (29eb30d0)
+    dialog.button_calibrate.click()
+    _wait(qtbot, dialog)
+    dialog.button_apply.click()
+    assert len(handed) == 1 and handed[0].offset_calibration is not None
+    assert handed[0] == _saved(tmp_path)
+    assert "the mosaic view and the drawn regions were cleared" in dialog.label_result.text()
+    monkeypatch.setattr(QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Yes)
+    dialog.button_clear_offsets.click()
+    assert len(handed) == 2 and handed[1].offset_calibration is None
+    assert "the mosaic view and the drawn regions were cleared" in dialog.label_result.text()
