@@ -541,13 +541,13 @@ class TestExtendedLoader:
         import pandas as pd
 
         from control.acquisition_yaml_loader import read_coordinates_csv
-        from control.core.coordinate_provenance import STAMP_PREFIX, write_scan_coordinates_csv
+        from control.core.coordinate_provenance import make_stamp, STAMP_PREFIX, write_scan_coordinates_csv
 
         csv_path = tmp_path / "saved.csv"
         df = pd.DataFrame(
             [["A1", 1.0, 2.0, 3.0], ["A1", 1.5, 2.0, 3.1]], columns=["region", "x (mm)", "y (mm)", "z (mm)"]
         )
-        write_scan_coordinates_csv(str(csv_path), df, "96 well plate")
+        write_scan_coordinates_csv(str(csv_path), df, make_stamp("96 well plate"))
         assert csv_path.read_text().startswith(STAMP_PREFIX)
 
         assert read_coordinates_csv(str(csv_path)) == [{"name": "A1", "fovs": [[1.0, 2.0, 3.0], [1.5, 2.0, 3.1]]}]
