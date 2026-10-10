@@ -67,7 +67,9 @@ REST_BEFORE_CHECKS_S = 30.0
 # Tries at arming the watchdog when giving it back to the heartbeat, each confirmed within the watchdog period
 WATCHDOG_ARM_ATTEMPTS = 3
 DROOP_WARN_FRACTION = 0.03
-TEST_BEAM_DEFAULT_PERCENT = 10.0
+# Above the drive where a source jumps on from nothing (the bench LED engine: DAC ~19 % on every channel), so the test
+# beam is visible on the sensor
+TEST_BEAM_DEFAULT_PERCENT = 30.0
 TEST_BEAM_MAX_S = 60.0
 
 Progress = Callable[[str, int, int], None]
