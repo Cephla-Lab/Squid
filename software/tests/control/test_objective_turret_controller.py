@@ -307,11 +307,11 @@ class _FakeModbus:
         return [value for (address, value) in self.writes if address == REG_TARGET_POSITION]
 
 
-def _make_real_controller(monkeypatch, fake=None, **controller_kwargs):
+def _make_real_controller(monkeypatch, fake=None, stage=None, **controller_kwargs):
     fake = fake or _FakeModbus()
     monkeypatch.setattr(otc, "find_port", lambda serial_number: "FAKE_PORT")
     monkeypatch.setattr(otc, "ModbusRTUClient", lambda **kwargs: fake)
-    controller = ObjectiveTurret4PosController(serial_number="SIM", stage=None, **controller_kwargs)
+    controller = ObjectiveTurret4PosController(serial_number="SIM", stage=stage, **controller_kwargs)
     return controller, fake
 
 
@@ -389,6 +389,95 @@ def test_home_timeout_leaves_motor_deenergized(monkeypatch):
         controller.home(timeout_s=0.2)
     # Failure cleanup: stopped and de-energized, NOT left clamped.
     assert fake.control_word_writes()[-1] == CW_DISABLE
+    controller.close()
+
+
+# --- a turret only homes with Z retracted ---
+
+
+def test_sim_home_retracts_and_restores_z(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    stage = FakeStage(z_mm=3.5)
+    sim = _make_sim(stage=stage)
+    sim.home()
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM, 3.5]
+    sim.close()
+
+
+def test_sim_home_leaves_z_retracted_when_restore_z_false(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    stage = FakeStage(z_mm=3.5)
+    sim = _make_sim(stage=stage)
+    sim.home(restore_z=False)
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
+    sim.close()
+
+
+@pytest.mark.parametrize("z_mm", [OBJECTIVE_RETRACTED_POS_MM, OBJECTIVE_RETRACTED_POS_MM + 0.00003, 0.0])
+def test_home_sends_no_z_move_when_z_is_already_retracted(monkeypatch, z_mm):
+    # Already at the retract position (within the microstep rounding of a position
+    # readback) or below it (Z just homed to 0.0 at startup): no Z move at all. A move
+    # from just above the retract position back onto it would be a move toward the Z
+    # home switch, which the controller refuses right after a Z homing.
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    stage = FakeStage(z_mm=z_mm)
+    sim = _make_sim(stage=stage)
+    sim.home()
+    sim.move_to_objective("40x")
+    assert stage.z_moves == []
+    sim.close()
+
+
+def test_sim_home_skips_z_without_a_stage_or_with_z_homing_disabled(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    _make_sim(stage=None).home()  # must not raise
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    stage = FakeStage(z_mm=3.5)
+    sim = _make_sim(stage=stage)
+    sim.home()
+    assert stage.z_moves == []
+    sim.close()
+
+
+class _StageOnTheWire(FakeStage):
+    """A FakeStage whose Z moves are also logged into the fake Modbus write list, so the
+    order of Z moves and drive writes can be asserted."""
+
+    def __init__(self, fake, z_mm):
+        super().__init__(z_mm)
+        self._fake = fake
+
+    def move_z_to(self, abs_mm: float, blocking: bool = True):
+        super().move_z_to(abs_mm, blocking)
+        self._fake.writes.append(("Z", abs_mm))
+
+
+def test_home_retracts_z_before_touching_the_drive_and_restores_it_after_the_clamp(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    fake = _FakeModbus()
+    stage = _StageOnTheWire(fake, z_mm=3.5)
+    controller, fake = _make_real_controller(monkeypatch, fake=fake, stage=stage)
+    _fast_homing(monkeypatch)
+    fake.writes.clear()
+    fake.di_script = [1, 0, 1]
+    controller.home()
+    assert fake.writes[0] == ("Z", OBJECTIVE_RETRACTED_POS_MM)  # before the first register write
+    assert fake.writes[-1] == ("Z", 3.5)  # after the clamp (0x06/0x07/0x0F) that ends the homing
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM, 3.5]
+    controller.close()
+
+
+def test_home_failure_leaves_z_retracted(monkeypatch):
+    # The turret's position is unknown after a failed homing: Z must not come back to the sample.
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    stage = FakeStage(z_mm=3.5)
+    controller, fake = _make_real_controller(monkeypatch, stage=stage)
+    _fast_homing(monkeypatch)
+    fake.di_script = [0]
+    with pytest.raises(TimeoutError):
+        controller.home(timeout_s=0.2)
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
     controller.close()
 
 
