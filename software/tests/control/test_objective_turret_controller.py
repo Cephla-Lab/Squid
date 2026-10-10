@@ -395,21 +395,31 @@ def test_home_timeout_leaves_motor_deenergized(monkeypatch):
 # --- a turret only homes with Z retracted ---
 
 
-def test_sim_home_retracts_and_restores_z(monkeypatch):
+def test_sim_home_retracts_z_and_leaves_it_there(monkeypatch):
+    # Homing ends at the sensor reference, where no slot is in position: the focus height
+    # of the objective that was selected must not be restored there.
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
     stage = FakeStage(z_mm=3.5)
     sim = _make_sim(stage=stage)
     sim.home()
-    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM, 3.5]
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
     sim.close()
 
 
-def test_sim_home_leaves_z_retracted_when_restore_z_false(monkeypatch):
+def test_sim_reset_restores_z_only_after_the_rotation_back(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
     stage = FakeStage(z_mm=3.5)
     sim = _make_sim(stage=stage)
-    sim.home(restore_z=False)
+    sim.move_to_objective("10x")
+    stage.z_moves.clear()
+    sim.reset("10x")
+    # One round trip: retract once, home, rotate (no restore of its own), restore once.
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM, 3.5]
+    assert sim.current_objective == "10x"
+    stage.z_moves.clear()
+    sim.reset(None)  # nothing selected: Z stays retracted
     assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
+    assert sim.current_objective is None
     sim.close()
 
 
@@ -452,7 +462,7 @@ class _StageOnTheWire(FakeStage):
         self._fake.writes.append(("Z", abs_mm))
 
 
-def test_home_retracts_z_before_touching_the_drive_and_restores_it_after_the_clamp(monkeypatch):
+def test_home_retracts_z_before_touching_the_drive_and_leaves_it_retracted(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
     fake = _FakeModbus()
     stage = _StageOnTheWire(fake, z_mm=3.5)
@@ -462,9 +472,32 @@ def test_home_retracts_z_before_touching_the_drive_and_restores_it_after_the_cla
     fake.di_script = [1, 0, 1]
     controller.home()
     assert fake.writes[0] == ("Z", OBJECTIVE_RETRACTED_POS_MM)  # before the first register write
-    assert fake.writes[-1] == ("Z", 3.5)  # after the clamp (0x06/0x07/0x0F) that ends the homing
-    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]  # ends clamped at home
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]  # and Z is still retracted there
+    controller.close()
+
+
+def test_reset_restores_z_only_after_the_rotation_back(monkeypatch):
+    # The operator's reset: Z comes back once, after the selected objective is back in
+    # position - never at the sensor reference, where a longer objective may stand.
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    fake = _FakeModbus()
+    stage = _StageOnTheWire(fake, z_mm=3.5)
+    controller, fake = _make_real_controller(monkeypatch, fake=fake, stage=stage)
+    _fast_homing(monkeypatch)
+    controller.move_to_objective("10x")
+    fake.writes.clear()
+    stage.z_moves.clear()
+    fake.di_script = [1, 0, 1]
+    controller.reset("10x")
+    assert fake.writes[0] == ("Z", OBJECTIVE_RETRACTED_POS_MM)
+    assert fake.writes[-1] == ("Z", 3.5)
+    # The restore comes after the rotation's target write, which comes after the homing's SET_ZERO.
+    i_zero = max(i for i, w in enumerate(fake.writes) if w == (REG_SET_ZERO, SET_ZERO_MAGIC))
+    i_rotate = max(i for i, w in enumerate(fake.writes) if w[0] == REG_TARGET_POSITION)
+    assert i_zero < i_rotate < len(fake.writes) - 1
     assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM, 3.5]
+    assert controller.current_objective == "10x"
     controller.close()
 
 

@@ -322,13 +322,22 @@ class ObjectiveTurret4PosControllerSimulation:
         self._stage = stage
         logger.info("Simulated turret opened (sn=%s)", serial_number)
 
-    def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S, restore_z: bool = True) -> None:
+    def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
         self._require_open()
-        captured_z = self._retract_z_if_possible()  # a turret only homes with Z retracted
+        self._retract_z_if_possible()  # a turret only homes with Z retracted; Z stays there (see the real twin)
         self._current_objective = None
-        if restore_z:
-            self._restore_z_if_captured(captured_z)
         logger.info("Simulated turret homed")
+
+    def reset(self, objective_name: Optional[str] = None, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
+        """Mirror of the real twin's reset: clear, enable, home, rotate back, restore Z last."""
+        self._require_open()
+        captured_z = self._retract_z_if_possible()
+        self.clear_alarm()
+        self.enable()
+        self.home(timeout_s)
+        if objective_name is not None:
+            self.move_to_objective(objective_name, restore_z=False)
+            self._restore_z_if_captured(captured_z)
 
     def enable(self) -> None:
         """Mirror of the real controller's disable -> startup -> enable state-machine cycle."""
@@ -527,7 +536,7 @@ class ObjectiveTurret4PosController:
             self._modbus.disconnect()
             raise
 
-    def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S, restore_z: bool = True) -> None:
+    def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
         """Software homing, ported from SingleMotor HomeSearch.start_homing.
 
         sweep -> backoff -> fine-search, then SET_ZERO at the sensor's trigger edge
@@ -537,13 +546,15 @@ class ObjectiveTurret4PosController:
 
         A turret only homes with Z retracted: the sweep can be most of a revolution,
         which carries every objective past the sample, so Z goes to
-        OBJECTIVE_RETRACTED_POS_MM first (as for a slot move) and comes back afterwards
-        when `restore_z` is set and the homing succeeded. After a failed homing Z stays
-        retracted: the turret's position is unknown and nothing should approach the
-        sample until it is homed.
+        OBJECTIVE_RETRACTED_POS_MM first (as for a slot move) and STAYS there. Homing
+        ends at the sensor reference, where no slot is in position and a longer
+        objective can stand under the axis, so restoring another objective's focus
+        height here could drive it into the sample; the caller restores Z once the
+        selected objective is back in position (see reset()). After a failed homing the
+        turret's position is unknown and nothing should approach the sample either.
         """
         self._require_open()
-        captured_z = self._retract_z_if_possible()
+        self._retract_z_if_possible()
         deadline = time.monotonic() + timeout_s
         # Parameter writes require the disabled state.
         self._write_control(CW_DISABLE)
@@ -599,7 +610,20 @@ class ObjectiveTurret4PosController:
         self._hold_position_clamp()
         self._current_objective = None
         logger.info("Homed at sensor edge (repeatability +/-%d pulses)", HOMING_FINE_STEP)
-        if restore_z:
+
+    def reset(self, objective_name: Optional[str] = None, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
+        """The operator's reset (GUI Utils -> Reset Objective Turret): clear a fault, re-enable,
+        re-home so the position tracker matches the physical slot, rotate back to
+        `objective_name`, and only then bring Z back to where it was - one Z round trip, and
+        the focus height is restored under the objective it belongs to. Without an objective
+        (none selected yet) Z stays retracted."""
+        self._require_open()
+        captured_z = self._retract_z_if_possible()
+        self.clear_alarm()
+        self.enable()
+        self.home(timeout_s)
+        if objective_name is not None:
+            self.move_to_objective(objective_name, restore_z=False)
             self._restore_z_if_captured(captured_z)
 
     def enable(self) -> None:

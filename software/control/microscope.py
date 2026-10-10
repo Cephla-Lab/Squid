@@ -597,20 +597,19 @@ class Microscope:
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays
             # powered), so a re-home would just be wasted motion.
-            # Turret: when Z was just homed it sits at the home reference (0.0, below the
-            # working soft floor), so neither the homing nor the rotation restores Z to it —
-            # the cached-Z restore at GUI startup positions Z. Later objective changes and
-            # resets (Z not freshly homed) restore the live focus position as before.
-            restore_z = skip_init or not control._def.HOMING_ENABLED_Z
+            if control._def.USE_XERYON or not skip_init:
+                self.addons.objective_changer.home()  # a turret homes with Z retracted and leaves it there
             if control._def.USE_XERYON:
-                self.addons.objective_changer.home()
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
-            elif not skip_init:
-                self.addons.objective_changer.home(restore_z=restore_z)
             try:
                 if control._def.USE_XERYON:
                     self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE)
                 else:
+                    # Turret: when Z was just homed it sits at the home reference (0.0, below the
+                    # working soft floor), so don't restore Z to it after rotating — the cached-Z
+                    # restore at GUI startup positions Z. Later objective changes (Z not freshly
+                    # homed) restore the live focus position as before.
+                    restore_z = skip_init or not control._def.HOMING_ENABLED_Z
                     self.addons.objective_changer.move_to_objective(control._def.DEFAULT_OBJECTIVE, restore_z=restore_z)
             except KeyError as e:
                 raise RuntimeError(
