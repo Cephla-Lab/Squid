@@ -582,6 +582,7 @@ class ObjectiveTurret4PosController:
         if _is_alias_for_current(self._current_objective, objective_name, self._positions):
             self._current_objective = objective_name
             return
+        _resolve_position(objective_name, self._positions)  # an unknown name fails before Z moves
 
         captured_z = self._retract_z_if_possible()
         # Unknown until the rotation completes: after a failed rotation the turret may sit between

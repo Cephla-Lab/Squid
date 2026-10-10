@@ -931,3 +931,14 @@ def test_a_successful_rotation_restores_z_unless_told_not_to(monkeypatch, restor
     assert stage.z_moves == ([OBJECTIVE_RETRACTED_POS_MM, 5.0] if restore_z else [OBJECTIVE_RETRACTED_POS_MM])
     assert controller.current_objective == second
     controller.close()
+
+
+def test_an_objective_without_a_slot_fails_before_z_moves_when_the_objective_in_place_is_unknown(monkeypatch):
+    """After homing or a failed rotation the turret has no current objective. A name its map does not have
+    (e.g. 60x, listed by the catalog) must then fail before Z retracts, as it did before Z stayed retracted."""
+    controller, stage, first, second = _real_controller_on_a_stage(monkeypatch)
+    assert controller.current_objective is None
+    with pytest.raises(KeyError, match="Unknown objective"):
+        controller.move_to_objective("no-such-objective")
+    assert stage.z_moves == []
+    controller.close()
