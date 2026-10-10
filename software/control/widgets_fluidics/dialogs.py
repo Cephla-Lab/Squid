@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -161,9 +162,10 @@ def pick_coordinates_source(parent) -> Optional[str]:
 class PreflightDialog(QDialog):
     """The one gate before a run: problems block Start; otherwise the summary asks for confirmation."""
 
-    def __init__(self, problems: List[str], summary_lines: List[str], parent=None):
+    def __init__(self, problems: List[str], summary_lines: List[str], parent=None, tec_option: bool = False):
         super().__init__(parent)
         self.setWindowTitle("Start run")
+        self.disable_tec_checkbox = None
         layout = QVBoxLayout()
         if problems:
             headline = QLabel(f"{len(problems)} problem(s) must be fixed before this protocol can run:")
@@ -177,6 +179,10 @@ class PreflightDialog(QDialog):
         text.setReadOnly(True)
         layout.addWidget(text)
 
+        if tec_option and not problems:
+            self.disable_tec_checkbox = QCheckBox("Turn off temperature control (TEC) when the run finishes")
+            layout.addWidget(self.disable_tec_checkbox)
+
         self.buttons = QDialogButtonBox()
         self.start_button = QPushButton("Start")
         self.buttons.addButton(self.start_button, QDialogButtonBox.AcceptRole)
@@ -186,6 +192,9 @@ class PreflightDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
         self.setLayout(layout)
+
+    def disable_tec_at_end(self) -> bool:
+        return self.disable_tec_checkbox is not None and self.disable_tec_checkbox.isChecked()
 
 
 class RecoveryDialog(QDialog):
