@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
 import squid.logging
 from squid.intensity_calibration import VERIFY_REL_TOL
 from squid.intensity_calibration_run import (
+    TEST_BEAM_DARK_MW,
     TEST_BEAM_DEFAULT_PERCENT,
     TEST_BEAM_MAX_S,
     CalibrationSession,
@@ -313,7 +314,10 @@ class IntensityCalibrationDialog(QDialog):
                 self.button_test_beam.setChecked(False)
                 self._say(f"Test beam turned off: the meter reading failed ({e}).")
             return
-        self.label_reading.setText(f"{reading:.4g} mW")
+        text = f"{reading:.4g} mW"
+        if self._test_beam_target is not None and reading < TEST_BEAM_DARK_MW:
+            text += " - no light at this level? Raise the test beam level"
+        self.label_reading.setText(text)
         limit = self.spin_sensor_limit.value()
         if self._test_beam_target is not None and limit > 0 and reading > limit:
             self.button_test_beam.setChecked(False)

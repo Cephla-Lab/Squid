@@ -228,3 +228,21 @@ def test_a_failed_reading_turns_the_test_beam_off(qtbot, session, answers, error
     dialog._update_reading()
     assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
     assert "Test beam turned off" in dialog.label_result.text()
+
+
+def test_a_dark_test_beam_says_to_raise_the_level(qtbot, session, answers):
+    # bench 2026-10-09: a test beam below the LED engine's switch-on (DAC ~19 %) gave no light and no clue why
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    session.read_mw = MagicMock(return_value=0.0002)
+    dialog._update_reading()
+    assert "no light at this level" in dialog.label_reading.text()
+    session.read_mw = MagicMock(return_value=8.4)
+    dialog._update_reading()
+    assert dialog.label_reading.text() == "8.4 mW"
+    dialog.button_test_beam.setChecked(False)
+    session.read_mw = MagicMock(return_value=0.0002)
+    dialog._update_reading()
+    assert "no light" not in dialog.label_reading.text()  # beam off: dark is expected

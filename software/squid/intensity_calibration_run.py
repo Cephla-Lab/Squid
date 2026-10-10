@@ -71,6 +71,9 @@ DROOP_WARN_FRACTION = 0.03
 # beam is visible on the sensor
 TEST_BEAM_DEFAULT_PERCENT = 30.0
 TEST_BEAM_MAX_S = 60.0
+# A test-beam reading under this is no light at all (the bench meter reads 0.2 uW dark): the level is below where
+# the source switches on
+TEST_BEAM_DARK_MW = 0.01
 
 Progress = Callable[[str, int, int], None]
 
