@@ -867,3 +867,78 @@ def test_sim_accepts_di_invert_kwarg():
     sim.move_to_objective("10x")
     assert sim.current_objective == "10x"
     sim.close()
+
+
+def test_a_failed_rotation_forgets_the_objective_so_a_move_back_really_moves(monkeypatch):
+    """After a rotation fails partway the turret may sit between slots. Keeping the old name would make
+    a move back to it take the same-slot shortcut and report success without moving."""
+    controller, fake = _make_real_controller(monkeypatch)
+    names = list(controller._positions)
+    first = names[0]
+    second = next(n for n in names if controller._positions[n] != controller._positions[first])
+    rotations = []
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: rotations.append(name))
+    controller.move_to_objective(first)
+
+    def jam(name, timeout_s):
+        rotations.append(name)
+        raise RuntimeError("drive alarm mid-rotation")
+
+    monkeypatch.setattr(controller, "_rotate_to", jam)
+    with pytest.raises(RuntimeError, match="mid-rotation"):
+        controller.move_to_objective(second)
+    assert controller.current_objective is None
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: rotations.append(name))
+    controller.move_to_objective(first)
+    assert rotations == [first, second, first]  # the move back really rotated
+    controller.close()
+
+
+def _real_controller_on_a_stage(monkeypatch, z_mm=5.0):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    controller, _ = _make_real_controller(monkeypatch)
+    stage = FakeStage(z_mm=z_mm)
+    controller._stage = stage
+    names = list(controller._positions)
+    first = names[0]
+    second = next(n for n in names if controller._positions[n] != controller._positions[first])
+    return controller, stage, first, second
+
+
+def test_a_failed_rotation_leaves_z_retracted(monkeypatch):
+    """With the objective unknown, Z must not go back up to the imaging height (external review of #683)."""
+    controller, stage, first, second = _real_controller_on_a_stage(monkeypatch)
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: None)
+    controller.move_to_objective(first)
+    stage.z_moves.clear()
+
+    def jam(name, timeout_s):
+        raise RuntimeError("drive alarm after partial rotation")
+
+    monkeypatch.setattr(controller, "_rotate_to", jam)
+    with pytest.raises(RuntimeError, match="partial rotation"):
+        controller.move_to_objective(second)
+    assert controller.current_objective is None
+    assert stage.z_moves == [OBJECTIVE_RETRACTED_POS_MM]
+    controller.close()
+
+
+@pytest.mark.parametrize("restore_z", [True, False])
+def test_a_successful_rotation_restores_z_unless_told_not_to(monkeypatch, restore_z):
+    controller, stage, first, second = _real_controller_on_a_stage(monkeypatch, z_mm=5.0)
+    monkeypatch.setattr(controller, "_rotate_to", lambda name, timeout_s: None)
+    controller.move_to_objective(second, restore_z=restore_z)
+    assert stage.z_moves == ([OBJECTIVE_RETRACTED_POS_MM, 5.0] if restore_z else [OBJECTIVE_RETRACTED_POS_MM])
+    assert controller.current_objective == second
+    controller.close()
+
+
+def test_an_objective_without_a_slot_fails_before_z_moves_when_the_objective_in_place_is_unknown(monkeypatch):
+    """After homing or a failed rotation the turret has no current objective. A name its map does not have
+    (e.g. 60x, listed by the catalog) must then fail before Z retracts, as it did before Z stayed retracted."""
+    controller, stage, first, second = _real_controller_on_a_stage(monkeypatch)
+    assert controller.current_objective is None
+    with pytest.raises(KeyError, match="Unknown objective"):
+        controller.move_to_objective("no-such-objective")
+    assert stage.z_moves == []
+    controller.close()

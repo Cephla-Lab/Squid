@@ -3913,12 +3913,24 @@ class ObjectivesWidget(QWidget):
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
         else:
+            # A changer that forgot its objective (a rotation that failed partway) may sit between slots.
+            position_unknown = getattr(self.objective_changer, "current_objective", "") is None
             QMessageBox.warning(
-                self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
+                self,
+                "Objective Change Failed",
+                f"Failed to switch to '{objective_name}':\n{error_msg}"
+                + (
+                    "\n\nThe objective in place is unknown: select one to move the changer there."
+                    if position_unknown
+                    else ""
+                ),
             )
-            # Revert the dropdown so it matches the store / actual changer state.
             self.dropdown.blockSignals(True)
-            self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+            if position_unknown:
+                # No selection, so choosing any objective, including the one shown before, really moves.
+                self.dropdown.setCurrentIndex(-1)
+            else:
+                self.dropdown.setCurrentText(self.objectiveStore.current_objective)
             self.dropdown.blockSignals(False)
         # Re-enable only after the modal warning, which spins a nested event loop.
         self.dropdown.setEnabled(True)
@@ -13425,7 +13437,9 @@ class SampleSettingsWidget(QFrame):
         """Save current objective and wellplate format to cache"""
         os.makedirs("cache", exist_ok=True)
         data = {
-            "objective": self.objectivesWidget.dropdown.currentText(),
+            # No selection after a failed switch (the objective in place is unknown): keep the store's.
+            "objective": self.objectivesWidget.dropdown.currentText()
+            or self.objectivesWidget.objectiveStore.current_objective,
             "wellplate_format": self.wellplateFormatWidget.wellplate_format,
         }
 
