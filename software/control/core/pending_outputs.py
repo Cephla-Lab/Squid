@@ -1,0 +1,139 @@
+"""Handshake for acquisition outputs written outside the worker's save jobs.
+
+The GUI saves the mosaic view for timepoint ``t`` from its own thread pool, some time after the worker
+says the timepoint finished. The transfer manifest may only call a timepoint (or the run) fully listed
+once those files exist, and the worker cannot tell "no save was dispatched" from "the GUI has not got to
+it yet". So the worker side records that a reply is *expected* for ``t``; the writer's side answers with
+either the save's future or "nothing to write"; and the worker waits on both the answer and the future.
+Nothing is expected unless a writer announced itself, so headless runs never wait.
+"""
+
+import concurrent.futures
+import threading
+import time
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Set, Tuple
+
+import squid.logging
+
+_log = squid.logging.get_logger(__name__)
+
+_POLL_S = 0.05
+
+
+@dataclass(frozen=True)
+class FinishedOutputs:
+    outputs: Tuple[Tuple[int, str], ...]  # (time_point, directory written), handed out once
+    complete: bool  # every expected reply arrived and every writer in scope finished without error
+
+
+class TimepointReply:
+    """The writer's answer for one timepoint, bound to the run (registry) that asked.
+
+    Runs replace their registry, and an answer can arrive after the next run has started, so the
+    answer must never be routed through "whatever the controller's registry is now". Whoever is asked
+    to write outputs for a timepoint is handed this object and answers on it.
+    """
+
+    def __init__(self, registry: "PendingOutputs", time_point: int) -> None:
+        self._registry = registry
+        self.time_point = int(time_point)
+
+    def register(self, future: concurrent.futures.Future, output_dir: str) -> None:
+        """An asynchronous save writing into ``output_dir`` was started."""
+        self._registry.register(self.time_point, future, output_dir)
+
+    def nothing_to_write(self) -> None:
+        self._registry.nothing_to_write(self.time_point)
+
+
+class PendingOutputs:
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._awaiting_reply: Set[int] = set()
+        self._writers: Dict[int, List[Tuple[concurrent.futures.Future, str]]] = {}
+        self._on_settled: Optional[Callable[[FinishedOutputs], None]] = None
+
+    def expect(self, time_point: int) -> "TimepointReply":
+        """An answer will arrive for ``time_point``; returns the reply object that delivers it here."""
+        with self._cond:
+            self._awaiting_reply.add(int(time_point))
+        return TimepointReply(self, time_point)
+
+    def register(self, time_point: int, future: concurrent.futures.Future, output_dir: str) -> None:
+        with self._cond:
+            self._writers.setdefault(int(time_point), []).append((future, str(output_dir)))
+            self._awaiting_reply.discard(int(time_point))
+            self._cond.notify_all()
+        future.add_done_callback(lambda _f: self._fire_if_settled())
+
+    def nothing_to_write(self, time_point: int) -> None:
+        with self._cond:
+            self._awaiting_reply.discard(int(time_point))
+            self._cond.notify_all()
+        self._fire_if_settled()
+
+    def when_settled(self, fn: Callable[[FinishedOutputs], None]) -> None:
+        """Call ``fn`` once, with whatever is left to hand out, as soon as no reply is awaited and every
+        registered writer has finished (immediately if that is already so). It runs on whichever thread
+        settles things. Used to write the manifest's end record late instead of while a save is in flight."""
+        with self._cond:
+            self._on_settled = fn
+        self._fire_if_settled()
+
+    def _fire_if_settled(self) -> None:
+        with self._cond:
+            fn = self._on_settled
+            if fn is None or self._awaiting_reply:
+                return
+            if any(not f.done() for writers in self._writers.values() for f, _ in writers):
+                return
+            self._on_settled = None
+            finished = self._collect_locked(lambda t: True, complete=True)
+        fn(finished)
+
+    def wait(
+        self, time_point: Optional[int], timeout_s: float, abort_fn: Optional[Callable[[], bool]] = None
+    ) -> FinishedOutputs:
+        """Wait (bounded, abort-aware) for the replies and writers of ``time_point`` (None = all of them).
+
+        Finished writers are returned and forgotten; unfinished ones and missing replies stay, so a later
+        wait (the one before the end record) still picks them up.
+        """
+        deadline = time.monotonic() + timeout_s
+        in_scope = (lambda t: True) if time_point is None else (lambda t: t == time_point)
+
+        def expired() -> bool:
+            return time.monotonic() >= deadline or (abort_fn is not None and abort_fn())
+
+        with self._cond:
+            while any(in_scope(t) for t in self._awaiting_reply) and not expired():
+                self._cond.wait(_POLL_S)
+            complete = not any(in_scope(t) for t in self._awaiting_reply)
+            candidates = [(t, f, d) for t, writers in self._writers.items() if in_scope(t) for f, d in writers]
+
+        while any(not f.done() for _, f, _ in candidates) and not expired():
+            concurrent.futures.wait([f for _, f, _ in candidates if not f.done()], timeout=_POLL_S)
+
+        with self._cond:
+            return self._collect_locked(in_scope, complete)
+
+    def _collect_locked(self, in_scope: Callable[[int], bool], complete: bool) -> FinishedOutputs:
+        """Hand out (and forget) the finished writers in scope; unfinished ones stay registered."""
+        outputs: List[Tuple[int, str]] = []
+        for t in [t for t in self._writers if in_scope(t)]:
+            remaining = []
+            for future, output_dir in self._writers[t]:
+                if not future.done():
+                    complete = False
+                    remaining.append((future, output_dir))
+                elif future.exception() is not None:
+                    _log.warning(f"Output writer for {output_dir} failed: {future.exception()}")
+                    complete = False
+                else:
+                    outputs.append((t, output_dir))
+            if remaining:
+                self._writers[t] = remaining
+            else:
+                del self._writers[t]
+        return FinishedOutputs(tuple(sorted(outputs)), complete)

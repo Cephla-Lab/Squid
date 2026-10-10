@@ -155,3 +155,56 @@ class TestFullViewMagnificationPersistence:
         )
         # Integer factor 3 -> 2.22 um, NOT the exact target 2.0 um.
         assert widget.viewer_pixel_size_mm == pytest.approx(0.00222, abs=1e-5)
+
+
+def test_save_for_timepoint_returns_the_save_future_and_its_directory(mosaic_widget, tmp_path, monkeypatch):
+    import control._def
+
+    mosaic_widget, _ = mosaic_widget
+    monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_OVERVIEW", True)
+    mosaic_widget.layers_initialized = True
+    mosaic_widget._acquisition_save_dir = str(tmp_path)
+    monkeypatch.setattr(mosaic_widget, "_snapshot_for_save", lambda: {"fake": True})
+    written = []
+
+    def fake_write(target_dir, snapshot):
+        import os
+
+        os.makedirs(target_dir, exist_ok=True)
+        with open(os.path.join(target_dir, "mosaic.yaml"), "w") as f:
+            f.write("ok\n")
+        written.append(target_dir)
+
+    monkeypatch.setattr(mosaic_widget, "_write_save_snapshot", fake_write)
+
+    pending = mosaic_widget.save_for_timepoint(3)
+
+    assert pending is not None
+    future, target_dir = pending
+    assert target_dir.endswith(f"{3:0{control._def.FILE_ID_PADDING}}/mosaic_view")
+    future.result(timeout=5)
+    assert written == [target_dir]
+
+    monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_OVERVIEW", False)
+    monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_WELL_IMAGES", False)
+    assert mosaic_widget.save_for_timepoint(4) is None
+
+
+def test_a_failed_mosaic_write_fails_its_future(mosaic_widget, tmp_path, monkeypatch):
+    import control._def
+    import control.widgets_mosaic as wm
+
+    widget, _ = mosaic_widget
+    monkeypatch.setattr(control._def, "SAVE_DOWNSAMPLED_OVERVIEW", True)
+    widget.updateTile(_tile_update(np.full((100, 100), 200, dtype=np.uint8), 10.0, 10.0))
+    widget._acquisition_save_dir = str(tmp_path)
+
+    def disk_full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(wm.tifffile, "imwrite", disk_full)
+    pending = widget.save_for_timepoint(0)
+    assert pending is not None
+    future, _target = pending
+    with pytest.raises(OSError):
+        future.result(timeout=10)
