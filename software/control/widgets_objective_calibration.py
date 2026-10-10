@@ -789,7 +789,7 @@ class ObjectiveCalibrationDialog(QDialog):
         )
         try:
             report = write_report(self._report_folder, result, self.phase.results, header)
-        except OSError as e:
+        except Exception as e:  # noqa: BLE001 - an image or plot error too: the dialog must stay usable
             log.error("Writing the repeatability report failed", exc_info=True)
             self._say(f"Report not written: {e}")
             return

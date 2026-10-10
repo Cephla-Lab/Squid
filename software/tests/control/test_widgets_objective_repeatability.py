@@ -107,9 +107,10 @@ def _wait(qtbot, dialog):
 
 def _report_folder(dialog) -> Path:
     """The group's default: {DEFAULT_SAVING_PATH}/objective_calibration/<ini-name>_<timestamp> (spec C §8.2)."""
-    folder = dialog.edit_report_folder.text()
-    assert re.fullmatch(r".*/saving/objective_calibration/configuration_test_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d", folder)
-    return Path(folder)
+    folder = Path(dialog.edit_report_folder.text())
+    pattern = r".*/saving/objective_calibration/configuration_test_\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d"
+    assert re.fullmatch(pattern, folder.as_posix())  # as_posix: the same check on Windows paths
+    return folder
 
 
 def _read_csv(path):
@@ -241,3 +242,19 @@ def test_the_run_refuses_a_non_empty_folder_and_fewer_than_two_objectives(tmp_pa
     dialog.edit_report_folder.setText(str(busy))
     dialog.button_repeat_start.click()
     assert "is not empty" in dialog.label_result.text() and not dialog._running()
+
+
+def test_a_report_that_cannot_be_written_leaves_the_dialog_usable(qtbot, monkeypatch, make_dialog):
+    """Not only OSError: an image or plot error while writing must not leave Start and Apply disabled."""
+    import control.widgets_objective_calibration as woc
+
+    def broken(*args, **kwargs):
+        raise ValueError("plot failed")
+
+    monkeypatch.setattr(woc, "write_report", broken)
+    dialog, hw = make_dialog(cycles=2)
+    dialog.button_repeat_start.click()
+    _wait(qtbot, dialog)
+    _assert_restored(hw)
+    assert "Report not written: plot failed" in dialog.label_result.text()
+    assert dialog.button_repeat_start.isEnabled() and dialog.button_apply.isEnabled()
