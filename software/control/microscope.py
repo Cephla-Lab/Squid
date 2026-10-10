@@ -598,7 +598,7 @@ class Microscope:
             # across close()/re-init (the motor is de-energized but the drive stays
             # powered), so a re-home would just be wasted motion.
             if control._def.USE_XERYON or not skip_init:
-                self.addons.objective_changer.home()
+                self.addons.objective_changer.home()  # a turret homes with Z retracted and leaves it there
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
             try:

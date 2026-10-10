@@ -2057,14 +2057,18 @@ class HighContentScreeningGui(QMainWindow):
             return
         self.log.info("Resetting objective turret")
         try:
-            self.objective_changer.clear_alarm()
-            self.objective_changer.enable()
-            # Re-home so the position tracker matches the physical slot: avoids short-circuiting the
-            # rotate in move_to_objective if the tracker is stale from a fault mid-rotation.
-            self.objective_changer.home()
-            current = self.objectiveStore.current_objective
-            if current:
-                self.objective_changer.move_to_objective(current)
+            current = self.objectiveStore.current_objective or None
+            if hasattr(self.objective_changer, "reset"):
+                # Turret: clear, enable, re-home with Z retracted (so the position tracker matches the
+                # physical slot without short-circuiting the rotate), rotate back, and restore Z only
+                # then - under the selected objective, not at the sensor reference. One Z round trip.
+                self.objective_changer.reset(current)
+            else:
+                self.objective_changer.clear_alarm()
+                self.objective_changer.enable()
+                self.objective_changer.home()
+                if current:
+                    self.objective_changer.move_to_objective(current)
         except Exception as exc:
             self.log.exception("Reset of objective turret failed")
             QMessageBox.warning(
