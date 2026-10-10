@@ -9,7 +9,7 @@ def test_the_engine_imports_no_app_or_qt_module():
     """The engine is Qt-free and independent of control.*: it runs in the GUI worker, under --simulation, and later headless."""
     code = (
         "import sys\n"
-        "import squid.objective_calibration.engine, squid.objective_calibration.synthetic\n"
+        "import squid.objective_calibration.engine, squid.objective_calibration.synthetic, squid.objective_calibration.report\n"
         "bad = sorted(m for m in sys.modules if m.split('.')[0] in ('control', 'qtpy', 'PyQt5', 'PySide6', 'napari'))\n"
         "print(bad)\n"
         "sys.exit(1 if bad else 0)\n"

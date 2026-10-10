@@ -8,10 +8,17 @@ only the measured objectives' pixel_size blocks, and, when offsets were measured
 offset_calibration section and every objective's offset block, in
 machine_configs/objective_calibration.yaml. This version records the calibrations; nothing applies
 them yet (B2 and C2).
+
+With `[GENERAL] show_factory_tools = True` in the machine ini (spec C §8, PR D) the dialog also has a
+Repeatability (factory) group: N full cycles at one site, every cycle centred on the same prediction,
+written up by squid.objective_calibration.report into an output folder. Nothing is saved
+automatically; "Apply and save mean" is C1's save path with the mean of the successful cycles.
 """
 
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -26,6 +33,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
@@ -69,8 +77,28 @@ from squid.objective_calibration.offsets import (
 )
 from squid.objective_calibration.pixel_size import decompose
 from squid.objective_calibration.registration import SEARCH_MARGIN
+from squid.objective_calibration.report import ReportHeader, run_status, write_report
 
 log = squid.logging.get_logger(__name__)
+
+REPEAT_CYCLES_DEFAULT = 10  # spec C §8.2: N defaults to 10
+# The spin box's upper bound only; no measurement behind it. Spec C §10 target 3 runs N = 20.
+REPEAT_CYCLES_MAX = 100
+APPLY_TEXT = "Apply and save"
+APPLY_MEAN_TEXT = "Apply and save mean"  # spec C §8.2: the same save, named for what it writes after N cycles
+
+
+@dataclass(frozen=True)
+class FactoryTools:
+    """What the Repeatability (factory) group needs from the application (spec C §8.1-8.3). The dialog
+    gets one only when [GENERAL] show_factory_tools is set in the machine ini; without it the group
+    does not exist."""
+
+    ini_name: str
+    saving_path: str  # DEFAULT_SAVING_PATH: the report folder defaults under it
+    squid_commit: str
+    get_exposure_ms: Callable[[str, str], Optional[float]]  # (objective, channel) -> the channel's exposure
+
 
 RUNNING_MESSAGE = (
     "A calibration is running. Cancel it and wait for the stage and objective to be put back before closing."
@@ -234,11 +262,16 @@ class ObjectiveCalibrationDialog(QDialog):
         default_channel: Optional[str] = None,
         busy_reason: Optional[Callable[[], Optional[str]]] = None,
         after_run: Optional[Callable[[], None]] = None,
+        factory: Optional[FactoryTools] = None,
         parent=None,
     ):
         super().__init__(parent)
         self.setWindowTitle("Objective Calibration")
         self.hardware = hardware
+        self.factory = factory
+        self.factory_group: Optional[QGroupBox] = None  # built only with factory (spec C §8.1)
+        self._report_folder: Optional[Path] = None  # set for a repeatability run, until its report is written
+        self._factory_run = False  # the last run was a repeatability run: Apply writes the mean of N cycles
         self.specs = {spec.name: spec for spec in specs}
         self.config_repo = config_repo
         self.tube_lens_mm = tube_lens_mm
@@ -300,6 +333,8 @@ class ObjectiveCalibrationDialog(QDialog):
         for box in (self.checkbox_pixel_size, self.checkbox_offsets):
             measure.addWidget(box)
         form.addRow("Measure", measure)
+        if self.factory is not None:
+            self._build_factory_group()
 
         guidance = QLabel(GUIDANCE)
         guidance.setWordWrap(True)
@@ -350,7 +385,7 @@ class ObjectiveCalibrationDialog(QDialog):
         buttons = QHBoxLayout()
         self.button_calibrate = QPushButton("Calibrate")
         self.button_cancel = QPushButton("Cancel")
-        self.button_apply = QPushButton("Apply and save")
+        self.button_apply = QPushButton(APPLY_TEXT)
         self.button_clear = QPushButton("Clear pixel size")
         self.button_clear_offsets = QPushButton("Clear offsets")
         self.button_close = QPushButton("Close")
@@ -374,6 +409,7 @@ class ObjectiveCalibrationDialog(QDialog):
         layout = QVBoxLayout(self)
         for widget in (
             inputs,
+            self.factory_group,
             guidance,
             saved_box,
             self.frame_view,
@@ -388,8 +424,42 @@ class ObjectiveCalibrationDialog(QDialog):
             self.label_result,
             self.log_view,
         ):
-            layout.addWidget(widget)
+            if widget is not None:
+                layout.addWidget(widget)
         layout.addLayout(buttons)
+
+    def _build_factory_group(self):
+        """Spec C §8.2: N, the output folder, Start and Cancel. The objectives, channel and search range
+        are the Calibrate group's; the run always measures the pixel size and the offsets."""
+        self.factory_group = QGroupBox("Repeatability (factory)")
+        form = QFormLayout(self.factory_group)
+        self.spin_repeat_cycles = QSpinBox()
+        self.spin_repeat_cycles.setRange(1, REPEAT_CYCLES_MAX)
+        self.spin_repeat_cycles.setValue(REPEAT_CYCLES_DEFAULT)
+        form.addRow("Cycles (N)", self.spin_repeat_cycles)
+        self.edit_report_folder = QLineEdit(str(self._default_report_folder()))
+        form.addRow("Output folder", self.edit_report_folder)
+        row = QHBoxLayout()
+        self.button_repeat_start = QPushButton("Start")
+        self.button_repeat_cancel = QPushButton("Cancel")
+        for button in (self.button_repeat_start, self.button_repeat_cancel):
+            button.setAutoDefault(False)
+            row.addWidget(button)
+        form.addRow(row)
+        self.button_repeat_start.clicked.connect(self._start_repeatability)
+        self.button_repeat_cancel.clicked.connect(self._cancel)
+        note = QLabel(
+            "N full cycles at this site, every cycle centred on the same prediction (the saved calibration, or "
+            "cycle 1's result). Nothing is saved automatically: the report goes to the output folder, and "
+            f"'{APPLY_MEAN_TEXT}' saves the mean of the successful cycles."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
+
+    def _default_report_folder(self) -> Path:
+        """{DEFAULT_SAVING_PATH}/objective_calibration/<ini-name>_<timestamp>/ (spec C §8.2)."""
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        return Path(self.factory.saving_path) / "objective_calibration" / f"{self.factory.ini_name}_{stamp}"
 
     # ---------------------------------------------------------------- state
     def _running(self) -> bool:
@@ -408,6 +478,9 @@ class ObjectiveCalibrationDialog(QDialog):
         self.button_clear.setEnabled(not running and not self.file_error)
         self.button_clear_offsets.setEnabled(not running and not self.file_error)
         self.button_close.setEnabled(not running)
+        if self.factory_group is not None:
+            self.button_repeat_start.setEnabled(not running)
+            self.button_repeat_cancel.setEnabled(running)
 
     def _can_apply(self) -> bool:
         return (
@@ -520,26 +593,26 @@ class ObjectiveCalibrationDialog(QDialog):
         )
 
     # ---------------------------------------------------------------- run
-    def _start(self):
+    def _selected_specs(self) -> Optional[List[ObjectiveSpec]]:
+        """The ticked objectives, or None (with the reason said) when a run must not start now."""
         if self._running():
-            return
+            return None
         reason = self.busy_reason() if self.busy_reason is not None else None
         if reason:
             self._say(f"Not started. {reason}")
-            return
+            return None
         selected = [self.specs[name] for name, box in self.checkboxes.items() if box.isChecked()]
         if not selected:
             self._say("Not started. Select at least one objective.")
-            return
-        measure_pixel_size, measure_offsets = self.checkbox_pixel_size.isChecked(), self.checkbox_offsets.isChecked()
-        if not (measure_pixel_size or measure_offsets):
-            self._say("Not started. Select a measurement.")
-            return
+            return None
+        return selected
+
+    def _run_config(self, selected: List[ObjectiveSpec], *, cycles: int, measure_pixel_size: bool) -> RunConfig:
         config = RunConfig(
             selected,
             self.combo_channel.currentText(),
             search_range_um=self.spin_range.value(),
-            cycles=self.spin_cycles.value(),
+            cycles=cycles,
             measure_pixel_size=measure_pixel_size,
         )
         mountings = self._current_mountings()
@@ -547,6 +620,17 @@ class ObjectiveCalibrationDialog(QDialog):
             # Every run, not only one with Offsets checked: the ±20 um default range after an offsets save
             # relies on the prediction (spec C §6.2 step 2.2; the final review of C1).
             config.predicted_residual_um = parfocal_residuals_um(self.saved, mountings, self.pos2_offset_um)
+        return config
+
+    def _start(self):
+        selected = self._selected_specs()
+        if selected is None:
+            return
+        measure_pixel_size, measure_offsets = self.checkbox_pixel_size.isChecked(), self.checkbox_offsets.isChecked()
+        if not (measure_pixel_size or measure_offsets):
+            self._say("Not started. Select a measurement.")
+            return
+        config = self._run_config(selected, cycles=self.spin_cycles.value(), measure_pixel_size=measure_pixel_size)
         phase = None
         if measure_offsets:
             if len(selected) < 2:
@@ -562,16 +646,39 @@ class ObjectiveCalibrationDialog(QDialog):
                     )
                     return
             phase = OffsetsPhase(config, fine_metric=self.fine_metric)
+        self._launch(config, phase, report_folder=None)
+
+    def _start_repeatability(self):
+        """Spec C §8.2: N full cycles (pixel size and offsets) at this site, every cycle centred on the
+        same prediction: the saved calibration, else cycle 1's result (RunConfig.predict_from_first_cycle)."""
+        selected = self._selected_specs()
+        if selected is None:
+            return
+        if len(selected) < 2:
+            self._say("Not started. The repeatability run needs at least two objectives.")
+            return
+        folder = Path(self.edit_report_folder.text().strip() or self._default_report_folder())
+        if folder.exists() and any(folder.iterdir()):
+            self._say(f"Not started. The output folder {folder} is not empty; choose another.")
+            return
+        config = self._run_config(selected, cycles=self.spin_repeat_cycles.value(), measure_pixel_size=True)
+        config.predict_from_first_cycle = True
+        self._launch(config, OffsetsPhase(config, fine_metric=self.fine_metric), report_folder=folder)
+
+    def _launch(self, config: RunConfig, phase: Optional[OffsetsPhase], *, report_folder: Optional[Path]):
         hardware = _PromptedSwitch(self.hardware, self._ask_switch) if self.manual_switch else self.hardware
         self.result = None
         self.phase = phase
         self.offsets = {}
+        self._report_folder = report_folder
+        self._factory_run = report_folder is not None
+        self.button_apply.setText(APPLY_MEAN_TEXT if self._factory_run else APPLY_TEXT)
         self.table.setRowCount(0)
         self.table_offsets.setRowCount(0)
         self.label_ranges.setText("")
         self.label_orientation.setText("")
         self.log_view.clear()
-        self._say("Calibrating...")
+        self._say("Calibrating..." if report_folder is None else f"Running {config.cycles} cycles...")
         forwarding = _FrameForwarding(
             hardware, lambda objective, image: self.worker.signal_frame.emit(objective, image)
         )
@@ -662,7 +769,38 @@ class ObjectiveCalibrationDialog(QDialog):
                     self._say(f"Calibration finished: {'; '.join(parts)}. Nothing has been saved yet.")
                 else:
                     self._say("Calibration finished with nothing measured. " + "; ".join(failed))
+            if self._report_folder is not None:
+                self._write_report(result)
+        self._report_folder = None
         self._set_running(False)
+
+    def _write_report(self, result: RunResult):
+        """Spec C §8.2-8.3: the report is written however the run ended (completed, cancelled after k
+        cycles, a failed restore), for the cycles it has."""
+        config = self.phase.cfg
+        site = result.cycles[0].start_xy_um if result.cycles else self.hardware.get_xy_um()
+        header = ReportHeader(
+            ini_name=self.factory.ini_name,
+            squid_commit=self.factory.squid_commit,
+            channel=config.channel,
+            exposures_ms={spec.name: self._exposure_ms(spec.name, config.channel) for spec in config.objectives},
+            cycles_requested=config.cycles,
+            site_xy_um=(float(site[0]), float(site[1])),
+        )
+        try:
+            report = write_report(self._report_folder, result, self.phase.results, header)
+        except Exception as e:  # noqa: BLE001 - an image or plot error too: the dialog must stay usable
+            log.error("Writing the repeatability report failed", exc_info=True)
+            self._say(f"Report not written: {e}")
+            return
+        self._say(f"Repeatability run {run_status(result)}; report written to {report}.")
+
+    def _exposure_ms(self, objective: str, channel: str) -> Optional[float]:
+        try:
+            return self.factory.get_exposure_ms(objective, channel)
+        except Exception:  # noqa: BLE001 - a header field; the report is still written
+            log.warning(f"No exposure for {objective} / {channel} in the report header", exc_info=True)
+            return None
 
     def _orientation_matches(self) -> bool:
         """Whether XY may be saved (spec C §5): every matrix the run registered with (this run's, or

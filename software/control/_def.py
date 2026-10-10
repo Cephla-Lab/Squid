@@ -1290,6 +1290,12 @@ XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 # at switch time (C2) a larger step is refused. Real parfocal residuals are tens of um.
 MAX_OBJECTIVE_Z_STEP_MM = 0.5
 
+# Factory tools (objective offset calibration, spec C §8.1): `[GENERAL] show_factory_tools = True` in the
+# machine ini shows the Repeatability (factory) group of Utils > Objective Calibration. Read from the
+# ini by the [GENERAL] loop below like every constant here, including Preferences' show_dev_tab; unlike
+# that one it has no Preferences checkbox, so enabling it means editing the ini.
+SHOW_FACTORY_TOOLS = False
+
 
 def xeryon_objective_position(objective_name):
     """Position index (1 or 2) of an objective on the Xeryon 2-position switcher,
