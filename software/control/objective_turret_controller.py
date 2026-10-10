@@ -131,7 +131,10 @@ HOMING_METHOD_SEARCH_POSITIVE = 19
 # search overshoots the ~50-pulse window by v^2/2a = 2400^2 / (2 x 16000) ~= 180 pulses and the
 # creep re-enters it on the way back. They equal the move set's values on purpose (150 Step/s is
 # the speed slot moves run at without losing steps) but are deliberately not aliased to them:
-# a move-speed change must not silently change the bench-verified homing profile.
+# a move-speed change must not silently change the bench-verified homing profile. The drive
+# caps the search at REG_MAX_SPEED: with 250 written here and max speed 150, homing time and
+# edge counter were identical to 150 (bench 2026-10-10), so a faster search needs the move max
+# speed raised with it, which is a step-loss question for the slot moves first.
 HOMING_SEARCH_SPEED = 150  # Step/s
 HOMING_ZERO_SPEED = 20  # Step/s; the creep that finds the edge (320 pulses/s at microstep 16)
 HOMING_ACCEL = 1000  # Step/s^2
