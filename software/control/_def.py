@@ -1132,6 +1132,8 @@ SQUID_FILTERWHEEL_CONFIGS = {
 # Stage
 USE_PRIOR_STAGE = False
 PRIOR_STAGE_SN = ""
+USE_ASI_STAGE = False
+ASI_STAGE_SN = ""
 
 # PI V-308 / C-414 focus drive used as the main Z (wraps the configured XY stage)
 USE_PI_FOCUS_STAGE = False
