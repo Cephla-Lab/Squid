@@ -99,15 +99,14 @@ def test_template_region_counts_drops(scan):
     assert len(scan.region_fov_coordinates["tmpl"]) == 2
 
 
-def test_manual_region_warns_on_drops(scan, caplog):
+def test_manual_region_records_and_warns_on_drops(scan, caplog):
     # a polygon straddling the x=0 travel edge
     polygon = [(-2.0, 4.0), (2.0, 4.0), (2.0, 6.0), (-2.0, 6.0)]
     with caplog.at_level(logging.WARNING):
-        points = scan.get_points_for_manual_region(polygon, overlap_percent=10)
-    assert points  # the in-travel part survives
-    assert any(
-        "Manual region" in r.getMessage() and "outside the stage travel" in r.getMessage() for r in caplog.records
-    )
+        scan.set_manual_coordinates([polygon], overlap_percent=10)
+    assert scan.region_fov_coordinates["manual"]  # the in-travel part survives
+    assert scan.out_of_travel["manual"] > 0
+    assert "Region 'manual'" in caplog.text and "outside the stage travel" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -150,20 +149,13 @@ def test_drop_counts_follow_renames_and_replacements(scan):
     assert "fovs" not in scan.out_of_travel
 
 
-def test_manual_region_counts_only_fovs_the_polygon_selects(scan, caplog):
+def test_manual_region_counts_only_fovs_the_polygon_selects(scan):
     """A triangle crossing the x=0 edge: bounding-box points outside the
     polygon are not planned FOVs and must not count as dropped ones."""
 
     def dropped_for(polygon):
-        caplog.clear()
-        with caplog.at_level(logging.WARNING):
-            scan.get_points_for_manual_region(polygon, overlap_percent=0)
-        counts = [
-            int(r.getMessage().split("Manual region: ")[1].split()[0])
-            for r in caplog.records
-            if "Manual region" in r.getMessage()
-        ]
-        return counts[0] if counts else 0
+        scan.set_manual_coordinates([polygon], overlap_percent=0)
+        return scan.out_of_travel.get("manual", 0)
 
     triangle = [(-3.0, 2.0), (3.0, 2.0), (3.0, 8.0)]  # out of travel: only its thin left tip
     bounding_box = [(-3.0, 2.0), (3.0, 2.0), (3.0, 8.0), (-3.0, 8.0)]  # out of travel: the whole x<0 strip

@@ -141,11 +141,8 @@ def staleness_warning(stamp: ScanCoordinatesStamp, current_format: str) -> Optio
 
 
 def write_scan_coordinates_csv(path: str, df: pd.DataFrame, stamp: Optional[ScanCoordinatesStamp]) -> None:
-    """`stamp` is make_stamp(format) for rows computed under today's placement,
-    the LOADED file's stamp when its rows are copied unchanged (re-labelling
-    them with today's placement would silence a staleness warning the file
-    just raised), and None for rows of unknown provenance (a legacy file
-    copied unchanged) - which stay unstamped."""
+    """`stamp` is written as the provenance line; None writes a legacy-shaped,
+    unstamped file (rows of unknown provenance stay unknown)."""
     with open(path, "w", newline="") as f:
         if stamp is not None:
             f.write(STAMP_PREFIX + stamp.model_dump_json() + "\n")

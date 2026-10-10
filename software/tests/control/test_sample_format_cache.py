@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 import control._def as _def
+from tests.control.conftest import write_legacy_cache
 
 
 SHIPPED_DIR = "objective_and_sample_formats"
@@ -87,11 +88,7 @@ def test_valid_cache_calibration_survives_migration(formats_tree, monkeypatch):
 
     shipped = _shipped_96_a1_x(formats_tree)
     calibrated = shipped + 1.234
-    # A legitimate cache is the WHOLE table (all the legacy writer ever produced);
-    # a shorter one is treated as truncated.
-    table = _def.read_sample_formats_csv(os.path.join(SHIPPED_DIR, CSV_NAME))
-    table["96 well plate"]["a1_x_mm"] = calibrated
-    _def.write_sample_formats_csv(str(formats_tree / CACHE_DIR / CSV_NAME), table)
+    write_legacy_cache(formats_tree, lambda f: f["96 well plate"].update(a1_x_mm=calibrated))
 
     _, sample_formats = _def.load_formats()
     monkeypatch.setattr(_def, "WELLPLATE_FORMAT_SETTINGS", sample_formats)

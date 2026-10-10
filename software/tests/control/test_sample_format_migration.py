@@ -30,15 +30,7 @@ def migration_tree(catalog_tree):
     return catalog_tree
 
 
-def write_legacy_cache(tree, edit):
-    """Build a legacy cache: the shipped table with `edit` applied."""
-    formats = _def.read_sample_formats_csv(os.path.join(SHIPPED_DIR, CSV))
-    edit(formats)
-    # Legacy caches carry only the 10 CSV columns.
-    ten = {
-        k: {f: v[f] for f in _def.SAMPLE_FORMAT_CSV_FIELDNAMES if f != "format" and f in v} for k, v in formats.items()
-    }
-    _def.write_sample_formats_csv(os.path.join("cache", CSV), ten)
+from tests.control.conftest import write_legacy_cache  # noqa: E402  (shared with the cache tests)
 
 
 def test_a1_recalibration_becomes_a_measured_definition(migration_tree):
@@ -228,14 +220,21 @@ def test_migration_refuses_to_write_over_a_damaged_user_file(migration_tree, cap
     )
 
 
-def test_truncated_cache_is_damage_not_a_shorter_table(migration_tree, caplog):
-    """A write interrupted after some complete rows parses as a plausible table;
-    the missing shipped formats must not silently vanish from the catalog."""
-    write_legacy_cache(migration_tree, lambda formats: formats.pop("384 well plate"))
+def test_cache_missing_a_shipped_format_keeps_the_calibrations_it_has(migration_tree, caplog):
+    """A missing row - truncation, or a cache older than a shipped format - is
+    the shipped example, like any never-calibrated format; the rows that
+    survived migrate instead of all being discarded over the one that did not."""
 
-    with caplog.at_level(logging.ERROR):
+    def truncate_after_a_calibration(formats):
+        formats["96 well plate"]["a1_x_mm"] = 11.41
+        formats.pop("384 well plate")
+
+    write_legacy_cache(migration_tree, truncate_after_a_calibration)
+    with caplog.at_level(logging.WARNING):
         _, sample_formats = _def.load_formats()
 
-    assert "384 well plate" in sample_formats  # the shipped geometry, not an absent format
-    assert os.path.exists(os.path.join("cache", CSV))  # not renamed .migrated
-    assert any("lack ['384 well plate']" in r.getMessage() for r in caplog.records)
+    assert "lacks ['384 well plate']" in caplog.text
+    assert sample_formats["384 well plate"]["a1_x_mm"] == 12.05  # the shipped example
+    assert sample_formats["96 well plate"]["a1_x_mm"] == 11.41  # the calibration survived...
+    assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 11.41  # ...into the user store
+    assert not os.path.exists(os.path.join("cache", CSV)) and os.path.exists(os.path.join("cache", CSV + ".migrated"))

@@ -5,6 +5,7 @@ import re
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
+from matplotlib.path import Path
 
 import control._def
 import control.utils
@@ -174,21 +175,13 @@ class ScanCoordinates:
         self.clear_regions()
         if manual_shapes is not None:
             # Handle manual ROIs
-            scan_coordinates = None
             for i, shape_coords in enumerate(manual_shapes):
-                scan_coordinates = self.get_points_for_manual_region(shape_coords, overlap_percent)
+                scan_coordinates, dropped = self.get_points_for_manual_region(shape_coords, overlap_percent)
                 if scan_coordinates:
-                    if len(manual_shapes) <= 1:
-                        region_name = f"manual"
-                    else:
-                        region_name = f"manual{i}"
+                    region_name = "manual" if len(manual_shapes) <= 1 else f"manual{i}"
                     center = np.mean(shape_coords, axis=0)
-                    self.region_centers[region_name] = [center[0], center[1]]
-                    self.region_shapes[region_name] = "Manual"
-                    self.region_fov_coordinates[region_name] = scan_coordinates
-                    self._log.info(f"Added Manual Region: {region_name}")
-                    self._update_callback(
-                        AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates))
+                    self._store_region(
+                        region_name, [center[0], center[1]], "Manual", scan_coordinates, len(scan_coordinates) + dropped
                     )
         else:
             self._log.info("No Manual ROI found")
@@ -284,42 +277,43 @@ class ScanCoordinates:
             else:
                 dropped_out_of_travel += 1
 
-        self._register_travel_drops(well_id, dropped_out_of_travel, len(scan_coordinates))
-        self.region_shapes[well_id] = shape
-        self.region_centers[well_id] = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
-        self.region_fov_coordinates[well_id] = scan_coordinates
-        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
-        self._log.info(f"Added Region: {well_id}")
+        center = [float(center_x), float(center_y), float(self.stage.get_pos().z_mm)]
+        self._store_region(well_id, center, shape, scan_coordinates, len(scan_coordinates) + dropped_out_of_travel)
+
+    def _region_maps(self):
+        """Every per-region map, so the lifecycle methods cannot drift on one.
+        A method, not a tuple captured at init: sort_coordinates rebinds two."""
+        return (self.region_centers, self.region_shapes, self.region_fov_coordinates, self.out_of_travel)
+
+    def _store_region(self, region_id, center, shape, coords, planned: int):
+        """The one place a planned region is written: travel drops (planned -
+        kept) on record, the three maps in step, the viewer told. A replaced
+        region's old bookkeeping is overwritten or cleared here, never left."""
+        self._register_travel_drops(region_id, planned - len(coords), len(coords))
+        self.region_centers[region_id] = center
+        self.region_shapes[region_id] = shape
+        self.region_fov_coordinates[region_id] = coords
+        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(coords)))
+        self._log.info(f"Added Region {region_id!r} ({shape}): {len(coords)} FOVs")
 
     def rename_region(self, old_id, new_id):
         """Move a region under a new ID - every per-region map, so no stale
         bookkeeping (a travel-drop count, say) is left under the old one."""
-        for mapping in (self.region_centers, self.region_shapes, self.region_fov_coordinates, self.out_of_travel):
+        for mapping in self._region_maps():
             if old_id in mapping:
                 mapping[new_id] = mapping.pop(old_id)
 
     def remove_region(self, well_id):
         if well_id in self.region_centers:
-            removed_fov_centers: List[FovCenter] = []
-            del self.region_centers[well_id]
-
-            if well_id in self.region_shapes:
-                del self.region_shapes[well_id]
-
-            if well_id in self.region_fov_coordinates:
-                region_scan_coordinates = self.region_fov_coordinates.pop(well_id)
-                for coord in region_scan_coordinates:
-                    removed_fov_centers.append(FovCenter(x_mm=coord[0], y_mm=coord[1]))
-
-            self.out_of_travel.pop(well_id, None)
+            removed = FovCenter.from_scan_coordinates(self.region_fov_coordinates.get(well_id, []))
+            for mapping in self._region_maps():
+                mapping.pop(well_id, None)
             self._log.info(f"Removed Region: {well_id}")
-            self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed_fov_centers))
+            self._update_callback(RemovedScanCoordinateRegion(fov_centers=removed))
 
     def clear_regions(self):
-        self.region_centers.clear()
-        self.region_shapes.clear()
-        self.region_fov_coordinates.clear()
-        self.out_of_travel.clear()
+        for mapping in self._region_maps():
+            mapping.clear()
         self._update_callback(ClearedScanCoordinates())
         self._log.info("Cleared All Regions")
 
@@ -346,26 +340,15 @@ class ScanCoordinates:
             scan_coordinates.extend(row)
 
         # Region coordinates are already centered since center_x, center_y is grid center.
-        # Stored even when every FOV was dropped, like the wells and template
-        # planners: a planned region always exists (possibly empty), so a
-        # recompute replaces its predecessor and the drops are on record.
-        # travel is the only filter above, so the drop count is derivable
-        self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
-        self._log.info(f"Added Flexible Region: {region_id}")
-        self.region_centers[region_id] = [center_x, center_y, center_z]
-        self.region_shapes[region_id] = "Square"
-        self.region_fov_coordinates[region_id] = scan_coordinates
-        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
+        # Stored even when every FOV was dropped: a planned region always exists
+        # (possibly empty), so a recompute replaces its predecessor.
+        self._store_region(region_id, [center_x, center_y, center_z], "Square", scan_coordinates, Nx * Ny)
 
     def add_single_fov_region(self, region_id, center_x, center_y, center_z):
         if not self.validate_coordinates(center_x, center_y):
             raise ValueError(f"FOV with center (x,y)={center_x},{center_y} is not valid, cannot add region.")
 
-        self._register_travel_drops(region_id, 0, 1)  # also clears a replaced region's count
-        self.region_centers[region_id] = [center_x, center_y, center_z]
-        self.region_shapes[region_id] = "Square"
-        self.region_fov_coordinates[region_id] = [(center_x, center_y)]
-        self._update_callback(AddScanCoordinateRegion(fov_centers=[FovCenter(x_mm=center_x, y_mm=center_y)]))
+        self._store_region(region_id, [center_x, center_y, center_z], "Square", [(center_x, center_y)], 1)
 
     def add_region_from_fovs(self, region_id, fovs, shape="Manual"):
         """Add a region from an explicit FOV list - the Load-Coordinates shape of region.
@@ -393,12 +376,7 @@ class ScanCoordinates:
         center = [sum(c[0] for c in coords) / len(coords), sum(c[1] for c in coords) / len(coords)]
         if has_z:
             center.append(sum(c[2] for c in coords) / len(coords))
-        self._register_travel_drops(region_id, 0, len(coords))  # also clears a replaced region's count
-        self.region_centers[region_id] = center
-        self.region_shapes[region_id] = shape
-        self.region_fov_coordinates[region_id] = coords
-        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(coords)))
-        self._log.info(f"Added Region from {len(coords)} FOVs: {region_id}")
+        self._store_region(region_id, center, shape, coords, len(coords))
 
     def add_flexible_region_with_step_size(self, region_id, center_x, center_y, center_z, Nx, Ny, dx, dy):
         """Convert grid parameters NX, NY to FOV coordinates based on dx, dy"""
@@ -418,20 +396,14 @@ class ScanCoordinates:
                     row.append((x, y))
             scan_coordinates.extend(row)
 
-        # Stored even when every FOV was dropped - see add_flexible_region.
-        # travel is the only filter above, so the drop count is derivable
-        self._register_travel_drops(region_id, Nx * Ny - len(scan_coordinates), len(scan_coordinates))
-        self._log.info(f"Added Flexible Region: {region_id}")
-        self.region_centers[region_id] = [center_x, center_y, center_z]
-        self.region_shapes[region_id] = "Square"
-        self.region_fov_coordinates[region_id] = scan_coordinates
-        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
+        self._store_region(region_id, [center_x, center_y, center_z], "Square", scan_coordinates, Nx * Ny)
 
     def get_points_for_manual_region(self, shape_coords, overlap_percent):
-        """Add region from manually drawn polygon shape"""
+        """FOV centres for a manually drawn polygon, and how many of the FOVs it
+        selected fell outside stage travel. Returns (points, dropped)."""
         if shape_coords is None or len(shape_coords) < 3:
             self._log.error("Invalid manual ROI data")
-            return []
+            return [], 0
 
         fov_size_mm = self.objectiveStore.get_pixel_size_factor() * self.camera.get_fov_size_mm()
         step_size_mm = fov_size_mm * (1 - overlap_percent / 100)
@@ -442,68 +414,34 @@ class ScanCoordinates:
             shape_coords = shape_coords.reshape(-1, 2)
         elif shape_coords.ndim > 2:
             self._log.error(f"Unexpected shape of manual_shape: {shape_coords.shape}")
-            return []
+            return [], 0
 
-        # Calculate bounding box
+        # A grid of candidate centres over the polygon's bounding box
         x_min, y_min = np.min(shape_coords, axis=0)
         x_max, y_max = np.max(shape_coords, axis=0)
-
-        # Create a grid of points within the bounding box
         x_range = np.arange(x_min, x_max + step_size_mm, step_size_mm)
         y_range = np.arange(y_min, y_max + step_size_mm, step_size_mm)
         xx, yy = np.meshgrid(x_range, y_range)
         grid_points = np.column_stack((xx.ravel(), yy.ravel()))
 
-        # # Use Delaunay triangulation for efficient point-in-polygon test
-        # # hull = Delaunay(shape_coords)
-        # # mask = hull.find_simplex(grid_points) >= 0
-        # # or
-        # # Use Ray Casting for point-in-polygon test
-        # mask = np.array([self._is_in_polygon(x, y, shape_coords) for x, y in grid_points])
+        # An FOV is planned when its centre or any corner is inside the polygon.
+        # Vectorised: a hand-drawn lasso hanging far outside travel used to cost
+        # five Python ray casts per bounding-box point. NOTE Path(verts) is
+        # implicitly closed; closed=True would drop the last vertex.
+        polygon = Path(shape_coords)
+        half = fov_size_mm / 2
+        selected = polygon.contains_points(grid_points, radius=1e-9)
+        for dx, dy in ((half, half), (-half, half), (-half, -half), (half, -half)):
+            selected |= polygon.contains_points(grid_points + (dx, dy), radius=1e-9)
+        planned = grid_points[selected]
 
-        # # Filter points inside the polygon
-        # valid_points = grid_points[mask]
-
-        def corners(x_mm, y_mm, fov):
-            center_to_corner = fov / 2
-            return (
-                (x_mm + center_to_corner, y_mm + center_to_corner),
-                (x_mm - center_to_corner, y_mm + center_to_corner),
-                (x_mm - center_to_corner, y_mm - center_to_corner),
-                (x_mm + center_to_corner, y_mm - center_to_corner),
-            )
-
-        valid_points = []
-        dropped_out_of_travel = 0
-        for x_center, y_center in grid_points:
-            # Membership first: a bounding-box point the polygon never selects
-            # is not a planned FOV, so it must not count as a dropped one.
-            if not self._is_in_polygon(x_center, y_center, shape_coords) and not any(
-                [
-                    self._is_in_polygon(x_corner, y_corner, shape_coords)
-                    for (x_corner, y_corner) in corners(x_center, y_center, fov_size_mm)
-                ]
-            ):
-                self._log.debug(
-                    f"Manual coords: ignoring {x_center=},{y_center=} because no corners or center are in poly. (corners={corners(x_center, y_center, fov_size_mm)}"
-                )
-                continue
-            if not self.validate_coordinates(x_center, y_center):
-                dropped_out_of_travel += 1
-                self._log.debug(
-                    f"Manual coords: ignoring {x_center=},{y_center=} because it is outside our movement range."
-                )
-                continue
-
-            valid_points.append((x_center, y_center))
-        if dropped_out_of_travel:
-            self._log.warning(
-                f"Manual region: {dropped_out_of_travel} planned FOVs fall outside the stage travel limits "
-                f"and were skipped."
-            )
-        if not valid_points:
-            return []
-        valid_points = np.array(valid_points)
+        # Membership first, travel second: a bounding-box point the polygon never
+        # selects is not a planned FOV, so it must not count as a dropped one.
+        in_travel = np.fromiter((control.utils.within_travel(x, y) for x, y in planned), dtype=bool, count=len(planned))
+        dropped = int(len(planned) - in_travel.sum())
+        valid_points = planned[in_travel]
+        if len(valid_points) == 0:
+            return [], dropped
 
         # Sort points
         sorted_indices = np.lexsort((valid_points[:, 0], valid_points[:, 1]))
@@ -516,7 +454,7 @@ class ScanCoordinates:
                 mask = sorted_points[:, 1] == unique_y[i]
                 sorted_points[mask] = sorted_points[mask][::-1]
 
-        return sorted_points.tolist()
+        return sorted_points.tolist(), dropped
 
     def add_template_region(
         self,
@@ -534,12 +472,7 @@ class ScanCoordinates:
             y = float(y_mm + template_y_mm[i])
             if self.validate_coordinates(x, y):
                 scan_coordinates.append((x, y))
-        # travel is the only filter above, so the drop count is derivable
-        self._register_travel_drops(region_id, len(template_x_mm) - len(scan_coordinates), len(scan_coordinates))
-        self.region_centers[region_id] = [x_mm, y_mm, z_mm]
-        self.region_shapes[region_id] = "Square"
-        self.region_fov_coordinates[region_id] = scan_coordinates
-        self._update_callback(AddScanCoordinateRegion(fov_centers=FovCenter.from_scan_coordinates(scan_coordinates)))
+        self._store_region(region_id, [x_mm, y_mm, z_mm], "Square", scan_coordinates, len(template_x_mm))
 
     def region_contains_coordinate(self, region_id: str, x: float, y: float) -> bool:
         # TODO: check for manual region
@@ -562,22 +495,6 @@ class ScanCoordinates:
                 return False
 
         return True
-
-    def _is_in_polygon(self, x, y, poly):
-        n = len(poly)
-        inside = False
-        p1x, p1y = poly[0]
-        for i in range(n + 1):
-            p2x, p2y = poly[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
-        return inside
 
     def _is_in_circle(self, x, y, center_x, center_y, radius_squared, fov_size_mm_half):
         corners = [

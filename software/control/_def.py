@@ -1240,11 +1240,23 @@ def _with_derived_geometry(format_key, settings):
     return settings
 
 
-def _missing_shipped_formats(cached, shipped):
-    """A legitimate whole-table cache carries every shipped format (custom rows
-    on top are fine). Missing ones mean damage - a write interrupted after some
-    complete rows parses as a shorter, plausible table."""
-    return [key for key in shipped if key not in cached]
+def _overlay_legacy_cache(cached, shipped, cached_formats_path):
+    """The legacy cache was a whole-table shadow of the shipped catalog, but a
+    row can be missing: a write interrupted after some complete rows parses as
+    a shorter, plausible table, and every cache was written by an OLDER build -
+    the catalog has grown since (the glass slide row, 2024), so a cache can
+    legitimately predate a shipped format. Either way a missing row is the
+    shipped example, exactly what a never-calibrated format is; the rows that
+    survived keep their calibrations instead of all being thrown away."""
+    missing = [key for key in shipped if key not in cached]
+    if not cached:
+        log.error(f"{cached_formats_path} parsed to zero formats (truncated); the shipped geometry is used.")
+    elif missing:
+        log.warning(
+            f"{cached_formats_path} lacks {missing} - truncated, or written before these formats shipped; "
+            f"the shipped geometry is used for them."
+        )
+    return {**shipped, **cached}
 
 
 def read_sample_formats_csv(file_path):
@@ -1315,8 +1327,9 @@ def write_sample_formats_csv(file_path, sample_formats):
         raise
 
 
-def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
-    """Convert a legacy cache/sample_formats.csv into user format definitions.
+def _migrate_legacy_format_cache(cached, shipped, cached_formats_path):
+    """Convert a legacy cache/sample_formats.csv (already parsed and overlaid on
+    the shipped table) into user format definitions.
 
     The legacy cache was a WHOLE-TABLE shadow: one calibration froze all seven
     formats forever. Each row that differs from the shipped example becomes a
@@ -1338,13 +1351,6 @@ def _migrate_legacy_format_cache(cached_formats_path, default_formats_path):
         save_user_sample_formats,
     )
 
-    cached = read_sample_formats_csv(cached_formats_path)
-    shipped = read_sample_formats_csv(default_formats_path)
-    missing = _missing_shipped_formats(cached, shipped)
-    if missing:
-        # Refuse to migrate damage, so the loader's loud damaged-cache ERROR
-        # path handles it instead.
-        raise ValueError(f"{cached_formats_path} lacks {missing}; treating as damaged, not migrating")
     mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
 
     user_formats = load_user_sample_formats_for_edit()  # raises on a damaged file: the cache keeps working
@@ -1404,26 +1410,14 @@ def load_formats():
     cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
     default_formats_path = os.path.join(default_path, "sample_formats.csv")
 
-    # One-time, idempotent migration of the legacy whole-table calibration
-    # cache into complete per-format definitions in the user YAML.
-    # Renames the cache to .migrated on success so it never runs twice; on any
-    # failure the cache is left in place and keeps working as before.
-    if os.path.exists(cached_formats_path):
-        try:
-            _migrate_legacy_format_cache(cached_formats_path, default_formats_path)
-        except Exception:
-            log.exception(
-                f"Migration of {cached_formats_path} failed; keeping the legacy cache as-is. "
-                f"Calibrations continue to load from it."
-            )
-
+    shipped = read_sample_formats_csv(default_formats_path)  # the base on every path
     sample_formats = None
     if os.path.exists(cached_formats_path):
+        # Never propagate: this runs at import time, so raising here means the
+        # application cannot start at all.
         try:
-            sample_formats = read_sample_formats_csv(cached_formats_path)
+            cached = _overlay_legacy_cache(read_sample_formats_csv(cached_formats_path), shipped, cached_formats_path)
         except Exception:
-            # Never propagate: this runs at import time, so raising here means the
-            # application cannot start at all.
             log.exception(
                 f"Cached sample formats at {cached_formats_path} are unreadable. Falling back to the shipped "
                 f"geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN THE CACHE IS NOT BEING "
@@ -1431,19 +1425,22 @@ def load_formats():
                 f"recalibrate to clear this."
             )
         else:
-            missing = _missing_shipped_formats(sample_formats, read_sample_formats_csv(default_formats_path))
-            if missing:
-                log.error(
-                    f"Cached sample formats at {cached_formats_path} parsed but lack {missing} (truncated?). Falling "
-                    f"back to the shipped geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN "
-                    f"THE CACHE IS NOT BEING APPLIED."
+            # One-time, idempotent migration of the legacy whole-table cache into
+            # complete per-format definitions in the user YAML. Renames the cache
+            # to .migrated on success so it never runs twice; on any failure the
+            # cache is left in place and keeps working as before.
+            try:
+                _migrate_legacy_format_cache(cached, shipped, cached_formats_path)
+            except Exception:
+                log.exception(
+                    f"Migration of {cached_formats_path} failed; keeping the legacy cache as-is. "
+                    f"Calibrations continue to load from it."
                 )
-                sample_formats = None
+                sample_formats = cached
+                log.info(f"Using cached sample formats from {cached_formats_path}")
 
     if sample_formats is None:
-        sample_formats = read_sample_formats_csv(default_formats_path)
-    else:
-        log.info(f"Using cached sample formats from {cached_formats_path}")
+        sample_formats = shipped
 
     # Layer the user's format edits and custom formats on top of the base
     # (shipped catalog, or the legacy whole-table cache until it is migrated).

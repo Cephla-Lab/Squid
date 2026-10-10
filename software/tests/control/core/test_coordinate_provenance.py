@@ -222,18 +222,14 @@ def test_garbage_stamp_is_ignored_and_the_data_still_loads(tree):
     assert parse_stamp("region,x (mm),y (mm)") is None
 
 
-def test_rows_copied_from_a_loaded_file_keep_its_stamp(tree):
-    """Re-saving a loaded (possibly stale) file must not re-label its rows with
-    today's placement - that would silence the warning it just raised."""
+def test_the_writer_writes_the_stamp_it_is_given(tree):
+    """Re-saving a loaded file keeps its label (Save passes the loaded stamp)."""
     save_plate_holder(holder(0.21))
-    write_scan_coordinates_csv("old.csv", df_fixture(), make_stamp("96 well plate"))
-    save_plate_holder(holder(0.34))  # the plate was re-measured since
-    df, loaded_stamp = read_scan_coordinates_csv("old.csv")
+    stale = make_stamp("96 well plate")
+    save_plate_holder(holder(0.34))  # a fresh stamp would now differ
 
-    write_scan_coordinates_csv("copy.csv", df, loaded_stamp)  # what Save does in Load Coordinates mode
-    _, stamp = read_scan_coordinates_csv("copy.csv")
-    assert stamp == loaded_stamp
-    assert staleness_warning(stamp, "96 well plate") is not None  # still warns
+    write_scan_coordinates_csv("copy.csv", df_fixture(), stale)
+    assert read_scan_coordinates_csv("copy.csv")[1] == stale
 
-    write_scan_coordinates_csv("legacy_copy.csv", df, None)  # rows of unknown provenance stay unstamped
+    write_scan_coordinates_csv("legacy_copy.csv", df_fixture(), None)  # unknown provenance stays unstamped
     assert read_scan_coordinates_csv("legacy_copy.csv")[1] is None

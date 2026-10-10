@@ -7223,12 +7223,8 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             self.dropdown_location_list.removeItem(index)
             self.table_location_list.removeRow(index)
 
-            # Remove scanCoordinates dictionaries and remove region overlay
-            self.scanCoordinates.region_centers.pop(region_id, None)
-            self.scanCoordinates.out_of_travel.pop(region_id, None)
-            self.navigationViewer.deregister_fovs_from_image(
-                self.scanCoordinates.region_fov_coordinates.pop(region_id, [])
-            )
+            # Every per-region map, and the overlay via the planner's callback
+            self.scanCoordinates.remove_region(region_id)
 
             """
             # Reindex remaining regions and update UI
@@ -9344,7 +9340,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         elif self.combobox_xy_mode.currentText() == "Current Position":
             pos = self.stage.get_pos()
             self.scanCoordinates.set_live_scan_coordinates(pos.x_mm, pos.y_mm, scan_size_mm, overlap_percent, shape)
-        elif self.combobox_xy_mode.currentText() == "Load Coordinates" and self.has_loaded_coordinates:
+        elif self._plan_is_loaded_file():
             # Loaded plans are owned by the load/restore/clear flow and have no scan
             # inputs to re-derive from. Falling through to the well-selector branch
             # below silently replaced a loaded plan with whatever wells were ticked
@@ -9698,6 +9694,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.text_loaded_coordinates.clear()
         self._set_has_loaded_coordinates(False)
 
+    def _plan_is_loaded_file(self):
+        """Are the current regions the loaded file's rows (as opposed to wells
+        or a grid computed now)? The restore cache outlives a mode switch, so
+        the mode must be asked too."""
+        return self.combobox_xy_mode.currentText() == "Load Coordinates" and self.has_loaded_coordinates
+
     def _set_has_loaded_coordinates(self, loaded: bool):
         self.has_loaded_coordinates = loaded
         self.btn_load_scan_coordinates.setText("Clear Coords" if loaded else "Load New Coords")
@@ -9771,6 +9773,12 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         folder_name = os.path.basename(folder_path)
         current_objective = self.objectiveStore.current_objective
         z_current_mm = self.stage.get_pos().z_mm
+        # Stamped, not a bare to_csv: these are ABSOLUTE stage positions, so the
+        # file records the placement they were computed under. Rows copied
+        # unchanged from a loaded file keep THAT file's label - re-stamping them
+        # with today's placement would silence the staleness warning they raised
+        # on load. One stamp for every objective's file: placement is per plan.
+        stamp = self.cached_loaded_stamp if self._plan_is_loaded_file() else make_stamp(self.scanCoordinates.format)
 
         def _save_for_objective(objective_name):
             self.objectiveStore.set_current_objective(objective_name)
@@ -9778,13 +9786,6 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             z_mm = parfocal_adjusted_z_mm(current_objective, objective_name, z_current_mm)
             df = coordinate_rows_for_save(self.scanCoordinates.region_fov_coordinates, z_mm)
             file_path = os.path.join(folder_path, f"{folder_name}_{objective_name}.csv")
-            # Stamped, not a bare to_csv: these are ABSOLUTE stage positions, so
-            # the file records the placement they were computed under. Rows
-            # copied unchanged from a loaded file keep THAT file's label.
-            if self.cached_loaded_coordinates_df is not None:
-                stamp = self.cached_loaded_stamp
-            else:
-                stamp = make_stamp(self.scanCoordinates.format)
             write_scan_coordinates_csv(file_path, df, stamp)
             self._log.info(f"Saved scan coordinates to {file_path}")
 

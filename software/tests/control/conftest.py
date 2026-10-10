@@ -83,6 +83,19 @@ def catalog_tree(tmp_path, monkeypatch):
         yield tmp_path
 
 
+def write_legacy_cache(tree, edit):
+    """Build a legacy cache/sample_formats.csv in `tree`: the shipped table with
+    `edit` applied (legacy caches carry only the 10 CSV columns)."""
+    import control._def as _def
+
+    formats = _def.read_sample_formats_csv(str(tree / "objective_and_sample_formats" / "sample_formats.csv"))
+    edit(formats)
+    ten = {
+        k: {f: v[f] for f in _def.SAMPLE_FORMAT_CSV_FIELDNAMES if f != "format" and f in v} for k, v in formats.items()
+    }
+    _def.write_sample_formats_csv(str(tree / "cache" / "sample_formats.csv"), ten)
+
+
 @pytest.fixture
 def strip_format(catalog_tree, monkeypatch):
     """A 1xN custom plate in the pinned table: the holder mode's corner picks
