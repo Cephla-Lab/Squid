@@ -156,7 +156,8 @@ def cycle_rows(result, offsets) -> List[CycleRow]:
     return rows
 
 
-def statistics(objective: str, quantity: str, values: Sequence[float]) -> SummaryRow:
+def statistics(objective: str, quantity: str, values: Sequence[float], ddof: int = 1) -> SummaryRow:
+    """ddof: degrees of freedom already used by the values (1 for a mean, 2 for the residuals of a line)."""
     v = np.asarray(values, dtype=float)
     mean = float(v.mean())
     return SummaryRow(
@@ -164,7 +165,7 @@ def statistics(objective: str, quantity: str, values: Sequence[float]) -> Summar
         quantity,
         len(v),
         mean,
-        float(np.std(v, ddof=1)) if len(v) > 1 else None,
+        float(np.std(v, ddof=ddof)) if len(v) > ddof else None,
         float(v.min()),
         float(v.max()),
         float(np.percentile(np.abs(v - mean), P95)),
@@ -221,7 +222,7 @@ def summary_rows(rows: List[CycleRow]) -> Tuple[List[SummaryRow], Dict[str, floa
             out.append(statistics(name, quantity, values))
             if quantity == "z_focus_um" and len(series) >= MIN_DETREND_CYCLES:
                 residuals, slopes[name] = detrend([t for t, _ in series], values)
-                out.append(statistics(name, DETRENDED_QUANTITY, residuals))
+                out.append(statistics(name, DETRENDED_QUANTITY, residuals, ddof=2))  # the line used two
     for lower, higher in combinations(names, 2):
         for pair_quantity, quantity in PAIR_QUANTITIES.items():
             by_cycle = {row.cycle: getattr(row, quantity) for row in rows if row.objective == lower and row.ok}

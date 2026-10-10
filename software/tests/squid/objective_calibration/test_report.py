@@ -194,7 +194,8 @@ def test_the_detrend_removes_a_known_linear_drift():
     raw = next(r for r in summary if r.quantity == "z_focus_um")
     detrended_row = next(r for r in summary if r.quantity == DETRENDED_QUANTITY)
     assert raw.std == pytest.approx(np.std(z, ddof=1)) and raw.std > 2.0
-    assert detrended_row.std == pytest.approx(math.sqrt(2.5))  # sqrt((1 + 4 + 0 + 4 + 1) / 4)
+    # the fitted line used two degrees of freedom: sqrt((1 + 4 + 0 + 4 + 1) / (5 - 2))
+    assert detrended_row.std == pytest.approx(math.sqrt(10 / 3))
     assert detrended_row.n == 5
     assert (detrended_row.max, detrended_row.min) == pytest.approx((2.0, -2.0))
     assert slopes == {"20x": pytest.approx(120.0)}
