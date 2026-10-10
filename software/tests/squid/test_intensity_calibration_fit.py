@@ -129,7 +129,7 @@ def test_unusable_measurements_raise():
 
 def test_a_source_that_jumps_on_has_a_lowest_power_and_a_request_below_it_gets_it():
     c = make_calibration(model=bench_488_led_mw)
-    assert c.lowest_percent == pytest.approx(2.12 / 31.7 * 100, rel=0.05)  # about 6.7 % of max
+    assert c.lowest_percent == pytest.approx(6.69, rel=0.05)  # 6.7 % of max
     lowest_command = c.commanded_percent(c.lowest_percent, 0.6, 1.0)
     for request in (0.5, 1.0, 3.0, c.lowest_percent * 0.99):
         assert c.commanded_percent(request, 0.6, 1.0) == lowest_command

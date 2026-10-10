@@ -228,7 +228,7 @@ def test_the_udev_rule_and_the_setup_doc_the_messages_name_ship_with_squid():
     assert (SOFTWARE_DIR / SETUP_DOC).is_file()
 
 
-PM16_ANSWERS = {"*IDN?": "Thorlabs,PM16-121,250328410,1.6.0\n"}
+PM16_ANSWERS = {"*IDN?": "Thorlabs,PM16-121,123456789,1.6.0\n"}
 
 
 def test_a_pm16_is_sent_no_averaging_command():
@@ -263,7 +263,7 @@ def test_errors_already_queued_are_not_blamed_on_a_setting():
 
 def test_the_resource_name_pyvisa_py_gives_the_bench_pm16_is_found():
     # pyvisa-py names USB resources with decimal IDs and the interface number: 4883 = 0x1313, 32891 = 0x807B
-    bench = "USB0::4883::32891::250328410::0::INSTR"
+    bench = "USB0::4883::32891::123456789::0::INSTR"
     assert find_thorlabs_resource(["ASRL3::INSTR", bench]) == bench
 
 
