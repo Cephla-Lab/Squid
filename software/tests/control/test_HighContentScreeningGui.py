@@ -298,3 +298,19 @@ def test_startup_warns_once_about_an_invalid_saved_calibration(qtbot, monkeypatc
     qtbot.add_widget(win)
     assert len(warnings) == 1
     assert warnings[0][0] == "Objective Calibration" and "20x: nominal pixel size in use" in warnings[0][1]
+
+
+def test_a_simulated_calibration_never_touches_the_machine_calibration_file(qtbot, confirm_exit_yes, monkeypatch):
+    """Under --simulation the dialog saves its synthetic calibration apart from machine_configs/: a fake
+    camera key and pixel sizes saved there would replace the real machine's calibration."""
+    import control.widgets_objective_calibration as woc
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+    opened = []
+    monkeypatch.setattr(woc.ObjectiveCalibrationDialog, "exec_", lambda self: opened.append(self) or 0)
+    win.openObjectiveCalibration()
+    repo = opened[0].config_repo
+    assert repo.machine_configs_path != scope.config_repo.machine_configs_path
+    assert repo.machine_configs_path.parts[-3:] == ("cache", "simulation", "machine_configs")

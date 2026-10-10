@@ -532,6 +532,11 @@ class ConfigRepository:
             config, self.machine_configs_path / "objective_calibration.yaml"
         )
 
+    def simulation_calibration_repository(self) -> "ConfigRepository":
+        """Where --simulation keeps its objective calibration (cache/simulation/machine_configs/): the
+        synthetic microscope is not this machine, so its records must never replace the real file."""
+        return ConfigRepository(base_path=self.base_path / "cache" / "simulation")
+
     def get_camera_names(self) -> List[str]:
         """Get list of available camera names from registry."""
         registry = self.get_camera_registry()
