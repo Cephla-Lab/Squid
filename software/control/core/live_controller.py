@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from qtpy.QtCore import QObject, Signal
 
@@ -98,15 +98,31 @@ class LiveController(QObject):
     def get_intensity_cap_percent(self, channel_config: Optional["AcquisitionChannel"]) -> float:
         """Maximum allowed illumination intensity (percent) for a channel.
 
-        Derived from the illumination channel's max_output (fraction of full
-        scale). Unknown channels or missing config fall back to 100%.
+        From the illumination channel's max_output (fraction of full scale), except that a channel with a new-format
+        calibration offers the full range: its ceiling is inside the lookup (design §6.2). Unknown channels or missing
+        config fall back to 100%.
         """
         if not channel_config:
             return 100.0
         ill_config = self._get_illumination_config()
         if not ill_config:
             return 100.0
-        return channel_config.get_max_output_percent(ill_config)
+        max_output_percent = channel_config.get_max_output_percent(ill_config)
+        wavelength = channel_config.get_illumination_wavelength(ill_config)
+        if wavelength is None:
+            return max_output_percent
+        return self.microscope.illumination_controller.get_intensity_cap_percent(wavelength, max_output_percent / 100.0)
+
+    def get_intensity_description(self, channel_config: Optional["AcquisitionChannel"]) -> Dict[str, object]:
+        """What a channel's intensity % means - power %, DAC % or the light source's own % - for the live controls
+        and the acquisition metadata."""
+        ill_config = self._get_illumination_config()
+        wavelength = None
+        if channel_config and ill_config:
+            wavelength = channel_config.get_illumination_wavelength(ill_config)
+        if wavelength is None:
+            return {"intensity_unit": "dac_percent"}
+        return self.microscope.illumination_controller.describe_intensity(wavelength)
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Squid laser engine readiness (warn-only)

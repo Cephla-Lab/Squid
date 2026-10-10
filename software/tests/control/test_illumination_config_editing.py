@@ -14,6 +14,7 @@ import control.widgets
 from control.core.config import ConfigRepository
 from control.lighting import IlluminationController
 from tests.tools import get_test_microcontroller
+from tests.squid.calibration_fixtures import DAC, write_legacy_csv
 
 ILLUMINATION_YAML = """\
 version: 1
@@ -174,3 +175,16 @@ def test_simulated_microscope_shares_config_repo_with_illumination_controller():
         assert scope.illumination_controller.config_repo is replacement
     finally:
         scope.close()
+
+
+def test_configurator_shows_calibration_status(qtbot, repo):
+    calibrations = repo.machine_configs_path / "intensity_calibrations"
+    calibrations.mkdir(exist_ok=True)
+    write_legacy_csv(calibrations / "405.csv", DAC, DAC * 3.0)
+    dialog = control.widgets.IlluminationChannelConfiguratorDialog(repo)
+    qtbot.addWidget(dialog)
+
+    header = dialog.table.horizontalHeaderItem(dialog.COL_CALIBRATION_STATUS).text()
+    assert header == "Calibration Status"
+    assert dialog.table.item(0, dialog.COL_CALIBRATION_STATUS).text() == ""  # LED matrix
+    assert dialog.table.item(1, dialog.COL_CALIBRATION_STATUS).text() == "405.csv: legacy"

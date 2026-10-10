@@ -1,8 +1,19 @@
 from enum import Enum
-import numpy as np
-import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
+
+import logging
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Tuple
+
+import squid.logging
+from control.models.illumination_config import IlluminationChannel
+from squid.intensity_calibration import (
+    CALIBRATIONS_DIR_NAME,
+    Calibration,
+    CalibrationFileError,
+    load_calibration,
+    resolve_calibration_path,
+)
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
@@ -48,6 +59,18 @@ class IntensityControlMode(Enum):
 class ShutterControlMode(Enum):
     TTL = 0
     Software = 1
+
+
+@dataclass(frozen=True)
+class CalibrationLookup:
+    """Which calibration applies to a wavelength and what loading it gave (design §6.1)."""
+
+    file_name: Optional[str] = None
+    calibration: Optional[Calibration] = None
+    error: Optional[str] = None
+
+
+_NO_CALIBRATION = CalibrationLookup()
 
 
 class IlluminationController:
@@ -120,8 +143,11 @@ class IlluminationController:
         self.is_on = {}
         self.intensity_settings = {}
         self.current_channel = None
-        self.intensity_luts = {}  # Store LUTs for each wavelength
-        self.max_power = {}  # Store max power for each wavelength
+        self._log = squid.logging.get_logger(self.__class__.__name__)
+        # path -> (mtime, calibration or None, error or None). Re-read when the file changes, so a Save from the
+        # calibration dialog, a hand edit or a channel-editor change takes effect on the next set_intensity.
+        self._calibration_cache: Dict[Path, Tuple[float, Optional[Calibration], Optional[str]]] = {}
+        self._logged_messages = set()
 
         # Multi-port illumination state tracking (16 ports max)
         self.port_is_on = {i: False for i in range(NUM_ILLUMINATION_PORTS)}
@@ -129,9 +155,6 @@ class IlluminationController:
 
         if self.light_source_type is not None:
             self._configure_light_source()
-
-        if self.light_source_type is None and self.disable_intensity_calibration is False:
-            self._load_intensity_calibrations()
 
     @property
     def channel_mappings_TTL(self) -> Dict[int, int]:
@@ -215,39 +238,87 @@ class IlluminationController:
 
         self.is_on[channel] = False
 
-    def _load_intensity_calibrations(self):
-        """Load intensity calibrations for all available wavelengths."""
-        calibrations_dir = Path(__file__).parent.parent / "machine_configs" / "intensity_calibrations"
-        if not calibrations_dir.exists():
-            return
+    def _log_once(self, level: int, message: str) -> None:
+        if message not in self._logged_messages:
+            self._logged_messages.add(message)
+            self._log.log(level, message)
 
-        for calibration_file in calibrations_dir.glob("*.csv"):
+    def _uses_dac_calibration(self) -> bool:
+        return (
+            self.light_source_type is None
+            and self.intensity_control_mode == IntensityControlMode.SquidControllerDAC
+            and not self.disable_intensity_calibration
+        )
+
+    def _channel_for_wavelength(self, wavelength) -> Optional[IlluminationChannel]:
+        """The channel set_intensity drives for this wavelength: like channel_mappings_TTL, the last one."""
+        config = self.config_repo.get_illumination_config()
+        if config is None:
+            return None
+        match = None
+        for channel in config.channels:
+            if channel.wavelength_nm == wavelength:
+                match = channel
+        return match
+
+    def _max_output(self, wavelength) -> float:
+        channel = self._channel_for_wavelength(wavelength)
+        return channel.max_output if channel is not None else 1.0
+
+    def _dac_factor(self) -> float:
+        return self.microcontroller.illumination_intensity_factor
+
+    def lookup_calibration(self, wavelength) -> CalibrationLookup:
+        """The calibration that applies to `wavelength` (design §6.1); empty when none does."""
+        if not self._uses_dac_calibration():
+            return _NO_CALIBRATION
+        channel = self._channel_for_wavelength(wavelength)
+        referenced = channel.intensity_calibration_file if channel is not None else None
+        calibrations_dir = self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME
+        path = resolve_calibration_path(calibrations_dir, referenced, wavelength)
+        if path is None:
+            if referenced:
+                self._log.debug(f"{referenced} (referenced for {wavelength} nm) does not exist: uncalibrated")
+            return _NO_CALIBRATION
+        mtime = path.stat().st_mtime
+        cached = self._calibration_cache.get(path)
+        if cached is None or cached[0] != mtime:
             try:
-                wavelength = int(calibration_file.stem)  # Filename should be wavelength.csv
-                calibration_data = pd.read_csv(calibration_file)
-                if "DAC Percent" in calibration_data.columns and "Optical Power (mW)" in calibration_data.columns:
-                    # Store max power for this wavelength
-                    self.max_power[wavelength] = calibration_data["Optical Power (mW)"].max()
-                    # Create normalized power values (0-100%)
-                    normalized_power = calibration_data["Optical Power (mW)"] / self.max_power[wavelength] * 100
-                    # Ensure DAC values are in range 0-100
-                    dac_percent = np.clip(calibration_data["DAC Percent"].values, 0, 100)
-                    self.intensity_luts[wavelength] = {
-                        "power_percent": normalized_power.values,
-                        "dac_percent": dac_percent,
-                    }
-            except (ValueError, KeyError) as e:
-                print(f"Warning: Could not load calibration from {calibration_file}: {e}")
+                cached = (mtime, load_calibration(path), None)
+            except CalibrationFileError as e:
+                cached = (mtime, None, str(e))
+                self._log_once(
+                    logging.ERROR, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {e}"
+                )
+            self._calibration_cache[path] = cached
+        calibration = cached[1]
+        if calibration is not None and channel is not None:
+            source_code = self.config_repo.get_illumination_config().get_source_code(channel)
+            mismatch = calibration.identity_mismatch(channel.wavelength_nm, channel.controller_port, source_code)
+            if mismatch:
+                self._log_once(
+                    logging.WARNING, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {mismatch}"
+                )
+                return CalibrationLookup(path.name, None, mismatch)
+        return CalibrationLookup(path.name, calibration, cached[2])
 
-    def _apply_lut(self, channel, intensity_percent):
-        """Convert desired power percentage to DAC value (0-100) using LUT."""
-        lut = self.intensity_luts[channel]
-        # Ensure intensity is within bounds
-        intensity_percent = np.clip(intensity_percent, 0, 100)
-        # Interpolate to get DAC value
-        dac_percent = np.interp(intensity_percent, lut["power_percent"], lut["dac_percent"])
-        # Ensure DAC value is in range 0-100
-        return np.clip(dac_percent, 0, 100)
+    def get_intensity_cap_percent(self, wavelength, max_output: float) -> float:
+        """The highest intensity % the GUI offers: 100 for a new calibration (the ceiling is inside the lookup),
+        max_output x 100 otherwise (as before)."""
+        lookup = self.lookup_calibration(wavelength)
+        if lookup.calibration is not None:
+            return lookup.calibration.cap_percent(max_output)
+        return max_output * 100.0
+
+    def describe_intensity(self, wavelength) -> Dict[str, object]:
+        """What this wavelength's intensity % means, for the GUI and acquisition metadata (design §9)."""
+        if self.light_source_type is not None or self.intensity_control_mode != IntensityControlMode.SquidControllerDAC:
+            return {"intensity_unit": "source_percent"}
+        factor = self._dac_factor()
+        lookup = self.lookup_calibration(wavelength)
+        if lookup.calibration is None:
+            return {"intensity_unit": "dac_percent", "illumination_intensity_factor": factor}
+        return {**lookup.calibration.describe(), "illumination_intensity_factor": factor}
 
     def set_intensity(self, channel, intensity):
         # initialize intensity setting for this channel if it doesn't exist
@@ -262,10 +333,19 @@ class IlluminationController:
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
                 self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
         else:
-            if channel in self.intensity_luts:
-                # Apply LUT to convert power percentage to DAC percent (0-100)
-                dac_percent = self._apply_lut(channel, intensity)
-                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], dac_percent)
+            lookup = self.lookup_calibration(channel)
+            if lookup.calibration is not None:
+                factor = self._dac_factor()
+                max_output = self._max_output(channel)
+                for note in lookup.calibration.notes(factor, max_output):
+                    self._log_once(logging.WARNING, f"{lookup.file_name}: {note}")
+                commanded, clamped = lookup.calibration.commanded_percent(intensity, factor, max_output)
+                if clamped:
+                    self._log_once(
+                        logging.WARNING,
+                        f"{lookup.file_name}: intensity clamped at Max Output ({max_output * 100:g} % DAC)",
+                    )
+                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], commanded)
             else:
                 self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
             self.intensity_settings[channel] = intensity

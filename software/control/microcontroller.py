@@ -667,6 +667,7 @@ class Microcontroller:
         # Heartbeat thread for serial watchdog keepalive
         self._heartbeat_thread = None
         self._heartbeat_stop_event = threading.Event()
+        self._heartbeat_interval_s = None  # the running heartbeat's interval; None when none runs
 
         # Lock to serialize all outgoing serial commands (heartbeat thread + main thread)
         self._cmd_lock = threading.Lock()
@@ -683,6 +684,13 @@ class Microcontroller:
         self._received_packet_cv = threading.Condition()
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
+
+        # The illumination intensity factor the firmware applies to every DAC illumination command, as it receives it.
+        # Set to the configured value here - with skip-init nothing is sent and the controller keeps what the previous
+        # session sent from the same configuration - and updated whenever a factor is sent.
+        self.illumination_intensity_factor = (
+            self._illumination_factor_byte(control._def.ILLUMINATION_INTENSITY_FACTOR) / 100.0
+        )
 
         if reset_and_initialize:
             self.log.debug("Resetting and initializing microcontroller.")
@@ -1013,10 +1021,19 @@ class Microcontroller:
 
         self._heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
         self._heartbeat_thread.start()
+        self._heartbeat_interval_s = interval_s
         self.log.debug(f"[MCU] Heartbeat started: interval={interval_s}s")
+
+    @property
+    def heartbeat_interval_s(self):
+        """The running heartbeat's interval in seconds, or None when no heartbeat runs (no watchdog: firmware
+        before 1.1, or not started). Code that drives the light itself can stop the heartbeat for that time and feed
+        the watchdog from its own loop, so the firmware turns the light off if that loop stops."""
+        return self._heartbeat_interval_s
 
     def stop_heartbeat(self) -> None:
         """Stop the heartbeat thread."""
+        self._heartbeat_interval_s = None
         self._heartbeat_stop_event.set()
         if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
             self._heartbeat_thread.join(timeout=2.0)
@@ -1859,6 +1876,16 @@ class Microcontroller:
             signed = signed - 256**number_of_bytes
         return int(signed)
 
+    @staticmethod
+    def _illumination_factor_byte(illumination_intensity_factor: float) -> int:
+        """The byte the firmware receives: clamped as before, then int(round(f, 2) * 100) - which truncates
+        (0.57 -> 56); kept exactly as master sends it."""
+        if illumination_intensity_factor > 1:
+            illumination_intensity_factor = 1
+        if illumination_intensity_factor < 0:
+            illumination_intensity_factor = 0.01
+        return int(round(illumination_intensity_factor, 2) * 100)
+
     def set_dac80508_scaling_factor_for_illumination(self, illumination_intensity_factor):
         """Set the illumination intensity scaling factor on the MCU.
 
@@ -1873,14 +1900,9 @@ class Microcontroller:
         Args:
             illumination_intensity_factor: Scaling factor (0.01-1.0, clamped)
         """
-        if illumination_intensity_factor > 1:
-            illumination_intensity_factor = 1
-
-        if illumination_intensity_factor < 0:
-            illumination_intensity_factor = 0.01
-
-        factor = round(illumination_intensity_factor, 2) * 100
+        factor_byte = self._illumination_factor_byte(illumination_intensity_factor)
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR
-        cmd[2] = int(factor)
+        cmd[2] = factor_byte
         self.send_command(cmd)
+        self.illumination_intensity_factor = factor_byte / 100.0

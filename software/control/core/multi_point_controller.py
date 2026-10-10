@@ -518,6 +518,10 @@ class MultiPointController:
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         acquisition_parameters["confocal_mode"] = self.liveController.is_confocal_mode()
+        acquisition_parameters["illumination"] = {
+            channel.name: self.liveController.get_intensity_description(channel)
+            for channel in self.selected_configurations
+        }
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
