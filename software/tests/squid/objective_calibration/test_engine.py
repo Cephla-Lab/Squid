@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from control._def import FocusMeasureOperator
@@ -66,7 +67,7 @@ def test_phase2_hook_receives_this_cycles_matrices():
     hw, cfg = _machine()
     seen = []
     run_calibration(
-        hw, cfg, fine_metric=lape, phase2=lambda cycle, view: seen.append((cycle.index, view.pixel_size_um("20x")))
+        hw, cfg, fine_metric=lape, phase2=lambda hw, cycle, view: seen.append((cycle.index, view.pixel_size_um("20x")))
     )
     assert [index for index, _ in seen] == [0, 1]
     assert all(px == pytest.approx(0.32 * 1.01, rel=0.005) for _, px in seen)
@@ -146,6 +147,38 @@ def test_a_failed_focus_returns_z_so_the_next_objectives_still_succeed():
     _assert_restored(hw)
 
 
+def _predicted_machine(z_focus_10x_um, matrix_10x=None):
+    """4x, 10x and 20x whose saved parfocal residuals (0, 30 and 45 um) predict each focus from the Z of
+    the last objective focused."""
+    objectives = {
+        "4x": FakeObjective("4x", 4, 0.13, pixel_um=1.6, z_focus_um=0.0),
+        "10x": FakeObjective("10x", 10, 0.3, matrix_um_per_px=matrix_10x, pixel_um=0.64, z_focus_um=z_focus_10x_um),
+        "20x": FakeObjective("20x", 20, 0.8, pixel_um=0.32, z_focus_um=45.0),
+    }
+    hw = FakeCalibrationHardware(objectives, FakeScene.random(), start_objective="4x", start_z_um=0.0)
+    specs = [
+        ObjectiveSpec("4x", 4, 0.13, 1.6),
+        ObjectiveSpec("10x", 10, 0.3, 0.64),
+        ObjectiveSpec("20x", 20, 0.8, 0.32),
+    ]
+    cfg = RunConfig(specs, "BF", search_range_um=20.0, cycles=1, predicted_residual_um={"10x": 30.0, "20x": 45.0})
+    return hw, cfg
+
+
+@pytest.mark.parametrize("failure", ["before its focus", "after its focus"])
+def test_a_failed_objective_leaves_the_next_prediction_on_the_last_one_focused(failure):
+    # 10x fails before its focus (its focus lies far outside the prediction) or after it (its pixel scale
+    # differs by 5% between x and y). Either way Z returns to 4x's focus, so 20x is predicted from 4x.
+    if failure == "before its focus":
+        hw, cfg = _predicted_machine(300.0)
+    else:
+        hw, cfg = _predicted_machine(30.0, matrix_10x=np.diag([0.64, 0.64 * 1.05]))
+    objectives = run_calibration(hw, cfg, fine_metric=lape).cycles[0].objectives
+    assert objectives["10x"].error is not None
+    assert objectives["20x"].error is None, objectives["20x"].error
+    assert objectives["20x"].focus.z_best_um == pytest.approx(45.0, abs=1.0)
+
+
 def test_a_start_near_the_lower_xy_limit_restores_without_the_pre_move():
     hw, cfg = _machine(xy_limits_um=((990.0, 50000.0), (-50000.0, 50000.0)))
     cfg.cycles = 1
@@ -168,7 +201,7 @@ def test_a_failed_xy_restore_still_restores_z_and_the_objective():
 
     hw.move_xy_to_um = move
     # The phase-2 hook runs just before the restore: arm the XY fault there.
-    result = run_calibration(hw, cfg, fine_metric=lape, phase2=lambda cycle, view: armed.update(on=True))
+    result = run_calibration(hw, cfg, fine_metric=lape, phase2=lambda hw, cycle, view: armed.update(on=True))
     assert result.stopped.startswith("Restoring") and "XY: XY stage fault" in result.stopped
     assert hw.current_objective() == "10x"
     assert hw.get_z_um() == pytest.approx(1.0)

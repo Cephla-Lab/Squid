@@ -70,12 +70,12 @@ def test_record_normalizes_by_the_binned_sensor_pixel():
 
 def test_save_replaces_only_the_measured_blocks_and_preserves_other_keys(tmp_path):
     path = tmp_path / "objective_calibration.yaml"
-    old_10x = _record(_summary(px=0.376), declared=D10).model_dump(mode="json")
+    old_10x = _record(_summary(px=0.376), declared=D10).model_dump(mode="json", exclude_none=True)
     path.write_text(
         yaml.safe_dump(
             {
                 "version": 1,
-                "offset_calibration": {"camera_key": "c1"},
+                "future_section": {"camera_key": "c1"},
                 "objectives": {"10x": {"pixel_size": old_10x, "xy_offset_um": [1.0, 2.0]}, "20x": {"z_offset_um": 3.5}},
             }
         ),
@@ -84,7 +84,7 @@ def test_save_replaces_only_the_measured_blocks_and_preserves_other_keys(tmp_pat
     merged = merge_pixel_records(load_objective_calibration(path), {"20x": _record()})
     save_objective_calibration(merged, path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    assert raw["offset_calibration"] == {"camera_key": "c1"}
+    assert raw["future_section"] == {"camera_key": "c1"}
     assert raw["objectives"]["10x"] == {"pixel_size": old_10x, "xy_offset_um": [1.0, 2.0]}
     assert raw["objectives"]["20x"]["z_offset_um"] == 3.5
     assert raw["objectives"]["20x"]["pixel_size"]["factor"] == pytest.approx(0.188 / 3.76)

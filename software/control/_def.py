@@ -1285,6 +1285,11 @@ XERYON_OBJECTIVE_SWITCHER_POS_1 = ["4x", "10x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2 = ["20x", "40x", "60x"]
 XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 2
 
+# Largest Z step a calibrated objective switch may apply (objective offset calibration, spec C §4):
+# a backstop independent of validation. Blocks saving a calibration that implies a larger step;
+# at switch time (C2) a larger step is refused. Real parfocal residuals are tens of um.
+MAX_OBJECTIVE_Z_STEP_MM = 0.5
+
 
 def xeryon_objective_position(objective_name):
     """Position index (1 or 2) of an objective on the Xeryon 2-position switcher,

@@ -2328,8 +2328,9 @@ class HighContentScreeningGui(QMainWindow):
 
     def openObjectiveCalibration(self):
         """Open Utils > Objective Calibration...: measure each mounted objective's pixel size and
-        pixel->stage matrix (control/widgets_objective_calibration.py). Under --simulation it runs on
-        the synthetic microscope: the simulated camera's frames do not follow the stage."""
+        pixel->stage matrix, and the Z and XY offsets between objectives
+        (control/widgets_objective_calibration.py). Under --simulation it runs on the synthetic
+        microscope: the simulated camera's frames do not follow the stage."""
         from control.objective_calibration_hardware import MicroscopeCalibrationHardware, simulation_hardware
         from control.widgets_objective_calibration import ObjectiveCalibrationDialog
         from squid.objective_calibration.engine import ObjectiveSpec
@@ -2376,6 +2377,11 @@ class HighContentScreeningGui(QMainWindow):
             fine_metric=lambda crop: float(
                 control.utils.calculate_focus_measure(crop, control._def.FOCUS_MEASURE_OPERATOR)
             ),
+            get_mounting=control._def.get_mounting,
+            pos2_offset_um=(
+                control._def.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM * 1000.0 if control._def.USE_XERYON else 0.0
+            ),
+            max_step_um=control._def.MAX_OBJECTIVE_Z_STEP_MM * 1000.0,
             manual_switch=manual_switch,
             default_channel=current.name if current is not None else None,
             busy_reason=self.objective_calibration_busy_reason,
