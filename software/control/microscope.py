@@ -1032,8 +1032,10 @@ class Microscope:
 
         camera_config = squid.config.get_camera_config()
         self.objective_calibration_error = ""
+        # Simulated, the calibration is the one the dialog saves in simulation, never this machine's.
+        repo = self.config_repo.simulation_calibration_repository() if self._simulated else self.config_repo
         try:
-            calibration = self.config_repo.get_objective_calibration()
+            calibration = repo.get_objective_calibration()
         except ObjectiveCalibrationFileError as e:
             self._log.error(str(e))
             self.objective_calibration_error = str(e)

@@ -287,7 +287,9 @@ def test_camera_settings_changes_recheck_the_calibration_validity(qtbot, monkeyp
 
 def test_startup_warns_once_about_an_invalid_saved_calibration(qtbot, monkeypatch, confirm_exit_yes):
     warnings = []
-    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a, **k: warnings.append((title, text)))
+    monkeypatch.setattr(
+        QMessageBox, "show", lambda box: warnings.append((box.windowTitle(), box.text(), box.isModal()))
+    )
     scope = control.microscope.Microscope.build_from_global_config(True)
     monkeypatch.setattr(
         scope.objective_store,
@@ -298,6 +300,7 @@ def test_startup_warns_once_about_an_invalid_saved_calibration(qtbot, monkeypatc
     qtbot.add_widget(win)
     assert len(warnings) == 1
     assert warnings[0][0] == "Objective Calibration" and "20x: nominal pixel size in use" in warnings[0][1]
+    assert warnings[0][2] is False  # never holds construction (scripted and --start-server starts)
 
 
 def test_a_simulated_calibration_never_touches_the_machine_calibration_file(qtbot, confirm_exit_yes, monkeypatch):

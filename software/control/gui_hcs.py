@@ -1848,13 +1848,18 @@ class HighContentScreeningGui(QMainWindow):
             lines.insert(0, file_error)
         if not lines:
             return
-        QMessageBox.warning(
-            self,
+        # Not modal: a modal box here would hold construction, and with it a scripted or --start-server start.
+        self._calibration_warning = QMessageBox(
+            QMessageBox.Warning,
             "Objective Calibration",
             "The saved objective calibration is not fully in use:\n\n"
             + "\n".join(lines)
             + "\n\nRecalibrate under Utils > Objective Calibration.",
+            QMessageBox.Ok,
+            self,
         )
+        self._calibration_warning.setModal(False)
+        self._calibration_warning.show()
 
     def _on_acquisition_save_target(self, save_target):
         """Route the controller's per-run save dir to the unified widget."""

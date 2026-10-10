@@ -339,3 +339,18 @@ def test_an_unreadable_calibration_file_leaves_the_microscope_nominal_and_report
         assert "cannot be read" in scope.objective_calibration_error
     finally:
         scope.close()
+
+
+def test_a_simulated_microscope_reads_the_simulation_calibration_never_the_machines(monkeypatch):
+    from control.core.config.repository import ConfigRepository
+
+    read_from = []
+    monkeypatch.setattr(
+        ConfigRepository, "get_objective_calibration", lambda self: read_from.append(self.machine_configs_path)
+    )
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        assert len(read_from) == 1
+        assert read_from[0].parts[-3:] == ("cache", "simulation", "machine_configs")
+    finally:
+        scope.close()
