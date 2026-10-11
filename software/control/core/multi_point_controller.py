@@ -16,7 +16,7 @@ import pandas as pd
 from control import utils, utils_acquisition
 import control._def
 from control.core.auto_focus_controller import AutoFocusController
-from control.core.acquisition_setup import create_experiment_dir, PrewarmedJobRunnerSlot
+from control.core.acquisition_setup import create_experiment_dir, PrewarmedJobRunnerSlot, start_run_state_writer
 from control.core.multi_point_utils import MultiPointControllerFunctions, ScanPositionInformation, AcquisitionParameters
 from control.core.scan_coordinates import ScanCoordinates
 from control.core.laser_auto_focus_controller import LaserAutofocusController
@@ -864,27 +864,19 @@ class MultiPointController:
                 protocol=run_protocol_info,
             )
 
-            # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).
-            # self._run_state_writer is already a NullRunStateWriter (set before the outer try); it
-            # stays one if start() below fails, so a breadcrumb write failure never breaks acquisition.
-            try:
-                expected = {
+            # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs); the
+            # null writer stands in if it cannot be written, so that never breaks the acquisition.
+            self._run_state_writer = start_run_state_writer(
+                experiment_id=self.experiment_ID,
+                output_path=experiment_path,
+                expected={
                     "timepoints": self.Nt,
                     "regions": len(scan_position_information.scan_region_coords_mm),
                     "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values()),
                     "channels": len(self.selected_configurations),
                     "z": self.NZ,
-                }
-                config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
-                self._run_state_writer = squid.acquisition_state.RunStateWriter.start(
-                    experiment_id=self.experiment_ID,
-                    pid=os.getpid(),
-                    config_path=config_path,
-                    output_path=experiment_path,
-                    expected=expected,
-                )
-            except Exception as e:
-                self._log.warning(f"Failed to write acquisition watchdog start state: {e}")
+                },
+            )
 
             # The pre-warmed save subprocess and its backpressure values (None, None for a Zarr v3 run)
             prewarmed_runner, prewarmed_bp_values = self.get_prewarmed_job_runner()

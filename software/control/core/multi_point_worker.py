@@ -95,6 +95,7 @@ class MultiPointWorkerBase:
         callbacks: MultiPointControllerFunctions,
         abort_requested_fn: Callable[[], bool],
         request_abort_fn: Callable[[], None],
+        run_state_writer=None,
     ):
         # Use type(self).__name__ so each subclass instance gets a logger named
         # after its own concrete class (e.g. "RecordZStackWorker"), rather than
@@ -119,6 +120,8 @@ class MultiPointWorkerBase:
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
         self._run_state_fatal = False  # True once run() crashed out; _finish_jobs then seals the stores as aborted
         self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
+        # Acquisition watchdog breadcrumb (run.json); the null writer when none is wired (tests, side paths).
+        self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
 
         # Optional SlackNotifier — subclasses set the real one if present.
         self._slack_notifier = None
@@ -494,6 +497,15 @@ class MultiPointWorkerBase:
         self._abort_cause = "error"
         self.request_abort_fn()
 
+    def _compute_end_reason(self) -> str:
+        if self._run_state_fatal:
+            return "error"
+        if self.abort_requested_fn():
+            return "error" if self._abort_cause == "error" else "user_abort"
+        if self._acquisition_error_count > 0:
+            return "completed_with_errors"
+        return "completed"
+
     def _run_state_beat(self) -> None:
         """Watchdog heartbeat — no-op in the base; MultiPointWorker overrides it.
 
@@ -713,6 +725,7 @@ class MultiPointWorker(MultiPointWorkerBase):
             callbacks=callbacks,
             abort_requested_fn=abort_requested_fn,
             request_abort_fn=request_abort_fn,
+            run_state_writer=run_state_writer,
         )
         self._alignment_widget = alignment_widget  # Optional AlignmentWidget for coordinate offset
         self._slack_notifier = slack_notifier  # Optional SlackNotifier for notifications
@@ -729,7 +742,6 @@ class MultiPointWorker(MultiPointWorkerBase):
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
 
-        self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -980,15 +992,6 @@ class MultiPointWorker(MultiPointWorkerBase):
                 "images": self.image_count,
             }
         )
-
-    def _compute_end_reason(self) -> str:
-        if self._run_state_fatal:
-            return "error"
-        if self.abort_requested_fn():
-            return "error" if self._abort_cause == "error" else "user_abort"
-        if self._acquisition_error_count > 0:
-            return "completed_with_errors"
-        return "completed"
 
     def run(self):
         this_image_callback_id = None

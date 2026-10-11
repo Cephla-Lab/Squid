@@ -8,7 +8,7 @@ from typing import List, Optional
 import yaml
 
 import squid.logging
-from control.core.acquisition_setup import compute_pixel_size_um
+from control.core.acquisition_setup import compute_pixel_size_um, start_run_state_writer
 from control.models.acquisition_config import AcquisitionChannel
 from control.utils import serialize_for_yaml as _serialize_for_yaml
 
@@ -367,19 +367,42 @@ class RecordZStackController:
         # (toggle_acquisition checks acquisition_in_progress() before calling here).
         self._abort_event.clear()
 
-        worker = RecordZStackWorker(
-            scope=self._microscope,
-            live_controller=self._live_controller,
-            laser_auto_focus_controller=self._laser_af,
-            objective_store=self._objective_store,
-            params=params,
-            callbacks=self._callbacks,
-            abort_requested_fn=lambda: self._abort_event.is_set(),
-            request_abort_fn=self.request_abort,
-            scan_region_fov_coords=scan_region_fov_coords,
-            display_frame_fn=self._display_frame_fn,
-            display_fps=self._display_fps,
+        # Acquisition watchdog breadcrumb, as MultiPointController writes it.  "channels" x "z" are
+        # the z-stack images per FOV (the recording is a stream, not counted as images).
+        run_state_writer = start_run_state_writer(
+            experiment_id=params.experiment_id,
+            output_path=experiment_dir,
+            expected={
+                "timepoints": params.Nt,
+                "regions": len(scan_region_fov_coords),
+                "fovs": sum(len(c) for c in scan_region_fov_coords.values()),
+                "channels": len(params.zstack_channels) if params.zstack_enabled else 0,
+                "z": (
+                    zstack_plane_count(params.z_min_um, params.z_max_um, params.z_step_um)
+                    if params.zstack_enabled
+                    else 0
+                ),
+            },
         )
+        try:
+            worker = RecordZStackWorker(
+                scope=self._microscope,
+                live_controller=self._live_controller,
+                laser_auto_focus_controller=self._laser_af,
+                objective_store=self._objective_store,
+                params=params,
+                callbacks=self._callbacks,
+                abort_requested_fn=lambda: self._abort_event.is_set(),
+                request_abort_fn=self.request_abort,
+                scan_region_fov_coords=scan_region_fov_coords,
+                display_frame_fn=self._display_frame_fn,
+                display_fps=self._display_fps,
+                run_state_writer=run_state_writer,
+            )
+        except Exception:
+            # No worker will end the breadcrumb; close it so the watchdog does not read a hang.
+            run_state_writer.end("error", None)
+            raise
 
         self._thread = Thread(target=worker.run, name="RecordZStack-acquisition", daemon=True)
         self._thread.start()
