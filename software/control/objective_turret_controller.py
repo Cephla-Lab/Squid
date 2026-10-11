@@ -145,12 +145,15 @@ ZERO_RETURN_ENABLED = 1
 # slower than it: a higher EXPECTED_MIN_SPEED needs a new HOMING_ZERO_SPEED, not a silent change.
 assert HOMING_ZERO_SPEED >= EXPECTED_MIN_SPEED
 # A switch the drive never sees (polarity, wiring, a dead sensor) must not spin the turret for the
-# whole timeout: the homing wait raises once the counter has travelled more than one revolution,
-# added up poll by poll.
-HOMING_MAX_TRAVEL = 10000  # pulses
+# whole timeout: the homing wait raises once a leg of the homing has travelled more than one
+# revolution, added up poll by poll. The drive's homing has at most two legs, each under a
+# revolution plus the switch window: the search to the switch and, when the search wrapped through
+# the switch, the return to the edge after the re-base at the crossing (a whole revolution the
+# drive travels for real, bench 2026-10-11: 8168 + 8839 pulses from a start just past the switch).
+HOMING_MAX_TRAVEL = 10000  # pulses per leg
 # A counter change beyond this between two polls is the drive re-basing its counter at the switch,
 # not travel: the search moves a few dozen pulses per poll, the re-base jumps up to a revolution
-# (more after a failed search left the counter far out).
+# (more after a failed search left the counter far out). It starts the second leg.
 HOMING_REBASE_JUMP_PULSES = PULSES_PER_REV // 2
 # At the end of a homing the drive has re-based its counter at the switch and stopped on the edge.
 # The counter read 62-63 pulses on every bench homing that started from a slot, about -10 when the
@@ -880,9 +883,9 @@ class ObjectiveTurret4PosController:
         the completion verdict, so polling can begin before the motor asserts RUNNING. A
         fault bit or an alarm code raises at once. With `target_pulses`, idle only counts
         inside POSITION_TOLERANCE_PULSES of it, and an idle drive that was seen running
-        but is not there has stopped short. With `max_travel_pulses`, a counter that has
-        travelled further than that, added up poll by poll, raises (a homing search that
-        never finds the switch)."""
+        but is not there has stopped short. With `max_travel_pulses`, a leg of the motion
+        that has travelled further than that, added up poll by poll, raises (a homing search
+        that never finds the switch; see HOMING_MAX_TRAVEL for the legs)."""
         started = time.monotonic()
         deadline = started + timeout_s
         seen_running = False
@@ -893,10 +896,12 @@ class ObjectiveTurret4PosController:
             self._check_fault(status)
             self._check_alarm(alarm, what)
             # The drive re-bases its counter at the switch once the search reaches it (see
-            # HOMING_EDGE_COUNTER_MAX): a jump between two polls is that re-base, not travel. A
-            # runaway search never re-bases and adds up past a revolution.
-            if last_pos is not None and abs(pos - last_pos) < HOMING_REBASE_JUMP_PULSES:
-                travelled += abs(pos - last_pos)
+            # HOMING_EDGE_COUNTER_MAX): a jump between two polls is that re-base, not travel, and
+            # what follows is the return leg, bounded on its own. A runaway search never re-bases
+            # and adds up past a revolution.
+            if last_pos is not None:
+                delta = abs(pos - last_pos)
+                travelled = travelled + delta if delta < HOMING_REBASE_JUMP_PULSES else 0
             last_pos = pos
             if max_travel_pulses is not None and travelled > max_travel_pulses:
                 raise RuntimeError(

@@ -1154,17 +1154,21 @@ class _ScriptedCounterModbus(_FakeModbus):
 @pytest.mark.parametrize(
     "counters",
     [
-        [-600, -3000, -6000, -8773, 7, 8848],  # start past the switch: a revolution, re-base at the crossing
+        # start past the switch: the search leg (8168), the re-base at the crossing, then the return
+        # leg of a whole revolution to the edge, travelled for real (bench trace, 60 ms polls)
+        [-605, -3000, -6000, -8773, 9, 1899, 4000, 6500, 8848],
         [8859, -1259, 48],  # the retry from that state: re-bases at once
-        [600, 3000, 8773, -7, -8752],  # the mirror search (method 19)
+        [-4658, -7000, -8837, 31, 3000, 5950, 8831],  # a restart homing from a cut-short search
+        [605, 3000, 6000, 8773, -9, -1899, -4000, -6500, -8848],  # the mirror search (method 19)
     ],
-    ids=["wrapped", "retry-after-a-wrap", "wrapped-mirror"],
+    ids=["wrapped", "retry-after-a-wrap", "wrapped-from-a-cut-search", "wrapped-mirror"],
 )
 def test_home_accepts_a_search_that_wraps_through_the_switch(monkeypatch, counters):
-    # Bench 2026-10-11: a search that reaches the switch after most of a revolution ends physically
-    # at the edge (image within 0.08 um of a from-slot homing) but with the counter a revolution on
-    # (8848 = 8800 + 48): the drive re-bases at the crossing and returns to the edge in the frame it
-    # started in. Neither the edge band nor the one-revolution travel bound may raise on that.
+    # Bench 2026-10-11: a search that reaches the switch after most of a revolution re-bases at the
+    # crossing and then travels a whole revolution more to the edge in the frame it started in, so
+    # it ends physically at the edge (image within 0.08 um of a from-slot homing) with the counter a
+    # revolution on (8848 = 8800 + 48) after close to two revolutions of travel. Neither the edge
+    # band nor the travel bound may raise on that.
     fake = _ScriptedCounterModbus(counters)
     controller, _ = _make_real_controller(monkeypatch, fake=fake)
     controller.home()
@@ -1177,6 +1181,17 @@ def test_home_still_rejects_a_stop_away_from_the_edge_modulo_a_revolution(monkey
     fake = _ScriptedCounterModbus([6050, 3000, 8800 + 1200])
     controller, _ = _make_real_controller(monkeypatch, fake=fake)
     with pytest.raises(RuntimeError, match="not at the switch reference"):
+        controller.home()
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
+    controller.close()
+
+
+def test_home_raises_when_the_return_leg_runs_away(monkeypatch):
+    # After the re-base the drive owes at most a revolution (plus the window) to the edge; a return
+    # leg that keeps going is bounded like the search leg.
+    fake = _ScriptedCounterModbus([-605, -8773, 9, 3000, 6000, 9000, 12000, 15000])
+    controller, _ = _make_real_controller(monkeypatch, fake=fake)
+    with pytest.raises(RuntimeError, match="found no sensor within one revolution"):
         controller.home()
     assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
     controller.close()
