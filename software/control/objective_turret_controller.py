@@ -24,6 +24,7 @@ POSITIONS_PER_REV = 4  # 90 degrees per objective
 MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after power cycle
 # 90 degrees of turret travel in motor pulses (2200); drives with a different microstep are rejected in __init__.
 PULSES_PER_SLOT = int(MOTOR_STEPS_PER_REV * 2**MICROSTEP_REG_VALUE * GEAR_RATIO / POSITIONS_PER_REV)
+PULSES_PER_REV = PULSES_PER_SLOT * POSITIONS_PER_REV  # 8800 at microstep 16
 POSITION_TOLERANCE_PULSES = 50
 # Upper bound for backlash compensation, in turret degrees. Real gear backlash is a
 # small fraction of a degree; anything larger indicates a misconfigured .ini.
@@ -144,15 +145,22 @@ ZERO_RETURN_ENABLED = 1
 # slower than it: a higher EXPECTED_MIN_SPEED needs a new HOMING_ZERO_SPEED, not a silent change.
 assert HOMING_ZERO_SPEED >= EXPECTED_MIN_SPEED
 # A switch the drive never sees (polarity, wiring, a dead sensor) must not spin the turret for the
-# whole timeout: the homing wait raises once the counter has travelled more than one revolution
-# (8800 pulses at microstep 16) from where the search started.
+# whole timeout: the homing wait raises once the counter has travelled more than one revolution,
+# added up poll by poll.
 HOMING_MAX_TRAVEL = 10000  # pulses
-# At the end of a homing the drive has re-based its counter at the switch: it read 62-63 pulses on
-# every one of the 119 bench homings that started from a slot, and about -10 when the homing
-# started inside the switch window (no search, only the creep and the return; bench 2026-10-10),
-# so the bound must stay wide enough for both signs. A counter still at a slot position means
-# the drive did not run its homing (run mode / homing registers), and zeroing there would plant
-# a wrong zero.
+# A counter change beyond this between two polls is the drive re-basing its counter at the switch,
+# not travel: the search moves a few dozen pulses per poll, the re-base jumps up to a revolution
+# (more after a failed search left the counter far out).
+HOMING_REBASE_JUMP_PULSES = PULSES_PER_REV // 2
+# At the end of a homing the drive has re-based its counter at the switch and stopped on the edge.
+# The counter read 62-63 pulses on every bench homing that started from a slot, about -10 when the
+# homing started inside the switch window (no search, only the creep and the return; bench
+# 2026-10-10), and a whole revolution more when the search wrapped through the switch (8848 from a
+# start just past it, bench 2026-10-11: the drive re-bases at the crossing and returns to the edge
+# in the frame it started in, and the image sits on the same edge within 0.08 um). The check
+# therefore compares the counter modulo a revolution (_wrap_to_revolution) and must stay wide
+# enough for both signs. A counter still at a slot position means the drive did not run its homing
+# (run mode / homing registers), and zeroing there would plant a wrong zero.
 HOMING_EDGE_COUNTER_MAX = 500  # pulses
 
 # Polling
@@ -270,6 +278,13 @@ def calibrate_register(
 def clear_drive_alarm(modbus: ModbusRTUClient, slave_id: int) -> None:
     modbus.write_register(slave_id, REG_CONTROL_WORD, CW_CLEAR_FAULT)
     modbus.write_register(slave_id, REG_CLEAR_ERROR_STORAGE, CLEAR_ERROR_STORAGE_MAGIC)
+
+
+def _wrap_to_revolution(pulses: int) -> int:
+    """The counter modulo one turret revolution, in (-half, half]: where the drive stands on
+    the turret, whichever revolution its counter is in."""
+    half = PULSES_PER_REV // 2
+    return (pulses + half) % PULSES_PER_REV - half
 
 
 def prepare_for_parameter_writes(modbus: ModbusRTUClient, slave_id: int) -> None:
@@ -606,11 +621,14 @@ class ObjectiveTurret4PosController:
             self._write_control(CW_RUN_ABSOLUTE)
             self._write_control(CW_TRIGGER_ABSOLUTE)
             edge_counter = self._wait_until_stopped(timeout_s, "homing", max_travel_pulses=HOMING_MAX_TRAVEL)
-            if abs(edge_counter) > HOMING_EDGE_COUNTER_MAX:
+            # The drive stops on the switch edge; its counter reads the edge offset, plus a whole
+            # revolution when the search wrapped through the switch (see HOMING_EDGE_COUNTER_MAX).
+            edge = _wrap_to_revolution(edge_counter)
+            if abs(edge) > HOMING_EDGE_COUNTER_MAX:
                 raise RuntimeError(
-                    f"Homing ended with the counter at {edge_counter} pulses, not at the switch reference "
-                    f"(within {HOMING_EDGE_COUNTER_MAX}): the drive did not run its homing (run mode / homing "
-                    "registers?)"
+                    f"Homing ended with the counter at {edge_counter} pulses ({edge} modulo a revolution), not "
+                    f"at the switch reference (within {HOMING_EDGE_COUNTER_MAX}): the drive did not run its "
+                    "homing (run mode / homing registers?)"
                 )
             # Zero return left the drive on the switch edge: make that the counter's zero.
             self._write_holding(REG_SET_ZERO, SET_ZERO_MAGIC)
@@ -863,32 +881,27 @@ class ObjectiveTurret4PosController:
         fault bit or an alarm code raises at once. With `target_pulses`, idle only counts
         inside POSITION_TOLERANCE_PULSES of it, and an idle drive that was seen running
         but is not there has stopped short. With `max_travel_pulses`, a counter that has
-        moved further than that from the first snapshot raises (a homing search that never
-        finds the switch)."""
+        travelled further than that, added up poll by poll, raises (a homing search that
+        never finds the switch)."""
         started = time.monotonic()
         deadline = started + timeout_s
         seen_running = False
         last_pos: Optional[int] = None
-        start_pos: Optional[int] = None
+        travelled = 0
         while time.monotonic() < deadline:
-            status, last_pos, alarm = self._read_status_snapshot()
+            status, pos, alarm = self._read_status_snapshot()
             self._check_fault(status)
             self._check_alarm(alarm, what)
-            if start_pos is None:
-                start_pos = last_pos
-            # Travel is measured from the first snapshot. The drive re-bases its counter to the
-            # switch reference once it finds the switch (see HOMING_EDGE_COUNTER_MAX), and that
-            # jump can exceed a revolution when the search started from a counter a previous
-            # failed search left far out; a counter inside the reference band is therefore the
-            # re-base, not travel. A runaway search never re-bases and leaves the band for good.
-            if (
-                max_travel_pulses is not None
-                and abs(last_pos) > HOMING_EDGE_COUNTER_MAX
-                and abs(last_pos - start_pos) > max_travel_pulses
-            ):
+            # The drive re-bases its counter at the switch once the search reaches it (see
+            # HOMING_EDGE_COUNTER_MAX): a jump between two polls is that re-base, not travel. A
+            # runaway search never re-bases and adds up past a revolution.
+            if last_pos is not None and abs(pos - last_pos) < HOMING_REBASE_JUMP_PULSES:
+                travelled += abs(pos - last_pos)
+            last_pos = pos
+            if max_travel_pulses is not None and travelled > max_travel_pulses:
                 raise RuntimeError(
-                    f"The {what} found no sensor within one revolution ({abs(last_pos - start_pos)} pulses "
-                    "travelled): direction, wiring or switch polarity?"
+                    f"The {what} found no sensor within one revolution ({travelled} pulses travelled): "
+                    "direction, wiring or switch polarity?"
                 )
             at_target = target_pulses is None or abs(last_pos - target_pulses) <= POSITION_TOLERANCE_PULSES
 

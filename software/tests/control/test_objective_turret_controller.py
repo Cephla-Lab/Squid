@@ -1127,3 +1127,56 @@ def test_homing_unfinished_after_a_homing_that_failed(monkeypatch):
         controller.home(timeout_s=1.0)
     assert controller.homing_unfinished is True
     controller.close()
+
+
+# --- a search that wraps through the switch: the counter ends one revolution on ---
+
+
+class _ScriptedCounterModbus(_FakeModbus):
+    """The drive's counter follows a script, one value per status snapshot; RUNNING until the
+    script's last value, which then repeats as the stop."""
+
+    def __init__(self, counters):
+        super().__init__()
+        self.counters = list(counters)
+        self.homes = False  # the script is the counter, no re-base on top
+        self._running_now = True
+
+    def _next_status_word(self):
+        return STATUS_BIT_RUNNING if self._running_now else 0
+
+    def read_input_registers(self, slave_id, address, count):
+        self._running_now = len(self.counters) > 1
+        self._position = self.counters.pop(0) if self._running_now else self.counters[0]
+        return super().read_input_registers(slave_id, address, count)
+
+
+@pytest.mark.parametrize(
+    "counters",
+    [
+        [-600, -3000, -6000, -8773, 7, 8848],  # start past the switch: a revolution, re-base at the crossing
+        [8859, -1259, 48],  # the retry from that state: re-bases at once
+        [600, 3000, 8773, -7, -8752],  # the mirror search (method 19)
+    ],
+    ids=["wrapped", "retry-after-a-wrap", "wrapped-mirror"],
+)
+def test_home_accepts_a_search_that_wraps_through_the_switch(monkeypatch, counters):
+    # Bench 2026-10-11: a search that reaches the switch after most of a revolution ends physically
+    # at the edge (image within 0.08 um of a from-slot homing) but with the counter a revolution on
+    # (8848 = 8800 + 48): the drive re-bases at the crossing and returns to the edge in the frame it
+    # started in. Neither the edge band nor the one-revolution travel bound may raise on that.
+    fake = _ScriptedCounterModbus(counters)
+    controller, _ = _make_real_controller(monkeypatch, fake=fake)
+    controller.home()
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) in fake.writes
+    assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    controller.close()
+
+
+def test_home_still_rejects_a_stop_away_from_the_edge_modulo_a_revolution(monkeypatch):
+    fake = _ScriptedCounterModbus([6050, 3000, 8800 + 1200])
+    controller, _ = _make_real_controller(monkeypatch, fake=fake)
+    with pytest.raises(RuntimeError, match="not at the switch reference"):
+        controller.home()
+    assert (REG_SET_ZERO, SET_ZERO_MAGIC) not in fake.writes
+    controller.close()
