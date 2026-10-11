@@ -269,7 +269,11 @@ class _FakeModbus:
         return self.connected
 
     def read_register(self, slave_id, address):
-        return self.microstep_raw if address == REG_MICROSTEP else 0
+        if address == REG_MICROSTEP:
+            return self.microstep_raw
+        if address == REG_RUN_MODE:
+            return self._run_mode or 0
+        return 0
 
     def read_register_32bit(self, slave_id, address, signed=False):
         return 0
@@ -1093,4 +1097,33 @@ def test_home_after_a_failed_search_is_not_tripped_by_the_counter_rebase(monkeyp
     controller.home()
     assert (REG_SET_ZERO, SET_ZERO_MAGIC) in fake.writes
     assert fake.control_word_writes()[-3:] == [CW_STARTUP, CW_ENABLE, CW_RUN_ABSOLUTE]
+    controller.close()
+
+
+# --- a homing the host never finished: the drive's run mode is the record ---
+
+
+def test_homing_unfinished_while_the_drive_is_still_in_homing_mode(monkeypatch):
+    # Bench 2026-10-10: a host killed after the trigger leaves the drive to finish the search on
+    # its own - still in homing mode, counter re-based at the switch (45 here), 45-66 pulses from
+    # where SET_ZERO would have put zero. home() only switches the drive back to position mode
+    # (the clamp) after SET_ZERO, so homing mode at reconnect means the counter is not the host's.
+    fake = _FakeModbus()
+    fake._run_mode = MODE_HOMING
+    fake._position = 45
+    controller, _ = _make_real_controller(monkeypatch, fake=fake)
+    assert controller.homing_unfinished is True
+    controller.home()
+    assert controller.homing_unfinished is False
+    controller.close()
+
+
+def test_homing_unfinished_after_a_homing_that_failed(monkeypatch):
+    _deterministic_clock(monkeypatch)
+    controller, fake = _make_real_controller(monkeypatch)
+    assert controller.homing_unfinished is False
+    fake.status_script = [STATUS_BIT_RUNNING]  # never finishes
+    with pytest.raises(TimeoutError):
+        controller.home(timeout_s=1.0)
+    assert controller.homing_unfinished is True
     controller.close()

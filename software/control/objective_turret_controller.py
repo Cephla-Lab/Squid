@@ -423,6 +423,10 @@ class ObjectiveTurret4PosControllerSimulation:
     def is_open(self) -> bool:
         return self._is_open
 
+    @property
+    def homing_unfinished(self) -> bool:
+        return False  # a simulated drive never leaves a homing hanging (see the real twin)
+
     def _require_open(self) -> None:
         if not self._is_open:
             raise RuntimeError("Turret controller is closed")
@@ -687,6 +691,16 @@ class ObjectiveTurret4PosController:
     def current_position_pulses(self) -> int:
         raw = self._modbus.read_input_register_32bit(self._slave_id, REG_CURRENT_POSITION, signed=True)
         return -raw if self._direction_inverted else raw
+
+    @property
+    def homing_unfinished(self) -> bool:
+        """Whether the drive is still in its homing mode, i.e. the last homing never completed
+        through the host: home() switches the drive back to position mode (the clamp) only
+        after SET_ZERO. A host that died or timed out mid-homing leaves the drive to finish the
+        search alone, with the counter re-based at the switch in the drive's own frame (45-66
+        pulses from the host's zero on the bench, 2026-10-10), or stops it part-way; either way
+        the counter is not the host's, and a software restart must home before trusting it."""
+        return self._modbus.read_register(self._slave_id, REG_RUN_MODE) == MODE_HOMING
 
     @property
     def current_objective(self) -> Optional[str]:
