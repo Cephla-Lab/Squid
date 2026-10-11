@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 import control._def
+import squid.logging
 from control import utils
 
 
@@ -136,3 +137,25 @@ class PrewarmedJobRunnerSlot:
         self.shutdown_runner(self._runner, timeout_s=timeout_s, context="during close")
         self._runner = None
         self._bp_values = None
+
+
+def start_run_state_writer(experiment_id: str, output_path: str, expected: dict):
+    """Start the acquisition watchdog's run.json breadcrumb, or return the null writer.
+
+    A breadcrumb failure must never stop an acquisition: it is logged, and the null writer
+    stands in so beat()/end() stay safe to call.
+    """
+    import squid.acquisition_state
+
+    try:
+        config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
+        return squid.acquisition_state.RunStateWriter.start(
+            experiment_id=experiment_id,
+            pid=os.getpid(),
+            config_path=config_path,
+            output_path=output_path,
+            expected=expected,
+        )
+    except Exception as e:
+        squid.logging.get_logger(__name__).warning(f"Failed to write acquisition watchdog start state: {e}")
+        return squid.acquisition_state.NullRunStateWriter()

@@ -1291,3 +1291,79 @@ def test_frame_source_discards_frames_around_a_live_frame_rate_write():
     cam2.cb(_FakeFrame(time.time(), "first"))
     src2.stop()
     assert [f.frame for f in got2] == ["first"]
+
+
+def test_frame_source_corrects_the_router_pacing_from_the_running_stream_rate():
+    """ToupTek rejects a stopped-state rate write after a binning change and reports its free-run maximum,
+    so the caller builds an unpaced router; the live write at start then succeeds and the sensor paces
+    itself.  The source hands the running-stream rate to the router, which switches to sequential slots:
+    at-rate delivery with ordinary jitter then fills every slot instead of leaving holes."""
+    from control.core.streaming_capture import ContinuousFrameSource, camera_paces_at
+
+    class _LatePacingCamera:
+        def __init__(self):
+            self.streaming = False
+            self.on_frame = None
+
+        def set_acquisition_mode(self, mode):
+            pass
+
+        def set_frame_rate(self, fps):
+            return fps if self.streaming else 1000.0  # stopped: rejected, reports the free-run maximum
+
+        def add_frame_callback(self, cb):
+            self.on_frame = cb
+            return 1
+
+        def remove_frame_callback(self, cb_id):
+            pass
+
+        def start_streaming(self):
+            self.streaming = True
+
+        def stop_streaming(self):
+            self.streaming = False
+
+    fps = 10.0
+    cam = _LatePacingCamera()
+    router = RecordingRouter(fps, paced=camera_paces_at(cam.set_frame_rate(fps), fps))  # the pre-stream decision
+    source = ContinuousFrameSource(cam, fps, already_configured=True, on_running_rate=router.set_paced_from_rate)
+    routed = []
+    source.start(lambda frame: routed.append(router.route(frame.timestamp)))
+    for ts in (0.0, 0.16, 0.26, 0.36, 0.46):  # at-rate frames with jitter; nearest-slot routing skips slot 1
+        cam.on_frame(_FakeFrame(ts, np.zeros((2, 2), np.uint16)))
+    source.stop()
+    assert [idx[0] for idx in routed] == [0, 1, 2, 3, 4]
+
+
+def test_finalize_reports_a_drain_that_outlived_it_and_wait_sealed_sees_its_errors(tmp_path, monkeypatch):
+    """A drain still writing when finalize() gives up its join must not look healthy: finalize() returns
+    False, and wait_sealed() lets the caller pick up the write errors that surface after it returned."""
+    import threading
+    from control.core.zarr_writer import ZarrWriter
+    from control.core.streaming_capture import RecordingWriter
+
+    release = threading.Event()
+
+    class _LateFailingFuture:
+        def done(self):
+            return release.is_set()
+
+        def result(self):
+            release.wait()
+            raise RuntimeError("disk error after finalize")
+
+    monkeypatch.setattr(ZarrWriter, "initialize", lambda self: None)
+    monkeypatch.setattr(ZarrWriter, "submit_frame", lambda self, image, t, c, z, fov=None: _LateFailingFuture())
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+
+    rw = RecordingWriter(_stub_zarr_cfg(tmp_path), max_queue=8)
+    rw.start()
+    rw.enqueue(np.zeros((4, 4), np.uint16), 0, 0, 0)
+    assert rw.finalize(timeout_s=0.2) is False
+    assert rw.finalize_wedged is False and rw.write_error_count == 0  # looks healthy: the error is still ahead
+    assert rw.wait_sealed(timeout_s=0.0) is False
+    release.set()
+    assert rw.wait_sealed(timeout_s=5.0) is True
+    assert rw.write_error_count == 1

@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -1624,3 +1625,210 @@ def test_three_record_zstack_acquisitions_all_sealed(tmp_path, monkeypatch):
     finally:
         controller.close()
     assert started == []
+
+
+def test_recording_switches_to_paced_routing_when_the_camera_only_paces_once_streaming(tmp_path, monkeypatch, caplog):
+    """The pacing decision is made before streaming.  A camera that rejects the stopped-state rate write
+    (ToupTek after a binning change) reports its free-run maximum there and only paces itself once the
+    stream runs; the recording must then route sequentially, or at-rate jitter seals it incomplete."""
+    pytest.importorskip("tensorstore")
+    import logging
+    import tests.control.test_stubs as ts
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    real_set_frame_rate = scope.camera.set_frame_rate
+
+    def late_pacing_set_frame_rate(fps):
+        real_set_frame_rate(fps)
+        return fps if scope.camera.get_is_streaming() else 1000.0
+
+    monkeypatch.setattr(scope.camera, "set_frame_rate", late_pacing_set_frame_rate)
+    with caplog.at_level(logging.INFO):
+        worker.run()
+    assert not aborted["v"]
+    assert any("routing switched to camera-paced" in r.getMessage() for r in caplog.records)
+    (attrs,) = ts.zarr_squid_attrs(worker.experiment_path)
+    assert attrs["acquisition_complete"] is True
+
+
+class _SlowFailingFuture:
+    """A write that outlives finalize()'s wait, then fails."""
+
+    def __init__(self, delay_s):
+        self._deadline = time.monotonic() + delay_s
+
+    def done(self):
+        return False
+
+    def result(self):
+        time.sleep(max(0.0, self._deadline - time.monotonic()))
+        raise RuntimeError("disk error after finalize")
+
+
+def _shorten_recording_finalize(monkeypatch, timeout_s):
+    """Give every per-plane finalize() a short join budget, as a slow disk would exhaust the real one."""
+    from control.core.streaming_capture import RecordingWriter
+
+    real_finalize = RecordingWriter.finalize
+    monkeypatch.setattr(RecordingWriter, "finalize", lambda self, timeout_s=timeout_s: real_finalize(self, timeout_s))
+
+
+def test_late_recording_write_error_ends_the_run_as_error(tmp_path, monkeypatch, caplog):
+    """A recording whose drain outlives finalize() still fails the run when its write errors surface
+    afterwards, and .done is written only once the store is sealed."""
+    pytest.importorskip("tensorstore")
+    import logging
+    import tests.control.test_stubs as ts
+    from control.core.record_zstack_worker import RecordZStackWorker
+    from control.core.zarr_writer import ZarrWriter
+
+    _shorten_recording_finalize(monkeypatch, 0.2)
+    monkeypatch.setattr(RecordZStackWorker, "DRAIN_SETTLE_TIMEOUT_S", 5.0, raising=False)
+    monkeypatch.setattr(ZarrWriter, "submit_frame", lambda self, image, t, c, z, fov=None: _SlowFailingFuture(0.6))
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    with caplog.at_level(logging.ERROR):
+        worker.run()
+    assert worker._abort_cause == "error"
+    assert any("after finalize() returned" in r.getMessage() for r in caplog.records)
+    assert os.path.exists(os.path.join(worker.experiment_path, ".done"))  # the directory is final: store sealed
+    (attrs,) = ts.zarr_squid_attrs(worker.experiment_path)
+    assert attrs["acquisition_complete"] is False
+
+
+def test_run_withholds_done_while_a_recording_is_still_being_written(tmp_path, monkeypatch, caplog):
+    """A store still being written when the run ends is not final: no .done, and the run ends as an error."""
+    pytest.importorskip("tensorstore")
+    import logging
+    import threading
+    from control.core.record_zstack_worker import RecordZStackWorker
+    from control.core.zarr_writer import ZarrWriter
+
+    release = threading.Event()
+
+    class _BlockedFuture:
+        def done(self):
+            return release.is_set()
+
+        def result(self):
+            release.wait()
+
+    _shorten_recording_finalize(monkeypatch, 0.2)
+    monkeypatch.setattr(RecordZStackWorker, "DRAIN_SETTLE_TIMEOUT_S", 0.3, raising=False)
+    monkeypatch.setattr(ZarrWriter, "submit_frame", lambda self, image, t, c, z, fov=None: _BlockedFuture())
+    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
+    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False
+    )
+    try:
+        with caplog.at_level(logging.ERROR):
+            worker.run()
+    finally:
+        release.set()
+    assert worker._abort_cause == "error"
+    assert any("still being written" in r.getMessage() for r in caplog.records)
+    assert not os.path.exists(os.path.join(worker.experiment_path, ".done"))
+
+
+def test_zstack_stops_streaming_when_callback_registration_fails(tmp_path, monkeypatch):
+    """start_streaming() succeeded but add_frame_callback() raised: the camera must not be left streaming."""
+    pytest.importorskip("tensorstore")
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=False, zstack_enabled=True
+    )
+
+    def refuse(cb):
+        raise RuntimeError("no callback slot")
+
+    monkeypatch.setattr(scope.camera, "add_frame_callback", refuse)
+    with pytest.raises(RuntimeError, match="no callback slot"):
+        worker.zstack(0, "A1", 0, scope.stage.get_pos().z_mm)
+    assert not scope.camera.get_is_streaming()
+
+
+def test_record_restores_z_and_camera_mode_when_illumination_fails(tmp_path, monkeypatch):
+    """Illumination raising after the first-plane Z move must still restore Z and software-trigger mode."""
+    pytest.importorskip("tensorstore")
+    from squid.abc import CameraAcquisitionMode
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=True, zstack_enabled=False, recording_bottom_z_offset_um=5.0
+    )
+    real_move_z_to = scope.stage.move_z_to
+    moves = []
+
+    def move_z_to_spy(z_mm):
+        moves.append(z_mm)
+        return real_move_z_to(z_mm)
+
+    scope.stage.move_z_to = move_z_to_spy
+
+    def fail():
+        raise RuntimeError("illumination")
+
+    monkeypatch.setattr(live_controller, "turn_on_illumination", fail)
+    z_ref = scope.stage.get_pos().z_mm
+    with pytest.raises(RuntimeError, match="illumination"):
+        worker.record(0, "A1", 0, z_ref)
+    assert moves and moves[-1] == pytest.approx(z_ref), "stage-Z restore must run when illumination fails"
+    assert scope.camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
+
+
+def test_record_zstack_run_writes_the_watchdog_breadcrumb(tmp_path, monkeypatch):
+    """Record + Z-Stack leaves the run.json the multipoint acquisition does, started before the worker and
+    ended with the run's reason, so the acquisition watchdog covers it."""
+    pytest.importorskip("tensorstore")
+    import squid.acquisition_state as ast
+    import tests.control.test_stubs as ts
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
+
+    state_dir = tmp_path / "watchdog"
+    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(state_dir))
+    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
+    scan_coords = ts.get_test_scan_coordinates(scope.objective_store, scope.stage, scope.camera)
+    scan_coords.region_fov_coordinates = {"A1": [fov]}
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=laser_af,
+        objective_store=scope.objective_store,
+        scan_coordinates=scan_coords,
+        callbacks=NoOpCallbacks,
+    )
+    base = tmp_path / "acq"
+    base.mkdir()
+    try:
+        controller.run_acquisition(
+            RecordZStackAcquisitionParameters(
+                base_path=str(base),
+                experiment_id="wd",
+                Nt=1,
+                dt_s=0.0,
+                use_laser_af=False,
+                recording_enabled=True,
+                recording_channel=channels[0],
+                fps=10.0,
+                duration_s=0.2,
+                recording_bottom_z_offset_um=0.0,
+                zstack_enabled=True,
+                zstack_channels=channels[:2],
+                z_min_um=-1.0,
+                z_max_um=1.0,
+                z_step_um=1.0,
+            )
+        )
+        controller.join(timeout=120)
+    finally:
+        controller.close()
+    (experiment_dir,) = [d for d in base.iterdir() if d.is_dir()]
+    rec = ast.read_run(state_dir)
+    assert rec is not None, "no run.json written for a Record + Z-Stack run"
+    assert rec["status"] == "ended" and rec["reason"] == "completed"
+    assert Path(rec["output_path"]) == experiment_dir
+    assert rec["expected"] == {"timepoints": 1, "regions": 1, "fovs": 1, "channels": 2, "z": 3}
