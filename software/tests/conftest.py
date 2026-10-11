@@ -75,6 +75,14 @@ def _close_quietly(obj, label):
 
 
 @pytest.fixture(autouse=True)
+def _watchdog_state_to_tmp(tmp_path_factory, monkeypatch):
+    # Keep acquisition breadcrumbs (run.json) out of the real user state dir: every acquisition
+    # controller writes one, under tests/control and tests/core alike.  A sibling of tmp_path,
+    # not inside it: tests enumerate tmp_path for the one experiment directory they made.
+    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path_factory.mktemp("watchdog")))
+
+
+@pytest.fixture(autouse=True)
 def cleanup_leaked_hardware(monkeypatch):
     """
     Automatically close hardware-simulation objects created during each test.

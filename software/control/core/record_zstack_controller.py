@@ -367,22 +367,20 @@ class RecordZStackController:
         # (toggle_acquisition checks acquisition_in_progress() before calling here).
         self._abort_event.clear()
 
-        # Acquisition watchdog breadcrumb, as MultiPointController writes it.  "channels" x "z" are
-        # the z-stack images per FOV (the recording is a stream, not counted as images).
+        # Acquisition watchdog breadcrumb, as MultiPointController writes it.  channels x z are the
+        # z-stack images per FOV (the recording is a stream, not counted as images).
+        channels, z = (
+            (len(params.zstack_channels), zstack_plane_count(params.z_min_um, params.z_max_um, params.z_step_um))
+            if params.zstack_enabled
+            else (0, 0)
+        )
         run_state_writer = start_run_state_writer(
             experiment_id=params.experiment_id,
             output_path=experiment_dir,
-            expected={
-                "timepoints": params.Nt,
-                "regions": len(scan_region_fov_coords),
-                "fovs": sum(len(c) for c in scan_region_fov_coords.values()),
-                "channels": len(params.zstack_channels) if params.zstack_enabled else 0,
-                "z": (
-                    zstack_plane_count(params.z_min_um, params.z_max_um, params.z_step_um)
-                    if params.zstack_enabled
-                    else 0
-                ),
-            },
+            timepoints=params.Nt,
+            region_fov_coords=scan_region_fov_coords,
+            channels=channels,
+            z=z,
         )
         try:
             worker = RecordZStackWorker(

@@ -10,8 +10,11 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 import control._def
+import squid.acquisition_state
 import squid.logging
 from control import utils
+
+_log = squid.logging.get_logger(__name__)
 
 
 def compute_pixel_size_um(objective_store, camera) -> Optional[float]:
@@ -139,14 +142,15 @@ class PrewarmedJobRunnerSlot:
         self._bp_values = None
 
 
-def start_run_state_writer(experiment_id: str, output_path: str, expected: dict):
+def start_run_state_writer(
+    experiment_id: str, output_path: str, *, timepoints: int, region_fov_coords: dict, channels: int, z: int
+):
     """Start the acquisition watchdog's run.json breadcrumb, or return the null writer.
 
-    A breadcrumb failure must never stop an acquisition: it is logged, and the null writer
-    stands in so beat()/end() stay safe to call.
+    The run's size goes in as timepoints x regions x fovs x channels x z images.  A breadcrumb
+    failure must never stop an acquisition: it is logged, and the null writer stands in so
+    beat()/end() stay safe to call.
     """
-    import squid.acquisition_state
-
     try:
         config_path = (getattr(control._def, "CACHED_CONFIG_FILE_PATH", None) or "").strip() or None
         return squid.acquisition_state.RunStateWriter.start(
@@ -154,8 +158,14 @@ def start_run_state_writer(experiment_id: str, output_path: str, expected: dict)
             pid=os.getpid(),
             config_path=config_path,
             output_path=output_path,
-            expected=expected,
+            expected={
+                "timepoints": timepoints,
+                "regions": len(region_fov_coords),
+                "fovs": sum(len(coords) for coords in region_fov_coords.values()),
+                "channels": channels,
+                "z": z,
+            },
         )
     except Exception as e:
-        squid.logging.get_logger(__name__).warning(f"Failed to write acquisition watchdog start state: {e}")
+        _log.warning(f"Failed to write acquisition watchdog start state: {e}")
         return squid.acquisition_state.NullRunStateWriter()

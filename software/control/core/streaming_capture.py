@@ -26,19 +26,6 @@ class CountStop:
         return self.target
 
 
-def camera_paces_at(achievable_fps: Optional[float], target_fps: float) -> bool:
-    """True when the camera reports it delivers at (or below) target_fps, i.e. paces itself.
-
-    A camera that reports a higher rate free-runs faster than the target and must be
-    downsampled by arrival time (see RecordingRouter).
-    """
-    return bool(achievable_fps) and achievable_fps <= target_fps * (1 + 1e-6)
-
-
-def pacing_label(paced: bool) -> str:
-    return "camera-paced, sequential slots" if paced else "free-run, downsampled by arrival time"
-
-
 class RecordingRouter:
     """Maps incoming frames to (t,c,z)=(slot,0,0) at `fps`.
 
@@ -77,7 +64,6 @@ class RecordingRouter:
     MIN_STALL_S = 0.1
 
     def __init__(self, fps: float, paced: bool = False):
-        self._fps = float(fps) if fps and fps > 0 else 0.0
         self._period = 1.0 / fps if fps and fps > 0 else 0.0
         self._paced = bool(paced)
         self._stall_gap = max(self.STALL_PERIODS * self._period, self.MIN_STALL_S)
@@ -86,6 +72,10 @@ class RecordingRouter:
         self._last_ts: Optional[float] = None
         self._stalls = 0  # paced mode: gaps treated as stalls
         self._holes = 0  # paced mode: slots left as fill by those stalls
+
+    @property
+    def paced(self) -> bool:
+        return self._paced
 
     @property
     def nominal_period(self) -> Optional[float]:
@@ -99,22 +89,21 @@ class RecordingRouter:
     def hole_count(self) -> int:
         return self._holes
 
-    def set_paced_from_rate(self, achievable_fps: Optional[float]) -> None:
-        """Re-decide the regime from the rate the camera reports with the stream running.
+    def set_paced_from_rate(self, running_fps: float) -> None:
+        """Decide the regime from the rate the camera reports for the hint with the stream running.
 
-        The caller decides before streaming from a stopped-state rate write; toupcam validates
-        that write against the range of the mode it last streamed in, so after a binning or
-        bit-depth change it is rejected and reports the free-run maximum, while the live write
-        in ContinuousFrameSource.start() then succeeds and the sensor paces itself.
+        A camera that reports it delivers at (or below) the nominal rate paces itself: sequential
+        slots.  One that reports a higher rate free-runs faster and is downsampled by arrival time.
+        Decided from the running stream, not a stopped-state probe: toupcam validates a stopped
+        write against the range of the mode it last streamed in, so after a binning or bit-depth
+        change it is rejected and reports the free-run maximum, while the live write at start
+        succeeds and the sensor paces itself.
         """
-        if achievable_fps is None or self._fps <= 0:
+        if self._period <= 0:
             return
-        paced = camera_paces_at(achievable_fps, self._fps)
-        if paced != self._paced:
-            self._paced = paced
-            _log.info(
-                f"camera reports {achievable_fps:.2f} fps with the stream running; routing switched to {pacing_label(paced)}"
-            )
+        self._paced = bool(running_fps) and running_fps <= (1.0 / self._period) * (1 + 1e-6)
+        regime = "camera-paced, sequential slots" if self._paced else "free-run, downsampled by arrival time"
+        _log.info(f"recording routed {regime} (camera reports {running_fps:.2f} fps with the stream running)")
 
     def measured_period(self) -> Optional[float]:
         """Mean wall-clock spacing per slot actually delivered: (last - first) / slots spanned.
@@ -431,8 +420,7 @@ class RecordingWriter:
         # The put and the join share ONE budget: a sentinel accepted late must
         # not be followed by a fresh full-length join (callers would block for
         # up to ~2x timeout_s).
-        self._thread.join(timeout=max(0.1, deadline - time.monotonic()))
-        if self._thread.is_alive():
+        if not self.wait_sealed(max(0.1, deadline - time.monotonic())):
             # Slow but progressing backlog — NOT wedged (flagging it would
             # fail-fast whole multi-well runs over stores that finish fine).
             # The daemon drain seals the store when it finishes.
@@ -461,8 +449,7 @@ class RecordingWriter:
             self._q.put_nowait(_SENTINEL)
         except queue.Full:
             pass
-        self._thread.join(timeout=5.0)
-        if self._thread.is_alive():
+        if not self.wait_sealed(5.0):
             _log.warning("drain thread still alive after abort() join timeout")
 
 
@@ -473,19 +460,9 @@ class ContinuousFrameSource:
     callback, and starts/stops streaming.
     """
 
-    def __init__(
-        self,
-        camera,
-        fps: float,
-        already_configured: bool = False,
-        on_running_rate: Optional[Callable[[float], None]] = None,
-    ):
+    def __init__(self, camera, fps: float, already_configured: bool = False):
         self._camera = camera
         self._fps = fps
-        # Called with the rate the camera reports for the hint once the stream is running
-        # (RecordingRouter.set_paced_from_rate): the stopped-state write the caller decided
-        # pacing from may have been rejected (toupcam after a binning change).
-        self._on_running_rate = on_running_rate
         # True when the caller already set CONTINUOUS mode + frame rate (the
         # achievable-fps probe in record() does exactly that): skip repeating
         # both, which on toupcam costs a mode switch plus a strobe/exposure
@@ -493,7 +470,9 @@ class ContinuousFrameSource:
         self._already_configured = already_configured
         self._cb_id: Optional[int] = None
 
-    def start(self, on_frame: Callable) -> None:
+    def start(self, on_frame: Callable) -> Optional[float]:
+        """Register on_frame, start the stream and apply the rate hint; returns the rate the camera
+        reports for it with the stream running (None if the write failed), for the router's regime."""
         # Order matters: switching to CONTINUOUS resets the frame-rate strategy to
         # MAX on toupcam, wiping any earlier fps hint, so the mode switch comes
         # first.  The hint itself is (re)applied AFTER the stream is up: on toupcam
@@ -528,19 +507,18 @@ class ContinuousFrameSource:
         self._cb_id = self._camera.add_frame_callback(_filtered)
         self._camera.start_streaming()
         t_start = time.time()
-        achievable_fps = None
+        running_fps = None
         try:
-            achievable_fps = self._camera.set_frame_rate(self._fps)
+            running_fps = self._camera.set_frame_rate(self._fps)
         except Exception:
             _log.exception("failed to apply the frame-rate hint after stream start")
-        if self._on_running_rate is not None and achievable_fps is not None:
-            self._on_running_rate(achievable_fps)
         # isinstance, not a None check: the simulated camera answers unknown
         # attributes with a sentinel object instead of raising.
         live_write = getattr(self._camera, "frame_rate_hint_live_write_ts", None)
         if isinstance(live_write, (int, float)) and live_write >= t_start:
             period = 1.0 / self._fps if self._fps and self._fps > 0 else 0.0
             self._discard_until = live_write + period + 0.02
+        return running_fps
 
     def stop(self) -> None:
         self._camera.stop_streaming()
@@ -681,7 +659,9 @@ class StreamingCapture:
         """Start capture, block until done (or timeout), and return emitted count."""
         self._writer.start()
         try:
-            self._source.start(self._on_frame)
+            running_fps = self._source.start(self._on_frame)
+            if running_fps is not None:
+                self._router.set_paced_from_rate(running_fps)
             # Poll abort_fn while waiting: the frame callback also samples it, but
             # if the camera delivers no frames at all (stall, misconfigured
             # trigger) the callback never runs and a bare wait(timeout) would

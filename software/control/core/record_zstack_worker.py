@@ -32,10 +32,8 @@ from squid.abc import CameraAcquisitionMode
 from control.core.acquisition_setup import compute_pixel_size_um
 from control.core.multi_point_worker import MultiPointWorkerBase
 from control.core.streaming_capture import (
-    camera_paces_at,
     ContinuousFrameSource,
     CountStop,
-    pacing_label,
     RecordingRouter,
     RecordingWriter,
     StreamingCapture,
@@ -147,7 +145,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # rate — it paces itself to the hint, or the request is at its free-run
         # maximum — so every frame is wanted and the RecordingRouter fills slots
         # sequentially instead of downsampling by arrival time.
-        self._paced: bool = False
         # Set at the top of run(); _wait_for_dt paces timepoint STARTS from it.
         self._acq_start_time: Optional[float] = None
 
@@ -195,6 +192,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
         camera is left stopped between FOVs/phases, so this loop owns no camera
         callback of its own.
         """
+        run_t0 = time.monotonic()
         # Quiesce live view once for the whole acquisition (restored in finally).
         was_live = bool(self.liveController.is_live)
         # Capture pre-acquisition hardware state so the finally can put the
@@ -222,7 +220,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
             self._acq_start_time = time.monotonic()
             for t_idx in range(self.params.Nt):
                 self.time_point = t_idx
-                fov_count = 0
+                self._timepoint_fov_count = 0
                 action = self._pace_timepoint(t_idx)
                 if action == "skip":
                     continue
@@ -245,8 +243,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
                             # Drain the finished save results after every FOV (non-blocking): a failed write
                             # requests the abort (_summarize_job_result) and the loop's abort check stops the run.
                             self._summarize_runner_outputs(drain_all=True)
-                        fov_count += 1
-                        self._run_state.beat({"timepoint": t_idx, "fov": fov_count, "images": self.image_count})
+                        self._timepoint_fov_count += 1
+                        self._run_state_beat()
         except Exception as e:
             log.exception(e)
             self._abort_due_to_error()  # tags the cause, so the run ends as "error" rather than a user abort
@@ -279,18 +277,16 @@ class RecordZStackWorker(MultiPointWorkerBase):
                     log.exception("Failed to restart live view after acquisition")
             # Recordings whose drain outlived finalize(): wait for them to seal, so .done means the
             # directory is final, and fail the run on a write error that surfaced after finalize().
-            if self._draining_writers:
-                try:
-                    self._settle_draining_recordings(self.DRAIN_SETTLE_TIMEOUT_S)
-                except RuntimeError as e:
-                    log.error(str(e))
-                    self._abort_due_to_error()
+            try:
+                self._settle_draining_recordings(self.DRAIN_SETTLE_TIMEOUT_S)
                 if self._draining_writers:
-                    log.error(
+                    raise RuntimeError(
                         f"{len(self._draining_writers)} recording store(s) still being written "
                         f"{self.DRAIN_SETTLE_TIMEOUT_S:g}s after the run ended; not writing .done"
                     )
-                    self._abort_due_to_error()
+            except RuntimeError as e:
+                log.error(str(e))
+                self._abort_due_to_error()
             # Completion marker for downstream watchers (mirrors multipoint's
             # _on_acquisition_completed). Written on abort too: the directory is
             # final either way, and the zarr attrs record completeness.
@@ -302,19 +298,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
                         create_done_file(self.experiment_path)
                 except Exception:
                     log.exception("Failed to write completion marker (.done)")
-            # Why the run ended (the watchdog breadcrumb and the controller read it).
-            self.end_reason = self._compute_end_reason()
-            self._run_state.end(
-                self.end_reason,
-                {
-                    "total_images": self.image_count,
-                    "total_timepoints": self.time_point,
-                    "total_duration_seconds": (
-                        time.monotonic() - self._acq_start_time if self._acq_start_time is not None else None
-                    ),
-                    "errors_encountered": self._acquisition_error_count,
-                },
-            )
+            self._end_run_state(time.monotonic() - run_t0)
             try:
                 self.callbacks.signal_acquisition_finished()
             except Exception:
@@ -429,7 +413,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
         # whether it can do even less than resolved.
         target_fps = self.params.effective_fps or self.params.fps
         effective_fps = target_fps
-        paced = False
         try:
             achievable_fps = self.camera.set_frame_rate(target_fps)
             if achievable_fps and 0 < achievable_fps < target_fps * (1 - 0.01):
@@ -438,14 +421,10 @@ class RecordZStackWorker(MultiPointWorkerBase):
                     f"recording at {achievable_fps:.2f} fps (acquisition.yaml has the resolved value)"
                 )
                 effective_fps = achievable_fps
-            # Sequential slots for a camera that paces itself, arrival-time downsampling for one
-            # that free-runs faster; re-decided from the running-stream rate in _record_one_plane.
-            paced = camera_paces_at(achievable_fps, target_fps)
         except Exception:
             log.exception("set_frame_rate failed; assuming the resolved fps")
         self._effective_fps = effective_fps
-        self._paced = paced
-        log.info(f"recording at {effective_fps:g} fps ({pacing_label(paced)})")
+        log.info(f"recording at {effective_fps:g} fps")
         return effective_fps
 
     def _record_one_plane(
@@ -495,12 +474,9 @@ class RecordZStackWorker(MultiPointWorkerBase):
             extra_squid_attrs=extra_attrs,
         )
         writer = RecordingWriter(cfg)
-        router = RecordingRouter(effective_fps, paced=self._paced)
         cap = StreamingCapture(
-            ContinuousFrameSource(
-                self.camera, effective_fps, already_configured=True, on_running_rate=router.set_paced_from_rate
-            ),
-            router,
+            ContinuousFrameSource(self.camera, effective_fps, already_configured=True),
+            RecordingRouter(effective_fps),  # paced or not is decided from the running-stream rate at start
             CountStop(T),
             writer,
             abort_fn=self.abort_requested_fn,
@@ -542,8 +518,12 @@ class RecordZStackWorker(MultiPointWorkerBase):
         where they fail the run.  Stores still being written stay listed.
         """
         deadline = time.monotonic() + timeout_s
-        still_open = [w for w in self._draining_writers if not w.wait_sealed(max(0.0, deadline - time.monotonic()))]
-        failed = [w for w in self._draining_writers if w not in still_open and w.write_error_count > 0]
+        still_open, failed = [], []
+        for writer in self._draining_writers:
+            if not writer.wait_sealed(max(0.0, deadline - time.monotonic())):
+                still_open.append(writer)
+            elif writer.write_error_count > 0:
+                failed.append(writer)
         self._draining_writers = still_open
         if failed:
             raise RuntimeError(
@@ -586,41 +566,28 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 except Exception:
                     log.exception("Failed to set camera software-trigger mode for z-stack")
         current_path = self._zstack_dir(region_id)
-        cb_id = None
         try:
-            self.camera.start_streaming()
-            cb_id = self.camera.add_frame_callback(self._image_callback)
-            # Make sure the trigger gate starts open.
-            self._ready_for_next_trigger.set()
-            for z_idx, off_um in enumerate(offsets):
-                self._move_z_to_offset(z_ref, off_um)
-                for c_idx, config in enumerate(self.zstack_channels):
-                    if self.abort_requested_fn():
-                        return
-                    file_id = f"{region_id}_{fov_idx}"
-                    self.acquire_camera_image(
-                        config=config,
-                        file_ID=file_id,
-                        current_path=current_path,
-                        k=z_idx,
-                        region_id=region_id,
-                        fov=fov_idx,
-                        config_idx=c_idx,
-                    )
+            # The stream is stopped again on the way out, so the next FOV's recording phase
+            # starts ContinuousFrameSource on a stopped camera.
+            with self._camera_streaming(self._image_callback):
+                # Make sure the trigger gate starts open.
+                self._ready_for_next_trigger.set()
+                for z_idx, off_um in enumerate(offsets):
+                    self._move_z_to_offset(z_ref, off_um)
+                    for c_idx, config in enumerate(self.zstack_channels):
+                        if self.abort_requested_fn():
+                            return
+                        file_id = f"{region_id}_{fov_idx}"
+                        self.acquire_camera_image(
+                            config=config,
+                            file_ID=file_id,
+                            current_path=current_path,
+                            k=z_idx,
+                            region_id=region_id,
+                            fov=fov_idx,
+                            config_idx=c_idx,
+                        )
         finally:
-            # Wait for the last in-flight frame, then detach our callback and stop
-            # streaming (mirrors ContinuousFrameSource.stop()), so the next FOV's
-            # recording phase starts ContinuousFrameSource on a stopped camera.
-            self._wait_for_outstanding_callback_images()
-            if cb_id is not None:
-                try:
-                    self.camera.remove_frame_callback(cb_id)
-                except Exception:
-                    log.exception("Failed to remove z-stack frame callback")
-            try:
-                self.camera.stop_streaming()
-            except Exception:
-                log.exception("Failed to stop streaming after z-stack")
             self.move_to_z_level(z_ref)
 
     # --------------------------------------------------------------- helpers
@@ -663,17 +630,12 @@ class RecordZStackWorker(MultiPointWorkerBase):
         frame = None
         try:
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
-            self.camera.start_streaming()
-            cam_frame = self.camera.read_camera_frame()
-            if cam_frame is not None:
-                frame = cam_frame.frame
+            with self._camera_streaming():
+                cam_frame = self.camera.read_camera_frame()
+                if cam_frame is not None:
+                    frame = cam_frame.frame
         except Exception:
             log.exception("probe-frame capture failed")
-        finally:
-            try:
-                self.camera.stop_streaming()
-            except Exception:
-                log.exception("failed to stop streaming after probe frame")
         if frame is None:
             # No usable frame: sizing from get_resolution() (raw sensor size) would
             # mismatch the cropped delivery and fail every write, so abort with a
