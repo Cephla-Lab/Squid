@@ -242,8 +242,7 @@ class RecordZStackAcquisitionParameters:
 
 
 class RecordZStackController:
-    """Controller that spawns RecordZStackWorker
-    on a daemon thread.
+    """Controller that spawns RecordZStackWorker on a daemon thread.
 
     Constructor arguments mirror MultiPointController's signature where the concept
     overlaps. Call run_acquisition(params) with a fully-built

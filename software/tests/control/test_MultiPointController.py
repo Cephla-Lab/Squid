@@ -726,17 +726,10 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
 
 
 def _zarr_jsons_with_squid(mpc):
-    """The _squid attributes of every OME group zarr.json of the run just finished (array zarr.json files carry none)."""
-    import json
+    """The _squid attributes of every OME group zarr.json of the run just finished."""
     from pathlib import Path
 
-    out = []
-    for p in (Path(mpc.base_path) / mpc.experiment_ID).rglob("zarr.json"):
-        with open(p) as f:
-            attrs = json.load(f).get("attributes", {}).get("_squid")
-        if attrs is not None:
-            out.append(attrs)
-    return out
+    return ts.zarr_squid_attrs(Path(mpc.base_path) / mpc.experiment_ID)
 
 
 def _zarr_v3_controller(monkeypatch):
@@ -750,24 +743,6 @@ def _zarr_v3_controller(monkeypatch):
     add_some_coordinates(mpc)
     select_some_configs(mpc, scope.objective_store.current_objective)
     return mpc, tt
-
-
-def _make_zarr_writes_fail(monkeypatch, message="disk full"):
-    """Every SaveZarrJob opens its store as usual (so there is a zarr.json to inspect) but its write fails."""
-    import concurrent.futures
-    from control.core.job_processing import SaveZarrJob
-
-    real_submit = SaveZarrJob.submit
-
-    def failing_submit(self):
-        future, result = real_submit(self)
-        if future is not None:
-            future.result()
-        failed = concurrent.futures.Future()
-        failed.set_exception(RuntimeError(message))
-        return failed, result
-
-    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
 
 
 def test_zarr_v3_multipoint_saves_in_process_and_seals(monkeypatch):
@@ -845,7 +820,7 @@ def test_zarr_write_error_ends_the_run_as_error(monkeypatch, caplog):
     import logging
 
     mpc, tt = _zarr_v3_controller(monkeypatch)
-    _make_zarr_writes_fail(monkeypatch)
+    ts.make_zarr_writes_fail(monkeypatch)
     with caplog.at_level(logging.ERROR):
         mpc.run_acquisition()
         assert tt.finished_event.wait(120)
@@ -921,7 +896,7 @@ def test_zarr_write_error_surfacing_at_the_end_ends_the_run_as_error(monkeypatch
         return real_summarize(self, drain_all=drain_all)
 
     mpc, tt = _zarr_v3_controller(monkeypatch)
-    _make_zarr_writes_fail(monkeypatch)
+    ts.make_zarr_writes_fail(monkeypatch)
     monkeypatch.setattr(MultiPointWorker, "_summarize_runner_outputs", final_drain_only)
     with caplog.at_level(logging.ERROR):
         mpc.run_acquisition()
