@@ -2699,6 +2699,7 @@ def test_update_coordinates_leaves_loaded_plan_untouched():
         has_loaded_coordinates=True,
     )
 
+    fake._plan_is_loaded_file = lambda: control.widgets.WellplateMultiPointWidget._plan_is_loaded_file(fake)
     control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
 
     fake.scanCoordinates.clear_regions.assert_not_called()
@@ -2720,6 +2721,7 @@ def test_update_coordinates_derives_from_wells_when_no_plan_loaded():
         has_loaded_coordinates=False,
     )
 
+    fake._plan_is_loaded_file = lambda: control.widgets.WellplateMultiPointWidget._plan_is_loaded_file(fake)
     control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
 
     fake.scanCoordinates.set_well_coordinates.assert_called_once()

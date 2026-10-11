@@ -683,6 +683,14 @@ def parse_well_id(well_id: str) -> Tuple[str, str]:
     return (letter_part, number_part)
 
 
+def within_travel(x_mm: float, y_mm: float) -> bool:
+    """Is this XY inside the software travel limits? Read live: the limits
+    class is mutated at runtime (Preferences), and nothing below this layer
+    clamps an XY move - the firmware truncates silently."""
+    limits = control._def.SOFTWARE_POS_LIMIT
+    return limits.X_NEGATIVE <= x_mm <= limits.X_POSITIVE and limits.Y_NEGATIVE <= y_mm <= limits.Y_POSITIVE
+
+
 def row_to_index(row: str) -> int:
     """Convert a well row label to a 0-based row index.
 

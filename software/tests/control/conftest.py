@@ -5,6 +5,10 @@ Microcontroller/Microscope/MultiPointController cleanup is handled suite-wide
 by the autouse fixture in tests/conftest.py.
 """
 
+import os
+import shutil
+from unittest.mock import patch
+
 import pytest
 
 from control.core.core import ImageDisplayWindow
@@ -48,6 +52,104 @@ def firmware_sim_nonstrict():
 def _watchdog_state_to_tmp(tmp_path, monkeypatch):
     # Keep acquisition breadcrumbs out of the real user state dir during tests.
     monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(tmp_path / "watchdog"))
+
+
+@pytest.fixture
+def catalog_tree(tmp_path, monkeypatch):
+    """Isolated cwd holding the shipped catalog: sidecar writes (machine_configs/,
+    cache/, objective_and_sample_formats/sample_formats_user.yaml) land in tmp,
+    never in the repo. images/ is symlinked read-only for widgets that draw.
+
+    The in-memory format table is pinned to the shipped catalog too: _def loaded
+    it at import from the checkout's cwd, user YAML included, so a plate
+    calibrated on this machine would move the reference wells the tests expect.
+    patch.dict swaps it in place, because widgets.py binds the dict by name."""
+    import control._def as _def
+
+    repo = os.getcwd()
+    (tmp_path / "objective_and_sample_formats").mkdir()
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "cache").mkdir()
+    for name in ("sample_formats.csv", "objectives.csv"):
+        shutil.copy(
+            os.path.join(repo, "objective_and_sample_formats", name),
+            tmp_path / "objective_and_sample_formats" / name,
+        )
+    os.symlink(os.path.join(repo, "images"), tmp_path / "images")
+    monkeypatch.chdir(tmp_path)
+
+    _objectives, shipped = _def.load_formats()  # the production loader, on the tmp tree: no user layer
+    with patch.dict(_def.WELLPLATE_FORMAT_SETTINGS, shipped, clear=True):
+        yield tmp_path
+
+
+def write_legacy_cache(tree, edit):
+    """Build a legacy cache/sample_formats.csv in `tree`: the shipped table with
+    `edit` applied (legacy caches carry only the 10 CSV columns)."""
+    import control._def as _def
+
+    formats = _def.read_sample_formats_csv(str(tree / "objective_and_sample_formats" / "sample_formats.csv"))
+    edit(formats)
+    ten = {
+        k: {f: v[f] for f in _def.SAMPLE_FORMAT_CSV_FIELDNAMES if f != "format" and f in v} for k, v in formats.items()
+    }
+    _def.write_sample_formats_csv(str(tree / "cache" / "sample_formats.csv"), ten)
+
+
+@pytest.fixture
+def strip_format(catalog_tree, monkeypatch):
+    """A 1xN custom plate in the pinned table: the holder mode's corner picks
+    collapse to two on it. Returns (format key, N)."""
+    import control._def as _def
+
+    def make(cols):
+        key = f"strip {cols}"
+        monkeypatch.setitem(
+            _def.WELLPLATE_FORMAT_SETTINGS,
+            key,
+            dict(_def.WELLPLATE_FORMAT_SETTINGS["96 well plate"], rows=1, cols=cols),
+        )
+        return key
+
+    return make
+
+
+@pytest.fixture
+def aniso_format(catalog_tree, monkeypatch):
+    """The shipped example's anisotropic carrier (ibidi 8 well: 12.5 x 11.2 mm
+    spacing, 10.4 x 9.4 mm wells) in the pinned table, in the production
+    shape (SampleFormat.to_settings). Returns the format key."""
+    import control._def as _def
+    from control.models.sample_format_config import SampleFormat
+
+    carrier = SampleFormat(
+        rows=2,
+        cols=4,
+        well_spacing_x_mm=12.5,
+        well_spacing_y_mm=11.2,
+        well_size_x_mm=10.4,
+        well_size_y_mm=9.4,
+        well_shape="rectangle",
+        a1_x_mm=15.0,
+        a1_y_mm=12.0,
+    )
+    monkeypatch.setitem(_def.WELLPLATE_FORMAT_SETTINGS, "ibidi 8 well", carrier.to_settings())
+    return "ibidi 8 well"
+
+
+@pytest.fixture
+def design_travel_limits(monkeypatch):
+    """The stage limits (and zero legacy offset) the design doc's reference
+    rings were derived against - pins reference-well computation regardless of
+    the machine config the tests happen to run under."""
+    import control._def as _def
+
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_NEGATIVE", 5.0)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "X_POSITIVE", 115.0)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_NEGATIVE", 4.0)
+    monkeypatch.setattr(_def.SOFTWARE_POS_LIMIT, "Y_POSITIVE", 76.0)
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_X_mm", 0.0)
+    monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
 
 
 @pytest.fixture(scope="session")
