@@ -1,7 +1,9 @@
+import json
 import os
 import shutil
 import tempfile
 import warnings
+from pathlib import Path
 
 from control._def import OBJECTIVES, DEFAULT_OBJECTIVE
 from control.core.auto_focus_controller import AutoFocusController
@@ -81,6 +83,35 @@ def get_test_scan_coordinates(
     camera: AbstractCamera,
 ):
     return ScanCoordinates(objectiveStore=objective_store, stage=stage, camera=camera)
+
+
+def zarr_squid_attrs(root) -> list[dict]:
+    """The _squid attributes of every OME group zarr.json under root (array zarr.json files carry none)."""
+    out = []
+    for p in Path(root).rglob("zarr.json"):
+        with open(p) as f:
+            attrs = json.load(f).get("attributes", {}).get("_squid")
+        if attrs is not None:
+            out.append(attrs)
+    return out
+
+
+def make_zarr_writes_fail(monkeypatch, message="disk full"):
+    """Every SaveZarrJob opens its store as usual (so there is a zarr.json to inspect) but its write fails."""
+    import concurrent.futures
+    from control.core.job_processing import SaveZarrJob
+
+    real_submit = SaveZarrJob.submit
+
+    def failing_submit(self):
+        future, result = real_submit(self)
+        if future is not None:
+            future.result()
+        failed = concurrent.futures.Future()
+        failed.set_exception(RuntimeError(message))
+        return failed, result
+
+    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
 
 
 def get_test_objective_store():

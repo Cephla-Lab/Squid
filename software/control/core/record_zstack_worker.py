@@ -231,10 +231,9 @@ class RecordZStackWorker(MultiPointWorkerBase):
                             self.record(t_idx, region_id, fov_idx, z_ref)
                         if self.params.zstack_enabled and self.zstack_channels:
                             self.zstack(t_idx, region_id, fov_idx, z_ref)
-                            # Look at the save results after every FOV, as MultiPointWorker does, so a
-                            # failed write stops the run instead of burning the remaining FOVs.
-                            if not self._summarize_runner_outputs().none_failed and self._abort_on_failed_job:
-                                return  # _summarize_job_result has requested the abort
+                            # Drain the finished save results after every FOV (non-blocking): a failed write
+                            # requests the abort (_summarize_job_result) and the loop's abort check stops the run.
+                            self._summarize_runner_outputs(drain_all=True)
         except Exception as e:
             log.exception(e)
             self.request_abort_fn()

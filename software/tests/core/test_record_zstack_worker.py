@@ -28,7 +28,7 @@ def test_zstack_plane_count_validation():
 
 
 # ---------------------------------------------------------------------------
-# Task D2: RecordZStackWorker smoke test (simulated microscope + JobRunner)
+# Task D2: RecordZStackWorker smoke test (simulated microscope, in-process Zarr runner)
 #
 # 2 wells x 2 FOV x 2 time points, both phases (recording + z-stack) enabled.
 # Asserts:
@@ -349,25 +349,10 @@ def test_probe_frame_shape_uses_processed_frame_not_resolution():
 # ---------------------------------------------------------------------------
 
 
-def _build_worker_harness(
-    tmp_path,
-    recording_enabled,
-    zstack_enabled,
-    zstack_channel_slice=slice(1, 2),
-    callbacks=None,
-    display_frame_fn=None,
-    display_fps=0.0,
-    **param_overrides,
-):
-    """Simulated scope + live controller + a 1-FOV worker with tiny params.
-
-    param_overrides replace fields of the RecordZStackAcquisitionParameters built here.
-    """
+def _build_simulated_setup():
+    """A 64x48 simulated scope at mid-Z with its live and laser-AF controllers, its channels, and one valid FOV."""
     import control._def
     import tests.control.test_stubs as ts
-    from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
-    from control.core.record_zstack_worker import RecordZStackWorker
 
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
     scope = _build_simulated_microscope(64, 48)
@@ -381,7 +366,28 @@ def _build_worker_harness(
     scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
     x0 = scope.stage.get_config().X_AXIS.MIN_POSITION + 1.0
     y0 = scope.stage.get_config().Y_AXIS.MIN_POSITION + 1.0
+    return scope, live_controller, laser_af, channels, (x0, y0)
 
+
+def _build_worker_harness(
+    tmp_path,
+    recording_enabled,
+    zstack_enabled,
+    zstack_channel_slice=slice(1, 2),
+    callbacks=None,
+    display_frame_fn=None,
+    display_fps=0.0,
+    **param_overrides,
+):
+    """A 1-FOV worker with tiny params on the simulated setup.
+
+    param_overrides replace fields of the RecordZStackAcquisitionParameters built here.
+    """
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
     param_values = dict(
         base_path=str(tmp_path),
         experiment_id="state_restore",
@@ -411,7 +417,7 @@ def _build_worker_harness(
         callbacks=NoOpCallbacks if callbacks is None else callbacks,
         abort_requested_fn=lambda: aborted["v"],
         request_abort_fn=lambda: aborted.__setitem__("v", True),
-        scan_region_fov_coords={"A1": [(x0, y0)]},
+        scan_region_fov_coords={"A1": [fov]},
         display_frame_fn=display_frame_fn,
         display_fps=display_fps,
     )
@@ -1509,32 +1515,22 @@ def test_controller_resolves_effective_fps_before_the_run_and_records_it(tmp_pat
 
 def _zstack_squid_attrs(root):
     """The _squid attributes of the one OME group zarr.json of the z-stack store under root."""
-    import json
+    import tests.control.test_stubs as ts
 
-    found = []
-    for zarr_json in Path(root).rglob("zarr.json"):
-        with open(zarr_json) as f:
-            attrs = json.load(f).get("attributes", {}).get("_squid")
-        if attrs is not None:
-            found.append(attrs)
-    (attrs,) = found
+    (attrs,) = ts.zarr_squid_attrs(root)
     return attrs
 
 
-def test_zstack_uses_the_in_process_runner_and_seals_the_store(tmp_path, monkeypatch):
-    """No subprocess is started for the z-stack; its store ends acquisition_complete=True."""
+def test_zstack_uses_the_in_process_runner_and_seals_the_store(tmp_path):
+    """The z-stack's one runner is the in-process one; its store ends acquisition_complete=True."""
     pytest.importorskip("tensorstore")
-    from control.core import job_processing
     from control.core.in_process_zarr_runner import InProcessZarrRunner
 
-    started = []
-    monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
         tmp_path, recording_enabled=False, zstack_enabled=True
     )
     assert isinstance(worker._job_runners[0][1], InProcessZarrRunner)
     worker.run()
-    assert started == []
     assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")["acquisition_complete"] is True
 
 
@@ -1563,21 +1559,10 @@ def test_abort_mid_zstack_seals_store_aborted(tmp_path):
 def test_zarr_write_error_aborts_the_acquisition(tmp_path, monkeypatch, caplog):
     """A failed z-stack write must end the run as an error and seal the store incomplete, not finish quietly."""
     pytest.importorskip("tensorstore")
-    import concurrent.futures
     import logging
-    from control.core.job_processing import SaveZarrJob
+    import tests.control.test_stubs as ts
 
-    real_submit = SaveZarrJob.submit
-
-    def failing_submit(self):
-        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
-        if future is not None:
-            future.result()
-        failed = concurrent.futures.Future()
-        failed.set_exception(RuntimeError("disk full"))
-        return failed, result
-
-    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
+    ts.make_zarr_writes_fail(monkeypatch)
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
         tmp_path, recording_enabled=False, zstack_enabled=True, zstack_channel_slice=slice(0, 2)
     )
@@ -1595,25 +1580,16 @@ def test_three_record_zstack_acquisitions_all_sealed(tmp_path, monkeypatch):
     from control.core import job_processing
     from control.core.multi_point_controller import NoOpCallbacks
     from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
-    from control.core.scan_coordinates import ScanCoordinates
 
     started = []
     monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
-    scope = _build_simulated_microscope(64, 48)
-    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
-    channels = live_controller.get_channels(scope.objective_store.default_objective)
-    scope.camera.set_exposure_time(1)
-    z_cfg = scope.stage.get_config().Z_AXIS
-    scope.stage.move_z_to((z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0)
-    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
-    scan_coords = ScanCoordinates(objectiveStore=scope.objective_store, stage=scope.stage, camera=scope.camera)
-    scan_coords.region_fov_coordinates = {
-        "A1": [(scope.stage.get_config().X_AXIS.MIN_POSITION + 1.0, scope.stage.get_config().Y_AXIS.MIN_POSITION + 1.0)]
-    }
+    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
+    scan_coords = ts.get_test_scan_coordinates(scope.objective_store, scope.stage, scope.camera)
+    scan_coords.region_fov_coordinates = {"A1": [fov]}
     controller = RecordZStackController(
         microscope=scope,
         live_controller=live_controller,
-        laser_autofocus_controller=ts.get_test_laser_autofocus_controller(scope),
+        laser_autofocus_controller=laser_af,
         objective_store=scope.objective_store,
         scan_coordinates=scan_coords,
         callbacks=NoOpCallbacks,
