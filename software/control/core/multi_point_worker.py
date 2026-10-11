@@ -1,4 +1,5 @@
 import math
+import contextlib
 import os
 import queue
 import threading
@@ -118,7 +119,6 @@ class MultiPointWorkerBase:
         self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
         self.request_abort_fn: Callable[[], None] = request_abort_fn
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
-        self._run_state_fatal = False  # True once run() crashed out; _finish_jobs then seals the stores as aborted
         self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
         # Acquisition watchdog breadcrumb (run.json); the null writer when none is wired (tests, side paths).
         self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
@@ -129,6 +129,7 @@ class MultiPointWorkerBase:
         # Counters touched by the shared capture / frame-callback path. Subclasses
         # may reset these per timepoint, but they must exist for the base methods.
         self.image_count = 0
+        self._timepoint_fov_count = 0
         self._timepoint_image_count = 0
         self._acquisition_error_count = 0
 
@@ -450,7 +451,7 @@ class MultiPointWorkerBase:
         self._log.info("Shutting down job runners...")
         remaining_time = time_left()
         # A user Stop, an error abort, or a crash out of run(): the store must not claim completeness.
-        aborted = bool(self.abort_requested_fn()) or self._run_state_fatal
+        aborted = bool(self.abort_requested_fn())
         for job_class, job_runner in active_runners:
             if isinstance(job_runner, InProcessZarrRunner):
                 # Its shutdown seals the stores (aborted ones as aborted); do it here so the
@@ -498,8 +499,6 @@ class MultiPointWorkerBase:
         self.request_abort_fn()
 
     def _compute_end_reason(self) -> str:
-        if self._run_state_fatal:
-            return "error"
         if self.abort_requested_fn():
             return "error" if self._abort_cause == "error" else "user_abort"
         if self._acquisition_error_count > 0:
@@ -507,11 +506,54 @@ class MultiPointWorkerBase:
         return "completed"
 
     def _run_state_beat(self) -> None:
-        """Watchdog heartbeat — no-op in the base; MultiPointWorker overrides it.
+        """Watchdog heartbeat: the base capture path calls it per image, subclasses per FOV / timepoint."""
+        self._run_state.beat(
+            {
+                "timepoint": self.time_point,
+                "fov": self._timepoint_fov_count,
+                "images": self.image_count,
+            }
+        )
 
-        Base capture mechanics call this per image so any subclass with a run
-        state writer gets beats without re-implementing the callback.
+    def _end_run_state(self, duration_s: float) -> str:
+        """Settle why the run ended, close the watchdog breadcrumb with the run's stats, return the reason."""
+        self.end_reason = self._compute_end_reason()
+        self._run_state.end(
+            self.end_reason,
+            {
+                "total_images": self.image_count,
+                "total_timepoints": self.time_point,
+                "total_duration_seconds": duration_s,
+                "errors_encountered": self._acquisition_error_count,
+            },
+        )
+        return self.end_reason
+
+    @contextlib.contextmanager
+    def _camera_streaming(self, on_frame: Optional[Callable] = None):
+        """Stream the camera for the block, with on_frame registered when given.
+
+        On the way out: wait for the last in-flight frame, detach the callback and stop
+        streaming (mirrors ContinuousFrameSource.stop()), each failure logged, so the next
+        phase starts on a stopped camera whatever happened inside the block.
         """
+        cb_id = None
+        try:
+            self.camera.start_streaming()
+            if on_frame is not None:
+                cb_id = self.camera.add_frame_callback(on_frame)
+            yield
+        finally:
+            if cb_id is not None:
+                self._wait_for_outstanding_callback_images()
+                try:
+                    self.camera.remove_frame_callback(cb_id)
+                except Exception:
+                    self._log.exception("Failed to remove the frame callback")
+            try:
+                self.camera.stop_streaming()
+            except Exception:
+                self._log.exception("Failed to stop streaming")
 
     def _image_callback(self, camera_frame: CameraFrame):
         try:
@@ -732,7 +774,6 @@ class MultiPointWorker(MultiPointWorkerBase):
 
         # Slack notification tracking counters
         self._timepoint_image_count = 0
-        self._timepoint_fov_count = 0
         self._timepoint_start_time = 0.0
         self._acquisition_error_count = 0
         self._laser_af_successes = 0
@@ -984,18 +1025,8 @@ class MultiPointWorker(MultiPointWorkerBase):
         )
         return True
 
-    def _run_state_beat(self) -> None:
-        self._run_state.beat(
-            {
-                "timepoint": self.time_point,
-                "fov": self._timepoint_fov_count,
-                "images": self.image_count,
-            }
-        )
-
     def run(self):
         this_image_callback_id = None
-        self._run_state_fatal = False
         try:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
@@ -1077,7 +1108,7 @@ class MultiPointWorker(MultiPointWorkerBase):
             self._abort_due_to_error()
         except Exception as e:
             self._log.exception(e)
-            self._run_state_fatal = True
+            self._abort_due_to_error()  # the run ends as "error" and the stores seal aborted
             raise
         finally:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
@@ -1090,17 +1121,8 @@ class MultiPointWorker(MultiPointWorkerBase):
             self._finish_jobs()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
-            reason = self.end_reason = self._compute_end_reason()
             total_duration = time.time() - self.timestamp_acquisition_started
-            self._run_state.end(
-                reason,
-                {
-                    "total_images": self.image_count,
-                    "total_timepoints": self.time_point,
-                    "total_duration_seconds": total_duration,
-                    "errors_encountered": self._acquisition_error_count,
-                },
-            )
+            reason = self._end_run_state(total_duration)
 
             # Send Slack acquisition finished notification via callback (ensures ordering with timepoint notifications)
             if self._slack_notifier is not None:

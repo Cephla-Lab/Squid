@@ -1,5 +1,4 @@
 import os
-import time
 from pathlib import Path
 
 import pytest
@@ -304,6 +303,17 @@ def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
     controller.close()
 
 
+def _probe_frame_shape_with(camera):
+    """RecordZStackWorker._probe_frame_shape on a worker shell that has only this camera and a logger."""
+    import squid.logging
+    from control.core.record_zstack_worker import RecordZStackWorker
+
+    worker = RecordZStackWorker.__new__(RecordZStackWorker)
+    worker.camera = camera
+    worker._log = squid.logging.get_logger("RecordZStackWorker")
+    return worker._probe_frame_shape()
+
+
 def test_probe_frame_shape_uses_processed_frame_not_resolution():
     """The recording dataset must be sized from a delivered (processed) frame:
     real cameras crop/rotate frames in _process_raw_frame, so get_resolution()
@@ -339,7 +349,7 @@ def test_probe_frame_shape_uses_processed_frame_not_resolution():
             return SimpleNamespace(frame=processed)
 
     fake_self = SimpleNamespace(camera=_FakeCamera())
-    y, x, dtype = RecordZStackWorker._probe_frame_shape(fake_self)
+    y, x, dtype = _probe_frame_shape_with(fake_self.camera)
 
     assert (y, x) == (50, 60), f"expected processed-frame shape, got ({y}, {x})"
     assert dtype == np.uint8
@@ -370,6 +380,52 @@ def _build_simulated_setup():
     return scope, live_controller, laser_af, channels, (x0, y0)
 
 
+def _params(base_path, channels, **overrides):
+    """Tiny Record + Z-Stack parameters: one timepoint, a 0.2 s recording of channels[0], a 2-plane z-stack
+    of channels[1]; overrides replace any field."""
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
+
+    values = dict(
+        base_path=str(base_path),
+        experiment_id="state_restore",
+        Nt=1,
+        dt_s=0.0,
+        use_laser_af=False,
+        recording_enabled=True,
+        recording_channel=channels[0],
+        fps=10.0,
+        duration_s=0.2,
+        recording_bottom_z_offset_um=0.0,
+        zstack_enabled=True,
+        zstack_channels=list(channels[1:2]),
+        z_min_um=0.0,
+        z_max_um=1.0,
+        z_step_um=1.0,
+    )
+    values.update(overrides)
+    return RecordZStackAcquisitionParameters(**values)
+
+
+def _build_controller_harness():
+    """A RecordZStackController on the simulated setup with one FOV; returns (scope, live_controller, channels, controller)."""
+    import tests.control.test_stubs as ts
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import RecordZStackController
+
+    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
+    scan_coords = ts.get_test_scan_coordinates(scope.objective_store, scope.stage, scope.camera)
+    scan_coords.region_fov_coordinates = {"A1": [fov]}
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=laser_af,
+        objective_store=scope.objective_store,
+        scan_coordinates=scan_coords,
+        callbacks=NoOpCallbacks,
+    )
+    return scope, live_controller, channels, controller
+
+
 def _build_worker_harness(
     tmp_path,
     recording_enabled,
@@ -380,34 +436,19 @@ def _build_worker_harness(
     display_fps=0.0,
     **param_overrides,
 ):
-    """A 1-FOV worker with tiny params on the simulated setup.
-
-    param_overrides replace fields of the RecordZStackAcquisitionParameters built here.
-    """
+    """A 1-FOV worker on the simulated setup; param_overrides replace fields of _params()."""
     from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters
     from control.core.record_zstack_worker import RecordZStackWorker
 
     scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
-    param_values = dict(
-        base_path=str(tmp_path),
-        experiment_id="state_restore",
-        Nt=1,
-        dt_s=0.0,
-        use_laser_af=False,
+    params = _params(
+        tmp_path,
+        channels,
         recording_enabled=recording_enabled,
-        recording_channel=channels[0],
-        fps=10.0,
-        duration_s=0.2,
-        recording_bottom_z_offset_um=0.0,
         zstack_enabled=zstack_enabled,
         zstack_channels=list(channels[zstack_channel_slice]) if zstack_enabled else [],
-        z_min_um=0.0,
-        z_max_um=1.0,
-        z_step_um=1.0,
+        **param_overrides,
     )
-    param_values.update(param_overrides)
-    params = RecordZStackAcquisitionParameters(**param_values)
     aborted = {"v": False}
     worker = RecordZStackWorker(
         scope=scope,
@@ -699,7 +740,7 @@ def test_probe_frame_shape_rejects_color_frames():
 
     fake_self = SimpleNamespace(camera=_FakeColorCamera())
     with pytest.raises(ValueError, match="monochrome"):
-        RecordZStackWorker._probe_frame_shape(fake_self)
+        _probe_frame_shape_with(fake_self.camera)
 
 
 def test_probe_frame_shape_uses_continuous_and_never_triggers():
@@ -739,7 +780,7 @@ def test_probe_frame_shape_uses_continuous_and_never_triggers():
             return SimpleNamespace(frame=processed)
 
     fake_self = SimpleNamespace(camera=_FakeCamera())
-    y, x, dtype = RecordZStackWorker._probe_frame_shape(fake_self)
+    y, x, dtype = _probe_frame_shape_with(fake_self.camera)
 
     assert (y, x) == (2084, 2084), f"expected cropped delivered shape, got ({y}, {x})"
     assert dtype == np.uint16
@@ -772,7 +813,7 @@ def test_probe_frame_shape_aborts_when_no_frame_delivered():
 
     fake_self = SimpleNamespace(camera=_FakeCamera())
     with pytest.raises(RuntimeError, match="probe"):
-        RecordZStackWorker._probe_frame_shape(fake_self)
+        _probe_frame_shape_with(fake_self.camera)
 
 
 def test_record_fails_fast_on_dropped_frames(tmp_path, monkeypatch):
@@ -1322,9 +1363,9 @@ def test_run_acquisition_writes_both_yaml_files(tmp_path, monkeypatch):
 
 
 def test_record_routes_sequentially_when_camera_paces_and_downsamples_when_it_cannot(tmp_path, monkeypatch):
-    """The router regime follows what set_frame_rate reports: achievable <= requested (the
-    camera paces itself, or the request is its maximum) -> every frame is wanted and slots
-    are sequential; achievable > requested (no hardware pacing) -> downsample by arrival."""
+    """The router regime follows what set_frame_rate reports with the stream running: achievable <=
+    requested (the camera paces itself, or the request is its maximum) -> every frame is wanted and
+    slots are sequential; achievable > requested (no hardware pacing) -> downsample by arrival."""
     pytest.importorskip("tensorstore")
     import control.core.record_zstack_worker as rzw
 
@@ -1332,8 +1373,12 @@ def test_record_routes_sequentially_when_camera_paces_and_downsamples_when_it_ca
 
     class _SpyRouter(rzw.RecordingRouter):
         def __init__(self, fps, paced=False, **kw):
-            captured["fps"], captured["paced"] = fps, paced
+            captured["fps"] = fps
             super().__init__(fps, paced=paced, **kw)
+
+        def set_paced_from_rate(self, running_fps):
+            super().set_paced_from_rate(running_fps)
+            captured["paced"] = self.paced
 
     monkeypatch.setattr(rzw, "RecordingRouter", _SpyRouter)
 
@@ -1577,45 +1622,18 @@ def test_zarr_write_error_aborts_the_acquisition(tmp_path, monkeypatch, caplog):
 def test_three_record_zstack_acquisitions_all_sealed(tmp_path, monkeypatch):
     """The data loss of PR 564: acquisition 3 used to lose its z-stack. No subprocess is started at all now."""
     pytest.importorskip("tensorstore")
-    import tests.control.test_stubs as ts
     from control.core import job_processing
-    from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
 
     started = []
     monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
-    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
-    scan_coords = ts.get_test_scan_coordinates(scope.objective_store, scope.stage, scope.camera)
-    scan_coords.region_fov_coordinates = {"A1": [fov]}
-    controller = RecordZStackController(
-        microscope=scope,
-        live_controller=live_controller,
-        laser_autofocus_controller=laser_af,
-        objective_store=scope.objective_store,
-        scan_coordinates=scan_coords,
-        callbacks=NoOpCallbacks,
-    )
+    scope, live_controller, channels, controller = _build_controller_harness()
     try:
         for i in range(1, 4):
             base = tmp_path / f"acq{i}"
             base.mkdir()
             controller.run_acquisition(
-                RecordZStackAcquisitionParameters(
-                    base_path=str(base),
-                    experiment_id="b2b",
-                    Nt=1,
-                    dt_s=0.0,
-                    use_laser_af=False,
-                    recording_enabled=True,
-                    recording_channel=channels[0],
-                    fps=10.0,
-                    duration_s=0.3,
-                    recording_bottom_z_offset_um=0.0,
-                    zstack_enabled=True,
-                    zstack_channels=channels[:2],
-                    z_min_um=-1.0,
-                    z_max_um=1.0,
-                    z_step_um=1.0,
+                _params(
+                    base, channels, experiment_id="b2b", duration_s=0.3, zstack_channels=channels[:2], z_min_um=-1.0
                 )
             )
             controller.join(timeout=120)
@@ -1648,23 +1666,9 @@ def test_recording_switches_to_paced_routing_when_the_camera_only_paces_once_str
     with caplog.at_level(logging.INFO):
         worker.run()
     assert not aborted["v"]
-    assert any("routing switched to camera-paced" in r.getMessage() for r in caplog.records)
+    assert any("routed camera-paced, sequential slots" in r.getMessage() for r in caplog.records)
     (attrs,) = ts.zarr_squid_attrs(worker.experiment_path)
     assert attrs["acquisition_complete"] is True
-
-
-class _SlowFailingFuture:
-    """A write that outlives finalize()'s wait, then fails."""
-
-    def __init__(self, delay_s):
-        self._deadline = time.monotonic() + delay_s
-
-    def done(self):
-        return False
-
-    def result(self):
-        time.sleep(max(0.0, self._deadline - time.monotonic()))
-        raise RuntimeError("disk error after finalize")
 
 
 def _shorten_recording_finalize(monkeypatch, timeout_s):
@@ -1680,13 +1684,23 @@ def test_late_recording_write_error_ends_the_run_as_error(tmp_path, monkeypatch,
     afterwards, and .done is written only once the store is sealed."""
     pytest.importorskip("tensorstore")
     import logging
+    import threading
     import tests.control.test_stubs as ts
     from control.core.record_zstack_worker import RecordZStackWorker
     from control.core.zarr_writer import ZarrWriter
 
     _shorten_recording_finalize(monkeypatch, 0.2)
-    monkeypatch.setattr(RecordZStackWorker, "DRAIN_SETTLE_TIMEOUT_S", 5.0, raising=False)
-    monkeypatch.setattr(ZarrWriter, "submit_frame", lambda self, image, t, c, z, fov=None: _SlowFailingFuture(0.6))
+    monkeypatch.setattr(RecordZStackWorker, "DRAIN_SETTLE_TIMEOUT_S", 5.0)
+    release = threading.Event()  # the writes complete, failing, 0.6 s after the first one is submitted:
+    timer = []  # after finalize() has given up its 0.2 s wait, before the end-of-run settle gives up
+
+    def late_failing_submit(self, image, t, c, z, fov=None):
+        if not timer:
+            timer.append(threading.Timer(0.6, release.set))
+            timer[0].start()
+        return ts.GatedFuture(release, RuntimeError("disk error after finalize"))
+
+    monkeypatch.setattr(ZarrWriter, "submit_frame", late_failing_submit)
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
         tmp_path, recording_enabled=True, zstack_enabled=False
     )
@@ -1704,23 +1718,13 @@ def test_run_withholds_done_while_a_recording_is_still_being_written(tmp_path, m
     pytest.importorskip("tensorstore")
     import logging
     import threading
+    import tests.control.test_stubs as ts
     from control.core.record_zstack_worker import RecordZStackWorker
-    from control.core.zarr_writer import ZarrWriter
 
     release = threading.Event()
-
-    class _BlockedFuture:
-        def done(self):
-            return release.is_set()
-
-        def result(self):
-            release.wait()
-
     _shorten_recording_finalize(monkeypatch, 0.2)
-    monkeypatch.setattr(RecordZStackWorker, "DRAIN_SETTLE_TIMEOUT_S", 0.3, raising=False)
-    monkeypatch.setattr(ZarrWriter, "submit_frame", lambda self, image, t, c, z, fov=None: _BlockedFuture())
-    monkeypatch.setattr(ZarrWriter, "finalize", lambda self, *a, **k: None)
-    monkeypatch.setattr(ZarrWriter, "abort", lambda self, *a, **k: None)
+    monkeypatch.setattr(RecordZStackWorker, "DRAIN_SETTLE_TIMEOUT_S", 0.3)
+    ts.stub_zarr_writer_io(monkeypatch, lambda self, image, t, c, z, fov=None: ts.GatedFuture(release))
     scope, live_controller, channels, worker, aborted = _build_worker_harness(
         tmp_path, recording_enabled=True, zstack_enabled=False
     )
@@ -1779,55 +1783,24 @@ def test_record_restores_z_and_camera_mode_when_illumination_fails(tmp_path, mon
     assert scope.camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
 
 
-def test_record_zstack_run_writes_the_watchdog_breadcrumb(tmp_path, monkeypatch):
+def test_record_zstack_run_writes_the_watchdog_breadcrumb(tmp_path):
     """Record + Z-Stack leaves the run.json the multipoint acquisition does, started before the worker and
     ended with the run's reason, so the acquisition watchdog covers it."""
     pytest.importorskip("tensorstore")
     import squid.acquisition_state as ast
-    import tests.control.test_stubs as ts
-    from control.core.multi_point_controller import NoOpCallbacks
-    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
 
-    state_dir = tmp_path / "watchdog"
-    monkeypatch.setenv("SQUID_WATCHDOG_STATE_DIR", str(state_dir))
-    scope, live_controller, laser_af, channels, fov = _build_simulated_setup()
-    scan_coords = ts.get_test_scan_coordinates(scope.objective_store, scope.stage, scope.camera)
-    scan_coords.region_fov_coordinates = {"A1": [fov]}
-    controller = RecordZStackController(
-        microscope=scope,
-        live_controller=live_controller,
-        laser_autofocus_controller=laser_af,
-        objective_store=scope.objective_store,
-        scan_coordinates=scan_coords,
-        callbacks=NoOpCallbacks,
-    )
+    scope, live_controller, channels, controller = _build_controller_harness()
     base = tmp_path / "acq"
     base.mkdir()
     try:
         controller.run_acquisition(
-            RecordZStackAcquisitionParameters(
-                base_path=str(base),
-                experiment_id="wd",
-                Nt=1,
-                dt_s=0.0,
-                use_laser_af=False,
-                recording_enabled=True,
-                recording_channel=channels[0],
-                fps=10.0,
-                duration_s=0.2,
-                recording_bottom_z_offset_um=0.0,
-                zstack_enabled=True,
-                zstack_channels=channels[:2],
-                z_min_um=-1.0,
-                z_max_um=1.0,
-                z_step_um=1.0,
-            )
+            _params(base, channels, experiment_id="wd", zstack_channels=channels[:2], z_min_um=-1.0)
         )
         controller.join(timeout=120)
     finally:
         controller.close()
     (experiment_dir,) = [d for d in base.iterdir() if d.is_dir()]
-    rec = ast.read_run(state_dir)
+    rec = ast.read_run(os.environ["SQUID_WATCHDOG_STATE_DIR"])  # the autouse fixture's per-test state dir
     assert rec is not None, "no run.json written for a Record + Z-Stack run"
     assert rec["status"] == "ended" and rec["reason"] == "completed"
     assert Path(rec["output_path"]) == experiment_dir

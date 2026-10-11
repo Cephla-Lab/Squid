@@ -869,13 +869,10 @@ class MultiPointController:
             self._run_state_writer = start_run_state_writer(
                 experiment_id=self.experiment_ID,
                 output_path=experiment_path,
-                expected={
-                    "timepoints": self.Nt,
-                    "regions": len(scan_position_information.scan_region_coords_mm),
-                    "fovs": sum(len(c) for c in scan_position_information.scan_region_fov_coords_mm.values()),
-                    "channels": len(self.selected_configurations),
-                    "z": self.NZ,
-                },
+                timepoints=self.Nt,
+                region_fov_coords=scan_position_information.scan_region_fov_coords_mm,
+                channels=len(self.selected_configurations),
+                z=self.NZ,
             )
 
             # The pre-warmed save subprocess and its backpressure values (None, None for a Zarr v3 run)
