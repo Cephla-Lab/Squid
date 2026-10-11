@@ -118,6 +118,14 @@ class DefaultCamera(AbstractCamera):
 
         self.set_auto_white_balance_gains(False)
 
+        # Some cameras (seen on the MER2-1220-32U3C color model) power up with auto exposure/gain enabled.  While
+        # auto exposure is on the ExposureTime feature is read-only, and gxipy only prints a warning on a failed
+        # set, so every exposure change from the GUI would silently do nothing.  Force manual control.
+        for auto_feature_name in ("ExposureAuto", "GainAuto"):
+            auto_feature = getattr(self._camera, auto_feature_name, None)
+            if auto_feature is not None and auto_feature.is_implemented() and auto_feature.is_writable():
+                auto_feature.set(gx.GxAutoEntry.OFF)
+
         if self._config.default_white_balance_gains is not None and self._capabilities.white_balance:
             default_wb = self._config.default_white_balance_gains
             self.set_white_balance_gains(default_wb.r, default_wb.g, default_wb.b)
