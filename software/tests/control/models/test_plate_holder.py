@@ -143,6 +143,16 @@ def test_transform_carries_the_resolved_rotation(holder_tree):
     )
 
 
+def test_bare_on_key_is_refused_not_dropped(holder_tree, caplog):
+    """YAML reads a bare `on` as the boolean True; with unknown keys forbidden a
+    hand-written record with it is refused loudly instead of silently losing
+    which plate the angle was measured on."""
+    (holder_tree / "machine_configs" / "plate_holder.yaml").write_text("version: 1\nmeasured:\n  on: 96 well plate\n")
+    with caplog.at_level(logging.ERROR):
+        assert load_plate_holder() is None
+    assert "NOT BEING APPLIED" in caplog.text
+
+
 def test_example_skeleton_parses():
     data = yaml.safe_load(open("machine_configs/plate_holder.yaml.example"))
     holder = PlateHolder.model_validate(data)

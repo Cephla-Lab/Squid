@@ -197,12 +197,23 @@ def test_well_spacing_change_is_flagged(tree, monkeypatch):
         lambda d: d["wells"][1].update(x_mm=True),
         lambda d: d.pop("format"),
         lambda d: d["wells"][2].update(row="7"),
+        lambda d: d["wells"][0].update(x_mm=float("nan")),
+        lambda d: d.update(rotation_deg=float("inf")),
     ],
-    ids=["missing y_mm", "string rotation", "bool x_mm", "missing format", "string row"],
+    ids=[
+        "missing y_mm",
+        "string rotation",
+        "bool x_mm",
+        "missing format",
+        "string row",
+        "nan coordinate",
+        "inf rotation",
+    ],
 )
 def test_stamp_with_missing_or_mistyped_field_is_ignored(tree, damage):
-    """Validated at parse time (strict), so the staleness check cannot raise
-    after the coordinates were already loaded and registered."""
+    """Validated at parse time (strict, finite), so the staleness check cannot
+    raise after the coordinates were already loaded - or, for a NaN, which
+    compares False against everything, pass silently."""
     import json
 
     data = make_stamp("96 well plate").model_dump()
@@ -233,18 +244,3 @@ def test_the_writer_writes_the_stamp_it_is_given(tree):
 
     write_scan_coordinates_csv("legacy_copy.csv", df_fixture(), None)  # unknown provenance stays unstamped
     assert read_scan_coordinates_csv("legacy_copy.csv")[1] is None
-
-
-@pytest.mark.parametrize(
-    "damage",
-    [lambda d: d["wells"][0].update(x_mm=float("nan")), lambda d: d.update(rotation_deg=float("inf"))],
-    ids=["nan coordinate", "inf rotation"],
-)
-def test_non_finite_stamp_numbers_are_damage(tree, damage):
-    """NaN compares False against everything: such a stamp would pass the
-    staleness check silently. Refused at parse time instead."""
-    import json
-
-    data = make_stamp("96 well plate").model_dump()
-    damage(data)
-    assert parse_stamp(STAMP_PREFIX + json.dumps(data)) is None

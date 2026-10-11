@@ -281,8 +281,7 @@ def test_unknown_key_is_damage_not_a_default(tmp_path, caplog):
     default - a1_x_mm 0.0 would move every well of that plate."""
     path = tmp_path / "sample_formats_user.yaml"
     path.write_text(
-        "version: 2\nformats:\n  96 well plate:\n    rows: 8\n    cols: 12\n    well_spacing_mm: 9.0\n"
-        "    well_size_mm: 6.21\n    a1_x_mn: 11.41\n"
+        "formats: {'96 well plate': {rows: 8, cols: 12, well_spacing_mm: 9.0, well_size_mm: 6.21, a1_x_mn: 11.41}}"
     )
     with caplog.at_level(logging.ERROR):
         assert load_user_sample_formats(str(path)) is None

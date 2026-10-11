@@ -20,7 +20,7 @@ from control.core.config import ConfigRepository
 from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
-from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
+from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
@@ -9176,21 +9176,14 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 # For glass slide, use default scan size
                 self.stored_xy_params["Select Wells"]["scan_size"] = 0.1
 
-            self.stored_xy_params["Select Wells"]["scan_shape"] = (
-                "Circle" if self.scanCoordinates.is_round_well else "Square"
-            )
+            self.stored_xy_params["Select Wells"]["scan_shape"] = default_scan_shape(self.scanCoordinates.well_shape)
 
         # change scan size to single FOV if XY is checked and mode is "Current Position"
         if self.checkbox_xy.isChecked() and self.combobox_xy_mode.currentText() == "Current Position":
             self.entry_scan_size.setValue(0.1)
 
     def set_default_shape(self):
-        # the format's own shape - a custom rectangular carrier is not a circle
-        # because its name is not "384 well plate"
-        if not self.scanCoordinates.is_round_well:
-            self.combobox_shape.setCurrentText("Square")
-        elif self.scanCoordinates.format != 0:
-            self.combobox_shape.setCurrentText("Circle")
+        self.combobox_shape.setCurrentText(default_scan_shape(self.scanCoordinates.well_shape))
 
     def get_effective_well_size(self):
         well_size = self.scanCoordinates.well_size_mm
@@ -12731,13 +12724,12 @@ class WellplateCalibration(QDialog):
         self.existing_well_size_input.setValue(well_size)
         self.center_well_size_input.setValue(well_size)
 
-        # Auto-select center point method for 384 and 1536 well plates because their
-        # small well diameters make it difficult to reliably set 3 distinct points
-        # on the well edge under a microscope
-        if selected_format in ("384 well plate", "1536 well plate"):
-            self.center_point_radio.setChecked(True)
-        else:
+        # 3 edge points fits a circle through the rim, which only a round well
+        # has; a rectangular well (384, 1536, a custom carrier) gets Center Point.
+        if control._def.get_wellplate_settings(selected_format)["well_shape"] == "circle":
             self.edge_points_radio.setChecked(True)
+        else:
+            self.center_point_radio.setChecked(True)
 
     def on_existing_format_changed(self):
         """Handle existing format combo box selection change."""

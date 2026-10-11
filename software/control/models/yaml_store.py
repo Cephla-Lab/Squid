@@ -10,10 +10,12 @@
   and lose every definition still recoverable from it, so write paths ask
   this variant: absent -> the model's defaults, damaged -> YamlStoreDamaged.
 - schema version: a model with a `version` field declares, through that field's
-  default, the one version this build reads. A file declaring another version
-  is refused (logged, None) rather than validated under the wrong reading -
-  pydantic ignores unknown keys, so it would otherwise load as an empty or
-  misread record. A file without the key is taken to be the current version.
+  default, the one version this build reads. The schema IS the version: any
+  key added or removed bumps it, so a file from another build is refused with
+  the version message (which names the build to restore) rather than as a
+  typo by the unknown-key rule below; the version check still earns its place
+  for a changed meaning behind an unchanged key, which no key check can see.
+  A file without the key is taken to be the current version.
 - atomic save: tmp file + fsync + os.replace, so an interrupted write can never
   leave a truncated file behind.
 
@@ -41,17 +43,16 @@ M = TypeVar("M", bound=BaseModel)
 
 
 class SidecarModel(BaseModel):
-    """Base for every sidecar model, set once so a new model or field cannot
-    forget it (model_config does not reach nested models, hence a base class
-    every point/measurement model inherits):
+    """Base for every sidecar model - model_config does not reach nested models,
+    so a base class is the one place a new model or field cannot forget:
 
-    - no number may be NaN or infinite: YAML accepts `.nan`/`.inf`, and a
-      definition replaces the shipped entry (or an angle applies to every
-      plate) wholesale, so one such number would poison every resolved stage
-      position instead of the file being refused;
-    - no unknown keys: these files are hand-editable and versioned, and
-      pydantic would otherwise drop a typo (`a1_x_mn`) and quietly use the
-      field's default - 0.0 for A1, which moves every well of that plate."""
+    - no NaN/inf: YAML accepts `.nan`/`.inf`, and a definition replaces the
+      shipped entry (or an angle applies to every plate) wholesale, so one such
+      number would poison every resolved stage position;
+    - no unknown keys: these files are hand-edited, and pydantic would otherwise
+      drop a typo (`a1_x_mn`) and use the field's default - 0.0 for A1, which
+      moves every well of that plate. (A key from another build is a different
+      version, caught first by the version check above.)"""
 
     model_config = ConfigDict(allow_inf_nan=False, extra="forbid")
 

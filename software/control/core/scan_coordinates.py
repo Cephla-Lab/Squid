@@ -7,6 +7,8 @@ from typing import Callable, List, Optional, Tuple
 import numpy as np
 from matplotlib.path import Path
 
+from control.core.geometry_utils import default_scan_shape
+
 import control._def
 import control.utils
 from control.core.plate_transform import plate_transform_for, WellplateSettings
@@ -73,7 +75,6 @@ class ScanCoordinates:
         # calibration change was silently ignored until a signal re-emit.
         self.format = control._def.WELLPLATE_FORMAT
         self.well_size_mm = control._def.WELL_SIZE_MM
-        self.well_shape = "circle"  # until update_wellplate_settings delivers the format's own
 
         # Centralized region management
         self.region_centers = {}  # {region_id: [x, y, z]}
@@ -94,12 +95,14 @@ class ScanCoordinates:
         # via plate_transform_for(self.format).
         self.format = settings.format
         self.well_size_mm = settings.well_size_mm
-        self.well_shape = settings.well_shape
+
+    @property
+    def well_shape(self) -> str:
+        """The format's own shape ("circle" | "rectangle"), resolved at compute time."""
+        return control._def.get_wellplate_settings(self.format)["well_shape"]
 
     @property
     def is_round_well(self) -> bool:
-        """From the format's definition - a custom rectangular carrier is not a
-        circle because its name is not '384 well plate'."""
         return self.well_shape == "circle"
 
     @staticmethod
@@ -185,12 +188,14 @@ class ScanCoordinates:
             # Handle manual ROIs
             for i, shape_coords in enumerate(manual_shapes):
                 scan_coordinates, dropped = self.get_points_for_manual_region(shape_coords, overlap_percent)
-                if scan_coordinates or dropped:  # a polygon that lost every FOV to travel is stored empty, loudly
+                planned = len(scan_coordinates) + dropped
+                # A region exists when its polygon planned at least one FOV: one that
+                # lost them all to travel is stored empty, loudly; one that selected
+                # none (zero area, bad input) is not a region at all.
+                if planned:
                     region_name = "manual" if len(manual_shapes) <= 1 else f"manual{i}"
                     center = np.mean(shape_coords, axis=0)
-                    self._store_region(
-                        region_name, [center[0], center[1]], "Manual", scan_coordinates, len(scan_coordinates) + dropped
-                    )
+                    self._store_region(region_name, [center[0], center[1]], "Manual", scan_coordinates, planned)
         else:
             self._log.info("No Manual ROI found")
 
@@ -682,7 +687,7 @@ class ScanCoordinatesSiLA2(ScanCoordinates):
     ):
         wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
         self.get_selected_well_coordinates(well_name, wellplate_format)
-        well_shape = "Circle" if wellplate_settings["well_shape"] == "circle" else "Square"
+        well_shape = default_scan_shape(wellplate_settings["well_shape"])
 
         if scan_size_mm is None:
             scan_size_mm = wellplate_settings["well_size_mm"]

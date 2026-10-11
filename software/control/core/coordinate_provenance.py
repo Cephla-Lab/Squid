@@ -44,14 +44,17 @@ POSITION_TOL_MM = 0.001
 ROTATION_TOL_DEG = ROTATION_QUANTUM_DEG / 2
 
 
-# Strict: a mistyped field (a string rotation, a bool) is a damaged stamp, not
-# something to coerce. Finite: a NaN coordinate compares False against
-# everything and would pass the staleness check silently.
-_STAMP_CONFIG = ConfigDict(strict=True, allow_inf_nan=False)
+class _StampModel(BaseModel):
+    """Strict: a mistyped field (a string rotation, a bool) is a damaged stamp,
+    not something to coerce. Finite: a NaN coordinate compares False against
+    everything and would pass the staleness check silently. Either is refused
+    at parse time, where it would otherwise raise inside the staleness check,
+    after the coordinates were already loaded."""
+
+    model_config = ConfigDict(strict=True, allow_inf_nan=False)
 
 
-class StampedWell(BaseModel):
-    model_config = _STAMP_CONFIG
+class StampedWell(_StampModel):
 
     well: str
     row: int
@@ -60,12 +63,7 @@ class StampedWell(BaseModel):
     y_mm: float
 
 
-class ScanCoordinatesStamp(BaseModel):
-    """A damaged stamp would otherwise raise inside the staleness check, after
-    the coordinates were already loaded - so it is refused at parse time."""
-
-    model_config = _STAMP_CONFIG
-
+class ScanCoordinatesStamp(_StampModel):
     format: str
     wells: List[StampedWell]
     rotation_deg: float  # context for the message; the positions carry the check
