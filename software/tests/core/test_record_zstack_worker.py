@@ -43,16 +43,27 @@ def _build_simulated_microscope(crop_w: int, crop_h: int):
     The simulated camera reports its resolution as crop_width/crop_height
     divided by binning, so pin binning to 1x1 — some machine configs default
     the camera model to 2x2 binning, which would silently halve every frame —
-    and mutate the (loaded) config so each captured/recorded frame is exactly
-    (crop_h, crop_w).
+    and give this camera its own copy of the config so each captured/recorded
+    frame is exactly (crop_h, crop_w). The camera is built with the module-level
+    CameraConfig; writing the crop into that object would shrink the frames of
+    every microscope built later in the same pytest process.
     """
     import control.microscope
 
     scope = control.microscope.Microscope.build_from_global_config(True)
-    scope.camera._config.crop_width = crop_w
-    scope.camera._config.crop_height = crop_h
+    scope.camera._config = scope.camera._config.model_copy(update={"crop_width": crop_w, "crop_height": crop_h})
     scope.camera.set_binning(1, 1)
     return scope
+
+
+def test_build_simulated_microscope_leaves_the_global_camera_config_alone():
+    """Only this camera is 64x48; the shared CameraConfig that every later microscope is built from is untouched."""
+    import squid.config
+
+    before = squid.config.get_camera_config().model_copy()
+    scope = _build_simulated_microscope(64, 48)
+    assert scope.camera.get_resolution() == (64, 48)
+    assert squid.config.get_camera_config() == before
 
 
 def test_record_zstack_worker_smoke(tmp_path):
