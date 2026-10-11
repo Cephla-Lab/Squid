@@ -817,14 +817,14 @@ def test_zarr_v3_run_leaves_the_warm_subprocess_for_tiff(monkeypatch):
     from control.core import job_processing
 
     mpc, tt = _zarr_v3_controller(monkeypatch)
-    warm_before = mpc._prewarmed_job_runner
+    warm_before = mpc._prewarm._runner
     assert warm_before is not None
     started = []  # only subprocesses started from here on count; the controller's own pre-warm is above
     monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
     mpc.run_acquisition()
     assert tt.finished_event.wait(120)
     assert started == [], "a Zarr v3 run must not start a save subprocess"
-    assert mpc._prewarmed_job_runner is warm_before
+    assert mpc._prewarm._runner is warm_before
 
 
 def test_three_zarr_runs_in_one_session_all_sealed(monkeypatch):
@@ -890,8 +890,7 @@ def test_close_shuts_down_in_process_runner_instead_of_terminating_it():
 
     mpc = MultiPointController.__new__(MultiPointController)  # close() only needs the fields set below
     mpc._log = logging.getLogger("squid.MultiPointController")
-    mpc._prewarmed_job_runner = None
-    mpc._prewarmed_bp_values = None
+    mpc._prewarm = MagicMock()  # PrewarmedJobRunnerSlot stand-in
     mpc._memory_monitor = None
     mpc.thread = None
     runner = MagicMock(spec=InProcessZarrRunner)

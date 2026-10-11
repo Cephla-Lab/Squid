@@ -8,8 +8,7 @@ from typing import List, Optional
 import yaml
 
 import squid.logging
-import control._def
-from control.core.acquisition_setup import compute_pixel_size_um, PrewarmedJobRunnerSlot
+from control.core.acquisition_setup import compute_pixel_size_um
 from control.models.acquisition_config import AcquisitionChannel
 from control.utils import serialize_for_yaml as _serialize_for_yaml
 
@@ -243,7 +242,7 @@ class RecordZStackAcquisitionParameters:
 
 
 class RecordZStackController:
-    """Controller that sets up the pre-warmed JobRunner and spawns RecordZStackWorker
+    """Controller that spawns RecordZStackWorker
     on a daemon thread.
 
     Constructor arguments mirror MultiPointController's signature where the concept
@@ -274,12 +273,6 @@ class RecordZStackController:
         self._abort_event: Event = Event()
         self._thread: Optional[Thread] = None
 
-        # Pre-warm a job runner subprocess at init so it is ready when the user
-        # clicks "Start Acquisition" (mirrors MultiPointController.__init__).
-        self._prewarm = PrewarmedJobRunnerSlot(log)
-        if control._def.Acquisition.USE_MULTIPROCESSING:
-            self._prewarm.start()
-
     # ---------------------------------------------------------------------- acquisition
 
     def acquisition_in_progress(self) -> bool:
@@ -290,7 +283,7 @@ class RecordZStackController:
         self._abort_event.set()
 
     def run_acquisition(self, params: RecordZStackAcquisitionParameters) -> None:
-        """Set up the pre-warmed JobRunner and spawn the worker thread.
+        """Spawn the worker thread.
 
         *params* must be a fully-built RecordZStackAcquisitionParameters (as produced
         by the widget's build_parameters() method).
@@ -375,34 +368,19 @@ class RecordZStackController:
         # (toggle_acquisition checks acquisition_in_progress() before calling here).
         self._abort_event.clear()
 
-        # Consume the pre-warmed runner only when the z-stack phase will actually
-        # dispatch jobs (the worker only builds a job runner for the z-stack
-        # phase): consuming it for a recording-only run would orphan the runner
-        # and immediately spawn a replacement subprocess for nothing.
-        prewarmed_runner, prewarmed_bp_values = (None, None)
-        if params.zstack_enabled and params.zstack_channels:
-            prewarmed_runner, prewarmed_bp_values = self._prewarm.take()
-
-        try:
-            worker = RecordZStackWorker(
-                scope=self._microscope,
-                live_controller=self._live_controller,
-                laser_auto_focus_controller=self._laser_af,
-                objective_store=self._objective_store,
-                params=params,
-                callbacks=self._callbacks,
-                abort_requested_fn=lambda: self._abort_event.is_set(),
-                request_abort_fn=self.request_abort,
-                scan_region_fov_coords=scan_region_fov_coords,
-                prewarmed_job_runner=prewarmed_runner,
-                prewarmed_bp_values=prewarmed_bp_values,
-                display_frame_fn=self._display_frame_fn,
-                display_fps=self._display_fps,
-            )
-        except Exception:
-            # Clean up the pre-warmed runner if worker construction failed.
-            self._prewarm.shutdown_runner(prewarmed_runner, context="after worker creation failure")
-            raise
+        worker = RecordZStackWorker(
+            scope=self._microscope,
+            live_controller=self._live_controller,
+            laser_auto_focus_controller=self._laser_af,
+            objective_store=self._objective_store,
+            params=params,
+            callbacks=self._callbacks,
+            abort_requested_fn=lambda: self._abort_event.is_set(),
+            request_abort_fn=self.request_abort,
+            scan_region_fov_coords=scan_region_fov_coords,
+            display_frame_fn=self._display_frame_fn,
+            display_fps=self._display_fps,
+        )
 
         self._thread = Thread(target=worker.run, name="RecordZStack-acquisition", daemon=True)
         self._thread.start()
@@ -415,9 +393,7 @@ class RecordZStackController:
     # ---------------------------------------------------------------------- cleanup
 
     def close(self, timeout_s: float = 5.0) -> None:
-        """Abort any running acquisition and shut down the pre-warmed job runner."""
-        self._prewarm.close(timeout_s=1.0)
-
+        """Abort any running acquisition."""
         if self.acquisition_in_progress():
             self._abort_event.set()
             if self._thread is not None:

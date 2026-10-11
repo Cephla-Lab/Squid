@@ -11,8 +11,8 @@ The recording phase reuses the ``StreamingCapture`` primitive
 (``ContinuousFrameSource`` + ``RecordingRouter`` + ``CountStop`` +
 ``RecordingWriter``).  The z-stack phase reuses ``MultiPointWorkerBase``'s
 shared single-frame capture + frame callback + job dispatch machinery, so the
-worker builds its own ``JobRunner`` (or accepts a pre-warmed one) plus a
-``BackpressureController`` exactly the way ``MultiPointWorker`` does.
+z-stack is saved in this process by an ``InProcessZarrRunner`` behind the same
+``BackpressureController`` ``MultiPointWorker`` uses.
 """
 
 import os
@@ -23,7 +23,6 @@ import numpy as np
 
 import squid.logging
 from control._def import (
-    Acquisition,
     SCAN_STABILIZATION_TIME_MS_X,
     SCAN_STABILIZATION_TIME_MS_Y,
     SCAN_STABILIZATION_TIME_MS_Z,
@@ -49,11 +48,10 @@ from control.core.record_zstack_controller import (
 )
 from control.core.job_processing import (
     AcquisitionInfo,
-    JobRunner,
     SaveZarrJob,
     ZarrWriterInfo,
 )
-from control.core.backpressure import BackpressureController, BackpressureValues
+from control.core.backpressure import BackpressureController
 
 log = squid.logging.get_logger("RecordZStackWorker")
 
@@ -75,8 +73,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
         abort_requested_fn: Callable[[], bool],
         request_abort_fn: Callable[[], None],
         scan_region_fov_coords: Dict[object, List[Tuple]],
-        prewarmed_job_runner: Optional[JobRunner] = None,
-        prewarmed_bp_values: Optional[BackpressureValues] = None,
         display_frame_fn: Optional[Callable] = None,
         display_fps: float = 0.0,
     ):
@@ -146,15 +142,15 @@ class RecordZStackWorker(MultiPointWorkerBase):
         self._acq_start_time: Optional[float] = None
 
         if params.zstack_enabled and self.zstack_channels:
-            self._setup_zstack_job_runner(prewarmed_job_runner, prewarmed_bp_values)
+            self._setup_zstack_job_runner()
         else:
             # Still need a (disabled) backpressure controller so base methods that
             # reference self._backpressure don't crash if ever reached.
             self._backpressure = BackpressureController(enabled=False)
 
     # ------------------------------------------------------------------ setup
-    def _setup_zstack_job_runner(self, prewarmed_job_runner, prewarmed_bp_values) -> None:
-        self._backpressure = self._create_backpressure(prewarmed_bp_values)
+    def _setup_zstack_job_runner(self) -> None:
+        self._backpressure = self._create_backpressure()
 
         # Channel metadata for zarr output.
         channel_names, channel_colors, channel_wavelengths = self._channel_zarr_metadata(self.zstack_channels)
@@ -177,19 +173,7 @@ class RecordZStackWorker(MultiPointWorkerBase):
             channel_colors=channel_colors,
             channel_wavelengths=channel_wavelengths,
         )
-        self._zarr_writer_info = zarr_writer_info
-
-        job_runner: Optional[JobRunner] = None
-        if Acquisition.USE_MULTIPROCESSING:
-            job_runner = self._adopt_or_create_job_runner(
-                prewarmed_job_runner,
-                prewarmed_bp_values,
-                zarr_writer_info,
-                cleanup_stale_ome_files=False,
-                job_name=SaveZarrJob.__name__,
-            )
-
-        self._job_runners = [(SaveZarrJob, job_runner)]
+        self._job_runners = [(SaveZarrJob, self._create_in_process_zarr_runner(zarr_writer_info))]
 
     # -------------------------------------------------------------------- run
     def run(self):
@@ -247,6 +231,10 @@ class RecordZStackWorker(MultiPointWorkerBase):
                             self.record(t_idx, region_id, fov_idx, z_ref)
                         if self.params.zstack_enabled and self.zstack_channels:
                             self.zstack(t_idx, region_id, fov_idx, z_ref)
+                            # Look at the save results after every FOV, as MultiPointWorker does, so a
+                            # failed write stops the run instead of burning the remaining FOVs.
+                            if not self._summarize_runner_outputs().none_failed and self._abort_on_failed_job:
+                                return  # _summarize_job_result has requested the abort
         except Exception as e:
             log.exception(e)
             self.request_abort_fn()

@@ -2938,8 +2938,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.exception(f"Error closing multipoint controller during {context}")
 
         # Clean up record+z-stack controller: aborts any running acquisition and
-        # shuts down its JobRunner subprocess so Zarr writers finalize instead of
-        # being killed mid-write (corrupted store).
+        # seals the open Zarr writers instead of leaving a store half-written.
         if self.recordZStackController is not None:
             try:
                 # 30s: the worker's unwind can legitimately take this long on a

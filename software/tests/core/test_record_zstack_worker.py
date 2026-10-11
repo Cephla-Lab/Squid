@@ -188,15 +188,6 @@ def test_record_zstack_controller_smoke(tmp_path, monkeypatch):
     )
     from control.core.scan_coordinates import ScanCoordinates
 
-    # Run SaveZarrJob in-process: this test runs after the worker smoke has
-    # already done in-process tensorstore I/O (its RecordingWriter), and a
-    # JobRunner forked from a tensorstore-initialized parent inherits its
-    # global state without its worker threads — the child then deadlocks
-    # inside ts.open() and the test wedges for minutes in bounded waits.
-    # The forked-subprocess path is exercised by the worker smoke above,
-    # whose fork happens before any in-process tensorstore use.
-    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
-
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
 
     crop_w, crop_h = 64, 48
@@ -1208,8 +1199,6 @@ def test_run_acquisition_survives_snapshot_write_failure(tmp_path, monkeypatch):
     from unittest.mock import MagicMock
     import control.core.record_zstack_controller as rzc
 
-    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
-
     class DummyWorker:
         def __init__(self, **kwargs):
             pass
@@ -1267,8 +1256,6 @@ def test_run_acquisition_writes_both_yaml_files(tmp_path, monkeypatch):
     """
     from unittest.mock import MagicMock
     import control.core.record_zstack_controller as rzc
-
-    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
 
     class DummyWorker:
         def __init__(self, **kwargs):
@@ -1455,7 +1442,6 @@ def test_controller_resolves_effective_fps_before_the_run_and_records_it(tmp_pat
     )
     from control.core.scan_coordinates import ScanCoordinates
 
-    monkeypatch.setattr("control._def.Acquisition.USE_MULTIPROCESSING", False)
     control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
     scope = _build_simulated_microscope(64, 48)
     live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
@@ -1508,3 +1494,146 @@ def test_controller_resolves_effective_fps_before_the_run_and_records_it(tmp_pat
     # The store's spacing is the resolved one unless the simulated camera delivered more than 2%
     # off it, in which case the measured spacing is stamped and the resolved one kept alongside.
     assert sq.get("nominal_time_increment_s", sq["time_increment_s"]) == pytest.approx(1.0 / expected)
+
+
+def _zstack_squid_attrs(root):
+    """The _squid attributes of the one OME group zarr.json of the z-stack store under root."""
+    import json
+
+    found = []
+    for zarr_json in Path(root).rglob("zarr.json"):
+        with open(zarr_json) as f:
+            attrs = json.load(f).get("attributes", {}).get("_squid")
+        if attrs is not None:
+            found.append(attrs)
+    (attrs,) = found
+    return attrs
+
+
+def test_zstack_uses_the_in_process_runner_and_seals_the_store(tmp_path, monkeypatch):
+    """No subprocess is started for the z-stack; its store ends acquisition_complete=True."""
+    pytest.importorskip("tensorstore")
+    from control.core import job_processing
+    from control.core.in_process_zarr_runner import InProcessZarrRunner
+
+    started = []
+    monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=False, zstack_enabled=True
+    )
+    assert isinstance(worker._job_runners[0][1], InProcessZarrRunner)
+    worker.run()
+    assert started == []
+    assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")["acquisition_complete"] is True
+
+
+def test_abort_mid_zstack_seals_store_aborted(tmp_path):
+    """Stop during the z-stack: the store says aborted, not complete."""
+    pytest.importorskip("tensorstore")
+
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=False, zstack_enabled=True, zstack_channel_slice=slice(0, 2)
+    )
+    original = worker.acquire_camera_image
+    calls = []
+
+    def abort_after_first(*args, **kwargs):
+        original(*args, **kwargs)
+        calls.append(1)
+        if len(calls) == 1:
+            aborted["v"] = True
+
+    worker.acquire_camera_image = abort_after_first
+    worker.run()
+    attrs = _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")
+    assert attrs["acquisition_complete"] is False and attrs.get("aborted") is True
+
+
+def test_zarr_write_error_aborts_the_acquisition(tmp_path, monkeypatch, caplog):
+    """A failed z-stack write must end the run as an error and seal the store incomplete, not finish quietly."""
+    pytest.importorskip("tensorstore")
+    import concurrent.futures
+    import logging
+    from control.core.job_processing import SaveZarrJob
+
+    real_submit = SaveZarrJob.submit
+
+    def failing_submit(self):
+        future, result = real_submit(self)  # open the store as usual, so there is a zarr.json to inspect
+        if future is not None:
+            future.result()
+        failed = concurrent.futures.Future()
+        failed.set_exception(RuntimeError("disk full"))
+        return failed, result
+
+    monkeypatch.setattr(SaveZarrJob, "submit", failing_submit)
+    scope, live_controller, channels, worker, aborted = _build_worker_harness(
+        tmp_path, recording_enabled=False, zstack_enabled=True, zstack_channel_slice=slice(0, 2)
+    )
+    with caplog.at_level(logging.ERROR):
+        worker.run()
+    assert aborted["v"] is True and worker._abort_cause == "error"
+    assert any("disk full" in r.getMessage() for r in caplog.records)
+    assert _zstack_squid_attrs(Path(tmp_path) / "state_restore" / "zarr")["acquisition_complete"] is False
+
+
+def test_three_record_zstack_acquisitions_all_sealed(tmp_path, monkeypatch):
+    """The data loss of PR 564: acquisition 3 used to lose its z-stack. No subprocess is started at all now."""
+    pytest.importorskip("tensorstore")
+    import tests.control.test_stubs as ts
+    from control.core import job_processing
+    from control.core.multi_point_controller import NoOpCallbacks
+    from control.core.record_zstack_controller import RecordZStackAcquisitionParameters, RecordZStackController
+    from control.core.scan_coordinates import ScanCoordinates
+
+    started = []
+    monkeypatch.setattr(job_processing.JobRunner, "start", lambda self: started.append(self))
+    scope = _build_simulated_microscope(64, 48)
+    live_controller = ts.get_test_live_controller(scope, scope.objective_store.default_objective)
+    channels = live_controller.get_channels(scope.objective_store.default_objective)
+    scope.camera.set_exposure_time(1)
+    z_cfg = scope.stage.get_config().Z_AXIS
+    scope.stage.move_z_to((z_cfg.MAX_POSITION + z_cfg.MIN_POSITION) / 2.0)
+    scope.low_level_drivers.microcontroller.wait_till_operation_is_completed()
+    scan_coords = ScanCoordinates(objectiveStore=scope.objective_store, stage=scope.stage, camera=scope.camera)
+    scan_coords.region_fov_coordinates = {
+        "A1": [(scope.stage.get_config().X_AXIS.MIN_POSITION + 1.0, scope.stage.get_config().Y_AXIS.MIN_POSITION + 1.0)]
+    }
+    controller = RecordZStackController(
+        microscope=scope,
+        live_controller=live_controller,
+        laser_autofocus_controller=ts.get_test_laser_autofocus_controller(scope),
+        objective_store=scope.objective_store,
+        scan_coordinates=scan_coords,
+        callbacks=NoOpCallbacks,
+    )
+    try:
+        for i in range(1, 4):
+            base = tmp_path / f"acq{i}"
+            base.mkdir()
+            controller.run_acquisition(
+                RecordZStackAcquisitionParameters(
+                    base_path=str(base),
+                    experiment_id="b2b",
+                    Nt=1,
+                    dt_s=0.0,
+                    use_laser_af=False,
+                    recording_enabled=True,
+                    recording_channel=channels[0],
+                    fps=10.0,
+                    duration_s=0.3,
+                    recording_bottom_z_offset_um=0.0,
+                    zstack_enabled=True,
+                    zstack_channels=channels[:2],
+                    z_min_um=-1.0,
+                    z_max_um=1.0,
+                    z_step_um=1.0,
+                )
+            )
+            controller.join(timeout=120)
+            assert not controller.acquisition_in_progress(), f"acquisition {i} did not finish"
+            (experiment_dir,) = [d for d in base.iterdir() if d.is_dir()]
+            assert _zstack_squid_attrs(experiment_dir / "zarr")["acquisition_complete"] is True, f"acquisition {i}"
+    finally:
+        controller.close()
+    assert started == []

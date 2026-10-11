@@ -115,6 +115,7 @@ class MultiPointWorkerBase:
         self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
         self.request_abort_fn: Callable[[], None] = request_abort_fn
         self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
+        self._run_state_fatal = False  # True once run() crashed out; _finish_jobs then seals the stores as aborted
         self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
 
         # Optional SlackNotifier — subclasses set the real one if present.
@@ -156,10 +157,6 @@ class MultiPointWorkerBase:
         # need these attributes to exist; placeholders keep them self-contained.
         self._backpressure: Optional[BackpressureController] = None
         self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
-        # Kept for the in-process job fallback: JobRunner.dispatch() injects
-        # zarr_writer_info into each job, so when multiprocessing is off the
-        # frame callback must inject it itself before job.run().
-        self._zarr_writer_info: Optional[ZarrWriterInfo] = None
         # The settings in effect now, for the whole acquisition.
         self._save_settings = SaveSettings()
         self._abort_on_failed_job = True
