@@ -58,3 +58,39 @@ def test_failed_switch_warns_reverts_and_reenables(qtbot):
     assert store.current_objective == store.default_objective
     assert widget.dropdown.currentText() == store.default_objective
     warning.assert_called_once()
+
+
+class _ForgetfulChanger(_BlockingChanger):
+    """Like the turret after a rotation that failed partway: it no longer knows which objective is in place."""
+
+    def __init__(self, fail_with=None):
+        super().__init__(fail_with)
+        self.current_objective = "20x"
+
+    def move_to_objective(self, objective_name):
+        self.current_objective = None
+        super().move_to_objective(objective_name)
+        self.current_objective = objective_name
+
+
+def test_a_failed_switch_that_leaves_the_objective_unknown_shows_none_so_reselecting_it_moves(qtbot):
+    store = ts.get_test_objective_store()
+    shown = store.current_objective
+    changer = _ForgetfulChanger(fail_with=TimeoutError("Move to 6050 pulses timed out"))
+    changer.release.set()
+    widget = ObjectivesWidget(store, changer)
+    qtbot.addWidget(widget)
+    other = next(name for name in store.objectives_dict if name != shown)
+
+    with patch.object(QMessageBox, "warning") as warning:
+        widget.dropdown.setCurrentText(other)
+        qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
+
+    assert changer.current_objective is None
+    assert widget.dropdown.currentIndex() == -1  # not the old objective: the changer may be between slots
+    assert "unknown" in warning.call_args[0][2]
+    changer.fail_with = None
+    with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+        widget.dropdown.setCurrentText(shown)  # the objective shown before the failure
+    assert changer.calls == [other, shown]
+    assert store.current_objective == shown == changer.current_objective
