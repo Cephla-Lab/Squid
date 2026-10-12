@@ -172,6 +172,8 @@ class MultiPointWorker:
         self.num_fovs = 0
         self.total_scans = 0
         self._last_time_point_z_pos = {}
+        # Z before move_to_coordinate lowered it for the laser autofocus (LASER_AF_LOWER_Z_BEFORE_UM), else None
+        self._z_before_lowering_mm: Optional[float] = None
         self.scan_region_fov_coords_mm = (
             acquisition_parameters.scan_position_information.scan_region_fov_coords_mm.copy()
         )
@@ -825,8 +827,31 @@ class MultiPointWorker:
         self._sleep(SCAN_STABILIZATION_TIME_MS_X / 1000)
 
         self.stage.move_y_to(y_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
+        lower_mm = self._laser_af_lowering_mm()
+        if not lower_mm:
+            self._sleep(SCAN_STABILIZATION_TIME_MS_Y / 1000)
+            self._move_to_field_z(coordinate_mm, region_id, fov)
+            return
 
+        # Lower Z while Y settles, after the field's own Z move, so that the autofocus correction is an upward move.
+        y_moved_at = time.time()
+        self._move_to_field_z(coordinate_mm, region_id, fov)
+        z_mm = self.stage.get_pos().z_mm
+        z_floor_mm = self.stage.get_config().Z_AXIS.MIN_POSITION + max(0.0, Z_BACKLASH_COMPENSATION_UM) / 1000
+        if z_mm - lower_mm >= z_floor_mm:
+            self.stage.move_z(-lower_mm)
+            self._z_before_lowering_mm = z_mm
+        self._sleep(max(0.0, SCAN_STABILIZATION_TIME_MS_Y / 1000 - (time.time() - y_moved_at)))
+
+    def _laser_af_lowering_mm(self) -> float:
+        """LASER_AF_LOWER_Z_BEFORE_UM in mm when it applies: laser autofocus is on and moves the stage, not a piezo."""
+        if not self.do_reflection_af or self.laser_auto_focus_controller is None:
+            return 0.0
+        if self.laser_auto_focus_controller.piezo is not None:
+            return 0.0
+        return max(0.0, LASER_AF_LOWER_Z_BEFORE_UM) / 1000
+
+    def _move_to_field_z(self, coordinate_mm, region_id, fov):
         # check if z is included in the coordinate
         if (self.do_reflection_af or self.do_autofocus) and self.time_point > 0:
             if (region_id, fov) in self._last_time_point_z_pos:
@@ -1085,6 +1110,11 @@ class MultiPointWorker:
 
     def acquire_at_position(self, region_id, current_path, fov):
         af_succeeded = self.perform_autofocus(region_id, fov)
+        if self._z_before_lowering_mm is not None:
+            if not af_succeeded:
+                # a failed autofocus leaves Z where it would have been without the lowering
+                self.stage.move_z_to(self._z_before_lowering_mm)
+            self._z_before_lowering_mm = None
         if not af_succeeded:
             self._log.error(
                 f"Autofocus failed in acquire_at_position.  Continuing to acquire anyway using the current z position (z={self.stage.get_pos().z_mm} [mm])"
