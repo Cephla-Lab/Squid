@@ -1,6 +1,7 @@
 #include "operations.h"
 
 #include "tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "trigger_pins.h"
 
 /*
   THE OPERATOR-DRIVEN MOTION PATHS ARE PART OF THE FAIL-SAFE.
@@ -456,28 +457,19 @@ void finalize_homing_xy()
 
 void do_camera_trigger()
 {
-  if (trigger_mode == 0) {
-    for (int camera_channel = 0; camera_channel < 4; camera_channel++)
+  for (int camera_channel = 0; camera_channel < NUM_CAMERA_TRIGGERS; camera_channel++)
+  {
+    if (!trigger_asserted[camera_channel])
+      continue;
+    // Edge mode: fixed pulse. Level mode: hold for strobe_delay + illumination_on_time so the
+    // illumination is fully contained within the trigger pulse.
+    unsigned long hold_us = (trigger_mode == 0)
+                                ? TRIGGER_PULSE_LENGTH_us
+                                : strobe_delay[camera_channel] + illumination_on_time[camera_channel];
+    if ((micros() - timestamp_trigger_rising_edge[camera_channel]) >= hold_us)
     {
-      // end the trigger pulse
-      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= TRIGGER_PULSE_LENGTH_us )
-      {
-        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
-        trigger_output_level[camera_channel] = HIGH;
-      }
-    }
-  }
-  else {
-    // for level trigger logic
-    for (int camera_channel = 0; camera_channel < 4; camera_channel++)
-    {
-      // end the trigger pulse after strobe_delay + illumination_on_time
-      // so illumination is fully contained within the trigger pulse
-      if (trigger_output_level[camera_channel] == LOW && (micros() - timestamp_trigger_rising_edge[camera_channel]) >= strobe_delay[camera_channel] + illumination_on_time[camera_channel])
-      {
-        digitalWrite(camera_trigger_pins[camera_channel], HIGH);
-        trigger_output_level[camera_channel] = HIGH;
-      }
+      trigger_release(camera_channel);
+      trigger_asserted[camera_channel] = false;
     }
   }
 }

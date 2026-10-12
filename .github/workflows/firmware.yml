@@ -31,6 +31,10 @@ jobs:
         run: pio run -e teensy41
         working-directory: ./firmware/controller
 
+      - name: Build controller firmware (Teensy 4.1, new controller profile)
+        run: pio run -e teensy41_newctrl
+        working-directory: ./firmware/controller
+
       - name: Build joystick firmware (Teensy LC)
         run: pio run -e teensyLC
         working-directory: ./firmware/joystick

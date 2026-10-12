@@ -93,7 +93,8 @@ static const int num_digital_pins = 4;
 static const int digitial_output_pins[num_digital_pins] = {6, 9, 10, 15}; // PWM 9, 12-14
 
 // camera trigger
-static const int camera_trigger_pins[] = {29, 30, 31, 32}; // trigger 1-4 (pin 16 used for W2 CS, pin 28 used for W2 CLK)
+// Camera trigger pins, polarity and the trigger-ready input live in the controller profile
+// (controller_profile.h / trigger_pins.h) — they differ between controller generations.
 
 // W2 clock pin
 const uint8_t pin_TMC4361_CLK_W2 = 28;
