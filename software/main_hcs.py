@@ -112,23 +112,7 @@ if __name__ == "__main__":
         skip_init=args.skip_init,
     )
 
-    microscope_utils_menu = QMenu("Utils", win)
-
-    stage_utils_action = QAction("Stage Utils", win)
-    stage_utils_action.triggered.connect(win.stageUtils.show)
-    microscope_utils_menu.addAction(stage_utils_action)
-
-    if control._def.USE_OBJECTIVE_TURRET:
-        reset_turret_action = QAction("Reset Objective Turret", win)
-        reset_turret_action.triggered.connect(win.resetObjectiveTurret)
-        microscope_utils_menu.addAction(reset_turret_action)
-
-    workflow_runner_action = QAction("Workflow Runner...", win)
-    workflow_runner_action.triggered.connect(win.openWorkflowRunner)
-    microscope_utils_menu.addAction(workflow_runner_action)
-
-    menu_bar = win.menuBar()
-    menu_bar.addMenu(microscope_utils_menu)
+    menu_bar = win.menuBar()  # its Utils menu is built by the GUI
 
     # Show startup warning if simulated disk I/O mode is enabled
     if control._def.SIMULATED_DISK_IO_ENABLED:
