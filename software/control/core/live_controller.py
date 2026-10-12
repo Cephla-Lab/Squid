@@ -53,6 +53,10 @@ class LiveController(QObject):
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count = 0
         self.timer_trigger: Optional[threading.Timer] = None
+        # cancel() cannot stop an already-dispatched Timer callback. Serialize its
+        # trigger with shutdown, and invalidate callbacks when their timer is replaced.
+        self._live_lock = threading.RLock()
+        self._timer_generation = 0
 
         self.trigger_ID = -1
 
@@ -382,39 +386,44 @@ class LiveController(QObject):
 
     def start_live(self):
         self._check_laser_engine_warn_only()
-        self.is_live = True
-        self.camera.start_streaming()
-        if self.trigger_mode == TriggerMode.SOFTWARE or (
-            self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
-        ):
-            self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
-            self._start_triggerred_acquisition()
-        elif self.trigger_mode == TriggerMode.CONTINUOUS:
-            # Continuous mode has no trigger_acquisition() loop to turn on the
-            # illumination, so do it here. stop_live() already turns it off
-            # symmetrically.
-            if self.control_illumination and not self.illumination_on:
-                self.turn_on_illumination()
-        # if controlling the laser displacement measurement camera
-        if self.for_displacement_measurement:
-            self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
-
-    def stop_live(self):
-        if self.is_live:
-            self.is_live = False
-            if self.trigger_mode == TriggerMode.SOFTWARE:
-                self._stop_triggerred_acquisition()
-            if self.trigger_mode == TriggerMode.CONTINUOUS:
-                self.camera.stop_streaming()
-            if (self.trigger_mode == TriggerMode.SOFTWARE) or (
+        with self._live_lock:
+            self.is_live = True
+            self.camera.start_streaming()
+            if self.trigger_mode == TriggerMode.SOFTWARE or (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
             ):
-                self._stop_triggerred_acquisition()
-            if self.control_illumination:
-                self.turn_off_illumination()
+                self.camera.enable_callbacks(True)  # in case it's disabled e.g. by the laser AF controller
+                self._start_triggerred_acquisition()
+            elif self.trigger_mode == TriggerMode.CONTINUOUS:
+                # Continuous mode has no trigger_acquisition() loop to turn on the
+                # illumination, so do it here. stop_live() already turns it off
+                # symmetrically.
+                if self.control_illumination and not self.illumination_on:
+                    self.turn_on_illumination()
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
-                self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
+                self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
+
+    def stop_live(self):
+        """Drain any in-flight Live trigger before switching illumination off.
+
+        Once this returns, callbacks from the stopped session cannot trigger or
+        relight the sample, even if Live is subsequently restarted.
+        """
+        with self._live_lock:
+            if self.is_live:
+                self.is_live = False
+                if self.trigger_mode == TriggerMode.CONTINUOUS:
+                    self.camera.stop_streaming()
+                if (self.trigger_mode == TriggerMode.SOFTWARE) or (
+                    self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger
+                ):
+                    self._stop_triggerred_acquisition()
+                if self.control_illumination:
+                    self.turn_off_illumination()
+                # if controlling the laser displacement measurement camera
+                if self.for_displacement_measurement:
+                    self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
 
     def snap(self):
         """Acquire exactly one frame using the current live configuration.
@@ -499,16 +508,19 @@ class LiveController(QObject):
         """True when camera frames are meant to reach the display (live or snap)."""
         return self.is_live or self._is_snapping
 
-    def _trigger_acquisition_timer_fn(self):
-        triggered = self.trigger_acquisition()
-        if not self.is_live:
-            return
-        if triggered or self.microscope.low_level_drivers.microcontroller.is_busy():
-            # A busy MCU (a stage move) resolves on a 100 ms-to-seconds scale, and every
-            # re-check spins up a fresh Timer thread: poll at frame cadence, not every 10 ms.
-            self._start_new_timer()
-        else:
-            self._start_new_timer(maybe_custom_interval_ms=10)  # camera not ready yet: retry soon
+    def _trigger_acquisition_timer_fn(self, generation=None):
+        with self._live_lock:
+            if not self.is_live or (generation is not None and generation != self._timer_generation):
+                return
+            triggered = self.trigger_acquisition()
+            if not self.is_live or (generation is not None and generation != self._timer_generation):
+                return
+            if triggered or self.microscope.low_level_drivers.microcontroller.is_busy():
+                # A busy MCU (a stage move) resolves on a 100 ms-to-seconds scale, and every
+                # re-check spins up a fresh Timer thread: poll at frame cadence, not every 10 ms.
+                self._start_new_timer()
+            else:
+                self._start_new_timer(maybe_custom_interval_ms=10)  # camera not ready yet: retry soon
 
     # software trigger related
     def trigger_acquisition(self):
@@ -548,19 +560,26 @@ class LiveController(QObject):
         return True
 
     def _stop_existing_timer(self):
-        if self.timer_trigger and self.timer_trigger.is_alive():
-            self.timer_trigger.cancel()
-        self.timer_trigger = None
+        with self._live_lock:
+            self._timer_generation += 1
+            if self.timer_trigger:
+                self.timer_trigger.cancel()
+            self.timer_trigger = None
 
     def _start_new_timer(self, maybe_custom_interval_ms=None):
-        self._stop_existing_timer()
-        if maybe_custom_interval_ms:
-            interval_s = maybe_custom_interval_ms / 1000.0
-        else:
-            interval_s = self.timer_trigger_interval / 1000.0
-        self.timer_trigger = threading.Timer(interval_s, self._trigger_acquisition_timer_fn)
-        self.timer_trigger.daemon = True
-        self.timer_trigger.start()
+        with self._live_lock:
+            self._stop_existing_timer()
+            if not self.is_live:
+                return
+            if maybe_custom_interval_ms:
+                interval_s = maybe_custom_interval_ms / 1000.0
+            else:
+                interval_s = self.timer_trigger_interval / 1000.0
+            self.timer_trigger = threading.Timer(
+                interval_s, self._trigger_acquisition_timer_fn, args=(self._timer_generation,)
+            )
+            self.timer_trigger.daemon = True
+            self.timer_trigger.start()
 
     def _start_triggerred_acquisition(self):
         self._start_new_timer()
