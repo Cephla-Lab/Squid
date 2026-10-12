@@ -1128,15 +1128,6 @@ class ToupcamCamera(AbstractCamera):
             raise ValueError(f"Do not know how to handle {acquisition_mode=}")
         self._camera.put_Option(toupcam.TOUPCAM_OPTION_TRIGGER, trigger_option_value)
 
-        if acquisition_mode == CameraAcquisitionMode.SOFTWARE_TRIGGER:
-            # The SDK moves the trigger source to software along with the option only while the stream runs.
-            # Switched while stopped, the source stays on the hardware input (GPIO0) and every software
-            # trigger is ignored, so set it explicitly, as the hardware branch below does for its source.
-            try:
-                self._camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 5)  # 5 => software
-            except toupcam.HRESULTException as ex:
-                self._log.warning("Unable to set trigger source to software: " + hresult_checker(ex))
-
         if acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
             if HARDWARE_TRIGGER_MODE == HardwareTriggerMode.LEVEL:
                 try:
