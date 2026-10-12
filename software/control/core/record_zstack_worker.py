@@ -206,6 +206,8 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.liveController.stop_live()
             except Exception:
                 log.exception("Failed to stop live view before acquisition")
+        if self.params.zstack_enabled and self.liveController.trigger_mode != TriggerMode.SOFTWARE:
+            self._switch_to_software_trigger_streaming()
 
         try:
             if self.params.recording_enabled:
@@ -303,6 +305,22 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.callbacks.signal_acquisition_finished()
             except Exception:
                 log.exception("signal_acquisition_finished callback failed")
+
+    def _switch_to_software_trigger_streaming(self) -> None:
+        """Put the z-stack's software trigger in place once, at the start, with the camera streaming.
+
+        A ToupTek camera moves its trigger source off the hardware input only when the trigger mode
+        changes on a running stream. Every later mode write in this run happens on a stopped stream
+        (each phase stops the camera on the way out), so a hardware-to-software switch made there
+        leaves the source on the hardware input and every z-stack trigger is ignored. zstack()'s own
+        switch stays as the fallback if this one fails.
+        """
+        try:
+            if not self.camera.get_is_streaming():
+                self.camera.start_streaming()
+            self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
+        except Exception:
+            log.exception("Failed to switch to software trigger before the acquisition")
 
     # ------------------------------------------------------------- reference
     def establish_reference(self) -> float:
