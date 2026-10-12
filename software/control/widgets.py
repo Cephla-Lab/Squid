@@ -21,6 +21,7 @@ from control.core.core import TrackingController, LiveController
 from control.core.multi_point_controller import MultiPointController
 from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import get_effective_well_size, calculate_well_coverage
+from control.core.disk_space import preflight_disk_check
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.channel_sequence import enable_channel_sequence
@@ -126,9 +127,10 @@ def check_space_available_with_error_dialog(
     # To check how much disk space is required, we need to have the MultiPointController all configured.  That is
     # a precondition of this function.
     save_directory = multi_point_controller.base_path
-    available_disk_space = utils.get_available_disk_space(save_directory)
-    space_required = factor_of_safecty * multi_point_controller.get_estimated_acquisition_disk_storage()
-    image_count = multi_point_controller.get_acquisition_image_count()
+    check = preflight_disk_check(multi_point_controller, save_directory, safety_factor=factor_of_safecty)
+    available_disk_space = check.available_bytes
+    space_required = check.required_bytes
+    image_count = check.image_count
 
     logger.info(
         f"Checking space available: {space_required=}, {available_disk_space=}, {image_count=}, {save_directory=}"
@@ -137,12 +139,7 @@ def check_space_available_with_error_dialog(
     if not options.needs_dialog:
         return True
 
-    megabytes_required = int(space_required / 1024 / 1024)
-    megabytes_available = int(available_disk_space / 1024 / 1024)
-    error_message = (
-        f"This acquisition will capture {image_count:,} images, which will"
-        f" require {megabytes_required:,} [MB], but '{save_directory}' only has {megabytes_available:,} [MB] available."
-    )
+    error_message = check.describe()
     # Module-level lookup (not a default argument) so tests can monkeypatch the dialog.
     action = preflight_disk_dialog(f"{error_message}\n\n{LARGE_ACQUISITION_MODE_EXPLANATION}", options)
     if action == "enable":

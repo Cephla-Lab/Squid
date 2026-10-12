@@ -35,6 +35,15 @@ def create_mock_server(objective: str = "20x", channels: list = None):
     mock_multipoint = MagicMock()
     mock_multipoint.acquisition_in_progress.return_value = False
     mock_multipoint.experiment_ID = "test_experiment"
+    # Pre-flight disk check inputs: a tiny acquisition that saves, with large acquisition mode off.
+    mock_multipoint.get_estimated_acquisition_disk_storage.return_value = 1000
+    mock_multipoint.get_acquisition_image_count.return_value = 12
+    mock_multipoint.skip_saving = False
+    mock_multipoint.large_acquisition_mode = False
+    mock_multipoint.set_large_acquisition_mode.side_effect = lambda on: setattr(
+        mock_multipoint, "large_acquisition_mode", on
+    )
+    mock_multipoint.set_skip_saving.side_effect = lambda on: setattr(mock_multipoint, "skip_saving", on)
     # What set_selected_configurations would have resolved for these channels
     mock_multipoint.selected_configurations = mock_channels
 
@@ -641,3 +650,76 @@ class TestPauseCommandDiscovery:
             assert schemas[name]["parameters"] == {}
             assert schemas[name]["required"] == []
             assert len(schemas[name]["description"]) > 20
+
+
+class TestTcpDiskPreflight:
+    """Both TCP run commands refuse an acquisition the save disk cannot hold unless large acquisition mode is
+    on, mirroring the GUI's "Not Enough Disk Space" check (which a TCP client never sees)."""
+
+    @pytest.fixture
+    def yaml_file(self, tmp_path):
+        path = tmp_path / "acq.yaml"
+        path.write_text(SAMPLE_WELLPLATE_YAML)
+        return str(path)
+
+    @pytest.fixture
+    def opt_in_yaml_file(self, tmp_path):
+        path = tmp_path / "acq_large.yaml"
+        path.write_text(
+            SAMPLE_WELLPLATE_YAML.replace("acquisition:\n", "acquisition:\n  large_acquisition_mode: true\n", 1)
+        )
+        assert "large_acquisition_mode: true" in path.read_text()
+        return str(path)
+
+    @pytest.fixture
+    def tiny_disk(self, monkeypatch):
+        import control._def
+        import control.utils
+
+        monkeypatch.setattr(control._def, "LARGE_ACQUISITION_MODE", False)
+        monkeypatch.setattr(control.utils, "get_available_disk_space", lambda d: 500)  # the mock run needs 1030
+
+    def test_yaml_run_that_does_not_fit_is_refused_before_anything_is_created(self, tiny_disk, yaml_file, tmp_path):
+        server = create_mock_server()
+        with pytest.raises(RuntimeError) as err:
+            server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file, base_path=str(tmp_path))
+        message = str(err.value)
+        assert "large_acquisition_mode: true" in message, "the error must name the opt-in"
+        assert "12 images" in message and str(tmp_path) in message
+        server.multipoint_controller.start_new_experiment.assert_not_called()
+        server.multipoint_controller.run_acquisition.assert_not_called()
+
+    def test_yaml_opt_in_lets_the_run_start(self, tiny_disk, opt_in_yaml_file, tmp_path):
+        server = create_mock_server()
+        result = server._cmd_run_acquisition_from_yaml(yaml_path=opt_in_yaml_file, base_path=str(tmp_path))
+        assert result["started"] is True
+        server.multipoint_controller.run_acquisition.assert_called_once()
+
+    def test_global_setting_lets_the_run_start(self, tiny_disk, yaml_file, tmp_path, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "LARGE_ACQUISITION_MODE", True)
+        server = create_mock_server()
+        assert server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file, base_path=str(tmp_path))["started"] is True
+
+    def test_runs_that_save_nothing_are_not_checked(self, tiny_disk, tmp_path):
+        path = tmp_path / "acq_skip.yaml"
+        path.write_text(SAMPLE_WELLPLATE_YAML.replace("acquisition:\n", "acquisition:\n  skip_saving: true\n", 1))
+        server = create_mock_server()
+        assert server._cmd_run_acquisition_from_yaml(yaml_path=str(path), base_path=str(tmp_path))["started"] is True
+
+    def test_a_run_that_fits_starts_as_before(self, yaml_file, tmp_path, monkeypatch):
+        import control.utils
+
+        monkeypatch.setattr(control.utils, "get_available_disk_space", lambda d: 10**9)
+        server = create_mock_server()
+        assert server._cmd_run_acquisition_from_yaml(yaml_path=yaml_file, base_path=str(tmp_path))["started"] is True
+
+    def test_the_wells_command_is_refused_too_and_names_the_setting(self, tiny_disk, tmp_path):
+        server = create_mock_server()
+        # This command validates channels against the live controller rather than the config repo.
+        server.microscope.live_controller.get_channels.return_value = [create_mock_channel("BF LED matrix full")]
+        with pytest.raises(RuntimeError) as err:
+            server._cmd_run_acquisition(wells="B6", channels=["BF LED matrix full"], base_path=str(tmp_path))
+        assert "Large Acquisitions" in str(err.value)
+        server.multipoint_controller.run_acquisition.assert_not_called()
