@@ -23,6 +23,7 @@ from control.models import (
     ObjectiveChannelConfig,
 )
 from control._def import XLIGHT_EMISSION_IRIS_DEFAULT, XLIGHT_ILLUMINATION_IRIS_DEFAULT
+import control._def
 from control.models.confocal_config import ConfocalConfig
 from control.models.illumination_config import (
     DEFAULT_LED_COLOR,
@@ -44,9 +45,6 @@ ALL_IRIS_DEFAULTS = {
     "illumination_iris": float(XLIGHT_ILLUMINATION_IRIS_DEFAULT),
     "emission_iris": float(XLIGHT_EMISSION_IRIS_DEFAULT),
 }
-
-# Standard objectives
-DEFAULT_OBJECTIVES = ["2x", "4x", "10x", "20x", "40x", "50x", "60x"]
 
 
 def build_confocal_settings_from_config(
@@ -290,7 +288,7 @@ def generate_default_configs(
     Args:
         illumination_config: Available illumination channels
         include_confocal: Whether to include confocal_hardware_settings and confocal_override in objective configs
-        objectives: List of objectives to generate configs for (default: standard set)
+        objectives: List of objectives to generate configs for (default: the machine's objectives, control._def.OBJECTIVES)
         camera_id: Camera ID (optional for single-camera systems)
         confocal_config: Confocal hardware config used to determine which iris properties to include (None = all at defaults)
 
@@ -298,7 +296,7 @@ def generate_default_configs(
         Tuple of (general_config, {objective: objective_config})
     """
     if objectives is None:
-        objectives = DEFAULT_OBJECTIVES
+        objectives = list(control._def.OBJECTIVES)
 
     general_config = generate_general_config(
         illumination_config, include_confocal=include_confocal, camera_id=camera_id

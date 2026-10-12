@@ -12,6 +12,13 @@ Defines all available illumination channels on this machine:
 - Controller port mappings (D1-D8 for lasers, USB for LED matrix)
 - Intensity calibration file references
 
+### `objectives.yaml` (Optional)
+The per-machine list of the objectives actually mounted on this microscope (name, optics, changer
+slot, optional model/serial). If absent, the objective list comes from
+`objective_and_sample_formats/objectives.csv` and the machine .ini, as before. Edit through
+Settings > Advanced > Objectives... in the GUI; a restart is required to apply changes. See
+`objectives.yaml.example`.
+
 ### `confocal_config.yaml` (Optional)
 Only create this file if the system has a confocal unit. Its presence indicates
 that confocal settings should be included in acquisition configs.
