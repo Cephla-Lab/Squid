@@ -3,7 +3,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from threading import Event, Thread
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -36,6 +36,8 @@ def validate_record_zstack_params(
     laser_af_has_reference: bool,
     recording_nz: int = 1,
     recording_dz_um: float = 1.0,
+    recording_exposure_ms: Optional[float] = None,
+    zstack_exposures_ms: Optional[Dict[str, float]] = None,
 ) -> Optional[str]:
     """Return an error string describing the first validation failure, or None if valid.
 
@@ -62,6 +64,8 @@ def validate_record_zstack_params(
             return "Recording Nz must be at least 1."
         if recording_nz > 1 and recording_dz_um <= 0:
             return "Recording dz must be > 0 when Nz > 1."
+        if recording_exposure_ms is not None and recording_exposure_ms <= 0:
+            return f"Recording: exposure of {recording_channel_name} must be greater than 0 ms."
     if zstack_enabled:
         if z_max <= z_min:
             return "Z-Stack: z_max must be greater than z_min."
@@ -69,6 +73,9 @@ def validate_record_zstack_params(
             return "Z-Stack: step must be greater than 0."
         if not zstack_channel_names:
             return "Z-Stack: at least one channel must be selected."
+        for name, exposure_ms in (zstack_exposures_ms or {}).items():
+            if exposure_ms <= 0:
+                return f"Z-Stack: exposure of {name} must be greater than 0 ms."
     if use_laser_af and not laser_af_has_reference:
         return "Laser AF is enabled but no reference position has been captured."
     return None
