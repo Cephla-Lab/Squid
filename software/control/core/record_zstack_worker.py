@@ -309,11 +309,22 @@ class RecordZStackWorker(MultiPointWorkerBase):
     def _switch_to_software_trigger_streaming(self) -> None:
         """Put the z-stack's software trigger in place once, at the start, with the camera streaming.
 
-        A ToupTek camera moves its trigger source off the hardware input only when the trigger mode
-        changes on a running stream. Every later mode write in this run happens on a stopped stream
-        (each phase stops the camera on the way out), so a hardware-to-software switch made there
-        leaves the source on the hardware input and every z-stack trigger is ignored. zstack()'s own
-        switch stays as the fallback if this one fails.
+        Why: a ToupTek camera moves its trigger source off the hardware input only when the trigger
+        mode changes on a running stream. Every later mode write in this run happens on a stopped
+        stream (each phase stops the camera on the way out), so a hardware-to-software switch made
+        there leaves the source on the hardware input and every z-stack trigger is ignored: no
+        z-stack, "Timed out waiting ... for a frame". Measured on an ITR3CMOS26000KMA; the SDK
+        documentation does not describe it, and other models are untested.
+
+        Scope: called only for runs with a z-stack that start outside software trigger. Runs that
+        start in software trigger, and recording-only runs, are unchanged. The user's mode is
+        restored in run()'s finally as before; the camera driver is not changed.
+
+        Side effect: a camera left stopped (e.g. by a previous run) is started here.
+
+        If the switch fails it is only logged, and zstack() switches as before. On a ToupTek camera
+        that later switch happens on a stopped stream, so it does not cure the trigger source; it
+        keeps other cameras and the LiveController in sync.
         """
         try:
             if not self.camera.get_is_streaming():
