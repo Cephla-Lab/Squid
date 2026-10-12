@@ -2364,3 +2364,52 @@ def test_toggle_acquisition_confirm_has_no_limit_note_when_rate_is_reachable(qtb
 
     assert "Camera limit" not in captured["text"]
     ctrl.run_acquisition.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Zero exposure: rounded to 0.0 by a one-decimal spinbox, then rejected by the camera mid-run
+# (ToupTek "The parameter is incorrect"), aborting the acquisition with the z-stack half written.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_helper_rejects_zero_recording_exposure():
+    from control.core.record_zstack_controller import validate_record_zstack_params
+
+    err = validate_record_zstack_params(**_base_params(recording_enabled=True, recording_exposure_ms=0.0))
+    assert err is not None and "exposure" in err and "BF LED matrix full" in err
+
+
+def test_validate_helper_rejects_zero_zstack_exposure_naming_the_channel():
+    from control.core.record_zstack_controller import validate_record_zstack_params
+
+    params = _base_params(
+        zstack_channel_names=["Fluorescence 488 nm Ex", "Fluorescence 405 nm Ex"],
+        zstack_exposures_ms={"Fluorescence 488 nm Ex": 30.0, "Fluorescence 405 nm Ex": 0.0},
+    )
+    err = validate_record_zstack_params(**params)
+    assert err is not None and "Fluorescence 405 nm Ex" in err and "exposure" in err
+
+
+def test_validate_helper_accepts_positive_exposures():
+    from control.core.record_zstack_controller import validate_record_zstack_params
+
+    params = _base_params(
+        recording_enabled=True, recording_exposure_ms=0.1, zstack_exposures_ms={"BF LED matrix full": 0.1}
+    )
+    assert validate_record_zstack_params(**params) is None
+
+
+def test_exposure_editors_cannot_hold_zero(qtbot, simulated_widget_deps):
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    w._recording_exp_spin.setValue(0.0)
+    assert w._recording_exposure() > 0
+    w._set_zstack_row_values("BF LED matrix full", 0.0, 0.0, 50.0)
+    assert w._get_zstack_row_values("BF LED matrix full")[0] > 0
+
+
+def test_validate_rejects_zero_zstack_exposure(qtbot, simulated_widget_deps, monkeypatch):
+    """A zero exposure that reaches the table anyway (e.g. from a settings file) is refused before Start."""
+    w = _make_valid_widget(qtbot, simulated_widget_deps)
+    monkeypatch.setattr(w, "_get_zstack_row_values", lambda name: (0.0, 0.0, 50.0))
+    err = w.validate()
+    assert err is not None and "exposure" in err

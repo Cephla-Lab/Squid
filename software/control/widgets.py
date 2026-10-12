@@ -16026,10 +16026,12 @@ def _add_channel_settings_spinboxes(
 ) -> Tuple[QDoubleSpinBox, QDoubleSpinBox, QDoubleSpinBox]:
     """Put the exposure, gain and illumination editors in columns 1-3 of *row* and return them."""
     exp_spin = QDoubleSpinBox()
-    exp_spin.setRange(0.01, 60000)
+    exp_spin.setDecimals(1)
+    # 0.1 ms: the smallest value one decimal can show. A smaller minimum rounds to 0.0 at one decimal,
+    # and a 0 ms exposure is rejected by the camera mid-run (ToupTek: "The parameter is incorrect").
+    exp_spin.setRange(0.1, 60000)
     exp_spin.setValue(exposure)
     exp_spin.setSuffix(" ms")
-    exp_spin.setDecimals(1)
 
     gain_spin = QDoubleSpinBox()
     gain_spin.setRange(0.0, 100.0)
@@ -17333,6 +17335,8 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
             laser_af_has_reference=self._laser_af_has_reference(),
             recording_nz=self.entry_recording_Nz.value(),
             recording_dz_um=self.entry_recording_dz.value(),
+            recording_exposure_ms=self._recording_exposure(),
+            zstack_exposures_ms={name: self._get_zstack_row_values(name)[0] for name in self._zstack_channel_names},
         )
 
     def build_parameters(self):
