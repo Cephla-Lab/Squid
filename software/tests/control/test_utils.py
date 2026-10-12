@@ -52,38 +52,51 @@ def test_single_spot_detection():
     assert abs(detected_y - spot_y) < 5
 
 
-def test_dual_spot_detection():
-    # Create test image with two spots
-    spots = [(280, 240), (360, 240)]
-    image = create_test_image(spots)
+@pytest.mark.parametrize(
+    "mode, spots_x, picked_x",
+    [
+        (SpotDetectionMode.MULTI_LEFT, [200, 280, 360], 200),
+        (SpotDetectionMode.MULTI_RIGHT, [200, 280, 360], 360),
+        (SpotDetectionMode.MULTI_SECOND_RIGHT, [200, 280, 360], 280),
+        (SpotDetectionMode.MULTI_LEFT, [280, 360], 280),
+        (SpotDetectionMode.MULTI_RIGHT, [280, 360], 360),
+        (SpotDetectionMode.MULTI_SECOND_RIGHT, [280, 360], 280),
+        (SpotDetectionMode.MULTI_LEFT, [320], 320),
+        (SpotDetectionMode.MULTI_RIGHT, [320], 320),
+    ],
+)
+def test_multi_spot_detection(mode, spots_x, picked_x):
+    image = create_test_image([(x, 240) for x in spots_x])
 
-    # Test right spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.DUAL_RIGHT)
-    assert result is not None
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[1][0]) < 5
+    detected_x, detected_y = find_spot_location(image, mode=mode)
 
-    # Test left spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.DUAL_LEFT)
-    assert result is not None
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[0][0]) < 5
+    assert abs(detected_x - picked_x) < 5
+    assert abs(detected_y - 240) < 5
 
 
-def test_multi_spot_detection():
-    # Create test image with multiple spots
-    spots = [(200, 240), (280, 240), (360, 240)]
-    image = create_test_image(spots)
+def test_second_right_spot_needs_two_spots():
+    image = create_test_image([(320, 240)])
 
-    # Test rightmost spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.MULTI_RIGHT)
-    assert result
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[2][0]) < 5
+    with pytest.raises(ValueError, match="Found 1 spot"):
+        find_spot_location(image, mode=SpotDetectionMode.MULTI_SECOND_RIGHT)
 
-    # Test second from right spot detection
-    with pytest.raises(NotImplementedError):
-        result = find_spot_location(image, mode=SpotDetectionMode.MULTI_SECOND_RIGHT)
+
+def test_spot_detection_modes():
+    assert [mode.value for mode in SpotDetectionMode] == ["single", "multi_left", "multi_right", "multi_second_right"]
+
+
+@pytest.mark.parametrize(
+    "former_name, mode",
+    [("dual_left", SpotDetectionMode.MULTI_LEFT), ("dual_right", SpotDetectionMode.MULTI_RIGHT)],
+)
+def test_former_name_of_a_spot_detection_mode_is_still_read(former_name, mode):
+    """Saved profiles and .ini files have them."""
+    assert SpotDetectionMode(former_name) is mode
+
+
+def test_unknown_spot_detection_mode_is_an_error():
+    with pytest.raises(ValueError):
+        SpotDetectionMode("dual_centre")
 
 
 def test_invalid_inputs():
@@ -110,11 +123,11 @@ def test_spot_detection_parameters():
 
     # Test with custom parameters
     params = {
-        "y_window": 50,
-        "x_window": 15,
-        "min_peak_width": 5,
-        "min_peak_distance": 5,
-        "min_peak_prominence": 0.25,
+        "threshold": 20,
+        "min_area": 10,
+        "max_area": 2000,
+        "row_tolerance": 30,
+        "max_aspect_ratio": 2.0,
     }
 
     result = find_spot_location(image, params=params)

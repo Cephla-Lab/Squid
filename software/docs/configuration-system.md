@@ -454,20 +454,20 @@ pixel_to_um_calibration_distance: 6.0
 
 # Detection parameters
 laser_af_range: 100.0
+search_for_spot: true        # When an autofocus move finds no spot, search in z over laser_af_range
 laser_af_averaging_n: 3
-spot_detection_mode: dual_right
-displacement_success_window_um: 1.0
+spot_detection_mode: multi_right   # single, multi_left, multi_right or multi_second_right
+displacement_success_window_pixels: 300.0   # Max distance of the spot from x_reference
 
 # Spot detection
 spot_crop_size: 100
 correlation_threshold: 0.9
-y_window: 96
-x_window: 20
-min_peak_width: 10.0
-min_peak_distance: 10.0
-min_peak_prominence: 0.25
-spot_spacing: 100.0
-filter_sigma: null
+cc_threshold: 8.0            # Intensity threshold for binarization
+cc_min_area: 5               # Pixels
+cc_max_area: 5000            # Pixels
+cc_row_tolerance: 50.0       # Max distance of the spot from the centre row, in pixels
+cc_max_aspect_ratio: 2.5     # Longer side over shorter side of the spot's bounding box
+filter_sigma: 1              # Gaussian filter before detection (0 for no filter)
 
 # Camera settings
 focus_camera_exposure_time_ms: 0.2
@@ -478,6 +478,12 @@ reference_image: null
 reference_image_shape: null
 reference_image_dtype: null
 ```
+
+A file with a setting that is not listed here is not loaded, and laser autofocus starts uninitialized for
+that objective. This includes files saved before connected components spot detection, which have the
+line-profile settings (`displacement_success_window_um`, `y_window`, `x_window`, `min_peak_width`,
+`min_peak_distance`, `min_peak_prominence`, `spot_spacing`). Initialize laser autofocus and set the reference
+again; that saves a new file.
 
 ---
 
