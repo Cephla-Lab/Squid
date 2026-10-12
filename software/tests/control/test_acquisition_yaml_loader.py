@@ -269,6 +269,75 @@ channels:
         result = parse_acquisition_yaml(str(yaml_file))
         assert result.channel_names == ["Valid Channel", "Another Valid"]
 
+    def test_parse_channel_settings(self, tmp_path):
+        """Per-channel exposure/gain/intensity are parsed from serialized channels."""
+        yaml_content = """
+acquisition:
+  widget_type: wellplate
+channels:
+  - name: BF LED matrix full
+    camera_settings:
+      exposure_time_ms: 12.5
+      gain_mode: 2.0
+      pixel_format: Mono12
+    illumination_settings:
+      illumination_channel: BF
+      intensity: 30.0
+    z_offset_um: 1.5
+  - name: Fluorescence 488 nm Ex
+    camera_settings:
+      exposure_time_ms: 100
+      gain_mode: 0
+    illumination_settings:
+      intensity: 75
+"""
+        yaml_file = tmp_path / "test_channel_settings.yaml"
+        yaml_file.write_text(yaml_content)
+
+        result = parse_acquisition_yaml(str(yaml_file))
+
+        assert len(result.channel_settings) == 2
+        bf = result.channel_settings[0]
+        assert bf.name == "BF LED matrix full"
+        assert bf.exposure_time_ms == 12.5
+        assert bf.analog_gain == 2.0
+        assert bf.illumination_intensity == 30.0
+        fluo = result.channel_settings[1]
+        assert fluo.name == "Fluorescence 488 nm Ex"
+        assert fluo.exposure_time_ms == 100.0
+        assert fluo.analog_gain == 0.0
+        assert fluo.illumination_intensity == 75.0
+
+    def test_parse_channel_settings_missing_or_invalid_values(self, tmp_path):
+        """Channels without settings (older YAMLs) or with non-numeric values parse to None."""
+        yaml_content = """
+acquisition:
+  widget_type: wellplate
+channels:
+  - name: Name Only Channel
+  - name: Partial Channel
+    camera_settings:
+      exposure_time_ms: fast
+      gain_mode: 1.0
+    illumination_settings: null
+  - exposure_time: 100
+"""
+        yaml_file = tmp_path / "test_channel_settings_missing.yaml"
+        yaml_file.write_text(yaml_content)
+
+        result = parse_acquisition_yaml(str(yaml_file))
+
+        assert len(result.channel_settings) == 2  # nameless entry dropped
+        name_only = result.channel_settings[0]
+        assert name_only.name == "Name Only Channel"
+        assert name_only.exposure_time_ms is None
+        assert name_only.analog_gain is None
+        assert name_only.illumination_intensity is None
+        partial = result.channel_settings[1]
+        assert partial.exposure_time_ms is None  # non-numeric
+        assert partial.analog_gain == 1.0
+        assert partial.illumination_intensity is None
+
 
 class TestValidateHardware:
     """Tests for validate_hardware function."""
