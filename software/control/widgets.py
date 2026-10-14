@@ -54,6 +54,16 @@ from squid.config import CameraPixelFormat
 # set QT_API environment variable
 os.environ["QT_API"] = "pyqt6"
 
+
+def checkbox_state_is_checked(state) -> bool:
+    """True when a QCheckBox.stateChanged value means Checked, under PyQt5 and PyQt6.
+
+    The signal carries an int on both bindings, but on PyQt6 Qt.Checked is a plain Enum
+    member, so ``state == Qt.Checked`` is always False there.
+    """
+    return getattr(state, "value", state) == getattr(Qt.Checked, "value", Qt.Checked)
+
+
 # qt libraries
 import qtpy
 from qtpy.QtCore import *
@@ -1924,11 +1934,7 @@ class PreferencesDialog(QDialog):
 
     def _toggle_dev_tab_visibility(self, state):
         """Show or hide the Dev tab based on checkbox state."""
-        # Handle both PyQt5 (int) and PyQt6 (CheckState enum) signal types
-        # PyQt6 enums have .value property, integers don't - use getattr for compatibility
-        state_value = getattr(state, "value", state)
-        checked_value = getattr(Qt.Checked, "value", Qt.Checked)
-        self.tab_widget.setTabVisible(self._dev_tab_index, state_value == checked_value)
+        self.tab_widget.setTabVisible(self._dev_tab_index, checkbox_state_is_checked(state))
 
     # The four readers below go through control._def.conf_attribute_reader, the function the running software reads
     # the same ini with. It strips an inline comment ("30.0  # mm/s"), which ConfigParser keeps as part of the value.
@@ -12256,7 +12262,7 @@ class WellplateCalibration(QDialog):
         self.stage.move_y(dy)
 
     def toggleClickToMove(self, state):
-        if state == Qt.Checked:
+        if checkbox_state_is_checked(state):
             self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
         else:
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
@@ -14115,7 +14121,7 @@ class WavelengthWidget(QWidget):
             self.na_label.setVisible(True)
 
     def _on_checkbox_changed(self, state):
-        checked = state == Qt.Checked
+        checked = checkbox_state_is_checked(state)
         self.spinbox.setVisible(checked)
         self.na_label.setVisible(not checked)
 
@@ -14751,7 +14757,7 @@ class SourceCodeWidget(QWidget):
             self.na_label.setVisible(True)
 
     def _on_checkbox_changed(self, state):
-        checked = state == Qt.Checked
+        checked = checkbox_state_is_checked(state)
         self.spinbox.setVisible(checked)
         self.na_label.setVisible(not checked)
 
