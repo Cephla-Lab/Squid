@@ -32,13 +32,7 @@ pytest.importorskip("tensorstore")
 
 
 def as_posix_path(path: str) -> str:
-    """Normalize a built path to forward slashes so it can be compared to a literal.
-
-    The path builders use os.path.join, so they emit "\\" on Windows while the expected
-    paths in these tests are written in the POSIX form the code produces on Linux. The
-    assertions are about path *structure*, not about which separator the OS uses, so
-    normalize before comparing rather than duplicating every expectation per platform.
-    """
+    """The builders use os.path.join; compare path structure, not the OS separator."""
     return path.replace(os.sep, "/")
 
 

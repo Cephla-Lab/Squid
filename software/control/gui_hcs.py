@@ -1517,10 +1517,26 @@ class HighContentScreeningGui(QMainWindow):
             self.movement_updater.piezo_z_um.connect(self.piezoWidget.update_displacement_um_display)
         self.multipointController.signal_set_display_tabs.connect(self.setAcquisitionDisplayTabs)
 
-        # Unified mosaic widget save hooks: route the controller's start/finish
-        # signals over here, where self.unifiedMosaicWidget is reachable.
+        # Unified mosaic widget: save hooks and its data feed. The feed is not part of
+        # napari_connections because performance mode keeps it connected: the canvas still
+        # builds during the run and only its redraw is deferred, by keeping the tab hidden
+        # until the run finishes (UnifiedMosaicWidget.showEvent, toggleAcquisitionStart).
         self.multipointController.signal_acquisition_save_target.connect(self._on_acquisition_save_target)
         self.multipointController.timepoint_finished.connect(self._on_timepoint_finished)
+        if self.unifiedMosaicWidget is not None:
+            self.multipointController.mosaic_tile_update.connect(self.unifiedMosaicWidget.updateTile)
+            self.unifiedMosaicWidget.signal_coordinates_clicked.connect(self.move_from_click_mm)
+            self.unifiedMosaicWidget.signal_clear_viewer.connect(self.navigationViewer.clear_slide)
+            # plate_view_init can be emitted from the acquisition worker thread; the slot
+            # needs to run on the main thread.
+            self.multipointController.plate_view_init.connect(
+                self.unifiedMosaicWidget.setPlateLayout, Qt.QueuedConnection
+            )
+            if ENABLE_WELLPLATE_MULTIPOINT:  # ROI shape drawing in mosaic mode
+                self.wellplateMultiPointWidget.signal_manual_shape_mode.connect(
+                    self.unifiedMosaicWidget.enable_shape_drawing
+                )
+                self.unifiedMosaicWidget.signal_shape_drawn.connect(self.wellplateMultiPointWidget.update_manual_shape)
 
         # Laser engine readiness gate — modal progress dialog while waiting at timepoint boundaries.
         self.multipointController.signal_laser_engine_waiting.connect(self._show_laser_engine_dialog)
@@ -1692,13 +1708,9 @@ class HighContentScreeningGui(QMainWindow):
         self.movement_update_timer.start()
 
     def makeNapariConnections(self):
-        """Collect the (signal, slot[, connection_type]) pairs that feed the napari display widgets.
+        """Collect the (signal, slot[, connection_type]) pairs that performance mode disconnects.
 
-        Only the multichannel view goes into ``napari_connections``, which performance mode
-        disconnects. The mosaic's feed is wired here for good: its canvas still builds during
-        acquisition, and what performance mode defers is the rendering, by keeping its tab
-        hidden until the run finishes (see UnifiedMosaicWidget.showEvent and
-        toggleAcquisitionStart).
+        That is the multichannel view's feed; the mosaic's is permanent (see make_connections).
         """
         self.napari_connections = []
 
@@ -1743,48 +1755,15 @@ class HighContentScreeningGui(QMainWindow):
                     ),
                 ]
 
-            # Unified mosaic/plate view connections. These stay connected in performance
-            # mode (see the docstring), so they are wired once here rather than registered.
-            # plate_view_init uses Qt.QueuedConnection because it can be emitted from
-            # the acquisition worker thread; the slot needs to run on the main thread.
-            if self.unifiedMosaicWidget is not None:
-                mosaic_connections = [
-                    (self.multipointController.mosaic_tile_update, self.unifiedMosaicWidget.updateTile),
-                    (self.unifiedMosaicWidget.signal_coordinates_clicked, self.move_from_click_mm),
-                    (self.unifiedMosaicWidget.signal_clear_viewer, self.navigationViewer.clear_slide),
-                    (
-                        self.multipointController.plate_view_init,
-                        self.unifiedMosaicWidget.setPlateLayout,
-                        Qt.QueuedConnection,
-                    ),
-                ]
-
-                # ROI shape drawing in mosaic mode (wellplate flow only).
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    mosaic_connections += [
-                        (
-                            self.wellplateMultiPointWidget.signal_manual_shape_mode,
-                            self.unifiedMosaicWidget.enable_shape_drawing,
-                        ),
-                        (
-                            self.unifiedMosaicWidget.signal_shape_drawn,
-                            self.wellplateMultiPointWidget.update_manual_shape,
-                        ),
-                    ]
-
-                for signal, slot, *connection_type in mosaic_connections:
-                    signal.connect(slot, *connection_type)
-
             # Make initial connections
             self.updateNapariConnections()
 
     def updateNapariConnections(self):
         """Performance mode disconnects the multichannel napari view; leaving it reconnects it.
 
-        Plain connect() does not raise on an existing connection; it adds a second one, so a
-        repeated refresh would stack connections and the slot would run N times per emit.
-        Disconnect first so this is idempotent. (Qt.UniqueConnection can't be OR'd with the
-        requested connection type under PyQt6, where Qt.ConnectionType is a plain Enum.)
+        Disconnect first so repeated calls are idempotent: plain connect() stacks a second
+        connection instead of raising. (Qt.UniqueConnection would do this but can't be OR'd
+        with the requested connection type under PyQt6.)
         """
         for signal, slot, *connection_type in self.napari_connections:
             try:
@@ -1794,13 +1773,13 @@ class HighContentScreeningGui(QMainWindow):
             if not self.performance_mode:
                 signal.connect(slot, *connection_type)
 
-    def toggleNapariTabs(self):
-        # Enable/disable Napari tabs based on performance mode
+    def _set_napari_tabs_enabled(self, enabled: bool):
+        """Enable or disable the napari display tabs; disabling also returns to Live View."""
         for i in range(1, self.imageDisplayTabs.count()):
             if self.imageDisplayTabs.tabText(i) not in (self.LASER_BASED_FOCUS_TAB_NAME, self.FLUIDICS_TAB_NAME):
-                self.imageDisplayTabs.setTabEnabled(i, not self.performance_mode)
+                self.imageDisplayTabs.setTabEnabled(i, enabled)
 
-        if self.performance_mode:
+        if not enabled:
             self.imageDisplayTabs.setCurrentIndex(0)  # Live View
 
     def togglePerformanceMode(self):
@@ -1808,7 +1787,7 @@ class HighContentScreeningGui(QMainWindow):
         button_txt = "Disable" if self.performance_mode else "Enable"
         self.performanceModeToggle.setText(button_txt + " Performance Mode")
         self.updateNapariConnections()
-        self.toggleNapariTabs()
+        self._set_napari_tabs_enabled(not self.performance_mode)
         self.signal_performance_mode_changed.emit(self.performance_mode)
         print(f"Performance mode {'enabled' if self.performance_mode else 'disabled'}")
 
@@ -2576,12 +2555,10 @@ class HighContentScreeningGui(QMainWindow):
             # NOTE: RAM monitor widget is connected via multipointController.signal_acquisition_start
             # which fires AFTER the memory monitor is created (see make_connections)
 
-            # Performance mode: keep the mosaic/multichannel napari tabs hidden and
-            # disabled for the duration of the run so the mosaic canvas builds without
-            # rendering (deferred), avoiding the per-tile GL stalls. A previous run's
-            # completion may have re-enabled/shown them, so re-apply the hidden state here.
+            # Performance mode: hide the napari tabs for the run so the mosaic canvas builds
+            # without rendering (the previous run's completion re-enabled them).
             if self.performance_mode:
-                self.toggleNapariTabs()
+                self._set_napari_tabs_enabled(False)
         else:
             self.log.info("FINISHED ACQUISITION")
             if self.live_scan_grid_was_on:
@@ -2589,12 +2566,10 @@ class HighContentScreeningGui(QMainWindow):
                 self.live_scan_grid_was_on = False
             # NOTE: RAM monitor widget is disconnected via multipointController.acquisition_finished
 
-            # Performance mode: render the assembled mosaic once, now that the run is
-            # done. Re-enable the napari tabs and switch to the mosaic view; becoming
-            # visible flushes the single deferred refresh (UnifiedMosaicWidget.showEvent).
+            # Performance mode: show the assembled mosaic once, now that the run is done;
+            # becoming visible flushes its deferred redraw (UnifiedMosaicWidget.showEvent).
             if self.performance_mode:
-                for i in range(self.imageDisplayTabs.count()):
-                    self.imageDisplayTabs.setTabEnabled(i, True)
+                self._set_napari_tabs_enabled(True)
                 if self.unifiedMosaicWidget is not None:
                     self.imageDisplayTabs.setCurrentWidget(self.unifiedMosaicWidget)
 

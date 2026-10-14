@@ -61,16 +61,17 @@ jobs:
         # Python GC — the same crash main_hcs.py avoids with os._exit()). The
         # conftest hook hard-exits with pytest's real status once the session
         # is complete, so real test failures still fail the step.
-        # Full-application GUI tests are excluded here and run below, one per
-        # process: see the comments on those steps.
-        run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py --ignore=tests/control/test_objective_swap_gui.py --ignore=tests/control/test_performance_mode.py
+        run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py --ignore=tests/control/test_objective_swap_gui.py
         working-directory: ./software
         env:
           SQUID_PYTEST_HARD_EXIT: "1"
       - name: Run the GUI test in its own process
         # Own invocation: the full-application GUI test leaves Qt/thread state
         # behind that deterministically segfaults later Qt tests (e.g.
-        # test_channel_sequence) when run in the same pytest process.
+        # test_channel_sequence) when run in the same pytest process: pytest-qt
+        # deleteLater()s each window at teardown, and destroying the full GUI
+        # crashes once a later test's event loop flushes that delete, so this
+        # file must be the last thing its process does (and hard-exit).
         # Step-scoped pyqt6 pin: keeps pytest-qt's qtbot on the same binding as
         # the app code (qtpy, QT_API=pyqt6). Mixed bindings fail with a QObject
         # double-init error, and pointing this at a binding that is not installed
@@ -89,19 +90,4 @@ jobs:
         env:
           QT_API: pyqt5
           PYTEST_QT_API: pyqt5
-          SQUID_PYTEST_HARD_EXIT: "1"
-      - name: Run the performance-mode GUI test in its own process
-        # Also constructs the full HCS GUI. Destroying that GUI segfaults (the
-        # destructor-order crash noted above; reproducible by flushing
-        # DeferredDelete events right after the test). pytest-qt deleteLater()s
-        # the window at teardown, and a later test's event-loop activity flushes
-        # that deferred delete — test_squid_laser_engine's cross-thread signal
-        # test did, taking the whole pytest process down at 67%. Each full-GUI
-        # test file must therefore be the last thing its process does: own
-        # step, own process, hard exit.
-        run: python3 -m pytest tests/control/test_performance_mode.py
-        working-directory: ./software
-        env:
-          QT_API: pyqt6
-          PYTEST_QT_API: pyqt6
           SQUID_PYTEST_HARD_EXIT: "1"
