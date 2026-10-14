@@ -128,3 +128,18 @@ def cleanup_leaked_hardware(monkeypatch):
 
     # Last, after every writer above is closed: delete this test's simulated-acquisition output.
     cleanup_stub_acquisition_dirs()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def use_leak_safe_log_records():
+    """Shadow napari's session fixture of the same name (napari.utils._testsupport, napari 0.7).
+
+    napari's pytest plugin swaps in a LogRecord factory that rewrites ``record.args`` as
+    ``tuple(str(a) for a in args)``. When a call logs a single dict, ``logging`` stores the dict
+    itself as ``args`` (so ``%(key)s`` formats work), and iterating it yields its keys: the
+    record then raises "not all arguments converted" and pytest's capture handler re-raises
+    that into the caller. The fluidics library logs each sequence that way, which failed every
+    fluidics run in the suite. None of these tests use napari's fixtures, so an inert
+    stand-in is enough.
+    """
+    yield
