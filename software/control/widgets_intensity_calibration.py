@@ -186,7 +186,9 @@ class IntensityCalibrationDialog(QDialog):
 
         plots = QHBoxLayout()
         self.plot_curve = pg.PlotWidget()
-        self.plot_curve.setLabel("bottom", "DAC (% commanded)")
+        self.plot_curve.setLabel(
+            "bottom", "drive (% of the line's ceiling)" if self.session.engine is not None else "DAC (% commanded)"
+        )
         self.plot_curve.setLabel("left", "power (mW)")
         self.plot_verify = pg.PlotWidget()
         self.plot_verify.setLabel("bottom", "requested (% power)")

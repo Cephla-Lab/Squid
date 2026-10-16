@@ -272,6 +272,7 @@ def test_engine_lines_show_their_ceiling_and_the_560_power(qtbot, engine_session
     assert ceilings["Fluorescence 488 nm Ex"] == "2.045 A" and ceilings["Fluorescence 560 nm Ex"] == "5 V"
     note = dialog.label_note.text()
     assert "firmware ceiling" in note and "(300 mW)" in note
+    assert dialog.plot_curve.getAxis("bottom").labelText == "drive (% of the line's ceiling)"
 
 
 def test_an_engine_line_runs_and_saves_from_the_dialog(qtbot, engine_session, answers):
