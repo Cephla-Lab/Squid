@@ -111,9 +111,15 @@ class EngineLineOutput:
         if info.now != info.target:
             raise LightSourceStopped(f"{self._key} did not reach its set-point ({info.now:g} of {info.target:g})")
 
+    def _line_moved(self) -> None:
+        """The line's set-point changed under the IlluminationController (a run, the test beam): every wavelength on
+        the line sends its intensity again at its next set_intensity, even at an unchanged %."""
+        self._illumination.forget_intensities(self._engine.wavelengths_for_line(self._line))
+
     def set_percent(self, percent: float) -> None:
         self._expected_drive = percent
         self._engine_call(self._engine.set_line_intensity, self._line, percent)
+        self._line_moved()
         self._check_level()
 
     def set_power_percent(self, requested: float) -> None:
@@ -121,6 +127,7 @@ class EngineLineOutput:
         must then hold the drive the candidate gives for `requested`."""
         self._expected_drive = self._candidate.commanded_percent(requested, 1.0, 1.0)[0]
         self._engine_call(self._light_source.set_intensity, self._wavelength, requested)
+        self._line_moved()
         self._check_level()
 
     def check(self) -> None:
@@ -144,6 +151,7 @@ class EngineLineOutput:
             self._ttl.safe_off()
         finally:
             self._engine_call(self._engine.set_line_intensity, self._line, 0.0)
+            self._line_moved()
 
     def recorded_identity(self) -> Dict[str, object]:
         drive = self._engine.line_identity(self._line)
@@ -295,9 +303,6 @@ class EngineCalibration:
 
     def output(self, microcontroller, target: ChannelTarget, deadline: Optional[WatchdogDeadline] = None):
         return EngineLineOutput(microcontroller, target, self.engine, self.light_source, self.illumination, deadline)
-
-    def forget(self, wavelengths: Iterable[int]) -> None:
-        self.illumination.forget_intensities(wavelengths)
 
     def simulated_light(self, microcontroller, target: ChannelTarget) -> Tuple[bool, float]:
         """What a simulated meter sees from this line (simulation only): the simulated controller's TTL for the port,

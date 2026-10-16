@@ -433,3 +433,36 @@ def test_the_test_beam_is_refused_while_the_line_is_not_ready(tmp_path):
         assert ("on",) not in inst.mcu.calls
     finally:
         inst.engine.close()
+
+
+# ---- what a raw drive leaves behind (final review C1) ------------------------------------------------------------------
+def test_after_a_test_beam_live_view_at_the_same_percent_sends_again(instrument):
+    assert instrument.engine.wait_until_ready(["L2"], timeout_s=10.0)
+    instrument.illumination.set_intensity(488, 50.0)  # live view had 488 nm at 50 %
+    session = _session(instrument)
+    target = next(t for t in session.targets() if t.engine_line == 2)
+    session.test_beam_on(target, 30.0)  # centring the sensor: the line goes to 30 % of its ceiling, then to 0
+    session.test_beam_off(target)
+    mark = len(instrument.fake.sent)
+    instrument.illumination.set_intensity(488, 50.0)  # the dialog closes and the live channel is re-sent
+    assert _sets(instrument, 2, mark) == ["LINE2:SET %.4f" % (0.5 * 2.045)]
+
+
+def test_a_run_of_one_wavelength_resends_the_other_wavelength_on_its_line(tmp_path):
+    yaml = ENGINE_YAML + (
+        "  - name: Fluorescence 470 nm Ex\n    type: epi_illumination\n    controller_port: D2\n    wavelength_nm: 470\n"
+    )
+    inst = engine_instrument(tmp_path, yaml=yaml)
+    try:
+        assert inst.engine.wait_until_ready(["L2"], timeout_s=10.0)
+        inst.illumination.set_intensity(470, 50.0)  # live view had the other channel on L2 at 50 %
+        session = _session(inst)
+        session.connect()
+        session.run(
+            [t for t in session.targets() if t.wavelength_nm == 488], measured_in="widefield", sensor_limit_mw=500.0
+        )
+        mark = len(inst.fake.sent)
+        inst.illumination.set_intensity(470, 50.0)  # the run left L2 at 0: sent again
+        assert _sets(inst, 2, mark) == ["LINE2:SET %.4f" % (0.5 * 2.045)]
+    finally:
+        inst.engine.close()

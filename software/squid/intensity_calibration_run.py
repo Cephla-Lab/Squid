@@ -706,8 +706,9 @@ class CalibrationSession:
     alive instead, so the firmware turns the light off if the code driving it stops.
 
     With `engine` (control/laser_engine_v2_calibration.EngineCalibration) the channels are the laser engine's lines: the
-    session asks it for the targets, readiness, the output, the identity to check before Save, what to forget after a
-    run, and (in simulation) what the meter sees.
+    session asks it for the targets, readiness, the output (which makes the illumination controller send an engine line's
+    intensities again whenever it moves the line), the identity to check before Save, and (in simulation) what the
+    meter sees.
     """
 
     def __init__(self, microcontroller, config_repo, dac_driven: bool = True, engine=None):
@@ -969,9 +970,6 @@ class CalibrationSession:
         finally:
             self._active = None
             self._active_target = None
-            if self.engine is not None:
-                # the run left these lines at 0 under the illumination controller: the next live view sends again
-                self.engine.forget([t.wavelength_nm for t in targets])
             self._resume_heartbeat()
         return results
 
