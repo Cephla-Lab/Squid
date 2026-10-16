@@ -12,12 +12,13 @@ import numpy as np
 import pytest
 
 from control.core.config import ConfigRepository
-from squid.intensity_calibration import load_calibration, write_calibration
+from squid.intensity_calibration import VERIFY_SETPOINTS, EngineLineIdentity, load_calibration, write_calibration
 from squid.intensity_calibration_run import (
     CalibrationCancelled,
     CalibrationSession,
     ChannelResult,
     ChannelTarget,
+    LightSourceStopped,
     MicrocontrollerDacOutput,
     SensorLimitExceeded,
     WatchdogDeadline,
@@ -822,3 +823,161 @@ def test_a_watchdog_that_cannot_be_armed_again_fails_the_hand_back_loudly(repo):
     with pytest.raises(WatchdogDeadlineMissed, match="live view"):
         session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)
     assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat comes back regardless
+
+
+L2_IDENTITY = EngineLineIdentity("SN-1", "DF", 2, 2.045, "A")
+ENGINE_L2 = ChannelTarget("Fluorescence 488 nm Ex", 488, "D2", 12, 1.0, engine_line=2)
+
+
+class FakeLineOutput:
+    """An engine-like output for calibrate_channel: raw levels as % of a ceiling (factor 1), set-power through the
+    installed candidate, and a check after every reading that can be made to fail."""
+
+    is_aom = False
+    overrange_advice = "use a higher-power sensor"
+
+    def __init__(self, mcu, source_code):
+        self._ttl = MicrocontrollerDacOutput(mcu, source_code)
+        self.drive = 0.0
+        self.candidate = None
+        self.power_requests = []
+        self.candidates_seen = []
+        self.checks = 0
+        self.fail_check_after = None
+
+    @property
+    def is_on(self):
+        return self._ttl.is_on
+
+    def level_text(self, percent):
+        return f"L2 at {percent:.1f} % of its ceiling"
+
+    def set_percent(self, percent):
+        self.drive = percent
+
+    def set_power_percent(self, requested):
+        self.power_requests.append(requested)
+        self.candidates_seen.append(self.candidate)
+        self.drive = self.candidate.commanded_percent(requested, 1.0, 1.0)[0]
+
+    def check(self):
+        self.checks += 1
+        if self.fail_check_after is not None and self.checks > self.fail_check_after:
+            raise LightSourceStopped("L2 left READY (PAUSED): cover open - lines resume when it closes")
+
+    def on(self):
+        self._ttl.set_percent(0.0)
+        self._ttl.on()
+
+    def off(self):
+        self._ttl.off()
+
+    def safe_off(self):
+        try:
+            self._ttl.safe_off()
+        finally:
+            self.drive = 0.0
+
+    def recorded_identity(self):
+        return {"engine": L2_IDENTITY}
+
+    def use_candidate(self, calibration):
+        self.candidate = calibration
+
+    def clear_candidate(self):
+        self.candidate = None
+
+
+class LineMeter:
+    """Reads model(drive / 100) while the output is on."""
+
+    def __init__(self, output, model):
+        self.output = output
+        self.model = model
+        self.info = PowerMeterInfo("Model meter", "Model sensor", 500.0, (350.0, 1100.0), 0.0, True)
+
+    def set_wavelength(self, nm):
+        pass
+
+    def hold_range(self, max_mw):
+        return 1197.0
+
+    def release_range(self):
+        pass
+
+    def read_mw(self):
+        return (float(self.model(self.output.drive / 100.0)) if self.output.is_on else 0.0) + 0.002
+
+    def close(self):
+        pass
+
+
+def _run_line(fail_check_after=None):
+    time = FakeTime()
+    mcu = FakeMicrocontroller(FACTOR, clock=time.clock)
+    output = FakeLineOutput(mcu, 12)
+    output.fail_check_after = fail_check_after
+    meter = LineMeter(output, simulated_laser_mw)
+    call = dict(
+        meter_info=meter.info,
+        measured_in="widefield",
+        sensor_limit_mw=500.0,
+        settle_s=0.0,
+        hold_s=10.0,
+        sleep=time.sleep,
+        clock=time.clock,
+    )
+    return mcu, output, lambda: calibrate_channel(ENGINE_L2, output, meter, 1.0, **call)
+
+
+def test_verification_and_hold_go_through_the_set_power_path_with_the_new_calibration():
+    _, output, run = _run_line()
+    c = run().calibration
+    assert c.verification == "pass" and c.illumination_intensity_factor == 1.0 and c.max_output == 1.0
+    assert set(VERIFY_SETPOINTS) <= set(output.power_requests) and output.power_requests[-1] == 50.0  # hold last
+    assert all(seen is not None and seen.p_max_mw == c.p_max_mw for seen in output.candidates_seen)
+    assert output.candidate is None  # cleared when the checks end
+
+
+def test_the_identity_the_output_reports_is_recorded():
+    _, _, run = _run_line()
+    assert run().calibration.engine == L2_IDENTITY
+
+
+def test_a_failed_check_in_the_sweep_stops_the_channel_with_the_light_off():
+    mcu, output, run = _run_line(fail_check_after=300)
+    with pytest.raises(LightSourceStopped, match="cover open"):
+        run()
+    assert not output.is_on and output.drive == 0.0 and output.candidate is None
+    assert mcu.calls[-2:] == [("off_all",), ("set", 12, 0.0)]
+
+
+def test_a_failed_check_in_the_verification_clears_the_candidate():
+    _, clean, run = _run_line()
+    run()
+    _, output, run = _run_line(fail_check_after=clean.checks - 5)  # in the hold, after the candidate is installed
+    with pytest.raises(LightSourceStopped):
+        run()
+    assert output.candidates_seen and output.candidate is None and not output.is_on
+
+
+def test_session_engine_hooks_are_used_when_an_engine_is_given(repo):
+    class Side:
+        def __init__(self):
+            self.calls = []
+
+        def targets(self, config):
+            self.calls.append("targets")
+            return [ENGINE_L2]
+
+        def ceiling_text(self, target):
+            return "2.045 A"
+
+        def run_notes(self, targets):
+            return ["note"]
+
+    side = Side()
+    session = CalibrationSession(FakeMicrocontroller(FACTOR), repo, dac_driven=False, engine=side)
+    assert session.targets() == [ENGINE_L2] and side.calls == ["targets"]
+    assert session.ceiling_text(ENGINE_L2) == "2.045 A" and session.run_notes([ENGINE_L2]) == ["note"]
+    assert session.ceiling_text(LASER) == "100 %" and _session(repo).run_notes([LASER]) == []

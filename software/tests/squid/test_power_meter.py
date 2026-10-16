@@ -4,6 +4,7 @@ meter."""
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from squid.power_meter import (
@@ -18,6 +19,7 @@ from squid.power_meter import (
     ThorlabsPowerMeter,
     UDEV_RULE,
     find_thorlabs_resource,
+    simulated_aom_mw,
     simulated_laser_mw,
     simulated_led_mw,
 )
@@ -299,3 +301,17 @@ def test_the_pm16_is_validated_and_others_are_not():
     # bench 2026-10-09: PM16-121 on five LED channels, 0-3 of 201 sweep points unsettled at the 0.3 s settle
     assert _meter(FakeInstrument(answers=PM16_ANSWERS)).info.validated
     assert not _meter(FakeInstrument()).info.validated  # a PM100USB: not run on a bench yet
+
+
+def test_the_simulated_aom_peaks_below_full_scale():
+    x = np.linspace(0.0, 1.0, 201)
+    power = simulated_aom_mw(x)
+    assert power[0] == 0.0 and x[int(np.argmax(power))] == pytest.approx(0.9)
+    assert power[-1] < 0.98 * power.max()  # rolls over: a rollover the fit must find
+
+
+def test_the_simulated_meter_reads_the_model_it_is_given():
+    meter = SimulatedPowerMeter(
+        lambda: (True, 0.9), noise_fraction=0.0, ambient_mw=0.0, model=lambda nm, x: simulated_aom_mw(x)
+    )
+    assert meter.read_mw() == pytest.approx(100.0)
