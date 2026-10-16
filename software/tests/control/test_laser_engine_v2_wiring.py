@@ -126,6 +126,8 @@ def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
         assert ic.intensity_control_mode == IntensityControlMode.Software
         assert ic.shutter_control_mode == ShutterControlMode.TTL
         assert engine._ttl_map() == ic.channel_mappings_TTL  # one wavelength map for intensity and exposure
+        assert engine.calibration_provider == ic.lookup_calibration  # intensities go through the controller's lookup
+        assert engine.serial_number == "SIMULATED"
         assert engine.in_use_provider == scope.live_controller.illumination_wavelengths_in_use  # live counts as use
         assert (
             "TEC1:OUT 1" in engine.sim_engine.sent and "ARM" in engine.sim_engine.sent
@@ -219,7 +221,7 @@ def test_live_view_counts_as_560_use_through_the_live_controller(monkeypatch):
         engine.close()
 
 
-def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(monkeypatch):
+def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
     from control._def import ILLUMINATION_CODE
@@ -240,8 +242,9 @@ def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(
         )
         ttl_map = {488: ILLUMINATION_CODE.ILLUMINATION_D2}
         controller.config_repo = MagicMock()
+        controller.config_repo.machine_configs_path = tmp_path  # no calibration files: intensities stay linear
         illumination_config = controller.config_repo.get_illumination_config.return_value
-        illumination_config.channels = [SimpleNamespace(wavelength_nm=488)]
+        illumination_config.channels = [SimpleNamespace(wavelength_nm=488, intensity_calibration_file=None)]
         illumination_config.get_source_code.side_effect = lambda channel: ttl_map[channel.wavelength_nm]
         engine.ttl_map_provider = lambda: controller.channel_mappings_TTL
         controller.set_intensity(488, 40)
