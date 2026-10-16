@@ -1159,6 +1159,12 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
+# Toupcam global reset mode: every row starts exposing at once, so triggered frames need no rolling-shutter
+# strobe delay.  The driver uses it in the trigger modes only (continuous mode keeps the rolling shutter, where
+# global reset would halve the frame rate and shade the image under steady light).  Needs a camera that
+# supports the option (eg: the ITR10CMOS26000KMA); on other cameras it is ignored.
+ENABLE_TOUPCAM_GLOBAL_RESET = False
+
 
 class HardwareTriggerMode:
     EDGE = 0  # Fixed pulse width (TRIGGER_PULSE_LENGTH_us)
