@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from control.core.config import ConfigRepository
 
 TOOL = Path(__file__).resolve().parents[1] / "tools" / "generate_intensity_calibrations.py"
@@ -75,3 +77,37 @@ def test_cli_saves_a_failed_channel_only_when_told_to(tmp_path, monkeypatch, cap
 
     assert _tool().main(args + ["--save-failed"], config_repo=repo) == 1
     assert saved.is_file() and repo.get_illumination_config().channels[0].intensity_calibration_file == "405nm_D1.csv"
+
+
+@pytest.mark.parametrize("flag", ["USE_LDI_SERIAL_CONTROL", "USE_CELESTA_ETHERNET_CONTROL", "USE_ANDOR_LASER_CONTROL"])
+def test_cli_refuses_an_instrument_whose_light_source_sets_the_power_before_opening_hardware(
+    tmp_path, monkeypatch, capsys, flag
+):
+    import control._def
+    import control.microcontroller
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
+    monkeypatch.setattr(control._def, flag, True)
+    opened = []
+    monkeypatch.setattr(
+        control.microcontroller, "get_microcontroller_serial_device", lambda *a, **k: opened.append("controller")
+    )
+
+    status = _tool().main([], config_repo=ConfigRepository(base_path=tmp_path))
+
+    assert status == 2 and opened == []
+    assert "sets illumination power in the light source itself" in capsys.readouterr().out
+
+
+def test_cli_in_simulation_calibrates_as_the_simulated_gui_does(tmp_path, monkeypatch):
+    # in simulation Squid builds no external light source: the controller DAC drives the channels, as in the GUI
+    import control._def
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
+    monkeypatch.setattr(control._def, "USE_LDI_SERIAL_CONTROL", True)
+    args = ["--simulation", "--settle-s", "0", "--hold-s", "0", "--rest-s", "0"]
+    assert _tool().main(args, config_repo=ConfigRepository(base_path=tmp_path)) == 0

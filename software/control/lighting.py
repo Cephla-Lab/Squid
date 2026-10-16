@@ -17,6 +17,7 @@ from squid.intensity_calibration import (
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
+import control._def
 from control._def import ILLUMINATION_CODE
 
 # Number of illumination ports supported (matches firmware)
@@ -49,6 +50,20 @@ class LightSourceType(Enum):
     VersaLase = 4
     SCI = 5
     AndorLaser = 6
+
+
+def external_light_source(simulated: bool) -> Optional[LightSourceType]:
+    """The light source that sets illumination power itself on this instrument, as Microscope.build_from_global_config
+    picks it from the machine ini; None when the controller DAC does (always in simulation, where none is built)."""
+    if simulated:
+        return None
+    if control._def.USE_LDI_SERIAL_CONTROL:
+        return LightSourceType.LDI
+    if control._def.USE_CELESTA_ETHERNET_CONTROL:
+        return LightSourceType.CELESTA
+    if control._def.USE_ANDOR_LASER_CONTROL:
+        return LightSourceType.AndorLaser
+    return None
 
 
 class IntensityControlMode(Enum):
