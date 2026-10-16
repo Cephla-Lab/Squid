@@ -7,6 +7,7 @@ squid/intensity_calibration_run.py. No Qt.
 Design: AI-docs Squid/to-do/2026-10-08-power-linearization-gui-design.md (§5.2 the fit, §6 the files).
 """
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -45,6 +46,62 @@ class CalibrationError(ValueError):
 
 class CalibrationFileError(ValueError):
     """A calibration file exists but cannot be used."""
+
+
+@dataclass(frozen=True)
+class EngineLineIdentity:
+    """A laser engine v2 line as a calibration records it and as the engine reports it now (spec §5.2)."""
+
+    serial: str  # the engine's USB serial number (laser_engine_sn)
+    variant: str  # DF, 400R, 400HP
+    line: int
+    ceiling: float  # the firmware ceiling: amps, or volts for the DF 560 nm AOM input
+    ceiling_unit: str  # "A" or "V"
+
+    def describe(self) -> str:
+        return f"engine {self.serial} ({self.variant}) L{self.line}, ceiling {self.ceiling:g} {self.ceiling_unit}"
+
+    def differs_from(self, now: "EngineLineIdentity") -> bool:
+        return not (
+            self.serial == now.serial
+            and self.variant == now.variant
+            and self.line == now.line
+            and self.ceiling_unit == now.ceiling_unit
+            and math.isclose(self.ceiling, now.ceiling, rel_tol=1e-4)
+        )
+
+
+@dataclass(frozen=True)
+class EngineUnavailable:
+    """A channel on a laser engine whose line cannot be identified now (not connected, status not read yet)."""
+
+    reason: str
+
+
+EngineDrive = Union[EngineLineIdentity, EngineUnavailable]
+
+
+def _engine_mismatch(
+    file_name: str, measured: Optional[EngineLineIdentity], now: Optional[EngineDrive]
+) -> Optional[str]:
+    """Why a calibration measured on `measured` (None: the controller DAC) does not apply to a channel driven by `now`
+    (None: the controller DAC), or None when it does."""
+    if measured is None and now is None:
+        return None
+    if measured is None:
+        if isinstance(now, EngineUnavailable):
+            return (
+                f"{file_name} was measured through the controller DAC; this instrument's light source is a laser "
+                "engine: recalibrate"
+            )
+        return f"{file_name} was measured through the controller DAC; this channel drives laser {now.describe()}: recalibrate"
+    if now is None:
+        return f"{file_name} was measured on laser {measured.describe()}; this channel is not on a laser engine: recalibrate"
+    if isinstance(now, EngineUnavailable):
+        return f"{file_name} cannot be checked against the laser engine: {now.reason}"
+    if measured.differs_from(now):
+        return f"{file_name} was measured on laser {measured.describe()}; this is {now.describe()}: recalibrate"
+    return None
 
 
 def isotonic_fit(y: Sequence[float]) -> np.ndarray:
@@ -225,6 +282,10 @@ class IntensityCalibration:
     # The controller source its port drove when measured (controller_port_mapping); None in files from before
     # 2026-10-09, which are compared by wavelength and port only
     source_code: Optional[int] = None
+    # The laser engine line it was measured on (spec §5.1); None: the controller DAC
+    engine: Optional[EngineLineIdentity] = None
+    # DF 560 nm line: the laser power (set, measured) during the calibration, mW; None for every other line
+    source_power_mw: Optional[Tuple[float, float]] = None
 
     @classmethod
     def from_sweep(
@@ -303,19 +364,24 @@ class IntensityCalibration:
         return 100.0
 
     def identity_mismatch(
-        self, wavelength_nm: Optional[int], controller_port: Optional[str], source_code: Optional[int]
+        self,
+        wavelength_nm: Optional[int],
+        controller_port: Optional[str],
+        source_code: Optional[int],
+        engine: Optional[EngineDrive] = None,
     ) -> Optional[str]:
-        """Why this calibration does not belong to a channel with this wavelength, port and controller source, or None
-        when it does: a lookup measured on one source says nothing about another - also when the port is remapped
-        to another source in controller_port_mapping."""
+        """Why this calibration does not belong to a channel with this wavelength, port and controller source - and,
+        on a laser engine, this engine line (`engine`; None: the channel is driven through the controller DAC) - or
+        None when it does: a lookup measured on one source says nothing about another, also when the port is
+        remapped to another source in controller_port_mapping."""
         same_source = self.source_code is None or source_code == self.source_code
-        if wavelength_nm == self.wavelength_nm and controller_port == self.controller_port and same_source:
-            return None
-        measured = "" if self.source_code is None else f" (controller source {self.source_code})"
-        return (
-            f"{self.file_name} was measured for {self.wavelength_nm} nm on {self.controller_port}{measured}; the "
-            f"channel is now {wavelength_nm} nm on {controller_port} (controller source {source_code}): recalibrate"
-        )
+        if not (wavelength_nm == self.wavelength_nm and controller_port == self.controller_port and same_source):
+            measured = "" if self.source_code is None else f" (controller source {self.source_code})"
+            return (
+                f"{self.file_name} was measured for {self.wavelength_nm} nm on {self.controller_port}{measured}; the "
+                f"channel is now {wavelength_nm} nm on {controller_port} (controller source {source_code}): recalibrate"
+            )
+        return _engine_mismatch(self.file_name, self.engine, engine)
 
     def describe(self) -> Dict[str, object]:
         description: Dict[str, object] = {
@@ -334,6 +400,14 @@ class IntensityCalibration:
         description["pulse_on_s"] = round(float(self.pulse_on_s), 3)
         if self.hold_droop_fraction is not None:
             description["continuous_hold_droop_percent"] = round(100.0 * self.hold_droop_fraction, 2)
+        if self.engine is not None:
+            description["light_source"] = "laser_engine_v2"
+            description["engine_serial"] = self.engine.serial
+            description["engine_variant"] = self.engine.variant
+            description["engine_line"] = self.engine.line
+            description["line_ceiling"] = f"{self.engine.ceiling:g} {self.engine.ceiling_unit}"
+        if self.source_power_mw is not None:
+            description["source_power_mw_at_calibration"] = round(float(self.source_power_mw[0]), 1)
         return description
 
     def notes(self, factor: float, max_output: float) -> List[str]:
@@ -401,6 +475,14 @@ def write_calibration(calibration: IntensityCalibration, path: Path) -> None:
         "unsettled_readings": "not counted" if c.unsettled_readings is None else str(c.unsettled_readings),
         "controller_source_code": "unknown" if c.source_code is None else str(c.source_code),
     }
+    if c.engine is not None:
+        header["light_source"] = "laser_engine_v2"
+        header["engine_serial"] = c.engine.serial
+        header["engine_variant"] = c.engine.variant
+        header["engine_line"] = str(c.engine.line)
+        header["line_ceiling"] = f"{c.engine.ceiling:.6g} {c.engine.ceiling_unit}"
+    if c.source_power_mw is not None:
+        header["source_power_mw"] = f"{c.source_power_mw[0]:.6g} / {c.source_power_mw[1]:.6g}"
     table = pd.DataFrame(
         {
             "dac_percent_commanded": c.dac_percent_commanded,
@@ -470,6 +552,26 @@ def _validate_lookup_columns(path: Path, dac: np.ndarray, x: np.ndarray, fitted:
         raise CalibrationFileError(f"{path.name}: the fitted curve is not monotone")
 
 
+def _read_engine(header: Dict[str, str]) -> Optional[EngineLineIdentity]:
+    light_source = header.get("light_source", "controller_dac")
+    if light_source == "controller_dac":
+        return None
+    if light_source != "laser_engine_v2":
+        raise ValueError(f"unknown light_source '{light_source}'")
+    ceiling, unit = header["line_ceiling"].split()
+    return EngineLineIdentity(
+        header["engine_serial"], header["engine_variant"], int(header["engine_line"]), float(ceiling), unit
+    )
+
+
+def _read_source_power(header: Dict[str, str]) -> Optional[Tuple[float, float]]:
+    value = header.get("source_power_mw")
+    if value is None:
+        return None
+    set_mw, measured_mw = (float(v) for v in value.split("/"))
+    return set_mw, measured_mw
+
+
 def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> IntensityCalibration:
     table = pd.read_csv(path, comment="#")
     missing = [column for column in _COLUMNS if column not in table.columns]
@@ -524,6 +626,8 @@ def _read_intensity_calibration(path: Path, header: Dict[str, str]) -> Intensity
         meter_range_mw=_optional_number(header.get("meter_range_mw"), "auto", float),
         unsettled_readings=_optional_number(header.get("unsettled_readings"), "not counted", int),
         source_code=_optional_number(header.get("controller_source_code"), "unknown", int),
+        engine=_read_engine(header),
+        source_power_mw=_read_source_power(header),
     )
 
 
@@ -619,10 +723,20 @@ class LegacyCalibration:
         return max_output * 100.0
 
     def identity_mismatch(
-        self, wavelength_nm: Optional[int], controller_port: Optional[str], source_code: Optional[int]
+        self,
+        wavelength_nm: Optional[int],
+        controller_port: Optional[str],
+        source_code: Optional[int],
+        engine: Optional[EngineDrive] = None,
     ) -> Optional[str]:
-        """Legacy files record neither wavelength nor port: nothing to compare (they apply by file name, as before)."""
-        return None
+        """Legacy files record neither wavelength nor port: nothing to compare (they apply by file name, as before) -
+        except on a laser engine line, where a file without the engine's identity is never used (spec §5.3)."""
+        if engine is None:
+            return None
+        return (
+            f"{self.file_name} is an old-format calibration with no laser engine identity; not used for laser engine "
+            "lines: recalibrate"
+        )
 
     def describe(self) -> Dict[str, object]:
         description: Dict[str, object] = {
@@ -686,8 +800,11 @@ def calibration_status(
     max_output: float,
     controller_port: Optional[str] = None,
     source_code: Optional[int] = None,
+    engine: Optional[EngineDrive] = None,
 ) -> str:
-    """One line for the channel editor and the calibration dialog; "" when the channel has no calibration."""
+    """One line for the channel editor and the calibration dialog; "" when the channel has no calibration. `engine`:
+    the laser engine line the channel drives (None: the controller DAC), whose calibrations have no controller factor
+    or Max Output (spec §6.2)."""
     path = resolve_calibration_path(calibrations_dir, referenced_file, wavelength_nm)
     if path is None:
         return ""
@@ -695,7 +812,11 @@ def calibration_status(
         calibration = load_calibration(path)
     except CalibrationFileError as e:
         return f"invalid file: {e}"
-    mismatch = calibration.identity_mismatch(wavelength_nm, controller_port, source_code) if controller_port else None
+    if engine is not None:
+        factor, max_output = 1.0, 1.0
+    mismatch = (
+        calibration.identity_mismatch(wavelength_nm, controller_port, source_code, engine) if controller_port else None
+    )
     if mismatch:
         return f"{path.name}: not applied: {mismatch}"
     return f"{path.name}: {calibration.status(factor, max_output)}"
@@ -703,6 +824,11 @@ def calibration_status(
 
 def intensity_tooltip(description: Dict[str, object]) -> str:
     unit = description.get("intensity_unit")
+    if unit == "engine_drive_percent":
+        what = "the AOM's 0-5 V range" if description.get("engine_drive") == "aom" else "the line's maximum current"
+        return (
+            f"Percent of {what}, not linear in optical power. Utils > Illumination Power Calibration makes it linear."
+        )
     if unit == "dac_percent":
         return (
             "Percent of the DAC output, not linear in optical power. "
@@ -722,4 +848,9 @@ def intensity_tooltip(description: Dict[str, object]) -> str:
     )
     if "lowest_percent" in description:
         text += f" Lowest non-zero: {lowest_percent_text(float(description['lowest_percent']))} (the source jumps there from off)."
+    if "source_power_mw_at_calibration" in description:
+        text += (
+            f" The mW is at the {float(description['source_power_mw_at_calibration']):.0f} mW 560 nm laser power it was "
+            "measured at; the % holds at any laser power."
+        )
     return text

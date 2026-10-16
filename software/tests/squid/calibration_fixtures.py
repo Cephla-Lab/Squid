@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 
-from squid.intensity_calibration import IntensityCalibration
+from squid.intensity_calibration import EngineLineIdentity, IntensityCalibration
 from squid.power_meter import simulated_laser_mw
 
 DAC = np.linspace(0.0, 100.0, 201)
@@ -59,6 +59,29 @@ def make_calibration(
         verification=verification,
         verification_points=((1.0, 0.5), (10.0, -0.4), (100.0, 0.1)),
         source_code=source_code,
+    )
+
+
+def make_engine_calibration(
+    model=simulated_laser_mw,
+    wavelength_nm=488,
+    port="D2",
+    line=2,
+    ceiling=2.045,
+    unit="A",
+    serial="SN-1",
+    variant="DF",
+    channel="Fluorescence 488 nm Ex",
+    source_power_mw=None,
+) -> IntensityCalibration:
+    """A laser engine line's calibration: x is the fraction of the line's ceiling (factor 1), Max Output 1."""
+    calibration = make_calibration(
+        model=model, factor=1.0, max_output=1.0, wavelength_nm=wavelength_nm, port=port, channel=channel
+    )
+    return replace(
+        calibration,
+        engine=EngineLineIdentity(serial, variant, line, ceiling, unit),
+        source_power_mw=source_power_mw,
     )
 
 
