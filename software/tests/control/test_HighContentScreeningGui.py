@@ -240,3 +240,16 @@ def test_pi_focus_stage_is_a_referenced_z_even_without_cephla_z_homing(qtbot, mo
 
     cache_position.assert_called_once()
     assert cache_position.call_args.kwargs["validate_z"] is True
+
+
+def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_exit_yes):
+    # main_hcs.py used to add a second "Utils" menu next to the one the GUI builds (two "Utils" in the menu bar)
+    monkeypatch.setattr(control.gui_hcs, "USE_OBJECTIVE_TURRET", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    menus = [action for action in win.menuBar().actions() if action.text() == "Utils"]
+    assert len(menus) == 1
+    items = [action.text() for action in menus[0].menu().actions()]
+    assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]
