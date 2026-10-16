@@ -1,5 +1,4 @@
 import time
-from pathlib import Path
 
 import pytest
 
@@ -7,8 +6,6 @@ from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2E
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine
 from control.laser_engine_v2_status import LineState
-
-NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"  # tests never read this machine's calibration CSVs
 
 
 @pytest.fixture(autouse=True)
@@ -19,7 +16,6 @@ def _fast_resync(monkeypatch):
 def _engine(fake=None, **kw):
     fake = fake or FakeEngine(tok_delay_polls=0)
     kw.setdefault("query_interval_s", 0.01)
-    kw.setdefault("calibration_dir", NO_CALIBRATIONS)
     return LaserEngineV2(link_factory=lambda: EngineLink(fake), **kw), fake
 
 
@@ -399,23 +395,22 @@ def test_set_intensity_after_connection_loss_raises_and_signals():
     assert len(lost) == 1
 
 
-def test_calibration_csv_maps_optical_percent_to_drive_percent(tmp_path):
+def test_old_calibration_files_are_not_used(tmp_path, monkeypatch):
+    # Engine lines are calibrated with Utils > Illumination Power Calibration (files tied to the engine); a
+    # <wavelength>.csv from the old tool says nothing about this engine's lines
     (tmp_path / "488.csv").write_text("DAC Percent,Optical Power (mW)\n0,0\n50,80\n100,100\n")
-    (tmp_path / "560_aom.csv").write_text("AOM Volts,Transmission\n0,0\n5,1\n")  # not a wavelength file: ignored here
-    engine, fake = _engine(calibration_dir=tmp_path)
-    engine.open()
-    engine.set_wavelength_intensity(488, 50.0)  # 50 % of the optical maximum = 31.25 % of the current ceiling
-    assert fake.sent[-1] == "LINE2:SET %.4f" % (0.3125 * 2.045)
+    monkeypatch.setattr("control.laser_engine_v2.DEFAULT_CALIBRATION_DIR", tmp_path, raising=False)
+    engine, fake = _opened()
+    engine.set_wavelength_intensity(488, 50.0)
+    assert fake.sent[-1] == "LINE2:SET %.4f" % (0.5 * 2.045)  # linear in the line's current
     assert engine.get_wavelength_intensity(488) == pytest.approx(50.0)
 
 
-def test_no_calibration_is_linear_and_logged_once():
+def test_intensity_is_linear_in_the_line_current():
     engine, fake = _opened()
-    engine._log = MagicMock()
     engine.set_wavelength_intensity(405, 40.0)
     engine.set_wavelength_intensity(405, 60.0)
     assert fake.sent[-1] == "LINE1:SET %.4f" % (0.6 * 0.541)
-    assert sum("no intensity calibration" in str(c) for c in engine._log.info.call_args_list) == 1
 
 
 def test_intensity_follows_the_live_ttl_map():

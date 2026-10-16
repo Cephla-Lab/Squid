@@ -1,17 +1,12 @@
-"""DF 560 nm intensity = the AOM amplitude (line 3 analog, 0-5 V): linear in volts by default,
-through intensity_calibrations/560_aom.csv when it exists. The laser power is the operator's and never changes here."""
-
-from pathlib import Path
+"""DF 560 nm intensity = the AOM amplitude (line 3 analog, 0-5 V), linear in volts. The laser power is the operator's and
+never changes here. (Engine lines are calibrated with Utils > Illumination Power Calibration, not here.)"""
 
 import pytest
 
-from control.laser_engine_v2 import LaserEngineV2, LaserEngineV2Error, load_aom_calibration
+from control.laser_engine_v2 import LaserEngineV2, LaserEngineV2Error
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine, FakeSource
 from control.laser_engine_v2_status import LineState
-
-CAL = "AOM Volts,Transmission\n0,0\n1,0.1\n2,0.4\n3,0.8\n4,1.0\n5,0.95\n"  # peak at 4 V
-NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 
 
 @pytest.fixture(autouse=True)
@@ -19,20 +14,15 @@ def _fast_resync(monkeypatch):
     monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
 
 
-def _engine(calibration_dir=NO_CALIBRATIONS):
+def _engine():
     fake, source = FakeEngine(tok_delay_polls=0), FakeSource()  # 200-1000 mW
-    engine = LaserEngineV2(
-        link_factory=lambda: EngineLink(fake),
-        source_factory=lambda: source,
-        query_interval_s=0.01,
-        calibration_dir=calibration_dir,
-    )
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), source_factory=lambda: source, query_interval_s=0.01)
     engine.open()
     return engine, fake, source
 
 
-def _ready_engine(calibration_dir=NO_CALIBRATIONS):
-    engine, fake, source = _engine(calibration_dir)
+def _ready_engine():
+    engine, fake, source = _engine()
     engine.wake_up("L3")
     for _ in range(5):
         engine.source_step()
@@ -42,13 +32,6 @@ def _ready_engine(calibration_dir=NO_CALIBRATIONS):
 
 def _aom_sets(sent, since=0):
     return [c for c in sent[since:] if c.startswith("LINE3:SET")]
-
-
-def test_aom_calibration_uses_the_rising_part_only(tmp_path):
-    (tmp_path / "560_aom.csv").write_text(CAL)
-    trans, volts = load_aom_calibration(tmp_path / "560_aom.csv")
-    assert list(volts) == [0, 1, 2, 3, 4] and trans[-1] == pytest.approx(1.0)
-    assert load_aom_calibration(tmp_path / "missing.csv") is None
 
 
 def test_intensity_is_linear_in_aom_volts_and_never_touches_the_laser_power():
@@ -62,37 +45,16 @@ def test_intensity_is_linear_in_aom_volts_and_never_touches_the_laser_power():
     assert source.calls == calls and source.power_mw == power  # no "power" request: the operator's setting stays
     assert engine.get_wavelength_intensity(560) == 0.0 and engine.get_line_intensity(3) == 0.0
     assert engine.poll_once().channels["L3"].state == LineState.READY  # 0 % = dark at the AOM, the laser stays up
-    assert any("no AOM calibration (560_aom.csv)" in n for n in engine.notices)
+    assert engine.aom_percent_for_volts(2.5) == pytest.approx(50.0)
 
 
-def test_intensity_through_the_aom_calibration(tmp_path):
-    (tmp_path / "560_aom.csv").write_text(CAL)
-    engine, fake, source = _ready_engine(tmp_path)
-    assert any("AOM calibration 560_aom.csv loaded" in n for n in engine.notices)
-    mark, power = len(fake.sent), source.power_mw
-    for pct in (50.0, 100.0, 0.0):  # transmission 0.5 -> 2.25 V; 1.0 -> 4 V (the peak, not 5 V); 0 -> 0 V
-        engine.set_wavelength_intensity(560, pct)
-    assert _aom_sets(fake.sent, mark) == ["LINE3:SET 2.250", "LINE3:SET 4.000", "LINE3:SET 0.000"]
-    assert source.power_mw == power and engine.aom_percent_for_volts(2.25) == pytest.approx(50.0)
-
-
-def test_zero_percent_is_0_v_even_when_the_calibration_starts_transmitting(tmp_path):
-    (tmp_path / "560_aom.csv").write_text(CAL.replace("\n0,0\n", "\n0.5,0.05\n"))  # the first row already transmits 5 %
-    engine, fake, source = _ready_engine(tmp_path)
-    engine.set_line_intensity(3, 50.0)
+def test_an_old_560_aom_csv_is_not_used(tmp_path, monkeypatch):
+    (tmp_path / "560_aom.csv").write_text("AOM Volts,Transmission\n0,0\n1,0.1\n2,0.4\n3,0.8\n4,1.0\n5,0.95\n")
+    monkeypatch.setattr("control.laser_engine_v2.DEFAULT_CALIBRATION_DIR", tmp_path, raising=False)
+    engine, fake, source = _ready_engine()
     mark = len(fake.sent)
-    engine.set_line_intensity(3, 0.0)
-    assert _aom_sets(fake.sent, mark) == ["LINE3:SET 0.000"]  # dark, not the first row's 0.5 V
-    assert engine.aom_percent_for_volts(0.0) == 0.0  # and the tab shows 0 %
-    assert source.enabled and engine.poll_once().channels["L3"].state == LineState.READY
-
-
-def test_unreadable_calibration_is_linear_and_says_why(tmp_path):
-    (tmp_path / "560_aom.csv").write_text("not,a,calibration\n1,2,3\n")
-    engine, fake, source = _ready_engine(tmp_path)
-    assert any("unreadable: 560 nm intensity is linear in AOM volts" in n for n in engine.notices)
-    engine.set_line_intensity(3, 50.0)
-    assert _aom_sets(fake.sent)[-1] == "LINE3:SET 2.500"
+    engine.set_wavelength_intensity(560, 100.0)
+    assert _aom_sets(fake.sent, mark) == ["LINE3:SET 5.000"]  # linear: not the file's 4 V peak
 
 
 def test_wake_sets_the_aom_to_the_requested_intensity_dark_until_asked():

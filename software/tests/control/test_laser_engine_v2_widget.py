@@ -93,9 +93,9 @@ def test_widget_connection_lost(qtbot):
 def test_widget_shows_what_the_connect_reset_cleared(qtbot):
     engine, widget = _widget(qtbot)  # the simulated engine starts with its power-up latch set
     assert "cleared at connect: hardware fault latch" in widget.notice_label.text()
-    assert "no AOM calibration" in widget.notice_label.text()
     engine.set_source_power_mw(600.0)
-    assert "560 nm laser set to 600 mW" in widget.notice_label.text()
+    engine.set_source_power_mw(700.0)
+    assert "560 nm laser set to 700 mW" in widget.notice_label.text()
     assert "cleared at connect" not in widget.notice_label.text()  # the latest two are shown ...
     assert "cleared at connect: hardware fault latch" in widget.notice_label.toolTip()  # ... the older ones are here
     engine.close()

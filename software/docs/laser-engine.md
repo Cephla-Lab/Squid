@@ -15,10 +15,8 @@ same key.
 | Setting | Where it is set | Default |
 |---|---|---|
 | Which engine, its USB serial number | machine ini, `laser_engine`, `laser_engine_sn` | no engine |
-| Intensity calibration per wavelength | `machine_configs/intensity_calibrations/<wavelength>.csv` | linear |
 | DF: 560 nm laser power | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | the source's minimum |
 | DF: 560 nm idle-off | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | 30 min |
-| DF: 560 nm intensity calibration (AOM) | `machine_configs/intensity_calibrations/560_aom.csv` | linear in AOM volts |
 
 ## 1. Machine ini
 
@@ -56,10 +54,9 @@ idle-off are operator settings kept in the cache (section 4).
   intensity and exposure always reach the same line. Squid's default map puts 405 on D1, 470/488 on D2, 545-561 on
   D3, 638/640 on D4 and 730-750 on D5; a port-map edit moves both together. A wavelength on a port beyond D5 is left
   to the controller and gets no engine set-point (logged once).
-- Intensity is % of optical power, as for Squid's other light sources. With
-  `machine_configs/intensity_calibrations/<wavelength>.csv` (columns `DAC Percent`, `Optical Power (mW)`, as
-  written by `tools/generate_intensity_calibrations.py`) it goes through that calibration, where `DAC Percent` is
-  the % of the line's current ceiling; without one it is linear in the line's current.
+- Intensity is linear in the line's drive: % of its current ceiling (on DF line 3, of the AOM's 0-5 V input).
+  Old calibration files (`machine_configs/intensity_calibrations/<wavelength>.csv`, `560_aom.csv`) are not used:
+  they record nothing about the engine they were measured on.
 
 At start, Squid connects (one fault reset when anything is latched, since the engine latches at every power-up;
 the tab says what it cleared), switches the TECs on, arms and brings every fitted line up, one step per status poll, so the GUI never
@@ -91,23 +88,7 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
   minimum and goes to the set power once it reads ready. Squid's intensity never changes the laser power.
 - **Intensity** in Squid (the 560 channel's intensity) is the AOM amplitude: line 3's set-point, 0-5 V, full scale =
   full transmission. The AOM's on/off input is the controller's D3 TTL, so exposure timing works as for the other
-  lines. Without a calibration the intensity is linear in AOM volts (50 % = 2.5 V). With
-  `machine_configs/intensity_calibrations/560_aom.csv` it follows the AOM's measured transmission:
-
-  ```
-  AOM Volts,Transmission
-  0,0
-  1,0.1
-  2,0.4
-  3,0.8
-  4,1.0
-  5,0.95
-  ```
-
-  `Transmission` is in any unit (it is scaled to its maximum); rows may be in any order. Only the rising part, from
-  0 V up to the voltage of peak transmission, is used: 100 % is the peak (4 V above), not 5 V. 0 % is always 0 V,
-  even when the first row already transmits. The tab says at connect whether the file was loaded, missing or
-  unreadable.
+  lines. The intensity is linear in AOM volts (50 % = 2.5 V).
 - **Shutter**: safety only, never per exposure. It opens when line 3 is READY and stays open while line 3 ramps to
   a new AOM set-point (every 560 intensity change) as long as the source reads ready. It is closed in every other
   state (key not cycled, source off or starting, line 3 off or paused, a fault, disarm) and before any source

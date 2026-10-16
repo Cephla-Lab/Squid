@@ -1,6 +1,5 @@
 import logging
 import threading
-from pathlib import Path
 
 import pytest
 from qtpy.QtWidgets import QMessageBox
@@ -12,8 +11,6 @@ from control.laser_engine_v2_bench import BenchWindow, LaserEngineV2ServicePanel
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_settings import save_idle_off_560_min, save_power_560_mw
 from control.laser_engine_v2_sim import FakeEngine, FakeSource, build_simulated_engine
-
-NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 
 
 @pytest.fixture(autouse=True)
@@ -245,7 +242,6 @@ def _shared_sim(monkeypatch):
             link_factory=lambda: EngineLink(fake),
             source_factory=lambda: source,
             options=options,
-            calibration_dir=NO_CALIBRATIONS,
         )
         engine.sim_engine, engine.sim_source = fake, source
         return engine

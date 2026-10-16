@@ -1,6 +1,5 @@
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
@@ -8,8 +7,6 @@ from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2E
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine, FakeSource
 from control.laser_engine_v2_status import LineState
-
-NO_CALIBRATIONS = Path(__file__).parent / "no_such_calibration_dir"
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +22,6 @@ def _with_source(source=None, options=None):
         source_factory=lambda: source,
         query_interval_s=0.01,
         options=options,
-        calibration_dir=NO_CALIBRATIONS,
     )
     engine.open()
     return engine, fake, source
