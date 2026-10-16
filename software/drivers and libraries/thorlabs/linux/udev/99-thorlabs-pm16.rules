@@ -1,0 +1,5 @@
+# Thorlabs PM16-121 power meter (Utils > Illumination Power Calibration), from github.com/hongquanli/PM16.
+# Copy this file to /etc/udev/rules.d (setup_22.04.sh does), then unplug and re-plug the meter.
+# Lets pyvisa-py open the meter without root. Another Thorlabs meter needs its own product ID (lsusb shows it).
+
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1313", ATTRS{idProduct}=="807b", MODE="0666"
