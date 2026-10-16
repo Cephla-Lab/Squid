@@ -284,6 +284,11 @@ class IlluminationController:
     def _drives_engine(self) -> bool:
         return self.light_source_type == LightSourceType.CephlaLaserEngineV2
 
+    def _on_engine_line(self, wavelength) -> bool:
+        """`wavelength` is a laser engine channel: its TTL port is an engine line (D1-D5). Other channels of an engine
+        instrument keep their Max Output cap and description."""
+        return self._drives_engine() and self.light_source.engine.line_for_wavelength(wavelength) is not None
+
     def engine_drive(self, wavelength) -> Optional[EngineDrive]:
         """The laser engine line `wavelength` drives, as calibrations are checked against it; None when this
         instrument's light source is not a laser engine v2 (its channels are driven through the controller DAC)."""
@@ -380,7 +385,7 @@ class IlluminationController:
     def get_intensity_cap_percent(self, wavelength, max_output: float) -> float:
         """The highest intensity % the GUI offers: 100 for a new calibration (the ceiling is inside the lookup),
         max_output x 100 otherwise (as before)."""
-        if self._drives_engine():
+        if self._on_engine_line(wavelength):
             return 100.0  # the firmware ceiling is the maximum; Max Output is not used on engine lines
         lookup = self.lookup_calibration(wavelength)
         if lookup.calibration is not None:
@@ -389,7 +394,7 @@ class IlluminationController:
 
     def describe_intensity(self, wavelength) -> Dict[str, object]:
         """What this wavelength's intensity % means, for the GUI and acquisition metadata (design §9)."""
-        if self._drives_engine():
+        if self._on_engine_line(wavelength):
             lookup = self.lookup_calibration(wavelength)
             if lookup.calibration is not None:
                 return lookup.calibration.describe()

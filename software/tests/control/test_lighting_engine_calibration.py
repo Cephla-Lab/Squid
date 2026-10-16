@@ -209,3 +209,9 @@ def test_other_software_light_sources_still_skip_an_unchanged_percent(tmp_path):
 
 def test_a_controller_dac_instrument_has_no_engine_drive():
     assert IlluminationController(FakeMicrocontroller()).engine_drive(488) is None
+
+
+def test_a_channel_not_on_an_engine_line_keeps_its_max_output_and_description(instrument):
+    # final review I1: on an engine instrument, a wavelength whose port is not an engine line is not an engine channel
+    assert instrument.illumination.get_intensity_cap_percent(999, 0.5) == 50.0
+    assert instrument.illumination.describe_intensity(999) == {"intensity_unit": "source_percent"}
