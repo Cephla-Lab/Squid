@@ -630,6 +630,12 @@ class MultiPointWorker:
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
 
+    def _note_laser_engine_use(self) -> None:
+        """Tell the laser engine its channels are in use (laser engine v2 switches an idle source off; v1 has no note_use)."""
+        note_use = getattr(self._laser_engine, "note_use", None)
+        if note_use is not None and self._laser_channels_needed:
+            note_use(self._laser_channels_needed)
+
     def _wait_for_outstanding_callback_images(self):
         # If there are outstanding frames, wait for them to come in.
         self._log.info("Waiting for any outstanding frames.")
@@ -1084,6 +1090,7 @@ class MultiPointWorker:
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
+        self._note_laser_engine_use()
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
@@ -1448,6 +1455,7 @@ class MultiPointWorker:
     def acquire_camera_image(
         self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
     ):
+        self._note_laser_engine_use()  # per image too: a single FOV (long z-stack) can outlast the 560 idle-off
         self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
