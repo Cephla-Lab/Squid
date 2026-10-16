@@ -6,6 +6,10 @@ from control.laser_engine_v2 import EngineOptions, LaserEngineV2, LaserEngineV2E
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine
 from control.laser_engine_v2_status import LineState
+from control.laser_engine_v2_sim import build_simulated_engine
+from control.lighting import CalibrationLookup
+from squid.intensity_calibration import EngineLineIdentity, EngineUnavailable
+from tests.squid.calibration_fixtures import make_engine_calibration
 
 
 @pytest.fixture(autouse=True)
@@ -406,11 +410,53 @@ def test_old_calibration_files_are_not_used(tmp_path, monkeypatch):
     assert engine.get_wavelength_intensity(488) == pytest.approx(50.0)
 
 
-def test_intensity_is_linear_in_the_line_current():
+def test_intensity_goes_through_the_calibration_the_provider_gives():
     engine, fake = _opened()
+    c = make_engine_calibration()  # 488 nm on D2 = L2
+    engine.calibration_provider = lambda wavelength: CalibrationLookup(c.file_name, c if wavelength == 488 else None)
+    engine.set_wavelength_intensity(488, 50.0)
+    drive = c.commanded_percent(50.0, 1.0, 1.0)[0]
+    assert fake.sent[-1] == "LINE2:SET %.4f" % (drive / 100.0 * 2.045)
+    assert engine.get_wavelength_intensity(488) == pytest.approx(50.0)
+
+
+def test_without_a_calibration_intensity_is_linear_and_logged_once():
+    engine, fake = _opened()
+    engine._log = MagicMock()
+    engine.calibration_provider = lambda wavelength: CalibrationLookup()
     engine.set_wavelength_intensity(405, 40.0)
     engine.set_wavelength_intensity(405, 60.0)
     assert fake.sent[-1] == "LINE1:SET %.4f" % (0.6 * 0.541)
+    assert sum("no intensity calibration" in str(c) for c in engine._log.info.call_args_list) == 1
+
+
+def test_line_identity_is_what_calibrations_are_checked_against():
+    engine, fake = _engine(serial_number="SN-1")
+    assert engine.line_identity(2) == EngineUnavailable("laser engine status not read yet")  # not opened yet
+    engine.open()
+    engine.poll_once()
+    assert engine.line_identity(2) == EngineLineIdentity("SN-1", "DF", 2, 2.045, "A")
+    assert engine.line_identity(3) == EngineLineIdentity("SN-1", "DF", 3, 5.0, "V")
+    fake.unplug()
+    engine.poll_once()
+    assert engine.line_identity(2) == EngineUnavailable("laser engine connection lost")
+
+
+def test_line_identity_needs_the_serial_number():
+    engine, _ = _opened()  # built without serial_number
+    engine.poll_once()
+    assert "serial number" in engine.line_identity(2).reason
+
+
+def test_engine_drive_of_a_wavelength_off_the_engine_ports():
+    engine, _ = _opened()
+    engine.poll_once()
+    assert "not on an engine port" in engine.light_source.engine_drive(999).reason
+    assert engine.light_source.engine is engine
+
+
+def test_the_simulated_engine_has_a_serial_number():
+    assert build_simulated_engine().serial_number == "SIMULATED"
 
 
 def test_intensity_follows_the_live_ttl_map():

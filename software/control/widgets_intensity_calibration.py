@@ -1,4 +1,4 @@
-"""Utils > Illumination Power Calibration...: measure each DAC-driven illumination channel with a power meter and make
+"""Utils > Illumination Power Calibration...: measure each DAC-driven illumination channel, or each laser engine v2 line, with a power meter and make
 its intensity linear in optical power.
 
 The work lives in squid/intensity_calibration_run.py (CalibrationSession), which tools/generate_intensity_calibrations.py
@@ -40,6 +40,12 @@ from squid.intensity_calibration_run import (
 from squid.power_meter import PowerMeterError
 
 log = squid.logging.get_logger(__name__)
+
+ENGINE_NOTE = (
+    "Place the sensor at the sample plane, in the light path. At a focused beam use a sensor rated for it (a "
+    "microscope-slide sensor): power density can damage a sensor below its power rating. Each laser engine line is "
+    "woken and must be ready, then swept from 0 to its firmware ceiling."
+)
 
 
 class CalibrationWorker(QThread):
@@ -180,7 +186,9 @@ class IntensityCalibrationDialog(QDialog):
 
         plots = QHBoxLayout()
         self.plot_curve = pg.PlotWidget()
-        self.plot_curve.setLabel("bottom", "DAC (% commanded)")
+        self.plot_curve.setLabel(
+            "bottom", "drive (% of the line's ceiling)" if self.session.engine is not None else "DAC (% commanded)"
+        )
         self.plot_curve.setLabel("left", "power (mW)")
         self.plot_verify = pg.PlotWidget()
         self.plot_verify.setLabel("bottom", "requested (% power)")
@@ -237,19 +245,29 @@ class IntensityCalibrationDialog(QDialog):
             self.table.setCellWidget(row, self.COL_USE, use)
             self.table.setItem(row, self.COL_CHANNEL, self._readonly_item(target.name))
             self.table.setItem(row, self.COL_PORT, self._readonly_item(target.controller_port))
-            self.table.setItem(row, self.COL_CEILING, self._readonly_item(f"{target.ceiling_percent:g} %"))
+            self.table.setItem(row, self.COL_CEILING, self._readonly_item(self.session.ceiling_text(target)))
             self.table.setItem(row, self.COL_CURRENT, self._readonly_item(self.session.current_status(target)))
             self.table.setItem(row, self.COL_RUN, self._readonly_item(""))
-        if not self.session.dac_driven:
+        if self.session.engine is not None and not self.targets:
+            self.label_note.setText(
+                "No epi-illumination channel is on a laser engine line (ports D1-D5), or the laser engine is not "
+                "connected (see the Laser Engine tab)."
+            )
+            return
+        if self.session.engine is None and not self.session.dac_driven:
             self.label_note.setText(
                 "This instrument sets illumination power in the light source itself (LDI, CELESTA or Andor), not "
                 "through the controller DAC, so there is nothing to calibrate here."
             )
-        elif not self.targets:
+            return
+        if not self.targets:
             self.label_note.setText(
                 "No epi-illumination channel with a wavelength on a controller port (D1-D8) is configured. Add one in "
                 "Settings > Advanced > Illumination Channel Configuration."
             )
+            return
+        if self.session.engine is not None:
+            self.label_note.setText(" ".join([ENGINE_NOTE] + self.session.run_notes(self.targets)))
         else:
             self.label_note.setText(
                 "Place the sensor at the sample plane, in the light path. At a focused beam use a sensor rated for it "
@@ -257,12 +275,12 @@ class IntensityCalibrationDialog(QDialog):
                 "is swept from DAC 0 upward to its ceiling (Max Output). If a channel's Max Output was set only to keep "
                 "the output linear, raise it to 1.0 in the channel editor first: calibration makes the full range linear."
             )
-            if not self.session.watchdog_protected:
-                self.label_note.setText(
-                    self.label_note.text() + " This controller has no illumination watchdog (firmware before 1.1): "
-                    "if the software stops responding during a run, turn the light off at the controller."
-                )
-            self.table.selectRow(0)
+        if not self.session.watchdog_protected:
+            self.label_note.setText(
+                self.label_note.text() + " This controller has no illumination watchdog (firmware before 1.1): "
+                "if the software stops responding during a run, turn the light off at the controller."
+            )
+        self.table.selectRow(0)
 
     def _refresh_current(self):
         # Re-read the channels: Save just pointed their intensity_calibration_file at the new files
@@ -385,11 +403,14 @@ class IntensityCalibrationDialog(QDialog):
         return [t for row, t in enumerate(self.targets) if self.table.cellWidget(row, self.COL_USE).isChecked()]
 
     def _confirm_run(self, targets: List[ChannelTarget]) -> bool:
-        top = max(t.ceiling_percent for t in targets)
+        if any(t.engine_line is not None for t in targets):
+            reach = "stepping each laser engine line up to its firmware ceiling"
+        else:
+            reach = f"stepping up to {max(t.ceiling_percent for t in targets):g} % DAC"
         answer = QMessageBox.warning(
             self,
             "Laser safety",
-            f"The run turns on {', '.join(t.name for t in targets)} one at a time, stepping up to {top:g} % DAC, "
+            f"The run turns on {', '.join(t.name for t in targets)} one at a time, {reach}, "
             f"for a few minutes each, and stops at the first reading above {self.spin_sensor_limit.value():g} mW."
             "\n\nBefore starting: the power meter sensor is in the light path at the sample plane and rated for the "
             "beam there, nobody is looking into the beam, and this instrument's laser safety rules are followed."
@@ -457,7 +478,12 @@ class IntensityCalibrationDialog(QDialog):
         mark = "✓" if calibration.verification == "pass" else "✗"
         text = f"{mark} {calibration.p_max_mw:.4g} mW, {calibration.verification_summary()}"
         if calibration.rollover:
-            text += f"  ⚠ peak at DAC {calibration.top_dac_percent:.1f} %"
+            where = (
+                f"{calibration.top_dac_percent:.1f} % of the line's range"
+                if calibration.engine is not None
+                else f"DAC {calibration.top_dac_percent:.1f} %"
+            )
+            text += f"  ⚠ peak at {where}"
         for warning in result.warnings:
             text += f"  ⚠ {warning}"
         return text

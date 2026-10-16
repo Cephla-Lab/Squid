@@ -11,6 +11,8 @@ from squid.intensity_calibration import (
     CALIBRATIONS_DIR_NAME,
     Calibration,
     CalibrationFileError,
+    EngineDrive,
+    EngineLineIdentity,
     load_calibration,
     resolve_calibration_path,
 )
@@ -56,15 +58,17 @@ class LightSourceType(Enum):
 
 def external_light_source(simulated: bool) -> Optional[LightSourceType]:
     """The light source that sets illumination power itself on this instrument, as Microscope.build_from_global_config
-    picks it from the machine ini; None when the controller DAC does (always in simulation, where none is built)."""
-    if simulated:
-        return None
-    if control._def.USE_LDI_SERIAL_CONTROL:
-        return LightSourceType.LDI
-    if control._def.USE_CELESTA_ETHERNET_CONTROL:
-        return LightSourceType.CELESTA
-    if control._def.USE_ANDOR_LASER_CONTROL:
-        return LightSourceType.AndorLaser
+    picks it from the machine ini; None when the controller DAC does. In simulation the LDI, CELESTA and Andor laser
+    are not built (the controller DAC drives the channels); laser engine v2 is, as the simulated engine."""
+    if not simulated:
+        if control._def.USE_LDI_SERIAL_CONTROL:
+            return LightSourceType.LDI
+        if control._def.USE_CELESTA_ETHERNET_CONTROL:
+            return LightSourceType.CELESTA
+        if control._def.USE_ANDOR_LASER_CONTROL:
+            return LightSourceType.AndorLaser
+    if control._def.LASER_ENGINE == "v2":
+        return LightSourceType.CephlaLaserEngineV2
     return None
 
 
@@ -85,9 +89,13 @@ class CalibrationLookup:
     file_name: Optional[str] = None
     calibration: Optional[Calibration] = None
     error: Optional[str] = None
+    # What the lookup was made from: the file's mtime, or ("candidate", generation). With file_name and error it is
+    # the calibration key: when it changes, set_intensity sends an unchanged % again (spec §6.4)
+    version: object = None
 
 
 _NO_CALIBRATION = CalibrationLookup()
+_NO_CALIBRATION_KEY = (None, None, None)
 
 
 class IlluminationController:
@@ -166,6 +174,11 @@ class IlluminationController:
         # calibration dialog, a hand edit or a channel-editor change takes effect on the next set_intensity.
         self._calibration_cache: Dict[Path, Tuple[float, Optional[Calibration], Optional[str]]] = {}
         self._logged_messages = set()
+        # wavelength -> a calibration being verified by Utils > Illumination Power Calibration: applies ahead of any
+        # file, once it passes the same identity check, until cleared (spec §6.3)
+        self._candidates: Dict[int, Calibration] = {}
+        self._candidate_generation = 0
+        self._intensity_calibration_keys: Dict[int, Tuple] = {}  # wavelength -> calibration key when last sent
 
         # Multi-port illumination state tracking (16 ports max)
         self.port_is_on = {i: False for i in range(NUM_ILLUMINATION_PORTS)}
@@ -268,6 +281,54 @@ class IlluminationController:
             and not self.disable_intensity_calibration
         )
 
+    def _drives_engine(self) -> bool:
+        return self.light_source_type == LightSourceType.CephlaLaserEngineV2
+
+    def engine_drive(self, wavelength) -> Optional[EngineDrive]:
+        """The laser engine line `wavelength` drives, as calibrations are checked against it; None when this
+        instrument's light source is not a laser engine v2 (its channels are driven through the controller DAC)."""
+        if not self._drives_engine():
+            return None
+        return self.light_source.engine_drive(wavelength)
+
+    def install_candidate(self, wavelength: int, calibration: Calibration) -> None:
+        """A calibration being verified: lookup_calibration returns it for `wavelength` ahead of any file, if it
+        belongs to the channel, until clear_candidate. Only the calibration run installs one, for one channel's checks.
+        """
+        self._candidates[wavelength] = calibration
+        self._candidate_generation += 1
+
+    def clear_candidate(self, wavelength: int) -> None:
+        if self._candidates.pop(wavelength, None) is not None:
+            self._candidate_generation += 1
+
+    def forget_intensities(self, wavelengths) -> None:
+        """Send these channels' intensity again on their next set_intensity, even at the same %: the light source's
+        set-point changed under this controller (a calibration run)."""
+        for wavelength in wavelengths:
+            self.intensity_settings.pop(wavelength, None)
+            self._intensity_ttl_ports.pop(wavelength, None)
+            self._intensity_calibration_keys.pop(wavelength, None)
+
+    def _calibration_key(self, wavelength) -> Tuple:
+        lookup = self.lookup_calibration(wavelength)
+        return (lookup.file_name, lookup.version, lookup.error)
+
+    def _checked(self, wavelength, channel, calibration, file_name, version, error) -> CalibrationLookup:
+        """`calibration` as the lookup's answer if it belongs to `channel` (wavelength, port, controller source and,
+        on a laser engine, the engine line), else none with the reason."""
+        if calibration is not None and channel is not None:
+            source_code = self.config_repo.get_illumination_config().get_source_code(channel)
+            mismatch = calibration.identity_mismatch(
+                channel.wavelength_nm, channel.controller_port, source_code, self.engine_drive(wavelength)
+            )
+            if mismatch:
+                self._log_once(
+                    logging.WARNING, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {mismatch}"
+                )
+                return CalibrationLookup(file_name, None, mismatch, version)
+        return CalibrationLookup(file_name, calibration, error, version)
+
     def _channel_for_wavelength(self, wavelength) -> Optional[IlluminationChannel]:
         """The channel set_intensity drives for this wavelength: like channel_mappings_TTL, the last one."""
         config = self.config_repo.get_illumination_config()
@@ -287,10 +348,15 @@ class IlluminationController:
         return self.microcontroller.illumination_intensity_factor
 
     def lookup_calibration(self, wavelength) -> CalibrationLookup:
-        """The calibration that applies to `wavelength` (design §6.1); empty when none does."""
-        if not self._uses_dac_calibration():
+        """The calibration that applies to `wavelength` (design §6.1): a candidate being verified, else the channel's
+        file - either only when it belongs to the channel; empty when none does."""
+        if not (self._uses_dac_calibration() or self._drives_engine()):
             return _NO_CALIBRATION
         channel = self._channel_for_wavelength(wavelength)
+        candidate = self._candidates.get(wavelength)
+        if candidate is not None:
+            version = ("candidate", self._candidate_generation)
+            return self._checked(wavelength, channel, candidate, candidate.file_name, version, None)
         referenced = channel.intensity_calibration_file if channel is not None else None
         calibrations_dir = self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME
         path = resolve_calibration_path(calibrations_dir, referenced, wavelength)
@@ -309,20 +375,13 @@ class IlluminationController:
                     logging.ERROR, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {e}"
                 )
             self._calibration_cache[path] = cached
-        calibration = cached[1]
-        if calibration is not None and channel is not None:
-            source_code = self.config_repo.get_illumination_config().get_source_code(channel)
-            mismatch = calibration.identity_mismatch(channel.wavelength_nm, channel.controller_port, source_code)
-            if mismatch:
-                self._log_once(
-                    logging.WARNING, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {mismatch}"
-                )
-                return CalibrationLookup(path.name, None, mismatch)
-        return CalibrationLookup(path.name, calibration, cached[2])
+        return self._checked(wavelength, channel, cached[1], path.name, mtime, cached[2])
 
     def get_intensity_cap_percent(self, wavelength, max_output: float) -> float:
         """The highest intensity % the GUI offers: 100 for a new calibration (the ceiling is inside the lookup),
         max_output x 100 otherwise (as before)."""
+        if self._drives_engine():
+            return 100.0  # the firmware ceiling is the maximum; Max Output is not used on engine lines
         lookup = self.lookup_calibration(wavelength)
         if lookup.calibration is not None:
             return lookup.calibration.cap_percent(max_output)
@@ -330,6 +389,15 @@ class IlluminationController:
 
     def describe_intensity(self, wavelength) -> Dict[str, object]:
         """What this wavelength's intensity % means, for the GUI and acquisition metadata (design §9)."""
+        if self._drives_engine():
+            lookup = self.lookup_calibration(wavelength)
+            if lookup.calibration is not None:
+                return lookup.calibration.describe()
+            description: Dict[str, object] = {"intensity_unit": "engine_drive_percent"}
+            drive = self.engine_drive(wavelength)
+            if isinstance(drive, EngineLineIdentity):
+                description["engine_drive"] = "aom" if drive.ceiling_unit == "V" else "current"
+            return description
         if self.light_source_type is not None or self.intensity_control_mode != IntensityControlMode.SquidControllerDAC:
             return {"intensity_unit": "source_percent"}
         factor = self._dac_factor()
@@ -347,10 +415,18 @@ class IlluminationController:
             # engine v2) must be told again after a remap, even at the same intensity.
             ttl_map = self.channel_mappings_TTL if self.shutter_control_mode == ShutterControlMode.TTL else {}
             ttl_port = ttl_map.get(channel)
-            if intensity != self.intensity_settings[channel] or ttl_port != self._intensity_ttl_ports.get(channel):
+            # ... and the calibration that applies is part of it too: a saved or edited file, a candidate, an identity
+            # change give an unchanged % another set-point (always unchanged for sources without calibrations)
+            calibration_key = self._calibration_key(channel)
+            if (
+                intensity != self.intensity_settings[channel]
+                or ttl_port != self._intensity_ttl_ports.get(channel)
+                or calibration_key != self._intensity_calibration_keys.get(channel, _NO_CALIBRATION_KEY)
+            ):
                 self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
                 self.intensity_settings[channel] = intensity
                 self._intensity_ttl_ports[channel] = ttl_port
+                self._intensity_calibration_keys[channel] = calibration_key
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.

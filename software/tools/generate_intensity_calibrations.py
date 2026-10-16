@@ -60,10 +60,16 @@ def main(argv: Optional[Sequence[str]] = None, config_repo=None) -> int:
     import control._def
     import control.microcontroller as microcontroller
     from control.core.config import ConfigRepository
-    from control.lighting import external_light_source
+    from control.lighting import LightSourceType, external_light_source
     from squid.intensity_calibration_run import CalibrationSession, ChannelResult
 
     light_source = external_light_source(args.simulation)
+    if light_source == LightSourceType.CephlaLaserEngineV2:
+        print(
+            "This instrument's light source is a Cephla laser engine v2: calibrate its lines from the GUI "
+            "(Utils > Illumination Power Calibration), which brings the engine up and drives it."
+        )
+        return 2
     if light_source is not None:  # checked before any hardware is opened
         print(
             f"This instrument sets illumination power in the light source itself ({light_source.name}), not through "

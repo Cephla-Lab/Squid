@@ -45,6 +45,8 @@ from squid.power_meter import (
     PowerMeterOverrange,
     SimulatedPowerMeter,
     ThorlabsPowerMeter,
+    simulated_aom_mw,
+    simulated_source_mw,
 )
 
 _log = squid.logging.get_logger(__name__)
@@ -90,9 +92,15 @@ class WatchdogDeadlineMissed(RuntimeError):
     """The controller heard nothing for longer than its watchdog, which may have turned the light off mid-channel."""
 
 
+class LightSourceStopped(RuntimeError):
+    """The light source stopped being usable mid-channel (a laser engine line left READY or its shutter closed, a
+    set-point was not taken or not reached, the connection was lost); the light is off."""
+
+
 @dataclass(frozen=True)
 class ChannelTarget:
-    """A channel that can be calibrated: epi-illumination, with a wavelength, on a controller DAC port (D1-D8)."""
+    """A channel that can be calibrated: epi-illumination, with a wavelength, on a controller port (D1-D8) - driven
+    through the controller DAC, or (engine_line set) a laser engine v2 line whose TTL that port is."""
 
     name: str
     wavelength_nm: int
@@ -100,6 +108,7 @@ class ChannelTarget:
     source_code: int
     max_output: float
     calibration_file: Optional[str] = None
+    engine_line: Optional[int] = None  # the laser engine v2 line it drives; None: the controller DAC
 
     @property
     def ceiling_percent(self) -> float:
@@ -188,7 +197,15 @@ class WatchdogDeadline:
 class MicrocontrollerDacOutput:
     """One illumination port driven through the controller DAC at a raw commanded %, bypassing the lookup and the cap.
     Remembers what it last commanded, which is also what the simulated meter reads. Light on is refused once the
-    deadline was missed; DAC levels and light off are always sent."""
+    deadline was missed; DAC levels and light off are always sent.
+
+    The output protocol calibrate_channel drives (control/laser_engine_v2_calibration.EngineLineOutput is the other
+    implementation): raw levels (set_percent), a requested % of power set the way the runtime sets it
+    (set_power_percent, through the candidate installed for the checks), light on/off, a check after every reading,
+    and the identity fields the calibration records."""
+
+    is_aom = False
+    overrange_advice = "lower Max Output or use a higher-power sensor"
 
     def __init__(self, microcontroller, source_code: int, deadline: Optional[WatchdogDeadline] = None):
         self._mcu = microcontroller
@@ -198,15 +215,41 @@ class MicrocontrollerDacOutput:
         self._all_ports = microcontroller.supports_multi_port()
         self.commanded_percent = 0.0
         self.is_on = False
+        self._candidate: Optional[IntensityCalibration] = None
 
     def _send(self, command, *args) -> None:
         command(*args)
         self._deadline.sent()
         self._mcu.wait_till_operation_is_completed()
 
+    def level_text(self, percent: float) -> str:
+        return f"DAC {percent:.1f} %"
+
+    def drive_fraction(self) -> float:
+        """The DAC output as a fraction of its full scale: what the simulated meter's source sees."""
+        return self.commanded_percent / 100.0 * self._mcu.illumination_intensity_factor
+
     def set_percent(self, percent: float) -> None:
         self._send(self._mcu.set_illumination, self._source_code, percent)
         self.commanded_percent = percent
+
+    def set_power_percent(self, requested: float) -> None:
+        """A requested % of power through the candidate's lookup, as the runtime would command it."""
+        c = self._candidate
+        self.set_percent(c.commanded_percent(requested, c.illumination_intensity_factor, c.max_output)[0])
+
+    def use_candidate(self, calibration: IntensityCalibration) -> None:
+        self._candidate = calibration
+
+    def clear_candidate(self) -> None:
+        self._candidate = None
+
+    def check(self) -> None:
+        """After every reading: nothing beyond the watchdog deadline, which the measurer checks itself."""
+
+    def recorded_identity(self) -> Dict[str, object]:
+        """Fields the calibration records about what drove the light: none beyond the port for the controller DAC."""
+        return {}
 
     def on(self) -> None:
         self._deadline.check()
@@ -227,9 +270,9 @@ class MicrocontrollerDacOutput:
 
 
 class _Measurer:
-    """Takes readings with the light pulsed on at a raw DAC level: waits, reads until two readings agree, feeds the
-    watchdog before every read, checks its deadline around every read, and enforces the sensor limit on every
-    reading."""
+    """Takes readings with the light pulsed on: waits, reads until two readings agree, feeds the watchdog before every
+    read, checks its deadline around every read and the output after every read, and enforces the sensor limit on
+    every reading."""
 
     def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive, deadline):
         self.output = output
@@ -250,30 +293,30 @@ class _Measurer:
 
     def _fed_read(self) -> float:
         """Feed the watchdog, read, and fail if the watchdog may have fired before or during the reading (it then
-        stays disarmed; the session arms it again before the next channel)."""
+        stays disarmed; the session arms it again before the next channel) or the output says its light source
+        stopped being usable."""
         self._feed()
         reading = self.meter.read_mw()
         self.deadline.check()
+        self.output.check()
         return reading
 
-    def _read(self, percent: float) -> float:
+    def _read(self, where: str) -> float:
         try:
             reading = self._fed_read()
         except PowerMeterOverrange as e:
-            raise SensorLimitExceeded(
-                f"meter overrange at DAC {percent:.1f} %: lower Max Output or use a higher-power sensor"
-            ) from e
+            raise SensorLimitExceeded(f"meter overrange at {where}: {self.output.overrange_advice}") from e
         if reading > self.sensor_limit_mw:
             raise SensorLimitExceeded(
-                f"{reading:.4g} mW at DAC {percent:.1f} % exceeds the sensor limit ({self.sensor_limit_mw:g} mW): "
-                "lower Max Output or use a higher-power sensor"
+                f"{reading:.4g} mW at {where} exceeds the sensor limit ({self.sensor_limit_mw:g} mW): "
+                f"{self.output.overrange_advice}"
             )
         return reading
 
-    def _converged(self, percent: float) -> Tuple[float, bool]:
-        previous = self._read(percent)
+    def _converged(self, where: str) -> Tuple[float, bool]:
+        previous = self._read(where)
         for _ in range(MAX_READS - 1):
-            current = self._read(percent)
+            current = self._read(where)
             if abs(current - previous) <= max(CONVERGE_REL * abs(current), 3.0 * self.sigma_dark):
                 return current, True
             previous = current
@@ -284,17 +327,24 @@ class _Measurer:
         self.sleep(self.settle_s)
         return np.array([self._fed_read() for _ in range(N_DARK)])
 
-    def at(self, percent: float) -> Tuple[float, bool]:
-        """A settled reading at `percent` with the light on only for it: (reading, settled)."""
-        self.output.set_percent(percent)
+    def _pulse(self, set_level: Callable[[], None], where: str) -> Tuple[float, bool]:
+        set_level()
         self.output.on()
         start = self.clock()
         try:
             self.sleep(self.settle_s)
-            return self._converged(percent)
+            return self._converged(where)
         finally:
             self.output.off()
             self.on_times.append(self.clock() - start)
+
+    def at(self, percent: float) -> Tuple[float, bool]:
+        """A settled reading at raw level `percent` with the light on only for it: (reading, settled)."""
+        return self._pulse(lambda: self.output.set_percent(percent), self.output.level_text(percent))
+
+    def at_power(self, requested: float) -> Tuple[float, bool]:
+        """A settled reading at `requested` % of power, set the way the runtime sets it: (reading, settled)."""
+        return self._pulse(lambda: self.output.set_power_percent(requested), f"{requested:g} % power")
 
     def median_at(self, percent: float, repeats: int) -> float:
         return float(np.median([self.at(percent)[0] for _ in range(repeats)]))
@@ -309,20 +359,21 @@ class _Measurer:
             self._feed()
             self.sleep(min(0.5, duration_s))
 
-    def hold(self, percent: float, duration_s: float, cancelled: Callable[[], bool]) -> Tuple[float, float]:
-        """Light on continuously at `percent` for duration_s: (reading at the start, reading at the end)."""
-        self.output.set_percent(percent)
+    def hold_power(self, requested: float, duration_s: float, cancelled: Callable[[], bool]) -> Tuple[float, float]:
+        """Light on continuously at `requested` % of power for duration_s: (reading at the start, at the end)."""
+        where = f"{requested:g} % power"
+        self.output.set_power_percent(requested)
         self.output.on()
         try:
             self.sleep(self.settle_s)
-            start, _ = self._converged(percent)
+            start, _ = self._converged(where)
             begin = self.clock()
             while self.clock() - begin < duration_s:
                 if cancelled():
                     raise CalibrationCancelled("cancelled during the continuous hold")
                 self._feed()
                 self.sleep(min(0.5, duration_s))
-            end, _ = self._converged(percent)
+            end, _ = self._converged(where)
         finally:
             self.output.off()
         return start, end
@@ -357,7 +408,7 @@ def _anomaly_requests(calibration: IntensityCalibration, sigma_dark: float) -> L
 
 def calibrate_channel(
     target: ChannelTarget,
-    output: MicrocontrollerDacOutput,
+    output,
     meter: PowerMeter,
     factor: float,
     *,
@@ -377,8 +428,10 @@ def calibrate_channel(
 ) -> ChannelResult:
     """Sweep, check, fit, verify and hold one channel (design §5).
 
-    Raises CalibrationCancelled, SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError or CalibrationError.
-    However it ends, all illumination is off and the DAC at 0 afterwards. `deadline` is the one `output` sends through.
+    `output` follows the output protocol (MicrocontrollerDacOutput, or a laser engine line). Raises
+    CalibrationCancelled, SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError, CalibrationError or
+    LightSourceStopped. However it ends, all illumination is off and the drive at 0 afterwards. `deadline` is the one
+    `output` sends through.
     """
     if meter_info.wavelength_range_nm is not None:
         low, high = meter_info.wavelength_range_nm
@@ -409,6 +462,7 @@ def calibrate_channel(
     def measure_everything():
         meter.set_wavelength(target.wavelength_nm)
         output.safe_off()
+        identity = output.recorded_identity()  # what drives the light, recorded in the file
         # Every reading of the channel, the dark included (ranges differ in offset too), is on one meter range: the
         # lowest that holds the sensor limit, where the sweep stops anyway. Auto-ranging stitched the PM16-121's
         # 11.9 mW and 1.2 W ranges, which disagree by 5-7 %, into a 488 nm curve (bench 2026-10-09); its 1.2 W range
@@ -437,24 +491,27 @@ def calibrate_channel(
             raw[i] = measure.median_at(dac[i], TOP_REMEASURE_READS if i == preliminary.top_index else REMEASURE_READS)
             settled[i] = True
 
-        calibration = IntensityCalibration.from_sweep(
-            channel=target.name,
-            controller_port=target.controller_port,
-            wavelength_nm=target.wavelength_nm,
-            calibrated_at=(now or datetime.datetime.now()).isoformat(timespec="seconds"),
-            software_commit=software_commit(),
-            meter=meter_info.meter,
-            sensor=meter_info.sensor,
-            factor=factor,
-            max_output=target.max_output,
-            measured_in=measured_in,
-            dark_mw=(float(dark_start.mean()), float(dark_end.mean())),
-            drift_fraction=0.0,
-            dac_percent=dac,
-            power_raw_mw=raw,
-            power_mw=raw - dark,
-            sigma_dark=sigma_dark,
-            pulse_on_s=float(np.median(measure.on_times)),
+        calibration = replace(
+            IntensityCalibration.from_sweep(
+                channel=target.name,
+                controller_port=target.controller_port,
+                wavelength_nm=target.wavelength_nm,
+                calibrated_at=(now or datetime.datetime.now()).isoformat(timespec="seconds"),
+                software_commit=software_commit(),
+                meter=meter_info.meter,
+                sensor=meter_info.sensor,
+                factor=factor,
+                max_output=target.max_output,
+                measured_in=measured_in,
+                dark_mw=(float(dark_start.mean()), float(dark_end.mean())),
+                drift_fraction=0.0,
+                dac_percent=dac,
+                power_raw_mw=raw,
+                power_mw=raw - dark,
+                sigma_dark=sigma_dark,
+                pulse_on_s=float(np.median(measure.on_times)),
+            ),
+            **identity,
         )
 
         # Drift: the point where the fit first reaches half of P_max (above a lasing threshold by construction),
@@ -468,21 +525,24 @@ def calibrate_channel(
         drift = abs(again - raw[reference]) / max(raw[reference] - dark[reference], 1e-9)
         calibration = replace(calibration, drift_fraction=float(drift))
 
-        points = []
-        for r in sorted(set(VERIFY_SETPOINTS) | set(_anomaly_requests(calibration, sigma_dark))):
-            step(f"verify {r:g} %")
-            commanded, _ = calibration.commanded_percent(r, factor, target.max_output)
-            measured = measure.at(commanded)[0] - float(dark_end.mean())
-            expected = r / 100.0 * calibration.p_max_mw
-            points.append((float(r), (measured - expected) / expected * 100.0))
+        # The checks set requested % of power the way the runtime does, through the new calibration (spec §3.1)
+        output.use_candidate(calibration)
+        try:
+            points = []
+            for r in sorted(set(VERIFY_SETPOINTS) | set(_anomaly_requests(calibration, sigma_dark))):
+                step(f"verify {r:g} %")
+                measured = measure.at_power(r)[0] - float(dark_end.mean())
+                expected = r / 100.0 * calibration.p_max_mw
+                points.append((float(r), (measured - expected) / expected * 100.0))
 
-        droop = None
-        if hold_s > 0:
-            step(f"continuous hold at {HOLD_PERCENT:g} % for {hold_s:g} s")
-            commanded, _ = calibration.commanded_percent(HOLD_PERCENT, factor, target.max_output)
-            start, end = measure.hold(commanded, hold_s, cancelled)
-            dark_mw = float(dark_end.mean())
-            droop = (end - start) / max(start - dark_mw, 1e-9)
+            droop = None
+            if hold_s > 0:
+                step(f"continuous hold at {HOLD_PERCENT:g} % for {hold_s:g} s")
+                start, end = measure.hold_power(HOLD_PERCENT, hold_s, cancelled)
+                dark_mw = float(dark_end.mean())
+                droop = (end - start) / max(start - dark_mw, 1e-9)
+        finally:
+            output.clear_candidate()
         return calibration, points, droop, unsettled, int(np.sum(~settled)), range_mw
 
     try:
@@ -584,7 +644,7 @@ def write_plot(calibration: IntensityCalibration, path: Path) -> None:
     curve.plot(c.dac_percent_commanded, c.power_mw_fit, "-", label="monotone fit")
     if c.rollover:
         curve.axvline(c.top_dac_percent, linestyle="--", color="red", label="calibrated top (rollover)")
-    curve.set_xlabel("DAC (% commanded)")
+    curve.set_xlabel("drive (% of the line's ceiling)" if c.engine is not None else "DAC (% commanded)")
     curve.set_ylabel("power (mW)")
     curve.set_title(f"{c.channel} ({c.measured_in}, {c.calibrated_at[:10]}, {c.pulse_on_s * 1000:.0f} ms pulses)")
     curve.legend()
@@ -644,19 +704,25 @@ class CalibrationSession:
     Owns no Qt. run() is meant for a worker thread; cancel() may be called from any thread. While run() or the test
     beam drives the light, the controller's background heartbeat is paused and feed_watchdog() keeps the watchdog
     alive instead, so the firmware turns the light off if the code driving it stops.
+
+    With `engine` (control/laser_engine_v2_calibration.EngineCalibration) the channels are the laser engine's lines: the
+    session asks it for the targets, readiness, the output, the identity to check before Save, what to forget after a
+    run, and (in simulation) what the meter sees.
     """
 
-    def __init__(self, microcontroller, config_repo, dac_driven: bool = True):
+    def __init__(self, microcontroller, config_repo, dac_driven: bool = True, engine=None):
         self.microcontroller = microcontroller
         self.config_repo = config_repo
         self.dac_driven = dac_driven
+        self.engine = engine
         self.settle_s: Optional[float] = None  # None: the meter's own settle time
         self.hold_s = HOLD_S
         self.rest_s = REST_BEFORE_CHECKS_S
         self.sleep: Callable[[float], None] = time.sleep
         self.clock: Callable[[], float] = time.monotonic
         self.meter: Optional[PowerMeter] = None
-        self._active: Optional[MicrocontrollerDacOutput] = None
+        self._active = None  # the output being driven (MicrocontrollerDacOutput or an engine line's)
+        self._active_target: Optional[ChannelTarget] = None
         self._cancelled = False
         self._paused_heartbeat_s: Optional[float] = None
         # True once a run or the test beam has driven a port: the controller is then left on that port at DAC 0,
@@ -676,33 +742,57 @@ class CalibrationSession:
         return self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME
 
     def targets(self) -> List[ChannelTarget]:
+        if self.engine is not None:
+            return self.engine.targets(self.config_repo.get_illumination_config())
         if not self.dac_driven:
             return []
         return calibration_targets(self.config_repo.get_illumination_config())
+
+    def _factor_for(self, target: ChannelTarget) -> float:
+        """x = the drive as a fraction of full scale: the controller DAC's after its factor; an engine line's ceiling
+        is its full scale."""
+        return 1.0 if target.engine_line is not None else self.factor
+
+    def ceiling_text(self, target: ChannelTarget) -> str:
+        return self.engine.ceiling_text(target) if target.engine_line is not None else f"{target.ceiling_percent:g} %"
+
+    def run_notes(self, targets: Sequence[ChannelTarget]) -> List[str]:
+        return self.engine.run_notes(targets) if self.engine is not None else []
+
+    def _simulated_source_mw(self, wavelength_nm: float, x):
+        """The simulated meter's source: the DF 560 nm AOM while an engine's AOM line is driven, else by wavelength."""
+        output = self._active
+        if output is not None and output.is_aom:
+            return simulated_aom_mw(x)
+        return simulated_source_mw(wavelength_nm, x)
 
     def current_status(self, target: ChannelTarget) -> str:
         status = calibration_status(
             self.calibrations_dir(),
             target.calibration_file,
             target.wavelength_nm,
-            self.factor,
+            self._factor_for(target),
             target.max_output,
             controller_port=target.controller_port,
             source_code=target.source_code,
+            engine=self.engine.drive(target.wavelength_nm) if target.engine_line is not None else None,
         )
         return status or "none"
 
     def source_state(self) -> Tuple[bool, float]:
-        """(light on, DAC output as a fraction of full scale) of the port being driven: what the simulated meter sees."""
+        """(light on, drive as a fraction of full scale) of what is being driven: what the simulated meter sees. An
+        engine line is read from the simulated engine and the simulated controller's TTL, not from what was asked."""
         output = self._active
         if output is None:
             return False, 0.0
-        return output.is_on, output.commanded_percent / 100.0 * self.factor
+        if self._active_target.engine_line is not None:
+            return self.engine.simulated_light(self.microcontroller, self._active_target)
+        return output.is_on, output.drive_fraction()
 
     def connect(self, resource: Optional[str] = None) -> PowerMeterInfo:
         self.disconnect()
         if self.microcontroller.is_simulated:
-            self.meter = SimulatedPowerMeter(self.source_state)
+            self.meter = SimulatedPowerMeter(self.source_state, model=self._simulated_source_mw)
         else:
             self.meter = ThorlabsPowerMeter(resource=resource)
         return self.meter.info
@@ -783,11 +873,13 @@ class CalibrationSession:
             self.microcontroller.send_heartbeat()
 
     # ---------------------------------------------------------------- driving the light
-    def _output_for(
-        self, target: ChannelTarget, deadline: Optional[WatchdogDeadline] = None
-    ) -> MicrocontrollerDacOutput:
+    def _output_for(self, target: ChannelTarget, deadline: Optional[WatchdogDeadline] = None):
         self.hardware_touched = True
-        self._active = MicrocontrollerDacOutput(self.microcontroller, target.source_code, deadline)
+        self._active_target = target
+        if target.engine_line is not None:
+            self._active = self.engine.output(self.microcontroller, target, deadline)
+        else:
+            self._active = MicrocontrollerDacOutput(self.microcontroller, target.source_code, deadline)
         return self._active
 
     def test_beam_on(self, target: ChannelTarget, percent_of_ceiling: float) -> None:
@@ -795,6 +887,8 @@ class CalibrationSession:
         after TEST_BEAM_MAX_S at the latest) and calls feed_watchdog() meanwhile."""
         if self.meter is not None:
             self.meter.set_wavelength(target.wavelength_nm)
+        if target.engine_line is not None:
+            self.engine.ready_now(target)  # on the GUI thread: no waiting for a line to warm up
         self._pause_heartbeat()
         output = self._output_for(target, self._arm_watchdog())
         try:
@@ -833,13 +927,17 @@ class CalibrationSession:
             for target in targets:
                 if self._cancelled:
                     break
-                deadline = self._arm_watchdog()  # again for every channel, in case it fired during the previous one
                 try:
+                    if self.engine is not None:
+                        # before arming: a line can take minutes to warm up, with the light off; the wait feeds the
+                        # watchdog
+                        self.engine.prepare(target, progress, self.feed_watchdog, lambda: self._cancelled)
+                    deadline = self._arm_watchdog()  # again for every channel, in case it fired during the previous one
                     result: Union[ChannelResult, Exception] = calibrate_channel(
                         target,
                         self._output_for(target, deadline),
                         self.meter,
-                        self.factor,
+                        self._factor_for(target),
                         meter_info=self.meter.info,
                         measured_in=measured_in,
                         sensor_limit_mw=sensor_limit_mw,
@@ -855,7 +953,13 @@ class CalibrationSession:
                     )
                 except CalibrationCancelled as e:
                     result = e
-                except (SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError, CalibrationError) as e:
+                except (
+                    SensorLimitExceeded,
+                    WatchdogDeadlineMissed,
+                    PowerMeterError,
+                    CalibrationError,
+                    LightSourceStopped,
+                ) as e:
                     _log.warning(f"illumination calibration of {target.name} failed: {e}")
                     result = e
                 results[target.name] = result
@@ -864,6 +968,10 @@ class CalibrationSession:
                     break
         finally:
             self._active = None
+            self._active_target = None
+            if self.engine is not None:
+                # the run left these lines at 0 under the illumination controller: the next live view sends again
+                self.engine.forget([t.wavelength_nm for t in targets])
             self._resume_heartbeat()
         return results
 
@@ -887,6 +995,21 @@ class CalibrationSession:
                 f"changed in the illumination config since the run (renamed, removed, re-ported or remapped): "
                 f"{', '.join(changed)}; run the calibration again"
             )
+        if self.engine is not None:
+            # the engine can change between the run and Save (another engine connected, a new firmware ceiling)
+            stale = [
+                mismatch
+                for c in calibrations
+                if (
+                    mismatch := c.identity_mismatch(
+                        c.wavelength_nm, c.controller_port, c.source_code, self.engine.drive(c.wavelength_nm)
+                    )
+                )
+            ]
+            if stale:
+                raise ValueError(
+                    "the laser engine changed since the run: " + "; ".join(stale) + "; run the calibration again"
+                )
         now = now or datetime.datetime.now()
         directory = self.calibrations_dir()
         # All or nothing: stage every channel's files first, so a failure (a full disk, a plot error) leaves every
