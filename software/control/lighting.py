@@ -58,15 +58,17 @@ class LightSourceType(Enum):
 
 def external_light_source(simulated: bool) -> Optional[LightSourceType]:
     """The light source that sets illumination power itself on this instrument, as Microscope.build_from_global_config
-    picks it from the machine ini; None when the controller DAC does (always in simulation, where none is built)."""
-    if simulated:
-        return None
-    if control._def.USE_LDI_SERIAL_CONTROL:
-        return LightSourceType.LDI
-    if control._def.USE_CELESTA_ETHERNET_CONTROL:
-        return LightSourceType.CELESTA
-    if control._def.USE_ANDOR_LASER_CONTROL:
-        return LightSourceType.AndorLaser
+    picks it from the machine ini; None when the controller DAC does. In simulation the LDI, CELESTA and Andor laser
+    are not built (the controller DAC drives the channels); laser engine v2 is, as the simulated engine."""
+    if not simulated:
+        if control._def.USE_LDI_SERIAL_CONTROL:
+            return LightSourceType.LDI
+        if control._def.USE_CELESTA_ETHERNET_CONTROL:
+            return LightSourceType.CELESTA
+        if control._def.USE_ANDOR_LASER_CONTROL:
+            return LightSourceType.AndorLaser
+    if control._def.LASER_ENGINE == "v2":
+        return LightSourceType.CephlaLaserEngineV2
     return None
 
 

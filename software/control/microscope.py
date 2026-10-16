@@ -455,7 +455,7 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
-        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
+        elif light_source == LightSourceType.CephlaLaserEngineV2 and addons.squid_laser_engine is not None:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,

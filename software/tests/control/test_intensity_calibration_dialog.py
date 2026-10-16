@@ -8,11 +8,14 @@ import pytest
 from qtpy.QtWidgets import QMessageBox
 
 import control.widgets_intensity_calibration as dialog_module
+from control.laser_engine_v2_calibration import EngineCalibration
+from control.laser_engine_v2_link import EngineLink
 from control.core.config import ConfigRepository
 from control.widgets_intensity_calibration import IntensityCalibrationDialog
 from squid.intensity_calibration import load_calibration
 from squid.intensity_calibration_run import CalibrationSession, ChannelResult
 from squid.power_meter import PowerMeterError, PowerMeterOverrange
+from tests.control.engine_calibration_fixtures import engine_instrument
 from tests.tools import get_test_microcontroller
 
 YAML = """\
@@ -246,3 +249,41 @@ def test_a_dark_test_beam_says_to_raise_the_level(qtbot, session, answers):
     session.read_mw = MagicMock(return_value=0.0002)
     dialog._update_reading()
     assert "no light" not in dialog.label_reading.text()  # beam off: dark is expected
+
+
+@pytest.fixture
+def engine_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    inst = engine_instrument(tmp_path)
+    session = CalibrationSession(inst.mcu, inst.repo, dac_driven=False, engine=EngineCalibration(inst.illumination))
+    session.settle_s, session.hold_s, session.rest_s = 0.0, 0.0, 0.0
+    yield inst, session
+    inst.engine.close()
+
+
+def test_engine_lines_show_their_ceiling_and_the_560_power(qtbot, engine_session, answers):
+    inst, session = engine_session
+    inst.engine.set_source_power_mw(300.0)
+    dialog = _dialog(qtbot, session)
+    ceilings = {
+        dialog.table.item(row, dialog.COL_CHANNEL).text(): dialog.table.item(row, dialog.COL_CEILING).text()
+        for row in range(dialog.table.rowCount())
+    }
+    assert ceilings["Fluorescence 488 nm Ex"] == "2.045 A" and ceilings["Fluorescence 560 nm Ex"] == "5 V"
+    note = dialog.label_note.text()
+    assert "firmware ceiling" in note and "(300 mW)" in note
+
+
+def test_an_engine_line_runs_and_saves_from_the_dialog(qtbot, engine_session, answers):
+    inst, session = engine_session
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    for row in range(dialog.table.rowCount()):
+        name = dialog.table.item(row, dialog.COL_CHANNEL).text()
+        dialog.table.cellWidget(row, dialog.COL_USE).setChecked(name == "Fluorescence 488 nm Ex")
+    dialog.button_run.click()
+    assert dialog.worker is not None, dialog.label_result.text()
+    qtbot.waitUntil(lambda: dialog.worker is None, timeout=120000)
+    assert "1 of 1 channels passed verification" in dialog.label_result.text()
+    dialog.button_save.click()
+    assert load_calibration(inst.calibrations / "488nm_D2.csv").engine.serial == "SN-1"

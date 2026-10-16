@@ -111,3 +111,23 @@ def test_cli_in_simulation_calibrates_as_the_simulated_gui_does(tmp_path, monkey
     monkeypatch.setattr(control._def, "USE_LDI_SERIAL_CONTROL", True)
     args = ["--simulation", "--settle-s", "0", "--hold-s", "0", "--rest-s", "0"]
     assert _tool().main(args, config_repo=ConfigRepository(base_path=tmp_path)) == 0
+
+
+def test_cli_refuses_a_laser_engine_instrument(tmp_path, monkeypatch, capsys):
+    import control._def
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
+    monkeypatch.setattr(control._def, "LASER_ENGINE", "v2")
+    status = _tool().main(["--simulation"], config_repo=ConfigRepository(base_path=tmp_path))
+    assert status == 2
+    assert "calibrate its lines from the GUI" in capsys.readouterr().out
+
+
+def test_laser_engine_v2_is_the_light_source_in_simulation_too(monkeypatch):
+    import control._def
+    from control.lighting import LightSourceType, external_light_source
+
+    monkeypatch.setattr(control._def, "LASER_ENGINE", "v2")
+    assert external_light_source(True) == external_light_source(False) == LightSourceType.CephlaLaserEngineV2
