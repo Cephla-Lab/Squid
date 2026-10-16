@@ -712,6 +712,13 @@ class Microcontroller:
         answer truthfully - the filter-wheel tuner needs the wheel's encoder - ask this before they start."""
         return self._is_simulated
 
+    def simulated_port_is_on(self, port_index: int) -> bool:
+        """Simulation only: whether the simulated controller has illumination port `port_index` (0 = D1) on - its TTL,
+        what a simulated meter behind it sees."""
+        if not self._is_simulated:
+            raise RuntimeError("simulated_port_is_on is only for a simulated controller")
+        return bool(self._serial.port_is_on[port_index])
+
     def _warn_if_reads_stale(self):
         if self._is_simulated:
             return
