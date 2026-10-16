@@ -11,7 +11,7 @@ from control.core.config import ConfigRepository
 from control.laser_engine_v2_link import EngineLink
 from control.lighting import IlluminationController, IntensityControlMode, LightSourceType, ShutterControlMode
 from squid.intensity_calibration import write_calibration
-from tests.control.engine_calibration_fixtures import engine_instrument
+from tests.control.engine_calibration_fixtures import ENGINE_YAML, engine_instrument
 from tests.squid.calibration_fixtures import (
     DAC,
     FakeMicrocontroller,
@@ -61,6 +61,21 @@ def test_a_calibration_for_this_engine_line_is_applied(instrument):
     mark = len(instrument.fake.sent)
     instrument.illumination.set_intensity(488, 50.0)
     assert _sets(instrument, 2, mark) == [_drive_amps(c, 50.0)]
+
+
+def test_the_first_intensity_before_any_engine_status_is_calibrated(tmp_path):
+    """No status published yet (the poll thread has not run): the wake-up before the set-point polls the engine, so
+    the very first exposure already goes through the calibration."""
+    inst = engine_instrument(tmp_path, start=False)
+    try:
+        c = make_engine_calibration()
+        _install(inst, c)
+        assert inst.engine.get_latest_status() is None
+        mark = len(inst.fake.sent)
+        inst.illumination.set_intensity(488, 50.0)
+        assert _sets(inst, 2, mark) == [_drive_amps(c, 50.0)]
+    finally:
+        inst.engine.close()
 
 
 def test_a_calibration_from_another_engine_runs_the_line_linear(instrument):
@@ -188,6 +203,36 @@ def test_a_forgotten_intensity_is_sent_again(instrument):
     instrument.illumination.forget_intensities([488])
     instrument.illumination.set_intensity(488, 40.0)
     assert _sets(instrument, 2, mark) == ["LINE2:SET %.4f" % (0.4 * 2.045)]
+
+
+# 470 nm on D2 as well: two wavelengths, one engine line (L2)
+SHARED_LINE_YAML = (
+    ENGINE_YAML
+    + """\
+  - name: Fluorescence 470 nm Ex
+    type: epi_illumination
+    controller_port: D2
+    wavelength_nm: 470
+"""
+)
+
+
+def test_switching_between_calibrated_wavelengths_on_one_line_sends_each_its_set_point(tmp_path):
+    """488 at 50 %, 470 at 20 %, 488 at 50 % again: the line holds 470's set-point, so 488's is sent again."""
+    inst = engine_instrument(tmp_path, yaml=SHARED_LINE_YAML)
+    try:
+        c488 = make_engine_calibration()
+        c470 = make_engine_calibration(model=bench_488_led_mw, wavelength_nm=470, channel="Fluorescence 470 nm Ex")
+        _install(inst, c488)
+        _install(inst, c470, "Fluorescence 470 nm Ex")
+        _ready(inst, "L2")
+        inst.illumination.set_intensity(488, 50.0)
+        inst.illumination.set_intensity(470, 20.0)
+        mark = len(inst.fake.sent)
+        inst.illumination.set_intensity(488, 50.0)
+        assert _sets(inst, 2, mark) == [_drive_amps(c488, 50.0)]
+    finally:
+        inst.engine.close()
 
 
 def test_other_software_light_sources_still_skip_an_unchanged_percent(tmp_path):
