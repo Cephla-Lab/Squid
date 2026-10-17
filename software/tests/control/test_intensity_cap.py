@@ -16,6 +16,8 @@ from control._def import LED_MATRIX_R_FACTOR
 from control.core.config import ConfigRepository
 from control.core.live_controller import LiveController
 from control.models.acquisition_config import AcquisitionChannel, CameraSettings, IlluminationSettings
+from squid.intensity_calibration import write_calibration
+from tests.squid.calibration_fixtures import make_calibration
 
 ILLUMINATION_YAML = """\
 version: 1
@@ -108,13 +110,14 @@ def _channel_switch_stub(cap_percent, qtbot):
     stub.is_switching_mode = False
     stub.liveController.get_intensity_cap_percent.return_value = cap_percent
     stub.liveController.is_confocal_mode.return_value = False
+    stub.liveController.get_intensity_description.return_value = {"intensity_unit": "dac_percent"}
 
     slider = control.widgets.CappedSlider(control.widgets.Qt.Horizontal)
     slider.setRange(0, 100)
     qtbot.addWidget(slider)
     stub.slider_illuminationIntensity = slider
 
-    spin = control.widgets.QDoubleSpinBox()
+    spin = control.widgets.GappedSpinBox()
     spin.setRange(0, 100)
     qtbot.addWidget(spin)
     stub.entry_illuminationIntensity = spin
@@ -162,3 +165,102 @@ def test_capped_slider_raising_cap_restores_full_range(qtbot):
     slider.set_cap(100)
     slider.setValue(50)
     assert slider.value() == 50
+
+
+def _write_488_calibration(scope, tmp_path):
+    calibrations = tmp_path / "machine_configs" / "intensity_calibrations"
+    calibrations.mkdir(parents=True, exist_ok=True)
+    factor = scope.low_level_drivers.microcontroller.illumination_intensity_factor
+    calibration = make_calibration(
+        wavelength_nm=488, port="D2", channel="Fluorescence 488 nm Ex", max_output=0.5, factor=factor
+    )
+    write_calibration(calibration, calibrations / "488.csv")
+
+
+def test_calibrated_channel_is_not_capped_before_the_lut(scope, live, tmp_path):
+    _write_488_calibration(scope, tmp_path)
+    assert live.get_intensity_cap_percent(_acquisition_channel("Fluorescence 488 nm Ex")) == pytest.approx(100.0)
+    live.currentConfiguration = _acquisition_channel("Fluorescence 488 nm Ex", intensity=80.0)
+    scope.illumination_controller.set_intensity = MagicMock()
+    live.update_illumination()
+    scope.illumination_controller.set_intensity.assert_called_once_with(488, 80.0)
+
+
+def test_intensity_description_names_the_unit(scope, live, tmp_path):
+    assert live.get_intensity_description(_acquisition_channel("BF LED matrix full")) == {
+        "intensity_unit": "dac_percent"
+    }
+    assert (
+        live.get_intensity_description(_acquisition_channel("Fluorescence 405 nm Ex"))["intensity_unit"]
+        == "dac_percent"
+    )
+    _write_488_calibration(scope, tmp_path)
+    assert (
+        live.get_intensity_description(_acquisition_channel("Fluorescence 488 nm Ex"))["intensity_unit"]
+        == "power_percent"
+    )
+
+
+def test_live_control_widget_says_what_the_percent_means_in_its_tooltip(qtbot):
+    # the box keeps a plain "%" (Hongquan, 2026-10-09: no power/DAC label on it); the tooltip says which it is
+    stub, config = _channel_switch_stub(cap_percent=100.0, qtbot=qtbot)
+    stub.entry_illuminationIntensity.setSuffix("%")
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.suffix() == "%"
+    assert "not linear in optical power" in stub.entry_illuminationIntensity.toolTip()
+
+    stub.liveController.get_intensity_description.return_value = make_calibration().describe()
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.suffix() == "%"
+    assert "Linear in power" in stub.entry_illuminationIntensity.toolTip()
+
+
+def _gapped(qtbot, lowest):
+    spin = control.widgets.GappedSpinBox()
+    spin.setRange(0, 100)
+    spin.setSingleStep(1)
+    qtbot.addWidget(spin)
+    spin.set_lowest(lowest)
+    return spin
+
+
+def test_the_intensity_box_has_no_values_between_off_and_the_lowest_power(qtbot):
+    # the bench 488 nm LED gives nothing, then 6.7 % of its maximum: there is no 1-6 %
+    spin = _gapped(qtbot, 6.7)
+    spin.setValue(0.0)
+    spin.stepBy(1)
+    assert spin.value() == pytest.approx(6.7)  # up from off: the lowest power
+    spin.stepBy(1)
+    assert spin.value() == pytest.approx(7.7)
+    spin.stepBy(-1)
+    spin.stepBy(-1)
+    assert spin.value() == 0.0  # down from the lowest power: off
+    spin.setValue(3.0)
+    assert spin.value() == pytest.approx(6.7)  # a slider or a saved 3 % shows what it gives
+    assert spin.valueFromText("2") == pytest.approx(6.7)  # typed
+    spin.setValue(50.0)
+    assert spin.value() == pytest.approx(50.0)
+
+
+def test_without_a_lowest_power_the_intensity_box_is_continuous(qtbot):
+    spin = _gapped(qtbot, 0.0)
+    spin.setValue(3.0)
+    assert spin.value() == pytest.approx(3.0)
+    spin.stepBy(-1)
+    assert spin.value() == pytest.approx(2.0)
+
+
+def test_live_control_widget_takes_the_lowest_power_from_the_calibration(qtbot):
+    stub, config = _channel_switch_stub(cap_percent=100.0, qtbot=qtbot)
+    config.illumination_intensity = 3.0  # a setting saved before the calibration
+    stub.liveController.get_intensity_description.return_value = {
+        **make_calibration().describe(),
+        "lowest_percent": 6.7,
+    }
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.value() == pytest.approx(6.7)
+    assert "Lowest non-zero: 6.7 %" in stub.entry_illuminationIntensity.toolTip()
+
+    stub.liveController.get_intensity_description.return_value = {"intensity_unit": "dac_percent"}
+    control.widgets.LiveControlWidget.update_ui_for_mode(stub, config)
+    assert stub.entry_illuminationIntensity.value() == pytest.approx(3.0)  # another channel: no gap
