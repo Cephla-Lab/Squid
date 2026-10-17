@@ -3,43 +3,33 @@
 MONO12PACKED is the packed 12-bit SDK mode; the ITR10CMOS26000KMA uses it unbinned (the camera only accepts it at 1x1).
 """
 
-import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call
+from unittest.mock import call
 
 import numpy as np
 import pytest
 
-import squid.logging
 import control.toupcam as toupcam
 from squid.abc import CameraFrameFormat, CameraPixelFormat
-from squid.config import CameraConfig, CameraVariant, ToupcamCameraModel
-import control.camera_toupcam as camera_toupcam
+from squid.config import ToupcamCameraModel
+from tests.control.toupcam_test_utils import capabilities, make_callback_camera, skeleton_toupcam
 
 KMA26000 = ToupcamCameraModel.ITR3CMOS26000KMA
 KMA09000 = ToupcamCameraModel.ITR3CMOS09000KMA  # not in the table: behaves as before
 ITR10 = ToupcamCameraModel.ITR10CMOS26000KMA  # packed 12-bit unbinned, 12-bit in the 16-bit mode binned
 
-_RESOLUTIONS = {(1, 1): (6208, 4168), (2, 2): (3104, 2084), (3, 3): (2069, 1389)}
-
 
 def _camera(requested, binning, model=KMA26000, max_bit_depth=16, frame_format=CameraFrameFormat.RAW):
-    """A ToupcamCamera with __init__ skipped: the state the format, binning and black-level code reads, over a
-    MagicMock SDK."""
-    cam = object.__new__(camera_toupcam.ToupcamCamera)
-    cam._config = SimpleNamespace(camera_model=model)
-    cam._capabilities = SimpleNamespace(
-        max_bit_depth=max_bit_depth, has_black_level=False, binning_to_resolution=_RESOLUTIONS
+    """Only the state the format, binning and black-level code reads."""
+    return skeleton_toupcam(
+        "test_toupcam_pixel_format",
+        _config=SimpleNamespace(camera_model=model),
+        _capabilities=capabilities(max_bit_depth=max_bit_depth, has_black_level=False),
+        _pixel_format=requested,
+        _binning=binning,
+        get_frame_format=lambda: frame_format,
+        _update_internal_settings=lambda: None,  # strobe and buffer bookkeeping, not under test here
     )
-    cam._pixel_format = requested
-    cam._binning = binning
-    cam._log = squid.logging.get_logger("test_toupcam_pixel_format")
-    cam._camera = MagicMock()
-    cam._trigger_lock = threading.RLock()
-    cam.get_frame_format = lambda: frame_format
-    cam.get_is_streaming = lambda: False
-    cam._update_internal_settings = lambda: None  # strobe and buffer bookkeeping, not under test here
-    return cam
 
 
 @pytest.mark.parametrize(
@@ -62,9 +52,7 @@ def _camera(requested, binning, model=KMA26000, max_bit_depth=16, frame_format=C
 def test_delivered_pixel_format(requested, binning, model, delivered):
     cam = _camera(requested, binning, model)
 
-    cam._refresh_pixel_format()
-
-    assert cam.get_pixel_format() == delivered
+    assert cam._delivered_format(requested) == delivered
 
 
 @pytest.mark.parametrize(
@@ -173,28 +161,10 @@ _W, _H = 8, 4
 
 
 def _callback_camera(pixel_format, pixels: np.ndarray):
-    """A ToupcamCamera whose fake SDK 'fills' the read buffer with ``pixels``; the real _on_frame_callback runs."""
-    cam = object.__new__(camera_toupcam.ToupcamCamera)
-    cam._raw_frame_callback_lock = threading.Lock()
-    cam._internal_read_buffer = pixels.astype(np.uint16).tobytes()
-    cam._current_frame = None
-    cam._trigger_sent = True
-    cam._raw_camera_stream_started = False
-    cam._config = CameraConfig(camera_type=CameraVariant.TOUPCAM, default_pixel_format=pixel_format)
-    cam._software_crop_width_ratio = 1.0
-    cam._software_crop_height_ratio = 1.0
-    cam._diag_frame_log_every = 30
-    cam._diag_last_callback_start_ns = None
-    cam._log = squid.logging.get_logger("test_toupcam_pixel_format")
-    cam._camera = SimpleNamespace(PullImageV2=lambda buffer, bits, info: None)
-    cam._get_pixel_size_in_bytes = lambda: 2
-    cam.get_frame_format = lambda: CameraFrameFormat.RAW
-    cam.get_pixel_format = lambda: pixel_format
-    cam.get_region_of_interest = lambda: (0, 0, _W, _H)
-    cam.get_binning = lambda: (1, 1)
-    captured = {}
-    cam._propogate_frame = lambda frame: captured.__setitem__("frame", np.array(frame.frame))
-    return cam, captured
+    """The real _on_frame_callback over a read buffer holding ``pixels``."""
+    return make_callback_camera(
+        pixel_format, pixels.astype(np.uint16).tobytes(), _W, _H, log_name="test_toupcam_pixel_format"
+    )
 
 
 def test_packed_frames_are_left_aligned_like_the_16_bit_modes():
