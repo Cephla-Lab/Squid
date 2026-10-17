@@ -1,10 +1,20 @@
 ## Setting up the environments
-Run the following script in terminal to clone the repo and set up the environment
+Run the setup script for your Ubuntu release in a terminal to clone the repo and set up the environment.
+
+Ubuntu 22.04:
 ```
 wget https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_22.04.sh
 chmod +x setup_22.04.sh
 ./setup_22.04.sh
 ```
+
+Ubuntu 24.04:
+```
+wget https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_24.04.sh
+chmod +x setup_24.04.sh
+./setup_24.04.sh
+```
+The two scripts install the same packages; the 24.04 one only adds what Python 3.12 requires (pip's `--break-system-packages`, apt setuptools). If you pip-install extras by hand on 24.04, add `--break-system-packages` to the pip command.
 
 Reboot the computer to finish the installation.
 
