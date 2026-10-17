@@ -710,7 +710,7 @@ class HighContentScreeningGui(QMainWindow):
         self.objectivesWidget: Optional[widgets.ObjectivesWidget] = None
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
-        self.laserEngineWidget: Optional[LaserEngineWidget] = None
+        self.laserEngineWidget: Optional[QWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
@@ -973,8 +973,13 @@ class HighContentScreeningGui(QMainWindow):
                 self.emission_filter_wheel, self.liveController, config_repo=self.microscope.config_repo
             )
 
-        if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
+        if LASER_ENGINE == "v1" and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
+
+        if LASER_ENGINE == "v2" and self.microscope.addons.squid_laser_engine is not None:
+            from control.laser_engine_v2_widget import LaserEngineV2Widget
+
+            self.laserEngineWidget = LaserEngineV2Widget(self.microscope.addons.squid_laser_engine)
 
         self.recordingControlWidget = widgets.RecordingWidget(
             self.streamHandler,
