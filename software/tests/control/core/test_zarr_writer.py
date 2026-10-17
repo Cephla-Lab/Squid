@@ -31,6 +31,11 @@ from control.models import AcquisitionChannel, CameraSettings, IlluminationSetti
 pytest.importorskip("tensorstore")
 
 
+def as_posix_path(path: str) -> str:
+    """The builders use os.path.join; compare path structure, not the OS separator."""
+    return path.replace(os.sep, "/")
+
+
 def make_test_capture_info(
     region_id: str = "A1",
     fov: int = 0,
@@ -476,18 +481,18 @@ class TestZarrWriterInfo:
 
         # Test single-letter row
         path = info.get_output_path("A1", 0)
-        assert path == "/tmp/experiment/plate.ome.zarr/A/1/0/0"
+        assert as_posix_path(path) == "/tmp/experiment/plate.ome.zarr/A/1/0/0"
 
         path = info.get_output_path("A1", 2)
-        assert path == "/tmp/experiment/plate.ome.zarr/A/1/2/0"
+        assert as_posix_path(path) == "/tmp/experiment/plate.ome.zarr/A/1/2/0"
 
         # Test multi-digit column
         path = info.get_output_path("B12", 2)
-        assert path == "/tmp/experiment/plate.ome.zarr/B/12/2/0"
+        assert as_posix_path(path) == "/tmp/experiment/plate.ome.zarr/B/12/2/0"
 
         # Test double-letter row (e.g., AA, AB)
         path = info.get_output_path("AA3", 0)
-        assert path == "/tmp/experiment/plate.ome.zarr/AA/3/0/0"
+        assert as_posix_path(path) == "/tmp/experiment/plate.ome.zarr/AA/3/0/0"
 
     def test_zarr_writer_info_non_hcs_per_fov_output_path(self):
         """Test non-HCS default: per-FOV zarr files (OME-NGFF compliant)."""
@@ -502,12 +507,12 @@ class TestZarrWriterInfo:
         )
 
         # Each FOV gets its own zarr file - get_output_path returns ARRAY path (group + /0)
-        assert info.get_output_path("region_1", 0) == "/tmp/experiment/zarr/region_1/fov_0.ome.zarr/0"
-        assert info.get_output_path("region_1", 1) == "/tmp/experiment/zarr/region_1/fov_1.ome.zarr/0"
-        assert info.get_output_path("region_1", 2) == "/tmp/experiment/zarr/region_1/fov_2.ome.zarr/0"
+        assert as_posix_path(info.get_output_path("region_1", 0)) == "/tmp/experiment/zarr/region_1/fov_0.ome.zarr/0"
+        assert as_posix_path(info.get_output_path("region_1", 1)) == "/tmp/experiment/zarr/region_1/fov_1.ome.zarr/0"
+        assert as_posix_path(info.get_output_path("region_1", 2)) == "/tmp/experiment/zarr/region_1/fov_2.ome.zarr/0"
 
         # Different region
-        assert info.get_output_path("region_2", 0) == "/tmp/experiment/zarr/region_2/fov_0.ome.zarr/0"
+        assert as_posix_path(info.get_output_path("region_2", 0)) == "/tmp/experiment/zarr/region_2/fov_0.ome.zarr/0"
 
     def test_zarr_writer_info_non_hcs_6d_output_path(self):
         """Test non-HCS with 6D mode: single zarr per region (non-standard)."""
@@ -525,12 +530,12 @@ class TestZarrWriterInfo:
         path_fov0 = info.get_output_path("region_1", 0)
         path_fov1 = info.get_output_path("region_1", 1)
 
-        assert path_fov0 == "/tmp/experiment/zarr/region_1/acquisition.zarr"
-        assert path_fov1 == "/tmp/experiment/zarr/region_1/acquisition.zarr"
+        assert as_posix_path(path_fov0) == "/tmp/experiment/zarr/region_1/acquisition.zarr"
+        assert as_posix_path(path_fov1) == "/tmp/experiment/zarr/region_1/acquisition.zarr"
 
         # Different region
         path_region2 = info.get_output_path("region_2", 0)
-        assert path_region2 == "/tmp/experiment/zarr/region_2/acquisition.zarr"
+        assert as_posix_path(path_region2) == "/tmp/experiment/zarr/region_2/acquisition.zarr"
 
     def test_zarr_writer_info_get_fov_count(self):
         """Test get_fov_count returns correct counts for regions."""
@@ -1926,7 +1931,7 @@ class TestZarrPathConsistency:
         for well_id, fov, expected_group_path, expected_array_path in test_cases:
             # Utility returns GROUP path (for NDViewer/readers)
             group_path = build_hcs_zarr_fov_path(base_path, well_id, fov)
-            assert group_path == expected_group_path, (
+            assert as_posix_path(group_path) == expected_group_path, (
                 f"Group path mismatch for well={well_id}, fov={fov}: "
                 f"got={group_path}, expected={expected_group_path}"
             )
@@ -1940,7 +1945,7 @@ class TestZarrPathConsistency:
                 is_hcs=True,
             )
             writer_path = zarr_info.get_output_path(well_id, fov)
-            assert writer_path == expected_array_path, (
+            assert as_posix_path(writer_path) == expected_array_path, (
                 f"Writer path mismatch for well={well_id}, fov={fov}: "
                 f"writer={writer_path}, expected={expected_array_path}"
             )
@@ -1986,7 +1991,7 @@ class TestZarrPathConsistency:
         for region_id, fov, expected_group_path, expected_array_path in test_cases:
             # Utility returns GROUP path (for NDViewer/readers)
             group_path = build_per_fov_zarr_path(base_path, region_id, fov)
-            assert group_path == expected_group_path, (
+            assert as_posix_path(group_path) == expected_group_path, (
                 f"Group path mismatch for region={region_id}, fov={fov}: "
                 f"got={group_path}, expected={expected_group_path}"
             )
@@ -2001,7 +2006,7 @@ class TestZarrPathConsistency:
                 use_6d_fov=False,
             )
             writer_path = zarr_info.get_output_path(region_id, fov)
-            assert writer_path == expected_array_path, (
+            assert as_posix_path(writer_path) == expected_array_path, (
                 f"Writer path mismatch for region={region_id}, fov={fov}: "
                 f"writer={writer_path}, expected={expected_array_path}"
             )
@@ -2020,7 +2025,7 @@ class TestZarrPathConsistency:
         for region_id, expected_path in test_cases:
             # Test utility function directly
             util_path = build_6d_zarr_path(base_path, region_id)
-            assert util_path == expected_path, (
+            assert as_posix_path(util_path) == expected_path, (
                 f"Utility path mismatch for region={region_id}: " f"got={util_path}, expected={expected_path}"
             )
 

@@ -190,3 +190,18 @@ def test_not_ready_for_trigger_while_settings_change_in_flight():
     with sim_cam._trigger_lock:
         assert sim_cam.get_ready_for_trigger()
     sim_cam.stop_streaming()
+
+
+def test_simulated_camera_close_stops_streaming_thread():
+    """close() must stop a running streaming thread. Owners (Microscope.close, the GUI
+    shutdown path) rely on close() as the final stop; a stream thread that survives it keeps
+    pushing frames into callbacks whose Qt receivers are gone, which segfaulted later Qt
+    tests in the same pytest process."""
+    sim_cam = squid.camera.utils.get_camera(squid.config.get_camera_config(), simulated=True)
+    sim_cam.start_streaming()
+    assert sim_cam.get_is_streaming()
+
+    sim_cam.close()
+
+    assert not sim_cam.get_is_streaming()
+    assert not any("stream_fn" in t.name for t in threading.enumerate())

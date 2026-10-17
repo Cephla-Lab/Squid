@@ -135,6 +135,7 @@ class UnifiedMosaicWidget(QWidget):
 
         self.mode = _load_last_view_mode()
         self.layers_initialized = False
+        self._pending_refresh = False  # a redraw was skipped while hidden; see _refresh_or_defer
         self.mosaic_dtype = None
         self.viewer_pixel_size_mm = None
 
@@ -282,11 +283,37 @@ class UnifiedMosaicWidget(QWidget):
         if PLATE_BOUNDARIES_LAYER in self.viewer.layers:
             self.viewer.layers.remove(self.viewer.layers[PLATE_BOUNDARIES_LAYER])
         if canvas_changed and self.mode == DisplayMode.PLATE:
-            self._fit_view_to_plate()
+            self._refresh_or_defer(self._fit_view_to_plate)
 
     def _image_layers(self):
         """Iterate napari image layers, skipping shape/boundary overlays."""
         return [lyr for lyr in self.viewer.layers if lyr.name not in NON_IMAGE_LAYERS and hasattr(lyr, "data")]
+
+    def _refresh_or_defer(self, gl_call):
+        """Run a GL-touching call now, or once the tab is next shown.
+
+        Painting this napari/vispy canvas while its tab is hidden fails on PyQt6: the
+        hidden QOpenGLWidget has no valid framebuffer, which corrupts the shared GL
+        program and cascades into "Cannot SIZE object N" on later frames. Tile data is
+        written to the layers regardless (so saves stay correct); only the redraw waits
+        for showEvent, which replays every kind of deferred redraw at once.
+        """
+        if self.isVisible():
+            gl_call()
+        else:
+            self._pending_refresh = True
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._pending_refresh:
+            self._pending_refresh = False
+            for lyr in self._image_layers():
+                lyr.refresh()
+            if self.mode == DisplayMode.PLATE:
+                self._draw_plate_boundaries()
+                self._fit_view_to_plate()  # not resetView(): bypasses the plate zoom clamp
+            else:
+                self.resetView()
 
     def enable_shape_drawing(self, enable):
         """Set Manual-ROI drawing on/off. Idempotent: the upstream signal
@@ -535,8 +562,8 @@ class UnifiedMosaicWidget(QWidget):
 
             layer = self.viewer.layers[channel_name]
             blit_tiles_to_canvas(layer.data, [(image, y_px, x_px)])
-            layer.refresh()
-            self._draw_plate_boundaries()
+            self._refresh_or_defer(layer.refresh)
+            self._refresh_or_defer(self._draw_plate_boundaries)
             # The fit-the-whole-plate camera reset only fires when the canvas
             # is (re)allocated — in setPlateLayout when slot dims/coverage
             # change and in _create_channel_layer when a layer is created.
@@ -567,14 +594,14 @@ class UnifiedMosaicWidget(QWidget):
                 x_end = min(x_offset + lyr.data.shape[1], new_data.shape[1])
                 new_data[y_offset:y_end, x_offset:x_end] = lyr.data[: y_end - y_offset, : x_end - x_offset]
                 lyr.data = new_data
-            self.resetView()
             # Keep ROI vertices anchored to their stage-coordinate positions after the shift.
             self._update_shape_layer_position()
+            self._refresh_or_defer(self.resetView)
 
         y_pos = int(math.floor((tl_y_mm - self.top_left_coordinate[0]) / self.viewer_pixel_size_mm))
         x_pos = int(math.floor((tl_x_mm - self.top_left_coordinate[1]) / self.viewer_pixel_size_mm))
         blit_tiles_to_canvas(layer.data, [(image, y_pos, x_pos)])
-        layer.refresh()
+        self._refresh_or_defer(layer.refresh)
 
     def _create_channel_layer(self, channel_name, reference_image):
         """Create a new napari image layer for a channel.
@@ -615,7 +642,7 @@ class UnifiedMosaicWidget(QWidget):
         # immediately sees the full plate; subsequent tiles preserve any
         # pan/zoom they've made since.
         if self.mode == DisplayMode.PLATE and self.num_rows > 0 and self.num_cols > 0:
-            self._fit_view_to_plate()
+            self._refresh_or_defer(self._fit_view_to_plate)
 
     def _convert_image_dtype(self, image, target_dtype):
         """Convert image to target dtype with range scaling."""

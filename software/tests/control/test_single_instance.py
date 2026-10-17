@@ -71,7 +71,7 @@ def test_stale_lock_from_dead_process_is_reclaimed(tmp_path):
 
     # Pin QT_API so qtpy in the child selects the same binding as the parent
     # regardless of what other Qt bindings are installed in the environment.
-    child_env = {**os.environ, "QT_API": "pyqt5"}
+    child_env = {**os.environ, "QT_API": "pyqt6"}
     result = subprocess.run(
         [sys.executable, "-c", child_script],
         capture_output=True,

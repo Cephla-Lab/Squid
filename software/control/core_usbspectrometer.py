@@ -1,7 +1,7 @@
 # set QT_API environment variable
 import os
 
-os.environ["QT_API"] = "pyqt5"
+os.environ["QT_API"] = "pyqt6"
 import qtpy
 
 # qt libraries
