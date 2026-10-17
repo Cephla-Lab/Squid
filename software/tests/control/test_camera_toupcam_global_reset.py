@@ -1,6 +1,5 @@
 """Toupcam global reset mode: every row starts exposing at once, so hardware-triggered frames need no rolling-shutter
-strobe delay.  It is opt-in through ENABLE_TOUPCAM_GLOBAL_RESET and only used in hardware trigger mode, the one mode
-where the light is off before the readout starts."""
+strobe delay.  It is opt-in through ENABLE_TOUPCAM_GLOBAL_RESET and only used in hardware trigger mode."""
 
 from unittest.mock import MagicMock
 
@@ -99,7 +98,7 @@ def test_global_reset_is_on_in_hardware_trigger_mode_and_off_in_the_other_modes_
     cam._camera.put_Option.assert_called_once_with(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
 
     cam._camera.put_Option.reset_mock()
-    cam._set_global_reset(SOFTWARE)  # the light stays on through the readout there, which global reset would shade
+    cam._set_global_reset(SOFTWARE)
     assert cam._global_reset_enabled is False
     cam._camera.put_Option.assert_called_once_with(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 0)
 
@@ -122,10 +121,17 @@ def test_global_reset_is_changed_with_the_stream_stopped(monkeypatch):
     assert calls == ["stop", ("put", toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1), "start"]
 
 
-def test_a_camera_that_rejects_the_option_is_not_asked_again(monkeypatch):
-    monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", True)
+@pytest.mark.parametrize(
+    "flag, error",
+    [(True, toupcam.E_NOTIMPL), (False, toupcam.E_INVALIDARG)],
+    ids=["not_supported", "any_error_on_the_first_write"],
+)
+def test_a_camera_that_rejects_the_first_write_is_not_asked_again(monkeypatch, flag, error):
+    """The first write is normally the flag-off write of 0 at startup, so no error there may stop the camera from
+    opening: any one means unsupported.  A later write only means that on E_NOTIMPL, see the next test."""
+    monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", flag)
     cam = _camera()
-    cam._camera.put_Option.side_effect = toupcam.HRESULTException(toupcam.E_NOTIMPL)
+    cam._camera.put_Option.side_effect = toupcam.HRESULTException(error)
 
     cam._set_global_reset(HARDWARE)
     assert cam._global_reset_enabled is False
@@ -134,18 +140,6 @@ def test_a_camera_that_rejects_the_option_is_not_asked_again(monkeypatch):
     cam._camera.put_Option.reset_mock()
     cam._set_global_reset(HARDWARE)
     cam._camera.put_Option.assert_not_called()
-
-
-def test_the_first_write_failing_for_any_reason_means_the_option_is_unsupported(monkeypatch):
-    """Normally the flag-off write of 0 at startup; it must not stop the camera from opening."""
-    monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", False)
-    cam = _camera()
-    cam._camera.put_Option.side_effect = toupcam.HRESULTException(toupcam.E_INVALIDARG)
-
-    cam._set_global_reset(HARDWARE)
-
-    assert cam._global_reset_enabled is False
-    assert cam._global_reset_supported is False
 
 
 def test_a_later_write_that_fails_keeps_the_last_known_state_and_raises(monkeypatch):

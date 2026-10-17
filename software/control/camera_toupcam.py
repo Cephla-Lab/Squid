@@ -176,9 +176,8 @@ class ToupcamCamera(AbstractCamera):
 
         if not line_length:
             # No row timing for this sensor / resolution (eg: the ITR10CMOS26000KMA's 6208x4168), so we can't
-            # calculate a rolling shutter strobe.  Report none rather than dividing by zero.  This is fine in
-            # continuous mode, where the strobe isn't used, and in software trigger mode, where it only paces the
-            # triggers; hardware trigger mode needs global reset (ENABLE_TOUPCAM_GLOBAL_RESET) on such a camera.
+            # calculate a rolling shutter strobe.  Report none rather than dividing by zero; hardware trigger mode
+            # needs global reset (ENABLE_TOUPCAM_GLOBAL_RESET) on such a camera.
             if (resolution_width, resolution_height, pixel_bits) not in ToupcamCamera._warned_unknown_strobe:
                 ToupcamCamera._warned_unknown_strobe.add((resolution_width, resolution_height, pixel_bits))
                 log.warning(
@@ -297,8 +296,12 @@ class ToupcamCamera(AbstractCamera):
         (self._camera, self._capabilities) = ToupcamCamera._open(index=0)
         self._pixel_format = self._config.default_pixel_format
         self._binning = self._config.default_binning
+        # The black level as set, on the 8-bit scale.  The SDK takes it on the current mode's scale, so a mode switch
+        # re-sends it (see _change_pixel_format); like the exposure time it is stored here rather than read back.
+        self._black_level = self._config.default_black_level
         # See _set_global_reset.  None until _configure_camera writes the option, so that first write is never
-        # skipped as a no-op; _global_reset_supported goes False the first time the camera rejects the option.
+        # skipped as a no-op; _global_reset_supported goes False when the camera rejects that first write, or a later
+        # one with E_NOTIMPL.
         self._global_reset_enabled: Optional[bool] = None
         self._global_reset_supported = True
 
@@ -572,7 +575,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_set_resolution(width, height)
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
-        self._change_pixel_format(self._delivered_format(self._pixel_format), self._config.default_black_level)
+        self._change_pixel_format(self._delivered_format(self._pixel_format))
         if not self._capabilities.has_black_level:
             self._log.warning("Black level is not supported by this toupcam model, ignoring default black level value")
 
@@ -613,17 +616,11 @@ class ToupcamCamera(AbstractCamera):
         self._global_reset_enabled = enabled
         self._log.info(f"Global reset mode {'enabled, strobe delay is 0' if enabled else 'disabled'}.")
 
-    def _change_pixel_format(self, pixel_format: CameraPixelFormat, black_level: Optional[float] = None):
-        """
-        Switch the SDK mode and re-send the black level, whose scale depends on the mode: the current one, or
-        ``black_level`` at startup, when the camera's mode is still unknown so a read-back would be in unknown units.
-        Call with the stream stopped.
-        """
-        if self._capabilities.has_black_level and black_level is None:
-            black_level = self.get_black_level()
+    def _change_pixel_format(self, pixel_format: CameraPixelFormat):
+        """Switch the SDK mode and re-send the black level, whose scale depends on the mode.  Call with the stream stopped."""
         self._raw_set_pixel_format(pixel_format)
         if self._capabilities.has_black_level:
-            self.set_black_level(black_level)
+            self.set_black_level(self._black_level)
 
     def set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func
@@ -1058,6 +1055,7 @@ class ToupcamCamera(AbstractCamera):
     def set_black_level(self, black_level: float):
         if not self._capabilities.has_black_level:
             raise NotImplementedError("This toupcam does not have black level setting.")
+        self._black_level = black_level
         raw_black_level = black_level * self._get_black_level_factor()
 
         try:

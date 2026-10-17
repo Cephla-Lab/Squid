@@ -129,21 +129,23 @@ def test_binning_leaves_the_packed_mode_before_resizing_and_enters_it_after():
 def test_binning_on_the_itr10_keeps_the_black_level_across_the_sdk_mode_change():
     """The SDK takes the black level on the mode's scale: 12-bit units packed, ADC units in the 16-bit mode."""
     cam = _camera(CameraPixelFormat.MONO12PACKED, (1, 1), model=ITR10, has_black_level=True)
-    cam._camera.get_Option.return_value = 7 * 16  # black level 7, set by the user, in the packed mode's units
+    cam.set_black_level(7)
+    cam._camera.put_Option.assert_called_once_with(toupcam.TOUPCAM_OPTION_BLACKLEVEL, 7 * 16)
+    cam._camera.reset_mock()
 
     cam.set_binning(2, 2)
 
     assert cam._camera.mock_calls == [
-        call.get_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL),
         call.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1),
         call.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, 7 * 256),
         call.put_Size(3104, 2084),
     ]
 
 
-def test_changing_the_pixel_format_keeps_the_black_level():
+def test_changing_the_pixel_format_keeps_the_black_level_last_set():
     cam = _camera(CameraPixelFormat.MONO16, (1, 1), has_black_level=True)
-    cam._camera.get_Option.return_value = 7 * 256  # black level 7 in the 16-bit mode's units
+    cam.set_black_level(7)
+    cam._camera.put_Option.reset_mock()
 
     cam.set_pixel_format(CameraPixelFormat.MONO8)
 
