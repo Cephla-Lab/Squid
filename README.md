@@ -24,7 +24,7 @@ See related work and applications on: www.cephla.com, www.squid-imaging.org
 ## How to Start
 ### Software
 #### Setting up and run Squid software on Linux
-Ubuntu 22.04 is the most tested platform. Other Linux systems should work but performance is not guaranteed.
+Ubuntu 22.04 is the most tested platform; Ubuntu 24.04 is supported with its own setup script (`software/setup_24.04.sh`). Other Linux systems should work but performance is not guaranteed.
 
 See [README](https://github.com/Cephla-Lab/Squid/blob/master/software/README.md) in `/software` directory for instructions. Toupcam and laser auto-focus camera dependencies will be installed automatically when you run the setup script.
 
