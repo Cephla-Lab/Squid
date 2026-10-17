@@ -177,8 +177,8 @@ class ToupcamCamera(AbstractCamera):
         if not line_length:
             # No row timing for this sensor / resolution (eg: the ITR10CMOS26000KMA's 6208x4168), so we can't
             # calculate a rolling shutter strobe.  Report none rather than dividing by zero.  This is fine in
-            # continuous mode, where the strobe isn't used; the trigger modes need global reset
-            # (ENABLE_TOUPCAM_GLOBAL_RESET) on such a camera.
+            # continuous mode, where the strobe isn't used, and in software trigger mode, where it only paces the
+            # triggers; hardware trigger mode needs global reset (ENABLE_TOUPCAM_GLOBAL_RESET) on such a camera.
             if (resolution_width, resolution_height, pixel_bits) not in ToupcamCamera._warned_unknown_strobe:
                 ToupcamCamera._warned_unknown_strobe.add((resolution_width, resolution_height, pixel_bits))
                 log.warning(
@@ -572,7 +572,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_set_resolution(width, height)
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
-        self._change_pixel_format(self._delivered_format(self._pixel_format))
+        self._change_pixel_format(self._delivered_format(self._pixel_format), self._config.default_black_level)
         if not self._capabilities.has_black_level:
             self._log.warning("Black level is not supported by this toupcam model, ignoring default black level value")
 
@@ -580,22 +580,30 @@ class ToupcamCamera(AbstractCamera):
 
     def _set_global_reset(self, acquisition_mode: CameraAcquisitionMode):
         """
-        Global reset mode, if ENABLE_TOUPCAM_GLOBAL_RESET is set and the camera supports it, is on in the trigger
-        modes and off in continuous mode.
+        Global reset mode, if ENABLE_TOUPCAM_GLOBAL_RESET is set and the camera supports it, is on in hardware
+        trigger mode and off otherwise.
 
         With global reset every row starts exposing at once, so the illumination needs no strobe delay.  But the rows
-        keep integrating until they're read out, so it only suits the trigger modes, where the illumination is on just
-        for the exposure: in continuous mode it would shade the image top to bottom under steady light, and it halves
-        the frame rate (measured on an ITR10CMOS26000KMA).  The option is changed with the stream stopped, so a
-        change costs a stream restart.
+        keep integrating until they're read out, so the image is only flat if the light is off before the readout
+        starts.  Only hardware trigger mode does that: the microcontroller pulses the illumination for exactly the
+        exposure.  In software trigger mode the illumination stays on until the frame has been read (and between
+        frames in live), and in continuous mode it is steady, so there global reset would shade the image top to
+        bottom and halve the frame rate (measured on an ITR10CMOS26000KMA).  The option is changed with the stream
+        stopped, so a change costs a stream restart.
         """
-        enabled = acquisition_mode != CameraAcquisitionMode.CONTINUOUS and ENABLE_TOUPCAM_GLOBAL_RESET
+        enabled = acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER and ENABLE_TOUPCAM_GLOBAL_RESET
         if enabled == self._global_reset_enabled or not self._global_reset_supported:
             return
         with self._pause_streaming():
             try:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1 if enabled else 0)
             except toupcam.HRESULTException as ex:
+                if self._global_reset_enabled is not None:
+                    # Once a write has succeeded only "not supported" means the option is unsupported.  Any other
+                    # failure left the camera in its previous state, so keep ours matching it and raise.  The first
+                    # write is exempt: it is normally the flag-off write of 0 at startup, and not every model is known
+                    # to answer an unknown option with E_NOTIMPL, so it must not stop the camera from opening.
+                    hresult_checker(ex, "E_NOTIMPL")
                 self._log.info(
                     f"Global reset mode not supported by this camera: {control.toupcam_exceptions.explain(ex)}"
                 )
@@ -605,11 +613,17 @@ class ToupcamCamera(AbstractCamera):
         self._global_reset_enabled = enabled
         self._log.info(f"Global reset mode {'enabled, strobe delay is 0' if enabled else 'disabled'}.")
 
-    def _change_pixel_format(self, pixel_format: CameraPixelFormat):
-        """Switch the SDK mode and re-send the black level, whose scale depends on the mode.  Call with the stream stopped."""
+    def _change_pixel_format(self, pixel_format: CameraPixelFormat, black_level: Optional[float] = None):
+        """
+        Switch the SDK mode and re-send the black level, whose scale depends on the mode: the current one, or
+        ``black_level`` at startup, when the camera's mode is still unknown so a read-back would be in unknown units.
+        Call with the stream stopped.
+        """
+        if self._capabilities.has_black_level and black_level is None:
+            black_level = self.get_black_level()
         self._raw_set_pixel_format(pixel_format)
         if self._capabilities.has_black_level:
-            self.set_black_level(self._config.default_black_level)
+            self.set_black_level(black_level)
 
     def set_temperature_reading_callback(self, func):
         self.temperature_reading_callback = func

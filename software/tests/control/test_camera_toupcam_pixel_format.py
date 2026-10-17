@@ -19,12 +19,14 @@ KMA09000 = ToupcamCameraModel.ITR3CMOS09000KMA  # not in the table: behaves as b
 ITR10 = ToupcamCameraModel.ITR10CMOS26000KMA  # packed 12-bit unbinned, 12-bit in the 16-bit mode binned
 
 
-def _camera(requested, binning, model=KMA26000, max_bit_depth=16, frame_format=CameraFrameFormat.RAW):
+def _camera(
+    requested, binning, model=KMA26000, max_bit_depth=16, frame_format=CameraFrameFormat.RAW, has_black_level=False
+):
     """Only the state the format, binning and black-level code reads."""
     return skeleton_toupcam(
         "test_toupcam_pixel_format",
         _config=SimpleNamespace(camera_model=model),
-        _capabilities=capabilities(max_bit_depth=max_bit_depth, has_black_level=False),
+        _capabilities=capabilities(max_bit_depth=max_bit_depth, has_black_level=has_black_level),
         _pixel_format=requested,
         _binning=binning,
         get_frame_format=lambda: frame_format,
@@ -121,6 +123,33 @@ def test_binning_leaves_the_packed_mode_before_resizing_and_enters_it_after():
     assert cam._camera.mock_calls == [
         call.put_Size(6208, 4168),
         call.put_Option(toupcam.TOUPCAM_OPTION_PIXEL_FORMAT, toupcam.TOUPCAM_PIXELFORMAT_RAW12PACK),
+    ]
+
+
+def test_binning_on_the_itr10_keeps_the_black_level_across_the_sdk_mode_change():
+    """The SDK takes the black level on the mode's scale: 12-bit units packed, ADC units in the 16-bit mode."""
+    cam = _camera(CameraPixelFormat.MONO12PACKED, (1, 1), model=ITR10, has_black_level=True)
+    cam._camera.get_Option.return_value = 7 * 16  # black level 7, set by the user, in the packed mode's units
+
+    cam.set_binning(2, 2)
+
+    assert cam._camera.mock_calls == [
+        call.get_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL),
+        call.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 1),
+        call.put_Option(toupcam.TOUPCAM_OPTION_BLACKLEVEL, 7 * 256),
+        call.put_Size(3104, 2084),
+    ]
+
+
+def test_changing_the_pixel_format_keeps_the_black_level():
+    cam = _camera(CameraPixelFormat.MONO16, (1, 1), has_black_level=True)
+    cam._camera.get_Option.return_value = 7 * 256  # black level 7 in the 16-bit mode's units
+
+    cam.set_pixel_format(CameraPixelFormat.MONO8)
+
+    assert cam._camera.put_Option.mock_calls == [
+        call(toupcam.TOUPCAM_OPTION_BITDEPTH, 0),
+        call(toupcam.TOUPCAM_OPTION_BLACKLEVEL, 7),
     ]
 
 

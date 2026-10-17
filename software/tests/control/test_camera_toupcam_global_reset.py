@@ -1,7 +1,10 @@
-"""Toupcam global reset mode: every row starts exposing at once, so triggered frames need no rolling-shutter strobe
-delay.  It is opt-in through ENABLE_TOUPCAM_GLOBAL_RESET and only used in the trigger modes."""
+"""Toupcam global reset mode: every row starts exposing at once, so hardware-triggered frames need no rolling-shutter
+strobe delay.  It is opt-in through ENABLE_TOUPCAM_GLOBAL_RESET and only used in hardware trigger mode, the one mode
+where the light is off before the readout starts."""
 
 from unittest.mock import MagicMock
+
+import pytest
 
 import control.toupcam as toupcam
 import control.camera_toupcam as camera_toupcam
@@ -9,7 +12,8 @@ from squid.abc import CameraAcquisitionMode
 from tests.control.toupcam_test_utils import capabilities, skeleton_toupcam
 
 _CAPABILITIES = capabilities()
-TRIGGER = CameraAcquisitionMode.SOFTWARE_TRIGGER
+HARDWARE = CameraAcquisitionMode.HARDWARE_TRIGGER
+SOFTWARE = CameraAcquisitionMode.SOFTWARE_TRIGGER
 CONTINUOUS = CameraAcquisitionMode.CONTINUOUS
 
 
@@ -70,7 +74,7 @@ def test_global_reset_is_off_unless_enabled_in_def(monkeypatch):
     monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", False)
     cam = _camera(global_reset_enabled=False)
 
-    cam._set_global_reset(TRIGGER)
+    cam._set_global_reset(HARDWARE)
 
     assert cam._global_reset_enabled is False
     cam._camera.put_Option.assert_not_called()
@@ -80,27 +84,28 @@ def test_the_first_call_always_writes_so_a_camera_that_came_up_with_global_reset
     monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", False)
     cam = _camera()  # state unknown, as at startup
 
-    cam._set_global_reset(TRIGGER)
+    cam._set_global_reset(HARDWARE)
 
     assert cam._global_reset_enabled is False
     cam._camera.put_Option.assert_called_once_with(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 0)
 
 
-def test_global_reset_is_on_in_the_trigger_modes_and_off_in_continuous_mode_when_enabled_in_def(monkeypatch):
+def test_global_reset_is_on_in_hardware_trigger_mode_and_off_in_the_other_modes_when_enabled_in_def(monkeypatch):
     monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", True)
     cam = _camera()
 
-    cam._set_global_reset(TRIGGER)
+    cam._set_global_reset(HARDWARE)
     assert cam._global_reset_enabled is True
     cam._camera.put_Option.assert_called_once_with(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1)
 
     cam._camera.put_Option.reset_mock()
-    cam._set_global_reset(CameraAcquisitionMode.HARDWARE_TRIGGER)  # still a trigger mode: nothing to send
-    cam._camera.put_Option.assert_not_called()
-
-    cam._set_global_reset(CONTINUOUS)
+    cam._set_global_reset(SOFTWARE)  # the light stays on through the readout there, which global reset would shade
     assert cam._global_reset_enabled is False
     cam._camera.put_Option.assert_called_once_with(toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 0)
+
+    cam._camera.put_Option.reset_mock()
+    cam._set_global_reset(CONTINUOUS)  # already off: nothing to send
+    cam._camera.put_Option.assert_not_called()
 
 
 def test_global_reset_is_changed_with_the_stream_stopped(monkeypatch):
@@ -112,7 +117,7 @@ def test_global_reset_is_changed_with_the_stream_stopped(monkeypatch):
     cam.start_streaming = lambda: calls.append("start")
     cam._camera.put_Option.side_effect = lambda option, value: calls.append(("put", option, value))
 
-    cam._set_global_reset(TRIGGER)
+    cam._set_global_reset(HARDWARE)
 
     assert calls == ["stop", ("put", toupcam.TOUPCAM_OPTION_GLOBAL_RESET_MODE, 1), "start"]
 
@@ -122,10 +127,35 @@ def test_a_camera_that_rejects_the_option_is_not_asked_again(monkeypatch):
     cam = _camera()
     cam._camera.put_Option.side_effect = toupcam.HRESULTException(toupcam.E_NOTIMPL)
 
-    cam._set_global_reset(TRIGGER)
+    cam._set_global_reset(HARDWARE)
     assert cam._global_reset_enabled is False
     assert cam._global_reset_supported is False
 
     cam._camera.put_Option.reset_mock()
-    cam._set_global_reset(TRIGGER)
+    cam._set_global_reset(HARDWARE)
     cam._camera.put_Option.assert_not_called()
+
+
+def test_the_first_write_failing_for_any_reason_means_the_option_is_unsupported(monkeypatch):
+    """Normally the flag-off write of 0 at startup; it must not stop the camera from opening."""
+    monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", False)
+    cam = _camera()
+    cam._camera.put_Option.side_effect = toupcam.HRESULTException(toupcam.E_INVALIDARG)
+
+    cam._set_global_reset(HARDWARE)
+
+    assert cam._global_reset_enabled is False
+    assert cam._global_reset_supported is False
+
+
+def test_a_later_write_that_fails_keeps_the_last_known_state_and_raises(monkeypatch):
+    """The failed write left the camera in global reset, so the driver must not record it as off."""
+    monkeypatch.setattr(camera_toupcam, "ENABLE_TOUPCAM_GLOBAL_RESET", True)
+    cam = _camera(global_reset_enabled=True)
+    cam._camera.put_Option.side_effect = toupcam.HRESULTException(toupcam.E_BUSY)
+
+    with pytest.raises(toupcam.HRESULTException):
+        cam._set_global_reset(CONTINUOUS)
+
+    assert cam._global_reset_enabled is True
+    assert cam._global_reset_supported is True
