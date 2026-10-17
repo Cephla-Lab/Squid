@@ -24,14 +24,18 @@ from control.toupcam_exceptions import hresult_checker
 
 log = squid.logging.get_logger(__name__)
 
-# Mono format a sensor really delivers in the SDK's 16-bit mode, (unbinned, binned). Any mono format above
-# 8 bits selects that one mode, and the sensor decides the depth per resolution; the SDK cannot be asked (it
-# reports RAW16 throughout). Verified on the ITR3CMOS26000KMA (2026-09-15): unbinned frames are true
-# 16-bit, while 2x2 and 3x3 frames have their low four bits zero in every pixel (12-bit, left-aligned, so
-# a clipped pixel reads 65520). Add a model after checking the low bits of one of its binned frames;
-# unlisted models keep the requested label.
+# Mono format above 8 bits a sensor really delivers, (unbinned, binned).  Requesting any of them selects one
+# SDK mode and the sensor decides the depth per resolution; the SDK cannot be asked (it reports RAW16
+# throughout).  Verified on the ITR3CMOS26000KMA (2026-09-15): unbinned frames are true 16-bit, while 2x2 and
+# 3x3 frames have their low four bits zero in every pixel (12-bit, left-aligned, so a clipped pixel reads
+# 65520).  The ITR10CMOS26000KMA has no plain 12-bit mode (RAW8, RAW16 and RAW12PACK only): unbinned it uses
+# the packed 12-bit mode, which saves USB bandwidth, and binned, where the packed mode is not available, the
+# 16-bit mode carrying 12-bit data on the same scale as the packed frames (per the bench driver that ran on
+# it, 2026-10; not yet checked with the low-bits test).  Add a model after checking the low bits of one of its
+# binned frames; unlisted models keep the requested label.
 _DELIVERED_PIXEL_FORMAT = {
     ToupcamCameraModel.ITR3CMOS26000KMA: (CameraPixelFormat.MONO16, CameraPixelFormat.MONO12),
+    ToupcamCameraModel.ITR10CMOS26000KMA: (CameraPixelFormat.MONO12PACKED, CameraPixelFormat.MONO12),
 }
 
 
@@ -42,7 +46,6 @@ class ToupCamCapabilities(pydantic.BaseModel):
     has_TEC: bool
     has_low_noise_mode: bool
     has_black_level: bool
-    has_raw12_pack: bool = False  # the sensor can send 12-bit pixels packed (TOUPCAM_PIXELFORMAT_RAW12PACK)
 
 
 class StrobeInfo(pydantic.BaseModel):
@@ -272,7 +275,6 @@ class ToupcamCamera(AbstractCamera):
             has_TEC=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_TEC_ONOFF) > 0,
             has_low_noise_mode=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_LOW_NOISE) > 0,
             has_black_level=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_BLACKLEVEL) > 0,
-            has_raw12_pack=(devices[index].model.flag & toupcam.TOUPCAM_FLAG_RAW12PACK) > 0,
         )
 
         return camera, capabilities
@@ -578,7 +580,7 @@ class ToupcamCamera(AbstractCamera):
         self._raw_set_resolution(width, height)
 
         self._raw_set_frame_format(CameraFrameFormat.RAW)
-        self._raw_set_pixel_format(self._pixel_format_for_binning(self._pixel_format, self._binning))
+        self._raw_set_pixel_format(self._delivered_format(self._pixel_format))
         if self._capabilities.has_black_level:
             self.set_black_level(self._config.default_black_level)
         else:
@@ -612,23 +614,6 @@ class ToupcamCamera(AbstractCamera):
                 return
         self._global_reset_enabled = enabled
         self._log.info(f"Global reset mode {'enabled, strobe delay is 0' if enabled else 'disabled'}.")
-
-    def _pixel_format_for_binning(self, pixel_format: CameraPixelFormat, binning: Tuple[int, int]) -> CameraPixelFormat:
-        """
-        MONO12PACKED carries the same 12 bit data as MONO12 with less bandwidth, but the camera only supports it at
-        1x1 binning.  So on cameras that support it, 12 bit is MONO12PACKED at 1x1 and MONO12 at any other binning.
-        """
-        if pixel_format not in (CameraPixelFormat.MONO12, CameraPixelFormat.MONO12PACKED):
-            return pixel_format
-        if not self._capabilities.has_raw12_pack:
-            if pixel_format == CameraPixelFormat.MONO12PACKED:
-                raise ValueError("MONO12PACKED is not supported by this toupcam model.")
-            return pixel_format
-
-        resolved = CameraPixelFormat.MONO12PACKED if tuple(binning) == (1, 1) else CameraPixelFormat.MONO12
-        if resolved != pixel_format:
-            self._log.info(f"Using {resolved.name} instead of {pixel_format.name} at {binning=}")
-        return resolved
 
     def _change_pixel_format(self, pixel_format: CameraPixelFormat):
         """Switch the SDK mode and re-send the black level, whose scale depends on the mode.  Call with the stream stopped."""
@@ -725,8 +710,8 @@ class ToupcamCamera(AbstractCamera):
             # Setting BITDEPTH below also takes the camera out of RAW12PACK (to RAW8 or RAW16).  Don't set
             # PIXEL_FORMAT to RAW12 for that: the ITR10CMOS26000KMA only supports RAW8, RAW16 and RAW12PACK.
             if pixel_format == CameraPixelFormat.MONO12PACKED:
-                if not self._capabilities.has_raw12_pack:
-                    raise ValueError("MONO12PACKED is not supported by this toupcam model.")
+                # Only reached on a model listed with it in _DELIVERED_PIXEL_FORMAT, or when a config asks for it
+                # on an unlisted model, where the SDK rejects it if the camera has no packed mode.
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_PIXEL_FORMAT, toupcam.TOUPCAM_PIXELFORMAT_RAW12PACK)
             elif pixel_format == CameraPixelFormat.MONO8:
                 self._camera.put_Option(toupcam.TOUPCAM_OPTION_BITDEPTH, 0)
@@ -770,10 +755,8 @@ class ToupcamCamera(AbstractCamera):
         self._pixel_format = pixel_format
 
     def set_pixel_format(self, pixel_format: CameraPixelFormat):
-        if self.get_frame_format() == CameraFrameFormat.RAW:
-            pixel_format = self._pixel_format_for_binning(pixel_format, self._binning)
         with self._pause_streaming():
-            self._change_pixel_format(pixel_format)
+            self._change_pixel_format(self._delivered_format(pixel_format))
         self._update_internal_settings()
 
     def get_pixel_format(self) -> CameraPixelFormat:
@@ -785,36 +768,44 @@ class ToupcamCamera(AbstractCamera):
         return self._pixel_format
 
     def get_available_pixel_formats(self) -> Sequence[CameraPixelFormat]:
-        """8-bit, plus what the sensor fills in the 16-bit mode at the current binning."""
-        if self._config.camera_model in _DELIVERED_PIXEL_FORMAT:
-            sixteen_bit_mode = [self._delivered_format(CameraPixelFormat.MONO16)]
+        """8-bit, plus what the sensor delivers above 8 bits at the current binning."""
+        delivered = self._model_delivers(self._binning)
+        if delivered is not None:
+            above_8_bit = [delivered]
         else:  # unverified sensor: any of these labels may be what it delivers, so keep them all selectable
-            sixteen_bit_mode = [CameraPixelFormat.MONO12, CameraPixelFormat.MONO14, CameraPixelFormat.MONO16]
-        formats = [CameraPixelFormat.MONO8, *sixteen_bit_mode]
-        if self._capabilities.has_raw12_pack and tuple(self._binning) == (1, 1):
-            # 12-bit is the packed format at 1x1 (see _pixel_format_for_binning), listed in depth order
-            formats = [CameraPixelFormat.MONO12PACKED if f == CameraPixelFormat.MONO12 else f for f in formats]
-            if CameraPixelFormat.MONO12PACKED not in formats:
-                formats.insert(1, CameraPixelFormat.MONO12PACKED)
+            above_8_bit = [CameraPixelFormat.MONO12, CameraPixelFormat.MONO14, CameraPixelFormat.MONO16]
+        formats = [CameraPixelFormat.MONO8, *above_8_bit]
         if self.get_frame_format() == CameraFrameFormat.RGB:
             formats += [CameraPixelFormat.RGB24, CameraPixelFormat.RGB32, CameraPixelFormat.RGB48]
         return formats
 
-    def _delivered_format(self, requested: CameraPixelFormat) -> CameraPixelFormat:
+    def _model_delivers(self, binning: Tuple[int, int]) -> Optional[CameraPixelFormat]:
+        """The one mono format above 8 bits this model delivers at ``binning``, or None for an unverified model
+        (see _DELIVERED_PIXEL_FORMAT)."""
         depths = _DELIVERED_PIXEL_FORMAT.get(self._config.camera_model)
-        if depths is None or requested.bit_depth == 8 or CameraPixelFormat.is_color_format(requested):
+        if depths is None:
+            return None
+        return depths[0] if tuple(binning) == (1, 1) else depths[1]
+
+    def _delivered_format(
+        self, requested: CameraPixelFormat, binning: Optional[Tuple[int, int]] = None
+    ) -> CameraPixelFormat:
+        """The format to run the camera in for ``requested`` at ``binning`` (the current binning by default).
+
+        On a listed model every mono request above 8 bits becomes the one format the sensor delivers there, so
+        this picks the SDK mode as well as the label (eg: on the ITR10CMOS26000KMA 12-bit is the packed mode
+        unbinned and the 16-bit mode binned).
+        """
+        binning = self._binning if binning is None else tuple(binning)
+        delivered = self._model_delivers(binning)
+        if delivered is None or requested.bit_depth == 8 or CameraPixelFormat.is_color_format(requested):
             return requested
-        if requested == CameraPixelFormat.MONO12PACKED:  # its own SDK mode, not the 16-bit one
-            return requested
-        return depths[0] if self._binning == (1, 1) else depths[1]
+        if delivered != requested:
+            self._log.info(f"Camera delivers {delivered.name} data at binning {binning} (was {requested.name})")
+        return delivered
 
     def _refresh_pixel_format(self):
-        delivered = self._delivered_format(self._pixel_format)
-        if delivered != self._pixel_format:
-            self._log.info(
-                f"Camera delivers {delivered.name} data at binning {self._binning} (was {self._pixel_format.name})"
-            )
-        self._pixel_format = delivered
+        self._pixel_format = self._delivered_format(self._pixel_format)
 
     def set_auto_exposure(self, enabled: bool):
         try:
@@ -853,15 +844,14 @@ class ToupcamCamera(AbstractCamera):
             if (binning_factor_x, binning_factor_y) not in self._capabilities.binning_to_resolution:
                 raise ValueError(f"Binning ({binning_factor_x},{binning_factor_y}) not supported by camera")
             width, height = self._capabilities.binning_to_resolution[(binning_factor_x, binning_factor_y)]
-            pixel_format = self._pixel_format
-            if self.get_frame_format() == CameraFrameFormat.RAW:
-                pixel_format = self._pixel_format_for_binning(pixel_format, (binning_factor_x, binning_factor_y))
+            pixel_format = self._delivered_format(self._pixel_format, (binning_factor_x, binning_factor_y))
             # MONO12PACKED only works at 1x1, so leave it before resizing and enter it after.
             if self._pixel_format == CameraPixelFormat.MONO12PACKED and pixel_format != self._pixel_format:
                 self._change_pixel_format(pixel_format)
             self._raw_set_resolution(width, height)
             if pixel_format == CameraPixelFormat.MONO12PACKED and pixel_format != self._pixel_format:
                 self._change_pixel_format(pixel_format)
+            self._pixel_format = pixel_format
             self._binning = (binning_factor_x, binning_factor_y)
             self._log.debug(f"Setting binning to {binning_factor_x},{binning_factor_y} -> {width},{height}")
 
