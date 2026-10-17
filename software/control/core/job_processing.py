@@ -6,7 +6,7 @@ import time
 import json
 from datetime import datetime
 from contextlib import contextmanager
-from typing import ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
+from typing import Any, ClassVar, Dict, Generic, List, Optional, Set, Tuple, TypeVar, Union
 from uuid import uuid4
 
 from dataclasses import dataclass, field
@@ -20,6 +20,7 @@ from control import _def, utils, utils_acquisition
 from control._def import ZProjectionMode, DownsamplingMethod
 import squid.abc
 import squid.logging
+from control.core.backpressure import note_job_completed, note_job_dispatched
 from control.models import AcquisitionChannel
 from control.core import utils_ome_tiff_writer as ome_tiff_writer
 from control.core.memory_profiler import (
@@ -491,76 +492,87 @@ class ZarrWriteResult:
 
 
 @dataclass
-class SaveZarrJob(Job):
-    """Job for saving images to Zarr v3 format using TensorStore.
+class ZarrWriterRegistry:
+    """The open ZarrWriters of one acquisition, keyed by writer_key, plus the HCS metadata already written.
 
-    Uses a process-local ZarrWriter that is initialized lazily on first write.
-    The zarr_writer_info field is injected by JobRunner.dispatch() before the job runs.
+    Each acquisition gets its own registry (the in-process runner owns one); the save subprocess
+    uses SaveZarrJob.default_registry, which lives as long as the subprocess does.
     """
 
-    _log: ClassVar = squid.logging.get_logger("SaveZarrJob")
-    zarr_writer_info: Optional[ZarrWriterInfo] = field(default=None)
+    writers: Dict[str, "ZarrWriter"] = field(default_factory=dict)
+    plates_written: Set[str] = field(default_factory=set)
+    wells_written: Set[str] = field(default_factory=set)
 
-    # Class-level writer storage keyed by output_path.
-    # SAFETY: JobRunner runs in a multiprocessing.Process (not threads), so each
-    # worker process has its own independent copy of this class variable.
-    # WARNING: This dict is NOT thread-safe. DO NOT use SaveZarrJob with threading
-    # (e.g., ThreadPoolExecutor) - it will cause race conditions and data corruption.
-    _zarr_writers: ClassVar[Dict[str, "ZarrWriter"]] = {}
+    _log: ClassVar = squid.logging.get_logger("ZarrWriterRegistry")
 
-    # Track HCS metadata that has been written (plate path -> True, well path -> True)
-    _hcs_plate_written: ClassVar[Set[str]] = set()
-    _hcs_wells_written: ClassVar[Set[str]] = set()
+    def finalize_all(self) -> bool:
+        """Finalize every open writer. Returns False if any failed. Empties the writers (HCS bookkeeping is kept)."""
+        failed = []
+        for path, writer in list(self.writers.items()):
+            if writer.is_initialized and not writer.is_finalized:
+                try:
+                    writer.finalize()
+                    self._log.info(f"Finalized zarr writer: {path}")
+                except Exception as e:
+                    self._log.error(f"Error finalizing writer {path}: {e}")
+                    failed.append(path)
+        self.writers.clear()
+        if failed:
+            self._log.error(f"Failed to finalize {len(failed)} zarr writers: {failed}")
+            return False
+        return True
 
-    @classmethod
-    def clear_writers(cls) -> None:
-        """Clear all zarr writers, aborting any that are still active.
-
-        Call at start of new acquisition to ensure clean state.
-        Uses try-finally to guarantee dictionaries are cleared even if abort fails.
-        """
+    def abort_all(self) -> None:
+        """Seal every open writer as aborted. Empties the registry even if a writer fails to abort."""
         try:
-            for writer in list(cls._zarr_writers.values()):
+            for writer in list(self.writers.values()):
                 if writer.is_initialized and not writer.is_finalized:
                     try:
                         writer.abort()
                     except Exception as e:
-                        cls._log.warning(f"Error aborting writer during clear: {e}")
+                        self._log.warning(f"Error aborting writer during clear: {e}")
         finally:
-            # Always clear dictionaries, even if abort loop fails
-            cls._zarr_writers.clear()
-            cls._hcs_plate_written.clear()
-            cls._hcs_wells_written.clear()
+            self.writers.clear()
+            self.plates_written.clear()
+            self.wells_written.clear()
+
+
+@dataclass
+class SaveZarrJob(Job):
+    """Job for saving images to Zarr v3 format using TensorStore.
+
+    Writes through its registry's ZarrWriter for the store (an InProcessZarrRunner's own
+    registry, or default_registry in the save subprocess), initialized lazily on first write.
+    The zarr_writer_info field is injected by whichever runner dispatches the job.
+    """
+
+    _log: ClassVar = squid.logging.get_logger("SaveZarrJob")
+    zarr_writer_info: Optional[ZarrWriterInfo] = field(default=None)
+    # The acquisition's writers. None = default_registry (the save subprocess, which has one acquisition
+    # per process). The in-process runner injects its own, as JobRunner.dispatch injects zarr_writer_info.
+    registry: Optional["ZarrWriterRegistry"] = field(default=None)
+
+    default_registry: ClassVar["ZarrWriterRegistry"] = ZarrWriterRegistry()
+
+    @property
+    def _registry(self) -> "ZarrWriterRegistry":
+        return self.registry if self.registry is not None else SaveZarrJob.default_registry
+
+    @classmethod
+    def clear_writers(cls) -> None:
+        """Abort and forget the default registry's writers (start of an acquisition in the subprocess)."""
+        cls.default_registry.abort_all()
 
     @classmethod
     def finalize_all_writers(cls) -> bool:
-        """Finalize all active zarr writers.
-
-        Call at end of acquisition to ensure all data is written.
-
-        Returns:
-            True if all writers finalized successfully, False if any failed.
-        """
-        failed_paths = []
-        for path, writer in list(cls._zarr_writers.items()):
-            if writer.is_initialized and not writer.is_finalized:
-                try:
-                    writer.finalize()
-                    cls._log.info(f"Finalized zarr writer: {path}")
-                except Exception as e:
-                    cls._log.error(f"Error finalizing writer {path}: {e}")
-                    failed_paths.append(path)
-        cls._zarr_writers.clear()
-        if failed_paths:
-            cls._log.error(f"Failed to finalize {len(failed_paths)} zarr writers: {failed_paths}")
-            return False
-        return True
+        """Finalize the default registry's writers (end of the subprocess). Returns False if any failed."""
+        return cls.default_registry.finalize_all()
 
     def _write_hcs_metadata_if_needed(self, region_id: str, fov: int) -> None:
         """Write HCS plate and well metadata if not already written.
 
         Called when a new writer is initialized for an HCS acquisition.
-        Uses class-level sets to track which plate/well metadata has been written.
+        Uses the registry's sets to track which plate/well metadata has been written.
 
         Args:
             region_id: Well ID (e.g., "A1", "B12")
@@ -572,28 +584,39 @@ class SaveZarrJob(Job):
 
         # Write plate metadata (once per acquisition)
         plate_path = info.get_plate_path()
-        if plate_path not in self._hcs_plate_written:
+        if plate_path not in self._registry.plates_written:
             rows, cols, wells = info.get_hcs_structure()
             write_plate_metadata(plate_path, rows, cols, wells, plate_name="plate")
-            self._hcs_plate_written.add(plate_path)
+            self._registry.plates_written.add(plate_path)
             self._log.info(f"Wrote HCS plate metadata: {len(wells)} wells")
 
         # Write well metadata (once per well)
         well_path = info.get_well_path(region_id)
-        if well_path not in self._hcs_wells_written:
+        if well_path not in self._registry.wells_written:
             # Get FOV count for this well
             fov_count = info.get_fov_count(region_id)
             fields = list(range(fov_count))
             write_well_metadata(well_path, fields)
-            self._hcs_wells_written.add(well_path)
+            self._registry.wells_written.add(well_path)
             self._log.debug(f"Wrote HCS well metadata for {region_id}: {fov_count} fields")
 
     def run(self) -> ZarrWriteResult:
+        """Write the frame and wait for it: what the save subprocess does, one job at a time."""
+        future, result = self.submit()
+        if future is not None:
+            future.result()
+        return result
+
+    def submit(self) -> Tuple[Optional[Any], ZarrWriteResult]:
+        """Submit the frame write without waiting for it.
+
+        Returns the tensorstore future (None in simulated-I/O mode, where the write already
+        happened) and the ZarrWriteResult to report once the future completes.
+        """
         if self.zarr_writer_info is None:
             raise ValueError(
-                "SaveZarrJob.run() requires zarr_writer_info but it is None. "
-                "This job must be dispatched via JobRunner.dispatch(), which injects zarr_writer_info. "
-                "If running directly, set job.zarr_writer_info before calling run()."
+                "SaveZarrJob requires zarr_writer_info but it is None; the runner that dispatches the job "
+                "injects it (set job.zarr_writer_info when running one directly)."
             )
 
         from control.core.io_simulation import is_simulation_enabled, simulated_zarr_write
@@ -654,13 +677,13 @@ class SaveZarrJob(Job):
                 f"SaveZarrJob {self.job_id}: simulated write of {bytes_written} bytes "
                 f"to {output_path} (image shape={image.shape})"
             )
-            return result
+            return None, result
 
-        self._save_zarr(image, info, output_path)
-        return result
+        future = self._submit_write(image, info, output_path)
+        return future, result
 
-    def _save_zarr(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> None:
-        """Write image to zarr dataset using TensorStore.
+    def _submit_write(self, image: np.ndarray, info: CaptureInfo, output_path: str) -> Any:
+        """Submit the image write to the zarr dataset using TensorStore; returns the write future.
 
         Args:
             image: Image array to write
@@ -684,7 +707,7 @@ class SaveZarrJob(Job):
         else:
             writer_key = output_path  # Unique per FOV
 
-        if writer_key not in self._zarr_writers:
+        if writer_key not in self._registry.writers:
             if is_hcs or not use_6d_fov:
                 # 5D shape: (T, C, Z, Y, X) - one writer per FOV
                 shape = (
@@ -728,7 +751,7 @@ class SaveZarrJob(Job):
             except Exception as e:
                 self._log.error(f"Failed to initialize zarr writer for {output_path}: {e}")
                 raise
-            self._zarr_writers[writer_key] = writer
+            self._registry.writers[writer_key] = writer
             if is_hcs:
                 mode_str = "HCS 5D"
                 # Write HCS plate and well metadata
@@ -739,7 +762,7 @@ class SaveZarrJob(Job):
                 mode_str = "non-HCS 5D per-FOV"
             self._log.info(f"Initialized zarr writer ({mode_str}): {output_path}")
 
-        writer = self._zarr_writers[writer_key]
+        writer = self._registry.writers[writer_key]
 
         # Write frame
         t = info.time_point or 0
@@ -747,13 +770,12 @@ class SaveZarrJob(Job):
         z = info.z_index
 
         if is_hcs or not use_6d_fov:
-            # 5D write
-            writer.write_frame(image, t=t, c=c, z=z)
-            self._log.debug(f"Wrote frame t={t}, c={c}, z={z} to {output_path}")
+            future = writer.submit_frame(image, t=t, c=c, z=z)  # 5D
+            self._log.debug(f"Submitted frame t={t}, c={c}, z={z} to {output_path}")
         else:
-            # 6D write with FOV index
-            writer.write_frame(image, t=t, c=c, z=z, fov=fov)
-            self._log.debug(f"Wrote frame t={t}, c={c}, z={z}, fov={fov} to {output_path}")
+            future = writer.submit_frame(image, t=t, c=c, z=z, fov=fov)  # 6D with FOV index
+            self._log.debug(f"Submitted frame t={t}, c={c}, z={z}, fov={fov} to {output_path}")
+        return future
 
 
 # These are debugging jobs - they should not be used in normal usage!
@@ -849,11 +871,7 @@ class JobRunner(multiprocessing.Process):
         # has_pending() to return False while job is still in flight.
         with self._pending_count.get_lock():
             self._pending_count.value += 1
-        if self._bp_pending_jobs is not None:
-            with self._bp_pending_jobs.get_lock():
-                self._bp_pending_jobs.value += 1
-            with self._bp_pending_bytes.get_lock():
-                self._bp_pending_bytes.value += image_bytes
+        note_job_dispatched(self._bp_pending_jobs, self._bp_pending_bytes, image_bytes)
 
         try:
             self._input_queue.put_nowait(job)
@@ -1026,21 +1044,15 @@ class JobRunner(multiprocessing.Process):
                     with self._pending_count.get_lock():
                         self._pending_count.value -= 1
 
-                    # Backpressure tracking: decrement counters immediately when job completes.
-                    # Backpressure tracks queue memory, not subprocess memory.
-                    if self._bp_pending_jobs is not None:
-                        with self._bp_pending_jobs.get_lock():
-                            self._bp_pending_jobs.value = max(0, self._bp_pending_jobs.value - 1)
-
-                        # Decrement image bytes
-                        if job.capture_image and job.capture_image.image_array is not None:
-                            image_bytes = job.capture_image.image_array.nbytes
-                            with self._bp_pending_bytes.get_lock():
-                                self._bp_pending_bytes.value = max(0, self._bp_pending_bytes.value - image_bytes)
-
-                        # Signal capacity available for all job completions
-                        if self._bp_capacity_event is not None:
-                            self._bp_capacity_event.set()
+                    # Backpressure tracks queue memory, not subprocess memory: release this job's share now.
+                    image_bytes = (
+                        job.capture_image.image_array.nbytes
+                        if job.capture_image and job.capture_image.image_array is not None
+                        else 0
+                    )
+                    note_job_completed(
+                        self._bp_pending_jobs, self._bp_pending_bytes, self._bp_capacity_event, image_bytes
+                    )
 
         # Finalize any zarr writers that are still open
         try:

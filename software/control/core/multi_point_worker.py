@@ -47,6 +47,7 @@ from control.core.job_processing import (
     JobRunner,
     JobResult,
 )
+from control.core.in_process_zarr_runner import InProcessZarrRunner
 from control.core.mosaic_utils import (
     calculate_overlap_pixels,
     parse_well_id,
@@ -311,15 +312,26 @@ class MultiPointWorker:
                 mode_str = "per-FOV 5D (OME-NGFF compliant)"
             self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
 
-        # Use pre-warmed job runner if available, otherwise create new ones.
-        # IMPORTANT: Only use pre-warmed runner if BOTH runner AND backpressure values
+        # Zarr is saved in this process; the TIFF formats keep the save subprocess.
+        # Use the pre-warmed subprocess if available, otherwise create new ones.
+        # IMPORTANT: Only use the pre-warmed runner if BOTH runner AND backpressure values
         # are available. Using a runner without matching backpressure values would cause
         # the BackpressureController to track different counters than the JobRunner.
         can_use_prewarmed = prewarmed_job_runner is not None and prewarmed_bp_values is not None
         used_prewarmed = False
         for job_class in job_classes:
             job_runner = None
-            if Acquisition.USE_MULTIPROCESSING:
+            if job_class is SaveZarrJob:
+                job_runner = self._create_in_process_zarr_runner(zarr_writer_info)
+                if can_use_prewarmed and not used_prewarmed:
+                    # Nothing here will use the subprocess the controller handed over.
+                    self._log.info("Zarr v3 saves in-process; releasing the pre-warmed save subprocess")
+                    try:
+                        prewarmed_job_runner.shutdown(timeout_s=1.0)
+                    except Exception as e:
+                        self._log.error(f"Error shutting down the unused pre-warmed runner: {e}")
+                    can_use_prewarmed = False
+            elif Acquisition.USE_MULTIPROCESSING:
                 # Try to use pre-warmed runner for the first job class
                 if can_use_prewarmed and not used_prewarmed:
                     if prewarmed_job_runner.is_ready():
@@ -433,6 +445,19 @@ class MultiPointWorker:
             next(iter(grid_sizes)),
         )
         return True
+
+    def _create_in_process_zarr_runner(self, zarr_writer_info: Optional[ZarrWriterInfo]) -> InProcessZarrRunner:
+        """Zarr is saved in this process (see in_process_zarr_runner.py); the runner shares our backpressure counters."""
+        runner = InProcessZarrRunner(
+            zarr_writer_info=zarr_writer_info,
+            bp_values=(
+                self._backpressure.pending_jobs_value,
+                self._backpressure.pending_bytes_value,
+                self._backpressure.capacity_event,
+            ),
+        )
+        runner.start()
+        return runner
 
     def _abort_due_to_error(self) -> None:
         """Abort the run due to an internal error (vs a user abort).
@@ -674,17 +699,23 @@ class MultiPointWorker:
             time.sleep(0.1)
         else:
             # Timed out - kill any runners that still have pending jobs
+            abandoned = False
             for job_class, job_runner in active_runners:
                 if job_runner.has_pending():
                     self._log.error(
                         f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
                     )
                     job_runner.kill()
+                    abandoned = True
+            if abandoned:
+                # Data is missing, so the run ends as an error (and the Zarr stores are sealed as aborted).
+                self._abort_due_to_error()
 
-        # Drain results before shutdown
+        # Drain results before shutdown (a failed job seen here aborts the run too, via _summarize_job_result)
         self._summarize_runner_outputs(drain_all=True)
 
-        # Shut down all job runners in parallel (in background to avoid blocking on subprocess termination).
+        # Shut down the save subprocesses in parallel (in background to avoid blocking on subprocess termination);
+        # the in-process Zarr runner is shut down inline below, because its shutdown seals the stores.
         # Using daemon threads is safe here because:
         # 1. All jobs are complete and results are already drained
         # 2. The subprocess termination is best-effort cleanup only
@@ -698,9 +729,20 @@ class MultiPointWorker:
             except Exception as e:
                 log.error(f"Error shutting down job runner in background: {e}")
 
-        self._log.info("Shutting down job runners (non-blocking)...")
+        self._log.info("Shutting down job runners...")
         remaining_time = time_left()
+        # A user Stop, an error abort, or a crash out of run(): the store must not claim completeness.
+        aborted = bool(self.abort_requested_fn()) or self._run_state_fatal
         for job_class, job_runner in active_runners:
+            if isinstance(job_runner, InProcessZarrRunner):
+                # Its shutdown seals the stores (aborted ones as aborted); do it here so the
+                # acquisition is not reported finished before the metadata says so.
+                try:
+                    if not job_runner.shutdown(remaining_time, aborted=aborted):
+                        self._abort_due_to_error()  # a write was still in flight: the stores were sealed aborted
+                except Exception as e:
+                    log.error(f"Error shutting down the in-process Zarr runner: {e}")
+                continue
             t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
             t.start()
 
@@ -863,6 +905,12 @@ class MultiPointWorker:
             if out_queue is None:
                 # Queue was cleared during shutdown
                 continue
+            if not drain_all and not job_runner.is_alive() and job_runner.has_pending():
+                self._log.error(
+                    f"{job_class.__name__} save subprocess exited (exit code {getattr(job_runner, 'exitcode', None)}) "
+                    f"with jobs pending; aborting the acquisition"
+                )
+                self._abort_due_to_error()
             while True:
                 try:
                     job_result: JobResult = out_queue.get_nowait()
@@ -885,6 +933,9 @@ class MultiPointWorker:
         if job_result.exception is not None:
             self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
             self._acquisition_error_count += 1
+            if self._abort_on_failed_job:
+                self._log.error("A save job failed, aborting acquisition because abort_on_failed_job=True")
+                self._abort_due_to_error()
 
             # Send Slack error notification
             if self._slack_notifier is not None:
@@ -1070,9 +1121,7 @@ class MultiPointWorker:
                 with self._timing.get_timer("job result summaries"):
                     result = self._summarize_runner_outputs()
                     if not result.none_failed and self._abort_on_failed_job:
-                        self._log.error("Some jobs failed, aborting acquisition because abort_on_failed_job=True")
-                        self._abort_due_to_error()
-                        return
+                        return  # _summarize_job_result has requested the abort
 
                 with self._timing.get_timer("move_to_coordinate"):
                     self.move_to_coordinate(coordinate_mm, region_id, fov)
@@ -1418,6 +1467,8 @@ class MultiPointWorker:
                                 return
                         else:
                             try:
+                                # In-process fallback (multiprocessing off) for the TIFF job classes;
+                                # SaveZarrJob always has an InProcessZarrRunner.
                                 # NOTE(imo): We don't have any way of people using results, so for now just
                                 # grab and ignore it.
                                 result = job.run()
