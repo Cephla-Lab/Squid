@@ -186,6 +186,50 @@ class TestConfigRepositoryMachineConfigs:
 
         assert config1 is config2  # Same object, from cache
 
+    def test_get_illumination_config_seeds_from_example(self, temp_dir):
+        """Test that a missing illumination config is created from its .example."""
+        machine_configs = temp_dir / "machine_configs"
+        machine_configs.mkdir()
+        (temp_dir / "user_profiles" / "default" / "channel_configs").mkdir(parents=True)
+        example = machine_configs / "illumination_channel_config.yaml.example"
+        example.write_text(
+            """
+version: 1
+channels:
+  - name: "488nm"
+    type: epi_illumination
+    controller_port: D2
+    wavelength_nm: 488
+"""
+        )
+
+        repo = ConfigRepository(base_path=temp_dir)
+        config = repo.get_illumination_config()
+
+        assert config is not None
+        assert config.channels[0].name == "488nm"
+        assert (machine_configs / "illumination_channel_config.yaml").read_text() == example.read_text()
+
+    def test_get_illumination_config_does_not_overwrite_existing(self, repo_with_profile, temp_dir):
+        """Test that an existing illumination config is never replaced by the .example."""
+        machine_configs = temp_dir / "machine_configs"
+        (machine_configs / "illumination_channel_config.yaml.example").write_text("version: 1\nchannels: []\n")
+
+        config = repo_with_profile.get_illumination_config()
+
+        assert len(config.channels) == 1
+        assert config.channels[0].name == "488nm"
+
+    def test_get_illumination_config_returns_none_without_example(self, temp_dir):
+        """Test that with neither the config nor its .example, nothing is created."""
+        (temp_dir / "machine_configs").mkdir()
+        (temp_dir / "user_profiles" / "default" / "channel_configs").mkdir(parents=True)
+
+        repo = ConfigRepository(base_path=temp_dir)
+
+        assert repo.get_illumination_config() is None
+        assert not (temp_dir / "machine_configs" / "illumination_channel_config.yaml").exists()
+
     def test_get_confocal_config_returns_none_when_missing(self, temp_dir):
         """Test that missing confocal config returns None."""
         (temp_dir / "machine_configs").mkdir()
