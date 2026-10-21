@@ -94,6 +94,12 @@ class RCM_API:
     def initialize_device(self, simulated: bool):
         return self.initializeDevice(simulated)
 
+    def get_available_devices(self):
+        val = c_int()
+        buffer = create_string_buffer(256)
+        result = self.getAvailableDevices(buffer)
+        return buffer.value.decode()
+
     def get_device_type(self):
         return self.getDeviceType()
 
