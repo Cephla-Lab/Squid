@@ -376,8 +376,11 @@ class LiveController(QObject):
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(0)
                 elif self.trigger_mode == TriggerMode.HARDWARE:
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(-self.camera.get_strobe_time())
-                self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
-                    {1: self.currentConfiguration.emission_filter_position}
+                # The channel's position applies to the first configured wheel (EMISSION_FILTER_WHEEL_INDICES),
+                # which is not always index 1: an Optospin wheel may sit on rotor port 2.
+                wheel = self.microscope.addons.emission_filter_wheel
+                wheel.set_filter_wheel_position(
+                    {wheel.available_filter_wheels[0]: self.currentConfiguration.emission_filter_position}
                 )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
