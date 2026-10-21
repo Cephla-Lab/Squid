@@ -4688,11 +4688,7 @@ class LiveControlWidget(QFrame):
         self.btn_snap.clicked.connect(self.snap)
         self.entry_exposureTime.valueChanged.connect(self.update_config_exposure_time)
         self.entry_analogGain.valueChanged.connect(self.update_config_analog_gain)
-        self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
-        self.entry_illuminationIntensity.valueChanged.connect(
-            lambda x: self.slider_illuminationIntensity.setValue(int(x))
-        )
-        self.slider_illuminationIntensity.valueChanged.connect(self.entry_illuminationIntensity.setValue)
+        self._connect_illumination_intensity_controls()
         self.btn_autolevel.toggled.connect(self.signal_autoLevelSetting.emit)
 
         # layout
@@ -4918,6 +4914,33 @@ class LiveControlWidget(QFrame):
                 confocal_mode=self.liveController.is_confocal_mode(),
             )
             self.signal_newAnalogGain.emit(new_value)
+
+    def _connect_illumination_intensity_controls(self):
+        # The slider applies its value when it is released (or stepped with the keyboard), not on every
+        # move: some light sources take a while per power change (a Vortran head ~1.2 s). While it is
+        # dragged, the value is only shown in the entry.
+        self._illumination_intensity_previewed = False
+        self.slider_illuminationIntensity.setTracking(False)
+        self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
+        self.entry_illuminationIntensity.valueChanged.connect(
+            lambda x: self.slider_illuminationIntensity.setValue(int(x))
+        )
+        self.slider_illuminationIntensity.sliderMoved.connect(self._preview_illumination_intensity)
+        self.slider_illuminationIntensity.valueChanged.connect(self._apply_illumination_slider_value)
+
+    def _preview_illumination_intensity(self, value):
+        self.entry_illuminationIntensity.blockSignals(True)
+        self.entry_illuminationIntensity.setValue(value)
+        self.entry_illuminationIntensity.blockSignals(False)
+        self._illumination_intensity_previewed = True
+
+    def _apply_illumination_slider_value(self, value):
+        previewed, self._illumination_intensity_previewed = self._illumination_intensity_previewed, False
+        if previewed and self.entry_illuminationIntensity.value() == value:
+            # The entry already shows the value, so setValue() would not emit; apply it directly.
+            self.update_config_illumination_intensity(value)
+        else:
+            self.entry_illuminationIntensity.setValue(value)
 
     def update_config_illumination_intensity(self, new_value):
         if self.is_switching_mode == False:
