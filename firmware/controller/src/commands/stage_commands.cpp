@@ -1,5 +1,6 @@
 #include "stage_commands.h"
 
+#include "../limit_switches.h"
 #include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
 
 // Surface a failed move whose callback had already claimed
@@ -306,7 +307,7 @@ void callback_set_home_safety_margin()
             uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[x] = tmc4361A_xmmToMicrosteps(&tmc4361[x], home_safety_margin_mm);
-            tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
+            tmc4361A_enableHomingLimit(&tmc4361[x], limit_switch_homing_polarity(x), TMC4361_homing_sw[x], home_safety_margin[x]);
             break;
         }
         case AXIS_Y:
@@ -314,7 +315,7 @@ void callback_set_home_safety_margin()
             uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[y] = tmc4361A_xmmToMicrosteps(&tmc4361[y], home_safety_margin_mm);
-            tmc4361A_enableHomingLimit(&tmc4361[y], lft_sw_pol[y], TMC4361_homing_sw[y], home_safety_margin[y]);
+            tmc4361A_enableHomingLimit(&tmc4361[y], limit_switch_homing_polarity(y), TMC4361_homing_sw[y], home_safety_margin[y]);
             break;
         }
         case AXIS_Z:
@@ -322,7 +323,7 @@ void callback_set_home_safety_margin()
             uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[z] = tmc4361A_xmmToMicrosteps(&tmc4361[z], home_safety_margin_mm);
-            tmc4361A_enableHomingLimit(&tmc4361[z], lft_sw_pol[z], TMC4361_homing_sw[z], home_safety_margin[z]);
+            tmc4361A_enableHomingLimit(&tmc4361[z], limit_switch_homing_polarity(z), TMC4361_homing_sw[z], home_safety_margin[z]);
             break;
         }
         case AXIS_W:
@@ -342,6 +343,12 @@ void callback_set_home_safety_margin()
             break;
         }
     }
+}
+
+void callback_set_limit_switch_config()
+{
+    if (!limit_switches_set(buffer_rx[2], buffer_rx[3]))
+        report_move_error();
 }
 
 void callback_set_pid_arguments()

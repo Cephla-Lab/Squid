@@ -1,6 +1,7 @@
 #include "commands.h"
 #include "stage_commands.h"           // the readiness gate the move commands use
 
+#include "../limit_switches.h"
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
@@ -22,6 +23,7 @@ void init_callbacks()
     cmd_map[SET_LIM] = &callback_set_lim;
     cmd_map[SET_LIM_SWITCH_POLARITY] = &callback_set_lim_switch_polarity;
     cmd_map[SET_HOME_SAFETY_MERGIN] = &callback_set_home_safety_margin;
+    cmd_map[SET_LIMIT_SWITCH_CONFIG] = &callback_set_limit_switch_config;
     cmd_map[SET_PID_ARGUMENTS] = &callback_set_pid_arguments;
     cmd_map[CONFIGURE_STEPPER_DRIVER] = &callback_configure_stepper_driver;
     cmd_map[SET_MAX_VELOCITY_ACCELERATION] = &callback_set_max_velocity_acceleration;
@@ -402,12 +404,9 @@ void callback_initialize()
         mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 
     // enable limit switch reading
-    tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);
-    tmc4361A_enableLimitSwitch(&tmc4361[x], rht_sw_pol[x], RGHT_SW, flip_limit_switch_x);
-    tmc4361A_enableLimitSwitch(&tmc4361[y], lft_sw_pol[y], LEFT_SW, flip_limit_switch_y);
-    tmc4361A_enableLimitSwitch(&tmc4361[y], rht_sw_pol[y], RGHT_SW, flip_limit_switch_y);
-    tmc4361A_enableLimitSwitch(&tmc4361[z], rht_sw_pol[z], RGHT_SW, false);
-    tmc4361A_enableLimitSwitch(&tmc4361[z], lft_sw_pol[z], LEFT_SW, false);
+    limit_switches_program(x, flip_limit_switch_x);
+    limit_switches_program(y, flip_limit_switch_y);
+    limit_switches_program(z, false);
 
     // motion profile
     uint32_t max_velocity_usteps[STAGE_AXES];
@@ -430,9 +429,9 @@ void callback_initialize()
     }
 
     // homing switch settings
-    tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
-    tmc4361A_enableHomingLimit(&tmc4361[y], lft_sw_pol[y], TMC4361_homing_sw[y], home_safety_margin[y]);
-    tmc4361A_enableHomingLimit(&tmc4361[z], rht_sw_pol[z], TMC4361_homing_sw[z], home_safety_margin[z]);
+    tmc4361A_enableHomingLimit(&tmc4361[x], limit_switch_homing_polarity(x), TMC4361_homing_sw[x], home_safety_margin[x]);
+    tmc4361A_enableHomingLimit(&tmc4361[y], limit_switch_homing_polarity(y), TMC4361_homing_sw[y], home_safety_margin[y]);
+    tmc4361A_enableHomingLimit(&tmc4361[z], limit_switch_homing_polarity(z), TMC4361_homing_sw[z], home_safety_margin[z]);
 
     // DAC init
     set_DAC8050x_config();

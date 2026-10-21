@@ -33,7 +33,7 @@
 //               moment a command completes, and completion is checked every 1 ms
 //               (was 10 ms), so the host learns of completion up to ~20 ms sooner.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 6
+#define FIRMWARE_VERSION_MINOR 7
 
 #include "def/def_v1.h"
 
