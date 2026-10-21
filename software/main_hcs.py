@@ -108,9 +108,10 @@ if __name__ == "__main__":
     try:
         microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
     except control.microcontroller.LimitSwitchConfigError as e:
-        # The configuration needs newer controller firmware: do not start with the limit switches read wrong.
+        # Invalid [LIMIT_SWITCHES], or firmware too old to apply it: do not start with the limit switches read
+        # wrong. The message says which.
         log.error(str(e))
-        QMessageBox.critical(None, "Firmware update needed", str(e))
+        QMessageBox.critical(None, "Limit-switch configuration", str(e))
         instance_lock.unlock()
         sys.exit(1)
     win = gui.HighContentScreeningGui(

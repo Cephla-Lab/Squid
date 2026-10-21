@@ -176,16 +176,61 @@ def test_failed_constructor_releases_the_link(monkeypatch):
     assert [t for t in threading.enumerate() if t not in threads_before] == []
 
 
-def test_old_firmware_defaults_start_normally():
+@pytest.mark.parametrize("reset_and_initialize", [True, False])
+def test_old_firmware_defaults_start_normally(reset_and_initialize):
     sim = _sim("old")
     sent = _record_commands(sim)
 
-    mcu = Microcontroller(serial_device=sim, reset_and_initialize=True)
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=reset_and_initialize)
 
     opcodes = [cmd[1] for cmd in sent]
     assert mcu.firmware_version == OLD_FIRMWARE
     assert CMD_SET.SET_LIMIT_SWITCH_CONFIG not in opcodes
-    assert {CMD_SET.RESET, CMD_SET.INITIALIZE, CMD_SET.CONFIGURE_STEPPER_DRIVER} <= set(opcodes)
+    if reset_and_initialize:
+        assert {CMD_SET.RESET, CMD_SET.INITIALIZE, CMD_SET.CONFIGURE_STEPPER_DRIVER} <= set(opcodes)
+    else:
+        assert opcodes == [CMD_SET.TURN_OFF_ALL_PORTS]
+    mcu.close()
+
+
+# Invalid [LIMIT_SWITCHES] content: (ini text, the key the error must name, what it must say about it).
+INVALID_LIMIT_SWITCHES = {
+    "unknown key": ("[LIMIT_SWITCHES]\nz_left_activ_high = True\n", "z_left_activ_high", "unknown key"),
+    "non-bool value": ("[LIMIT_SWITCHES]\nz_right_active_high = no\n", "z_right_active_high", "True or False"),
+}
+
+
+@pytest.mark.parametrize("device", ["supported", "old", "SimSerial"])
+@pytest.mark.parametrize("problem", sorted(INVALID_LIMIT_SWITCHES))
+@pytest.mark.parametrize("reset_and_initialize", [True, False])
+def test_invalid_config_refuses_on_every_serial_device(device, problem, reset_and_initialize, load_limit_switches):
+    text, key, says = INVALID_LIMIT_SWITCHES[problem]
+    load_limit_switches(text)
+    if device == "SimSerial":
+        sim = SimSerial()
+    else:
+        sim = _sim(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE if device == "supported" else "old")
+    sent = _record_commands(sim)
+
+    with pytest.raises(LimitSwitchConfigError) as e:
+        Microcontroller(serial_device=sim, reset_and_initialize=reset_and_initialize)
+
+    message = str(e.value)
+    assert "LIMIT_SWITCHES" in message and key in message and says in message, message
+    # The content check comes first: not the firmware-version refusal, even on old firmware.
+    assert "%d.%d" % LIMIT_SWITCH_CONFIG_MIN_FIRMWARE not in message, message
+    # Nothing beyond version detection reached the controller.
+    assert [cmd[1] for cmd in sent] == [CMD_SET.TURN_OFF_ALL_PORTS]
+    assert not sim.is_open()
+
+
+def test_ini_z_both_active_high_reaches_the_controller(load_limit_switches):
+    load_limit_switches("[LIMIT_SWITCHES]\nz_left_active_high = True\nz_right_active_high = True\n")
+    sim = _sim(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+
+    assert sim.limit_switch_config == {AXIS.X: 0x03, AXIS.Y: 0x03, AXIS.Z: 0x0F}
     mcu.close()
 
 

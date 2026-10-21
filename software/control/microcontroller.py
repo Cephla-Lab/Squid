@@ -124,7 +124,8 @@ class CommandAborted(RuntimeError):
 
 
 class LimitSwitchConfigError(RuntimeError):
-    """The configuration asks for limit-switch settings the controller's firmware cannot apply.
+    """The configuration's [LIMIT_SWITCHES] section is invalid, or asks for settings the controller's firmware
+    cannot apply.
 
     Raised by the Microcontroller constructor before anything is sent that could move a stage; the controller
     link is closed by then.
@@ -1852,11 +1853,21 @@ class Microcontroller:
         return tuple(self.firmware_version) >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
 
     def check_limit_switch_compatibility(self) -> None:
-        """Raise LimitSwitchConfigError if [LIMIT_SWITCHES] is not the default and the firmware cannot apply it.
+        """Raise LimitSwitchConfigError if [LIMIT_SWITCHES] is invalid, or not the default and the firmware cannot
+        apply it.
 
-        Older firmware answers SET_LIMIT_SWITCH_CONFIG with a success that does nothing, so its limit switches
-        would stay at the stock settings while the configuration says otherwise.
+        Invalid content (an unknown key, a value that is not True or False) is refused first and on every serial
+        device, simulated ones included: it would otherwise be ignored or read by truthiness. Older firmware answers
+        SET_LIMIT_SWITCH_CONFIG with a success that does nothing, so its limit switches would stay at the stock
+        settings while the configuration says otherwise.
         """
+        problems = limit_switch_config_problems()
+        if problems:
+            raise LimitSwitchConfigError(
+                f"The configuration's [LIMIT_SWITCHES] section is invalid: {'; '.join(problems)}. Its keys are "
+                f"<axis>_<side>_active_high and <axis>_<side>_enabled (axis x, y or z; side left or right), each "
+                f"True or False."
+            )
         if self.supports_limit_switch_config():
             return
         if self._is_simulated:

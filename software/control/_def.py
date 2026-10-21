@@ -3,7 +3,7 @@ import sys
 import glob
 from pathlib import Path
 from configparser import ConfigParser
-from typing import Optional, Union
+from typing import List, Optional, Union
 import json
 import csv
 import squid.logging
@@ -315,6 +315,30 @@ class LIMIT_SWITCHES:
     Z_RIGHT_ENABLED = True
 
 
+_LIMIT_SWITCH_KEYS = tuple(
+    f"{axis}_{side}_{setting}" for axis in "XYZ" for side in ("LEFT", "RIGHT") for setting in ("ACTIVE_HIGH", "ENABLED")
+)
+
+
+def limit_switch_config_problems() -> List[str]:
+    """What is wrong with LIMIT_SWITCHES as loaded from [LIMIT_SWITCHES]; empty when nothing is.
+
+    The loader puts any key of the section on the class and its value through conf_attribute_reader, so a misspelled
+    key would be a stray attribute nobody reads and "no", "off" or 0 would be used by truthiness. Each unknown key and
+    each value that is not True or False is listed here. Importing _def never fails on it: the Microcontroller raises
+    LimitSwitchConfigError with this list before it sends anything beyond its firmware-version probe.
+    """
+    problems = []
+    for name, value in vars(LIMIT_SWITCHES).items():
+        if name.startswith("__") and name.endswith("__"):
+            continue
+        if name not in _LIMIT_SWITCH_KEYS:
+            problems.append(f"unknown key {name.lower()}")
+        elif type(value) is not bool:
+            problems.append(f"{name.lower()} = {value!r} is not True or False")
+    return problems
+
+
 def limit_switch_config_byte(axis: str) -> int:
     """Config nibble for axis ("x", "y" or "z") built from LIMIT_SWITCHES."""
     a = axis.upper()
@@ -325,6 +349,14 @@ def limit_switch_config_byte(axis: str) -> int:
         if getattr(LIMIT_SWITCHES, f"{a}_{side}_ACTIVE_HIGH"):
             byte |= getattr(LIMIT_SWITCH_BITS, f"{side}_ACTIVE_HIGH")
     return byte
+
+
+class LIMIT_SWITCH_POLARITY:
+    # Retired (replaced by LIMIT_SWITCHES). Kept only so that field .txt configurations that still assign
+    # X/Y/Z_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.<...> exec without a NameError; nothing reads these.
+    ACTIVE_LOW = 0
+    ACTIVE_HIGH = 1
+    DISABLED = 2
 
 
 def legacy_limit_switch_warning(cfp: ConfigParser) -> Optional[str]:
