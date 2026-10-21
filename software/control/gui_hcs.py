@@ -1324,7 +1324,7 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
-            self.cameraTabWidget.addTab(self.nl5Wdiget, "NL5")
+            self.cameraTabWidget.addTab(self.nl5Wdiget, getattr(self.nl5, "device_name", "NL5"))
         if ENABLE_SPINNING_DISK_CONFOCAL:
             self.cameraTabWidget.addTab(self.spinningDiskConfocalWidget, "Confocal")
         if self.emission_filter_wheel:
