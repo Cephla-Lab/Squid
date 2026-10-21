@@ -560,32 +560,6 @@ class MultiPointController:
             # this "not configured" and want it to be a ValueError.
             raise ValueError("Not properly configured for an acquisition, cannot calculate image count.")
 
-    def _temporary_get_an_image_hack(self) -> Tuple[np.array, bool]:
-        was_streaming = self.camera.get_is_streaming()
-        callbacks_were_enabled = self.camera.get_callbacks_enabled()
-        self.camera.enable_callbacks(False)
-        test_frame = None
-        if not was_streaming:
-            self.camera.start_streaming()
-        try:
-            channels = self.liveController.get_channels(self.objectiveStore.current_objective)
-            if not channels:
-                self._log.warning("No channels available in _temporary_get_an_image_hack")
-                return (None, False)
-            # Note: config is currently unused but kept for potential future use
-            config = channels[0]
-            if (
-                self.liveController.trigger_mode == control._def.TriggerMode.SOFTWARE
-                or self.liveController.trigger_mode == control._def.TriggerMode.HARDWARE
-            ):
-                self.camera.send_trigger()
-            test_frame = self.camera.read_camera_frame()
-        finally:
-            self.camera.enable_callbacks(callbacks_were_enabled)
-            if not was_streaming:
-                self.camera.stop_streaming()
-        return (test_frame.frame, test_frame.is_color()) if test_frame else (None, False)
-
     def get_estimated_acquisition_disk_storage(self):
         """
         This does its best to return the number of bytes needed to store the settings for the currently
@@ -597,24 +571,13 @@ class MultiPointController:
             raise ValueError("Cannot calculate disk space requirements without any valid configurations.")
         first_config = self.liveController.get_channels(self.objectiveStore.current_objective)[0]
 
-        # Our best bet is to grab an image, and use that for our size estimate.
-        test_image = None
-        is_color = True
-        try:
-            test_image, is_color = self._temporary_get_an_image_hack()
-        except Exception as e:
-            self._log.exception("Couldn't capture image from camera for size estimate, using worst cast image.")
-            # Not ideal that we need to catch Exception, but the camera implementations vary wildly...
-            pass
-
-        if test_image is None:
-            is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
-            # Do our best to create a fake image with the correct properties.
-            # TODO(imo): It'd be better to pull this from our camera but need to wait for AbstractCamera for a consistent way to do that.
-            width, height = self.camera.get_crop_size()
-            bytes_per_pixel = 3 if is_color else 2  # Worst case assumptions: 24 bit color, 16 bit grayscale
-
-            test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+        # A worst-case image with the camera's size and format: random 16-bit data, which compression can't shrink.
+        # This used to trigger the camera for a real frame. In hardware trigger mode nothing but the acquisition
+        # delivers that frame (on AION the trigger ran a confocal scan and then timed out, 1.1 s per acquisition
+        # start), and in software trigger mode it was a dark frame, which compresses better than the real images.
+        is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
+        width, height = self.camera.get_crop_size()
+        test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
 
         # Depending on settings, we modify the image before saving.  This means we need to actually save an image
         # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
