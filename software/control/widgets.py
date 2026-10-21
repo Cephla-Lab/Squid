@@ -3882,10 +3882,14 @@ class DragonflyConfocalWidget(QWidget):
 class ObjectivesWidget(QWidget):
     signal_objective_changed = Signal()
 
-    def __init__(self, objective_store, objective_changer=None):
+    def __init__(self, objective_store, objective_changer=None, focus_servo=None):
         super(ObjectivesWidget, self).__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
+        # A Z stage with a set_servo(bool) (the V-308's PIFocusStage): with no objective changer, a
+        # switch is a manual swap done with Z retracted and its servo released.
+        self.focus_servo = focus_servo
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
         # connected yet and the hardware already sits there.
@@ -3905,6 +3909,9 @@ class ObjectivesWidget(QWidget):
         self.setLayout(layout)
 
     def on_objective_changed(self, objective_name):
+        if self.objective_changer is None and self.focus_servo is not None:
+            self._swap_objective_with_servo_off(objective_name)
+            return
         if self.objective_changer is None:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
@@ -3937,11 +3944,96 @@ class ObjectivesWidget(QWidget):
                 self, "Objective Change Failed", f"Failed to switch to '{objective_name}':\n{error_msg}"
             )
             # Revert the dropdown so it matches the store / actual changer state.
-            self.dropdown.blockSignals(True)
-            self.dropdown.setCurrentText(self.objectiveStore.current_objective)
-            self.dropdown.blockSignals(False)
+            self._revert_dropdown()
         # Re-enable only after the modal warning, which spins a nested event loop.
         self.dropdown.setEnabled(True)
+
+    def _swap_objective_with_servo_off(self, objective_name):
+        """Manual swap: retract Z, disengage the focus servo, wait for the user to confirm the new
+        objective is seated, then re-engage and restore Z. The servo is re-engaged and Z restored
+        whether the user confirms or cancels.
+
+        The voice coil is not self-locking, so with the servo off Z drifts (on a vertical mount it
+        can run to the end of travel within a minute); retracting first keeps that drift clear of
+        the sample, and restoring returns to the pre-swap focus height."""
+        previous_objective = self.objectiveStore.current_objective
+        # The modal dialogs below spin nested event loops: keep the dropdown disabled meanwhile.
+        self.dropdown.setEnabled(False)
+        try:
+            try:
+                z_before_mm = self.focus_servo.get_pos().z_mm
+                # home(z) drives the V-308 to its configured objective-clear position.
+                self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
+                self._log.info(f"Z retracted from {z_before_mm:.4f} mm for objective change")
+            except Exception as e:
+                self._log.exception("Failed to retract Z for an objective change")
+                QMessageBox.warning(
+                    self,
+                    "Objective Change Failed",
+                    f"Could not retract Z, so the objective was not changed:\n{e}",
+                )
+                self._revert_dropdown()
+                return
+
+            try:
+                self.focus_servo.set_servo(False)
+            except Exception as e:
+                self._log.exception("Failed to disengage the focus servo for an objective change")
+                QMessageBox.warning(
+                    self,
+                    "Objective Change Failed",
+                    f"Could not disengage the focus servo, so the objective was not changed:\n{e}\n\n"
+                    f"Z was left retracted.",
+                )
+                self._revert_dropdown()
+                return
+            self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
+
+            reply = QMessageBox.question(
+                self,
+                "Change Objective",
+                f"Z is retracted and the focus servo is disengaged.\n\n"
+                f"Load the {objective_name} objective and make sure it is securely seated, then click OK "
+                f"to re-engage the servo and return Z to {z_before_mm:.4f} mm.\n\n"
+                f"Click Cancel to keep {previous_objective} (put it back first if you removed it).",
+                QMessageBox.Ok | QMessageBox.Cancel,
+                QMessageBox.Ok,
+            )
+
+            try:
+                self.focus_servo.set_servo(True)
+                self._log.info("Focus servo re-engaged after objective change")
+            except Exception as e:
+                self._log.exception("Failed to re-engage the focus servo after an objective change")
+                QMessageBox.critical(
+                    self,
+                    "Focus Servo Not Engaged",
+                    f"Could not re-engage the focus servo; Z is not being held:\n{e}",
+                )
+            else:
+                try:
+                    self.focus_servo.move_z_to(z_before_mm, blocking=True)
+                    self._log.info(f"Z restored to {z_before_mm:.4f} mm after objective change")
+                except Exception as e:
+                    self._log.exception("Failed to restore Z after an objective change")
+                    QMessageBox.warning(
+                        self,
+                        "Z Not Restored",
+                        f"Could not move Z back to {z_before_mm:.4f} mm after the objective change:\n{e}",
+                    )
+
+            if reply == QMessageBox.Ok:
+                self.objectiveStore.set_current_objective(objective_name)
+                self.signal_objective_changed.emit()
+            else:
+                self._revert_dropdown()
+        finally:
+            self.dropdown.setEnabled(True)
+
+    def _revert_dropdown(self):
+        self.dropdown.blockSignals(True)
+        self.dropdown.setCurrentText(self.objectiveStore.current_objective)
+        self.dropdown.blockSignals(False)
 
 
 def set_spinbox_range_from_exposure_limits(camera: AbstractCamera, spinbox: QDoubleSpinBox):

@@ -563,3 +563,42 @@ def test_calc_move_timeout_scales_with_axis_speed():
     assert timeout(-60.0, 30.0) == pytest.approx(6.0)  # direction does not matter
     assert timeout(0.5, 2.0) == 3.0  # short moves get the 3 s floor
     assert timeout(1.0, 0.0) == pytest.approx(30.0)  # zero speed falls back to 0.1 mm/s instead of dividing by zero
+
+
+def test_pi_focus_servo_toggle_reaches_backend_and_blocks_moves():
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config())
+    combined = squid.stage.pi.CombinedStage(
+        xy_stage=unittest.mock.MagicMock(), z_stage=stage, stage_config=squid.config.get_stage_config()
+    )
+    assert combined.z_stage is stage
+    assert stage.is_servo_on()
+
+    stage.set_servo(False)
+    assert not sim.is_servo_on()
+    with pytest.raises(RuntimeError):
+        stage.move_z_to(1.0)
+
+    stage.set_servo(True)
+    assert stage.is_referenced()  # releasing the servo does not drop the reference
+    stage.move_z_to(1.0)
+    assert stage.get_pos().z_mm == pytest.approx(1.0)
+
+
+def test_c414_initialize_without_reference_still_reads_reference_state():
+    # A --skip-init restart connects with reference=False; an axis the controller reports as
+    # referenced must still accept moves.
+    stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
+    stage.axis = "1"
+    stage._is_referenced = False
+    stage._range_lo = stage._range_hi = None
+    stage.gcs = unittest.mock.MagicMock()
+    stage.gcs.qFRF.return_value = {"1": True}
+    stage.gcs.qPOS.return_value = {"1": 1.0}
+    stage._pitools = unittest.mock.MagicMock()
+
+    stage.initialize(reference=False)
+
+    stage.gcs.FRF.assert_not_called()
+    stage.move_to(1.0)
+    stage.gcs.MOV.assert_called_once_with("1", 1.0)

@@ -966,7 +966,11 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
-        self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
+        self.objectivesWidget = widgets.ObjectivesWidget(
+            self.objectiveStore,
+            self.objective_changer,
+            focus_servo=self.stage.z_stage if USE_PI_FOCUS_STAGE else None,
+        )
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
@@ -2912,7 +2916,12 @@ class HighContentScreeningGui(QMainWindow):
         if not for_restart or USE_XERYON:
             z_retracted = False
             try:
-                self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+                if USE_PI_FOCUS_STAGE:
+                    # The V-308's home(z) is its configured objective-clear retract, which on an
+                    # upright system is the positive travel limit rather than OBJECTIVE_RETRACTED_POS_MM.
+                    self.stage.home(x=False, y=False, z=True, theta=False)
+                else:
+                    self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
                 z_retracted = True
             except Exception:
                 if for_restart:
