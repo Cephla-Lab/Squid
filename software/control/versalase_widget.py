@@ -48,7 +48,7 @@ def _head_line(status: HeadStatus) -> str:
         state = status.fault_description or "OK"
     return (
         f"{status.wavelength:>3} nm {'ON ' if status.emission else 'OFF'} {'TTL' if status.modulation else 'CW ':<3} "
-        f"{status.set_power_mw:5.1f}/{status.max_power_mw:5.1f} mW  out {status.measured_power_mw:4.1f}  "
+        f"{status.set_power_mw:5.1f}/{status.max_power_mw:5.1f} mW  "
         f"{status.base_plate_temp_c:4.1f}/{status.optical_block_temp_c:4.1f} °C  {state}"
     )
 
@@ -58,7 +58,7 @@ def _head_tooltip(status: HeadStatus) -> str:
         f"S/N {status.serial_number}\n"
         f"{'Digital modulation (TTL on the SMB input)' if status.modulation else 'CW'}\n"
         f"Set {status.set_power_mw:.1f} mW of {status.max_power_mw:.1f} mW max, "
-        f"measured {status.measured_power_mw:.1f} mW\n"
+        f"measured {status.measured_power_mw:.1f} mW (near 0 while the TTL line is off)\n"
         f"Base plate {status.base_plate_temp_c:.1f} °C, optical block {status.optical_block_temp_c:.1f} °C\n"
         f"Interlock {'closed' if status.interlock_closed else 'OPEN'}, fault code {status.fault_code}"
     )

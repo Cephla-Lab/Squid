@@ -55,7 +55,8 @@ def test_one_line_per_head(qtbot):
 
     line_405 = widget._head_lines[0].text()
     assert line_405.startswith("405 nm ON  CW ")
-    assert "20.2/100.8 mW" in line_405 and "out  0.1 " in line_405
+    assert "20.2/100.8 mW  27.0/25.1" in line_405 and "out" not in line_405
+    assert "measured 0.1 mW" in widget._head_lines[0].toolTip()
     assert "27.0/25.1 °C" in line_405 and line_405.endswith("OK")
     assert _dot_color(widget, 0) == GREEN
 
