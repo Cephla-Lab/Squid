@@ -1,5 +1,5 @@
 import ctypes
-from ctypes import c_int, c_char_p, create_string_buffer
+from ctypes import c_int, c_double, c_char_p, byref, create_string_buffer
 from pycparser import c_parser, c_ast, parse_file
 import re
 import sys
@@ -11,6 +11,8 @@ C_TO_CTYPES = {
     'char*': ctypes.c_char_p,
     'bool': ctypes.c_bool,
     'double': ctypes.c_double,
+    'int*': ctypes.POINTER(ctypes.c_int),
+    'double*': ctypes.POINTER(ctypes.c_double),
     # Add more mappings as needed
 }
 
@@ -84,6 +86,16 @@ class RCM_API:
             return buffer.value.decode()
         else:
             return None
+
+    def get_integer_parameter(self, param: int):
+        value = c_int()
+        result = self.getIntegerParameter(param, byref(value))
+        return value.value if result == self.ERR_OK else None
+
+    def get_float_parameter(self, param: int):
+        value = c_double()
+        result = self.getFloatParameter(param, byref(value))
+        return value.value if result == self.ERR_OK else None
 
     def set_integer_parameter(self, param: int, value: int):
         return self.setIntegerParameter(param, value)

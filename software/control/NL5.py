@@ -14,6 +14,89 @@ DEFAULT_RCM_INTERNAL_STAGE_SN = "AL05NB1GA"
 
 SLIT_POSITIONS_UM = {88: 1500, 44: 900, 22: 300, 33: -300, 66: -900, 132: -1500}
 
+# Scanner line speed (LINE_FREQUENCY, mrad/s) limits accepted by the GUI.
+LINE_SPEED_MIN = 100
+LINE_SPEED_MAX = 20000
+SPEED_INPUT_MODES = ("line_speed", "fps")
+
+
+class _ScanSpeedMixin:
+    """Conversion between the scanner line speed and the scan-limited frame rate.
+
+    One frame is one sweep of the line across the scanned field. The sweep angle is the
+    full-field scan amplitude (AMPLITUDE_X, mrad) scaled by the scanned fraction of the
+    camera width (FIELD_OF_VIEW_X / MAX_CAM_PIX_X), so
+        fps = line_speed [mrad/s] / sweep [mrad].
+    The jump back and the exposure delay are not included, so this is the upper bound the
+    scanner allows, not the camera frame rate.
+    """
+
+    max_cam_pix_x = None
+
+    def scan_sweep_mrad(self):
+        fraction = 1.0
+        if self.max_cam_pix_x and self.fov_x:
+            fraction = min(1.0, self.fov_x / self.max_cam_pix_x)
+        return max(1e-6, self.scan_amplitude * fraction)
+
+    def line_speed_to_fps(self, line_speed):
+        return line_speed / self.scan_sweep_mrad()
+
+    def fps_to_line_speed(self, fps):
+        return int(round(fps * self.scan_sweep_mrad()))
+
+    @staticmethod
+    def clamp_line_speed(speed):
+        return int(min(LINE_SPEED_MAX, max(LINE_SPEED_MIN, round(speed))))
+
+    def set_speed_input_mode(self, mode):
+        if mode not in SPEED_INPUT_MODES:
+            raise ValueError(f"Unknown speed input mode {mode!r}; expected one of {SPEED_INPUT_MODES}")
+        self.speed_input_mode = mode
+        self.save_settings()
+
+    def load_settings(self):
+        try:
+            with open("NL5_settings.json", "r") as file:
+                settings = json.load(file)
+                self.scan_amplitude = settings.get("scan_amplitude", 70.0)
+                self.offset_x = settings.get("offset_x", 0.0)
+                self.bypass_offset = settings.get("bypass_offset", 0.0)
+                self.fov_x = settings.get("fov_x", 2048)
+                self.exposure_delay_ms = settings.get("exposure_delay_ms", 30)
+                self.line_speed = settings.get("line_speed", 3000)
+                self.slit_width_um = settings.get("slit_width_um", 88)
+                self.slit_offset_um = settings.get("slit_offset_um", 0.0)
+                self.speed_input_mode = settings.get("speed_input_mode", "line_speed")
+                if self.speed_input_mode not in SPEED_INPUT_MODES:
+                    self.speed_input_mode = "line_speed"
+
+        except FileNotFoundError:
+            self.scan_amplitude = 70.0
+            self.offset_x = 0.0
+            self.bypass_offset = 0.0
+            self.exposure_delay_ms = 30
+            self.line_speed = 3000
+            self.fov_x = 2048
+            self.slit_width_um = 88
+            self.slit_offset_um = 0.0
+            self.speed_input_mode = "line_speed"
+
+    def save_settings(self):
+        settings = {
+            "scan_amplitude": self.scan_amplitude,
+            "offset_x": self.offset_x,
+            "bypass_offset": self.bypass_offset,
+            "fov_x": self.fov_x,
+            "exposure_delay_ms": self.exposure_delay_ms,
+            "line_speed": self.line_speed,
+            "slit_width_um": self.slit_width_um,
+            "slit_offset_um": self.slit_offset_um,
+            "speed_input_mode": self.speed_input_mode,
+        }
+        with open("NL5_settings.json", "w") as file:
+            json.dump(settings, file)
+
 
 class RCMInternalStage:
     BAUD = 9600
@@ -91,7 +174,7 @@ class RCMInternalStage:
             self.ser.close()
 
 
-class NL5:
+class NL5(_ScanSpeedMixin):
 
     def __init__(self):
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -109,6 +192,14 @@ class NL5:
         self.is_aion = self.device_type == getattr(self.rcm, "Dev_AION", 5) or bool(data and "aion/" in data)
         self.device_name = "AION" if self.is_aion else "NL5"
         self._log.info(f"RCM device type {self.device_type} -> {self.device_name}")
+
+        # Full camera width known to the RCM; used for the line speed <-> frame rate conversion.
+        self.max_cam_pix_x = self.rcm.get_integer_parameter(self.rcm.MAX_CAM_PIX_X) or None
+        self._log.info(
+            f"Scan speed conversion: amplitude_x={self.scan_amplitude} mrad, fov_x={self.fov_x} px, "
+            f"max_cam_pix_x={self.max_cam_pix_x} -> sweep={self.scan_sweep_mrad():.2f} mrad, "
+            f"line_speed={self.line_speed} mrad/s = {self.line_speed_to_fps(self.line_speed):.2f} fps"
+        )
 
         self.internal_stage = None
         if self.is_aion:
@@ -161,8 +252,8 @@ class NL5:
         self.rcm.set_float_parameter(self.rcm.BYPASS_OFFSET, offset)
 
     def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = speed
-        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, speed)  # speed in mrad/s
+        self.line_speed = self.clamp_line_speed(speed)
+        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, self.line_speed)  # speed in mrad/s
         if save_setting:
             self.save_settings()
 
@@ -191,49 +282,14 @@ class NL5:
         if self.internal_stage is not None:
             self.internal_stage.home()
 
-    def load_settings(self):
-        try:
-            with open("NL5_settings.json", "r") as file:
-                settings = json.load(file)
-                self.scan_amplitude = settings.get("scan_amplitude", 70.0)
-                self.offset_x = settings.get("offset_x", 0.0)
-                self.bypass_offset = settings.get("bypass_offset", 0.0)
-                self.fov_x = settings.get("fov_x", 2048)
-                self.exposure_delay_ms = settings.get("exposure_delay_ms", 30)
-                self.line_speed = settings.get("line_speed", 3000)
-                self.slit_width_um = settings.get("slit_width_um", 88)
-                self.slit_offset_um = settings.get("slit_offset_um", 0.0)
-
-        except FileNotFoundError:
-            self.scan_amplitude = 70.0
-            self.offset_x = 0.0
-            self.bypass_offset = 0.0
-            self.exposure_delay_ms = 30
-            self.line_speed = 3000
-            self.fov_x = 2048
-            self.slit_width_um = 88
-            self.slit_offset_um = 0.0
-
-    def save_settings(self):
-        settings = {
-            "scan_amplitude": self.scan_amplitude,
-            "offset_x": self.offset_x,
-            "bypass_offset": self.bypass_offset,
-            "fov_x": self.fov_x,
-            "exposure_delay_ms": self.exposure_delay_ms,
-            "line_speed": self.line_speed,
-            "slit_width_um": self.slit_width_um,
-            "slit_offset_um": self.slit_offset_um,
-        }
-        with open("NL5_settings.json", "w") as file:
-            json.dump(settings, file)
 
 
-class NL5_Simulation:
+class NL5_Simulation(_ScanSpeedMixin):
 
     def __init__(self):
         self.load_settings()
         self.internal_stage = None
+        self.max_cam_pix_x = 2048
         self.device_type = 4
         self.is_aion = False
         self.device_name = "NL5"
@@ -269,7 +325,7 @@ class NL5_Simulation:
         pass
 
     def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = speed
+        self.line_speed = self.clamp_line_speed(speed)
         if save_setting:
             self.save_settings()
 
@@ -281,33 +337,3 @@ class NL5_Simulation:
         self.exposure_delay_ms = exposure_delay_ms
         pass
 
-    def load_settings(self):
-        try:
-            with open("NL5_settings.json", "r") as file:
-                settings = json.load(file)
-                self.scan_amplitude = settings.get("scan_amplitude", 70.0)
-                self.offset_x = settings.get("offset_x", 0.0)
-                self.bypass_offset = settings.get("bypass_offset", 0.0)
-                self.fov_x = settings.get("fov_x", 2048)
-                self.exposure_delay_ms = settings.get("exposure_delay_ms", 30)
-                self.line_speed = settings.get("line_speed", 3000)
-
-        except FileNotFoundError:
-            self.scan_amplitude = 70.0
-            self.offset_x = 0.0
-            self.bypass_offset = 0.0
-            self.exposure_delay_ms = 30
-            self.line_speed = 3000
-            self.fov_x = 2048
-
-    def save_settings(self):
-        settings = {
-            "scan_amplitude": self.scan_amplitude,
-            "offset_x": self.offset_x,
-            "bypass_offset": self.bypass_offset,
-            "fov_x": self.fov_x,
-            "exposure_delay_ms": self.exposure_delay_ms,
-            "line_speed": self.line_speed,
-        }
-        with open("NL5_settings.json", "w") as file:
-            json.dump(settings, file)

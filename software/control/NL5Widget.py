@@ -17,7 +17,7 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Qt
 
-from control.NL5 import SLIT_POSITIONS_UM
+from control.NL5 import SLIT_POSITIONS_UM, LINE_SPEED_MIN, LINE_SPEED_MAX
 
 
 class NL5SettingsDialog(QDialog):
@@ -103,14 +103,27 @@ class NL5Widget(QWidget):
         layout1.addWidget(self.exposure_delay_input)
         layout1.addStretch()
 
-        # Line speed control
-        layout1.addWidget(QLabel("Line Speed"))
-        self.line_speed_input = QSpinBox()
-        self.line_speed_input.setMaximum(20000)
-        self.line_speed_input.setValue(self.nl5.line_speed)
-        self.line_speed_input.setSuffix(" mrad/s")
-        self.line_speed_input.valueChanged.connect(self.update_line_speed)
+        # Scan speed control: entered either as scanner line speed (mrad/s) or as the scan-limited
+        # frame rate (fps). The value is sent to the device only when Enter is pressed.
+        self.speed_mode_combo = QComboBox()
+        self.speed_mode_combo.addItem("Line Speed", "line_speed")
+        self.speed_mode_combo.addItem("Frame Rate", "fps")
+        self.speed_mode_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        layout1.addWidget(self.speed_mode_combo)
+        self.line_speed_input = QDoubleSpinBox()
+        self.line_speed_input.setKeyboardTracking(False)
+        self.line_speed_input.setToolTip(
+            "Press Enter to apply.\n"
+            f"Line speed: {LINE_SPEED_MIN}-{LINE_SPEED_MAX} mrad/s.\n"
+            "Frame rate = line speed / scan sweep, where the sweep is the scan amplitude scaled by\n"
+            "FOV / camera width (scanner-limited; excludes the jump back and exposure delay)."
+        )
+        self.line_speed_input.lineEdit().returnPressed.connect(self.apply_speed_input)
         layout1.addWidget(self.line_speed_input)
+        mode_index = self.speed_mode_combo.findData(getattr(self.nl5, "speed_input_mode", "line_speed"))
+        self.speed_mode_combo.setCurrentIndex(max(0, mode_index))
+        self._configure_speed_input()
+        self.speed_mode_combo.currentIndexChanged.connect(self.update_speed_mode)
         layout1.addStretch()
 
         # FOV X control
@@ -163,6 +176,8 @@ class NL5Widget(QWidget):
     def show_settings_dialog(self):
         dialog = NL5SettingsDialog(self.nl5)
         dialog.exec_()
+        # the scan amplitude may have changed, which changes the frame rate for the same line speed
+        self._refresh_speed_display()
 
     def update_bypass(self, checked):
         self.nl5.set_bypass(checked)
@@ -171,11 +186,55 @@ class NL5Widget(QWidget):
     def update_exposure_delay(self, value):
         self.nl5.set_exposure_delay(value)
 
-    def update_line_speed(self, value):
-        self.nl5.set_line_speed(value)
+    def _speed_mode(self):
+        return self.speed_mode_combo.currentData() or "line_speed"
+
+    def _configure_speed_input(self):
+        """Set range, decimals and suffix for the current mode and show the device's current speed."""
+        box = self.line_speed_input
+        box.blockSignals(True)
+        if self._speed_mode() == "fps":
+            box.setDecimals(2)
+            box.setSingleStep(0.5)
+            box.setRange(self.nl5.line_speed_to_fps(LINE_SPEED_MIN), self.nl5.line_speed_to_fps(LINE_SPEED_MAX))
+            box.setSuffix(" fps")
+        else:
+            box.setDecimals(0)
+            box.setSingleStep(100)
+            box.setRange(LINE_SPEED_MIN, LINE_SPEED_MAX)
+            box.setSuffix(" mrad/s")
+        box.blockSignals(False)
+        self._refresh_speed_display()
+
+    def _refresh_speed_display(self):
+        """Show the device's current line speed in the selected unit without sending anything."""
+        box = self.line_speed_input
+        box.blockSignals(True)
+        if self._speed_mode() == "fps":
+            box.setRange(self.nl5.line_speed_to_fps(LINE_SPEED_MIN), self.nl5.line_speed_to_fps(LINE_SPEED_MAX))
+            box.setValue(self.nl5.line_speed_to_fps(self.nl5.line_speed))
+        else:
+            box.setValue(self.nl5.line_speed)
+        box.blockSignals(False)
+
+    def update_speed_mode(self, _index):
+        self.nl5.set_speed_input_mode(self._speed_mode())
+        self._configure_speed_input()
+
+    def apply_speed_input(self):
+        """Enter pressed: send the entered value to the device as a line speed."""
+        value = self.line_speed_input.value()
+        if self._speed_mode() == "fps":
+            line_speed = self.nl5.fps_to_line_speed(value)
+        else:
+            line_speed = value
+        self.nl5.set_line_speed(line_speed, save_setting=True)
+        # show what was actually applied (clamped / rounded)
+        self._refresh_speed_display()
 
     def update_fov_x(self, value):
         self.nl5.set_fov_x(value)
+        self._refresh_speed_display()
 
     def update_slit_width(self, _index):
         width = self.slit_combo.currentData()
