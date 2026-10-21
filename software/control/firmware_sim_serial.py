@@ -96,7 +96,6 @@ class FirmwareConstants:
             "ANALOG_WRITE_ONBOARD_DAC",
             "SET_DAC80508_REFDIV_GAIN",
             "SET_ILLUMINATION_INTENSITY_FACTOR",
-            "SET_LIM_SWITCH_POLARITY",
             "CONFIGURE_STEPPER_DRIVER",
             "SET_MAX_VELOCITY_ACCELERATION",
             "SET_LEAD_SCREW_PITCH",
@@ -216,7 +215,6 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 for cmd_id in [
                     self.fw.get("HOME_OR_ZERO"),
                     self.fw.get("SET_LIM"),
-                    self.fw.get("SET_LIM_SWITCH_POLARITY"),
                     self.fw.get("CONFIGURE_STEPPER_DRIVER"),
                     self.fw.get("SET_MAX_VELOCITY_ACCELERATION"),
                     self.fw.get("SET_LEAD_SCREW_PITCH"),

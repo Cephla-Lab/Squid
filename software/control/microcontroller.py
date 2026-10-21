@@ -51,7 +51,6 @@ _CMD_NAMES = {
     CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR: "SET_ILLUMINATION_INTENSITY_FACTOR",
     CMD_SET.MOVETO_W: "MOVETO_W",
     CMD_SET.MOVETO_W2: "MOVETO_W2",
-    CMD_SET.SET_LIM_SWITCH_POLARITY: "SET_LIM_SWITCH_POLARITY",
     CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
     CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
     CMD_SET.SET_LEAD_SCREW_PITCH: "SET_LEAD_SCREW_PITCH",
@@ -1364,13 +1363,6 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def set_limit_switch_polarity(self, axis, polarity):
-        cmd = bytearray(self.tx_buffer_length)
-        cmd[1] = CMD_SET.SET_LIM_SWITCH_POLARITY
-        cmd[2] = axis
-        cmd[3] = polarity
-        self.send_command(cmd)
-
     def set_home_safety_margin(self, axis, margin):
         margin = abs(margin)
         if margin > 0xFFFF:
@@ -1441,13 +1433,6 @@ class Microcontroller:
         self.set_max_velocity_acceleration(AXIS.Y, MAX_VELOCITY_Y_mm, MAX_ACCELERATION_Y_mm)
         self.wait_till_operation_is_completed()
         self.set_max_velocity_acceleration(AXIS.Z, MAX_VELOCITY_Z_mm, MAX_ACCELERATION_Z_mm)
-        self.wait_till_operation_is_completed()
-        # home switch
-        self.set_limit_switch_polarity(AXIS.X, X_HOME_SWITCH_POLARITY)
-        self.wait_till_operation_is_completed()
-        self.set_limit_switch_polarity(AXIS.Y, Y_HOME_SWITCH_POLARITY)
-        self.wait_till_operation_is_completed()
-        self.set_limit_switch_polarity(AXIS.Z, Z_HOME_SWITCH_POLARITY)
         self.wait_till_operation_is_completed()
         # home safety margin
         self.set_home_safety_margin(AXIS.X, int(X_HOME_SAFETY_MARGIN_UM))
