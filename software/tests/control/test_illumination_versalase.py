@@ -12,7 +12,7 @@ class FakeStradusHead:
     def __init__(self, li, maxp, delay=False, stale_reply=None):
         self.li = li
         self.state = {"MAXP": maxp, "LE": 0, "PUL": 0, "PP": 10.0, "LP": 0.0, "LPS": 10.0, "DELAY": int(delay)}
-        self.state.update({"FC": 0, "FD": "LASER EMISSION ACTIVE", "IL": 1, "BPT": 27, "OBT": 25.1, "LH": 1604.7})
+        self.state.update({"FC": 0, "FD": "LASER EMISSION ACTIVE", "IL": 1, "BPT": 27, "OBT": 25.1})
         self.reply = stale_reply  # a head keeps replaying its last response until acknowledged
         self.pending = []
         self.sent = []
@@ -192,7 +192,7 @@ def test_get_status_reports_every_head_in_wavelength_order(heads):
     s488 = statuses[1]
     assert s488.emission and s488.modulation and s488.interlock_closed
     assert s488.set_power_mw == pytest.approx(60.0)  # PP in TTL mode
-    assert s488.base_plate_temp_c == 27 and s488.optical_block_temp_c == 25.1 and s488.hours == 1604.7
+    assert s488.base_plate_temp_c == 27 and s488.optical_block_temp_c == 25.1
     assert s488.fault_description == "" and not s488.faulted
     assert statuses[3].fault_description == "WARMUP" and not statuses[3].faulted  # warm-up is a state, not a fault
     assert "?FD" not in heads[b"p405"].sent  # only asked for when there is something to describe

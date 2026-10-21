@@ -4,67 +4,68 @@ import threading
 from typing import Callable, List, Optional
 
 from qtpy.QtCore import QTimer, Signal
-from qtpy.QtGui import QColor
-from qtpy.QtWidgets import (
-    QAbstractItemView,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from qtpy.QtGui import QFontDatabase
+from qtpy.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from control.illumination_versalase import HeadStatus
 
 POLL_INTERVAL_MS = 3000
-COLUMNS = [
-    "Laser",
-    "Emission",
-    "Mode",
-    "Set / max (mW)",
-    "Measured (mW)",
-    "Base plate (°C)",
-    "Optical block (°C)",
-    "Interlock",
-    "Hours",
-    "Status",
-]
 RED = "#c0392b"
 AMBER = "#daa520"
 GREEN = "#2e8b57"
 GREY = "#888888"
+
+# ?FC laser states below the fault codes
+STANDBY = 1
+WARMUP = 2
 
 
 def _summary(statuses: List[HeadStatus]):
     """Return (color, text) for the summary line."""
     if not statuses:
         return GREY, "No lasers"
-    if any(s.faulted for s in statuses) or not all(s.interlock_closed for s in statuses):
+    if any(s.faulted or not s.interlock_closed for s in statuses):
         return RED, "Fault"
     if all(s.emission for s in statuses):
         return GREEN, "Ready"
     return AMBER, "Emission off"
 
 
-def _row(status: HeadStatus) -> List[str]:
-    return [
-        f"{status.wavelength} nm",
-        "On" if status.emission else "Off",
-        "TTL" if status.modulation else "CW",
-        f"{status.set_power_mw:.1f} / {status.max_power_mw:.1f}",
-        f"{status.measured_power_mw:.1f}",
-        f"{status.base_plate_temp_c:.1f}",
-        f"{status.optical_block_temp_c:.1f}",
-        "Closed" if status.interlock_closed else "OPEN",
-        f"{status.hours:.0f}",
-        status.fault_description or "OK",
-    ]
+def _head_color(status: HeadStatus) -> str:
+    if status.faulted or not status.interlock_closed:
+        return RED
+    if not status.emission:
+        return GREY
+    if status.fault_code & (STANDBY | WARMUP):
+        return AMBER
+    return GREEN
+
+
+def _head_line(status: HeadStatus) -> str:
+    if not status.interlock_closed:
+        state = "INTERLOCK OPEN"
+    else:
+        state = status.fault_description or "OK"
+    return (
+        f"{status.wavelength:>3} nm {'ON ' if status.emission else 'OFF'} {'TTL' if status.modulation else 'CW ':<3} "
+        f"{status.set_power_mw:5.1f}/{status.max_power_mw:5.1f} mW  out {status.measured_power_mw:4.1f}  "
+        f"{status.base_plate_temp_c:4.1f}/{status.optical_block_temp_c:4.1f} °C  {state}"
+    )
+
+
+def _head_tooltip(status: HeadStatus) -> str:
+    return (
+        f"S/N {status.serial_number}\n"
+        f"{'Digital modulation (TTL on the SMB input)' if status.modulation else 'CW'}\n"
+        f"Set {status.set_power_mw:.1f} mW of {status.max_power_mw:.1f} mW max, "
+        f"measured {status.measured_power_mw:.1f} mW\n"
+        f"Base plate {status.base_plate_temp_c:.1f} °C, optical block {status.optical_block_temp_c:.1f} °C\n"
+        f"Interlock {'closed' if status.interlock_closed else 'OPEN'}, fault code {status.fault_code}"
+    )
 
 
 class VersaLaseWidget(QWidget):
-    """Tab content showing live status of a VersaLase.
+    """Tab content showing live status of a VersaLase, one line per laser head.
 
     Status is read on a worker thread every few seconds, only while the tab is visible, and not while
     is_busy() returns True (an acquisition is running), so status queries never hold up a head when
@@ -79,6 +80,8 @@ class VersaLaseWidget(QWidget):
         self._versalase = versalase
         self._is_busy = is_busy
         self._poll_thread: Optional[threading.Thread] = None
+        self._head_dots: List[QLabel] = []
+        self._head_lines: List[QLabel] = []
         self._build_ui()
         self._status_ready.connect(self._on_status)
         self._poll_failed.connect(self._on_poll_failed)
@@ -87,7 +90,7 @@ class VersaLaseWidget(QWidget):
         self._timer.timeout.connect(self.poll)
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
+        self._layout = QVBoxLayout(self)
 
         top_row = QHBoxLayout()
         self._dot = QLabel("●")
@@ -98,22 +101,17 @@ class VersaLaseWidget(QWidget):
         top_row.addWidget(self._summary_label)
         top_row.addStretch(1)
         top_row.addWidget(self._paused_label)
-        layout.addLayout(top_row)
+        self._layout.addLayout(top_row)
 
         self._banner = QLabel("")
         self._banner.setStyleSheet(f"background-color: {RED}; color: white; padding: 4px;")
         self._banner.setWordWrap(True)
         self._banner.setVisible(False)
-        layout.addWidget(self._banner)
+        self._layout.addWidget(self._banner)
 
-        self._table = QTableWidget(0, len(COLUMNS))
-        self._table.setHorizontalHeaderLabels(COLUMNS)
-        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._table.setSelectionMode(QAbstractItemView.NoSelection)
-        self._table.verticalHeader().setVisible(False)
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self._table.horizontalHeader().setStretchLastSection(True)
-        layout.addWidget(self._table)
+        self._heads_layout = QVBoxLayout()
+        self._layout.addLayout(self._heads_layout)
+        self._layout.addStretch(1)
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -150,17 +148,29 @@ class VersaLaseWidget(QWidget):
         except RuntimeError:
             pass  # the widget was deleted while the read was in flight
 
+    def _ensure_head_rows(self, count: int) -> None:
+        while len(self._head_lines) < count:
+            row = QHBoxLayout()
+            dot = QLabel("●")
+            line = QLabel("—")
+            line.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))  # "monospace" is not fixed on Windows
+            row.addWidget(dot)
+            row.addWidget(line)
+            row.addStretch(1)
+            self._heads_layout.addLayout(row)
+            self._head_dots.append(dot)
+            self._head_lines.append(line)
+        for i, (dot, line) in enumerate(zip(self._head_dots, self._head_lines)):
+            dot.setVisible(i < count)
+            line.setVisible(i < count)
+
     def _on_status(self, statuses: List[HeadStatus]) -> None:
         self._banner.setVisible(False)
-        self._table.setRowCount(len(statuses))
-        for row, status in enumerate(statuses):
-            for column, text in enumerate(_row(status)):
-                item = QTableWidgetItem(text)
-                if (COLUMNS[column] == "Status" and status.faulted) or (
-                    COLUMNS[column] == "Interlock" and not status.interlock_closed
-                ):
-                    item.setForeground(QColor(RED))
-                self._table.setItem(row, column, item)
+        self._ensure_head_rows(len(statuses))
+        for status, dot, line in zip(statuses, self._head_dots, self._head_lines):
+            dot.setStyleSheet(f"color: {_head_color(status)};")
+            line.setText(_head_line(status))
+            line.setToolTip(_head_tooltip(status))
         color, text = _summary(statuses)
         self._set_summary(color, text)
 

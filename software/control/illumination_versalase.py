@@ -103,7 +103,6 @@ class HeadStatus:
     interlock_closed: bool
     fault_code: int
     fault_description: str  # empty when the fault code is 0 (emission active)
-    hours: float
 
     @property
     def faulted(self) -> bool:
@@ -362,7 +361,7 @@ class VersaLase(LightSource):
         return self.shutter_mode == ShutterControlMode.TTL and self.ttl_input == TtlInput.DIGITAL_MODULATION
 
     def get_status(self) -> List[HeadStatus]:
-        """Read every head's status, lowest wavelength first (about 10 queries per head)."""
+        """Read every head's status, lowest wavelength first (about 9 queries per head)."""
         return [self._head_status(head) for head in sorted(self.heads, key=lambda h: h.wavelength)]
 
     @staticmethod
@@ -382,7 +381,6 @@ class VersaLase(LightSource):
             interlock_closed=head.query_flag("?IL"),
             fault_code=fault_code,
             fault_description=head.transact("?FD") if fault_code else "",
-            hours=head.query_float("?LH"),
         )
 
     def shut_down(self):

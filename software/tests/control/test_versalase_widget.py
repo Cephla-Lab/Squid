@@ -1,7 +1,7 @@
 """Tests for the VersaLase status tab."""
 
 from control.illumination_versalase import HeadStatus
-from control.versalase_widget import COLUMNS, RED, VersaLaseWidget
+from control.versalase_widget import AMBER, GREEN, GREY, RED, VersaLaseWidget
 
 
 def _status(wavelength, **overrides):
@@ -10,15 +10,14 @@ def _status(wavelength, **overrides):
         serial_number=f"VL{wavelength}",
         max_power_mw=100.8,
         emission=True,
-        modulation=True,
-        set_power_mw=25.0,
+        modulation=False,
+        set_power_mw=20.2,
         measured_power_mw=0.1,
         base_plate_temp_c=27.0,
         optical_block_temp_c=25.1,
         interlock_closed=True,
         fault_code=0,
         fault_description="",
-        hours=1604.7,
     )
     values.update(overrides)
     return HeadStatus(**values)
@@ -37,39 +36,63 @@ class FakeVersaLase:
         return self.statuses
 
 
-def _cell(widget, row, column_name):
-    return widget._table.item(row, COLUMNS.index(column_name))
-
-
-def test_table_shows_one_row_per_head(qtbot):
-    laser = FakeVersaLase([_status(405), _status(639, emission=False, modulation=False)])
-    widget = VersaLaseWidget(laser)
+def _show_status(qtbot, statuses):
+    widget = VersaLaseWidget(FakeVersaLase(statuses))
     qtbot.addWidget(widget)
-
     widget.poll()
-    qtbot.waitUntil(lambda: widget._table.rowCount() == 2)
+    qtbot.waitUntil(lambda: len(widget._head_lines) == len(statuses))
+    return widget
 
-    assert _cell(widget, 0, "Laser").text() == "405 nm"
-    assert _cell(widget, 0, "Mode").text() == "TTL"
-    assert _cell(widget, 0, "Set / max (mW)").text() == "25.0 / 100.8"
-    assert _cell(widget, 0, "Status").text() == "OK"
-    assert _cell(widget, 1, "Emission").text() == "Off"
-    assert _cell(widget, 1, "Mode").text() == "CW"
+
+def _dot_color(widget, row):
+    return widget._head_dots[row].styleSheet().split("color:")[1].strip(" ;")
+
+
+def test_one_line_per_head(qtbot):
+    widget = _show_status(qtbot, [_status(405), _status(639, emission=False, max_power_mw=160.0)])
+
+    line_405 = widget._head_lines[0].text()
+    assert line_405.startswith("405 nm ON  CW ")
+    assert "20.2/100.8 mW" in line_405 and "out  0.1 " in line_405
+    assert "27.0/25.1 °C" in line_405 and line_405.endswith("OK")
+    assert _dot_color(widget, 0) == GREEN
+
+    assert widget._head_lines[1].text().startswith("639 nm OFF")
+    assert _dot_color(widget, 1) == GREY
     assert widget._summary_label.text() == "VersaLase: Emission off"
 
 
-def test_fault_is_shown_in_red(qtbot):
-    laser = FakeVersaLase([_status(488, fault_code=16, fault_description="INTERLOCK OPEN", interlock_closed=False)])
-    widget = VersaLaseWidget(laser)
-    qtbot.addWidget(widget)
+def test_hours_are_not_shown(qtbot):
+    widget = _show_status(qtbot, [_status(405)])
+    assert "h" not in widget._head_lines[0].text().replace("nm", "")
+    assert "hour" not in widget._head_lines[0].toolTip().lower()
 
-    widget.poll()
-    qtbot.waitUntil(lambda: widget._table.rowCount() == 1)
 
-    assert _cell(widget, 0, "Status").text() == "INTERLOCK OPEN"
-    assert _cell(widget, 0, "Status").foreground().color().name() == RED
-    assert _cell(widget, 0, "Interlock").text() == "OPEN"
+def test_fault_and_open_interlock_are_red(qtbot):
+    widget = _show_status(
+        qtbot,
+        [
+            _status(488, fault_code=16, fault_description="INTERLOCK OPEN", interlock_closed=False),
+            _status(561, fault_code=128, fault_description="DIODE TEMPERATURE FAULT"),
+        ],
+    )
+
+    assert widget._head_lines[0].text().endswith("INTERLOCK OPEN")
+    assert widget._head_lines[1].text().endswith("DIODE TEMPERATURE FAULT")
+    assert _dot_color(widget, 0) == RED and _dot_color(widget, 1) == RED
     assert widget._summary_label.text() == "VersaLase: Fault"
+
+
+def test_warmup_is_amber(qtbot):
+    widget = _show_status(qtbot, [_status(405, fault_code=2, fault_description="WARMUP")])
+    assert _dot_color(widget, 0) == AMBER
+    assert widget._head_lines[0].text().endswith("WARMUP")
+
+
+def test_tooltip_has_the_details(qtbot):
+    widget = _show_status(qtbot, [_status(405)])
+    tooltip = widget._head_lines[0].toolTip()
+    assert "S/N VL405" in tooltip and "Base plate 27.0 °C, optical block 25.1 °C" in tooltip
 
 
 def test_no_polling_during_acquisition(qtbot):
