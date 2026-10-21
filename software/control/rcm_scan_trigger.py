@@ -51,34 +51,44 @@ class RcmScanTrigger:
         self._frame_id = frame_id
         self._scan: Optional[threading.Thread] = None
         self._error: Optional[BaseException] = None
-        self._stuck = False
+        # Set whenever an aborted scan outlives the abort wait: the camera then still needs re-arming once
+        # that scan has returned, whether or not another trigger saw it stuck in the meantime.
+        self._rearm_pending = False
+        self._stuck_logged = False
 
     def trigger(self, unit, frame_time_s: float = 0.0) -> bool:
         """Scan one image on `unit`; False if it was not taken (stalled again after the retry, or a scan is stuck)."""
         if self._scan is not None and self._scan.is_alive():
             # Never call into the RCM DLL again while an earlier startAcquisition() is stuck in it.
-            if not self._stuck:
+            if not self._stuck_logged:
                 log.error("An aborted confocal scan is still stuck in startAcquisition(); dropping triggers")
-                self._stuck = True
+                self._stuck_logged = True
             return False
-        if self._stuck:
-            # The camera was never re-armed after that stall.
-            log.warning("The stuck confocal scan has returned; re-arming the camera")
-            self._stuck = False
+        self._stuck_logged = False
+        if self._rearm_pending:
+            log.warning("The aborted confocal scan has returned; re-arming the camera before scanning")
+            self._rearm_pending = False
             self._call_rearm()
 
         timeout_s = self._timeout_s + 3 * frame_time_s
         frame_id_before = self._frame_id() if self._frame_id else None
         if self._scan_once(unit, timeout_s):
             return True
-        if self._scan.is_alive() or self._rearm is None:
+        if self._scan.is_alive():
+            self._rearm_pending = True
+            return False
+        if self._rearm is None:
             return False
         if frame_id_before is not None and self._frame_id() != frame_id_before:
             log.warning("The aborted confocal scan had already exposed the camera; not retrying")
             return True
         log.warning("Re-arming the camera and retrying the scan once")
         self._call_rearm()
-        return self._scan_once(unit, timeout_s)
+        if self._scan_once(unit, timeout_s):
+            return True
+        if self._scan.is_alive():
+            self._rearm_pending = True
+        return False
 
     def _scan_once(self, unit, timeout_s: float) -> bool:
         self._error = None

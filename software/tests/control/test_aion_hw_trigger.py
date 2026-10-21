@@ -478,3 +478,45 @@ def test_piezo_stack_undoes_only_the_steps_taken(steps_taken, expected_um):
     )
     MultiPointWorker.move_z_back_after_stack(worker, steps_taken)
     assert worker.piezo.moves == [pytest.approx(expected_um)]
+
+
+def test_a_stuck_scan_that_returns_with_no_trigger_in_between_is_still_rearmed():
+    """The re-arm used to depend on another trigger seeing the scan stuck; with none in between it was skipped."""
+    from control.rcm_scan_trigger import RcmScanTrigger
+
+    rearms = []
+    trigger = RcmScanTrigger(timeout_s=0.1, rearm=lambda: rearms.append(1))
+    unit = StuckUnit()  # stays stuck after stop_continuous_acquisition()
+
+    assert trigger.trigger(unit) is False  # still alive after the abort wait
+    unit.release.set()  # ...and returns before any other trigger
+    trigger._scan.join(5)
+    unit.start_acquisition = lambda: None
+
+    assert trigger.trigger(unit) is True
+    assert rearms == [1]  # re-armed before that scan
+
+
+def test_a_retry_that_stays_stuck_is_rearmed_after_it_returns():
+    from control.rcm_scan_trigger import RcmScanTrigger
+
+    rearms = []
+    trigger = RcmScanTrigger(timeout_s=0.1, rearm=lambda: rearms.append(1))
+    unit = StallsUntilStopped(stalls=1)  # the first scan stops when asked...
+    retry_release = threading.Event()
+
+    def retry_stays_stuck():
+        unit.starts += 1
+        retry_release.wait(10)  # ...but the retry does not
+
+    original = unit.start_acquisition
+    unit.start_acquisition = lambda: original() if unit.starts == 0 else retry_stays_stuck()
+
+    assert trigger.trigger(unit) is False
+    assert rearms == [1]  # the re-arm before the retry
+    retry_release.set()
+    trigger._scan.join(5)
+    unit.start_acquisition = lambda: None
+
+    assert trigger.trigger(unit) is True
+    assert rearms == [1, 1]  # and again once the stuck retry had returned
