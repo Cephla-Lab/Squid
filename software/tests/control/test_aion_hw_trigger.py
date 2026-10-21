@@ -24,22 +24,26 @@ from tests.control.test_MultiPointController import TestAcquisitionTracker, add_
 
 
 class FakeConfocalUnit:
-    def __init__(self, camera, lose_frames_from_scan=None, stall=False):
+    def __init__(self, camera, lose_frames_from_scan=None, stall=False, stall_on_scans=()):
         self.camera = camera
         self.scans = 0
         self.stops = 0
         self.lose_frames_from_scan = lose_frames_from_scan
         self.stall = stall
+        self.stall_on_scans = set(stall_on_scans)
         self.release = threading.Event()
 
     def start_acquisition(self):
         self.scans += 1
-        if self.stall:
-            self.release.wait(10)  # the camera never reports ready
+        if self.stall or self.scans in self.stall_on_scans:
+            self.release.clear()
+            self.release.wait(10)  # the camera never reports ready, until the scan is aborted
             return
         time.sleep(0.005)  # the scan
         if self.lose_frames_from_scan is None or self.scans < self.lose_frames_from_scan:
-            self.camera._next_frame()
+            # Like the camera SDK: the frame arrives on another thread, not inside startAcquisition(), so the
+            # acquisition's frame handling doesn't count towards the scan's timeout.
+            threading.Thread(target=self.camera._next_frame, daemon=True).start()
 
     def stop_continuous_acquisition(self):
         self.stops += 1
@@ -53,7 +57,12 @@ class FakeConfocalUnit:
 
 
 @pytest.fixture
-def aion_scope(monkeypatch):
+def nl5_trigger_timeout_s():
+    return 2.0  # tests parametrize this to make a stalled scan time out quickly
+
+
+@pytest.fixture
+def aion_scope(monkeypatch, nl5_trigger_timeout_s):
     # ENABLE_NL5 stays off in control._def so the simulated build doesn't create its own NL5; the fake
     # unit is attached as addons.nl5 afterwards.
     for module in (control._def, control.core.multi_point_worker, control.core.live_controller):
@@ -61,10 +70,12 @@ def aion_scope(monkeypatch):
             monkeypatch.setattr(module, "ENABLE_NL5", True, raising=False)
         monkeypatch.setattr(module, "NL5_USE_DOUT", True, raising=False)
         monkeypatch.setattr(module, "NL5_USE_AOUT", False, raising=False)
-    control._def.MERGE_CHANNELS = False
+    monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    monkeypatch.setattr(control._def, "NL5_TRIGGER_TIMEOUT_S", nl5_trigger_timeout_s, raising=False)
     scope = control.microscope.Microscope.build_from_global_config(True)
     camera = scope.camera
     simulated_trigger = camera._send_trigger_imp
+    simulated_set_mode = camera._set_acquisition_mode_imp
 
     def tucsen_like_trigger(illumination_time=None):
         if camera.get_acquisition_mode() != CameraAcquisitionMode.HARDWARE_TRIGGER:
@@ -72,7 +83,13 @@ def aion_scope(monkeypatch):
         camera._last_trigger_timestamp = time.time()
         camera._hw_trigger_fn(illumination_time)
 
+    def tucsen_like_set_mode(acquisition_mode):
+        # Like the Tucsen: a mode change pauses streaming, which takes the camera's trigger lock.
+        with camera._pause_streaming():
+            simulated_set_mode(acquisition_mode)
+
     monkeypatch.setattr(camera, "_send_trigger_imp", tucsen_like_trigger)
+    monkeypatch.setattr(camera, "_set_acquisition_mode_imp", tucsen_like_set_mode)
     yield scope
     scope.close()
 
@@ -127,33 +144,63 @@ def test_a_lost_frame_stops_the_acquisition_promptly(aion_scope, monkeypatch):
     assert unit.scans == 3  # nothing more is triggered once the frame for scan 3 never came
 
 
-def test_a_stalled_scan_does_not_hold_the_camera(aion_scope, monkeypatch):
-    """A scan whose camera never reports ready held the camera's trigger lock forever (live view stalled)."""
-    monkeypatch.setattr(control._def, "NL5_TRIGGER_TIMEOUT_S", 0.2, raising=False)
-    scope = control.microscope.Microscope.build_from_global_config(True)  # picks up the short timeout
-    try:
-        unit = FakeConfocalUnit(scope.camera, stall=True)
-        scope.addons.nl5 = unit
-        scope.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-        scope.camera.start_streaming()
-        rearmed = []
-        set_mode = scope.camera.set_acquisition_mode
-        scope.camera.set_acquisition_mode = lambda mode: (rearmed.append(mode), set_mode(mode))
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_a_stalled_scan_is_aborted_rearmed_and_retried(aion_scope):
+    """A scan whose camera never reports ready used to hold the camera's trigger lock forever."""
+    camera = aion_scope.camera
+    unit = FakeConfocalUnit(camera, stall_on_scans={1})
+    aion_scope.addons.nl5 = unit
+    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    camera.start_streaming()
+    frames = []
+    camera.add_frame_callback(lambda frame: frames.append(frame.frame_id))
+    mode_changes = []
+    set_mode = camera.set_acquisition_mode
 
-        sender = threading.Thread(target=scope.camera._hw_trigger_fn, args=(10.0,), daemon=True)
-        sender.start()
-        sender.join(5)
+    def recording_set_mode(mode):
+        mode_changes.append((threading.current_thread().name, mode))
+        set_mode(mode)
 
-        assert not sender.is_alive()
-        assert unit.stops == 1  # the stuck scan was aborted
-        deadline = time.monotonic() + 5
-        while not rearmed and time.monotonic() < deadline:
-            time.sleep(0.05)
-        # ...and the camera re-armed, as toggling the trigger mode did by hand.
-        assert rearmed == [CameraAcquisitionMode.HARDWARE_TRIGGER]
-        assert scope.camera.get_is_streaming()
-    finally:
-        scope.close()
+    camera.set_acquisition_mode = recording_set_mode
+
+    sender = threading.Thread(target=camera.send_trigger, args=(10.0,), name="trigger", daemon=True)
+    sender.start()
+    time.sleep(0.05)  # the first scan is now stalled, with send_trigger holding the camera's lock
+    # A user switching to software trigger meanwhile waits for the trigger to finish, then wins.
+    toggler = threading.Thread(
+        target=camera.set_acquisition_mode, args=(CameraAcquisitionMode.SOFTWARE_TRIGGER,), name="user", daemon=True
+    )
+    toggler.start()
+    sender.join(10)
+    toggler.join(10)
+
+    assert not sender.is_alive() and not toggler.is_alive()
+    assert unit.stops == 1  # the stalled scan was aborted
+    assert unit.scans == 2  # ...and retried once
+    deadline = time.monotonic() + 5
+    while not frames and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(frames) == 1  # the retry delivered the image
+    # The re-arm ran on the triggering thread, inside send_trigger, before the user's change.
+    assert [c for c in mode_changes if c[0] == "trigger"] == [("trigger", CameraAcquisitionMode.HARDWARE_TRIGGER)]
+    assert camera.get_acquisition_mode() == CameraAcquisitionMode.SOFTWARE_TRIGGER
+    assert camera.get_is_streaming()
+
+
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_a_stall_during_an_acquisition_does_not_abort_it(aion_scope):
+    """A dropped trigger used to leave the acquisition waiting for a frame that never came, then abort."""
+    unit = FakeConfocalUnit(aion_scope.camera, stall_on_scans={3})
+    mpc, tracker = _fluorescence_acquisition(aion_scope, unit)
+    expected = mpc.get_acquisition_image_count()
+
+    mpc.run_acquisition()
+    assert tracker.started_event.wait(10)
+    assert tracker.finished_event.wait(60)
+
+    assert tracker.image_count == expected  # every image, including the one whose first scan stalled
+    assert unit.scans == expected + 1  # one retry
+    assert unit.stops == 1
 
 
 class StuckUnit:
@@ -187,8 +234,7 @@ def test_scan_trigger_times_out_and_never_calls_into_a_stuck_unit_again():
     assert unit.starts == 1
 
     unit.release.set()
-    time.sleep(0.1)
-    unit.release.clear()
+    trigger._scan.join(5)
     unit.start_acquisition = lambda: None
     assert trigger.trigger(unit) is True
 
@@ -204,51 +250,68 @@ def test_scan_trigger_passes_errors_through():
         RcmScanTrigger(timeout_s=1.0).trigger(Broken())
 
 
-def test_scan_trigger_runs_one_recovery_and_drops_triggers_meanwhile():
+class StallsUntilStopped(StuckUnit):
+    """A unit whose first `stalls` scans hang until stopContinuousAcquisition(); later scans succeed."""
+
+    def __init__(self, stalls):
+        super().__init__()
+        self.stalls = stalls
+
+    def start_acquisition(self):
+        self.starts += 1
+        if self.starts <= self.stalls:
+            self.release.clear()
+            self.release.wait(10)
+
+    def stop_continuous_acquisition(self):
+        self.stops += 1
+        self.release.set()
+
+
+def test_a_stall_is_rearmed_and_retried_on_the_calling_thread():
     from control.rcm_scan_trigger import RcmScanTrigger
 
-    recovering = threading.Event()
-    finish = threading.Event()
-    recoveries = []
+    rearms = []
+    trigger = RcmScanTrigger(timeout_s=0.1, rearm=lambda: rearms.append(threading.current_thread().name))
+    unit = StallsUntilStopped(stalls=1)
 
-    def recover():
-        recoveries.append(1)
-        recovering.set()
-        finish.wait(5)
+    assert trigger.trigger(unit) is True  # the retry succeeded
+    assert unit.starts == 2 and unit.stops == 1
+    assert rearms == [threading.current_thread().name]  # synchronous, not on a background thread
 
-    trigger = RcmScanTrigger(timeout_s=0.1, on_timeout=recover)
-    unit = StuckUnit()
-    unit.stop_continuous_acquisition = lambda: unit.release.set()  # this unit does stop when asked
+
+def test_a_retry_that_stalls_too_drops_the_trigger():
+    from control.rcm_scan_trigger import RcmScanTrigger
+
+    rearms = []
+    trigger = RcmScanTrigger(timeout_s=0.1, rearm=lambda: rearms.append(1))
+    unit = StallsUntilStopped(stalls=2)
 
     assert trigger.trigger(unit) is False
-    assert recovering.wait(5)
-    assert trigger.trigger(unit) is False  # dropped while the camera is being re-armed...
-    assert unit.starts == 1  # ...without starting a scan that could take the re-arm's ready signal
-    assert recoveries == [1]
-
-    finish.set()
-    trigger._recovery.join(5)
-    unit.start_acquisition = lambda: None
-    assert trigger.trigger(unit) is True  # normal again once the re-arm is done
+    assert unit.starts == 2 and unit.stops == 2
+    assert rearms == [1]  # one re-arm per trigger, not a loop
 
 
-def test_recovery_waits_for_the_aborted_scan_to_exit():
+def test_no_rearm_while_the_aborted_scan_is_still_stuck(caplog):
     """Re-arming while the aborted scan is still in startAcquisition() could let it deliver a late frame."""
     from control.rcm_scan_trigger import RcmScanTrigger
 
-    recoveries = []
-    trigger = RcmScanTrigger(timeout_s=0.1, on_timeout=lambda: recoveries.append(1))
+    rearms = []
+    trigger = RcmScanTrigger(timeout_s=0.1, rearm=lambda: rearms.append(1))
     unit = StuckUnit()  # stays stuck after stop_continuous_acquisition()
 
-    assert trigger.trigger(unit) is False  # times out; the scan stays alive past the 1 s abort wait
-    time.sleep(0.3)
-    assert recoveries == []  # not re-armed while the old scan is still running
     assert trigger.trigger(unit) is False
+    for _ in range(3):
+        assert trigger.trigger(unit) is False
+    assert rearms == []  # not re-armed while the old scan is still running
     assert unit.starts == 1  # and no new scan was started meanwhile
+    assert sum("still stuck" in r.getMessage() for r in caplog.records) == 1  # logged once, not per trigger
 
     unit.release.set()  # the old scan finally exits
-    trigger._recovery.join(5)
-    assert recoveries == [1]  # now the camera is re-armed
+    trigger._scan.join(5)
+    unit.start_acquisition = lambda: None
+    assert trigger.trigger(unit) is True
+    assert rearms == [1]  # re-armed before the next scan
 
 
 def _z_moves_during(scope, mpc, tracker, monkeypatch):
@@ -274,7 +337,7 @@ def _z_moves_during(scope, mpc, tracker, monkeypatch):
     ],
 )
 def test_z_returns_to_the_start_of_the_stack(aion_scope, monkeypatch, lose_frames_from_scan, stacking):
-    """An aborted stack used to undo all NZ - 1 steps, moving Z past where the stack started."""
+    """Z ends where the stack started, also when an abort leaves the z loop early (only the steps taken are undone)."""
     monkeypatch.setattr(MultiPointWorker, "_frame_wait_timeout_s", lambda self: 0.3)
     unit = FakeConfocalUnit(aion_scope.camera, lose_frames_from_scan=lose_frames_from_scan)
     mpc, tracker = _fluorescence_acquisition(aion_scope, unit, nz=10)

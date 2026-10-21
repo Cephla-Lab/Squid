@@ -385,6 +385,8 @@ class Microscope:
         def rearm_camera_after_stalled_scan():
             # The camera stopped signalling ready to the confocal unit. Re-applying hardware trigger mode
             # (stop streaming, set the trigger, start streaming) re-arms it, as toggling the trigger mode did.
+            # Runs on the triggering thread inside send_trigger(), which holds the camera's (reentrant)
+            # trigger lock, so the check and the set are not interleaved with another thread's mode change.
             try:
                 if camera.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
                     camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
@@ -392,9 +394,7 @@ class Microscope:
             except Exception as e:
                 cam_trigger_log.error(f"Could not re-arm the camera after a stalled confocal scan: {e}")
 
-        rcm_scan_trigger = RcmScanTrigger(
-            control._def.NL5_TRIGGER_TIMEOUT_S, on_timeout=rearm_camera_after_stalled_scan
-        )
+        rcm_scan_trigger = RcmScanTrigger(control._def.NL5_TRIGGER_TIMEOUT_S, rearm=rearm_camera_after_stalled_scan)
 
         def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
             # NOTE(imo): If this succeeds, it means we sent the request,
