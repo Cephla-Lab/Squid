@@ -27,7 +27,9 @@ void test_command_ids_are_unique(void) {
         SET_PORT_INTENSITY, TURN_ON_PORT, TURN_OFF_PORT,
         SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS,
         // Filter-wheel speed and diagnostics (firmware v1.6+)
-        SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW
+        SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW,
+        // Configurable limit switches
+        SET_LIMIT_SWITCH_CONFIG
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -59,7 +61,9 @@ void test_command_ids_fit_in_byte(void) {
         SET_PORT_INTENSITY, TURN_ON_PORT, TURN_OFF_PORT,
         SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS,
         // Filter-wheel speed and diagnostics (firmware v1.6+)
-        SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW
+        SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW,
+        // Configurable limit switches
+        SET_LIMIT_SWITCH_CONFIG
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);

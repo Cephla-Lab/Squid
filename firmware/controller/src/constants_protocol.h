@@ -86,6 +86,13 @@ static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 
                                               // not to an axis whose closed loop is enabled. Kept in these physical
                                               // units: a later microstepping or pitch change does not alter its width.
 // (45, 46, 48 and 50 are reserved for the closed-loop commands of the Z encoder work.)
+// Configurable limit switches. 45-63 are claimed by open branches, hence 64.
+static const int SET_LIMIT_SWITCH_CONFIG = 64;  // [2]=axis, [3]=LIMIT_SWITCH_* nibble (enable + polarity per side); saved to EEPROM
+// SET_LIMIT_SWITCH_CONFIG nibble
+static const int LIMIT_SWITCH_LEFT_ENABLED = 1;
+static const int LIMIT_SWITCH_RIGHT_ENABLED = 2;
+static const int LIMIT_SWITCH_LEFT_ACTIVE_HIGH = 4;
+static const int LIMIT_SWITCH_RIGHT_ACTIVE_HIGH = 8;
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_ENCODER_REPORTING modes
@@ -130,6 +137,8 @@ static const int AXIS_W2 = 6;
 
 // Button/switch bit positions in response packet
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
+static const int BIT_POS_Z_LIMIT_LEFT = 2;   // status byte 18: Z left limit switch triggered
+static const int BIT_POS_Z_LIMIT_RIGHT = 3;  // status byte 18: Z right limit switch triggered
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;
