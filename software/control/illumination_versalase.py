@@ -28,6 +28,7 @@ to acquisition.
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 import hid
@@ -70,6 +71,27 @@ EMISSION_DELAY_S = 5.0
 
 class VortranError(RuntimeError):
     pass
+
+
+@dataclass
+class HeadStatus:
+    wavelength: int
+    serial_number: str
+    max_power_mw: float
+    emission: bool
+    modulation: bool  # True: digital modulation (TTL gated), False: CW
+    set_power_mw: float  # PP with modulation, LP setting in CW
+    measured_power_mw: float
+    base_plate_temp_c: float
+    optical_block_temp_c: float
+    interlock_closed: bool
+    fault_code: int
+    fault_description: str  # empty when the fault code is 0 (emission active)
+    hours: float
+
+    @property
+    def faulted(self) -> bool:
+        return self.fault_code >= FAULT_INTERLOCK_OPEN
 
 
 class StradusHead:
@@ -302,6 +324,30 @@ class VersaLase(LightSource):
         else:
             power_mw = self._requested_power_mw.get(head.serial_number, head.query_float("?LPS"))
         return power_mw / head.max_power_mw * 100.0
+
+    def get_status(self) -> List[HeadStatus]:
+        """Read every head's status, lowest wavelength first (about 10 queries per head)."""
+        return [self._head_status(head) for head in sorted(self.heads, key=lambda h: h.wavelength)]
+
+    @staticmethod
+    def _head_status(head: StradusHead) -> HeadStatus:
+        modulation = head.query_flag("?PUL")
+        fault_code = int(head.transact("?FC"))
+        return HeadStatus(
+            wavelength=head.wavelength,
+            serial_number=head.serial_number,
+            max_power_mw=head.max_power_mw,
+            emission=head.query_flag("?LE"),
+            modulation=modulation,
+            set_power_mw=head.query_float("?PP" if modulation else "?LPS"),
+            measured_power_mw=head.query_float("?LP"),
+            base_plate_temp_c=head.query_float("?BPT"),
+            optical_block_temp_c=head.query_float("?OBT"),
+            interlock_closed=head.query_flag("?IL"),
+            fault_code=fault_code,
+            fault_description=head.transact("?FD") if fault_code else "",
+            hours=head.query_float("?LH"),
+        )
 
     def shut_down(self):
         for head in self.heads:

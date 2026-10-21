@@ -43,6 +43,7 @@ from control._def import *
 
 # app specific libraries
 from control.laser_engine_widget import LaserEngineWidget
+from control.versalase_widget import VersaLaseWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -711,6 +712,7 @@ class HighContentScreeningGui(QMainWindow):
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
         self.laserEngineWidget: Optional[LaserEngineWidget] = None
+        self.versaLaseWidget: Optional[VersaLaseWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
@@ -975,6 +977,13 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
+
+        if self.microscope.illumination_controller.light_source_type == LightSourceType.VersaLase:
+            self.versaLaseWidget = VersaLaseWidget(
+                self.microscope.illumination_controller.light_source,
+                is_busy=lambda: self.multipointController is not None
+                and self.multipointController.acquisition_in_progress(),
+            )
 
         self.recordingControlWidget = widgets.RecordingWidget(
             self.streamHandler,
@@ -1318,6 +1327,8 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget.addTab(self.focusMapWidget, "Focus Map")
         if self.laserEngineWidget:
             self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
+        if self.versaLaseWidget:
+            self.cameraTabWidget.addTab(self.versaLaseWidget, "VersaLase")
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 

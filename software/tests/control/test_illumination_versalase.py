@@ -12,6 +12,7 @@ class FakeStradusHead:
     def __init__(self, li, maxp, delay=False, stale_reply=None):
         self.li = li
         self.state = {"MAXP": maxp, "LE": 0, "PUL": 0, "PP": 10.0, "LP": 0.0, "LPS": 10.0, "DELAY": int(delay)}
+        self.state.update({"FC": 0, "FD": "LASER EMISSION ACTIVE", "IL": 1, "BPT": 27, "OBT": 25.1, "LH": 1604.7})
         self.reply = stale_reply  # a head keeps replaying its last response until acknowledged
         self.pending = []
         self.sent = []
@@ -49,8 +50,6 @@ class FakeStradusHead:
     def _execute(self, command):
         if command == "?LI":
             return f"?LI={self.li}"
-        if command == "?FC":
-            return "?FC=0"
         if command.startswith("?"):
             name = command[1:]
             if name == "LE" and self.le_polls_until_on is not None:
@@ -165,10 +164,7 @@ def test_no_reply_raises(heads):
 
 
 def test_interlock_fault_stops_initialize(heads):
-    heads[b"p561"]._execute = lambda command: (
-        "?FC=16" if command == "?FC" else FakeStradusHead._execute(heads[b"p561"], command)
-    )
-    heads[b"p561"].state["FD"] = "INTERLOCK OPEN"
+    heads[b"p561"].state.update({"FC": 16, "FD": "INTERLOCK OPEN"})
 
     with pytest.raises(RuntimeError, match="fault code 16"):
         versalase.VersaLase().initialize()
@@ -180,3 +176,21 @@ def test_shut_down_turns_emission_off_and_closes(heads):
     laser.shut_down()
     for fake in heads.values():
         assert fake.state["LE"] == 0 and fake.closed
+
+
+def test_get_status_reports_every_head_in_wavelength_order(heads):
+    laser = versalase.VersaLase()
+    laser.initialize()
+    laser.set_intensity(laser.channel_mappings[488], 40)
+    heads[b"p639"].state.update({"FC": 2, "FD": "WARMUP"})
+
+    statuses = laser.get_status()
+
+    assert [s.wavelength for s in statuses] == [405, 488, 561, 639]
+    s488 = statuses[1]
+    assert s488.emission and s488.modulation and s488.interlock_closed
+    assert s488.set_power_mw == pytest.approx(60.0)  # PP in TTL mode
+    assert s488.base_plate_temp_c == 27 and s488.optical_block_temp_c == 25.1 and s488.hours == 1604.7
+    assert s488.fault_description == "" and not s488.faulted
+    assert statuses[3].fault_description == "WARMUP" and not statuses[3].faulted  # warm-up is a state, not a fault
+    assert "?FD" not in heads[b"p405"].sent  # only asked for when there is something to describe
