@@ -970,6 +970,8 @@ class HighContentScreeningGui(QMainWindow):
             self.objectiveStore,
             self.objective_changer,
             focus_servo=self.stage.z_stage if USE_PI_FOCUS_STAGE else None,
+            z_in_use=lambda: self.autofocusController.autofocus_in_progress
+            or self.multipointController.acquisition_in_progress(),
         )
 
         if self.emission_filter_wheel:
