@@ -6,6 +6,8 @@
 - The disk space estimate does not trigger the camera.
 """
 
+import threading
+import time
 import types
 
 import pytest
@@ -67,19 +69,56 @@ def _run(mpc, tracker, timeout_s=60):
     assert tracker.finished_event.wait(timeout_s)
 
 
+class LateFrameConfocalUnit(FakeConfocalUnit):
+    """The scan returns at once; its frame arrives frame_delay_s later, like the camera's readout after the scan."""
+
+    def __init__(self, camera, events, frame_delay_s):
+        super().__init__(camera)
+        self.events = events
+        self.frame_delay_s = frame_delay_s
+
+    def start_acquisition(self):
+        self.scans += 1
+        self.events.append("scan")
+        threading.Thread(target=self._deliver_frame, daemon=True).start()
+
+    def _deliver_frame(self):
+        time.sleep(self.frame_delay_s)
+        self.events.append("frame")  # before the callbacks run, so whatever the frame unblocks comes after it
+        self.camera._next_frame()
+
+
 def test_confocal_unit_trigger_waits_for_the_frame_not_a_frame_time(aion_scope, monkeypatch):
-    """send_trigger() blocks through the scan; a further total-frame-time sleep ended long after the frame came."""
+    """send_trigger() blocks through the scan; a further total-frame-time sleep ended long after the frame came.
+
+    Nothing may move Z, switch channel or trigger again before the frame of the last scan has arrived, and no
+    image may wait a whole frame time once it has.
+    """
     frame_time_ms = 400.0
     monkeypatch.setattr(aion_scope.camera, "get_total_frame_time", lambda: frame_time_ms)
     sleeps = _record_sleeps(monkeypatch)
-    unit = FakeConfocalUnit(aion_scope.camera)  # each scan delivers its frame within a few ms
+    events = []
+    unit = LateFrameConfocalUnit(aion_scope.camera, events, frame_delay_s=0.15)
     mpc, tracker = _fluorescence_acquisition(aion_scope, unit)
     expected = mpc.get_acquisition_image_count()
+    move_z = aion_scope.stage.move_z
+    monkeypatch.setattr(aion_scope.stage, "move_z", lambda *a, **k: (events.append("move_z"), move_z(*a, **k)))
+    set_mode = mpc.liveController.set_microscope_mode
+    monkeypatch.setattr(
+        mpc.liveController, "set_microscope_mode", lambda *a, **k: (events.append("set_mode"), set_mode(*a, **k))
+    )
 
     _run(mpc, tracker)
 
     assert tracker.image_count == expected
     assert unit.scans == expected
+    frame_pending = False
+    for i, event in enumerate(events):
+        if event == "frame":
+            frame_pending = False
+            continue
+        assert not frame_pending, f"{event} before the last scan's frame arrived: {events[max(0, i - 4) : i + 1]}"
+        frame_pending = event == "scan"
     assert max(sleeps) < 0.5 * frame_time_ms / 1000  # no frame-time sleep after any trigger
 
 
@@ -157,8 +196,9 @@ def test_a_channel_counts_as_applied_only_while_it_is_unchanged_and_current(scop
     assert not _already_applied(applied, edited, edited)  # the channel was edited since it was applied
 
 
+@pytest.mark.parametrize("pseudo_color", [False, True])
 @pytest.mark.parametrize("trigger_mode", [TriggerMode.SOFTWARE, TriggerMode.HARDWARE])
-def test_disk_space_estimate_does_not_trigger_the_camera(scope, monkeypatch, trigger_mode):
+def test_disk_space_estimate_does_not_trigger_the_camera(scope, monkeypatch, trigger_mode, pseudo_color):
     """In hardware trigger mode the test frame never came (AION: a confocal scan, then a 1.1 s time-out)."""
     camera = scope.camera
     calls = []
@@ -167,6 +207,8 @@ def test_disk_space_estimate_does_not_trigger_the_camera(scope, monkeypatch, tri
     mpc = ts.get_test_multi_point_controller(microscope=scope)
     mpc.liveController.set_trigger_mode(trigger_mode)
     monkeypatch.setattr(control._def, "MERGE_CHANNELS", False)
+    # Pseudocolor turns a monochrome (height, width) image into (height, width, 3) before saving.
+    monkeypatch.setattr(control._def, "SAVE_IN_PSEUDO_COLOR", pseudo_color)
     mpc.scanCoordinates.clear_regions()
     mpc.scanCoordinates.add_single_fov_region(
         "single",

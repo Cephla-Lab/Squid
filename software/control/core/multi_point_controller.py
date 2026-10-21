@@ -577,7 +577,9 @@ class MultiPointController:
         # start), and in software trigger mode it was a dark frame, which compresses better than the real images.
         is_color = squid.abc.CameraPixelFormat.is_color_format(self.camera.get_pixel_format())
         width, height = self.camera.get_crop_size()
-        test_image = np.random.randint(2**16 - 1, size=(height, width, (3 if is_color else 1)), dtype=np.uint16)
+        # Shaped like the camera's frames: (height, width) monochrome, which pseudocolor saving turns into RGB.
+        shape = (height, width, 3) if is_color else (height, width)
+        test_image = np.random.randint(2**16 - 1, size=shape, dtype=np.uint16)
 
         # Depending on settings, we modify the image before saving.  This means we need to actually save an image
         # to see how much disk space it takes up.  This can be very wrong (eg: if we compress during saving, then
