@@ -83,6 +83,12 @@ class VersaLaseWidget(QWidget):
         self._head_dots: List[QLabel] = []
         self._head_lines: List[QLabel] = []
         self._build_ui()
+        # One line per head from the start: the settings panel sizes a tab from its size hint when the
+        # tab is selected, before the first status read would otherwise add the lines.
+        heads = sorted(getattr(versalase, "heads", []), key=lambda h: h.wavelength)
+        self._ensure_head_rows(len(heads))
+        for head, line in zip(heads, self._head_lines):
+            line.setText(f"{head.wavelength:>3} nm reading status…")
         self._status_ready.connect(self._on_status)
         self._poll_failed.connect(self._on_poll_failed)
         self._timer = QTimer(self)
@@ -152,6 +158,7 @@ class VersaLaseWidget(QWidget):
         while len(self._head_lines) < count:
             row = QHBoxLayout()
             dot = QLabel("●")
+            dot.setStyleSheet(f"color: {GREY};")
             line = QLabel("—")
             line.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))  # "monospace" is not fixed on Windows
             row.addWidget(dot)

@@ -1,5 +1,7 @@
 """Tests for the VersaLase status tab."""
 
+import types
+
 from control.illumination_versalase import HeadStatus
 from control.versalase_widget import AMBER, GREEN, GREY, RED, VersaLaseWidget
 
@@ -129,3 +131,17 @@ def test_polls_only_while_visible(qtbot):
 
     widget.hide()
     assert not widget._timer.isActive()
+
+
+def test_lines_exist_before_the_first_status_read(qtbot):
+    """The settings panel sizes the tab when it is selected, so all heads must be there from the start."""
+    laser = FakeVersaLase([_status(405), _status(488)])
+    laser.heads = [types.SimpleNamespace(wavelength=488), types.SimpleNamespace(wavelength=405)]
+    empty = VersaLaseWidget(FakeVersaLase())
+    widget = VersaLaseWidget(laser)
+    qtbot.addWidget(empty)
+    qtbot.addWidget(widget)
+
+    assert [line.text() for line in widget._head_lines] == ["405 nm reading status…", "488 nm reading status…"]
+    assert laser.calls == 0
+    assert widget.sizeHint().height() > empty.sizeHint().height()
