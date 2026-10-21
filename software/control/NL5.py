@@ -1,14 +1,109 @@
 import control.RCM_API as RCM_API
 import json
+import time
+
+import serial
+import serial.tools.list_ports
+
+
+RCM_INTERNAL_STAGE_SN = "AL05NB1GA"  # Set to USB serial number of the SmarAct SCU controller
+
+SLIT_POSITIONS_UM = {88: 1500, 44: 900, 22: 300, 33: -300, 66: -900, 132: -1500}
+
+
+class RCMInternalStage:
+    BAUD = 9600
+    ANSWER_TIMEOUT_S = 0.5
+    HOMING_WAIT_S = 15
+    REFERENCE_MOVE_WAIT_S = 2
+    COMMAND_GAP_S = 0.1
+    DEFAULT_HOLD_MS = 10
+    SLIT_CHANNEL = 0
+
+    def __init__(self, serial_number):
+        port = self._find_port(serial_number)
+        if port is None:
+            raise RuntimeError(
+                f"RCM internal stage with USB serial number '{serial_number}' not found"
+            )
+        self.ser = serial.Serial(
+            port=port,
+            baudrate=self.BAUD,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=self.ANSWER_TIMEOUT_S,
+            rtscts=False,
+            dsrdtr=False,
+            xonxoff=False,
+        )
+        self.ser.dtr = False
+        self.offset_um = 0.0
+        self.current_slit_um = None
+        self.home()
+
+    @staticmethod
+    def _find_port(serial_number):
+        for port in serial.tools.list_ports.comports():
+            if port.serial_number == serial_number:
+                return port.device
+        return None
+
+    def _send(self, command):
+        self.ser.reset_input_buffer()
+        self.ser.write(f":{command}\n".encode("ascii"))
+        time.sleep(self.COMMAND_GAP_S)
+
+    def home(self):
+        ch = self.SLIT_CHANNEL
+        self._send(f"SCLF{ch}F5000")
+        self._send(f"SST{ch}T22")
+        # CS homes the stage; sending commands during this aborts the process
+        self._send(f"CS{ch}")
+        time.sleep(self.HOMING_WAIT_S)
+        self._send(f"MTR{ch}Z1")
+        time.sleep(self.REFERENCE_MOVE_WAIT_S)
+        if self.current_slit_um is not None:
+            self.set_slit_width(self.current_slit_um)
+
+    def set_slit_width(self, width_um):
+        if width_um not in SLIT_POSITIONS_UM:
+            raise ValueError(
+                f"Unknown slit width {width_um} µm; expected one of {list(SLIT_POSITIONS_UM)}"
+            )
+        self.current_slit_um = width_um
+        target = SLIT_POSITIONS_UM[width_um] + int(round(self.offset_um))
+        self._send(f"MPA{self.SLIT_CHANNEL}P{target}H{self.DEFAULT_HOLD_MS}")
+
+    def set_offset(self, offset_um):
+        self.offset_um = offset_um
+        if self.current_slit_um is not None:
+            self.set_slit_width(self.current_slit_um)
+
+    def close(self):
+        if self.ser.is_open:
+            self.ser.close()
 
 
 class NL5:
 
     def __init__(self):
-
         self.rcm = RCM_API.RCM_API()
+        time.sleep(0.5)
+        data = self.rcm.get_available_devices()
+        print(f"Devices: {data}")
         self.rcm.initialize_device(simulated=False)
         self.load_settings()
+
+        self.internal_stage = None
+        if data and data.startswith("aion/"):
+            try:
+                self.internal_stage = RCMInternalStage(RCM_INTERNAL_STAGE_SN)
+                self.internal_stage.set_offset(self.slit_offset_um)
+                self.internal_stage.set_slit_width(self.slit_width_um)
+            except Exception as e:
+                print(f"Failed to initialize RCM internal stage: {e}")
+                self.internal_stage = None
 
     def set_scan_amplitude(self, amplitude):
         self.scan_amplitude = amplitude
@@ -20,6 +115,7 @@ class NL5:
 
     def start_acquisition(self):
         ret = self.rcm.start_acquisition()
+        print(f"Start acquisition: {ret}")
 
     def start_continuous_acquisition(self):
         self.rcm.start_acquisition()
@@ -60,6 +156,22 @@ class NL5:
         self.exposure_delay_ms = exposure_delay_ms
         self.rcm.set_integer_parameter(self.rcm.EXPOSURE_DELAY, exposure_delay_ms)
 
+    def set_slit_width(self, width_um):
+        self.slit_width_um = width_um
+        if self.internal_stage is not None:
+            self.internal_stage.set_slit_width(width_um)
+        self.save_settings()
+
+    def set_slit_offset(self, offset_um):
+        self.slit_offset_um = offset_um
+        if self.internal_stage is not None:
+            self.internal_stage.set_offset(offset_um)
+        self.save_settings()
+
+    def home_internal_stage(self):
+        if self.internal_stage is not None:
+            self.internal_stage.home()
+
     def load_settings(self):
         try:
             with open("NL5_settings.json", "r") as file:
@@ -70,6 +182,8 @@ class NL5:
                 self.fov_x = settings.get("fov_x", 2048)
                 self.exposure_delay_ms = settings.get("exposure_delay_ms", 30)
                 self.line_speed = settings.get("line_speed", 3000)
+                self.slit_width_um = settings.get("slit_width_um", 88)
+                self.slit_offset_um = settings.get("slit_offset_um", 0.0)
 
         except FileNotFoundError:
             self.scan_amplitude = 70.0
@@ -78,6 +192,8 @@ class NL5:
             self.exposure_delay_ms = 30
             self.line_speed = 3000
             self.fov_x = 2048
+            self.slit_width_um = 88
+            self.slit_offset_um = 0.0
 
     def save_settings(self):
         settings = {
@@ -87,6 +203,8 @@ class NL5:
             "fov_x": self.fov_x,
             "exposure_delay_ms": self.exposure_delay_ms,
             "line_speed": self.line_speed,
+            "slit_width_um": self.slit_width_um,
+            "slit_offset_um": self.slit_offset_um,
         }
         with open("NL5_settings.json", "w") as file:
             json.dump(settings, file)
@@ -96,6 +214,7 @@ class NL5_Simulation:
 
     def __init__(self):
         self.load_settings()
+        self.internal_stage = None
 
     def set_scan_amplitude(self, amplitude):
         self.scan_amplitude = amplitude

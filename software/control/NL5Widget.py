@@ -10,10 +10,14 @@ from qtpy.QtWidgets import (
     QSpinBox,
     QPushButton,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
+    QSizePolicy,
 )
 from qtpy.QtCore import Qt
+
+from control.NL5 import SLIT_POSITIONS_UM
 
 
 class NL5SettingsDialog(QDialog):
@@ -44,11 +48,29 @@ class NL5SettingsDialog(QDialog):
         self.bypass_offset_input.setValue(self.nl5.bypass_offset)
         layout.addWidget(self.bypass_offset_input, 2, 1)
 
+        # Slit offset control and home button (only when internal stage is present)
+        self.slit_offset_input = None
+        self.home_stage_button = None
+        next_row = 3
+        if self.nl5.internal_stage is not None:
+            layout.addWidget(QLabel("Slit Offset"), next_row, 0)
+            self.slit_offset_input = QDoubleSpinBox()
+            self.slit_offset_input.setRange(-500, 500)
+            self.slit_offset_input.setSuffix(" µm")
+            self.slit_offset_input.setValue(self.nl5.slit_offset_um)
+            layout.addWidget(self.slit_offset_input, next_row, 1)
+            next_row += 1
+
+            self.home_stage_button = QPushButton("Home Stage")
+            self.home_stage_button.clicked.connect(self.nl5.home_internal_stage)
+            layout.addWidget(self.home_stage_button, next_row, 0, 1, 2)
+            next_row += 1
+
         # Dialog buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons, 3, 0, 1, 2)
+        layout.addWidget(buttons, next_row, 0, 1, 2)
 
         self.setLayout(layout)
 
@@ -56,6 +78,8 @@ class NL5SettingsDialog(QDialog):
         self.nl5.set_scan_amplitude(self.scan_amplitude_input.value())
         self.nl5.set_offset_x(self.offset_x_input.value())
         self.nl5.set_bypass_offset(self.bypass_offset_input.value())
+        if self.slit_offset_input is not None:
+            self.nl5.set_slit_offset(self.slit_offset_input.value())
         self.nl5.save_settings()
         super().accept()
 
@@ -99,6 +123,22 @@ class NL5Widget(QWidget):
         self.fov_x_input.valueChanged.connect(self.update_fov_x)
         layout1.addWidget(self.fov_x_input)
 
+        # Slit selector (only when internal stage is present)
+        self.slit_combo = None
+        if self.nl5.internal_stage is not None:
+            slit_label = QLabel("Slit")
+            slit_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            layout2.addWidget(slit_label)
+            self.slit_combo = QComboBox()
+            for width in SLIT_POSITIONS_UM:
+                self.slit_combo.addItem(f"{width} µm", width)
+            index = self.slit_combo.findData(self.nl5.slit_width_um)
+            if index >= 0:
+                self.slit_combo.setCurrentIndex(index)
+            self.slit_combo.currentIndexChanged.connect(self.update_slit_width)
+            self.slit_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+            layout2.addWidget(self.slit_combo)
+
         # Bypass control
         self.bypass_button = QPushButton("Enable Bypass")
         self.bypass_button.setCheckable(True)
@@ -136,6 +176,11 @@ class NL5Widget(QWidget):
 
     def update_fov_x(self, value):
         self.nl5.set_fov_x(value)
+
+    def update_slit_width(self, _index):
+        width = self.slit_combo.currentData()
+        if width is not None:
+            self.nl5.set_slit_width(width)
 
 
 if __name__ == "__main__":

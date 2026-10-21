@@ -173,7 +173,7 @@ class ImageArrayDisplayWindow(QMainWindow):
         self.setCentralWidget(self.widget)
 
         # set window size
-        desktopWidget = QDesktopWidget()
+        desktopWidget = QApplication.primaryScreen().geometry()  # QDesktopWidget was removed in Qt6
         width = min(desktopWidget.height() * 0.9, 1000)  # @@@TO MOVE@@@#
         height = width
         self.setFixedSize(width, height)

@@ -229,7 +229,7 @@ class NoFileCompleter(IPCompleter):
 
 
 class JupyterWidget(QWidget):
-    """Widget that embeds a Jupyter console with PyQt5 integration"""
+    """Widget that embeds a Jupyter console with Qt (qtpy) integration"""
 
     kernel_ready = Signal()  # Signal emitted when kernel is ready
 
