@@ -2924,7 +2924,9 @@ class HighContentScreeningGui(QMainWindow):
         if self.emission_filter_wheel:
             try:
                 if not for_restart:
-                    self.emission_filter_wheel.set_filter_wheel_position({1: 1})
+                    self.emission_filter_wheel.set_filter_wheel_position(
+                        {self.emission_filter_wheel.available_filter_wheels[0]: 1}
+                    )
                 self.emission_filter_wheel.close()
             except Exception:
                 if for_restart:
