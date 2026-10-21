@@ -221,9 +221,9 @@ void init_stages()
   // This must precede the first tmc_driver_set_current() below. tmc4361A_init()
   // just above zeroed both fields, and a TMC2660 axis asked for current with
   // r_sense = 0 encodes CS = 0 - minimum current, a stage that cannot move.
-  tmc4361[x].r_sense = R_sense_xy;  tmc4361[x].current_range = CURRENT_RANGE_XY;
-  tmc4361[y].r_sense = R_sense_xy;  tmc4361[y].current_range = CURRENT_RANGE_XY;
-  tmc4361[z].r_sense = R_sense_z;   tmc4361[z].current_range = CURRENT_RANGE_Z;
+  tmc4361[x].r_sense = R_sense_xy;  tmc4361[x].current_range = tmc4361[x].current_range_floor = CURRENT_RANGE_XY;
+  tmc4361[y].r_sense = R_sense_xy;  tmc4361[y].current_range = tmc4361[y].current_range_floor = CURRENT_RANGE_XY;
+  tmc4361[z].r_sense = R_sense_z;   tmc4361[z].current_range = tmc4361[z].current_range_floor = CURRENT_RANGE_Z;
 
   // SPI
   SPI.begin();

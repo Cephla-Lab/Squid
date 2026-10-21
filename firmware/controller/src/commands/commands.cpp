@@ -260,6 +260,7 @@ static void init_filterwheel_axis(uint8_t axis)
     // encodes CS = 0, i.e. minimum current.
     tmc4361[axis].r_sense = R_sense_w;
     tmc4361[axis].current_range = CURRENT_RANGE_W;
+    tmc4361[axis].current_range_floor = CURRENT_RANGE_W;
 
     // Probe EVERY time this runs, not only on the first INITFILTERWHEEL.
     // tmc4361A_init() on the first line of this function resets driver_type to

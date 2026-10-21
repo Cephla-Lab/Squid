@@ -118,6 +118,26 @@ void test_mres_rejects_illegal_values(void) {
     TEST_ASSERT_EQUAL_UINT8(TMC_MRES_INVALID, tmc_microsteps_to_mres(512));
 }
 
+void test_tmc2240_select_range_keeps_the_floor_when_it_fits(void) {
+    TEST_ASSERT_EQUAL_UINT8(0, tmc2240_select_range(500.0f, 0));   // stock Z
+    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(1000.0f, 1));  // stock X/Y
+    TEST_ASSERT_EQUAL_UINT8(2, tmc2240_select_range(1900.0f, 2));  // stock W
+    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(490.0f, 1));   // _def.py X/Y default
+    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(600.0f, 1));   // legacy .txt configs
+    TEST_ASSERT_EQUAL_UINT8(2, tmc2240_select_range(1000.0f, 2));  // reduced W tuner current
+}
+void test_tmc2240_select_range_steps_up_only_when_needed(void) {
+    TEST_ASSERT_EQUAL_UINT8(0, tmc2240_select_range(692.0f, 0));
+    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(693.0f, 0));
+    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(1000.0f, 0));  // Stowers Z
+    TEST_ASSERT_EQUAL_UINT8(2, tmc2240_select_range(1500.0f, 0));
+    TEST_ASSERT_EQUAL_UINT8(2, tmc2240_select_range(1500.0f, 1));
+}
+void test_tmc2240_select_range_refuses_above_the_ceiling(void) {
+    TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2240_select_range(2122.0f, 0));
+    TEST_ASSERT_EQUAL_UINT8(TMC_CURRENT_OUT_OF_RANGE, tmc2240_select_range(3000.0f, 2));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_tmc2660_shipped_xy);
@@ -133,6 +153,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_tmc2240_irun_zero_current);
     RUN_TEST(test_tmc2240_ifs_values);
     RUN_TEST(test_tmc2240_selected_ranges_land_in_recommended_band);
+    RUN_TEST(test_tmc2240_select_range_keeps_the_floor_when_it_fits);
+    RUN_TEST(test_tmc2240_select_range_steps_up_only_when_needed);
+    RUN_TEST(test_tmc2240_select_range_refuses_above_the_ceiling);
     RUN_TEST(test_mres_all_legal_values);
     RUN_TEST(test_mres_rejects_illegal_values);
     return UNITY_END();

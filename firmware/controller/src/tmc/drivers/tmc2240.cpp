@@ -203,9 +203,13 @@ void tmc2240_driver_init(TMC4361ATypeDef *tmc4361A, uint32_t clk_Hz_TMC4361)
 
 bool tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma, float hold_ratio)
 {
-    uint8_t irun = tmc2240_irun(current_rms_ma, tmc4361A->current_range);
+    /* CURRENT_RANGE is a floor: stay on it when the request fits, step up only
+       when it does not. Every stock current fits its floor. */
+    uint8_t range = tmc2240_select_range(current_rms_ma, tmc4361A->current_range_floor);
+    if (range == TMC_CURRENT_OUT_OF_RANGE) return false;
+    uint8_t irun = tmc2240_irun(current_rms_ma, range);
     if (irun == TMC2240_IRUN_OUT_OF_RANGE) {
-        /* Requested current exceeds this CURRENT_RANGE. Refuse rather than
+        /* Requested current exceeds the highest range. Refuse rather than
            clamp: a silently under-currented axis stalls under load instead of
            reporting a fault. The axis stays at whatever current it had.
            Returning here is also what keeps the 0xFF sentinel away from
@@ -250,8 +254,22 @@ bool tmc2240_driver_set_current(TMC4361ATypeDef *tmc4361A, float current_rms_ma,
       1.0, and not hold_ratio^2. Only hardware settles which reading is true;
       this choice is the one that is safe in all of them.
     */
+    /* The current on the wire must never exceed the higher of the old and new
+       request while the two registers are momentarily out of step. IRUN is a
+       fraction of full scale, so stepping UP writes IHOLD_IRUN first (the
+       smaller fraction of the old scale) and DRV_CONF second; stepping DOWN
+       writes DRV_CONF first. */
+    bool range_changed = (range != tmc4361A->current_range);
+    bool range_up      = (range > tmc4361A->current_range);
+    if (range_changed && !range_up) {
+        tmc2240_cover_write(tmc4361A, TMC2240_REG_DRV_CONF, tmc2240_drv_conf_value(range));
+    }
     tmc2240_cover_write(tmc4361A, TMC2240_REG_IHOLD_IRUN,
                         tmc2240_ihold_irun_value(irun, irun, TMC2240_DEFAULT_IHOLDDELAY));
+    if (range_up) {
+        tmc2240_cover_write(tmc4361A, TMC2240_REG_DRV_CONF, tmc2240_drv_conf_value(range));
+    }
+    tmc4361A->current_range = range;
 
     /* The TMC4361A-side scale values are driver-agnostic and carry the hold
        reduction. HOLD_SCALE_VAL is an 8-bit field at bit 24 of SCALE_VALUES and
