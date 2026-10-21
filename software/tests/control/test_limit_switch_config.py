@@ -25,7 +25,7 @@ def test_default_config_byte_is_stock_for_every_axis():
     assert [limit_switch_config_byte(a) for a in "xyz"] == [0x03, 0x03, 0x03]
 
 
-def test_stowers_z_both_active_high(monkeypatch):
+def test_z_lift_both_active_high(monkeypatch):
     monkeypatch.setattr(LIMIT_SWITCHES, "Z_LEFT_ACTIVE_HIGH", True)
     monkeypatch.setattr(LIMIT_SWITCHES, "Z_RIGHT_ACTIVE_HIGH", True)
     assert limit_switch_config_byte("z") == 0x0F

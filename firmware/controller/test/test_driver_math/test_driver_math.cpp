@@ -129,7 +129,7 @@ void test_tmc2240_select_range_keeps_the_floor_when_it_fits(void) {
 void test_tmc2240_select_range_steps_up_only_when_needed(void) {
     TEST_ASSERT_EQUAL_UINT8(0, tmc2240_select_range(692.0f, 0));
     TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(693.0f, 0));
-    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(1000.0f, 0));  // Stowers Z
+    TEST_ASSERT_EQUAL_UINT8(1, tmc2240_select_range(1000.0f, 0));  // Z lift
     TEST_ASSERT_EQUAL_UINT8(2, tmc2240_select_range(1500.0f, 0));
     TEST_ASSERT_EQUAL_UINT8(2, tmc2240_select_range(1500.0f, 1));
 }
