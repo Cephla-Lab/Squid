@@ -550,6 +550,23 @@ void test_status_byte_18_reports_the_z_limit_inputs(void)
     TEST_ASSERT_NOT_NULL(strstr(ser, "BIT_POS_Z_LIMIT_LEFT"));
 }
 
+void test_command_20_is_retired(void)
+{
+    const char *cmds = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(cmds);
+    TEST_ASSERT_EQUAL(0, count_occurrences(cmds, "cmd_map[SET_LIM_SWITCH_POLARITY]"));
+    const char *stage = load_source("src/commands/stage_commands.cpp");
+    TEST_ASSERT_NOT_NULL(stage);
+    TEST_ASSERT_EQUAL(0, count_occurrences(stage, "LIM_SWITCH_X_ACTIVE_LOW"));
+    const char *defs = load_source("src/global_defs.cpp");
+    TEST_ASSERT_NOT_NULL(defs);
+    TEST_ASSERT_EQUAL(0, count_occurrences(defs, "LIM_SWITCH_X_ACTIVE_LOW"));
+    const char *proto = load_source("src/constants_protocol.h");
+    TEST_ASSERT_NOT_NULL(proto);
+    TEST_ASSERT_NOT_NULL(strstr(proto, "SET_LIM_SWITCH_POLARITY = 20"));
+    TEST_ASSERT_EQUAL(0, count_occurrences(proto, "static const int DISABLED"));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -594,6 +611,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stored_config_is_loaded_before_the_inputs_are_programmed);
     RUN_TEST(test_set_limit_switch_config_is_registered);
     RUN_TEST(test_status_byte_18_reports_the_z_limit_inputs);
+    RUN_TEST(test_command_20_is_retired);
 
     return UNITY_END();
 }

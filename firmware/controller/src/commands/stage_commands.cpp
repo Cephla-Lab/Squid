@@ -267,37 +267,6 @@ void callback_set_lim()
     }
 }
 
-void callback_set_lim_switch_polarity()
-{
-    switch (buffer_rx[2])
-    {
-        case AXIS_X:
-        {
-            if (buffer_rx[3] != DISABLED)
-            {
-            LIM_SWITCH_X_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-            }
-            break;
-        }
-        case AXIS_Y:
-        {
-            if (buffer_rx[3] != DISABLED)
-            {
-            LIM_SWITCH_Y_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-            }
-            break;
-        }
-        case AXIS_Z:
-        {
-            if (buffer_rx[3] != DISABLED)
-            {
-            LIM_SWITCH_Z_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-            }
-            break;
-        }
-    }
-}
-
 void callback_set_home_safety_margin()
 {
     switch (buffer_rx[2])
@@ -670,25 +639,6 @@ void callback_home_or_zero()
                 tmc4361A_setSpeed(&tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], RGHT_DIR * HOMING_VELOCITY_X * MAX_VELOCITY_X_mm ));
             }
             }
-            /*
-            if(digitalRead(X_LIM)==(LIM_SWITCH_X_ACTIVE_LOW?HIGH:LOW))
-            {
-            is_homing_X = true;
-            if(homing_direction_X==HOME_NEGATIVE)
-                stepper_X.setSpeed(-HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            else
-                stepper_X.setSpeed(HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            }
-            else
-            {
-            // get out of the hysteresis zone
-            is_preparing_for_homing_X = true;
-            if(homing_direction_X==HOME_NEGATIVE)
-                stepper_X.setSpeed(HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            else
-                stepper_X.setSpeed(-HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            }
-            */
             break;
         case AXIS_Y:
             if (stage_PID_enabled[AXIS_Y] == 1)

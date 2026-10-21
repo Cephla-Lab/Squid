@@ -45,6 +45,7 @@ static const int SET_DAC80508_REFDIV_GAIN = 16;
 static const int SET_ILLUMINATION_INTENSITY_FACTOR = 17;
 static const int MOVETO_W = 18;
 static const int MOVE_W2 = 19;
+// RETIRED: opcode 20 has no handler (it never had an effect); an unknown opcode is a no-op. Never reuse 20.
 static const int SET_LIM_SWITCH_POLARITY = 20;
 static const int CONFIGURE_STEPPER_DRIVER = 21;
 static const int SET_MAX_VELOCITY_ACCELERATION = 22;
@@ -147,11 +148,6 @@ static const int LIM_CODE_Y_POSITIVE = 2;
 static const int LIM_CODE_Y_NEGATIVE = 3;
 static const int LIM_CODE_Z_POSITIVE = 4;
 static const int LIM_CODE_Z_NEGATIVE = 5;
-
-// Limit switch polarity
-static const int ACTIVE_LOW = 0;
-static const int ACTIVE_HIGH = 1;
-static const int DISABLED = 2;
 
 /***************************************************************************************************/
 /***************************************** Illumination ********************************************/

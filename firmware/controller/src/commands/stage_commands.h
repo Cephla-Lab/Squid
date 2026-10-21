@@ -28,7 +28,6 @@ void callback_move_to_z();
 void callback_move_to_w();
 void callback_move_to_w2();
 void callback_set_lim();
-void callback_set_lim_switch_polarity();
 void callback_set_home_safety_margin();
 void callback_set_limit_switch_config();
 void callback_set_pid_arguments();
