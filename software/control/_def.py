@@ -1026,6 +1026,9 @@ NL5_USE_AOUT = False
 NL5_USE_DOUT = True
 NL5_TRIGGER_PIN = 2
 NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 638: 4, 640: 4}
+# AION only: USB serial number of the SmarAct SCU controller driving the internal slit stage
+# (the FTDI port's SER field, e.g. "SCU"). The slit width/offset controls appear only when it connects.
+RCM_INTERNAL_STAGE_SN = "AL05NB1GA"
 
 # Laser AF characterization mode
 LASER_AF_CHARACTERIZATION_MODE = False

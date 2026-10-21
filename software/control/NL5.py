@@ -1,4 +1,6 @@
 import control.RCM_API as RCM_API
+import control._def
+import squid.logging
 import json
 import time
 
@@ -6,7 +8,9 @@ import serial
 import serial.tools.list_ports
 
 
-RCM_INTERNAL_STAGE_SN = "AL05NB1GA"  # Set to USB serial number of the SmarAct SCU controller
+# USB serial number of the SmarAct SCU controller that drives the AION internal (slit) stage.
+# Configure per machine with RCM_INTERNAL_STAGE_SN in the .ini (e.g. "SCU", "AL05NB1GA").
+DEFAULT_RCM_INTERNAL_STAGE_SN = "AL05NB1GA"
 
 SLIT_POSITIONS_UM = {88: 1500, 44: 900, 22: 300, 33: -300, 66: -900, 132: -1500}
 
@@ -21,6 +25,7 @@ class RCMInternalStage:
     SLIT_CHANNEL = 0
 
     def __init__(self, serial_number):
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         port = self._find_port(serial_number)
         if port is None:
             raise RuntimeError(
@@ -40,6 +45,7 @@ class RCMInternalStage:
         self.ser.dtr = False
         self.offset_um = 0.0
         self.current_slit_um = None
+        self._log.info(f"RCM internal stage (SmarAct SCU, USB SN '{serial_number}') connected on {port}; homing")
         self.home()
 
     @staticmethod
@@ -88,21 +94,34 @@ class RCMInternalStage:
 class NL5:
 
     def __init__(self):
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.rcm = RCM_API.RCM_API()
         time.sleep(0.5)
         data = self.rcm.get_available_devices()
-        print(f"Devices: {data}")
+        self._log.info(f"RCM devices: {data!r}")
         self.rcm.initialize_device(simulated=False)
         self.load_settings()
 
+        # Device type per RCM_API.h: Dev_NL5 = 4, Dev_AION = 5. The AION is the line scanner with the
+        # internal slit stage; the available-devices string ("aion/<name>") is the fallback when the
+        # type query is unavailable.
+        self.device_type = self.rcm.get_device_type()
+        self.is_aion = self.device_type == getattr(self.rcm, "Dev_AION", 5) or bool(data and "aion/" in data)
+        self.device_name = "AION" if self.is_aion else "NL5"
+        self._log.info(f"RCM device type {self.device_type} -> {self.device_name}")
+
         self.internal_stage = None
-        if data and data.startswith("aion/"):
+        if self.is_aion:
+            sn = getattr(control._def, "RCM_INTERNAL_STAGE_SN", None) or DEFAULT_RCM_INTERNAL_STAGE_SN
             try:
-                self.internal_stage = RCMInternalStage(RCM_INTERNAL_STAGE_SN)
+                self.internal_stage = RCMInternalStage(sn)
                 self.internal_stage.set_offset(self.slit_offset_um)
                 self.internal_stage.set_slit_width(self.slit_width_um)
             except Exception as e:
-                print(f"Failed to initialize RCM internal stage: {e}")
+                self._log.error(
+                    f"Failed to initialize the RCM internal (slit) stage with USB SN '{sn}': {e}. "
+                    "Slit controls will be hidden; set RCM_INTERNAL_STAGE_SN in the .ini to the SCU controller's USB serial number."
+                )
                 self.internal_stage = None
 
     def set_scan_amplitude(self, amplitude):
@@ -215,6 +234,9 @@ class NL5_Simulation:
     def __init__(self):
         self.load_settings()
         self.internal_stage = None
+        self.device_type = 4
+        self.is_aion = False
+        self.device_name = "NL5"
 
     def set_scan_amplitude(self, amplitude):
         self.scan_amplitude = amplitude
