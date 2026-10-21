@@ -292,6 +292,9 @@ class LIMIT_SWITCH_BITS:
 
 
 LIMIT_SWITCH_DEFAULT_CONFIG = 0x03  # both inputs enabled, both active low
+# First firmware with SET_LIMIT_SWITCH_CONFIG. The single source for the Microcontroller's gate, FirmwareSimSerial's
+# cutoff and the tests' versions.
+LIMIT_SWITCH_CONFIG_MIN_FIRMWARE = (1, 7)
 
 
 class LIMIT_SWITCHES:

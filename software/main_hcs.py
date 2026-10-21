@@ -20,6 +20,7 @@ import control.gui_hcs as gui
 from control._def import USE_TERMINAL_CONSOLE, ENABLE_MCP_SERVER_SUPPORT, CONTROL_SERVER_HOST, CONTROL_SERVER_PORT
 import control._def
 import control.utils
+import control.microcontroller
 import control.microscope
 from control.single_instance import acquire_single_instance_lock
 
@@ -104,7 +105,14 @@ if __name__ == "__main__":
     # This allows shutdown via ctrl+C even after the gui has popped up.
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
-    microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
+    try:
+        microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
+    except control.microcontroller.LimitSwitchConfigError as e:
+        # The configuration needs newer controller firmware: do not start with the limit switches read wrong.
+        log.error(str(e))
+        QMessageBox.critical(None, "Firmware update needed", str(e))
+        instance_lock.unlock()
+        sys.exit(1)
     win = gui.HighContentScreeningGui(
         microscope=microscope,
         is_simulation=args.simulation,

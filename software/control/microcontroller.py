@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable
+from typing import Callable, Tuple
 
 import numpy as np
 import serial
@@ -51,6 +51,7 @@ _CMD_NAMES = {
     CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR: "SET_ILLUMINATION_INTENSITY_FACTOR",
     CMD_SET.MOVETO_W: "MOVETO_W",
     CMD_SET.MOVETO_W2: "MOVETO_W2",
+    CMD_SET.SET_LIMIT_SWITCH_CONFIG: "SET_LIMIT_SWITCH_CONFIG",
     CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
     CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
     CMD_SET.SET_LEAD_SCREW_PITCH: "SET_LEAD_SCREW_PITCH",
@@ -120,6 +121,19 @@ class CommandAborted(RuntimeError):
         super().__init__(reason)
         self.command_id = command_id
         self.recoverable = recoverable
+
+
+class LimitSwitchConfigError(RuntimeError):
+    """The configuration asks for limit-switch settings the controller's firmware cannot apply.
+
+    Raised by the Microcontroller constructor before anything is sent that could move a stage; the controller
+    link is closed by then.
+    """
+
+
+def decode_z_limits(byte18: int) -> Tuple[bool, bool]:
+    """(left, right) Z limit switch triggered, from status byte 18."""
+    return bool(byte18 & (1 << BIT_POS_Z_LIMIT_LEFT)), bool(byte18 & (1 << BIT_POS_Z_LIMIT_RIGHT))
 
 
 # NOTE(imo): We'll want to pull this out into a common serial impl shared with serial_peripheral.py at some point, but
@@ -658,6 +672,8 @@ class Microcontroller:
         # These are called in our busy loop, and so should return immediately!
         self.joystick_event_listeners = []
         self.switch_state = 0
+        self.z_limit_left_triggered = False
+        self.z_limit_right_triggered = False
 
         # Firmware version (major, minor) - detected from response byte 22
         # (0, 0) indicates legacy firmware without version reporting
@@ -683,19 +699,34 @@ class Microcontroller:
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
-        if reset_and_initialize:
-            self.log.debug("Resetting and initializing microcontroller.")
-            self.reset()
-            time.sleep(0.5)
-            self.initialize_drivers()
-            time.sleep(0.5)
-            self.configure_actuators()
-            self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
-            time.sleep(0.5)
+        try:
+            # Detect the firmware version first by sending a harmless command: supports_multi_port() needs it right
+            # after construction, and the limit-switch check needs it before anything else is sent.
+            self._detect_firmware_version()
+            # Refuse before reset/initialize/actuator setup, so that nothing moves with the limit switches read
+            # wrong and an unsupported current in the same config cannot end startup first.
+            self.check_limit_switch_compatibility()
 
-        # Detect firmware version early by sending a harmless command
-        # This ensures supports_multi_port() returns accurate results immediately
-        self._detect_firmware_version()
+            if reset_and_initialize:
+                self.log.debug("Resetting and initializing microcontroller.")
+                self.reset()
+                time.sleep(0.5)
+                self.initialize_drivers()
+                time.sleep(0.5)
+                self.configure_actuators()
+                self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+                time.sleep(0.5)
+
+            # On both startup paths (--skip-init skips the block above).
+            self.apply_limit_switch_config()
+        except BaseException:
+            # A failed constructor leaves no reader thread or open port behind: headless callers may catch this
+            # and keep their process.
+            try:
+                self.close()
+            except Exception:
+                self.log.exception("Failed to close the microcontroller link after a failed start")
+            raise
 
     @property
     def is_simulated(self) -> bool:
@@ -1363,6 +1394,15 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
+    def set_limit_switch_config(self, axis: int, config: int):
+        """Send one axis's limit-switch config nibble (LIMIT_SWITCH_BITS); the firmware stores it in EEPROM."""
+        self.log.info(f"Set limit switch config: {axis=}, config=0x{config:02X}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_LIMIT_SWITCH_CONFIG
+        cmd[2] = axis
+        cmd[3] = config
+        self.send_command(cmd)
+
     def set_home_safety_margin(self, axis, margin):
         margin = abs(margin)
         if margin > 0xFFFF:
@@ -1737,6 +1777,11 @@ class Microcontroller:
                 tmp = self.button_and_switch_state & (1 << BIT_POS_SWITCH)
                 self.switch_state = tmp > 0
 
+                # Z limit switches (firmware >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE; older firmware leaves the bits 0)
+                self.z_limit_left_triggered, self.z_limit_right_triggered = decode_z_limits(
+                    self.button_and_switch_state
+                )
+
                 # Firmware version from byte 22: high nibble = major, low nibble = minor
                 # Legacy firmware (pre-v1.0) sends 0x00, which gives version (0, 0)
                 version_byte = msg[RESPONSE_BYTE_FIRMWARE_VERSION]
@@ -1775,6 +1820,47 @@ class Microcontroller:
             True if firmware version >= 1.0, False otherwise.
         """
         return self.firmware_version >= (1, 0)
+
+    def supports_limit_switch_config(self) -> bool:
+        """True if the firmware has SET_LIMIT_SWITCH_CONFIG."""
+        return tuple(self.firmware_version) >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
+
+    def check_limit_switch_compatibility(self) -> None:
+        """Raise LimitSwitchConfigError if [LIMIT_SWITCHES] is not the default and the firmware cannot apply it.
+
+        Older firmware answers SET_LIMIT_SWITCH_CONFIG with a success that does nothing, so its limit switches
+        would stay at the stock settings while the configuration says otherwise.
+        """
+        if self.supports_limit_switch_config():
+            return
+        if all(limit_switch_config_byte(axis) == LIMIT_SWITCH_DEFAULT_CONFIG for axis in "xyz"):
+            return
+        settings = []
+        for axis in "XYZ":
+            for side in ("LEFT", "RIGHT"):
+                for setting in ("ENABLED", "ACTIVE_HIGH"):
+                    default = bool(LIMIT_SWITCH_DEFAULT_CONFIG & getattr(LIMIT_SWITCH_BITS, f"{side}_{setting}"))
+                    value = getattr(LIMIT_SWITCHES, f"{axis}_{side}_{setting}")
+                    if bool(value) != default:
+                        settings.append(f"{axis}_{side}_{setting}".lower() + f" = {value}")
+        raise LimitSwitchConfigError(
+            f"The configuration's [LIMIT_SWITCHES] section sets {', '.join(settings)}, but the controller runs "
+            f"firmware {self.firmware_version[0]}.{self.firmware_version[1]}, which cannot apply limit-switch "
+            f"settings. Flash firmware {LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[0]}.{LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[1]} "
+            f"or newer onto the controller."
+        )
+
+    def apply_limit_switch_config(self) -> None:
+        """Send [LIMIT_SWITCHES] for X, Y and Z, defaults included, if the firmware supports it.
+
+        On older firmware this does nothing: check_limit_switch_compatibility() has already refused a non-default
+        configuration there.
+        """
+        if not self.supports_limit_switch_config():
+            return
+        for axis, name in ((AXIS.X, "x"), (AXIS.Y, "y"), (AXIS.Z, "z")):
+            self.set_limit_switch_config(axis, limit_switch_config_byte(name))
+            self.wait_till_operation_is_completed()
 
     def get_button_and_switch_state(self):
         return self.button_and_switch_state

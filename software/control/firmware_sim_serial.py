@@ -14,10 +14,11 @@ import re
 import struct
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional, Tuple
 
 from crc import CrcCalculator, Crc8
 
+from control._def import LIMIT_SWITCH_CONFIG_MIN_FIRMWARE, LIMIT_SWITCH_DEFAULT_CONFIG
 from control.microcontroller import AbstractCephlaMicroSerial
 
 
@@ -96,6 +97,7 @@ class FirmwareConstants:
             "ANALOG_WRITE_ONBOARD_DAC",
             "SET_DAC80508_REFDIV_GAIN",
             "SET_ILLUMINATION_INTENSITY_FACTOR",
+            "SET_LIMIT_SWITCH_CONFIG",
             "CONFIGURE_STEPPER_DRIVER",
             "SET_MAX_VELOCITY_ACCELERATION",
             "SET_LEAD_SCREW_PITCH",
@@ -135,7 +137,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
     mismatches between Python and firmware.
     """
 
-    def __init__(self, firmware_path: Optional[Path] = None, strict: bool = True):
+    def __init__(
+        self, firmware_path: Optional[Path] = None, strict: bool = True, firmware_version: Tuple[int, int] = (0, 0)
+    ):
         """
         Initialize the firmware simulator.
 
@@ -143,6 +147,8 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             firmware_path: Path to firmware constants_protocol.h. If None, uses default.
             strict: If True, raise FirmwareProtocolError on any mismatch.
                    If False, log warnings but continue.
+            firmware_version: (major, minor) reported in response byte 22. (0, 0) is legacy firmware
+                   that reports no version.
         """
         super().__init__()
         self.fw = FirmwareConstants(firmware_path)
@@ -165,9 +171,20 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.w = 0
         self.w2 = 0
 
+        self.firmware_version = tuple(firmware_version)
+        # Limit-switch config nibble per protocol axis (SET_LIMIT_SWITCH_CONFIG)
+        self.limit_switch_config: Dict[int, int] = {
+            self.fw.get("AXIS_X", 0): LIMIT_SWITCH_DEFAULT_CONFIG,
+            self.fw.get("AXIS_Y", 1): LIMIT_SWITCH_DEFAULT_CONFIG,
+            self.fw.get("AXIS_Z", 2): LIMIT_SWITCH_DEFAULT_CONFIG,
+        }
+
         # Button/switch state
         self.joystick_button = False
         self.switch = False
+        # Z limit switch inputs triggered (status byte 18 bits 2-3)
+        self.z_limit_left = False
+        self.z_limit_right = False
 
         # Validation tracking
         # Note: validation_errors accumulates across commands for debugging.
@@ -284,8 +301,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         - bytes[6-9]: Y position
         - bytes[10-13]: Z position
         - bytes[14-17]: Theta position
-        - byte[18]: buttons/switches
-        - bytes[19-22]: reserved
+        - byte[18]: buttons/switches, Z limit switches
+        - bytes[19-21]: reserved
+        - byte[22]: firmware version (high nibble major, low nibble minor)
         - byte[23]: CRC
 
         Note: W axis position is tracked internally (self.w) but is NOT included
@@ -297,10 +315,12 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         button_state = (1 if self.joystick_button else 0) << self.fw.get("BIT_POS_JOYSTICK_BUTTON", 0)
         # BIT_POS_SWITCH may not be in constants_protocol.h; default to bit position 1
         button_state |= (1 if self.switch else 0) << self.fw.get("BIT_POS_SWITCH", 1)
+        button_state |= (1 if self.z_limit_left else 0) << self.fw.get("BIT_POS_Z_LIMIT_LEFT", 2)
+        button_state |= (1 if self.z_limit_right else 0) << self.fw.get("BIT_POS_Z_LIMIT_RIGHT", 3)
 
-        reserved = 0
+        version_byte = (self.firmware_version[0] << 4) | (self.firmware_version[1] & 0x0F)
 
-        # Struct format ">BBiiiiBi" byte breakdown:
+        # Struct format ">BBiiiiB3xB" byte breakdown:
         #   B: cmd_id       (1 byte)
         #   B: status       (1 byte)
         #   i: x            (4 bytes)
@@ -308,11 +328,12 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         #   i: z            (4 bytes)
         #   i: theta        (4 bytes)
         #   B: button_state (1 byte)
-        #   i: reserved     (4 bytes)
-        #   Total: 1+1+4+4+4+4+1+4 = 23 bytes (+ 1 byte CRC = 24 = MSG_LENGTH)
+        #   3x: reserved    (3 bytes, zero)
+        #   B: version_byte (1 byte)
+        #   Total: 1+1+4+4+4+4+1+3+1 = 23 bytes (+ 1 byte CRC = 24 = MSG_LENGTH)
         response = bytearray(
             struct.pack(
-                ">BBiiiiBi",
+                ">BBiiiiB3xB",
                 cmd_id,
                 status,
                 self.x,
@@ -320,12 +341,12 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
                 self.z,
                 self.theta,
                 button_state,
-                reserved,
+                version_byte,
             )
         )
 
         # Verify response payload matches firmware MSG_LENGTH - 1 (leaving room for CRC).
-        # The struct format ">BBiiiiBi" produces 23 bytes, matching MSG_LENGTH-1 when
+        # The struct format ">BBiiiiB3xB" produces 23 bytes, matching MSG_LENGTH-1 when
         # MSG_LENGTH == 24. If firmware changes MSG_LENGTH, this assertion will fail
         # and the struct format must be updated to match the new protocol.
         expected_payload_len = msg_length - 1
@@ -345,6 +366,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         """Process a validated command and update state."""
         cmd_id = cmd[0]
         cmd_code = cmd[1]
+        status = self.fw.get("COMPLETED_WITHOUT_ERRORS", 0)
 
         # Extract 4-byte position from bytes 2-5
         def get_position() -> int:
@@ -401,12 +423,29 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.theta = 0
             self.w = 0
             self.w2 = 0
+        elif cmd_code == self.fw.get("SET_LIMIT_SWITCH_CONFIG"):
+            if not self._set_limit_switch_config(cmd[2], cmd[3]):
+                status = self.fw.get("CMD_EXECUTION_ERROR", 4)
 
         # Build and queue response
-        status = self.fw.get("COMPLETED_WITHOUT_ERRORS", 0)
         response = self._build_response(cmd_id, status)
         self.response_buffer.extend(response)
         self._update_internal_state()
+
+    def _set_limit_switch_config(self, axis: int, config: int) -> bool:
+        """SET_LIMIT_SWITCH_CONFIG. Returns False for a command the firmware refuses (CMD_EXECUTION_ERROR).
+
+        Firmware older than LIMIT_SWITCH_CONFIG_MIN_FIRMWARE has no handler for it: callback_default answers
+        success for any axis and byte and does nothing. Newer firmware stores a nibble for X, Y or Z and refuses
+        any other axis or a value wider than a nibble, storing nothing. Validated here rather than in
+        _validate_command, whose generic axis check raises for an axis outside its list.
+        """
+        if self.firmware_version < LIMIT_SWITCH_CONFIG_MIN_FIRMWARE:
+            return True
+        if axis not in self.limit_switch_config or config > 0x0F:
+            return False
+        self.limit_switch_config[axis] = config
+        return True
 
     def _update_internal_state(self, clear_buffer: bool = False):
         if clear_buffer:
