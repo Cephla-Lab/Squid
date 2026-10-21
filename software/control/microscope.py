@@ -11,6 +11,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
+from control.rcm_scan_trigger import RcmScanTrigger
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
@@ -381,11 +382,27 @@ class Microscope:
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
 
+        def rearm_camera_after_stalled_scan():
+            # The camera stopped signalling ready to the confocal unit. Re-applying hardware trigger mode
+            # (stop streaming, set the trigger, start streaming) re-arms it, as toggling the trigger mode did.
+            try:
+                if camera.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                    cam_trigger_log.warning("Re-armed the camera's hardware trigger after a stalled confocal scan")
+            except Exception as e:
+                cam_trigger_log.error(f"Could not re-arm the camera after a stalled confocal scan: {e}")
+
+        rcm_scan_trigger = RcmScanTrigger(
+            control._def.NL5_TRIGGER_TIMEOUT_S, on_timeout=rearm_camera_after_stalled_scan
+        )
+
         def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
             # NOTE(imo): If this succeeds, it means we sent the request,
             # but we didn't necessarily get confirmation of success.
             if addons.nl5 and control._def.NL5_USE_DOUT:
-                addons.nl5.start_acquisition()
+                # The confocal unit triggers the camera; a scan it cannot finish is aborted, not waited on.
+                frame_time_s = illumination_time / 1000.0 if illumination_time else 0.0
+                return rcm_scan_trigger.trigger(addons.nl5, frame_time_s)
             else:
                 illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
                 cam_trigger_log.debug(
