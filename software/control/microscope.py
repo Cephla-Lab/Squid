@@ -966,19 +966,24 @@ class Microscope:
             self.stage.home(x=False, y=False, z=True, theta=False)
 
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
-            # The plate clamp actuation post can get in the way of homing if we start with
-            # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x
-            # and move x over 20 , guarantees we'll clear the post for homing.  If we are <20mm
-            # from the end travel of either axis, we'll just stop at the extent without consequence.
-            #
-            # The one odd corner case is if the system gets shut down in the loading position.
-            # in that case, we drive off of the loading position and the clamp closes quickly.
-            # This doesn't seem to cause problems, and there isn't a clean way to avoid the corner
-            # case.
-            self._log.info("Moving y+20, then x->home->+50 to make sure system is clear for homing.")
-            self.stage.move_y(20)
-            self.stage.home(x=True, y=False, z=False, theta=False)
-            self.stage.move_x(50)
+            if control._def.HOMING_XY_CLEARANCE_MOVES:
+                # The plate clamp actuation post can get in the way of homing if we start with
+                # the stage in "just the wrong" position.  Blindly moving the Y out 20, then home x
+                # and move x over 20 , guarantees we'll clear the post for homing.  If we are <20mm
+                # from the end travel of either axis, we'll just stop at the extent without consequence.
+                #
+                # The one odd corner case is if the system gets shut down in the loading position.
+                # in that case, we drive off of the loading position and the clamp closes quickly.
+                # This doesn't seem to cause problems, and there isn't a clean way to avoid the corner
+                # case.
+                self._log.info("Moving y+20, then x->home->+50 to make sure system is clear for homing.")
+                self.stage.move_y(20)
+                self.stage.home(x=True, y=False, z=False, theta=False)
+                self.stage.move_x(50)
+            else:
+                # No clamp post on this system (HOMING_XY_CLEARANCE_MOVES = False): home X in place.
+                self._log.info("Homing the X axis (clearance moves disabled)...")
+                self.stage.home(x=True, y=False, z=False, theta=False)
 
             self._log.info("Homing the Y axis...")
             self.stage.home(x=False, y=True, z=False, theta=False)

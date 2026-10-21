@@ -737,6 +737,10 @@ SCAN_STABILIZATION_TIME_MS_Z = 20
 HOMING_ENABLED_X = True
 HOMING_ENABLED_Y = True
 HOMING_ENABLED_Z = False
+# Before homing X/Y, drive Y +20 mm, home X and drive X +50 mm so a plate-clamp actuation post
+# cannot block the homing sweep. Set False on systems without the clamp post (e.g. an upright
+# system with a lift stage), where the extra travel is unwanted and Y would run to its limit.
+HOMING_XY_CLEARANCE_MOVES = True
 
 SLEEP_TIME_S = 0.005
 
