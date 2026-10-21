@@ -259,6 +259,56 @@ def test_detection_never_uses_a_packet_begun_before_its_command(monkeypatch):
     mcu.close()
 
 
+def test_detection_never_uses_a_packet_queued_before_its_command(monkeypatch):
+    # A previous session's last packet (cmd id 7, completed, older firmware) is fully queued when detection writes
+    # its command (id 1); the reader does not touch it until the write, so it begins reading it afterwards. Only the
+    # echoed command id tells it apart. The probe's own answer is held back until detection returns (or 1 s).
+    _z_both_active_high(monkeypatch)
+    sim = _sim(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+    stale = _sim("old")._build_response(7, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
+    sim.response_buffer.extend(stale)
+    sim._update_internal_state()
+
+    written = threading.Event()
+    detection_returned = threading.Event()
+    bytes_read = []
+    bytes_available, write, read = sim.bytes_available, sim.write, sim.read
+
+    def bytes_available_after_the_write():
+        return bytes_available() if written.is_set() else 0
+
+    def write_and_signal(data, reconnect_tries=0):
+        n = write(data, reconnect_tries)
+        written.set()
+        return n
+
+    def read_holding_the_answer(count=1, reconnect_tries=0):
+        bytes_read.append(count)
+        if len(bytes_read) == len(stale) + 1:  # the probe's answer waits for detection
+            detection_returned.wait(1)
+        return read(count, reconnect_tries)
+
+    sim.bytes_available = bytes_available_after_the_write
+    sim.write = write_and_signal
+    sim.read = read_holding_the_answer
+
+    detect = Microcontroller._detect_firmware_version
+    detected = []
+
+    def detect_and_signal(self):
+        detect(self)
+        detected.append(self.firmware_version)
+        detection_returned.set()
+
+    monkeypatch.setattr(Microcontroller, "_detect_firmware_version", detect_and_signal)
+
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+
+    assert detected == [LIMIT_SWITCH_CONFIG_MIN_FIRMWARE]
+    assert sim.limit_switch_config[AXIS.Z] == 0x0F
+    mcu.close()
+
+
 @pytest.mark.parametrize("reset_and_initialize", [True, False])
 def test_simulated_controller_skips_the_firmware_check(reset_and_initialize, monkeypatch, caplog):
     # SimSerial reports firmware 1.3 and models no limit switches; --simulation must start with any ini.
