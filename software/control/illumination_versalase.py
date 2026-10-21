@@ -15,10 +15,15 @@ wrapped in 64-byte HID reports. The first byte of every output report is an opco
 A head keeps replaying its last response until it is acknowledged, so a reply is
 only accepted when it echoes the command that was sent.
 
-With ShutterControlMode.TTL (the normal Squid setup), every head is put in digital
-modulation mode (PUL=1) with emission enabled, and the microcontroller's TTL
-outputs wired to the VersaLase SMB inputs gate the light. Intensity sets the peak
-pulse power (PP). PUL is not stored by the laser, so it is set on every initialize().
+With ShutterControlMode.TTL (the normal Squid setup), emission stays enabled and
+TTL lines (the microcontroller's, or the NL5's on AION) gate the light through one
+of two VersaLase inputs, chosen with TtlInput:
+
+- LASER_ENABLE (default): the DE-25 Laser Enable pins, standard on every VersaLase.
+  Heads run CW (PUL=0); TTL high turns emission on at the laser power (LP).
+- DIGITAL_MODULATION: the rear SMB inputs, an option not every head has. Heads run
+  in digital modulation (PUL=1) and intensity sets the peak pulse power (PP). PUL is
+  not stored by the laser, so it is set on every initialize().
 
 With ShutterControlMode.Software, the heads run CW (PUL=0), intensity sets the
 laser power (LP), and the shutter toggles emission (LE). Heads with the 5 second
@@ -29,6 +34,7 @@ to acquisition.
 import threading
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, List, Optional
 
 import hid
@@ -71,6 +77,13 @@ EMISSION_DELAY_S = 5.0
 
 class VortranError(RuntimeError):
     pass
+
+
+class TtlInput(Enum):
+    """Which VersaLase input the TTL lines are wired to (only used with ShutterControlMode.TTL)."""
+
+    LASER_ENABLE = "LASER_ENABLE"
+    DIGITAL_MODULATION = "DIGITAL_MODULATION"
 
 
 @dataclass
@@ -193,6 +206,7 @@ class VersaLase(LightSource):
     def __init__(
         self,
         shutter_mode: ShutterControlMode = ShutterControlMode.TTL,
+        ttl_input: TtlInput = TtlInput.LASER_ENABLE,
         vid: int = VORTRAN_VID,
         pid: int = VORTRAN_PID,
         timeout_s: float = 1.0,
@@ -203,6 +217,7 @@ class VersaLase(LightSource):
         self.heads: List[StradusHead] = []
         self.channel_mappings: Dict[int, Optional[StradusHead]] = {wl: None for group in CHANNEL_GROUPS for wl in group}
         self.shutter_mode = shutter_mode
+        self.ttl_input = ttl_input
         # Software shutter mode: LP is only accepted while emission is on, so the
         # requested power is kept here and applied when the shutter opens.
         self._requested_power_mw: Dict[str, float] = {}
@@ -255,10 +270,18 @@ class VersaLase(LightSource):
     def set_shutter_control_mode(self, mode: ShutterControlMode):
         ttl = mode == ShutterControlMode.TTL
         for head in self.heads:
-            if ttl:
+            if ttl and self.ttl_input == TtlInput.DIGITAL_MODULATION:
                 # Modulation first, so enabling emission cannot leave a head in CW.
                 if not head.set_flag("PUL", True):
-                    raise RuntimeError(f"Vortran head {head.describe()} refused digital modulation (PUL=1)")
+                    raise RuntimeError(
+                        f"Vortran head {head.describe()} refused digital modulation (PUL=1). Heads without the "
+                        'optional SMB modulation inputs are gated through Laser Enable: VORTRAN_TTL_INPUT = "LASER_ENABLE"'
+                    )
+                self._enable_emission(head)
+            elif ttl:
+                # CW at LP; the Laser Enable input switches emission on and off.
+                if head.set_flag("PUL", False):
+                    raise RuntimeError(f"Vortran head {head.describe()} refused CW mode (PUL=0)")
                 self._enable_emission(head)
             else:
                 head.set_flag("LE", False)
@@ -308,8 +331,11 @@ class VersaLase(LightSource):
         if head is None:
             return
         power_mw = head.max_power_mw * min(max(intensity, 0.0), 100.0) / 100.0
-        if self.shutter_mode == ShutterControlMode.TTL:
+        if self._uses_peak_power():
             head.transact(f"PP={power_mw:.1f}")
+        elif self.shutter_mode == ShutterControlMode.TTL:
+            # Emission is held on, so LP is accepted straight away.
+            head.transact(f"LP={power_mw:.1f}")
         else:
             self._requested_power_mw[head.serial_number] = power_mw
             if head.query_flag("?LE"):
@@ -319,11 +345,16 @@ class VersaLase(LightSource):
         """Return a head's power setting as a percentage of its maximum power."""
         if head is None:
             return 0
-        if self.shutter_mode == ShutterControlMode.TTL:
+        if self._uses_peak_power():
             power_mw = head.query_float("?PP")
+        elif self.shutter_mode == ShutterControlMode.TTL:
+            power_mw = head.query_float("?LPS")
         else:
             power_mw = self._requested_power_mw.get(head.serial_number, head.query_float("?LPS"))
         return power_mw / head.max_power_mw * 100.0
+
+    def _uses_peak_power(self) -> bool:
+        return self.shutter_mode == ShutterControlMode.TTL and self.ttl_input == TtlInput.DIGITAL_MODULATION
 
     def get_status(self) -> List[HeadStatus]:
         """Read every head's status, lowest wavelength first (about 10 queries per head)."""

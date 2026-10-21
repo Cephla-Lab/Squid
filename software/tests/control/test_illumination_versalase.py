@@ -64,6 +64,8 @@ class FakeStradusHead:
         if name in ("PP", "LP") and not self.state["LE"]:
             return f"{name}=0.00"  # power is only written while emission is on
         self.state[name] = float(value) if name in ("PP", "LP") else int(value)
+        if name == "LP":
+            self.state["LPS"] = float(value)  # the setting ?LPS reports
         return f"{name}={value}"
 
 
@@ -97,8 +99,8 @@ def test_heads_map_to_squid_channels_by_wavelength(heads):
     assert laser.channel_mappings[640].serial_number == "VL07241K14"
 
 
-def test_ttl_mode_enables_modulation_before_emission(heads):
-    laser = versalase.VersaLase(shutter_mode=ShutterControlMode.TTL)
+def test_smb_ttl_mode_enables_modulation_before_emission(heads):
+    laser = versalase.VersaLase(shutter_mode=ShutterControlMode.TTL, ttl_input=versalase.TtlInput.DIGITAL_MODULATION)
     laser.initialize()
 
     for fake in heads.values():
@@ -108,8 +110,8 @@ def test_ttl_mode_enables_modulation_before_emission(heads):
     assert heads[b"p488"].sent.count("?LE") >= 2
 
 
-def test_ttl_intensity_sets_peak_power_as_percent_of_max(heads):
-    laser = versalase.VersaLase()
+def test_smb_ttl_intensity_sets_peak_power_as_percent_of_max(heads):
+    laser = versalase.VersaLase(ttl_input=versalase.TtlInput.DIGITAL_MODULATION)
     laser.initialize()
     head = laser.channel_mappings[561]
 
@@ -122,7 +124,7 @@ def test_ttl_intensity_sets_peak_power_as_percent_of_max(heads):
 
 
 def test_intensity_is_clamped(heads):
-    laser = versalase.VersaLase()
+    laser = versalase.VersaLase(ttl_input=versalase.TtlInput.DIGITAL_MODULATION)
     laser.initialize()
     laser.set_intensity(laser.channel_mappings[405], 150)
     assert heads[b"p405"].sent[-1] == "PP=100.8"
@@ -179,7 +181,7 @@ def test_shut_down_turns_emission_off_and_closes(heads):
 
 
 def test_get_status_reports_every_head_in_wavelength_order(heads):
-    laser = versalase.VersaLase()
+    laser = versalase.VersaLase(ttl_input=versalase.TtlInput.DIGITAL_MODULATION)
     laser.initialize()
     laser.set_intensity(laser.channel_mappings[488], 40)
     heads[b"p639"].state.update({"FC": 2, "FD": "WARMUP"})
@@ -194,3 +196,27 @@ def test_get_status_reports_every_head_in_wavelength_order(heads):
     assert s488.fault_description == "" and not s488.faulted
     assert statuses[3].fault_description == "WARMUP" and not statuses[3].faulted  # warm-up is a state, not a fault
     assert "?FD" not in heads[b"p405"].sent  # only asked for when there is something to describe
+
+
+def test_laser_enable_ttl_runs_cw_with_emission_on(heads):
+    laser = versalase.VersaLase()  # TTL through Laser Enable is the default
+    laser.initialize()
+
+    for fake in heads.values():
+        assert fake.state["PUL"] == 0 and fake.state["LE"] == 1
+        assert "PUL=1" not in fake.sent
+    head = laser.channel_mappings[488]
+    laser.set_intensity(head, 40)
+    assert heads[b"p488"].sent[-1] == "LP=60.0"
+    assert laser.get_intensity(head) == pytest.approx(40)
+    assert laser.get_shutter_state(head) is False  # the Laser Enable line decides whether light is out
+    assert not laser.get_status()[1].modulation and laser.get_status()[1].set_power_mw == pytest.approx(60.0)
+
+
+def test_head_without_smb_modulation_points_at_laser_enable(heads):
+    original = heads[b"p405"]._execute
+    heads[b"p405"]._execute = lambda command: "PUL=0" if command == "PUL=1" else original(command)
+
+    with pytest.raises(RuntimeError, match="LASER_ENABLE"):
+        versalase.VersaLase(ttl_input=versalase.TtlInput.DIGITAL_MODULATION).initialize()
+    assert heads[b"p405"].state["LE"] == 0  # emission is never enabled on a head left in CW

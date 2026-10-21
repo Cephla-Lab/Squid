@@ -446,7 +446,10 @@ class Microscope:
                 raise ValueError(
                     f"VORTRAN_SHUTTER_CONTROL_MODE must be 'TTL' or 'Software', got {control._def.VORTRAN_SHUTTER_CONTROL_MODE!r}"
                 )
-            versalase = control.illumination_versalase.VersaLase(shutter_mode=shutter_mode)
+            versalase = control.illumination_versalase.VersaLase(
+                shutter_mode=shutter_mode,
+                ttl_input=control.illumination_versalase.TtlInput(control._def.VORTRAN_TTL_INPUT),
+            )
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,
