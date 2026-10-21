@@ -2919,15 +2919,13 @@ class HighContentScreeningGui(QMainWindow):
                 raise
 
         # Turn off and release an external light source (VersaLase, CELESTA, LDI, Andor) once live view,
-        # which may still switch it, has stopped
+        # which may still switch it, has stopped. Only logged on failure, even on a full shutdown: a light
+        # source that has dropped off its link must not keep the stage and microcontroller from closing.
         if self.microscope.illumination_controller.light_source is not None:
             try:
                 self.microscope.illumination_controller.close()
             except Exception:
-                if for_restart:
-                    self.log.exception(f"Error closing the light source during {context}")
-                else:
-                    raise
+                self.log.exception(f"Error closing the light source during {context}")
 
         # Z-retract + Xeryon zero: needed on full shutdown, and on Xeryon restart
         # (Xeryon must be zeroed before re-init).
