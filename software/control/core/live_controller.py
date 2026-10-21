@@ -402,6 +402,7 @@ class LiveController(QObject):
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
     def stop_live(self):
+        self._confocal_scan_failed = False
         if self.is_live:
             self.is_live = False
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -595,6 +596,7 @@ class LiveController(QObject):
 
     # trigger mode and settings
     def set_trigger_mode(self, mode):
+        self._confocal_scan_failed = False
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger

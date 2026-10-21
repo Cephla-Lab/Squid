@@ -24,7 +24,15 @@ from tests.control.test_MultiPointController import TestAcquisitionTracker, add_
 
 
 class FakeConfocalUnit:
-    def __init__(self, camera, lose_frames_from_scan=None, stall=False, stall_on_scans=(), fire_on_abort_scans=()):
+    def __init__(
+        self,
+        camera,
+        lose_frames_from_scan=None,
+        stall=False,
+        stall_on_scans=(),
+        fire_on_abort_scans=(),
+        fire_late_on_abort_scans=(),
+    ):
         self.camera = camera
         self.scans = 0
         self.stops = 0
@@ -33,17 +41,21 @@ class FakeConfocalUnit:
         self.stall_on_scans = set(stall_on_scans)
         # Scans that look stalled but expose the camera just as they are aborted.
         self.fire_on_abort_scans = set(fire_on_abort_scans)
+        # ...or whose frame only arrives after readout, ~30 ms after the aborted scan has returned.
+        self.fire_late_on_abort_scans = set(fire_late_on_abort_scans)
         self.release = threading.Event()
         self.scan_started = threading.Event()
 
     def start_acquisition(self):
         self.scans += 1
         self.scan_started.set()
-        if self.stall or self.scans in self.stall_on_scans | self.fire_on_abort_scans:
+        if self.stall or self.scans in self.stall_on_scans | self.fire_on_abort_scans | self.fire_late_on_abort_scans:
             self.release.clear()
             self.release.wait(10)  # the camera never reports ready, until the scan is aborted
             if self.scans in self.fire_on_abort_scans:
                 self.camera._next_frame()
+            if self.scans in self.fire_late_on_abort_scans:
+                threading.Timer(0.03, self.camera._next_frame).start()
             return
         time.sleep(0.005)  # the scan
         if self.lose_frames_from_scan is None or self.scans < self.lose_frames_from_scan:
@@ -308,6 +320,39 @@ def test_live_view_keeps_running_and_logs_a_trigger_failure_once(aion_scope, cap
         time.sleep(0.2)
 
     assert sum("Live view:" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_no_retry_when_the_aborted_scan_s_frame_arrives_after_readout(aion_scope):
+    """Checking the frame id once, right after the aborted scan returned, missed a frame still in readout."""
+    camera = aion_scope.camera
+    unit = FakeConfocalUnit(camera, fire_late_on_abort_scans={1})
+    aion_scope.addons.nl5 = unit
+    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    camera.start_streaming()
+    frames = []
+    camera.add_frame_callback(lambda frame: frames.append(frame.frame_id))
+    mode_changes = []
+    set_mode = camera.set_acquisition_mode
+    camera.set_acquisition_mode = lambda mode: (mode_changes.append(mode), set_mode(mode))
+
+    camera.send_trigger(10.0)
+    time.sleep(0.3)
+
+    assert unit.scans == 1  # no retry
+    assert mode_changes == []  # no re-arm
+    assert len(frames) == 1  # just the late frame, no second one
+
+
+def test_live_view_failure_flag_is_reset_when_live_stops_or_the_trigger_mode_changes(aion_scope):
+    live = aion_scope.live_controller
+    live._confocal_scan_failed = True
+    live.stop_live()
+    assert live._confocal_scan_failed is False
+
+    live._confocal_scan_failed = True
+    live.set_trigger_mode(TriggerMode.SOFTWARE)
+    assert live._confocal_scan_failed is False
 
 
 class StuckUnit:

@@ -20,11 +20,14 @@ No retry, and no re-arm, when:
 - the aborted scan is still inside startAcquisition(): re-arming would give it the ready signal it
   waits for, and it could deliver a late frame after the acquisition had moved on. Triggers are
   dropped (logged once) until it returns; the next trigger then re-arms first.
-- the camera produced a frame during the aborted scan (it fired just before the abort): that frame
-  is the image, and a retry would add a second one that could be filed under the next channel.
+- the camera produced a frame during the aborted scan (it fired just before the abort), waiting up to
+  one frame time for it, since it arrives after readout: that frame is the image, and a retry would
+  add a second one that could be filed under the next channel. (The check cannot tell which scan
+  produced a frame, so a late frame from an earlier stuck scan would also count.)
 """
 
 import threading
+import time
 from typing import Callable, Optional
 
 from squid.abc import CameraError
@@ -33,6 +36,9 @@ import squid.logging
 log = squid.logging.get_logger(__name__)
 
 ABORT_JOIN_TIMEOUT_S = 1.0
+# After an aborted scan, how much longer than one frame time to wait for a frame it may still have
+# produced (the camera delivers it after readout) before deciding to retry.
+FRAME_READOUT_MARGIN_S = 0.1
 
 
 class ConfocalScanFailedError(CameraError):
@@ -79,7 +85,7 @@ class RcmScanTrigger:
             return False
         if self._rearm is None:
             return False
-        if frame_id_before is not None and self._frame_id() != frame_id_before:
+        if frame_id_before is not None and self._frame_arrived(frame_id_before, frame_time_s + FRAME_READOUT_MARGIN_S):
             log.warning("The aborted confocal scan had already exposed the camera; not retrying")
             return True
         log.warning("Re-arming the camera and retrying the scan once")
@@ -105,6 +111,17 @@ class RcmScanTrigger:
         if self._error is not None:
             raise self._error
         return True
+
+    def _frame_arrived(self, frame_id_before: int, wait_s: float) -> bool:
+        # A scan that fired just before the abort delivers its frame only after readout, so wait for it
+        # rather than checking once.
+        deadline = time.monotonic() + wait_s
+        while True:
+            if self._frame_id() != frame_id_before:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.005)
 
     def _call_rearm(self):
         if self._rearm is not None:
