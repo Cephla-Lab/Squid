@@ -23,6 +23,8 @@ import squid.logging
 log = squid.logging.get_logger(__name__)
 
 ABORT_JOIN_TIMEOUT_S = 1.0
+# How long recovery waits for the aborted scan to leave startAcquisition() before giving up.
+RECOVERY_WAIT_S = 10.0
 
 
 class RcmScanTrigger:
@@ -34,7 +36,11 @@ class RcmScanTrigger:
         self._error: Optional[BaseException] = None
 
     def trigger(self, unit, frame_time_s: float = 0.0) -> bool:
-        """Scan one image on `unit`; False if the trigger was dropped (timed out or still busy)."""
+        """Scan one image on `unit`; False if the trigger was dropped (timed out, busy or recovering)."""
+        if self._recovery is not None and self._recovery.is_alive():
+            # A scan started now could take the ready signal the re-arm is about to give the camera.
+            log.debug("The camera is being re-armed after a stalled confocal scan; dropping this trigger")
+            return False
         if self._scan is not None and self._scan.is_alive():
             # Never call into the RCM DLL again while an earlier startAcquisition() is stuck in it.
             log.warning("The previous confocal scan has still not returned; dropping this trigger")
@@ -51,18 +57,30 @@ class RcmScanTrigger:
             )
             unit.stop_continuous_acquisition()
             self._scan.join(ABORT_JOIN_TIMEOUT_S)
-            self._start_recovery()
+            self._start_recovery(self._scan)
             return False
         if self._error is not None:
             raise self._error
         return True
 
-    def _start_recovery(self):
+    def _start_recovery(self, stalled_scan: threading.Thread):
         # One recovery at a time, so a camera that stays dead isn't restarted on every trigger.
         if self._on_timeout is None or (self._recovery is not None and self._recovery.is_alive()):
             return
-        self._recovery = threading.Thread(target=self._on_timeout, name="Confocal scan recovery", daemon=True)
+        self._recovery = threading.Thread(
+            target=self._recover, args=(stalled_scan,), name="Confocal scan recovery", daemon=True
+        )
         self._recovery.start()
+
+    def _recover(self, stalled_scan: threading.Thread):
+        # Re-arming gives the camera its ready signal back. While the aborted scan is still inside
+        # startAcquisition(), that could let it go ahead and deliver a late frame after the acquisition
+        # has moved on, so only re-arm once it has exited.
+        stalled_scan.join(RECOVERY_WAIT_S)
+        if stalled_scan.is_alive():
+            log.error("The aborted confocal scan never returned; not re-arming the camera")
+            return
+        self._on_timeout()
 
     def _run(self, unit):
         try:

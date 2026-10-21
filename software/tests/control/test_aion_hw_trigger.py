@@ -204,7 +204,7 @@ def test_scan_trigger_passes_errors_through():
         RcmScanTrigger(timeout_s=1.0).trigger(Broken())
 
 
-def test_scan_trigger_runs_one_recovery_after_a_timeout():
+def test_scan_trigger_runs_one_recovery_and_drops_triggers_meanwhile():
     from control.rcm_scan_trigger import RcmScanTrigger
 
     recovering = threading.Event()
@@ -222,10 +222,33 @@ def test_scan_trigger_runs_one_recovery_after_a_timeout():
 
     assert trigger.trigger(unit) is False
     assert recovering.wait(5)
-    unit.release.clear()
-    assert trigger.trigger(unit) is False  # times out again while the first recovery still runs
+    assert trigger.trigger(unit) is False  # dropped while the camera is being re-armed...
+    assert unit.starts == 1  # ...without starting a scan that could take the re-arm's ready signal
     assert recoveries == [1]
+
     finish.set()
+    trigger._recovery.join(5)
+    unit.start_acquisition = lambda: None
+    assert trigger.trigger(unit) is True  # normal again once the re-arm is done
+
+
+def test_recovery_waits_for_the_aborted_scan_to_exit():
+    """Re-arming while the aborted scan is still in startAcquisition() could let it deliver a late frame."""
+    from control.rcm_scan_trigger import RcmScanTrigger
+
+    recoveries = []
+    trigger = RcmScanTrigger(timeout_s=0.1, on_timeout=lambda: recoveries.append(1))
+    unit = StuckUnit()  # stays stuck after stop_continuous_acquisition()
+
+    assert trigger.trigger(unit) is False  # times out; the scan stays alive past the 1 s abort wait
+    time.sleep(0.3)
+    assert recoveries == []  # not re-armed while the old scan is still running
+    assert trigger.trigger(unit) is False
+    assert unit.starts == 1  # and no new scan was started meanwhile
+
+    unit.release.set()  # the old scan finally exits
+    trigger._recovery.join(5)
+    assert recoveries == [1]  # now the camera is re-armed
 
 
 def _z_moves_during(scope, mpc, tracker, monkeypatch):
