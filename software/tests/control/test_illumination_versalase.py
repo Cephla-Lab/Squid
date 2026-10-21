@@ -1,8 +1,12 @@
 """Tests for the Vortran Stradus VersaLase USB HID driver."""
 
+import os
+
+import psutil
 import pytest
 
 import control.illumination_versalase as versalase
+import control.versalase_guard as guard
 from control.lighting import ShutterControlMode
 
 
@@ -69,8 +73,27 @@ class FakeStradusHead:
         return f"{name}={value}"
 
 
+class FakeGuard:
+    """Stands in for the crash guard's Popen, so no test starts a real guard process."""
+
+    def __init__(self, squid_pid):
+        self.squid_pid = squid_pid
+        self.pid = 4321
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
+
+
 @pytest.fixture
-def heads(monkeypatch):
+def guards(monkeypatch):
+    started = []
+    monkeypatch.setattr(guard, "start", lambda pid: started.append(FakeGuard(pid)) or started[-1])
+    return started
+
+
+@pytest.fixture
+def heads(monkeypatch, guards):
     fakes = {
         b"p405": FakeStradusHead("VL07241K15, 11070, 405nm, 100mW, C", 100.8),
         b"p488": FakeStradusHead("0106259H19, 11075, 488nm, 150mW, C", 150.0, delay=True, stale_reply="?OP2=1*2"),
@@ -267,3 +290,126 @@ def test_failed_initialize_turns_earlier_heads_off_and_closes_them(heads):
         assert fake.state["LE"] == 0 and fake.closed
     assert laser.heads == []
     assert all(head is None for head in laser.channel_mappings.values())
+
+
+def test_crash_guard_starts_before_any_head_is_touched(heads, guards, monkeypatch):
+    started_before_open = []
+    real_open = versalase.VersaLase._open_heads
+    monkeypatch.setattr(
+        versalase.VersaLase, "_open_heads", lambda self: (started_before_open.append(len(guards)), real_open(self))
+    )
+    laser = versalase.VersaLase()
+    laser.initialize()
+
+    assert started_before_open == [1]
+    assert [g.squid_pid for g in guards] == [os.getpid()]
+    assert not guards[0].terminated
+
+
+def test_clean_shut_down_turns_heads_off_then_stops_the_guard(heads, guards):
+    laser = versalase.VersaLase()
+    laser.initialize()
+    le_when_stopped = []
+    guards[0].terminate = lambda: le_when_stopped.append([f.state["LE"] for f in heads.values()])
+
+    laser.shut_down()
+
+    assert le_when_stopped == [[0, 0, 0, 0]]  # stopped only once every head was off
+
+
+def test_failed_initialize_also_stops_the_guard(heads, guards):
+    heads[b"p561"].state.update({"FC": 16, "FD": "INTERLOCK OPEN"})
+    with pytest.raises(RuntimeError):
+        versalase.VersaLase().initialize()
+    assert guards[0].terminated
+
+
+def test_no_crash_guard_when_disabled(heads, guards):
+    versalase.VersaLase(crash_guard=False).initialize()
+    assert guards == []
+
+
+def test_a_guard_that_cannot_start_does_not_block_initialize(heads, monkeypatch):
+    def fail(pid):
+        raise OSError("no python")
+
+    monkeypatch.setattr(guard, "start", fail)
+    laser = versalase.VersaLase()
+    assert laser.initialize()
+    laser.shut_down()
+
+
+class ReopenableDevice:
+    """hid.device() for the guard, which opens a fresh device per attempt: open_path() picks the fake head."""
+
+    def __init__(self, fakes):
+        self._fakes = fakes
+        self._fake = None
+
+    def open_path(self, path):
+        self._fake = self._fakes[path]
+
+    def __getattr__(self, name):
+        return getattr(self._fake, name)
+
+    def close(self):
+        if self._fake is not None:
+            self._fake.close()
+
+
+@pytest.fixture
+def guard_heads(monkeypatch):
+    fakes = {
+        b"p405": FakeStradusHead("VL07241K15, 11070, 405nm, 100mW, C", 100.8),
+        b"p639": FakeStradusHead("VL07241K14, 11951, 639nm, 160mW, C", 160.0),
+    }
+    for fake in fakes.values():
+        fake.state.update({"LE": 1, "LW": 405 if fake is fakes[b"p405"] else 639})
+    monkeypatch.setattr(guard.hid, "enumerate", lambda vid, pid: [{"path": p} for p in fakes])
+    monkeypatch.setattr(guard.hid, "device", lambda: ReopenableDevice(fakes))
+    monkeypatch.setattr(guard.time, "sleep", lambda s: None)
+    return fakes
+
+
+def test_guard_turns_every_head_off(guard_heads):
+    assert guard.turn_off_all_heads() == ["405 nm", "639 nm"]
+    assert all(f.state["LE"] == 0 and f.closed for f in guard_heads.values())
+
+
+def test_guard_retries_a_head_that_fails(guard_heads):
+    fake = guard_heads[b"p639"]
+    original = fake._execute
+    failures = iter([True])
+    fake._execute = lambda command: "LE=1" if command == "LE=0" and next(failures, False) else original(command)
+
+    assert guard.turn_off_all_heads() == ["405 nm", "639 nm"]
+    assert fake.sent.count("LE=0") == 2 and fake.state["LE"] == 0
+
+
+def test_guard_main_waits_for_squid_then_turns_emission_off(monkeypatch):
+    events = []
+
+    class Process:
+        def __init__(self, pid):
+            events.append(("watch", pid))
+
+        def wait(self):
+            events.append("squid ended")
+
+    monkeypatch.setattr(guard.psutil, "Process", Process)
+    monkeypatch.setattr(guard.squid.logging, "add_file_logging", lambda path: True)
+    monkeypatch.setattr(guard, "turn_off_all_heads", lambda: events.append("off") or ["405 nm"])
+
+    assert guard.main(["1234"]) == 0
+    assert events == [("watch", 1234), "squid ended", "off"]
+
+
+def test_guard_main_acts_when_squid_is_already_gone(monkeypatch):
+    def gone(pid):
+        raise psutil.NoSuchProcess(pid)
+
+    monkeypatch.setattr(guard.psutil, "Process", gone)
+    monkeypatch.setattr(guard.squid.logging, "add_file_logging", lambda path: True)
+    monkeypatch.setattr(guard, "turn_off_all_heads", lambda: ["405 nm"])
+
+    assert guard.main(["1234"]) == 0
