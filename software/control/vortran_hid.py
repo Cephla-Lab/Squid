@@ -51,7 +51,8 @@ class StradusHead:
         self.path = path
         self._timeout_s = timeout_s
         self._command_timeout_s = max(timeout_s, command_timeout_s)
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # one transaction at a time, and close() never during one
+        self._closed = False
 
         self.serial_number: Optional[str] = None
         self.wavelength: Optional[int] = None
@@ -82,6 +83,8 @@ class StradusHead:
         command = command.strip().upper()
         expected_prefix = command.split("=")[0] + "="
         with self._lock:
+            if self._closed:
+                raise VortranError(f"Vortran head {self.describe()} is closed")
             self._device.write(self._report(OP_ACK))
             self._device.write(self._report(OP_SEND, (command + "\r\n").encode("ascii")))
 
@@ -137,4 +140,9 @@ class StradusHead:
         return f"{self.wavelength} nm (S/N {self.serial_number})"
 
     def close(self):
-        self._device.close()
+        # Under the lock: a transaction in flight on another thread (e.g. a status read) finishes first,
+        # and any later one raises instead of using the closed device.
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._device.close()

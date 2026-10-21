@@ -2923,6 +2923,8 @@ class HighContentScreeningGui(QMainWindow):
         # source that has dropped off its link must not keep the stage and microcontroller from closing.
         if self.microscope.illumination_controller.light_source is not None:
             try:
+                if self.versaLaseWidget is not None:
+                    self.versaLaseWidget.stop()  # no status read may use the lasers while they shut down
                 self.microscope.illumination_controller.close()
             except Exception:
                 self.log.exception(f"Error closing the light source during {context}")

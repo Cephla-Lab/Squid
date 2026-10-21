@@ -1,6 +1,8 @@
 """Tests for the Vortran Stradus VersaLase USB HID driver."""
 
 import os
+import threading
+import time
 
 import psutil
 import pytest
@@ -413,3 +415,70 @@ def test_guard_main_acts_when_squid_is_already_gone(monkeypatch):
     monkeypatch.setattr(guard, "turn_off_all_heads", lambda: ["405 nm"])
 
     assert guard.main(["1234"]) == 0
+
+
+def test_shut_down_keeps_the_guard_when_a_head_stays_on(heads, guards):
+    """A head that never confirms LE=0 is retried, and the guard stays as the fallback."""
+    laser = versalase.VersaLase()
+    laser.initialize()
+    stuck = heads[b"p561"]
+    original = stuck._execute
+    stuck._execute = lambda command: "LE=1" if command == "LE=0" else original(command)
+
+    laser.shut_down()
+
+    assert stuck.sent.count("LE=0") == versalase.SHUTDOWN_ATTEMPTS
+    assert all(f.closed for f in heads.values())  # every handle is released for the guard
+    assert all(f.state["LE"] == 0 for name, f in heads.items() if name != b"p561")
+    assert not guards[0].terminated
+
+
+def test_shut_down_retries_a_head_and_then_stops_the_guard(heads, guards):
+    laser = versalase.VersaLase()
+    laser.initialize()
+    flaky = heads[b"p405"]
+    original = flaky._execute
+    replies = iter(["LE=1"])  # still on after the first LE=0
+    flaky._execute = lambda command: (
+        next(replies, None) or original(command) if command == "LE=0" else original(command)
+    )
+
+    laser.shut_down()
+
+    assert flaky.sent.count("LE=0") == 2 and flaky.state["LE"] == 0
+    assert guards[0].terminated
+
+
+def test_close_waits_for_a_transaction_in_flight(heads):
+    """close() from one thread while another is mid-read must not close the device under it."""
+    laser = versalase.VersaLase(crash_guard=False)
+    laser.initialize()
+    head = laser.channel_mappings[405]
+    fake = heads[b"p405"]
+    reading = threading.Event()
+    release = threading.Event()
+    real_read = fake.read
+
+    def slow_read(size, timeout_ms):
+        if fake.sent[-1] == "?LE" and not release.is_set():
+            reading.set()
+            release.wait(5)
+        return real_read(size, timeout_ms)
+
+    fake.read = slow_read
+    result = {}
+    reader = threading.Thread(target=lambda: result.update(le=head.transact("?LE")))
+    reader.start()
+    assert reading.wait(5)
+
+    closer = threading.Thread(target=head.close)
+    closer.start()
+    time.sleep(0.2)
+    assert closer.is_alive() and not fake.closed  # waiting for the read
+
+    release.set()
+    reader.join(5)
+    closer.join(5)
+    assert result == {"le": "1"} and fake.closed
+    with pytest.raises(versalase.VortranError, match="closed"):
+        head.transact("?LE")

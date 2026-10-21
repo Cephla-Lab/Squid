@@ -10,6 +10,8 @@ from qtpy.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from control.illumination_versalase import HeadStatus
 
 POLL_INTERVAL_MS = 3000
+# A full status read is ~9 queries per head; long enough for one in flight to finish.
+STOP_TIMEOUT_S = 15.0
 RED = "#c0392b"
 AMBER = "#daa520"
 GREEN = "#2e8b57"
@@ -80,6 +82,7 @@ class VersaLaseWidget(QWidget):
         self._versalase = versalase
         self._is_busy = is_busy
         self._poll_thread: Optional[threading.Thread] = None
+        self._stopped = False
         self._head_dots: List[QLabel] = []
         self._head_lines: List[QLabel] = []
         self._build_ui()
@@ -121,6 +124,8 @@ class VersaLaseWidget(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
+        if self._stopped:
+            return
         self.poll()
         self._timer.start()
 
@@ -128,8 +133,17 @@ class VersaLaseWidget(QWidget):
         super().hideEvent(event)
         self._timer.stop()
 
+    def stop(self) -> None:
+        """Stop polling for good and wait for a status read in flight, before the lasers are shut down."""
+        self._stopped = True
+        self._timer.stop()
+        if self._poll_thread is not None:
+            self._poll_thread.join(STOP_TIMEOUT_S)
+
     def poll(self) -> None:
-        """Start a status read unless one is running or an acquisition is in progress."""
+        """Start a status read unless stopped, one is running, or an acquisition is in progress."""
+        if self._stopped:
+            return
         if self._is_busy():
             self._paused_label.setText("Paused during acquisition")
             return

@@ -1,5 +1,6 @@
 """Tests for the VersaLase status tab."""
 
+import threading
 import types
 
 from control.illumination_versalase import HeadStatus
@@ -146,3 +147,26 @@ def test_lines_exist_before_the_first_status_read(qtbot):
     assert [line.text() for line in widget._head_lines] == ["405 nm reading status…", "488 nm reading status…"]
     assert laser.calls == 0
     assert widget.sizeHint().height() > empty.sizeHint().height()
+
+
+def test_stop_waits_for_a_read_in_flight_and_ends_polling(qtbot):
+    release = threading.Event()
+
+    class SlowVersaLase(FakeVersaLase):
+        def get_status(self):
+            release.wait(5)
+            return super().get_status()
+
+    laser = SlowVersaLase([_status(405)])
+    widget = VersaLaseWidget(laser)
+    qtbot.addWidget(widget)
+    widget.poll()
+    reader = widget._poll_thread
+    threading.Timer(0.2, release.set).start()
+
+    widget.stop()
+
+    assert not reader.is_alive() and laser.calls == 1
+    widget.poll()
+    widget.show()
+    assert laser.calls == 1 and not widget._timer.isActive()

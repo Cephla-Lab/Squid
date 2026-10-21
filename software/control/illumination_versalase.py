@@ -67,6 +67,7 @@ WAVELENGTH_MATCH_TOLERANCE_NM = 5
 # Lower values are laser state (0 active, 1 standby, 2 warmup) or syntax errors.
 FAULT_INTERLOCK_OPEN = 16
 EMISSION_DELAY_S = 5.0
+SHUTDOWN_ATTEMPTS = 3
 
 
 class TtlInput(Enum):
@@ -297,15 +298,33 @@ class VersaLase(LightSource):
         )
 
     def shut_down(self):
+        still_on = []
         for head in self.heads:
             try:
-                head.set_flag("LE", False)
-            except Exception as e:
-                log.error(f"Failed to turn off Vortran head {head.describe()}: {e}")
+                if not self._turn_off(head):
+                    still_on.append(head.describe())
             finally:
                 head.close()
         self.heads = []
-        # The heads are off, so the guard must not act when this process ends (or race a restarted Squid).
+        if still_on:
+            # Keep the guard: it turns these heads off, with fresh handles, once this process ends.
+            fallback = "the crash guard turns them off when Squid exits" if self._guard else "no crash guard is running"
+            log.error(f"Vortran head(s) {', '.join(still_on)} did not confirm emission off; {fallback}")
+            return
+        # Every head confirmed it is off, so the guard must not act when this process ends (or race a
+        # restarted Squid).
         if self._guard is not None:
             self._guard.terminate()
             self._guard = None
+
+    @staticmethod
+    def _turn_off(head: StradusHead) -> bool:
+        """Send LE=0 until the head confirms emission is off; False if it never does."""
+        for attempt in range(1, SHUTDOWN_ATTEMPTS + 1):
+            try:
+                if not head.set_flag("LE", False):
+                    return True
+                log.warning(f"Vortran head {head.describe()} still reports emission on (attempt {attempt})")
+            except Exception as e:
+                log.warning(f"Failed to turn off Vortran head {head.describe()} (attempt {attempt}): {e}")
+        return False
