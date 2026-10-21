@@ -1700,6 +1700,7 @@ class HighContentScreeningGui(QMainWindow):
             self.napari_connections += [
                 (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
                 (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
+                (self.multipointController.acquisition_finished, self.napariMultiChannelWidget.finishAcquisition),
             ]
 
             if ENABLE_FLEXIBLE_MULTIPOINT:
