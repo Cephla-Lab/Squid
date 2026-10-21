@@ -17,6 +17,7 @@ from qtpy.QtWidgets import (
 )
 from qtpy.QtCore import Qt
 
+import control._def
 from control.NL5 import SLIT_POSITIONS_UM, LINE_SPEED_MIN, LINE_SPEED_MAX
 
 
@@ -24,7 +25,7 @@ class NL5SettingsDialog(QDialog):
     def __init__(self, nl5):
         super().__init__()
         self.nl5 = nl5
-        self.setWindowTitle("NL5 Settings")
+        self.setWindowTitle(f"{getattr(self.nl5, 'device_name', 'NL5')} Settings")
 
         layout = QGridLayout()
 
@@ -152,11 +153,14 @@ class NL5Widget(QWidget):
             self.slit_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             layout2.addWidget(self.slit_combo)
 
-        # Bypass control
+        # Bypass control (hidden on systems without a brightfield path, see NL5_SHOW_BYPASS_BUTTON)
         self.bypass_button = QPushButton("Enable Bypass")
         self.bypass_button.setCheckable(True)
         self.bypass_button.toggled.connect(self.update_bypass)
-        layout2.addWidget(self.bypass_button)
+        if getattr(control._def, "NL5_SHOW_BYPASS_BUTTON", True):
+            layout2.addWidget(self.bypass_button)
+        else:
+            self.bypass_button.hide()
 
         # Start acquisition button
         self.start_acquisition_button = QPushButton("Start Acquisition")
@@ -164,7 +168,7 @@ class NL5Widget(QWidget):
         # layout2.addWidget(self.start_acquisition_button, 3, 0, 1, 4)
 
         # NL5 Settings button
-        self.settings_button = QPushButton("Edit NL5 Settings")
+        self.settings_button = QPushButton(f"Edit {getattr(self.nl5, 'device_name', 'NL5')} Settings")
         self.settings_button.clicked.connect(self.show_settings_dialog)
         layout2.addWidget(self.settings_button)
 

@@ -1029,6 +1029,9 @@ NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 6
 # AION only: USB serial number of the SmarAct SCU controller driving the internal slit stage
 # (the FTDI port's SER field, e.g. "SCU"). The slit width/offset controls appear only when it connects.
 RCM_INTERNAL_STAGE_SN = "AL05NB1GA"
+# Show the "Enable Bypass" button in the NL5/AION tab. Set False on a system without a brightfield
+# (bypass) path so the button cannot be pressed by mistake.
+NL5_SHOW_BYPASS_BUTTON = True
 
 # Laser AF characterization mode
 LASER_AF_CHARACTERIZATION_MODE = False
