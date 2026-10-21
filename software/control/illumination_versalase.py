@@ -73,6 +73,9 @@ WAVELENGTH_MATCH_TOLERANCE_NM = 5
 # Lower values are laser state (0 active, 1 standby, 2 warmup) or syntax errors.
 FAULT_INTERLOCK_OPEN = 16
 EMISSION_DELAY_S = 5.0
+# Queries reply in ~15 ms, but a head only replies to a power command (LP/PP) after it has
+# regulated to the new setting - about 1.2 s on the AION heads.
+COMMAND_TIMEOUT_S = 3.0
 
 
 class VortranError(RuntimeError):
@@ -110,10 +113,11 @@ class HeadStatus:
 class StradusHead:
     """One laser head of the VersaLase, talking over its own HID device."""
 
-    def __init__(self, device, path: bytes, timeout_s: float = 1.0):
+    def __init__(self, device, path: bytes, timeout_s: float = 1.0, command_timeout_s: float = COMMAND_TIMEOUT_S):
         self._device = device
         self.path = path
         self._timeout_s = timeout_s
+        self._command_timeout_s = max(timeout_s, command_timeout_s)
         self._lock = threading.Lock()
 
         self.serial_number: Optional[str] = None
@@ -148,7 +152,8 @@ class StradusHead:
             self._device.write(self._report(OP_ACK))
             self._device.write(self._report(OP_SEND, (command + "\r\n").encode("ascii")))
 
-            deadline = time.monotonic() + self._timeout_s
+            timeout_s = self._timeout_s if command.startswith("?") else self._command_timeout_s
+            deadline = time.monotonic() + timeout_s
             while time.monotonic() < deadline:
                 self._device.write(self._report(OP_STATUS))
                 frame = self._read(OP_STATUS)

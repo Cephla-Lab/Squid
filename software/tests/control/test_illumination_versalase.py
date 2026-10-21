@@ -220,3 +220,30 @@ def test_head_without_smb_modulation_points_at_laser_enable(heads):
     with pytest.raises(RuntimeError, match="LASER_ENABLE"):
         versalase.VersaLase(ttl_input=versalase.TtlInput.DIGITAL_MODULATION).initialize()
     assert heads[b"p405"].state["LE"] == 0  # emission is never enabled on a head left in CW
+
+
+def test_set_commands_wait_longer_than_queries(heads, monkeypatch):
+    """A head replies to LP/PP only after regulating (~1.2 s on AION), longer than a query may take."""
+    laser = versalase.VersaLase(timeout_s=0.05)
+    laser.initialize()
+    head = laser.channel_mappings[405]
+    fake = heads[b"p405"]
+    clock = {"now": 0.0}
+    monkeypatch.setattr(versalase.time, "monotonic", lambda: clock["now"])
+    real_read = fake.read
+
+    def slow_read(size, timeout_ms):
+        clock["now"] += 0.01  # every read takes 10 ms
+        if fake.sent[-1].startswith("LP=") and clock["now"] < 1.2:
+            return []  # still regulating
+        return real_read(size, timeout_ms)
+
+    fake.read = slow_read
+    laser.set_intensity(head, 20)  # would time out after 0.05 s if commands used the query timeout
+    assert fake.state["LP"] == pytest.approx(20.2)
+
+    clock["now"] = 0.0
+    fake.read = lambda size, timeout_ms: (clock.__setitem__("now", clock["now"] + 0.01), [])[1]
+    with pytest.raises(versalase.VortranError):
+        head.transact("?LE")
+    assert clock["now"] < 0.2  # a query still gives up after its own short timeout
