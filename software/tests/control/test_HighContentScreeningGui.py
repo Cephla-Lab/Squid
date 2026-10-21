@@ -145,6 +145,58 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     assert calls == ["stage", "microcontroller"]
 
 
+def test_cleanup_continues_when_the_light_source_fails_to_close(qtbot, monkeypatch, confirm_exit_yes):
+    """A light source that errors on shut_down (e.g. its link dropped) is only logged, even on a full
+    shutdown, so the stage and microcontroller are still closed."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    class DroppedLightSource:
+        def shut_down(self):
+            raise ConnectionError("light source link dropped")
+
+    scope.illumination_controller.light_source = DroppedLightSource()
+    calls = []
+    gui.stage.close = lambda: calls.append("stage")
+    original_micro_close = gui.microcontroller.close
+
+    def recording_micro_close():
+        calls.append("microcontroller")
+        original_micro_close()
+
+    monkeypatch.setattr(gui.microcontroller, "close", recording_micro_close)
+    gui.closeEvent = lambda event: event.accept()  # keep teardown from re-running cleanup
+
+    gui._cleanup_common(for_restart=False)
+
+    assert calls == ["stage", "microcontroller"]
+
+
+def test_cleanup_stops_the_versalase_tab_before_shutting_the_lasers_down(qtbot, monkeypatch, confirm_exit_yes):
+    """No status read may use the lasers while they are shut down and their devices closed."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    order = []
+
+    class RecordingLightSource:
+        def shut_down(self):
+            order.append("lasers shut down")
+
+    class RecordingTab:
+        def stop(self):
+            order.append("tab stopped")
+
+    scope.illumination_controller.light_source = RecordingLightSource()
+    gui.versaLaseWidget = RecordingTab()
+    gui.closeEvent = lambda event: event.accept()  # keep teardown from re-running cleanup
+
+    gui._cleanup_common(for_restart=True)
+
+    assert order == ["tab stopped", "lasers shut down"]
+
+
 def test_create_simulated_hcs_with_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: with a Dragonfly as the spinning disk unit, GUI construction wired the
     X-Light-only iris signals onto DragonflyConfocalWidget and raised AttributeError."""
