@@ -11,7 +11,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
-from control.rcm_scan_trigger import RcmScanTrigger
+from control.rcm_scan_trigger import ConfocalScanFailedError, RcmScanTrigger
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
@@ -394,15 +394,25 @@ class Microscope:
             except Exception as e:
                 cam_trigger_log.error(f"Could not re-arm the camera after a stalled confocal scan: {e}")
 
-        rcm_scan_trigger = RcmScanTrigger(control._def.NL5_TRIGGER_TIMEOUT_S, rearm=rearm_camera_after_stalled_scan)
+        rcm_scan_trigger = RcmScanTrigger(
+            control._def.NL5_TRIGGER_TIMEOUT_S,
+            rearm=rearm_camera_after_stalled_scan,
+            frame_id=lambda: camera.get_frame_id(),
+        )
 
         def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
             # NOTE(imo): If this succeeds, it means we sent the request,
             # but we didn't necessarily get confirmation of success.
             if addons.nl5 and control._def.NL5_USE_DOUT:
                 # The confocal unit triggers the camera; a scan it cannot finish is aborted, not waited on.
-                frame_time_s = illumination_time / 1000.0 if illumination_time else 0.0
-                return rcm_scan_trigger.trigger(addons.nl5, frame_time_s)
+                # The timeout scales with the whole frame time (exposure plus readout), not just the exposure.
+                frame_time_ms = max(illumination_time or 0.0, camera.get_total_frame_time())
+                if not rcm_scan_trigger.trigger(addons.nl5, frame_time_ms / 1000.0):
+                    raise ConfocalScanFailedError(
+                        "The confocal scan stalled and re-arming the camera did not recover it "
+                        "(or an earlier aborted scan is still stuck)"
+                    )
+                return True
             else:
                 illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
                 cam_trigger_log.debug(

@@ -13,14 +13,21 @@ On AION a Tucsen left idle in hardware trigger mode for 50-55 s or more stops si
 re-applying its trigger mode re-arms it. After a stalled scan has been aborted and has exited,
 trigger() calls rearm() and retries the scan once, so the image is still taken. Both happen on the
 calling thread, which holds the camera's trigger lock (send_trigger), so nothing else can change the
-camera's settings in between. While an aborted scan is still inside startAcquisition(), nothing is
-re-armed and triggers are dropped: re-arming would give the camera the ready signal that scan waits
-for, and it could deliver a late frame after the acquisition had moved on.
+camera's settings in between. A stall is therefore a bounded pause: at most two scan timeouts, two
+abort waits and one re-arm (on AION about 2-4 s was observed).
+
+No retry, and no re-arm, when:
+- the aborted scan is still inside startAcquisition(): re-arming would give it the ready signal it
+  waits for, and it could deliver a late frame after the acquisition had moved on. Triggers are
+  dropped (logged once) until it returns; the next trigger then re-arms first.
+- the camera produced a frame during the aborted scan (it fired just before the abort): that frame
+  is the image, and a retry would add a second one that could be filed under the next channel.
 """
 
 import threading
 from typing import Callable, Optional
 
+from squid.abc import CameraError
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
@@ -28,16 +35,26 @@ log = squid.logging.get_logger(__name__)
 ABORT_JOIN_TIMEOUT_S = 1.0
 
 
+class ConfocalScanFailedError(CameraError):
+    """The confocal unit could not take this image: its scan stalled and re-arming did not help."""
+
+
 class RcmScanTrigger:
-    def __init__(self, timeout_s: float, rearm: Optional[Callable[[], None]] = None):
+    def __init__(
+        self,
+        timeout_s: float,
+        rearm: Optional[Callable[[], None]] = None,
+        frame_id: Optional[Callable[[], int]] = None,
+    ):
         self._timeout_s = timeout_s
         self._rearm = rearm
+        self._frame_id = frame_id
         self._scan: Optional[threading.Thread] = None
         self._error: Optional[BaseException] = None
         self._stuck = False
 
     def trigger(self, unit, frame_time_s: float = 0.0) -> bool:
-        """Scan one image on `unit`; False if the trigger was dropped (stalled twice, or a scan is stuck)."""
+        """Scan one image on `unit`; False if it was not taken (stalled again after the retry, or a scan is stuck)."""
         if self._scan is not None and self._scan.is_alive():
             # Never call into the RCM DLL again while an earlier startAcquisition() is stuck in it.
             if not self._stuck:
@@ -51,10 +68,14 @@ class RcmScanTrigger:
             self._call_rearm()
 
         timeout_s = self._timeout_s + 3 * frame_time_s
+        frame_id_before = self._frame_id() if self._frame_id else None
         if self._scan_once(unit, timeout_s):
             return True
         if self._scan.is_alive() or self._rearm is None:
             return False
+        if frame_id_before is not None and self._frame_id() != frame_id_before:
+            log.warning("The aborted confocal scan had already exposed the camera; not retrying")
+            return True
         log.warning("Re-arming the camera and retrying the scan once")
         self._call_rearm()
         return self._scan_once(unit, timeout_s)

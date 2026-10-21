@@ -24,20 +24,26 @@ from tests.control.test_MultiPointController import TestAcquisitionTracker, add_
 
 
 class FakeConfocalUnit:
-    def __init__(self, camera, lose_frames_from_scan=None, stall=False, stall_on_scans=()):
+    def __init__(self, camera, lose_frames_from_scan=None, stall=False, stall_on_scans=(), fire_on_abort_scans=()):
         self.camera = camera
         self.scans = 0
         self.stops = 0
         self.lose_frames_from_scan = lose_frames_from_scan
         self.stall = stall
         self.stall_on_scans = set(stall_on_scans)
+        # Scans that look stalled but expose the camera just as they are aborted.
+        self.fire_on_abort_scans = set(fire_on_abort_scans)
         self.release = threading.Event()
+        self.scan_started = threading.Event()
 
     def start_acquisition(self):
         self.scans += 1
-        if self.stall or self.scans in self.stall_on_scans:
+        self.scan_started.set()
+        if self.stall or self.scans in self.stall_on_scans | self.fire_on_abort_scans:
             self.release.clear()
             self.release.wait(10)  # the camera never reports ready, until the scan is aborted
+            if self.scans in self.fire_on_abort_scans:
+                self.camera._next_frame()
             return
         time.sleep(0.005)  # the scan
         if self.lose_frames_from_scan is None or self.scans < self.lose_frames_from_scan:
@@ -88,8 +94,16 @@ def aion_scope(monkeypatch, nl5_trigger_timeout_s):
         with camera._pause_streaming():
             simulated_set_mode(acquisition_mode)
 
+    simulated_close = camera.close
+
+    def tucsen_like_close():
+        # Like the Tucsen: closing waits for a trigger still in send_trigger().
+        with camera._trigger_lock:
+            simulated_close()
+
     monkeypatch.setattr(camera, "_send_trigger_imp", tucsen_like_trigger)
     monkeypatch.setattr(camera, "_set_acquisition_mode_imp", tucsen_like_set_mode)
+    monkeypatch.setattr(camera, "close", tucsen_like_close)
     yield scope
     scope.close()
 
@@ -165,7 +179,7 @@ def test_a_stalled_scan_is_aborted_rearmed_and_retried(aion_scope):
 
     sender = threading.Thread(target=camera.send_trigger, args=(10.0,), name="trigger", daemon=True)
     sender.start()
-    time.sleep(0.05)  # the first scan is now stalled, with send_trigger holding the camera's lock
+    assert unit.scan_started.wait(5)  # the first scan is now stalled, with send_trigger holding the camera's lock
     # A user switching to software trigger meanwhile waits for the trigger to finish, then wins.
     toggler = threading.Thread(
         target=camera.set_acquisition_mode, args=(CameraAcquisitionMode.SOFTWARE_TRIGGER,), name="user", daemon=True
@@ -201,6 +215,99 @@ def test_a_stall_during_an_acquisition_does_not_abort_it(aion_scope):
     assert tracker.image_count == expected  # every image, including the one whose first scan stalled
     assert unit.scans == expected + 1  # one retry
     assert unit.stops == 1
+
+
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_closing_the_camera_waits_for_a_stalled_trigger(aion_scope):
+    """Closing during a stall used to tear the camera down under a trigger that was about to re-arm it."""
+    camera = aion_scope.camera
+    unit = FakeConfocalUnit(camera, stall_on_scans={1})
+    aion_scope.addons.nl5 = unit
+    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    camera.start_streaming()
+    events = []
+
+    def send():
+        camera.send_trigger(10.0)
+        events.append("trigger finished")
+
+    def close():
+        camera.close()
+        events.append("camera closed")
+
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    assert unit.scan_started.wait(5)
+    closer = threading.Thread(target=close, daemon=True)
+    closer.start()
+    sender.join(10)
+    closer.join(10)
+
+    assert events == ["trigger finished", "camera closed"]
+    assert unit.scans == 2  # the re-arm and retry ran on an open camera
+
+
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_no_retry_when_the_aborted_scan_had_already_exposed_the_camera(aion_scope):
+    """A retry after a scan that did fire would add a second frame, which could be filed under the next channel."""
+    camera = aion_scope.camera
+    unit = FakeConfocalUnit(camera, fire_on_abort_scans={1})
+    aion_scope.addons.nl5 = unit
+    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    camera.start_streaming()
+    frames = []
+    camera.add_frame_callback(lambda frame: frames.append(frame.frame_id))
+    mode_changes = []
+    set_mode = camera.set_acquisition_mode
+    camera.set_acquisition_mode = lambda mode: (mode_changes.append(mode), set_mode(mode))
+
+    camera.send_trigger(10.0)  # does not raise: the image was taken
+    time.sleep(0.3)
+
+    assert unit.scans == 1  # no retry
+    assert mode_changes == []  # no re-arm
+    assert len(frames) == 1
+
+
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_a_failed_retry_aborts_the_acquisition_explicitly_and_restores_z(aion_scope, monkeypatch, caplog):
+    """When re-arming does not help, the acquisition stops at once with the reason, and Z goes back."""
+    unit = FakeConfocalUnit(aion_scope.camera, stall_on_scans={3, 4})  # scan 3 and its retry both stall
+    mpc, tracker = _fluorescence_acquisition(aion_scope, unit, nz=4)
+    mpc.set_deltaZ(10)
+
+    t0 = time.monotonic()
+    moves = _z_moves_during(aion_scope, mpc, tracker, monkeypatch)
+
+    assert time.monotonic() - t0 < 9  # no 10 s frame-timeout wait before the abort
+    assert unit.scans == 4
+    assert tracker.image_count == 2
+    assert sum(moves) == pytest.approx(0.0, abs=1e-9), moves
+    assert any("Aborting the acquisition" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("nl5_trigger_timeout_s", [0.2])
+def test_live_view_keeps_running_and_logs_a_trigger_failure_once(aion_scope, caplog):
+    """An exception out of the live trigger timer would stop live view without saying why."""
+    camera = aion_scope.camera
+    unit = FakeConfocalUnit(camera, stall=True)  # every scan stalls
+    aion_scope.addons.nl5 = unit
+    live = aion_scope.live_controller
+    live.set_microscope_mode(
+        next(
+            c
+            for c in live.get_channels(aion_scope.objective_store.current_objective)
+            if "Fluorescence" in c.name and _wavelength(c.name) in control._def.NL5_WAVENLENGTH_MAP
+        )
+    )
+    live.set_trigger_mode(TriggerMode.HARDWARE)
+    camera.start_streaming()
+
+    for _ in range(3):
+        assert live.trigger_acquisition() is True  # did not raise; the timer keeps its frame cadence
+        time.sleep(0.2)
+
+    assert sum("Live view:" in r.getMessage() for r in caplog.records) == 1
 
 
 class StuckUnit:

@@ -31,6 +31,7 @@ from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
+from control.rcm_scan_trigger import ConfocalScanFailedError
 import squid.logging
 import control.core.job_processing
 from control.core.job_processing import ZarrWriteResult
@@ -1509,7 +1510,16 @@ class MultiPointWorker:
             )
             self._current_capture_info = current_capture_info
         with self._timing.get_timer("send_trigger"):
-            self.camera.send_trigger(illumination_time=camera_illumination_time)
+            try:
+                self.camera.send_trigger(illumination_time=camera_illumination_time)
+            except ConfocalScanFailedError as e:
+                # No frame will come for this image: abort now, with the reason, rather than waiting out the
+                # frame timeout. Returning (not raising) keeps the z stack's cleanup, so Z still goes back.
+                self._log.error(f"Aborting the acquisition: {e}")
+                self._current_capture_info = None
+                self._ready_for_next_trigger.set()
+                self._abort_due_to_error()
+                return
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
             if self.liveController.trigger_mode == TriggerMode.HARDWARE:

@@ -70,3 +70,41 @@ def test_convert_header_to_numpy_rejects_padding():
 
     with pytest.raises(CameraError):
         TucsenCamera._convert_header_to_numpy(header)
+
+
+def test_close_waits_for_a_trigger_in_progress(monkeypatch):
+    """A trigger still in send_trigger() (e.g. a confocal scan being aborted, the camera re-armed and the scan
+    retried) must finish before the SDK is torn down, or it calls into a closed handle."""
+    import threading
+    import types
+
+    import control.camera_tucsen as tucsen
+    import squid.logging
+
+    events = []
+    monkeypatch.setattr(
+        tucsen, "TUCAM_Dev_Close", lambda handle: events.append("Dev_Close") or tucsen.TUCAMRET.TUCAMRET_SUCCESS
+    )
+    monkeypatch.setattr(tucsen, "TUCAM_Api_Uninit", lambda: events.append("Api_Uninit"))
+    camera = types.SimpleNamespace(
+        _trigger_lock=threading.RLock(),
+        _camera=None,
+        temperature_reading_thread=None,
+        stop_streaming=lambda: events.append("stop_streaming"),
+        _log=squid.logging.get_logger("test"),
+    )
+    in_trigger = threading.Event()
+
+    def trigger():
+        with camera._trigger_lock:  # as send_trigger() holds it
+            in_trigger.set()
+            threading.Event().wait(0.3)
+            events.append("trigger finished")
+
+    sender = threading.Thread(target=trigger)
+    sender.start()
+    assert in_trigger.wait(5)
+    TucsenCamera.close(camera)
+    sender.join(5)
+
+    assert events == ["trigger finished", "stop_streaming", "Dev_Close", "Api_Uninit"]
