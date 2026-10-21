@@ -3,6 +3,7 @@
 import threading
 from unittest.mock import patch
 
+import pytest
 from qtpy.QtWidgets import QMessageBox
 
 import tests.control.test_stubs as ts
@@ -235,3 +236,49 @@ def test_servo_swap_refused_while_z_is_in_use(qtbot):
     assert store.current_objective == store.default_objective
     assert widget.dropdown.currentText() == store.default_objective
     assert widget.dropdown.isEnabled()
+
+
+def _swap_active_log(widget):
+    log = []
+    widget.signal_swap_active.connect(log.append)
+    return log
+
+
+@pytest.mark.parametrize(
+    "fail_on, answer",
+    [
+        (None, QMessageBox.Ok),
+        (None, QMessageBox.Cancel),
+        ("retract", QMessageBox.Ok),
+        (False, QMessageBox.Ok),  # servo disengage fails
+        (True, QMessageBox.Ok),  # servo re-engage fails
+        ("restore", QMessageBox.Ok),
+    ],
+)
+def test_servo_swap_holds_swap_active_until_every_end(qtbot, fail_on, answer):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on=fail_on))
+    qtbot.addWidget(widget)
+    swap_active = _swap_active_log(widget)
+
+    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, answer)), patch.object(
+        QMessageBox, "warning"
+    ), patch.object(QMessageBox, "critical"):
+        widget.dropdown.setCurrentText("10x")
+        assert swap_active == [True]
+        qtbot.waitUntil(lambda: swap_active == [True, False], timeout=3000)
+
+    assert widget.dropdown.isEnabled()
+
+
+def test_refused_swap_never_reports_swap_active(qtbot):
+    store = ts.get_test_objective_store()
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo([]), z_in_use=lambda: True)
+    qtbot.addWidget(widget)
+    swap_active = _swap_active_log(widget)
+
+    with patch.object(QMessageBox, "warning"):
+        widget.dropdown.setCurrentText("10x")
+
+    assert swap_active == []

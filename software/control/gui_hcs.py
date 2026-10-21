@@ -615,6 +615,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._skip_init = skip_init
+        # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
+        self._objective_swap_active = False
+        self._objective_swap_saved_enabled = {}
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -1486,6 +1489,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
+        self.objectivesWidget.signal_swap_active.connect(self._on_objective_swap_active)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
         # Sensor mode changes (readout speed) can shift the valid exposure range;
         # refresh the exposure control the user actually sees (LiveControlWidget's),
@@ -2212,6 +2216,46 @@ class HighContentScreeningGui(QMainWindow):
         if self.workflowRunner:
             self.workflowRunner.request_stop()
 
+    # Controls that can move the stage, run autofocus or start an acquisition.
+    _OBJECTIVE_SWAP_BLOCKED_WIDGETS = (
+        "navigationWidget",
+        "stageUtils",
+        "autofocusWidget",
+        "piezoWidget",
+        "laserAutofocusControlWidget",
+        "laserAutofocusSettingWidget",
+        "focusMapWidget",
+        "wellSelectionWidget",
+        "recordTabWidget",
+    )
+
+    def _on_objective_swap_active(self, active: bool):
+        """Block every other stage / focus / acquisition control for the whole manual objective swap.
+
+        The swap retracts Z and releases the V-308 servo from background threads, so anything else
+        driving the stage meanwhile would interleave with it or fail with the servo off. Each widget
+        gets back the enabled state it had when the swap began.
+        """
+        self._objective_swap_active = active
+        if active:
+            self._objective_swap_saved_enabled = {}
+            for name in self._OBJECTIVE_SWAP_BLOCKED_WIDGETS:
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    self._objective_swap_saved_enabled[name] = widget.isEnabled()
+                    widget.setEnabled(False)
+        else:
+            for name, was_enabled in self._objective_swap_saved_enabled.items():
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    widget.setEnabled(was_enabled)
+            self._objective_swap_saved_enabled = {}
+
+    def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
+        if self._objective_swap_active:
+            self.log.info(f"{what} ignored: an objective change is in progress")
+        return self._objective_swap_active
+
     def _set_workflow_controls_enabled(self, enabled: bool):
         """Enable/disable main window controls during workflow.
 
@@ -2677,6 +2721,8 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayTabs.setCurrentIndex(0)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
+        if self._stage_moves_blocked_by_objective_swap("Click to move"):
+            return
         if not self.navigationWidget.get_click_to_move_enabled():
             self.log.debug(f"Click to move disabled, ignoring click at {click_x=}, {click_y=}")
             return
@@ -2689,6 +2735,8 @@ class HighContentScreeningGui(QMainWindow):
         self._move_stage_by_image_delta(click_x, click_y, pixel_size_um)
 
     def move_z_from_scroll(self, delta_um: float):
+        if self._stage_moves_blocked_by_objective_swap("Z scroll"):
+            return
         if not self.navigationWidget.get_click_to_move_enabled():
             return
         if self.stage.get_state().busy:
@@ -2712,6 +2760,8 @@ class HighContentScreeningGui(QMainWindow):
             self.log.debug(f"Click to move disabled, ignoring click request for {x_mm=}, {y_mm=}")
 
     def move_to_mm(self, x_mm, y_mm):
+        if self._stage_moves_blocked_by_objective_swap("Stage move"):
+            return
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
 

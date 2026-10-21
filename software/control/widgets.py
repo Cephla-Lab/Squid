@@ -3881,6 +3881,9 @@ class DragonflyConfocalWidget(QWidget):
 
 class ObjectivesWidget(QWidget):
     signal_objective_changed = Signal()
+    # True from the start of a manual (servo-off) swap until it fully ends, through both stage
+    # phases and the confirmation dialog: the GUI blocks every other stage / focus control meanwhile.
+    signal_swap_active = Signal(bool)
 
     def __init__(self, objective_store, objective_changer=None, focus_servo=None, z_in_use=None):
         super(ObjectivesWidget, self).__init__()
@@ -3966,8 +3969,9 @@ class ObjectivesWidget(QWidget):
         can run to the end of travel within a minute); retracting first keeps that drift clear of
         the sample, and restoring returns to the pre-swap focus height.
 
-        The stage calls run off the GUI thread in two phases around the dialog, with the dropdown
-        disabled as the re-entry guard until the whole swap ends."""
+        The stage calls run off the GUI thread in two phases around the dialog. Until the whole swap
+        ends, the dropdown stays disabled as the re-entry guard and signal_swap_active holds True so
+        the GUI keeps autofocus, acquisitions and manual stage moves blocked."""
         if self.z_in_use is not None and self.z_in_use():
             QMessageBox.warning(
                 self,
@@ -3977,6 +3981,7 @@ class ObjectivesWidget(QWidget):
             self._revert_dropdown()
             return
         self.dropdown.setEnabled(False)
+        self.signal_swap_active.emit(True)
         self._swap_target = objective_name
         self._swap_z_before_mm = None
         self._swap_retracted = False
@@ -4003,7 +4008,7 @@ class ObjectivesWidget(QWidget):
                 f"{error_msg}{left_retracted}",
             )
             self._revert_dropdown()
-            self.dropdown.setEnabled(True)
+            self._end_swap()
             return
         self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
 
@@ -4048,7 +4053,11 @@ class ObjectivesWidget(QWidget):
         else:
             self._revert_dropdown()
         # Re-enable only after any modal warning, which spins a nested event loop.
+        self._end_swap()
+
+    def _end_swap(self):
         self.dropdown.setEnabled(True)
+        self.signal_swap_active.emit(False)
 
     def _revert_dropdown(self):
         self.dropdown.blockSignals(True)
