@@ -255,8 +255,15 @@ class IlluminationController:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
             if intensity != self.intensity_settings[channel]:
-                self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
+                line = self.channel_mappings_software[channel]
+                self.light_source.set_intensity(line, intensity)
                 self.intensity_settings[channel] = intensity
+                # Channels served by the same line (e.g. 470 and 488 on one laser) share its power, so a
+                # later switch to one of them must not skip setting its own intensity.
+                if line is not None:
+                    for other, other_line in self.channel_mappings_software.items():
+                        if other_line == line:
+                            self.intensity_settings[other] = intensity
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
