@@ -2886,16 +2886,6 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
-        # Turn off and release an external light source (VersaLase, CELESTA, LDI, Andor)
-        if self.microscope.illumination_controller.light_source is not None:
-            try:
-                self.microscope.illumination_controller.close()
-            except Exception:
-                if for_restart:
-                    self.log.exception(f"Error closing the light source during {context}")
-                else:
-                    raise
-
         # Release the Dragonfly serial port so a restarted process can open it
         if self.dragonfly is not None:
             try:
@@ -2927,6 +2917,17 @@ class HighContentScreeningGui(QMainWindow):
                 self.log.exception(f"Error closing camera during {context}")
             else:
                 raise
+
+        # Turn off and release an external light source (VersaLase, CELESTA, LDI, Andor) once live view,
+        # which may still switch it, has stopped
+        if self.microscope.illumination_controller.light_source is not None:
+            try:
+                self.microscope.illumination_controller.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing the light source during {context}")
+                else:
+                    raise
 
         # Z-retract + Xeryon zero: needed on full shutdown, and on Xeryon restart
         # (Xeryon must be zeroed before re-init).

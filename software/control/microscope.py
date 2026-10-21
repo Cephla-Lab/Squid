@@ -1111,6 +1111,12 @@ class Microscope:
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
 
+        # Turn an external light source's lines off first, while everything else is still connected.
+        try:
+            self.illumination_controller.close()
+        except Exception as e:
+            self._log.warning(f"Error closing illumination: {e}")
+
         try:
             self.stage.close()  # stage-owned transports, e.g. the PI C-414 serial handle
         except Exception as e:
@@ -1139,11 +1145,6 @@ class Microscope:
                 self.addons.squid_laser_engine.close()
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
-
-        try:
-            self.illumination_controller.close()  # an external light source turns its lines off
-        except Exception as e:
-            self._log.warning(f"Error closing illumination: {e}")
 
         if self.addons.dragonfly is not None:
             try:
