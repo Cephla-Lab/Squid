@@ -696,6 +696,11 @@ class Microcontroller:
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self._received_packet_cv = threading.Condition()
+        # Packet fence (under _received_packet_cv): _detect_firmware_version raises _packet_fence right after writing
+        # its command; the reader notes the fence before it begins reading each packet and publishes that value with
+        # the parsed packet, so a waiter can tell a packet begun after its write from one begun before.
+        self._packet_fence = 0
+        self._fence_at_last_packet = 0
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -1658,6 +1663,8 @@ class Microcontroller:
                             maybe_msg.pop(0)
                     return None
 
+                with self._received_packet_cv:
+                    fence = self._packet_fence
                 msg = get_msg_with_good_checksum()
 
                 if msg is None:
@@ -1788,6 +1795,7 @@ class Microcontroller:
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:
+                    self._fence_at_last_packet = fence
                     self._received_packet_cv.notify_all()
 
                 if self.new_packet_callback_external is not None:
@@ -1798,16 +1806,25 @@ class Microcontroller:
     def get_pos(self):
         return self.x_pos, self.y_pos, self.z_pos, self.theta_pos
 
-    def _detect_firmware_version(self):
+    def _detect_firmware_version(self, timeout_s: float = 5):
         """Detect firmware version by sending a harmless command.
 
-        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off)
-        to trigger a response from which we can read the firmware version.
-        This ensures supports_multi_port() returns accurate results immediately
-        after Microcontroller initialization.
+        Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and takes the version from the first
+        status packet the reader begins after that write, not from the command's completion: every packet
+        carries the version, and a controller still busy with a move from a previous session answers IN_PROGRESS
+        until RESET. A packet begun before the write is never used. This ensures supports_multi_port() returns
+        accurate results immediately after Microcontroller initialization.
         """
-        self.turn_off_all_ports()
-        self.wait_till_operation_is_completed()
+        with self._received_packet_cv:
+            # Write and raise the fence under the lock the reader takes to note the fence, so every packet it
+            # begins from here on is newer than the write.
+            self.turn_off_all_ports()
+            self._packet_fence += 1
+            fence = self._packet_fence
+            if not self._received_packet_cv.wait_for(lambda: self._fence_at_last_packet >= fence, timeout=timeout_s):
+                raise TimeoutError(
+                    f"No status packet within {timeout_s} [s] of asking for the firmware version. {self._mcu_state()}"
+                )
         self.log.debug(f"Detected firmware version: {self.firmware_version}")
 
     def supports_multi_port(self) -> bool:
@@ -1832,6 +1849,11 @@ class Microcontroller:
         would stay at the stock settings while the configuration says otherwise.
         """
         if self.supports_limit_switch_config():
+            return
+        if self._is_simulated:
+            self.log.info(
+                "Simulated controller: skipping the [LIMIT_SWITCHES] firmware check (it models no limit switches)."
+            )
             return
         if all(limit_switch_config_byte(axis) == LIMIT_SWITCH_DEFAULT_CONFIG for axis in "xyz"):
             return
