@@ -2886,6 +2886,16 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
+        # Turn off and release an external light source (VersaLase, CELESTA, LDI, Andor)
+        if self.microscope.illumination_controller.light_source is not None:
+            try:
+                self.microscope.illumination_controller.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing the light source during {context}")
+                else:
+                    raise
+
         # Release the Dragonfly serial port so a restarted process can open it
         if self.dragonfly is not None:
             try:

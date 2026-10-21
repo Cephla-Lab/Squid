@@ -115,6 +115,7 @@ class IlluminationController:
         self.shutter_control_mode = shutter_control_mode
         self.light_source_type = light_source_type
         self.light_source = light_source
+        self._light_source_closed = False
         self.disable_intensity_calibration = disable_intensity_calibration
         self.channel_mappings_software = {}
         self.is_on = {}
@@ -388,5 +389,7 @@ class IlluminationController:
         return [i for i in range(NUM_ILLUMINATION_PORTS) if self.port_is_on[i]]
 
     def close(self):
-        if self.light_source is not None:
+        # Both the GUI and Microscope.close() close the controller; shut the light source down once.
+        if self.light_source is not None and not self._light_source_closed:
+            self._light_source_closed = True
             self.light_source.shut_down()

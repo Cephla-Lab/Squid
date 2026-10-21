@@ -1140,6 +1140,11 @@ class Microscope:
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
 
+        try:
+            self.illumination_controller.close()  # an external light source turns its lines off
+        except Exception as e:
+            self._log.warning(f"Error closing illumination: {e}")
+
         if self.addons.dragonfly is not None:
             try:
                 self.addons.dragonfly.close()
