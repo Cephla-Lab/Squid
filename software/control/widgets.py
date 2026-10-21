@@ -75,6 +75,7 @@ import numpy as np
 from scipy.spatial import Delaunay
 import shutil
 from control._def import *
+from control.lighting import LightSourceType
 from PIL import Image, ImageDraw, ImageFont
 
 
@@ -4916,15 +4917,19 @@ class LiveControlWidget(QFrame):
             self.signal_newAnalogGain.emit(new_value)
 
     def _connect_illumination_intensity_controls(self):
-        # The slider applies its value when it is released (or stepped with the keyboard), not on every
-        # move: some light sources take a while per power change (a Vortran head ~1.2 s). While it is
-        # dragged, the value is only shown in the entry.
-        self._illumination_intensity_previewed = False
-        self.slider_illuminationIntensity.setTracking(False)
         self.entry_illuminationIntensity.valueChanged.connect(self.update_config_illumination_intensity)
         self.entry_illuminationIntensity.valueChanged.connect(
             lambda x: self.slider_illuminationIntensity.setValue(int(x))
         )
+        if self.liveController.microscope.illumination_controller.light_source_type != LightSourceType.VersaLase:
+            self.slider_illuminationIntensity.valueChanged.connect(self.entry_illuminationIntensity.setValue)
+            return
+
+        # A VersaLase head takes ~1.2 s per power change, so its slider applies the value when it is
+        # released (or stepped with the keyboard), not on every move. While it is dragged, the value is
+        # only shown in the entry.
+        self._illumination_intensity_previewed = False
+        self.slider_illuminationIntensity.setTracking(False)
         self.slider_illuminationIntensity.sliderMoved.connect(self._preview_illumination_intensity)
         self.slider_illuminationIntensity.valueChanged.connect(self._apply_illumination_slider_value)
 

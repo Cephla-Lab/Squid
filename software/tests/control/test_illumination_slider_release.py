@@ -1,9 +1,11 @@
-"""The illumination intensity slider applies its value on release, not while it is dragged."""
+"""With a VersaLase, the illumination intensity slider applies its value on release, not while it is
+dragged; with any other light source it applies every value it passes, as before."""
 
 import types
 
 import tests.control.gui_test_stubs  # noqa: F401 - ensures GUI modules import cleanly
 import control.widgets
+from control.lighting import LightSourceType
 from control.widgets import LiveControlWidget
 
 
@@ -11,9 +13,14 @@ class _Controls:
     pass  # a plain class, not SimpleNamespace: PyQt needs to weak-reference a connected method's object
 
 
-def _controls(qtbot):
+def _controls(qtbot, light_source_type=LightSourceType.VersaLase):
     """LiveControlWidget-shaped object with the real intensity slider, entry and wiring."""
     stub = _Controls()
+    stub.liveController = types.SimpleNamespace(
+        microscope=types.SimpleNamespace(
+            illumination_controller=types.SimpleNamespace(light_source_type=light_source_type)
+        )
+    )
     stub.applied = []
     stub.update_config_illumination_intensity = stub.applied.append  # PyQt cannot connect a MagicMock
 
@@ -66,3 +73,25 @@ def test_keyboard_step_on_the_slider_applies_immediately(qtbot):
 
     assert stub.applied == [21]
     assert stub.entry_illuminationIntensity.value() == 21
+
+
+def test_other_light_sources_apply_every_value_while_dragging(qtbot):
+    stub = _controls(qtbot, light_source_type=None)  # Squid LEDs / lasers on the microcontroller
+    slider = stub.slider_illuminationIntensity
+
+    slider.setSliderDown(True)
+    for position in (25, 30, 40):
+        slider.setSliderPosition(position)
+    slider.setSliderDown(False)
+
+    assert stub.applied == [25, 30, 40]
+    assert stub.entry_illuminationIntensity.value() == 40
+
+
+def test_other_light_sources_apply_a_typed_value_once(qtbot):
+    stub = _controls(qtbot, light_source_type=LightSourceType.CELESTA)
+
+    stub.entry_illuminationIntensity.setValue(35)
+
+    assert stub.applied == [35]
+    assert stub.slider_illuminationIntensity.value() == 35
