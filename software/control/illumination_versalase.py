@@ -227,6 +227,18 @@ class VersaLase(LightSource):
         self._requested_power_mw: Dict[str, float] = {}
 
     def initialize(self) -> bool:
+        try:
+            self._open_heads()
+            self._map_channels()
+            self.set_shutter_control_mode(self.shutter_mode)
+        except Exception:
+            # A later head failing must not leave the earlier ones emitting or their HID handles open.
+            self.shut_down()
+            self.channel_mappings = {wl: None for wl in self.channel_mappings}
+            raise
+        return True
+
+    def _open_heads(self):
         paths = [d["path"] for d in hid.enumerate(self.vid, self.pid)]
         if not paths:
             raise RuntimeError(f"No Vortran laser heads found with VID:PID {self.vid:04x}:{self.pid:04x}")
@@ -234,15 +246,16 @@ class VersaLase(LightSource):
         for path in paths:
             device = hid.device()
             device.open_path(path)
-            device.set_nonblocking(0)
             head = StradusHead(device, path, self.timeout_s)
-            self.heads.append(head)
+            self.heads.append(head)  # before anything else can fail, so shut_down() closes it
+            device.set_nonblocking(0)
             head.identify()
             fault = int(head.transact("?FC"))
             if fault >= FAULT_INTERLOCK_OPEN:
                 raise RuntimeError(f"Vortran head {head.describe()} reports fault code {fault}: {head.transact('?FD')}")
             log.info(f"Found Vortran head {head.describe()}, max power {head.max_power_mw} mW")
 
+    def _map_channels(self):
         for head in self.heads:
             group = next(
                 (
@@ -260,9 +273,6 @@ class VersaLase(LightSource):
                     raise RuntimeError(f"Two Vortran heads serve the {wl} nm channel")
                 self.channel_mappings[wl] = head
             log.info(f"Mapped channels {group} to Vortran head {head.describe()}")
-
-        self.set_shutter_control_mode(self.shutter_mode)
-        return True
 
     def set_intensity_control_mode(self, mode: IntensityControlMode):
         if mode != IntensityControlMode.Software:

@@ -168,8 +168,11 @@ def test_no_reply_raises(heads):
 def test_interlock_fault_stops_initialize(heads):
     heads[b"p561"].state.update({"FC": 16, "FD": "INTERLOCK OPEN"})
 
+    laser = versalase.VersaLase()
     with pytest.raises(RuntimeError, match="fault code 16"):
-        versalase.VersaLase().initialize()
+        laser.initialize()
+    assert heads[b"p405"].closed and heads[b"p488"].closed  # opened before the faulty head, closed again
+    assert laser.heads == []
 
 
 def test_shut_down_turns_emission_off_and_closes(heads):
@@ -247,3 +250,20 @@ def test_set_commands_wait_longer_than_queries(heads, monkeypatch):
     with pytest.raises(versalase.VortranError):
         head.transact("?LE")
     assert clock["now"] < 0.2  # a query still gives up after its own short timeout
+
+
+def test_failed_initialize_turns_earlier_heads_off_and_closes_them(heads):
+    """The fourth head refusing PUL=1 must not leave the first three emitting or open."""
+    original = heads[b"p639"]._execute
+    heads[b"p639"]._execute = lambda command: "PUL=0" if command == "PUL=1" else original(command)
+    laser = versalase.VersaLase(ttl_input=versalase.TtlInput.DIGITAL_MODULATION)
+
+    with pytest.raises(RuntimeError, match="refused digital modulation"):
+        laser.initialize()
+
+    for name in (b"p405", b"p488", b"p561"):
+        assert "LE=1" in heads[name].sent  # these had emission enabled before the failure
+    for fake in heads.values():
+        assert fake.state["LE"] == 0 and fake.closed
+    assert laser.heads == []
+    assert all(head is None for head in laser.channel_mappings.values())
