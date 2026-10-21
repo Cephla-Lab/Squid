@@ -89,13 +89,13 @@ static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 
 // (45, 46, 48 and 50 are reserved for the closed-loop commands of the Z encoder work.)
 // Configurable limit switches. 45-63 are claimed by open branches, hence 64.
 static const int SET_LIMIT_SWITCH_CONFIG = 64;  // [2]=axis, [3]=LIMIT_SWITCH_* nibble (enable + polarity per side); saved to EEPROM
+static const int RAMP_PROFILE_TRAPEZOID = 1;
+static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_LIMIT_SWITCH_CONFIG nibble
 static const int LIMIT_SWITCH_LEFT_ENABLED = 1;
 static const int LIMIT_SWITCH_RIGHT_ENABLED = 2;
 static const int LIMIT_SWITCH_LEFT_ACTIVE_HIGH = 4;
 static const int LIMIT_SWITCH_RIGHT_ACTIVE_HIGH = 8;
-static const int RAMP_PROFILE_TRAPEZOID = 1;
-static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,

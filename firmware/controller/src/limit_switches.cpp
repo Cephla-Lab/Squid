@@ -5,8 +5,9 @@
 #include "globals.h"
 #include "utils/limit_switch_config.h"
 
-// Indexed by internal axis (x, y, z are 1, 0, 2); entries for other axes are never used.
-static uint8_t limit_switch_config[TOTAL_AXES];
+// Indexed by internal axis (x, y, z are 1, 0, 2); entries for other axes are never used. Stock settings until
+// limit_switches_load() reads the stored record.
+static uint8_t limit_switch_config[TOTAL_AXES] = {LSC_DEFAULT, LSC_DEFAULT, LSC_DEFAULT, LSC_DEFAULT, LSC_DEFAULT};
 
 static bool is_limit_switch_axis(uint8_t internal_axis)
 {

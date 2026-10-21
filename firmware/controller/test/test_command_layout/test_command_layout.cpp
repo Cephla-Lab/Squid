@@ -567,6 +567,15 @@ void test_command_20_is_retired(void)
     TEST_ASSERT_EQUAL(0, count_occurrences(proto, "static const int DISABLED"));
 }
 
+void test_limit_switch_record_is_written_only_on_change(void)
+{
+    // Flash wear and main-loop stalls: EEPROM.update() skips bytes that already hold the value; write() does not.
+    const char *src = load_source("src/limit_switches.cpp");
+    TEST_ASSERT_NOT_NULL(src);
+    TEST_ASSERT_NOT_NULL_MESSAGE(strstr(src, "EEPROM.update("), "the record must be saved with EEPROM.update()");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(src, "EEPROM.write("), "EEPROM.write() rewrites unchanged bytes");
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -612,6 +621,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_set_limit_switch_config_is_registered);
     RUN_TEST(test_status_byte_18_reports_the_z_limit_inputs);
     RUN_TEST(test_command_20_is_retired);
+    RUN_TEST(test_limit_switch_record_is_written_only_on_change);
 
     return UNITY_END();
 }

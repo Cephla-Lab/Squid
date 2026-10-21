@@ -934,10 +934,10 @@ void test_tmc2240_set_current_clamps_hostile_hold_ratio(void)
         "would let it through");
 }
 
-/* Range step-up. The two ordering tests pin the safe write order: the current
-   on the wire never exceeds the higher of the old and new request, so going up
-   writes IHOLD_IRUN (computed for the NEW range) only after... no — before
-   DRV_CONF raises the full scale, and going down writes DRV_CONF first. */
+/* Range step-up. The two ordering tests pin the safe write order, in which the
+   current on the wire never exceeds the higher of the old and new request: going
+   up writes IHOLD_IRUN (computed for the NEW range) before DRV_CONF raises the
+   full scale, and going down writes DRV_CONF first. */
 static unsigned cover_write_index(uint8_t reg2240)
 {
     for (unsigned i = 0; i + 1 < g_n; i++)
