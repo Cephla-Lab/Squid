@@ -986,6 +986,11 @@ USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
+# Vortran Stradus VersaLase over USB HID. VORTRAN_SHUTTER_CONTROL_MODE is "TTL" (the
+# microcontroller's TTL outputs gate each head in digital modulation mode) or "Software"
+# (emission toggled over USB - slow, heads with the 5 s emission delay take 5 s to turn on).
+USE_VORTRAN_LASER_CONTROL = False
+VORTRAN_SHUTTER_CONTROL_MODE = "TTL"
 
 # Squid laser engine integration (Cephla Teensy-based laser controller)
 # When True, software opens a USB-serial connection to the laser engine, polls

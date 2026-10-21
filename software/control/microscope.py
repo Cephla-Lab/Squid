@@ -21,6 +21,7 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
+import control.illumination_versalase
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
@@ -435,6 +436,23 @@ class Microscope:
                 ShutterControlMode.TTL,
                 LightSourceType.AndorLaser,
                 andor_laser,
+            )
+        elif control._def.USE_VORTRAN_LASER_CONTROL and not simulated:
+            if control._def.VORTRAN_SHUTTER_CONTROL_MODE == "TTL":
+                shutter_mode = ShutterControlMode.TTL
+            elif control._def.VORTRAN_SHUTTER_CONTROL_MODE == "Software":
+                shutter_mode = ShutterControlMode.Software
+            else:
+                raise ValueError(
+                    f"VORTRAN_SHUTTER_CONTROL_MODE must be 'TTL' or 'Software', got {control._def.VORTRAN_SHUTTER_CONTROL_MODE!r}"
+                )
+            versalase = control.illumination_versalase.VersaLase(shutter_mode=shutter_mode)
+            illumination_controller = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                shutter_mode,
+                LightSourceType.VersaLase,
+                versalase,
             )
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
