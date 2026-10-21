@@ -7,6 +7,7 @@ This document describes the Zarr v3 output format for Squid acquisitions.
 Squid supports saving acquisition data in Zarr v3 format with OME-NGFF 0.5 metadata. This format provides:
 
 - **High performance**: TensorStore backend with sharding for ~200 MB/s write speed
+- **Written in the acquisition process**: Zarr v3 is saved by `ZarrWriter` through `InProcessZarrRunner`, not by the save subprocess the TIFF formats use. tensorstore does its I/O on its own threads, and it aborts any `fork()`ed child of a process that has used it, so a subprocess would gain nothing and must never be forked for Zarr.
 - **Compression options**: None, Fast (LZ4), Balanced (Zstd), Best (Zstd level 9)
 - **Streaming support**: Data can be read during acquisition
 - **OME-NGFF 0.5 metadata**: Standard metadata format (note: viewer support for Zarr v3 is still emerging)
