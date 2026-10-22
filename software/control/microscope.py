@@ -952,7 +952,7 @@ class Microscope:
         # Move to start of z-stack
         if NZ > 1 and z_stacking_config == "FROM CENTER":
             self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
-            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
 
         saved_paths = []
         try:
@@ -970,7 +970,7 @@ class Microscope:
 
                 if z_level < NZ - 1:
                     self.stage.move_z(deltaZ)
-                    time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+                    time.sleep(squid.stage.utils.z_stabilization_time_s())
         finally:
             # Always return Z to starting position
             try:

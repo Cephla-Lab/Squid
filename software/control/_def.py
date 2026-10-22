@@ -1173,6 +1173,10 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0.1
 PI_FOCUS_ON_TARGET_TOL_MAX_UM = 0.5
 PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION = 0.1
+# Pause after a Z move before imaging, replacing SCAN_STABILIZATION_TIME_MS_Z for the V-308: its moves already
+# wait for on-target inside the window above. Ignored (SCAN_STABILIZATION_TIME_MS_Z applies) when the window is
+# disabled (PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0).
+PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z = 0
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 

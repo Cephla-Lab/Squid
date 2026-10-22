@@ -863,3 +863,20 @@ def test_pi_focus_on_target_window_stays_inside_the_configured_bounds(policy_um,
 def test_pi_focus_rejects_an_unusable_window_policy(policy):
     with pytest.raises(ValueError):
         squid.stage.pi.PIFocusStage(_make_referenced_sim(), on_target_tolerance=policy)
+
+
+@pytest.mark.parametrize(
+    "use_pi, tol_min_um, expected_s",
+    [
+        (False, 0.1, 0.02),  # stepper Z: SCAN_STABILIZATION_TIME_MS_Z
+        (True, 0.1, 0.0),  # V-308 with its on-target window: PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z
+        (True, 0.0, 0.02),  # V-308 with the window disabled (controller's +-1 um): back to the stepper value
+    ],
+    ids=["stepper", "v308-window", "v308-no-window"],
+)
+def test_z_stabilization_time(monkeypatch, use_pi, tol_min_um, expected_s):
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", use_pi)
+    monkeypatch.setattr(control._def, "PI_FOCUS_ON_TARGET_TOL_MIN_UM", tol_min_um)
+    monkeypatch.setattr(control._def, "SCAN_STABILIZATION_TIME_MS_Z", 20)
+    monkeypatch.setattr(control._def, "PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z", 0)
+    assert squid.stage.utils.z_stabilization_time_s() == pytest.approx(expected_s)

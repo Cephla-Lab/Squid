@@ -31,6 +31,7 @@ from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
+import squid.stage.utils
 from control.rcm_scan_trigger import ConfocalScanFailedError
 import squid.logging
 import control.core.job_processing
@@ -844,7 +845,7 @@ class MultiPointWorker:
     def move_to_z_level(self, z_mm):
         self._log.debug("moving z")
         self.stage.move_z_to(z_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
         """Process job results from output queues.
@@ -1232,8 +1233,8 @@ class MultiPointWorker:
         # move to bottom of the z stack
         if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
@@ -1271,7 +1272,7 @@ class MultiPointWorker:
         else:
             self.stage.move_z(delta_um / 1000)
             self.wait_till_operation_is_completed()
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
             self._log.info(
                 f"[z-offset] moved {delta_um:+.2f} µm via stage; actual z = {self.stage.get_pos().z_mm:.5f} mm"
             )
@@ -1719,7 +1720,7 @@ class MultiPointWorker:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
             self.stage.move_z(self.deltaZ)
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def move_z_back_after_stack(self, steps_taken: Optional[int] = None):
         """Return Z to where the stack started, undoing steps_taken z steps (default: a full stack)."""
