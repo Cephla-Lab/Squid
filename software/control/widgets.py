@@ -11070,6 +11070,11 @@ class AlignmentWidget(QWidget):
 
 
 class NapariMultiChannelWidget(QWidget):
+    # Writing a frame into its layer is a cheap copy, but refreshing the viewer re-slices
+    # every layer and recomputes its thumbnail, so refreshes are coalesced to at most one
+    # per interval. Without this, a large z-stack queues frames faster than the GUI thread
+    # can draw them and the window stops responding.
+    MIN_REFRESH_INTERVAL_S = 0.1
 
     def __init__(self, objectiveStore, camera, contrastManager, grid_enabled=False, parent=None):
         super().__init__(parent)
@@ -11089,6 +11094,14 @@ class NapariMultiChannelWidget(QWidget):
         self.viewer_scale_initialized = False
         self.update_layer_count = 0
         self.grid_enabled = grid_enabled
+        # The viewer's 2D/3D mode before the acquisition switched it to 2D; None when idle.
+        self._ndisplay_before_acquisition = None
+        # Z index of the latest complete channel set, shown by the next coalesced refresh.
+        self._pending_z_index = None
+        self._next_refresh_time = 0.0
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.timeout.connect(self._refreshDisplay)
 
         # Initialize a napari Viewer without showing its standalone window.
         self.initNapariViewer()
@@ -11098,6 +11111,7 @@ class NapariMultiChannelWidget(QWidget):
         if self.grid_enabled:
             self.viewer.grid.enabled = True
         self.viewer.dims.axis_labels = ["Z-axis", "Y-axis", "X-axis"]
+        self.viewer.dims.events.ndisplay.connect(self._onNdisplayChanged)
         self.viewerWidget = self.viewer.window._qt_window
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewerWidget)
@@ -11170,6 +11184,14 @@ class NapariMultiChannelWidget(QWidget):
         self.layers_initialized = True
         self.update_layer_count = 0
 
+        # In 3D, every refresh max-projects the whole (Nz, H, W) canvas of every layer, which
+        # takes seconds for a large z-stack. Show 2D while acquiring; finishAcquisition()
+        # restores the user's mode.
+        if self._ndisplay_before_acquisition is None:
+            ndisplay = self.viewer.dims.ndisplay
+            self.viewer.dims.ndisplay = 2  # before recording it, so _onNdisplayChanged ignores this switch
+            self._ndisplay_before_acquisition = ndisplay
+
     def updateLayers(self, image, x, y, k, channel_name):
         """Updates the appropriate slice of the canvas with the new image data."""
         rgb = len(image.shape) == 3
@@ -11222,13 +11244,48 @@ class NapariMultiChannelWidget(QWidget):
 
         layer = self.viewer.layers[channel_name]
         layer.data[k] = image
-        layer.contrast_limits = self.contrastManager.get_limits(channel_name)
+        limits = self.contrastManager.get_limits(channel_name)
+        # The setter recomputes the layer thumbnail even when the limits are unchanged.
+        if list(layer.contrast_limits) != list(limits):
+            layer.contrast_limits = limits
         self.update_layer_count += 1
         if self.update_layer_count % len(self.channels) == 0:
-            if self.Nz > 1:
-                self.viewer.dims.set_point(0, k * self.dz_um)
+            self._pending_z_index = k
+            if not self._refresh_timer.isActive():
+                delay_s = max(0.0, self._next_refresh_time - time.monotonic())
+                self._refresh_timer.start(int(delay_s * 1000))
+
+    def _refreshDisplay(self):
+        """Show the latest complete channel set; data written since the last refresh appears now."""
+        start = time.monotonic()
+        k, self._pending_z_index = self._pending_z_index, None
+        point_before = self.viewer.dims.point
+        if k is not None and self.Nz > 1:
+            self.viewer.dims.set_point(0, k * self.dz_um)
+        # Moving to a new plane re-slices every layer; otherwise the new data went into the
+        # plane already on screen, so the layers have to be refreshed explicitly.
+        if self.viewer.dims.point == point_before:
             for layer in self.viewer.layers:
                 layer.refresh()
+        # Give the event loop at least twice as long as the refresh took, so even a slow
+        # refresh (e.g. the user switched to 3D mid-acquisition) can't starve the GUI.
+        elapsed = time.monotonic() - start
+        self._next_refresh_time = time.monotonic() + max(self.MIN_REFRESH_INTERVAL_S, 2 * elapsed)
+
+    def finishAcquisition(self):
+        """Draw the final state now and restore the 2D/3D mode the acquisition replaced."""
+        self._refresh_timer.stop()
+        if self._ndisplay_before_acquisition is None:
+            return  # no frame of this acquisition reached the viewer
+        self._refreshDisplay()
+        self.viewer.dims.ndisplay = self._ndisplay_before_acquisition
+        self._ndisplay_before_acquisition = None
+
+    def _onNdisplayChanged(self, event=None):
+        # A 2D/3D switch the user makes mid-acquisition is the mode to end in, not the one from
+        # before the run.
+        if self._ndisplay_before_acquisition is not None:
+            self._ndisplay_before_acquisition = self.viewer.dims.ndisplay
 
     def signalContrastLimits(self, event):
         layer = event.source
