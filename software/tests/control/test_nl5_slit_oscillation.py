@@ -471,19 +471,58 @@ class FakeNL5(NL5.NL5_Simulation):
         return self.oscillating
 
 
-def test_widget_toggle_starts_and_stops_the_oscillation(qtbot):
+def _set_on_in_dialog(nl5, on, widget=None):
+    """Open the settings dialog, set Oscillate Slit and press OK, then let the device tab follow up, as
+    NL5Widget.show_settings_dialog does."""
+    from control.NL5Widget import NL5SettingsDialog
+
+    dialog = NL5SettingsDialog(nl5)
+    dialog.slit_osc_enable_checkbox.setChecked(on)
+    dialog.accept()
+    if widget is not None:
+        widget._after_settings_dialog(dialog)
+    return dialog
+
+
+def test_the_device_tab_has_no_oscillation_controls(qtbot):
     from control.NL5Widget import NL5Widget
+
+    widget = NL5Widget(FakeNL5())
+    qtbot.addWidget(widget)
+    assert not hasattr(widget, "slit_osc_button")  # switched on in the settings dialog
+    assert not hasattr(widget, "slit_osc_plus_input")
+
+
+def test_dialog_starts_and_stops_the_oscillation(qtbot):
+    from control.NL5Widget import NL5SettingsDialog, NL5Widget
 
     nl5 = FakeNL5()
     widget = NL5Widget(nl5)
     qtbot.addWidget(widget)
-    assert not hasattr(widget, "slit_osc_plus_input")  # the settings are in the dialog
+    assert not NL5SettingsDialog(nl5).slit_osc_enable_checkbox.isChecked()
 
-    widget.slit_osc_button.setChecked(True)
+    qtbot.addWidget(_set_on_in_dialog(nl5, True, widget))
+    assert nl5.calls == [("start", SlitOscillation())]
     assert widget.slit_osc_sync_timer.isActive()
-    widget.slit_osc_button.setChecked(False)
-    assert nl5.calls == [("start", SlitOscillation()), ("stop",)]
+    assert widget.settings_button.text().endswith("(slit oscillating)")
+
+    reopened = NL5SettingsDialog(nl5)
+    qtbot.addWidget(reopened)
+    assert reopened.slit_osc_enable_checkbox.isChecked()  # shows that it is running
+
+    qtbot.addWidget(_set_on_in_dialog(nl5, False, widget))
+    assert nl5.calls == [("start", SlitOscillation()), ("stop",)]  # one stop: not also treated as a failure
     assert not widget.slit_osc_sync_timer.isActive()
+    assert "oscillating" not in widget.settings_button.text()
+
+
+def test_dialog_ok_without_a_change_neither_starts_nor_stops(qtbot):
+    nl5 = FakeNL5()
+    qtbot.addWidget(_set_on_in_dialog(nl5, False))
+    assert nl5.calls == []
+    nl5.oscillating = True
+    qtbot.addWidget(_set_on_in_dialog(nl5, True))
+    assert nl5.calls == []
 
 
 def test_dialog_edits_the_oscillation_settings(qtbot):
@@ -519,17 +558,19 @@ def test_dialog_has_no_oscillation_rows_without_the_slit_stage(qtbot):
     assert nl5.slit_oscillation == SlitOscillation()
 
 
-def test_widget_unchecks_when_the_oscillation_fails_to_start(qtbot):
+def test_a_failed_start_is_logged_and_not_shown_as_oscillating(qtbot):
     from control.NL5Widget import NL5Widget
 
-    widget = NL5Widget(FakeNL5(fail_start=True))
+    nl5 = FakeNL5(fail_start=True)
+    widget = NL5Widget(nl5)
     qtbot.addWidget(widget)
 
-    widget.slit_osc_button.setChecked(True)
-    assert not widget.slit_osc_button.isChecked()
+    qtbot.addWidget(_set_on_in_dialog(nl5, True, widget))  # the error is logged, the dialog still closes
+    assert not widget.slit_osc_sync_timer.isActive()
+    assert "oscillating" not in widget.settings_button.text()
 
 
-def test_widget_unchecks_when_the_oscillation_ends_on_its_own(qtbot):
+def test_the_slit_returns_to_its_centre_when_the_oscillation_ends_on_its_own(qtbot):
     from control.NL5Widget import NL5Widget
 
     nl5 = FakeNL5()
@@ -537,7 +578,8 @@ def test_widget_unchecks_when_the_oscillation_ends_on_its_own(qtbot):
     qtbot.addWidget(widget)
     widget.slit_osc_sync_timer.setInterval(10)
 
-    widget.slit_osc_button.setChecked(True)
+    qtbot.addWidget(_set_on_in_dialog(nl5, True, widget))
     nl5.oscillating = False  # e.g. the serial port went away
-    qtbot.waitUntil(lambda: not widget.slit_osc_button.isChecked(), timeout=1000)
-    assert nl5.calls == [("start", SlitOscillation()), ("stop",)]  # the sync puts the slit back at its centre
+    qtbot.waitUntil(lambda: not widget.slit_osc_sync_timer.isActive(), timeout=1000)
+    assert nl5.calls == [("start", SlitOscillation()), ("stop",)]  # the watcher puts the slit back at its centre
+    assert "oscillating" not in widget.settings_button.text()

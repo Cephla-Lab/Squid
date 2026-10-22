@@ -35,6 +35,7 @@ from control.NL5 import (
 class NL5SettingsDialog(QDialog):
     def __init__(self, nl5):
         super().__init__()
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.nl5 = nl5
         self.setWindowTitle(f"{getattr(self.nl5, 'device_name', 'NL5')} Settings")
 
@@ -89,9 +90,18 @@ class NL5SettingsDialog(QDialog):
         self.setLayout(layout)
 
     def _add_slit_oscillation_rows(self, layout, row):
-        """Slit oscillation settings; the on/off button is on the device tab. Applied on OK, also to a running
-        oscillation (from its next move). Not saved."""
+        """Slit oscillation on/off and settings. Applied on OK: the settings also to a running oscillation (from its
+        next move), then the oscillation is started or stopped. Not saved."""
         osc = self.nl5.slit_oscillation
+
+        self.slit_osc_enable_checkbox = QCheckBox("Oscillate Slit")
+        self.slit_osc_enable_checkbox.setChecked(self.nl5.is_slit_oscillating())
+        self.slit_osc_enable_checkbox.setToolTip(
+            "Move the slit back and forth around its centre (slit position + slit offset) with the settings below.\n"
+            "Unchecking returns it to the centre. Applied on OK."
+        )
+        layout.addWidget(self.slit_osc_enable_checkbox, row, 0, 1, 2)
+        row += 1
 
         def spinbox(minimum, maximum, value, decimals, suffix):
             box = QDoubleSpinBox()
@@ -169,8 +179,22 @@ class NL5SettingsDialog(QDialog):
         if self.slit_offset_input is not None:
             self.nl5.set_slit_offset(self.slit_offset_input.value())
             self.nl5.set_slit_oscillation(self._slit_oscillation_from_inputs())
+            self._apply_slit_oscillation_on_off()
         self.nl5.save_settings()
         super().accept()
+
+    def _apply_slit_oscillation_on_off(self):
+        wanted = self.slit_osc_enable_checkbox.isChecked()
+        if wanted == self.nl5.is_slit_oscillating():
+            return
+        try:
+            if wanted:
+                self.nl5.start_slit_oscillation()
+            else:
+                self.nl5.stop_slit_oscillation()
+                self.stopped_slit_oscillation = True  # on purpose, so the device tab doesn't treat it as a failure
+        except Exception as e:
+            self._log.error(f"Slit oscillation failed: {e}")
 
 
 class NL5Widget(QWidget):
@@ -243,19 +267,12 @@ class NL5Widget(QWidget):
             self.slit_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             layout2.addWidget(self.slit_combo)
 
-            # Slit oscillation on/off; its settings (+ / −, jump or sweep, frequency, speed) are in the settings dialog.
-            self.slit_osc_button = QPushButton("Oscillate Slit")
-            self.slit_osc_button.setCheckable(True)
-            self.slit_osc_button.setToolTip(
-                "Move the slit back and forth around its centre (slit position + slit offset), as set in the\n"
-                "settings dialog. Unchecking returns it to the centre."
-            )
-            self.slit_osc_button.toggled.connect(self.update_slit_oscillation)
-            layout2.addWidget(self.slit_osc_button)
-            # The oscillation can end on its own (serial error, failed homing); keep the button honest.
+            # Slit oscillation is switched on and set up in the settings dialog. While it runs, watch it: it can end
+            # on its own (serial error, failed homing), and then the slit is put back at its centre.
+            self._slit_oscillating = False
             self.slit_osc_sync_timer = QTimer(self)
             self.slit_osc_sync_timer.setInterval(1000)
-            self.slit_osc_sync_timer.timeout.connect(self._sync_slit_oscillation_button)
+            self.slit_osc_sync_timer.timeout.connect(self._sync_slit_oscillation)
 
         # Bypass control (hidden on systems without a brightfield path, see NL5_SHOW_BYPASS_BUTTON)
         self.bypass_button = QPushButton("Enable Bypass")
@@ -271,8 +288,9 @@ class NL5Widget(QWidget):
         self.start_acquisition_button.clicked.connect(self.nl5.start_acquisition)
         # layout2.addWidget(self.start_acquisition_button, 3, 0, 1, 4)
 
-        # NL5 Settings button
-        self.settings_button = QPushButton(f"Edit {getattr(self.nl5, 'device_name', 'NL5')} Settings")
+        # NL5 Settings button (also where slit oscillation is switched on; its label says when the slit oscillates)
+        self._settings_button_text = f"Edit {getattr(self.nl5, 'device_name', 'NL5')} Settings"
+        self.settings_button = QPushButton(self._settings_button_text)
         self.settings_button.clicked.connect(self.show_settings_dialog)
         layout2.addWidget(self.settings_button)
 
@@ -284,10 +302,16 @@ class NL5Widget(QWidget):
     def show_settings_dialog(self):
         dialog = NL5SettingsDialog(self.nl5)
         dialog.exec_()
+        self._after_settings_dialog(dialog)
+
+    def _after_settings_dialog(self, dialog):
         # the scan amplitude may have changed, which changes the frame rate for the same line speed
         self._refresh_speed_display()
         if self.slit_combo is not None:
-            self._sync_slit_oscillation_button()  # homing pauses the oscillation and may fail to resume it
+            if getattr(dialog, "stopped_slit_oscillation", False):
+                self._slit_oscillating = False  # stopped on purpose, not ended on its own
+            # the dialog may have started it; homing pauses it and may fail to resume it
+            self._sync_slit_oscillation()
 
     def update_bypass(self, checked):
         self.nl5.set_bypass(checked)
@@ -351,29 +375,21 @@ class NL5Widget(QWidget):
         if width is not None:
             self.nl5.set_slit_width(width)
 
-    def update_slit_oscillation(self, checked):
-        try:
-            if checked:
-                self.nl5.start_slit_oscillation()
-            else:
-                self.nl5.stop_slit_oscillation()
-        except Exception as e:
-            self._log.error(f"Slit oscillation failed: {e}")
-        self._sync_slit_oscillation_button()
-
-    def _sync_slit_oscillation_button(self):
-        """Show whether the slit is actually oscillating, and watch it while it does."""
+    def _sync_slit_oscillation(self):
+        """Track whether the slit is actually oscillating, watch it while it does, and say so on the settings button."""
         oscillating = self.nl5.is_slit_oscillating()
-        if self.slit_osc_button.isChecked() and not oscillating:
+        if self._slit_oscillating and not oscillating:
             # It ended on its own (serial error, failed homing): put the slit back at its centre, which also
             # applies a slit or offset chosen while it oscillated.
+            self._log.warning("Slit oscillation ended; returning the slit to its centre")
             try:
                 self.nl5.stop_slit_oscillation()
             except Exception as e:
                 self._log.error(f"Could not return the slit to its centre: {e}")
-        self.slit_osc_button.blockSignals(True)
-        self.slit_osc_button.setChecked(oscillating)
-        self.slit_osc_button.blockSignals(False)
+        self._slit_oscillating = oscillating
+        self.settings_button.setText(
+            f"{self._settings_button_text} (slit oscillating)" if oscillating else self._settings_button_text
+        )
         if oscillating:
             self.slit_osc_sync_timer.start()
         else:
