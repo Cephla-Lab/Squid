@@ -12265,6 +12265,11 @@ class WellplateCalibration(QDialog):
         self.center_point = None  # For center point calibration method
         self.show_virtual_joystick = True  # FLAG
         self.initUI()
+        # With a well plate loaded, open ready to recalibrate it: the existing
+        # format list already starts on that plate. A glass slide (not listed)
+        # keeps the Add New Format default.
+        if self.existing_format_combo.currentData() == self.wellplateFormatWidget.wellplate_format:
+            self.calibrate_format_radio.setChecked(True)
         # Initially allow click-to-move and hide the joystick controls
         self.clickToMoveCheckbox.setChecked(True)
         self.toggleVirtualJoystick(False)

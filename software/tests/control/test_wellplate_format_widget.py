@@ -398,3 +398,29 @@ def test_calibrate_existing_with_a_glass_slide_loaded_starts_on_the_first_plate(
 
     assert combo.currentIndex() == 0
     assert combo.currentData() != "glass slide"
+
+
+def _calibration_dialog(qtbot, loaded_format):
+    format_widget = MagicMock()
+    format_widget.wellplate_format = loaded_format
+    live_controller = MagicMock()
+    live_controller.is_live = False
+    dialog = control.widgets.WellplateCalibration(format_widget, MagicMock(), MagicMock(), MagicMock(), live_controller)
+    qtbot.addWidget(dialog)
+    return dialog
+
+
+def test_calibration_dialog_opens_on_the_loaded_plate(qtbot, catalog_tree, design_travel_limits):
+    dialog = _calibration_dialog(qtbot, "384 well plate")
+
+    assert dialog.calibrate_format_radio.isChecked()
+    assert dialog.existing_format_combo.currentData() == "384 well plate"
+    assert dialog.existing_spacing_input.value() == 4.5  # the plate's values are loaded, ready to calibrate
+    assert dialog.new_format_widget.isHidden()
+
+
+def test_calibration_dialog_with_a_glass_slide_opens_on_add_new_format(qtbot, catalog_tree, design_travel_limits):
+    dialog = _calibration_dialog(qtbot, "glass slide")
+
+    assert dialog.new_format_radio.isChecked()
+    assert not dialog.new_format_widget.isHidden()
