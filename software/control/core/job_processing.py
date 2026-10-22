@@ -935,6 +935,15 @@ class JobRunner(multiprocessing.Process):
         if self.is_alive():
             self.terminate()
             self.join(timeout=1.0)
+        # The worker is gone (or being killed), so jobs it never picked up will never be read. The
+        # queue's feeder thread blocks forever writing them into the pipe once they exceed its
+        # buffer (8 KiB on Windows, 64 KiB on Linux - i.e. any real image), and join_thread() would
+        # wait on that thread forever. Discard what we can so the feeder can finish, then cancel the
+        # join so a still-stuck feeder can never hang shutdown.
+        discarded = self._discard_undelivered_jobs()
+        if discarded:
+            self._log.warning(f"Discarded {discarded} job(s) the worker never picked up")
+        self._input_queue.cancel_join_thread()
         # Clean up multiprocessing primitives to avoid semaphore leaks
         self._input_queue.close()
         self._input_queue.join_thread()
@@ -945,6 +954,27 @@ class JobRunner(multiprocessing.Process):
         self._output_queue = None
         self._shutdown_event = None
         self._pending_count = None
+
+    def _discard_undelivered_jobs(self, budget_s: float = 2.0) -> int:
+        """Read and drop jobs left on the input queue after the worker has stopped.
+
+        Best effort: stops after budget_s, or as soon as a 0.1 s get() comes back empty - including
+        when a worker terminated mid-get() left the queue's read lock held forever. Returns the
+        number of jobs discarded (the shutdown sentinel is not counted).
+        """
+        discarded = 0
+        deadline = time.monotonic() + budget_s
+        while time.monotonic() < deadline:
+            try:
+                job = self._input_queue.get(timeout=0.1)
+            except queue.Empty:
+                break
+            except Exception as e:
+                self._log.debug(f"Stopped discarding undelivered jobs: {e}")
+                break
+            if job is not None:
+                discarded += 1
+        return discarded
 
     def run(self):
         import logging

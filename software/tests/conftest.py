@@ -34,6 +34,35 @@ logger = logging.getLogger(__name__)
 _CLEANUP_STATE_DIR = os.path.join(tempfile.gettempdir(), f"squid-test-watchdog-cleanup-{os.getpid()}")
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "own_process: full-application GUI test module that only runs when it is the only module in the pytest session",
+    )
+
+
+@pytest.hookimpl(trylast=True)  # After -k/-m deselection, so a filtered run down to one module still counts.
+def pytest_collection_modifyitems(config, items):
+    """Skip own_process modules in any session that also collected other modules.
+
+    Building the full HCS GUI leaves Qt/thread state behind that crashes a later test spinning the
+    Qt event loop in the same process (a segfault on Linux, heap corruption 0xC0000374 on Windows).
+    CI therefore runs each such module in its own pytest invocation; this makes a plain
+    `pytest tests/control tests/squid` do the same instead of crashing partway through.
+    """
+    if len({item.path for item in items}) < 2:
+        return
+    for item in items:
+        if item.get_closest_marker("own_process") is None:
+            continue
+        rel_path = item.path.relative_to(config.rootpath).as_posix()
+        item.add_marker(
+            pytest.mark.skip(
+                reason=f"own_process GUI test shares this session with other modules; run it alone: python -m pytest {rel_path}"
+            )
+        )
+
+
 def pytest_sessionfinish(session, exitstatus):
     session.config._squid_exitstatus = int(exitstatus)
     # Nothing reads the watchdog cleanup breadcrumbs after the session.
