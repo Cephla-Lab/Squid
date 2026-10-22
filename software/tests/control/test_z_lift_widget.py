@@ -288,3 +288,67 @@ def test_a_failed_return_from_loading_stays_at_loading(qtbot):
     assert reached == ["loading"]  # still at loading: everything stays locked
     assert dialog.slide_position == "loading" and guard.at_loading_position
     assert dialog.btn_load_slide.text() == "Move to Scanning Position"  # retry offered
+
+
+def _stage_utils_dialog(qtbot, is_live, keep_live_off_at_loading):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = is_live
+    live.stop_live.side_effect = lambda: setattr(live, "is_live", False)
+    live.start_live.side_effect = lambda: setattr(live, "is_live", True)
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    dialog.keep_live_off_at_loading = keep_live_off_at_loading
+    return dialog, live
+
+
+def _toggle(dialog, success=True):
+    with patch("control.widgets.move_to_loading_position"), patch("control.widgets.move_to_scanning_position"):
+        going_to_loading = dialog.slide_position != "loading"
+        dialog.switch_position()
+    if going_to_loading:
+        dialog._callback_loading_position_reached(True, None)
+    else:
+        with patch.object(QMessageBox, "warning"):
+            dialog._callback_scanning_position_reached(success, None if success else "timeout")
+
+
+def test_a_lift_system_keeps_live_off_at_loading_and_resumes_it_at_scanning(qtbot):
+    dialog, live = _stage_utils_dialog(qtbot, is_live=True, keep_live_off_at_loading=True)
+    _toggle(dialog)
+    assert dialog.slide_position == "loading" and not live.is_live  # its controls are locked there
+    _toggle(dialog, success=False)  # a failed return: still at loading, live still off
+    assert dialog.slide_position == "loading" and not live.is_live
+    _toggle(dialog)
+    assert dialog.slide_position == "scanning" and live.is_live
+
+
+def test_a_lift_system_does_not_start_live_that_was_off(qtbot):
+    dialog, live = _stage_utils_dialog(qtbot, is_live=False, keep_live_off_at_loading=True)
+    _toggle(dialog)
+    _toggle(dialog)
+    live.start_live.assert_not_called()
+
+
+def test_without_a_lift_live_comes_back_at_the_loading_position_as_before(qtbot):
+    dialog, live = _stage_utils_dialog(qtbot, is_live=True, keep_live_off_at_loading=False)
+    _toggle(dialog)
+    assert dialog.slide_position == "loading" and live.is_live
+
+
+def test_set_to_current_is_blocked_at_the_loading_position(qtbot, tmp_path):
+    utils = _FakeStageUtils()
+    widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
+    assert widget.btn_height_set.isEnabled()
+    widget.btn_loading.click()
+    utils.slide_position = "loading"
+    utils.signal_loading_position_reached.emit()
+    assert not widget.btn_height_set.isEnabled()
+    widget._select_format("96 well plate")
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.Ok) as question:
+        widget._set_selected_height_to_current()  # refused even if a click got through
+    question.assert_not_called()
+    assert lift.heights.get("96 well plate") is None

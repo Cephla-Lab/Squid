@@ -2331,6 +2331,7 @@ class HighContentScreeningGui(QMainWindow):
     _LOADING_POSITION_BLOCKED_WIDGETS = (
         "navigationWidget",
         "stageUtils",
+        "liveControlWidget",  # live stays off at the loading position (StageUtils.keep_live_off_at_loading)
         "objectivesWidget",
         "autofocusWidget",
         "piezoWidget",
@@ -2674,6 +2675,7 @@ class HighContentScreeningGui(QMainWindow):
             # to scanning; the lift itself is held by its LiftMotionGuard, these are the rest.
             self.stageUtils.signal_loading_position_reached.connect(self._lock_stage_at_loading_position)
             self.stageUtils.signal_scanning_position_reached.connect(self._unlock_stage_after_loading_position)
+            self.stageUtils.keep_live_off_at_loading = True
 
     def replaceWellSelectionWidget(self, new_widget):
         self.wellSelectionWidget.setParent(None)

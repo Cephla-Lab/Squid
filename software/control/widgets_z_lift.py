@@ -277,6 +277,8 @@ class ZLiftWidget(QDialog):
             self.btn_loading = LoadingPositionButton(self.stage_utils, self.motion_guard)
             layout.addWidget(self.btn_loading)
 
+        # Disabled while lift moves are blocked (moving, or at the loading position). Set To Current too: the
+        # lift is lowered at the loading position and moving otherwise, so neither is a working height.
         self._move_controls = [
             self.btn_up,
             self.btn_down,
@@ -284,6 +286,7 @@ class ZLiftWidget(QDialog):
             self.btn_lower,
             self.btn_home,
             self.btn_height_go,
+            self.btn_height_set,
         ]
 
     # --- readout ----------------------------------------------------------------------------------------------
@@ -386,7 +389,7 @@ class ZLiftWidget(QDialog):
 
     def _set_selected_height_to_current(self):
         sample_format = self._selected_format()
-        if sample_format is None:
+        if sample_format is None or self.motion_guard.moves_blocked:
             return
         height = round(self.lift.get_position_mm(), 4)
         old = self.lift.heights.get(sample_format)

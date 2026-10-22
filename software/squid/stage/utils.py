@@ -137,7 +137,29 @@ def _restore_lift_after_loading(stage: AbstractStage):
     stage._scanning_position_lift_mm = None
 
 
+def _retract_objective_for_loading(stage: AbstractStage):
+    # The objective goes up to its retracted position (never down: one already above it stays), remembering where
+    # it was; the way back lowers it there last.
+    stage._scanning_position_z_mm = stage.get_pos().z_mm
+    if stage._scanning_position_z_mm > _def.OBJECTIVE_RETRACTED_POS_MM:
+        stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
+        stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+
+
+def _restore_objective_after_loading(stage: AbstractStage):
+    z_mm = getattr(stage, "_scanning_position_z_mm", None)
+    if z_mm is None:
+        return
+    stage.move_z_to(z_mm)
+    # Forgotten only once Z got there: a failed move keeps it, so retrying the return lowers the objective again.
+    stage._scanning_position_z_mm = None
+
+
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+    # The objective retracts first; with a Z lift, before the lift lowers. The way back raises the lift before it
+    # lowers the objective, so the sample never rises toward an objective already at its working height.
+    if is_wellplate or getattr(stage, "lift", None) is not None:
+        _retract_objective_for_loading(stage)
     _lower_lift_for_loading(stage)
     # Set our limits to something large.  Then later reset them back to the safe values.
     if is_wellplate:
@@ -148,10 +170,6 @@ def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
             y_pos_mm=a_large_limit_mm,
             y_neg_mm=-a_large_limit_mm,
         )
-
-        stage._scanning_position_z_mm = stage.get_pos().z_mm
-        stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
-        stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
 
         # TODO: These values should not be hardcoded as we have stages with different blocks
         # for opening the clamp. I'm not sure why exactly this piece is designed this way and
@@ -176,13 +194,11 @@ def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool):
     if is_wellplate:
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
-        if stage._scanning_position_z_mm is not None:
-            stage.move_z_to(stage._scanning_position_z_mm)
-        stage._scanning_position_z_mm = None
     else:
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
     _restore_lift_after_loading(stage)
+    _restore_objective_after_loading(stage)
 
 
 def move_to_loading_position(

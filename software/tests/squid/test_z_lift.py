@@ -282,49 +282,67 @@ class _RecordingLift:
         self.height = mm
 
 
-def _recording_stage(events, **lift_kwargs):
+def _recording_stage(events, z_mm=2.5, **lift_kwargs):
     stage = MagicMock()
     stage.lift = _RecordingLift(events, **lift_kwargs)
     stage._scanning_position_lift_mm = None
+    stage._scanning_position_z_mm = None
+    stage.get_pos.return_value = Pos(x_mm=20.0, y_mm=20.0, z_mm=z_mm, theta_rad=None)
     stage.move_x_to.side_effect = lambda mm, *a, **k: events.append("x")
     stage.move_y_to.side_effect = lambda mm, *a, **k: events.append("y")
+    stage.move_z_to.side_effect = lambda mm, *a, **k: events.append(f"z_to_{mm}")
     return stage
 
 
-def _load_then_unload(stage, events, change_format_to=None):
-    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
-    assert events == ["lift_lower", "y", "x"]
+def _load_then_unload(stage, events, change_format_to=None, is_wellplate=False):
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=is_wellplate)
+    # the objective retracts before the lift lowers, and both before XY travels
+    assert events[:2] == [f"z_to_{_def.OBJECTIVE_RETRACTED_POS_MM}", "lift_lower"]
     events.clear()
     if change_format_to is not None:
         stage.lift.sample_format = change_format_to
-    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
-    assert stage._scanning_position_lift_mm is None
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=is_wellplate)
+    assert stage._scanning_position_lift_mm is None and stage._scanning_position_z_mm is None
 
 
-def test_unloading_raises_the_lift_to_the_sample_format_height_last():
+def test_unloading_raises_the_lift_to_the_sample_format_height_then_lowers_the_objective():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25})
     _load_then_unload(stage, events)
-    assert events == ["y", "x", "lift_to_6.25"]
+    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+
+
+def test_a_well_plate_with_a_lift_also_raises_the_lift_before_lowering_the_objective():
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    _load_then_unload(stage, events, is_wellplate=True)
+    assert events[-2:] == ["lift_to_6.25", "z_to_2.5"]
 
 
 def test_unloading_uses_the_new_format_height_after_a_format_change():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25, "glass slide": 5.5})
     _load_then_unload(stage, events, change_format_to="glass slide")
-    assert events == ["y", "x", "lift_to_5.5"]
+    assert events == ["y", "x", "lift_to_5.5", "z_to_2.5"]
 
 
 def test_unloading_without_a_saved_height_goes_back_for_the_same_format_only():
     events = []
     stage = _recording_stage(events)
     _load_then_unload(stage, events)
-    assert events == ["y", "x", "lift_to_4.0"]
+    assert events == ["y", "x", "lift_to_4.0", "z_to_2.5"]
 
     events.clear()
     stage = _recording_stage(events)
     _load_then_unload(stage, events, change_format_to="glass slide")
-    assert events == ["y", "x"]  # a different sample with no height of its own: stays lowered
+    assert events == ["y", "x", "z_to_2.5"]  # a different sample with no height of its own: stays lowered
+
+
+def test_an_objective_above_the_retracted_position_is_not_lowered_for_loading():
+    events = []
+    stage = _recording_stage(events, z_mm=_def.OBJECTIVE_RETRACTED_POS_MM / 2)
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    assert events == ["lift_lower", "y", "x"]
 
 
 def test_loading_without_a_lift_is_unchanged():
@@ -619,8 +637,10 @@ def test_a_failed_lift_restore_is_retried_on_the_next_return():
     with pytest.raises(TimeoutError):
         squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
     assert stage._scanning_position_lift_mm is not None  # kept for the retry
+    assert events == ["y", "x"]  # and the objective stays retracted over a lift that did not get there
+    assert stage._scanning_position_z_mm == 2.5
 
     events.clear()
     squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)  # the retry
-    assert events == ["y", "x", "lift_to_6.25"]
-    assert stage._scanning_position_lift_mm is None
+    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+    assert stage._scanning_position_lift_mm is None and stage._scanning_position_z_mm is None

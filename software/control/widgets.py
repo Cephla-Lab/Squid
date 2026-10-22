@@ -2813,6 +2813,10 @@ class StageUtils(QDialog):
         # On a Z lift system, the lift's LiftMotionGuard (control/widgets_z_lift.py): the loading toggle is refused,
         # and its button disabled, while a lift move or an objective swap holds it. See set_lift_motion_guard().
         self.lift_motion_guard = None
+        # True on a Z lift system, where the live controls are locked at the loading position: live stays off there
+        # and comes back (if it was on) only at the scanning position.
+        self.keep_live_off_at_loading = False
+        self._was_live = False
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -2943,8 +2947,10 @@ class StageUtils(QDialog):
         if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
             self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
             return
-        self._was_live = self.live_controller.is_live
-        if self._was_live:
+        if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
+            # (leaving a loading position where live was kept off: _was_live still holds what it was before)
+            self._was_live = self.live_controller.is_live
+        if self.live_controller.is_live:
             self.live_controller.stop_live()
         self.signal_threaded_stage_move_started.emit()
         if self.slide_position != "loading":
@@ -2969,7 +2975,7 @@ class StageUtils(QDialog):
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
-        if self._was_live:
+        if self._was_live and not self.keep_live_off_at_loading:
             self.live_controller.start_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
@@ -3927,8 +3933,9 @@ class ObjectivesWidget(QWidget):
         # Returns True while something else drives Z (autofocus, an acquisition); a manual swap is
         # refused then, since it retracts Z and releases the servo under that work.
         self.z_in_use = z_in_use
-        # A Z lift (squid.stage.lift.LiftStage): a switch to a higher magnification lowers it first, and leaves it
-        # lowered (raised again from Utils > Z Lift...).
+        # A Z lift (squid.stage.lift.LiftStage): a switch to a higher magnification lowers it first. A manual swap
+        # raises it back to its height once the servo holds Z again, before Z returns; a changer switch (which
+        # restores Z itself) leaves it lowered, to be raised from Utils > Z Lift...
         self.z_lift = z_lift
         # The Z lift's LiftMotionGuard (control/widgets_z_lift.py): a swap that moves anything claims it for its whole
         # run, and is refused while a loading / scanning move or a lift move holds it, so neither can move the lift
@@ -3937,6 +3944,8 @@ class ObjectivesWidget(QWidget):
         self._lift_claimed = False
         self._swap_lowers_lift = False
         self._swap_lift_lowered = False
+        self._swap_lift_height_mm = None  # the lift height a manual swap lowered from, raised back to after it
+        self._swap_lift_raised = False
         self._changer_swap_guarded = False
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
@@ -4094,7 +4103,7 @@ class ObjectivesWidget(QWidget):
         self._swap_retracted = True
         self._log.info(f"Z retracted from {self._swap_z_before_mm:.4f} mm for objective change")
         if self._swap_lowers_lift:
-            self.z_lift.lower()
+            self._swap_lift_height_mm = self.z_lift.lower()
             self._swap_lift_lowered = True
         self.focus_servo.set_servo(False)
 
@@ -4116,7 +4125,7 @@ class ObjectivesWidget(QWidget):
         self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
 
         lift_note = (
-            "The Z lift is lowered and stays lowered: raise it from Utils > Z Lift... once the objective is in.\n\n"
+            f"The Z lift is lowered; it goes back up to {self._swap_lift_height_mm:.3f} mm before Z returns.\n\n"
             if self._swap_lift_lowered
             else ""
         )
@@ -4133,12 +4142,19 @@ class ObjectivesWidget(QWidget):
         )
         self._swap_confirmed = reply == QMessageBox.Ok
         self._swap_servo_on = False
+        self._swap_lift_raised = False
         utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
 
     def _reengage_servo_and_restore_z(self):
         self.focus_servo.set_servo(True)
         self._swap_servo_on = True
         self._log.info("Focus servo re-engaged after objective change")
+        if self._swap_lift_lowered:
+            # The lift goes back up while the objective is still retracted, and only then does the objective come
+            # back down: a lift that fails to get there leaves Z retracted.
+            self.z_lift.move_to(self._swap_lift_height_mm)
+            self._swap_lift_raised = True
+            self._log.info(f"Z lift raised back to {self._swap_lift_height_mm:.3f} mm after objective change")
         self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
         self._log.info(f"Z restored to {self._swap_z_before_mm:.4f} mm after objective change")
 
@@ -4149,6 +4165,13 @@ class ObjectivesWidget(QWidget):
                 self,
                 "Focus Servo Not Engaged",
                 f"Could not re-engage the focus servo; Z is not being held:\n{error_msg}",
+            )
+        elif not success and self._swap_lift_lowered and not self._swap_lift_raised:
+            QMessageBox.warning(
+                self,
+                "Z Lift Not Raised",
+                f"Could not raise the Z lift back to {self._swap_lift_height_mm:.3f} mm after the objective change, so "
+                f"Z was left retracted:\n{error_msg}\n\nRaise the lift from Utils > Z Lift..., then focus again.",
             )
         elif not success:
             QMessageBox.warning(
