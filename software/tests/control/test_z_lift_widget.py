@@ -192,8 +192,23 @@ def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
     widget._jog(+1)  # refused even if a click got through
     assert lift.calls == []
 
+    # At the loading position the lift stays locked; only the toggle back to scanning is allowed.
+    utils.slide_position = "loading"
     utils.signal_loading_position_reached.emit()
+    assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
+    assert row_button.isEnabled() and widget.btn_loading.isEnabled()
+    widget._jog(+1)
+    assert lift.calls == []
+    assert not widget.motion_guard.claim()  # no objective swap either
+
+    row_button.click()  # back to scanning: the loading position is being left
+    assert utils.switches == 2
+    assert not widget.motion_guard.at_loading_position
+    utils.slide_position = "scanning"
+    utils.signal_scanning_position_reached.emit()
     assert widget.btn_up.isEnabled() and row_button.isEnabled()
+    widget._jog(+1)
+    qtbot.waitUntil(lambda: lift.calls == [("move_relative", 0.1)], timeout=3000)
 
 
 def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):

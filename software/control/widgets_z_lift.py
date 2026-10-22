@@ -50,6 +50,10 @@ class LiftMotionGuard(QObject):
     The toggle runs in StageUtils' worker thread and lowers the lift, moves XY, and (back to scanning) raises it
     again; LiftStage's lock only covers each single lift move, so a GUI move in between would raise the sample
     while XY travels. The toggle is tracked from StageUtils' own signals, so it counts wherever it was started.
+
+    At the loading position nothing may move the lift (a sample is being loaded): ``moves_blocked`` holds from the
+    loading position being reached until the toggle back to scanning starts. The toggle itself stays allowed then,
+    so ``busy`` (which the loading buttons follow) does not include it.
     """
 
     signal_busy_changed = Signal(bool)
@@ -58,25 +62,38 @@ class LiftMotionGuard(QObject):
 
     def __init__(self, stage_utils=None, parent=None):
         super().__init__(parent)
+        self._stage_utils = stage_utils
         self._lift_move = False
         self._loading = False
         self._claimed = False  # held by an operation run elsewhere: an objective swap
+        self._at_loading_position = False
         if stage_utils is not None:
             # signal_threaded_stage_move_started is emitted on the GUI thread before the toggle's thread starts,
             # so the guard is busy before any of its motion; the "reached" signals arrive from that thread.
             stage_utils.signal_threaded_stage_move_started.connect(self._on_loading_started)
-            stage_utils.signal_loading_position_reached.connect(self._on_loading_finished)
-            stage_utils.signal_scanning_position_reached.connect(self._on_loading_finished)
+            stage_utils.signal_loading_position_reached.connect(self._on_loading_position_reached)
+            stage_utils.signal_scanning_position_reached.connect(self._on_scanning_position_reached)
         self.signal_move_finished.connect(self._end_lift_move)
 
     @property
     def busy(self) -> bool:
+        """Something is moving the lift (or about to): the loading toggle must not start either."""
         return self._lift_move or self._loading or self._claimed
+
+    @property
+    def at_loading_position(self) -> bool:
+        return self._at_loading_position
+
+    @property
+    def moves_blocked(self) -> bool:
+        """No lift move and no objective swap may start: busy, or at the loading position."""
+        return self.busy or self._at_loading_position
 
     def claim(self) -> bool:
         """Hold the lift for an operation that moves it on its own (an objective swap lowers it), from its start to
-        its end. False (nothing held) while anything else is moving the lift: the caller must not start then."""
-        if self.busy:
+        its end. False (nothing held) while anything else is moving the lift, or at the loading position: the caller
+        must not start then."""
+        if self.moves_blocked:
             return False
         self._claimed = True
         self.signal_busy_changed.emit(True)
@@ -87,8 +104,9 @@ class LiftMotionGuard(QObject):
         self.signal_busy_changed.emit(self.busy)
 
     def run(self, operation: Callable, **kwargs) -> bool:
-        """Run a lift move in a worker thread; False (nothing started) while anything else is moving the lift."""
-        if self.busy:
+        """Run a lift move in a worker thread; False (nothing started) while anything else is moving the lift or at
+        the loading position."""
+        if self.moves_blocked:
             return False
         self._lift_move = True
         self.signal_busy_changed.emit(True)
@@ -103,10 +121,18 @@ class LiftMotionGuard(QObject):
 
     def _on_loading_started(self):
         self._loading = True
+        if self._stage_utils is not None and self._stage_utils.slide_position == "loading":
+            self._at_loading_position = False  # leaving it: the toggle back to scanning has started
         self.signal_busy_changed.emit(True)
 
-    def _on_loading_finished(self):
+    def _on_loading_position_reached(self):
         self._loading = False
+        self._at_loading_position = True
+        self.signal_busy_changed.emit(self.busy)
+
+    def _on_scanning_position_reached(self):
+        self._loading = False
+        self._at_loading_position = False
         self.signal_busy_changed.emit(self.busy)
 
 
@@ -274,8 +300,9 @@ class ZLiftWidget(QDialog):
 
     # --- moves ------------------------------------------------------------------------------------------------
     def _on_busy_changed(self, busy: bool):
+        blocked = self.motion_guard.moves_blocked  # busy, or at the loading position
         for b in self._move_controls:
-            b.setEnabled(not busy)
+            b.setEnabled(not blocked)
 
     def _on_move_finished(self, success: bool, error_msg: str):
         self._refresh_readout()
