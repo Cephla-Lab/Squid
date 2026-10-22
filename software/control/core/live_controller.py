@@ -24,6 +24,9 @@ class LiveController(QObject):
     # Emitted when live start encounters a non-fatal condition the user should see
     # (e.g. the Squid laser engine is not yet ready for the requested wavelength).
     signal_warning = Signal(str)
+    # A channel exposure was applied to a confocal unit that level-triggers the camera (AION / NL5 with
+    # NL5_USE_DOUT): (exposure the camera will see [ms], the unit's line speed [mrad/s]).
+    signal_scan_exposure_applied = Signal(float, int)
 
     def __init__(
         self,
@@ -606,6 +609,7 @@ class LiveController(QObject):
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+            self._restore_camera_exposure_after_scan_unit(mode)
             if self.is_live:
                 self._start_triggerred_acquisition()
             self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
@@ -613,7 +617,8 @@ class LiveController(QObject):
             if self.trigger_mode == TriggerMode.SOFTWARE and self.is_live:
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
-            self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+            self.trigger_mode = mode  # apply_exposure_time() decides by the trigger mode
+            self.apply_exposure_time(self.currentConfiguration.exposure_time)
 
             if self.is_live and self.use_internal_timer_for_hardware_trigger:
                 self._start_triggerred_acquisition()
@@ -626,8 +631,16 @@ class LiveController(QObject):
             ):
                 self._stop_triggerred_acquisition()
             self.camera.set_acquisition_mode(CameraAcquisitionMode.CONTINUOUS)
+            self._restore_camera_exposure_after_scan_unit(mode)
             self.microscope.low_level_drivers.microcontroller.set_trigger_mode(0)
         self.trigger_mode = mode
+
+    def _restore_camera_exposure_after_scan_unit(self, mode):
+        # Leaving hardware trigger on an NL5/AION: the camera's own exposure applies again, so set it back to the
+        # channel's. Other systems keep their exposure as before.
+        if self.scan_unit_sets_exposure() and self.currentConfiguration is not None:
+            self.trigger_mode = mode
+            self.apply_exposure_time(self.currentConfiguration.exposure_time)
 
     def set_trigger_fps(self, fps):
         if (self.trigger_mode == TriggerMode.SOFTWARE) or (
@@ -655,7 +668,7 @@ class LiveController(QObject):
         self.currentConfiguration = configuration
 
         # set camera exposure time and analog gain
-        self.camera.set_exposure_time(self.currentConfiguration.exposure_time)
+        self.apply_exposure_time(self.currentConfiguration.exposure_time)
         try:
             self.camera.set_analog_gain(self.currentConfiguration.analog_gain)
         except NotImplementedError:
@@ -674,6 +687,59 @@ class LiveController(QObject):
 
     def get_trigger_mode(self):
         return self.trigger_mode
+
+    # Exposure on a confocal unit that level-triggers the camera
+
+    def scan_unit_sets_exposure(self) -> bool:
+        """True when the camera's exposure is the confocal unit's trigger width, not its own setting.
+
+        With an NL5/AION and NL5_USE_DOUT in hardware trigger mode the unit holds the camera's trigger high for
+        the exposure delay plus the scan, and the camera (Tucsen "trigger width" mode) ignores its ExposureTime.
+        The channel exposure is then reached by setting the unit's line speed (see control.NL5).
+        """
+        return self.microscope.addons.nl5 is not None and NL5_USE_DOUT and self.trigger_mode == TriggerMode.HARDWARE
+
+    def effective_exposure_time_ms(self, exposure_ms: float) -> float:
+        """The exposure the camera will see for a channel exposure setting, without changing anything."""
+        if self.scan_unit_sets_exposure():
+            nl5 = self.microscope.addons.nl5
+            return nl5.exposure_time_ms(nl5.line_speed_for_exposure(exposure_ms))
+        return exposure_ms
+
+    def exposure_limits_ms(self):
+        """(min, max) exposure a channel can be set to: the unit's range when it sets the exposure, else the camera's."""
+        if self.scan_unit_sets_exposure():
+            return self.microscope.addons.nl5.exposure_limits_ms()
+        return self.camera.get_exposure_limits()
+
+    def apply_exposure_time(self, exposure_ms: float) -> float:
+        """Apply a channel exposure and return the exposure the camera will see.
+
+        On a confocal unit that sets the exposure, the unit's line speed is set for it and the camera is told the
+        exposure the unit will produce, so the camera's total frame time (the post-trigger wait, the timeouts
+        and the trigger-ready window are computed from it) matches the hardware. Otherwise the camera is set to
+        the channel exposure as before.
+        """
+        applied = exposure_ms
+        if self.scan_unit_sets_exposure():
+            nl5 = self.microscope.addons.nl5
+            applied = nl5.apply_exposure_time(exposure_ms)
+            self._log.info(
+                f"Exposure {exposure_ms:.2f} ms -> confocal unit line speed {nl5.line_speed} mrad/s: "
+                f"{nl5.exposure_delay_ms} ms delay + {nl5.scan_time_ms():.2f} ms scan = {applied:.2f} ms"
+            )
+            self.signal_scan_exposure_applied.emit(applied, nl5.line_speed)
+        self.camera.set_exposure_time(applied)
+        return applied
+
+    def current_configuration_as_applied(self) -> Optional["AcquisitionChannel"]:
+        """The current channel with the exposure the camera actually sees (for recording metadata)."""
+        config = self.currentConfiguration
+        if config is None or not self.scan_unit_sets_exposure():
+            return config
+        applied = config.model_copy(deep=True)
+        applied.exposure_time = self.effective_exposure_time_ms(config.exposure_time)
+        return applied
 
     # slot
     def on_new_frame(self):

@@ -17,13 +17,16 @@ import control.core.live_controller
 import control.core.multi_point_worker
 import control.microscope
 from control._def import TriggerMode
+from control.NL5 import _ScanSpeedMixin
 from control.core.multi_point_worker import MultiPointWorker
 from squid.abc import CameraAcquisitionMode
 import tests.control.test_stubs as ts
 from tests.control.test_MultiPointController import TestAcquisitionTracker, add_some_coordinates
 
 
-class FakeConfocalUnit:
+class FakeConfocalUnit(_ScanSpeedMixin):
+    """Scan timing as the AION is installed: 73 mrad, the full 3200 px width, 10 ms delay, 3000 mrad/s."""
+
     def __init__(
         self,
         camera,
@@ -45,6 +48,35 @@ class FakeConfocalUnit:
         self.fire_late_on_abort_scans = set(fire_late_on_abort_scans)
         self.release = threading.Event()
         self.scan_started = threading.Event()
+        self.scan_amplitude = 73.0
+        self.offset_x = 0.5
+        self.bypass_offset = 0.0
+        self.fov_x = 3200
+        self.max_cam_pix_x = 3200
+        self.exposure_delay_ms = 10
+        self.line_speed = 3000
+        self.line_speed_writes = []
+        self.internal_stage = None
+        self.device_name = "AION"
+
+    def set_line_speed(self, speed, save_setting=False):
+        self.line_speed = self.clamp_line_speed(speed)
+        self.line_speed_writes.append(self.line_speed)
+
+    def set_exposure_delay(self, exposure_delay_ms):
+        self.exposure_delay_ms = exposure_delay_ms
+
+    def set_scan_amplitude(self, amplitude):
+        self.scan_amplitude = amplitude
+
+    def set_fov_x(self, fov_x):
+        self.fov_x = fov_x
+
+    def load_settings(self):
+        pass
+
+    def save_settings(self):
+        pass
 
     def start_acquisition(self):
         self.scans += 1

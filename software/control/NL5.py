@@ -21,17 +21,26 @@ SPEED_INPUT_MODES = ("line_speed", "fps")
 
 
 class _ScanSpeedMixin:
-    """Conversion between the scanner line speed and the scan-limited frame rate.
+    """Scan timing of the line scanner: line speed <-> frame rate <-> exposure.
 
     One frame is one sweep of the line across the scanned field. The scanner travels +/- the
-    scan amplitude (AMPLITUDE_X, mrad), so the sweep is twice the amplitude, scaled by the
-    scanned fraction of the camera width (FIELD_OF_VIEW_X / MAX_CAM_PIX_X), and
-        fps = line_speed [mrad/s] / sweep [mrad].
-    Measured on AION: the time to a frame grows by 2 x amplitude / line speed, so halving the
-    amplitude or FIELD_OF_VIEW_X saved 26 ms at 73 mrad and 3000 mrad/s.
-    The exposure delay, the jump back (~3 ms) and the camera's readout and transfer (~30 ms
-    for a full Aries frame) are not included, so this is the upper bound the scanner allows,
-    not the camera frame rate.
+    scan amplitude (AMPLITUDE_X, mrad, the amplitude for MAX_CAM_PIX_X pixels), scaled by the
+    scanned width in pixels relative to that (FIELD_OF_VIEW_X / MAX_CAM_PIX_X, not capped at 1:
+    a FIELD_OF_VIEW_X wider than MAX_CAM_PIX_X scans further), so
+        sweep = 2 x amplitude x FIELD_OF_VIEW_X / MAX_CAM_PIX_X,
+        scan time = sweep [mrad] / line speed [mrad/s],    fps = line speed / sweep.
+    Measured on AION (camera + unit, 2026-10-22, frame latency vs settings): the time to a frame
+    moves by exactly this scan time when the line speed, the amplitude or FIELD_OF_VIEW_X change
+    (73 mrad, MAX_CAM_PIX_X 2048, FIELD_OF_VIEW_X 3200: 76 ms at 3000 mrad/s, 38 ms at 6000 or at
+    36.5 mrad, 24 ms at FIELD_OF_VIEW_X 1024), plus a jump back of about 4 ms at the full width
+    that is not counted here. The fps is the upper bound the scanner allows, not the camera's
+    frame rate: the frame arrives ~56 ms after the scan (readout and transfer of a full Aries frame).
+
+    The camera is level-triggered by the unit (Tucsen "trigger width" mode): its exposure is however
+    long the unit holds the trigger high, which is the exposure delay (EXPOSURE_DELAY) followed by
+    the scan. The camera's own exposure setting is ignored. So on this unit
+        exposure = exposure delay + scan time,
+    and a wanted exposure is reached by setting the line speed (line_speed_for_exposure).
     """
 
     max_cam_pix_x = None
@@ -39,7 +48,7 @@ class _ScanSpeedMixin:
     def scan_sweep_mrad(self):
         fraction = 1.0
         if self.max_cam_pix_x and self.fov_x:
-            fraction = min(1.0, self.fov_x / self.max_cam_pix_x)
+            fraction = self.fov_x / self.max_cam_pix_x
         return max(1e-6, 2 * self.scan_amplitude * fraction)
 
     def line_speed_to_fps(self, line_speed):
@@ -51,6 +60,66 @@ class _ScanSpeedMixin:
     @staticmethod
     def clamp_line_speed(speed):
         return int(min(LINE_SPEED_MAX, max(LINE_SPEED_MIN, round(speed))))
+
+    def scan_time_ms(self, line_speed=None):
+        """Time of one sweep at `line_speed` (default: the current line speed)."""
+        speed = self.line_speed if line_speed is None else line_speed
+        return 1000.0 * self.scan_sweep_mrad() / speed
+
+    def exposure_time_ms(self, line_speed=None):
+        """The camera exposure the unit produces: exposure delay + scan time."""
+        return self.exposure_delay_ms + self.scan_time_ms(line_speed)
+
+    def line_speed_for_exposure(self, exposure_ms):
+        """The line speed (within the unit's limits) whose exposure is closest to `exposure_ms`."""
+        scan_ms = exposure_ms - self.exposure_delay_ms
+        if scan_ms <= 0:
+            return LINE_SPEED_MAX
+        return self.clamp_line_speed(1000.0 * self.scan_sweep_mrad() / scan_ms)
+
+    def exposure_limits_ms(self):
+        """(min, max) exposure the unit can produce with the current delay, amplitude and FOV."""
+        return self.exposure_time_ms(LINE_SPEED_MAX), self.exposure_time_ms(LINE_SPEED_MIN)
+
+    def apply_exposure_time(self, exposure_ms):
+        """Set the line speed for this exposure; returns the exposure the unit will actually produce.
+
+        The line speed is sent to the unit only when it changes (at most one write per channel change).
+        The first call always writes, since the unit's line speed at start-up is not known to match
+        the saved one.
+        """
+        speed = self.line_speed_for_exposure(exposure_ms)
+        if speed != getattr(self, "_line_speed_applied", None):
+            self.set_line_speed(speed)
+            self._line_speed_applied = speed
+        return self.exposure_time_ms()
+
+    def scan_timing_metadata(self, line_speed=None):
+        """The scan timing behind an exposure at `line_speed` (default: the current one), for acquisition metadata."""
+        speed = self.line_speed if line_speed is None else line_speed
+        return {
+            "line_speed_mrad_s": speed,
+            "scan_time_ms": self.scan_time_ms(speed),
+            "exposure_ms": self.exposure_time_ms(speed),
+        }
+
+    def settings_metadata(self):
+        """Every setting of the unit Squid holds, for acquisition metadata (the real unit adds the device's readback)."""
+        metadata = {
+            "device": getattr(self, "device_name", "NL5"),
+            "exposure_delay_ms": self.exposure_delay_ms,
+            "scan_amplitude_mrad": self.scan_amplitude,
+            "offset_x_mrad": self.offset_x,
+            "bypass_offset_mrad": self.bypass_offset,
+            "fov_x_px": self.fov_x,
+            "max_cam_pix_x": self.max_cam_pix_x,
+            "sweep_mrad": self.scan_sweep_mrad(),
+            "line_speed_mrad_s": self.line_speed,
+        }
+        for key in ("slit_width_um", "slit_offset_um"):
+            if hasattr(self, key):
+                metadata[key] = getattr(self, key)
+        return metadata
 
     def set_speed_input_mode(self, mode):
         if mode not in SPEED_INPUT_MODES:
@@ -114,9 +183,7 @@ class RCMInternalStage:
         self._log = squid.logging.get_logger(self.__class__.__name__)
         port = self._find_port(serial_number)
         if port is None:
-            raise RuntimeError(
-                f"RCM internal stage with USB serial number '{serial_number}' not found"
-            )
+            raise RuntimeError(f"RCM internal stage with USB serial number '{serial_number}' not found")
         self.ser = serial.Serial(
             port=port,
             baudrate=self.BAUD,
@@ -160,9 +227,7 @@ class RCMInternalStage:
 
     def set_slit_width(self, width_um):
         if width_um not in SLIT_POSITIONS_UM:
-            raise ValueError(
-                f"Unknown slit width {width_um} µm; expected one of {list(SLIT_POSITIONS_UM)}"
-            )
+            raise ValueError(f"Unknown slit width {width_um} µm; expected one of {list(SLIT_POSITIONS_UM)}")
         self.current_slit_um = width_um
         target = SLIT_POSITIONS_UM[width_um] + int(round(self.offset_um))
         self._send(f"MPA{self.SLIT_CHANNEL}P{target}H{self.DEFAULT_HOLD_MS}")
@@ -269,6 +334,48 @@ class NL5(_ScanSpeedMixin):
         self.exposure_delay_ms = exposure_delay_ms
         self.rcm.set_integer_parameter(self.rcm.EXPOSURE_DELAY, exposure_delay_ms)
 
+    # RCM parameters read back from the device for acquisition metadata (name -> integer or float).
+    DEVICE_READBACK_PARAMETERS = (
+        ("FIELD_OF_VIEW_X", int),
+        ("FIELD_OF_VIEW_Y", int),
+        ("MAX_CAM_PIX_X", int),
+        ("MAX_CAM_PIX_Y", int),
+        ("EXPOSURE_DELAY", int),
+        ("LINE_FREQUENCY", int),
+        ("AMPLITUDE_X", float),
+        ("AMPLITUDE_Y", float),
+        ("OFFSET_SCAN_X", float),
+        ("OFFSET_SCAN_Y", float),
+        ("BYPASS_OFFSET", float),
+        ("LASER_1_SELECTED", int),
+        ("LASER_2_SELECTED", int),
+        ("LASER_3_SELECTED", int),
+        ("LASER_4_SELECTED", int),
+        ("LASER_1_POWER", int),
+        ("LASER_2_POWER", int),
+        ("LASER_3_POWER", int),
+        ("LASER_4_POWER", int),
+    )
+
+    def settings_metadata(self):
+        metadata = super().settings_metadata()
+        metadata["device_type"] = self.device_type
+        readback = {}
+        for name, kind in self.DEVICE_READBACK_PARAMETERS:
+            param = getattr(self.rcm, name, None)
+            if param is None:
+                continue
+            try:
+                if kind is float:
+                    readback[name] = self.rcm.get_float_parameter(param)
+                else:
+                    readback[name] = self.rcm.get_integer_parameter(param)
+            except Exception as e:
+                self._log.warning(f"Could not read RCM parameter {name}: {e}")
+                readback[name] = None
+        metadata["device_readback"] = readback
+        return metadata
+
     def set_slit_width(self, width_um):
         self.slit_width_um = width_um
         if self.internal_stage is not None:
@@ -284,7 +391,6 @@ class NL5(_ScanSpeedMixin):
     def home_internal_stage(self):
         if self.internal_stage is not None:
             self.internal_stage.home()
-
 
 
 class NL5_Simulation(_ScanSpeedMixin):
@@ -339,4 +445,3 @@ class NL5_Simulation(_ScanSpeedMixin):
     def set_exposure_delay(self, exposure_delay_ms):
         self.exposure_delay_ms = exposure_delay_ms
         pass
-
