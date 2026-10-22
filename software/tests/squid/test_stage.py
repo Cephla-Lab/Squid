@@ -1,5 +1,7 @@
 import builtins
 import logging
+
+import numpy as np
 import pytest
 import time
 import unittest.mock
@@ -977,3 +979,37 @@ def test_pi_focus_settle_decision_uses_this_moves_window(monkeypatch):
     stage._c414.move_relative = move_relative_then_other_thread_widens_window
     stage.move_z(0.0003)  # 0.3 um > its own 0.1 um window: no settle, whatever the cache says later
     assert sleeps == []
+
+
+class _Float32LimitsGcs:
+    """A C-414 that keeps the range-limit params at float32 precision and reports them back that way, as the
+    instrument does (SPA 0.05, then TMN? answers 4.9999996e-2)."""
+
+    def __init__(self):
+        self.params = {squid.stage.pi.PARAM_RANGE_LIMIT_MIN: 0.0, squid.stage.pi.PARAM_RANGE_LIMIT_MAX: 7.0}
+
+    def CCL(self, *args):
+        pass
+
+    def SPA(self, axis, param, value):
+        self.params[param] = float(np.float32(value))
+
+    def qTMN(self, axis):
+        return {axis: float(f"{self.params[squid.stage.pi.PARAM_RANGE_LIMIT_MIN]:.8g}")}
+
+    def qTMX(self, axis):
+        return {axis: float(f"{self.params[squid.stage.pi.PARAM_RANGE_LIMIT_MAX]:.8g}")}
+
+
+@pytest.mark.parametrize("fence", ["set_travel_limits", "reset_range_limit"])
+def test_c414_clamps_to_the_limits_the_controller_reports(caplog, fence):
+    # A target clamped to the reported range (the focus wheel router does this through z_range_mm) must not be
+    # "outside" the clamp range: the clamp cache is the controller's read-back, not the values written.
+    stage = _c414_with(_Float32LimitsGcs())
+    getattr(stage, fence)(0.05, 6.95) if fence == "set_travel_limits" else stage.reset_range_limit(6.95, 0.05)
+    lo, hi = stage.hardware_limits_mm()
+    assert lo != 0.05  # the precision the instrument has
+    assert (stage._range_lo, stage._range_hi) == (lo, hi)
+    with caplog.at_level(logging.WARNING):
+        assert stage._clamp_target(lo) == lo
+    assert "outside the range limit" not in caplog.text

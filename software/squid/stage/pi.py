@@ -645,7 +645,7 @@ class C414FocusStage:
                 self.gcs.WPA(WPA_PASSWORD)
         finally:
             self.gcs.CCL(0)
-        self._range_lo, self._range_hi = min_mm, max_mm  # refresh the clamp cache
+        self._refresh_range_cache()
 
     def reset_range_limit(self, max_mm: float, min_mm: float = 0.0) -> None:
         """Restore the Position Range Limit to the full physical travel [min_mm, max_mm].
@@ -662,7 +662,13 @@ class C414FocusStage:
             self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, float(max_mm))
         finally:
             self.gcs.CCL(0)
-        self._range_lo, self._range_hi = float(min_mm), float(max_mm)  # refresh the clamp cache
+        self._refresh_range_cache()
+
+    def _refresh_range_cache(self) -> None:
+        # From the controller's read-back, not the values written: it stores the limits at its own precision
+        # (0.05 reads back as 0.049999996), and moves must be clamped to the range it enforces and reports
+        # (hardware_limits_mm), or a target clamped to the reported range is "outside" the written one by a few nm.
+        self._range_lo, self._range_hi = self.hardware_limits_mm()
 
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
