@@ -43,12 +43,12 @@ import time
 import csv
 import itertools
 import json
-import math
 import numpy as np
 import pandas as pd
 import cv2
 import imageio as iio
 import squid.abc
+from control.core.plate_transform import resolve_rotation_deg, rotate_deg
 import scipy.ndimage
 
 if ENABLE_NL5:
@@ -65,7 +65,6 @@ class QtStreamHandler(QObject):
 
     def __init__(
         self,
-        display_resolution_scaling=1,
         accept_new_frame_fn: Callable[[], bool] = lambda: True,
         force_display_fn: Callable[[], bool] = lambda: False,
     ):
@@ -78,9 +77,7 @@ class QtStreamHandler(QObject):
             accept_new_frame=accept_new_frame_fn,
             force_display=force_display_fn,
         )
-        self._handler = StreamHandler(
-            handler_functions=functions, display_resolution_scaling=display_resolution_scaling
-        )
+        self._handler = StreamHandler(handler_functions=functions)
 
     def get_frame_callback(self) -> Callable[[CameraFrame], None]:
         return self._handler.on_new_frame
@@ -96,9 +93,6 @@ class QtStreamHandler(QObject):
 
     def set_save_fps(self, fps):
         self._handler.set_save_fps(fps)
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self._handler.set_display_resolution_scaling(display_resolution_scaling)
 
 
 log = squid.logging.get_logger(__name__)
@@ -503,7 +497,6 @@ class TrackingController(QObject):
 
         self.tracking_time_interval_s = 0
 
-        self.display_resolution_scaling = Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
         self.counter = 0
         self.experiment_ID = None
         self.base_path = None
@@ -677,7 +670,6 @@ class TrackingWorker(QObject):
         self.liveController = self.trackingController.liveController
         self.autofocusController = self.trackingController.autofocusController
         self.imageDisplayWindow = self.trackingController.imageDisplayWindow
-        self.display_resolution_scaling = self.trackingController.display_resolution_scaling
         self.counter = self.trackingController.counter
         self.experiment_ID = self.trackingController.experiment_ID
         self.base_path = self.trackingController.base_path
@@ -771,13 +763,7 @@ class TrackingWorker(QObject):
                 # TODO(imo): use illumination controller
                 self.liveController.turn_off_illumination()
                 image_ = np.squeeze(image_)
-                # display image
-                image_to_display_ = utils.crop_image(
-                    image_,
-                    round(image_.shape[1] * self.liveController.display_resolution_scaling),
-                    round(image_.shape[0] * self.liveController.display_resolution_scaling),
-                )
-                self.image_to_display_multi.emit(image_to_display_, config_.illumination_source)
+                self.image_to_display_multi.emit(image_, config_.illumination_source)
                 # save image
                 if self.trackingController.flag_save_image:
                     if camera_frame.is_color():
@@ -843,6 +829,26 @@ class TrackingWorker(QObject):
         self.finished.emit()
 
 
+MAGENTA_COLORMAP = pg.ColorMap(pos=[0.0, 1.0], color=[(0, 0, 0), (255, 0, 255)])
+# One green pixel, stretched over the live image and multiplied into it: keeps only the green channel
+GREEN_TINT_PIXEL = np.array([[[0, 255, 0]]], dtype=np.uint8)
+# Mask overlay: 0 = see-through, 1 = red
+OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
+# Stacking order above the live image (z = 0): tint multiplies, reference adds, the red mask covers both
+Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE, Z_FRAME = 1, 2, 3, 4
+
+
+def _overexposure_mask(image: np.ndarray, saturation: float) -> np.ndarray:
+    """1 where any channel is at or above ``saturation``, else 0."""
+    intensity = image if image.ndim == 2 else image.max(axis=2)
+    return (intensity >= saturation).view(np.uint8)
+
+
+def _dtype_range(dtype):
+    """np.iinfo / np.finfo for the dtype, whichever applies."""
+    return np.iinfo(dtype) if np.issubdtype(dtype, np.integer) else np.finfo(dtype)
+
+
 class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
@@ -884,6 +890,17 @@ class ImageDisplayWindow(QMainWindow):
         self.preview_line = None
         self.start_point_marker = None
 
+        # Last frame as received (before any on-screen marking), for registration
+        self._current_image: Optional[np.ndarray] = None
+
+        # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
+        self.alignment_reference_item: Optional[pg.ImageItem] = None
+        self.live_tint_item: Optional[pg.ImageItem] = (
+            None  # green multiply over the live image while a reference is shown
+        )
+        self.overexposure_item: Optional[pg.ImageItem] = None
+        self._overexposure_source = None  # (frame id, saturation) the current mask was computed from
+
         # Create main layout
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
@@ -912,6 +929,11 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
 
+        self.btn_overexposure = QPushButton("Over-exposed Pixels")
+        self.btn_overexposure.setCheckable(True)
+        self.btn_overexposure.setToolTip("Highlight pixels at the camera's maximum value in red")
+        self.btn_overexposure.toggled.connect(self.set_overexposure_indicator)
+
         # Add well selector toggle button
         self.btn_well_selector = QPushButton("Show Well Selector")
         self.btn_well_selector.setCheckable(False)
@@ -926,6 +948,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
         status_layout.addWidget(self.btn_well_selector)  # Add well selector button
+        status_layout.addWidget(QLabel(" | "))  # Add separator
+        status_layout.addWidget(self.btn_overexposure)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
 
@@ -957,15 +981,21 @@ class ImageDisplayWindow(QMainWindow):
         if self.show_LUT:
             self.graphics_widget.view = pg.ImageView()
             self.graphics_widget.img = self.graphics_widget.view.getImageItem()
-            self.graphics_widget.img.setBorder("w")
             self.graphics_widget.view.ui.roiBtn.hide()
             self.graphics_widget.view.ui.menuBtn.hide()
             self.LUTWidget = self.graphics_widget.view.getHistogramWidget()
             self.LUTWidget.region.sigRegionChanged.connect(self.update_contrast_limits)
             self.LUTWidget.region.sigRegionChangeFinished.connect(self.update_contrast_limits)
+            self.LUTWidget.item.sigLevelsChanged.connect(self._update_overlays)
         else:
-            self.graphics_widget.img = pg.ImageItem(border="w")
+            self.graphics_widget.img = pg.ImageItem()
             self.graphics_widget.view.addItem(self.graphics_widget.img)
+
+        # White frame around the live image, above every overlay so tints and masks never recolor it
+        self.frame_item = QGraphicsRectItem()
+        self.frame_item.setPen(pg.mkPen("w"))
+        self.frame_item.setZValue(Z_FRAME)
+        self._active_view().addItem(self.frame_item)
 
         ## Create ROI
         self.roi_pos = (500, 500)
@@ -1087,6 +1117,82 @@ class ImageDisplayWindow(QMainWindow):
         # Stop the timer when the window is closed
         self.update_timer.stop()
         super().closeEvent(event)
+
+    def set_overexposure_indicator(self, enabled: bool):
+        """Overlay pixels at the camera's maximum value in red, whatever the contrast setting."""
+        if enabled and self.overexposure_item is None:
+            self.overexposure_item = self._add_overlay_item(Z_OVEREXPOSURE, lut=OVEREXPOSURE_LUT)
+            self._update_overlays()
+        elif not enabled and self.overexposure_item is not None:
+            self._active_view().removeItem(self.overexposure_item)
+            self.overexposure_item = None
+            self._overexposure_source = None
+
+    def current_image(self) -> Optional[np.ndarray]:
+        """The most recently received frame, unmodified (None before the first one or after invalidation)."""
+        return self._current_image
+
+    def invalidate_current_image(self):
+        """Forget the last frame, e.g. after a stage move it no longer shows what is under the objective."""
+        self._current_image = None
+
+    def show_alignment_reference(self, image: np.ndarray):
+        """Overlay a reference image in additive magenta on a green live view.
+
+        Misalignment shows as magenta and green fringes; where the two line up the colors add to white.
+        The live image item itself (levels, lookup table, histogram) is left untouched.
+        """
+        if self.alignment_reference_item is None:
+            self.live_tint_item = self._add_overlay_item(Z_LIVE_TINT, QPainter.CompositionMode_Multiply)
+            self.live_tint_item.setImage(GREEN_TINT_PIXEL, levels=(0, 255))
+            self.alignment_reference_item = self._add_overlay_item(
+                Z_ALIGNMENT_REFERENCE, QPainter.CompositionMode_Plus, lut=MAGENTA_COLORMAP.getLookupTable(nPts=256)
+            )
+        # lookup tables do not apply to H x W x 3 data
+        self.alignment_reference_item.setImage(utils.to_grayscale(image), autoLevels=False)
+        self._update_overlays()
+
+    def hide_alignment_reference(self):
+        if self.alignment_reference_item is not None:
+            self._active_view().removeItem(self.alignment_reference_item)
+            self._active_view().removeItem(self.live_tint_item)
+            self.alignment_reference_item = self.live_tint_item = None
+
+    def _add_overlay_item(self, z: int, composition_mode=None, lut: Optional[np.ndarray] = None) -> pg.ImageItem:
+        item = pg.ImageItem()
+        item.setZValue(z)
+        if lut is not None:
+            item.setLookupTable(lut)
+        if composition_mode is not None:
+            item.setCompositionMode(composition_mode)
+        self._active_view().addItem(item)
+        return item
+
+    def _update_overlays(self, *_):
+        """Keep the overlays in step with the live image and its contrast range."""
+        image_rect = self.graphics_widget.img.boundingRect()
+        self.frame_item.setRect(image_rect)
+        if self.live_tint_item is not None:
+            self.live_tint_item.setRect(image_rect)
+        levels = self.graphics_widget.img.getLevels()
+        if levels is None:
+            return
+        reference = self.alignment_reference_item
+        if reference is not None and not np.array_equal(reference.getLevels(), levels):
+            reference.setLevels(levels)
+        if self.overexposure_item is not None and self._current_image is not None:
+            saturation = self._saturation_level(self._current_image)
+            source = (id(self._current_image), saturation)
+            if source != self._overexposure_source:
+                self._overexposure_source = source
+                mask = _overexposure_mask(self._current_image, saturation)
+                self.overexposure_item.setImage(mask, autoLevels=False, levels=(0, 1))
+
+    def _saturation_level(self, image: np.ndarray) -> float:
+        """The camera's maximum pixel value; the dtype's full range when no camera is attached."""
+        if self.liveController is None or not np.issubdtype(image.dtype, np.integer):
+            return _dtype_range(image.dtype).max
+        return self.liveController.camera.get_pixel_format().max_value(image.dtype)
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
@@ -1399,6 +1505,7 @@ class ImageDisplayWindow(QMainWindow):
         if self.first_image:
             self.first_image = False
             self.btn_line_profiler.setEnabled(True)
+        self._current_image = image
 
         if ENABLE_TRACKING:
             image = np.copy(image)
@@ -1407,7 +1514,7 @@ class ImageDisplayWindow(QMainWindow):
                 cv2.rectangle(image, self.ptRect1, self.ptRect2, (255, 255, 255), 4)
                 self.draw_rectangle = False
 
-        info = np.iinfo(image.dtype) if np.issubdtype(image.dtype, np.integer) else np.finfo(image.dtype)
+        info = _dtype_range(image.dtype)
         min_val, max_val = info.min, info.max
 
         if self.liveController is not None and self.contrastManager is not None:
@@ -1428,6 +1535,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.graphics_widget.img.setLevels((min_val, max_val))
 
         self.graphics_widget.img.updateImage()
+        self._update_overlays()
 
         # Update pixel value based on last valid position
         if self.has_valid_position:
@@ -1517,11 +1625,14 @@ class NavigationViewer(QFrame):
         super().__init__(*args, **kwargs)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
-        self.sample = sample
+        # Catalog identity vs display identity: "4 glass slide" is an image
+        # choice, not a format. Constructors may pass either; normalize to the
+        # format and derive the display name from the ONE owner of the alias.
+        self.format = "glass slide" if sample in ("glass slide", "4 glass slide") else sample
+        self.sample = self._display_sample_for(self.format)
         self.objectiveStore = objectivestore
         self.camera = camera
         self.well_size_mm = WELL_SIZE_MM
-        self.well_spacing_mm = WELL_SPACING_MM
         self.number_of_skip = NUMBER_OF_SKIP
         self.a1_x_mm = A1_X_MM
         self.a1_y_mm = A1_Y_MM
@@ -1547,9 +1658,9 @@ class NavigationViewer(QFrame):
         print("navigation viewer:", sample)
         self.init_ui(invertX)
 
-        self.load_background_image(self.image_paths.get(sample, "images/4 slide carrier_1509x1010.png"))
+        self.load_background_image(self.image_paths.get(self.sample, "images/4 slide carrier_1509x1010.png"))
         self.create_layers()
-        self.update_display_properties(sample)
+        self.update_display_properties(self.sample)
         # self.update_display()
 
     def init_ui(self, invertX):
@@ -1598,7 +1709,13 @@ class NavigationViewer(QFrame):
         """Set the alignment widget to be displayed in the navigation viewer."""
         self.alignment_widget = alignment_widget
         self.alignment_widget.setParent(self.graphics_widget)
+        self.alignment_widget.installEventFilter(self)  # it grows/shrinks as its Auto button toggles
         self.alignment_widget.adjustSize()
+
+    def eventFilter(self, obj, event):
+        if obj is self.alignment_widget and event.type() == QEvent.Resize:
+            self._position_button()
+        return super().eventFilter(obj, event)
         self._position_button()
 
     def resizeEvent(self, event):
@@ -1665,42 +1782,58 @@ class NavigationViewer(QFrame):
     def update_fov_size(self):
         self.fov_size_mm = self.camera.get_fov_size_mm() * self.objectiveStore.get_pixel_size_factor()
 
+    @staticmethod
+    def _display_sample_for(format_: str) -> str:
+        """The display alias for a catalog format - the one owner of the
+        "4 glass slide is how an HCS machine DRAWS a glass slide" rule."""
+        if format_ == "glass slide" and IS_HCS:
+            return "4 glass slide"
+        return format_
+
+    def _current_rotation_deg(self) -> float:
+        """The measured plate rotation, resolved at CALL time (never cached).
+
+        The background image is a NOMINAL drawing - wells on an unrotated grid -
+        so under a measured rotation the stage<->pixel mapping must go through
+        the plate frame: pixels are always nominal, stage coordinates are
+        rotated about A1. Pitch-0 formats (glass slides) resolve to 0.0 in the
+        resolver itself - no sample-name special cases here.
+        """
+        try:
+            return resolve_rotation_deg(self.format)[0]
+        except Exception:
+            self._log.exception(
+                f"Could not resolve plate rotation for {self.format!r}; drawing the navigation view with 0.00 deg."
+            )
+            return 0.0
+
     def redraw_fov(self):
         self.clear_overlay()
         self.update_fov_size()
         self.draw_current_fov(self.x_mm, self.y_mm)
 
-    def update_wellplate_settings(
-        self,
-        sample_format,
-        a1_x_mm,
-        a1_y_mm,
-        a1_x_pixel,
-        a1_y_pixel,
-        well_size_mm,
-        well_spacing_mm,
-        number_of_skip,
-        rows,
-        cols,
-    ):
-        if isinstance(sample_format, QVariant):
-            sample_format = sample_format.value()
+    def update_wellplate_settings(self, settings: "WellplateSettings"):
+        sample_format = settings.format
+        a1_x_mm = settings.a1_x_mm
+        a1_y_mm = settings.a1_y_mm
+        a1_x_pixel = settings.a1_x_pixel
+        a1_y_pixel = settings.a1_y_pixel
+        well_size_mm = settings.well_size_mm
+        number_of_skip = settings.number_of_skip
+        rows = settings.rows
+        cols = settings.cols
 
-        if sample_format == "glass slide":
-            if IS_HCS:
-                sample = "4 glass slide"
-            else:
-                sample = "glass slide"
-        else:
-            sample = sample_format
+        sample = self._display_sample_for(sample_format)
 
         self.sample = sample
+        self.format = sample_format  # catalog identity survives the display renaming
         self.a1_x_mm = a1_x_mm
         self.a1_y_mm = a1_y_mm
         self.a1_x_pixel = a1_x_pixel
         self.a1_y_pixel = a1_y_pixel
         self.well_size_mm = well_size_mm
-        self.well_spacing_mm = well_spacing_mm
+        # settings.well_spacing_mm is deliberately not stored: NavigationViewer's
+        # mm<->pixel mapping never uses the pitch.
         self.number_of_skip = number_of_skip
         self.rows = rows
         self.cols = cols
@@ -1708,13 +1841,20 @@ class NavigationViewer(QFrame):
         # Try to find the image for the wellplate
         image_path = self.image_paths.get(sample)
         if image_path is None or not os.path.exists(image_path):
-            # Look for a custom wellplate image
+            # Custom wellplate image: raw name is the convention; the underscore
+            # variant is a legacy fallback for images generated by older builds,
+            # which wrote spaces as underscores.
             custom_image_path = os.path.join("images", self.sample + ".png")
-            self._log.info(custom_image_path)
+            legacy_image_path = os.path.join("images", self.sample.replace(" ", "_") + ".png")
             if os.path.exists(custom_image_path):
                 image_path = custom_image_path
+            elif os.path.exists(legacy_image_path):
+                image_path = legacy_image_path
             else:
-                self._log.warning(f"Image not found for {sample}. Using default image.")
+                self._log.warning(
+                    f"No plate image for {sample!r} (tried {custom_image_path!r} and {legacy_image_path!r}); "
+                    f"using the default image - the navigation view will not match this plate."
+                )
                 image_path = self.image_paths.get("glass slide")  # Use a default image
 
         self.load_background_image(image_path)
@@ -1734,7 +1874,12 @@ class NavigationViewer(QFrame):
             self.x_mm = x_mm
             self.y_mm = y_mm
 
-    def get_FOV_pixel_coordinates(self, x_mm, y_mm):
+    def get_FOV_pixel_coordinates(self, x_mm, y_mm, rotation_deg=None):
+        """Stage mm -> image pixel corners of the FOV box.
+
+        rotation_deg lets batch callers resolve the rotation once per redraw
+        instead of once per FOV (resolution reads the placement/holder files).
+        """
         if self.sample == "glass slide":
             current_FOV_top_left = (
                 round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
@@ -1753,13 +1898,29 @@ class NavigationViewer(QFrame):
                 ),
             )
         else:
+            if rotation_deg is None:
+                rotation_deg = self._current_rotation_deg()
+            if rotation_deg == 0.0:
+                # Legacy arithmetic kept verbatim (origin_pixel form) so the
+                # unrotated path is bit-for-bit what it always was.
+                center_x_pixel = self.origin_x_pixel + x_mm / self.mm_per_pixel
+                center_y_pixel = self.origin_y_pixel + y_mm / self.mm_per_pixel
+            else:
+                # Stage -> plate frame (R(-theta) about A1), then the nominal
+                # drawing's anchor. The pivot is the same composed a1 the
+                # planner rotates about, so a planned well-center FOV lands on
+                # the well's drawn (nominal) position.
+                plate_x, plate_y = rotate_deg(-rotation_deg, x_mm - self.a1_x_mm, y_mm - self.a1_y_mm)
+                center_x_pixel = self.a1_x_pixel + plate_x / self.mm_per_pixel
+                center_y_pixel = self.a1_y_pixel + plate_y / self.mm_per_pixel
+            half_fov_pixel = self.fov_size_mm / 2 / self.mm_per_pixel
             current_FOV_top_left = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel - self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) - self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel - half_fov_pixel),
+                round(center_y_pixel - half_fov_pixel),
             )
             current_FOV_bottom_right = (
-                round(self.origin_x_pixel + x_mm / self.mm_per_pixel + self.fov_size_mm / 2 / self.mm_per_pixel),
-                round((self.origin_y_pixel + y_mm / self.mm_per_pixel) + self.fov_size_mm / 2 / self.mm_per_pixel),
+                round(center_x_pixel + half_fov_pixel),
+                round(center_y_pixel + half_fov_pixel),
             )
         return current_FOV_top_left, current_FOV_bottom_right
 
@@ -1790,6 +1951,7 @@ class NavigationViewer(QFrame):
             return
 
         color = (252, 174, 30, 128)  # Yellow RGBA
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1798,7 +1960,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, color, self.box_line_thickness
             )
@@ -1815,6 +1979,7 @@ class NavigationViewer(QFrame):
         if not fov_list:
             return
 
+        rotation_deg = self._current_rotation_deg()  # once per batch, not per FOV
         for fov in fov_list:
             # Handle tuple (2D or 3D) and FovCenter object formats
             if isinstance(fov, tuple):
@@ -1823,7 +1988,9 @@ class NavigationViewer(QFrame):
             else:
                 x_mm = fov.x_mm
                 y_mm = fov.y_mm
-            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(x_mm, y_mm)
+            current_FOV_top_left, current_FOV_bottom_right = self.get_FOV_pixel_coordinates(
+                x_mm, y_mm, rotation_deg=rotation_deg
+            )
             cv2.rectangle(
                 self.scan_overlay, current_FOV_top_left, current_FOV_bottom_right, (0, 0, 0, 0), self.box_line_thickness
             )
@@ -1858,6 +2025,25 @@ class NavigationViewer(QFrame):
         self.focus_point_overlay.fill(0)
         self.focus_point_overlay_item.setImage(self.focus_point_overlay)
 
+    def pixel_to_stage_mm(self, x_pixel, y_pixel):
+        """Image pixel -> stage mm: the inverse of get_FOV_pixel_coordinates.
+
+        The clicked pixel is a NOMINAL plate position (the drawing is unrotated),
+        so under a measured rotation the plate-frame point rotates forward
+        (R(+theta) about A1) into stage coordinates - a double-click on a drawn
+        well navigates to where that well actually sits.
+        """
+        rotation_deg = self._current_rotation_deg()  # pitch-0 formats resolve to 0.0
+        if rotation_deg == 0.0:
+            # Legacy arithmetic kept verbatim for the unrotated path.
+            x_mm = (x_pixel - self.origin_x_pixel) * self.mm_per_pixel
+            y_mm = (y_pixel - self.origin_y_pixel) * self.mm_per_pixel
+            return x_mm, y_mm
+        plate_x = (x_pixel - self.a1_x_pixel) * self.mm_per_pixel
+        plate_y = (y_pixel - self.a1_y_pixel) * self.mm_per_pixel
+        dx, dy = rotate_deg(rotation_deg, plate_x, plate_y)
+        return (self.a1_x_mm + dx, self.a1_y_mm + dy)
+
     def handle_mouse_click(self, evt):
         if not evt.double():
             return
@@ -1865,9 +2051,7 @@ class NavigationViewer(QFrame):
             # Get mouse position in image coordinates (independent of zoom)
             mouse_point = self.background_item.mapFromScene(evt.scenePos())
 
-            # Subtract origin offset before converting to mm
-            x_mm = (mouse_point.x() - self.origin_x_pixel) * self.mm_per_pixel
-            y_mm = (mouse_point.y() - self.origin_y_pixel) * self.mm_per_pixel
+            x_mm, y_mm = self.pixel_to_stage_mm(mouse_point.x(), mouse_point.y())
 
             self._log.debug(f"Got double click at (x_mm, y_mm) = {x_mm, y_mm}")
             self.signal_coordinates_clicked.emit(x_mm, y_mm)

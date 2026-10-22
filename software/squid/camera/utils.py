@@ -433,7 +433,7 @@ class SimulatedCamera(AbstractCamera):
         self._propogate_frame(self._current_frame)
 
     @debug_log
-    def get_ready_for_trigger(self) -> bool:
+    def _get_ready_for_trigger_imp(self) -> bool:
         # Use total frame time (exposure + strobe) to match real camera behavior
         return time.time() - self._last_trigger_timestamp > self.get_total_frame_time() / 1000.0
 

@@ -98,6 +98,10 @@ bool closed_loop_position_control = false;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 volatile int counter_send_pos_update = 0;
 volatile bool flag_send_pos_update = false;
+
+uint8_t encoder_report_axis = 0xFF;
+uint8_t encoder_report_mode = ENCODER_REPORT_OFF;
+uint16_t completion_window_units[TOTAL_AXES] = {0};
 elapsedMicros us_since_last_pos_update = 5000;
 elapsedMicros us_since_last_check_position = 3000;
 elapsedMicros us_since_last_joystick_update = 3000;

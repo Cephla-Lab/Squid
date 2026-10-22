@@ -25,7 +25,9 @@ void test_command_ids_are_unique(void) {
         SET_PIN_LEVEL, INITFILTERWHEEL, INITFILTERWHEEL_W2, INITIALIZE, RESET,
         // Multi-port illumination commands (firmware v1.0+)
         SET_PORT_INTENSITY, TURN_ON_PORT, TURN_OFF_PORT,
-        SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS
+        SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS,
+        // Filter-wheel speed and diagnostics (firmware v1.6+)
+        SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -55,7 +57,9 @@ void test_command_ids_fit_in_byte(void) {
         SET_PIN_LEVEL, INITFILTERWHEEL, INITFILTERWHEEL_W2, INITIALIZE, RESET,
         // Multi-port illumination commands (firmware v1.0+)
         SET_PORT_INTENSITY, TURN_ON_PORT, TURN_OFF_PORT,
-        SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS
+        SET_PORT_ILLUMINATION, SET_MULTI_PORT_MASK, TURN_OFF_ALL_PORTS,
+        // Filter-wheel speed and diagnostics (firmware v1.6+)
+        SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -98,6 +102,22 @@ void test_multiport_illumination_commands(void) {
     TEST_ASSERT_NOT_EQUAL(SET_ILLUMINATION, SET_PORT_INTENSITY);
 }
 
+// Firmware 1.6 wire values. The host (control/_def.py) and the Z encoder work, which adds its
+// closed-loop commands at 45, 46, 48 and 50, both depend on these exact numbers.
+void test_firmware_1_6_wheel_commands(void) {
+    TEST_ASSERT_EQUAL(44, SET_ENCODER_REPORTING);
+    TEST_ASSERT_EQUAL(47, SET_RAMP_PROFILE);
+    TEST_ASSERT_EQUAL(49, SET_COMPLETION_WINDOW);
+    TEST_ASSERT_EQUAL(1, RAMP_PROFILE_TRAPEZOID);
+    TEST_ASSERT_EQUAL(2, RAMP_PROFILE_SSHAPE);
+    TEST_ASSERT_EQUAL(0, ENCODER_REPORT_OFF);
+    TEST_ASSERT_EQUAL(1, ENCODER_REPORT_ENC_IN_THETA);
+    TEST_ASSERT_EQUAL(2, ENCODER_REPORT_ENC_AS_POSITION);
+    TEST_ASSERT_EQUAL(0, ENC_FLAG_REPORTING);
+    TEST_ASSERT_EQUAL(1, ENC_FLAG_PID_ENABLED);
+    TEST_ASSERT_EQUAL(4, ENC_FLAG_AXIS_SHIFT);
+}
+
 void test_illumination_source_codes(void) {
     // Legacy illumination source codes (non-sequential D3/D4!)
     TEST_ASSERT_EQUAL_INT(11, ILLUMINATION_D1);
@@ -122,6 +142,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_message_lengths);
     RUN_TEST(test_axis_ids_are_sequential);
     RUN_TEST(test_multiport_illumination_commands);
+    RUN_TEST(test_firmware_1_6_wheel_commands);
     RUN_TEST(test_illumination_source_codes);
 
     return UNITY_END();

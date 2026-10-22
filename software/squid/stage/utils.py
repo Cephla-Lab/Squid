@@ -54,19 +54,33 @@ def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
     return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=None)
 
 
-def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH):
-    """Write out the current x, y, z position, in mm, so we can use it later as a cached position."""
+def z_is_referenced() -> bool:
+    """True when Z is an absolute position: the Cephla Z is homed, or a PI V-308 is the Z.
+
+    Mirrors Microscope.home_xyz, which references the V-308 at every start regardless of HOMING_ENABLED_Z
+    (a Cephla XY stage with a V-308 has no Cephla Z to home, so it runs with homing_enabled_z off).
+    Otherwise Z is the raw firmware step count: 0 at boot on an XY-only Cephla stage.
+    """
+    return _def.HOMING_ENABLED_Z or _def.USE_PI_FOCUS_STAGE
+
+
+def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH, validate_z: bool = True):
+    """Write out the current x, y, z position, in mm, so we can use it later as a cached position.
+
+    Raises ValueError, writing nothing, when a validated axis is outside its soft limits.  X and Y are always
+    validated; Z is skipped when validate_z=False (see z_is_referenced).
+    """
     if stage_config is not None:  # StageConfig not implemented for Prior stage
-        x_min = stage_config.X_AXIS.MIN_POSITION
-        x_max = stage_config.X_AXIS.MAX_POSITION
-        y_min = stage_config.Y_AXIS.MIN_POSITION
-        y_max = stage_config.Y_AXIS.MAX_POSITION
-        z_min = stage_config.Z_AXIS.MIN_POSITION
-        z_max = stage_config.Z_AXIS.MAX_POSITION
-        if not (x_min <= pos.x_mm <= x_max and y_min <= pos.y_mm <= y_max and z_min <= pos.z_mm <= z_max):
-            raise ValueError(
-                f"Position {pos} is not cacheable because it is outside of the min/max of at least one axis. x_range=({x_min}, {x_max}), y_range=({y_min}, {y_max}), z_range=({z_min}, {z_max})"
-            )
+        axes = [("x", stage_config.X_AXIS, pos.x_mm), ("y", stage_config.Y_AXIS, pos.y_mm)]
+        if validate_z:
+            axes.append(("z", stage_config.Z_AXIS, pos.z_mm))
+        out_of_range = [
+            f"{name}={value} not in ({axis.MIN_POSITION}, {axis.MAX_POSITION})"
+            for name, axis, value in axes
+            if not axis.MIN_POSITION <= value <= axis.MAX_POSITION
+        ]
+        if out_of_range:
+            raise ValueError(f"Position {pos} is not cacheable, outside of the axis min/max: {'; '.join(out_of_range)}")
     _log.debug(f"Writing position={pos} to cache path='{cache_path}'")
     # Atomic write: a crash between truncating and writing would leave a partial file that
     # get_cached_position() can only discard, losing the position it was meant to preserve.

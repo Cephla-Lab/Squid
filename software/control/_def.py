@@ -204,6 +204,10 @@ class CMD_SET:
     SET_PIN_LEVEL = 41
     HEARTBEAT = 42  # No-op keepalive for watchdog
     MOVETO_W2 = 43  # Absolute move on the W2 filter wheel
+    # Firmware >= 1.6 only; the host never sends these to older firmware (callers gate on the version).
+    SET_ENCODER_REPORTING = 44  # One axis's encoder in the status packet (see ENCODER_REPORTING)
+    SET_RAMP_PROFILE = 47  # S-shaped or trapezoidal ramp per axis (see RAMP_PROFILE)
+    SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -219,6 +223,36 @@ class CMD_SET2:
 
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
+
+
+class ENCODER_REPORTING:
+    """Modes for CMD_SET.SET_ENCODER_REPORTING (firmware >= 1.6).
+
+    OFF: shipping packet. ENC_IN_THETA: the status packet's theta field (bytes 14-17) carries the
+    selected axis's ENC_POS in microsteps, byte 19 carries ENC_FLAG bits and bytes 20-21 the clipped
+    int16 ENC_POS - XACTUAL (positive = encoder ahead of the step counter). ENC_AS_POSITION: as
+    ENC_IN_THETA, and the axis's own position field carries ENC_POS instead of XACTUAL (X/Y/Z only).
+    The filter wheels have no position field in the packet, so this is the only way to see one.
+    """
+
+    OFF = 0
+    ENC_IN_THETA = 1
+    ENC_AS_POSITION = 2
+
+
+class ENC_FLAG:
+    """Bit positions in status byte 19, valid only while encoder reporting is on."""
+
+    REPORTING = 0
+    PID_ENABLED = 1
+    AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
+
+
+class RAMP_PROFILE:
+    """Values for CMD_SET.SET_RAMP_PROFILE (firmware >= 1.6). S-shape is the firmware default."""
+
+    TRAPEZOID = 1
+    SSHAPE = 2
 
 
 class HOME_OR_ZERO:
@@ -664,13 +698,12 @@ MAX_ACCELERATION_W_mm = 300
 HAS_ENCODER_X = False
 HAS_ENCODER_Y = False
 HAS_ENCODER_Z = False
-HAS_ENCODER_W = False
+HAS_ENCODER_W = False  # the wheel's encoder is for reporting and the tuner; closed loop on the wheel is not supported
 
 # enable PID control
 ENABLE_PID_X = False
 ENABLE_PID_Y = False
 ENABLE_PID_Z = False
-ENABLE_PID_W = False
 
 # PID arguments
 PID_P_X = int(1 << 12)
@@ -684,10 +717,6 @@ PID_D_Y = int(0)
 PID_P_Z = int(1 << 12)
 PID_I_Z = int(0)
 PID_D_Z = int(1)
-
-PID_P_W = int(1 << 12)
-PID_I_W = int(1)
-PID_D_W = int(1)
 
 # flip direction True or False
 ENCODER_FLIP_DIR_X = True
@@ -957,6 +986,14 @@ USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
+# Vortran Stradus VersaLase over USB HID. VORTRAN_SHUTTER_CONTROL_MODE is "TTL" (TTL lines gate
+# the light) or "Software" (emission toggled over USB - slow, heads with the 5 s emission delay
+# take 5 s to turn on). With TTL, VORTRAN_TTL_INPUT is the VersaLase input the TTL lines are wired
+# to: "LASER_ENABLE" (DE-25 Laser Enable pins, standard; heads run CW at the laser power) or
+# "DIGITAL_MODULATION" (rear SMB inputs, optional; heads run in pulse mode at the peak power).
+USE_VORTRAN_LASER_CONTROL = False
+VORTRAN_SHUTTER_CONTROL_MODE = "TTL"
+VORTRAN_TTL_INPUT = "LASER_ENABLE"
 
 # Squid laser engine integration (Cephla Teensy-based laser controller)
 # When True, software opens a USB-serial connection to the laser engine, polls
@@ -983,6 +1020,10 @@ CELLX_SN = None
 CELLX_MODULATION = "EXT Digital"
 NL5_USE_AOUT = False
 NL5_USE_DOUT = True
+# With NL5_USE_DOUT, a hardware trigger is one blocking RCM scan that waits for the camera's ready
+# signal. A scan that has not finished after this long (plus 3 frame times) is aborted and the
+# trigger dropped, instead of holding the camera's trigger lock forever.
+NL5_TRIGGER_TIMEOUT_S = 2.0
 NL5_TRIGGER_PIN = 2
 NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 638: 4, 640: 4}
 
@@ -990,10 +1031,9 @@ NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 6
 LASER_AF_CHARACTERIZATION_MODE = False
 
 # Napari integration
-USE_NAPARI_FOR_LIVE_VIEW = False
 USE_NAPARI_FOR_MOSAIC_DISPLAY = True
-USE_NAPARI_WELL_SELECTION = False
-USE_NAPARI_FOR_LIVE_CONTROL = False
+
+# Live view only (no acquisition tabs)
 LIVE_ONLY_MODE = False
 
 # NDViewer integration
@@ -1071,6 +1111,16 @@ SQUID_FILTERWHEEL_MIN_INDEX = 1
 SQUID_FILTERWHEEL_OFFSET = 0.008
 SQUID_FILTERWHEEL_MOTORSLOTINDEX = 3
 SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION = 4000
+# Shortest path between slots may cross the index flag (8 -> 1 is one slot, not seven); firmware >= 1.6 only.
+# False forces the flag-free arc on every firmware.
+SQUID_FILTERWHEEL_WRAP = True
+# > 0: the wheel reports a slot change complete once it is within this many degrees of the slot, while the last
+# degrees are still travelled, so the exposure can start earlier (firmware >= 1.6, SET_COMPLETION_WINDOW; ignored
+# with a warning on older firmware). 0 = complete at the exact slot with the wheel stopped. Size it from the optics:
+# (filter clear aperture - image field diameter) / 2 / filter pitch radius, in degrees, minus margin. 32 mm filters
+# on a 22 mm field and a ~46 mm pitch radius allow about 6 deg (5 was used on the bench: 58 instead of 78 ms per
+# slot, wheel 2.7 deg from the slot when COMPLETED arrived); 25 mm filters allow about 1.9 deg.
+SQUID_FILTERWHEEL_COMPLETION_WINDOW_DEG = 0.0
 
 # Multi-wheel SQUID filter wheel configuration
 # Motor slot 3 = W axis (first filter wheel), motor slot 4 = W2 axis (second filter wheel)
@@ -1121,6 +1171,12 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 
+# Toupcam global reset mode: every row starts exposing at once, so hardware-triggered frames need no
+# rolling-shutter strobe delay.  Used in hardware trigger mode only, the one mode where the illumination is pulsed
+# for just the exposure (see ToupcamCamera._set_global_reset for why).  Needs a camera that supports the option
+# (eg: the ITR10CMOS26000KMA); on other cameras it is ignored.
+ENABLE_TOUPCAM_GLOBAL_RESET = False
+
 
 class HardwareTriggerMode:
     EDGE = 0  # Fixed pulse width (TRIGGER_PULSE_LENGTH_us)
@@ -1143,6 +1199,76 @@ def read_objectives_csv(file_path):
     return objectives
 
 
+# On-disk column order for sample_formats.csv. Single source of truth for both the
+# reader and the writer below, so the two cannot drift apart. This schema is
+# FROZEN at these 10 columns: per-axis geometry and well shape are derived
+# in-memory (below) and, when a format genuinely differs from the defaults,
+# persisted in the user-formats YAML - never here.
+SAMPLE_FORMAT_CSV_FIELDNAMES = (
+    "format",
+    "a1_x_mm",
+    "a1_y_mm",
+    "a1_x_pixel",
+    "a1_y_pixel",
+    "well_size_mm",
+    "well_spacing_mm",
+    "number_of_skip",
+    "rows",
+    "cols",
+)
+
+# In-memory keys derived from the 10 CSV columns; never written back to the CSV
+# (the writer skips them without warning). well_spacing_x_mm multiplies the
+# COLUMN index and well_spacing_y_mm the ROW index; ANSI/SLAS pitch is identical
+# in both axes for every shipped format, so the scalar broadcasts.
+DERIVED_SAMPLE_FORMAT_KEYS = (
+    "well_spacing_x_mm",
+    "well_spacing_y_mm",
+    "well_size_x_mm",
+    "well_size_y_mm",
+    "well_shape",
+)
+
+# Well shape was previously inferred from the format NAME at scattered call
+# sites (384/1536 -> Square, everything else -> Circle) - which silently
+# misclassified any custom rectangular format as a circle. This is the one
+# code-side default; formats defined in the user YAML can override it.
+_RECTANGULAR_SHIPPED_FORMATS = ("384 well plate", "1536 well plate")
+
+
+def _with_derived_geometry(format_key, settings):
+    """Fill the derived per-axis/shape keys, idempotently.
+
+    Applied on CSV load AND in get_wellplate_settings, so runtime-added custom
+    formats and format "0" (plain dicts) get defaults too.
+    """
+    settings.setdefault("well_spacing_x_mm", settings["well_spacing_mm"])
+    settings.setdefault("well_spacing_y_mm", settings["well_spacing_mm"])
+    settings.setdefault("well_size_x_mm", settings["well_size_mm"])
+    settings.setdefault("well_size_y_mm", settings["well_size_mm"])
+    settings.setdefault("well_shape", "rectangle" if format_key in _RECTANGULAR_SHIPPED_FORMATS else "circle")
+    return settings
+
+
+def _overlay_legacy_cache(cached, shipped, cached_formats_path):
+    """The legacy cache was a whole-table shadow of the shipped catalog, but a
+    row can be missing: a write interrupted after some complete rows parses as
+    a shorter, plausible table, and every cache was written by an OLDER build -
+    the catalog has grown since (the glass slide row, 2024), so a cache can
+    legitimately predate a shipped format. Either way a missing row is the
+    shipped example, exactly what a never-calibrated format is; the rows that
+    survived keep their calibrations instead of all being thrown away."""
+    missing = [key for key in shipped if key not in cached]
+    if not cached:
+        log.error(f"{cached_formats_path} parsed to zero formats (truncated); the shipped geometry is used.")
+    elif missing:
+        log.warning(
+            f"{cached_formats_path} lacks {missing} - truncated, or written before these formats shipped; "
+            f"the shipped geometry is used for them."
+        )
+    return {**shipped, **cached}
+
+
 def read_sample_formats_csv(file_path):
     sample_formats = {}
     with open(file_path, "r") as csvfile:
@@ -1150,18 +1276,136 @@ def read_sample_formats_csv(file_path):
         for row in reader:
             format_ = str(row["format"])
             format_key = f"{format_} well plate" if format_.isdigit() else format_
-            sample_formats[format_key] = {
-                "a1_x_mm": float(row["a1_x_mm"]),
-                "a1_y_mm": float(row["a1_y_mm"]),
-                "a1_x_pixel": int(row["a1_x_pixel"]),
-                "a1_y_pixel": int(row["a1_y_pixel"]),
-                "well_size_mm": float(row["well_size_mm"]),
-                "well_spacing_mm": float(row["well_spacing_mm"]),
-                "number_of_skip": int(row["number_of_skip"]),
-                "rows": int(row["rows"]),
-                "cols": int(row["cols"]),
-            }
+            sample_formats[format_key] = _with_derived_geometry(
+                format_key,
+                {
+                    "a1_x_mm": float(row["a1_x_mm"]),
+                    "a1_y_mm": float(row["a1_y_mm"]),
+                    "a1_x_pixel": int(row["a1_x_pixel"]),
+                    "a1_y_pixel": int(row["a1_y_pixel"]),
+                    "well_size_mm": float(row["well_size_mm"]),
+                    "well_spacing_mm": float(row["well_spacing_mm"]),
+                    "number_of_skip": int(row["number_of_skip"]),
+                    "rows": int(row["rows"]),
+                    "cols": int(row["cols"]),
+                },
+            )
     return sample_formats
+
+
+def write_sample_formats_csv(file_path, sample_formats):
+    """Write sample formats to file_path atomically.
+
+    The caller's previous file survives any failure intact: we write a sibling
+    temp file, fsync it, then os.replace() onto the target. That matters because
+    load_formats() parses this file at import time, so a half-written file would
+    prevent the application from starting.
+    """
+    directory = os.path.dirname(file_path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    # Same directory as the target so os.replace() stays within one filesystem.
+    tmp_path = file_path + ".tmp"
+    try:
+        with open(tmp_path, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=SAMPLE_FORMAT_CSV_FIELDNAMES)
+            writer.writeheader()
+            for format_, settings in sample_formats.items():
+                # Project explicitly onto the known columns. A missing column raises
+                # (a blank cell is what breaks load_formats() at import time); an
+                # extra key is dropped, but never silently - if you add a setting you
+                # must add it to SAMPLE_FORMAT_CSV_FIELDNAMES or it will not persist.
+                dropped = set(settings) - set(SAMPLE_FORMAT_CSV_FIELDNAMES) - set(DERIVED_SAMPLE_FORMAT_KEYS)
+                if dropped:
+                    log.warning(
+                        f"Sample format {format_!r} has setting(s) {sorted(dropped)} with no column in "
+                        f"SAMPLE_FORMAT_CSV_FIELDNAMES; they will NOT be saved to {file_path}."
+                    )
+                row = {"format": format_}
+                for field in SAMPLE_FORMAT_CSV_FIELDNAMES[1:]:
+                    row[field] = settings[field]
+                writer.writerow(row)
+            csvfile.flush()
+            os.fsync(csvfile.fileno())
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _migrate_legacy_format_cache(cached, shipped, cached_formats_path):
+    """Convert a legacy cache/sample_formats.csv (already parsed and overlaid on
+    the shipped table) into user format definitions.
+
+    The legacy cache was a WHOLE-TABLE shadow: one calibration froze all seven
+    formats forever. Each row that differs from the shipped example becomes a
+    COMPLETE definition in sample_formats_user.yaml (a1 included, absolutely);
+    rows the shipped catalog does not know become definitions too. Rows
+    identical to the shipped example are dropped - they carry no user intent
+    and keeping them would needlessly stop tracking future shipped examples.
+
+    The cache is then renamed .migrated. Existing entries in the user file are
+    never clobbered (they are newer than the cache).
+    """
+    import datetime
+
+    from control.models.sample_format_config import (
+        FormatMeasurement,
+        load_user_sample_formats_for_edit,
+        MeasuredPoint,
+        SampleFormat,
+        save_user_sample_formats,
+    )
+
+    mtime = datetime.datetime.fromtimestamp(os.path.getmtime(cached_formats_path)).isoformat(timespec="seconds")
+
+    user_formats = load_user_sample_formats_for_edit()  # raises on a damaged file: the cache keeps working
+    migrated = []
+
+    for format_key, cached_settings in cached.items():
+        if format_key in user_formats.formats:
+            continue  # the user file is newer than the cache
+        shipped_settings = shipped.get(format_key)
+        if shipped_settings is not None and all(
+            cached_settings[field] == shipped_settings[field]
+            for field in SAMPLE_FORMAT_CSV_FIELDNAMES
+            if field != "format"
+        ):
+            continue  # untouched example: nothing of the user's to carry over
+
+        a1_measured = shipped_settings is None or (
+            cached_settings["a1_x_mm"] != shipped_settings["a1_x_mm"]
+            or cached_settings["a1_y_mm"] != shipped_settings["a1_y_mm"]
+        )
+        # from_settings is the ONE dict -> model converter: cached_settings has
+        # already been through _with_derived_geometry, so per-axis pitch and
+        # well_shape come across too. Hand-listing the CSV's 10 columns here
+        # silently dropped well_shape, migrating 384/1536 to "circle".
+        user_formats.formats[format_key] = SampleFormat.from_settings(
+            cached_settings,
+            measured=(
+                FormatMeasurement(
+                    points=[MeasuredPoint(well="A1", x_mm=cached_settings["a1_x_mm"], y_mm=cached_settings["a1_y_mm"])],
+                    method="migrated",
+                    timestamp=mtime,
+                    note=f"migrated_from_cache_csv (cache mtime {mtime})",
+                )
+                if a1_measured
+                else None
+            ),
+        )
+        migrated.append(format_key)
+
+    save_user_sample_formats(user_formats)
+    os.replace(cached_formats_path, cached_formats_path + ".migrated")
+    log.info(
+        f"Legacy format cache migrated ({len(migrated)} format(s): {sorted(migrated)}) and renamed to "
+        f"{cached_formats_path}.migrated; definitions now load from sample_formats_user.yaml."
+    )
 
 
 def load_formats():
@@ -1176,12 +1420,48 @@ def load_formats():
     cached_formats_path = os.path.join(cache_path, "sample_formats.csv")
     default_formats_path = os.path.join(default_path, "sample_formats.csv")
 
+    shipped = read_sample_formats_csv(default_formats_path)  # the base on every path
+    sample_formats = None
     if os.path.exists(cached_formats_path):
-        print("Using cached sample formats")
-        sample_formats = read_sample_formats_csv(cached_formats_path)
-    else:
-        print("Using default sample formats")
-        sample_formats = read_sample_formats_csv(default_formats_path)
+        # Never propagate: this runs at import time, so raising here means the
+        # application cannot start at all.
+        try:
+            cached = _overlay_legacy_cache(read_sample_formats_csv(cached_formats_path), shipped, cached_formats_path)
+        except Exception:
+            log.exception(
+                f"Cached sample formats at {cached_formats_path} are unreadable. Falling back to the shipped "
+                f"geometry in {default_formats_path} - ANY PLATE CALIBRATION STORED IN THE CACHE IS NOT BEING "
+                f"APPLIED, so stage positions will differ from your last session. Move the file aside and "
+                f"recalibrate to clear this."
+            )
+        else:
+            # One-time, idempotent migration of the legacy whole-table cache into
+            # complete per-format definitions in the user YAML. Renames the cache
+            # to .migrated on success so it never runs twice; on any failure the
+            # cache is left in place and keeps working as before.
+            try:
+                _migrate_legacy_format_cache(cached, shipped, cached_formats_path)
+            except Exception:
+                log.exception(
+                    f"Migration of {cached_formats_path} failed; keeping the legacy cache as-is. "
+                    f"Calibrations continue to load from it."
+                )
+                sample_formats = cached
+                log.info(f"Using cached sample formats from {cached_formats_path}")
+
+    if sample_formats is None:
+        sample_formats = shipped
+
+    # Layer the user's format edits and custom formats on top of the base
+    # (shipped catalog, or the legacy whole-table cache until it is migrated).
+    # Imported here because control.models imports pydantic; keep _def importable
+    # even if that stack is broken - the identity default is "no user file".
+    try:
+        from control.models.sample_format_config import apply_user_sample_formats, load_user_sample_formats
+
+        apply_user_sample_formats(sample_formats, load_user_sample_formats())
+    except Exception:
+        log.exception("Failed to load sample_formats_user.yaml; continuing without user format edits.")
 
     return objectives, sample_formats
 
@@ -1194,20 +1474,23 @@ OBJECTIVES, WELLPLATE_FORMAT_SETTINGS = load_formats()
 
 def get_wellplate_settings(wellplate_format):
     if wellplate_format in WELLPLATE_FORMAT_SETTINGS:
-        settings = WELLPLATE_FORMAT_SETTINGS[wellplate_format]
+        settings = _with_derived_geometry(wellplate_format, WELLPLATE_FORMAT_SETTINGS[wellplate_format])
     elif wellplate_format == "0":
-        settings = {
-            "format": "0",
-            "a1_x_mm": 0,
-            "a1_y_mm": 0,
-            "a1_x_pixel": 0,
-            "a1_y_pixel": 0,
-            "well_size_mm": 0,
-            "well_spacing_mm": 0,
-            "number_of_skip": 0,
-            "rows": 1,
-            "cols": 1,
-        }
+        settings = _with_derived_geometry(
+            "0",
+            {
+                "format": "0",
+                "a1_x_mm": 0,
+                "a1_y_mm": 0,
+                "a1_x_pixel": 0,
+                "a1_y_pixel": 0,
+                "well_size_mm": 0,
+                "well_spacing_mm": 0,
+                "number_of_skip": 0,
+                "rows": 1,
+                "cols": 1,
+            },
+        )
     else:
         raise ValueError(
             f"Invalid wellplate format: {wellplate_format}. Expected formats are: {list(WELLPLATE_FORMAT_SETTINGS.keys())} or '0'"
@@ -1300,6 +1583,26 @@ FLUIDICS_CONFIG_PATH = "machine_configs/fluidics_config.yaml"  # the library's F
 USE_TEMPLATE_MULTIPOINT = False
 
 FILE_SAVING_OPTION = FileSavingOption.INDIVIDUAL_IMAGES
+
+# TIFF saving configuration: 0 writes uncompressed TIFFs, 1-9 pick the zlib compression level
+# (higher = smaller files, slower writes).  Applies to INDIVIDUAL_IMAGES and MULTI_PAGE_TIFF;
+# OME-TIFF stacks are written through a memory map, which requires an uncompressed file.
+TIFF_COMPRESSION_LEVEL = 0
+
+
+def tiff_compression_level_from_config(value) -> int:
+    """The TIFF compression level for a value from the machine config.
+
+    A bad value must neither keep the software from starting nor fail every image write: out of
+    range is limited to 0-9, and anything that isn't a number means uncompressed.
+    """
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        log.warning(f"tiff_compression_level = {value!r} is not a number, TIFFs will be saved uncompressed")
+        return 0
+    return min(max(level, 0), 9)
+
 
 # Zarr v3 saving configuration
 ZARR_CHUNK_MODE = ZarrChunkMode.FULL_FRAME
@@ -1457,6 +1760,8 @@ ZARR_CHUNK_MODE = ZarrChunkMode.convert_to_enum(ZARR_CHUNK_MODE)
 ZARR_COMPRESSION = ZarrCompression.convert_to_enum(ZARR_COMPRESSION)
 FOCUS_MEASURE_OPERATOR = FocusMeasureOperator.convert_to_enum(FOCUS_MEASURE_OPERATOR)
 DEFAULT_TRIGGER_MODE = TriggerMode.convert_to_var(DEFAULT_TRIGGER_MODE)
+
+TIFF_COMPRESSION_LEVEL = tiff_compression_level_from_config(TIFF_COMPRESSION_LEVEL)
 
 # saving path
 if not (DEFAULT_SAVING_PATH.startswith(str(Path.home()))):

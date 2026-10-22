@@ -36,6 +36,7 @@ PARAM_RANGE_LIMIT_MAX = 0x07000001
 _Z_RESOLUTION_MM = 1e-5  # 10 nm
 
 _NOT_REFERENCED_MSG = "C-414 axis is not referenced; call reference()/home() before moving."
+_SERVO_OFF_MSG = "C-414 servo is off; re-engage it with set_servo(True) before moving."
 
 
 def _import_pipython():
@@ -72,6 +73,7 @@ class _SimulatedC414:
         self._vel_mm_s = None
         self._closed = False
         self._ref_count = 0
+        self._servo_on = True
 
     def connect_serial(self, *args, **kwargs):
         pass
@@ -100,6 +102,12 @@ class _SimulatedC414:
     def set_velocity(self, vel_mm_s: float):
         self._vel_mm_s = float(vel_mm_s)
 
+    def set_servo(self, enabled: bool):
+        self._servo_on = bool(enabled)
+
+    def is_servo_on(self) -> bool:
+        return self._servo_on
+
     def get_position_mm(self) -> float:
         return self._pos_mm
 
@@ -112,6 +120,8 @@ class _SimulatedC414:
     def move_to(self, z_mm: float, wait: bool = True, **kwargs) -> float:
         if not self._referenced:
             raise RuntimeError(_NOT_REFERENCED_MSG)
+        if not self._servo_on:  # the C-414 rejects MOV with the servo off
+            raise RuntimeError(_SERVO_OFF_MSG)
         self._pos_mm = min(max(float(z_mm), self._lo_mm), self._hi_mm)
         return self._pos_mm
 
@@ -193,6 +203,19 @@ class PIFocusStage(AbstractStage):
     def is_referenced(self) -> bool:
         with self._lock:
             return self._c414.is_referenced()
+
+    def set_servo(self, enabled: bool):
+        """Engage / disengage the closed-loop servo, e.g. to release Z while an objective is swapped.
+
+        Servo off leaves the voice coil unpowered and unlocked: a vertically mounted V-308 can drift
+        under its own weight. Re-engaging holds Z wherever it now sits (it does not restore the old Z).
+        """
+        with self._lock:
+            self._c414.set_servo(enabled)
+
+    def is_servo_on(self) -> bool:
+        with self._lock:
+            return self._c414.is_servo_on()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         # Home = reference if needed (FRF skipped when already referenced, so no redundant
@@ -285,6 +308,9 @@ class CombinedStage(AbstractStage):
         self._xy = xy_stage
         self._z = z_stage
         self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
+
+        # The GUI reaches the V-308 directly for servo control during a manual objective swap.
+        self.z_stage = z_stage
 
         # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
         # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own
@@ -471,7 +497,10 @@ class C414FocusStage:
         """Enable closed loop and (optionally) reference the axis (referencing MOVES it)."""
         self.gcs.RON(self.axis, [True])
         self.gcs.SVO(self.axis, [True])
-        if reference and not self.is_referenced():
+        # Always query (it seeds the cached state move_to/move_relative check): with reference=False,
+        # e.g. a --skip-init restart, an already-referenced axis must still be movable.
+        referenced = self.is_referenced()
+        if reference and not referenced:
             self.reference(timeout=ref_timeout)
 
     def is_referenced(self) -> bool:
@@ -536,6 +565,13 @@ class C414FocusStage:
 
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
+
+    def set_servo(self, enabled: bool) -> None:
+        """Switch closed-loop servo (SVO). Off releases the voice coil, which is not self-locking."""
+        self.gcs.SVO(self.axis, [bool(enabled)])
+
+    def is_servo_on(self) -> bool:
+        return bool(self.gcs.qSVO(self.axis)[self.axis])
 
     def get_velocity(self) -> float:
         return self.gcs.qVEL(self.axis)[self.axis]

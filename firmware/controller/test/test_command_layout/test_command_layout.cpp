@@ -470,13 +470,15 @@ void test_commands_guards_the_pid_actuator_path(void)
     TEST_ASSERT_NOT_NULL_MESSAGE(src, "could not open src/commands/commands.cpp from any "
                                       "candidate working directory");
 
-    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(src, "axis_driver_ready("),
-        "commands.cpp must hold exactly one axis_driver_ready call site: "
-        "callback_enable_stage_pid. Losing it lets ENABLE_STAGE_PID drive a "
-        "DRIVER_UNKNOWN axis continuously at unknown current");
-
     assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
                                  "axis_driver_ready(", "tmc4361A_set_PID(");
+    // Closed loop on the filter wheels is refused before the loop is engaged.
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_enable_stage_pid()",
+                                 "axis == w || axis == w2", "tmc4361A_set_PID(");
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_set_ramp_profile()",
+                                 "axis_driver_ready(", "tmc4361A_sRampInit(");
+    assert_guard_precedes_motion(src, "commands.cpp", "void callback_set_encoder_reporting()",
+                                 "axis_driver_ready(", "encoder_report_axis = on");
 }
 
 int main(int argc, char **argv) {
