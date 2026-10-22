@@ -4,12 +4,14 @@ A non-modal window: the lift's position and its two limit sensors, jog up / down
 home, the loading position, and the named preset heights (editable here, saved to Z_LIFT_PRESETS_PATH). The preset
 marked "After homing" is where the lift rises to after the startup homing; with none marked it stays lowered.
 
-Every move runs in a worker thread, one at a time; the controls that move the lift are disabled until it finishes.
+Every move runs in a worker thread, one at a time. A LiftMotionGuard, shared with every loading-position button, keeps
+lift moves and the loading / scanning toggle (which lowers and raises the lift around its XY travel) from overlapping:
+while either runs, every control that would start the other is disabled and refused.
 """
 
 from typing import Optional
 
-from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtCore import QObject, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -39,44 +41,76 @@ _TRIGGERED_STYLE = "background-color: #FFB0B0; border: 1px solid #A00; padding: 
 _CLEAR_STYLE = "background-color: #C2FFC2; border: 1px solid #080; padding: 2px 6px;"
 
 
+class LiftMotionGuard(QObject):
+    """One lift motion at a time: a move from the Z Lift window, or the loading / scanning toggle.
+
+    The toggle runs in StageUtils' worker thread and lowers the lift, moves XY, and (back to scanning) raises it
+    again; LiftStage's lock only covers each single lift move, so a window move in between would raise the sample
+    while XY travels. The toggle is tracked from StageUtils' own signals, so it counts wherever it was started.
+    """
+
+    signal_busy_changed = Signal(bool)
+
+    def __init__(self, stage_utils=None, parent=None):
+        super().__init__(parent)
+        self._lift_move = False
+        self._loading = False
+        if stage_utils is not None:
+            # signal_threaded_stage_move_started is emitted on the GUI thread before the toggle's thread starts,
+            # so the guard is busy before any of its motion; the "reached" signals arrive from that thread.
+            stage_utils.signal_threaded_stage_move_started.connect(self._on_loading_started)
+            stage_utils.signal_loading_position_reached.connect(self._on_loading_finished)
+            stage_utils.signal_scanning_position_reached.connect(self._on_loading_finished)
+
+    @property
+    def busy(self) -> bool:
+        return self._lift_move or self._loading
+
+    def begin_lift_move(self) -> bool:
+        """Claim the lift for a move; False (and nothing claimed) while anything else is moving it."""
+        if self.busy:
+            return False
+        self._lift_move = True
+        self.signal_busy_changed.emit(True)
+        return True
+
+    def end_lift_move(self):
+        self._lift_move = False
+        self.signal_busy_changed.emit(self.busy)
+
+    def _on_loading_started(self):
+        self._loading = True
+        self.signal_busy_changed.emit(True)
+
+    def _on_loading_finished(self):
+        self._loading = False
+        self.signal_busy_changed.emit(self.busy)
+
+
 class LoadingPositionButton(QPushButton):
     """Toggles between the loading and scanning positions through StageUtils, which owns that state and the GUI's
-    reactions to it; with a Z lift the move lowers it first and raises it back last (squid.stage.utils)."""
+    reactions to it; with a Z lift the move lowers it first and raises it back last (squid.stage.utils).
+    Disabled, and refusing, while the shared LiftMotionGuard is busy."""
 
-    def __init__(self, stage_utils, parent=None):
+    def __init__(self, stage_utils, motion_guard: LiftMotionGuard, parent=None):
         super().__init__(parent)
         self.stage_utils = stage_utils
-        self._in_progress = False
-        self._blocked = False
+        self.motion_guard = motion_guard
         self.clicked.connect(self._toggle)
-        # Every button on the same StageUtils sees a toggle start, wherever it was clicked.
-        stage_utils.signal_threaded_stage_move_started.connect(self._on_started)
-        stage_utils.signal_loading_position_reached.connect(self._on_finished)
-        stage_utils.signal_scanning_position_reached.connect(self._on_finished)
+        motion_guard.signal_busy_changed.connect(self.refresh)
+        stage_utils.signal_loading_position_reached.connect(self.refresh)
+        stage_utils.signal_scanning_position_reached.connect(self.refresh)
         self.refresh()
 
-    def refresh(self):
+    def refresh(self, *_):
         at_loading = self.stage_utils.slide_position == "loading"
         self.setText("Move To Scanning Position" if at_loading else "Move To Loading Position")
         self.setStyleSheet("background-color: #C2FFC2" if at_loading else "background-color: #C2C2FF")
-        self.setEnabled(not self._in_progress and not self._blocked)
-
-    def set_blocked(self, blocked: bool):
-        """Disable while something else moves the lift (the owner's own moves)."""
-        self._blocked = blocked
-        self.refresh()
+        self.setEnabled(not self.motion_guard.busy)
 
     def _toggle(self):
-        if not self._in_progress:
+        if not self.motion_guard.busy:
             self.stage_utils.switch_position()
-
-    def _on_started(self):
-        self._in_progress = True
-        self.refresh()
-
-    def _on_finished(self):
-        self._in_progress = False
-        self.refresh()
 
 
 class ZLiftWidget(QDialog):
@@ -89,7 +123,9 @@ class ZLiftWidget(QDialog):
         self.presets = presets
         # StageUtils owns the loading / scanning toggle (and the GUI's reactions to it); None hides the button.
         self.stage_utils = stage_utils
-        self._moving = False
+        # Shared with every loading button (ZLiftControls takes it from here).
+        self.motion_guard = LiftMotionGuard(stage_utils, parent=self)
+        self.motion_guard.signal_busy_changed.connect(self._on_busy_changed)
 
         self.setWindowTitle("Z Lift")
         self.setModal(False)
@@ -182,7 +218,7 @@ class ZLiftWidget(QDialog):
 
         self.btn_loading = None
         if self.stage_utils is not None:
-            self.btn_loading = LoadingPositionButton(self.stage_utils)
+            self.btn_loading = LoadingPositionButton(self.stage_utils, self.motion_guard)
             layout.addWidget(self.btn_loading)
 
         self._move_controls = [
@@ -202,29 +238,25 @@ class ZLiftWidget(QDialog):
         except Exception as e:  # never let a readout error kill the timer
             self.label_position.setText(f"Unavailable ({e})")
             return
-        self.label_position.setText(f"{position:.3f} mm" + ("   (moving)" if self._moving else ""))
+        self.label_position.setText(f"{position:.3f} mm" + ("   (moving)" if self.motion_guard.busy else ""))
         for label, name, triggered in ((self.label_bottom, "Bottom", bottom), (self.label_top, "Top", top)):
             label.setText(f"{name} sensor: {'TRIGGERED' if triggered else 'clear'}")
             label.setStyleSheet(_TRIGGERED_STYLE if triggered else _CLEAR_STYLE)
 
     # --- moves ------------------------------------------------------------------------------------------------
-    def _set_moving(self, moving: bool):
-        self._moving = moving
+    def _on_busy_changed(self, busy: bool):
         for b in self._move_controls:
-            b.setEnabled(not moving)
-        if self.btn_loading is not None:
-            self.btn_loading.set_blocked(moving)
+            b.setEnabled(not busy)
 
     def _run_move(self, operation, **kwargs):
-        if self._moving:
+        if not self.motion_guard.begin_lift_move():
             return
-        self._set_moving(True)
         utils.threaded_operation_helper(
             operation, lambda ok, msg: self._signal_move_finished.emit(ok, msg or ""), **kwargs
         )
 
     def _on_move_finished(self, success: bool, error_msg: str):
-        self._set_moving(False)
+        self.motion_guard.end_lift_move()
         self._refresh_readout()
         if not success:
             QMessageBox.warning(self, "Z Lift", f"The lift move failed:\n{error_msg}")
@@ -362,11 +394,12 @@ class ZLiftWidget(QDialog):
 
 
 class ZLiftControls(QWidget):
-    """The control panel's row for a lift system: the loading position toggle, and the button opening the window."""
+    """The control panel's row for a lift system: the loading position toggle (sharing the window's motion guard),
+    and the button opening the window."""
 
     def __init__(self, lift_window: ZLiftWidget, stage_utils, parent=None):
         super().__init__(parent)
-        self.btn_loading = LoadingPositionButton(stage_utils)
+        self.btn_loading = LoadingPositionButton(stage_utils, lift_window.motion_guard)
         self.btn_lift = QPushButton("Z Lift...")
         self.btn_lift.clicked.connect(lambda: (lift_window.show(), lift_window.raise_(), lift_window.activateWindow()))
         layout = QHBoxLayout(self)

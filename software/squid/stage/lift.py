@@ -219,6 +219,7 @@ class FocusWheelRouter:
         self._thread: Optional[threading.Thread] = None
         self._last_count: Optional[int] = None
         self._target_mm: Optional[float] = None
+        self._range_mm: Optional[Tuple[float, float]] = None
         self._last_tick_time = 0.0
 
     def set_enabled_check(self, enabled: Callable[[], bool]):
@@ -268,8 +269,15 @@ class FocusWheelRouter:
         now = time.monotonic()
         if self._target_mm is None or now - self._last_tick_time > self._RESYNC_AFTER_S:
             self._target_mm = self._focus.get_pos().z_mm
+            # Read with the position: the range can be fenced at runtime (set_limits).
+            z_range = getattr(self._focus, "z_range_mm", None)
+            self._range_mm = z_range() if z_range is not None else None
         self._last_tick_time = now
         self._target_mm += ticks * self._mm_per_tick
+        if self._range_mm is not None:
+            # Keep the target reachable: the stage clamps the move anyway, and an unclamped target would make
+            # the wheel turned back do nothing until the extra ticks were unwound.
+            self._target_mm = min(max(self._target_mm, self._range_mm[0]), self._range_mm[1])
         self._focus.move_z_to(self._target_mm, blocking=False)
 
 

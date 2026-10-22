@@ -268,6 +268,12 @@ class PIFocusStage(AbstractStage):
         with self._lock:
             return self._c414.is_referenced()
 
+    def z_range_mm(self) -> Tuple[float, float]:
+        """The reachable Z range (min, max) in Squid mm: the controller's current, possibly fenced, range limit."""
+        with self._lock:
+            ends = [self._to_squid(native) for native in self._c414.hardware_limits_mm()]
+        return min(ends), max(ends)
+
     def set_servo(self, enabled: bool):
         """Engage / disengage the closed-loop servo, e.g. to release Z while an objective is swapped.
 

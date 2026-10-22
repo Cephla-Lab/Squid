@@ -179,6 +179,32 @@ def test_router_accumulates_ticks_onto_the_last_target():
     assert focus.targets == [1.003, 1.005]
 
 
+def test_router_target_stays_within_the_reachable_range():
+    mcu = MagicMock()
+    mcu.focus_wheel_count = 0
+    focus = _FakeFocus(z_mm=1.0)
+    focus.z_range_mm = lambda: (0.0, 1.002)
+    router = FocusWheelRouter(mcu, focus, mm_per_tick=0.001)
+    router.poll()
+    mcu.focus_wheel_count = 10  # 8 ticks past the end
+    router.poll()
+    mcu.focus_wheel_count = 9  # turned back at once: moves off the end, not 8 ticks later
+    router.poll()
+    assert focus.targets == [1.002, 1.001]
+
+
+def test_pi_focus_stage_reports_its_range_in_squid_coordinates():
+    import squid.stage.pi
+
+    sim = squid.stage.pi._SimulatedC414()
+    sim.initialize(reference=True)
+    sim.reset_range_limit(7.0)
+    stage = squid.stage.pi.PIFocusStage(sim, invert_z=True)  # squid = 7 - native
+    assert stage.z_range_mm() == pytest.approx((0.0, 7.0))
+    stage.set_limits(z_pos_mm=6.5, z_neg_mm=1.0)  # fenced at runtime, as at startup
+    assert stage.z_range_mm() == pytest.approx((1.0, 6.5))
+
+
 def test_router_handles_the_int32_wrap():
     router, mcu, focus = _router(count=2**31 - 2)
     mcu.focus_wheel_count = -(2**31) + 1  # +3 ticks across the wrap

@@ -3902,6 +3902,7 @@ class ObjectivesWidget(QWidget):
         self.z_lift = z_lift
         self._swap_lowers_lift = False
         self._swap_lift_lowered = False
+        self._changer_swap_guarded = False
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
         # connected yet and the hardware already sits there.
@@ -3948,6 +3949,11 @@ class ObjectivesWidget(QWidget):
         # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
         # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
         self.dropdown.setEnabled(False)
+        # With a Z lift, hold the GUI's swap guard (the same one a manual swap holds) until the switch has ended,
+        # so nothing raises the lift or drives the stage while the changer moves.
+        self._changer_swap_guarded = self.z_lift is not None
+        if self._changer_swap_guarded:
+            self.signal_swap_active.emit(True)
         utils.threaded_operation_helper(
             self._lower_lift_then,
             self._queued_slot("_on_objective_move_finished"),
@@ -3989,6 +3995,9 @@ class ObjectivesWidget(QWidget):
             )
         # Re-enable only after the modal warning, which spins a nested event loop.
         self.dropdown.setEnabled(True)
+        if self._changer_swap_guarded:
+            self._changer_swap_guarded = False
+            self.signal_swap_active.emit(False)
 
     def _swap_objective_with_servo_off(self, objective_name):
         """Manual swap: retract Z, disengage the focus servo, wait for the user to confirm the new

@@ -6,7 +6,7 @@ from unittest.mock import patch
 from qtpy.QtCore import QObject, Qt, Signal
 from qtpy.QtWidgets import QInputDialog, QMessageBox
 
-from control.widgets_z_lift import LoadingPositionButton, ZLiftWidget
+from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton, ZLiftControls, ZLiftWidget
 from squid.stage.lift import LiftPreset, LiftPresets
 
 
@@ -132,14 +132,55 @@ class _FakeStageUtils(QObject):
 
 def test_loading_buttons_share_one_toggle(qtbot):
     utils = _FakeStageUtils()
-    a, b = LoadingPositionButton(utils), LoadingPositionButton(utils)
+    guard = LiftMotionGuard(utils)
+    a, b = LoadingPositionButton(utils, guard), LoadingPositionButton(utils, guard)
     qtbot.addWidget(a)
     qtbot.addWidget(b)
     a.click()
     assert utils.switches == 1
     assert not a.isEnabled() and not b.isEnabled()  # the other button saw it start
-    b.click()
+    b._toggle()  # refused even if a click got through
     assert utils.switches == 1
     utils.slide_position = "loading"
     utils.signal_loading_position_reached.emit()
     assert a.isEnabled() and b.text() == "Move To Scanning Position"
+
+
+def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
+    utils = _FakeStageUtils()
+    lift = _FakeLift()
+    widget = ZLiftWidget(lift, LiftPresets(str(tmp_path / "p.json")), stage_utils=utils)
+    controls = ZLiftControls(widget, utils)
+    qtbot.addWidget(widget)
+    qtbot.addWidget(controls)
+
+    controls.btn_loading.click()  # the Stages-tab button, not the window's
+    assert utils.switches == 1
+    assert not widget.btn_up.isEnabled() and not widget.btn_preset_go.isEnabled()
+    assert not widget.btn_loading.isEnabled()
+    widget._jog(+1)  # refused even if a click got through
+    assert lift.calls == []
+
+    utils.signal_loading_position_reached.emit()
+    assert widget.btn_up.isEnabled() and controls.btn_loading.isEnabled()
+
+
+def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
+    utils = _FakeStageUtils()
+    lift = _FakeLift()
+    release = threading.Event()
+    real_move = lift.move_relative
+    lift.move_relative = lambda delta_mm, blocking=True: (release.wait(5), real_move(delta_mm))
+    lift.move_relative.__name__ = "move_relative"
+    widget = ZLiftWidget(lift, LiftPresets(str(tmp_path / "p.json")), stage_utils=utils)
+    controls = ZLiftControls(widget, utils)
+    qtbot.addWidget(widget)
+    qtbot.addWidget(controls)
+
+    widget.btn_up.click()
+    assert not controls.btn_loading.isEnabled() and not widget.btn_loading.isEnabled()
+    controls.btn_loading._toggle()
+    assert utils.switches == 0
+    with qtbot.waitSignal(widget._signal_move_finished, timeout=3000):
+        release.set()
+    qtbot.waitUntil(lambda: controls.btn_loading.isEnabled(), timeout=3000)

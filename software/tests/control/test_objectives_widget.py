@@ -339,3 +339,34 @@ def test_changer_switch_to_higher_mag_lowers_the_lift_first(qtbot):
     assert events == ["lift_lower"]
     assert changer.calls == ["60x"]
     information.assert_called_once()
+
+
+def test_changer_switch_with_a_lift_holds_swap_active_until_it_ends(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    changer = _BlockingChanger(fail_with=RuntimeError("stalled"))
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+
+    with patch.object(QMessageBox, "warning"), patch.object(QMessageBox, "information"):
+        widget.dropdown.setCurrentText("60x")
+        assert active == [True]  # held while the lift is lowered and the changer moves
+        changer.release.set()
+        qtbot.waitUntil(lambda: widget.dropdown.isEnabled(), timeout=3000)
+
+    assert active == [True, False]  # released after the failure too
+
+
+def test_changer_switch_without_a_lift_does_not_hold_swap_active(qtbot):
+    store = ts.get_test_objective_store()
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer)
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+    with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+        widget.dropdown.setCurrentText("60x")
+    assert active == []
