@@ -55,10 +55,10 @@ def _watchdog_state_to_tmp(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def catalog_tree(tmp_path, monkeypatch):
+def format_catalog(tmp_path, monkeypatch):
     """Isolated cwd holding the shipped catalog: sidecar writes (machine_configs/,
-    cache/, objective_and_sample_formats/sample_formats_user.yaml) land in tmp,
-    never in the repo. images/ is symlinked read-only for widgets that draw.
+    cache/, objective_and_sample_formats/sample_formats_user.yaml and
+    sample_formats_disabled.yaml) land in tmp, never in the repo.
 
     The in-memory format table is pinned to the shipped catalog too: _def loaded
     it at import from the checkout's cwd, user YAML included, so a plate
@@ -75,12 +75,19 @@ def catalog_tree(tmp_path, monkeypatch):
             os.path.join(repo, "objective_and_sample_formats", name),
             tmp_path / "objective_and_sample_formats" / name,
         )
-    os.symlink(os.path.join(repo, "images"), tmp_path / "images")
     monkeypatch.chdir(tmp_path)
 
     _objectives, shipped = _def.load_formats()  # the production loader, on the tmp tree: no user layer
     with patch.dict(_def.WELLPLATE_FORMAT_SETTINGS, shipped, clear=True):
         yield tmp_path
+
+
+@pytest.fixture
+def catalog_tree(format_catalog):
+    """format_catalog plus images/, symlinked read-only for widgets that draw."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.symlink(os.path.join(repo, "images"), format_catalog / "images")
+    return format_catalog
 
 
 def write_legacy_cache(tree, edit):

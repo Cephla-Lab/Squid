@@ -44,6 +44,11 @@ from control.core.holder_alignment import (
     SessionError,
 )
 from control.core.plate_fit import circumcenter, PlateFitError
+from control.models.sample_format_config import (
+    listed_sample_formats,
+    load_disabled_sample_formats_for_edit,
+    save_disabled_sample_formats,
+)
 from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
@@ -12032,6 +12037,55 @@ class LaserAutofocusControlWidget(QFrame):
             self.liveController.start_live()
 
 
+class SampleFormatVisibilityDialog(QDialog):
+    """Checklist of every sample format; unchecked ones are hidden from the dropdowns."""
+
+    def __init__(self, current_format, disabled, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manage Sample Formats")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Show in dropdown:"))
+
+        # Disabled names this build has no definition for (a user format whose
+        # file is unreadable right now, a list copied from another machine)
+        # are not shown, but must survive the save.
+        self._unlisted_disabled = [f for f in disabled if f not in WELLPLATE_FORMAT_SETTINGS]
+
+        self.format_list = QListWidget(self)
+        for format_ in WELLPLATE_FORMAT_SETTINGS:
+            item = QListWidgetItem(format_)
+            item.setData(Qt.UserRole, format_)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Unchecked if format_ in disabled else Qt.Checked)
+            if format_ == current_format:
+                item.setText(f"{format_}  (in use)")
+                item.setToolTip("Stays in the dropdown while it is loaded, even if disabled.")
+            self.format_list.addItem(item)
+        layout.addWidget(self.format_list)
+
+        buttons = QHBoxLayout()
+        show_all_button = QPushButton("Show all")
+        show_all_button.clicked.connect(self.show_all)
+        buttons.addWidget(show_all_button)
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        buttons.addWidget(button_box)
+        layout.addLayout(buttons)
+
+    def show_all(self):
+        for i in range(self.format_list.count()):
+            self.format_list.item(i).setCheckState(Qt.Checked)
+
+    def disabled_formats(self):
+        unchecked = [
+            self.format_list.item(i).data(Qt.UserRole)
+            for i in range(self.format_list.count())
+            if self.format_list.item(i).checkState() != Qt.Checked
+        ]
+        return unchecked + self._unlisted_disabled
+
+
 class WellplateFormatWidget(QWidget):
 
     # One object instead of 10 positional args: slots with shorter signatures
@@ -12061,17 +12115,23 @@ class WellplateFormatWidget(QWidget):
         if index >= 0:
             self.comboBox.setCurrentIndex(index)
 
-    def populate_combo_box(self):
+    def _formats_to_list(self, current):
+        # The plate in use is listed even when disabled, so the dropdown never
+        # names a plate other than the loaded one; once it is unloaded it goes.
+        return listed_sample_formats(WELLPLATE_FORMAT_SETTINGS, always=(current,))
+
+    def populate_combo_box(self, current=None):
+        """`current`: the plate that will be selected, if not self.wellplate_format."""
         self.comboBox.clear()
-        for format_, settings in WELLPLATE_FORMAT_SETTINGS.items():
+        for format_ in self._formats_to_list(self.wellplate_format if current is None else current):
             self.comboBox.addItem(format_, format_)
 
-        # Add custom item and set its font to italic
-        self.comboBox.addItem("calibrate format...", "custom")
-        index = self.comboBox.count() - 1  # Get the index of the last item
+        # Action items, in italics to set them apart from the formats
         font = QFont()
         font.setItalic(True)
-        self.comboBox.setItemData(index, font, Qt.FontRole)
+        for text, data in (("calibrate format...", "custom"), ("manage formats...", "manage")):
+            self.comboBox.addItem(text, data)
+            self.comboBox.setItemData(self.comboBox.count() - 1, font, Qt.FontRole)
 
     def wellplateChanged(self, index):
         selected = self.comboBox.itemData(index)
@@ -12095,9 +12155,41 @@ class WellplateFormatWidget(QWidget):
                 prev_index = self.comboBox.findData(self.wellplate_format)
                 if prev_index >= 0:
                     self.comboBox.setCurrentIndex(prev_index)
+        elif selected == "manage":
+            self.manage_formats()
         else:
             self.wellplate_format = selected
+            listed = [self.comboBox.itemData(i) for i in range(self.comboBox.count())][:-2]  # minus the actions
+            if listed != self._formats_to_list(selected):
+                self._relist_silently()  # e.g. drop the disabled plate just switched away from
             self.setWellplateSettings(self.wellplate_format)
+
+    def _relist_silently(self):
+        """Rebuild the format items and reselect the loaded plate, emitting nothing."""
+        self.comboBox.blockSignals(True)
+        try:
+            self.populate_combo_box()
+            self.comboBox.setCurrentIndex(self.comboBox.findData(self.wellplate_format))
+        finally:
+            self.comboBox.blockSignals(False)
+
+    def manage_formats(self):
+        """Edit which formats the dropdowns list. The loaded plate does not change."""
+        try:
+            disabled = load_disabled_sample_formats_for_edit()
+        except YamlStoreDamaged as e:
+            # Editing from an empty list would save over whatever it still holds.
+            QMessageBox.critical(self, "Disabled Formats Unreadable", str(e))
+        else:
+            dialog = SampleFormatVisibilityDialog(self.wellplate_format, disabled, self)
+            if dialog.exec_() == QDialog.Accepted:
+                try:
+                    save_disabled_sample_formats(dialog.disabled_formats())
+                except Exception as e:
+                    QMessageBox.critical(self, "Save Failed", f"Could not save the disabled formats:\n{e}")
+        # Rebuild (or just step back off "manage formats...") without emitting:
+        # the loaded plate is unchanged, so nothing downstream needs telling.
+        self._relist_silently()
 
     def select_format_silently(self, format_id):
         """Rebuild the combo and select format_id with exactly ONE settings emission.
@@ -12109,7 +12201,9 @@ class WellplateFormatWidget(QWidget):
         """
         self.comboBox.blockSignals(True)
         try:
-            self.populate_combo_box()
+            # List for the plate being selected, not the one it replaces: format_id
+            # shows even if disabled, and a disabled outgoing plate is dropped.
+            self.populate_combo_box(current=format_id)
             index = self.comboBox.findData(format_id)
             if index >= 0:
                 self.comboBox.setCurrentIndex(index)
@@ -12511,7 +12605,9 @@ class WellplateCalibration(QDialog):
 
     def populate_existing_formats(self):
         self.existing_format_combo.clear()
-        for format_ in WELLPLATE_FORMAT_SETTINGS:
+        for format_ in listed_sample_formats(
+            WELLPLATE_FORMAT_SETTINGS, always=(self.wellplateFormatWidget.wellplate_format,)
+        ):
             # nothing to calibrate on a glass slide, and the user-format model
             # could not save it anyway (spacing must be positive)
             if has_well_grid(control._def.get_wellplate_settings(format_)):
@@ -13203,6 +13299,15 @@ class WellplateCalibration(QDialog):
 
     def _finish_calibration(self, format_id, success_message: str):
         """Complete calibration by updating UI and showing success message."""
+        # Calibrating a plate is asking to use it, so one calibrated (or created
+        # under a name) that was disabled comes back into the dropdowns.
+        try:
+            disabled = load_disabled_sample_formats_for_edit()
+            if format_id in disabled:
+                disabled.discard(format_id)
+                save_disabled_sample_formats(disabled)
+        except Exception:
+            logger.exception(f"Could not re-enable sample format {format_id!r}; it stays hidden once unloaded")
         self.wellplateFormatWidget.select_format_silently(format_id)
 
         QMessageBox.information(self, "Calibration Successful", success_message)
