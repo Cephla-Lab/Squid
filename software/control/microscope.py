@@ -372,6 +372,16 @@ class Microscope:
                 invert_z=control._def.PI_FOCUS_INVERT_Z,
                 home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                on_target_tolerance=(
+                    (
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MAX_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION,
+                    )
+                    if control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM
+                    else None
+                ),
+                sub_window_settle_s=control._def.PI_FOCUS_SUB_WINDOW_SETTLE_MS / 1000.0,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
@@ -948,7 +958,7 @@ class Microscope:
         # Move to start of z-stack
         if NZ > 1 and z_stacking_config == "FROM CENTER":
             self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
-            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
 
         def snap(config, z_level):
             self.live_controller.set_microscope_mode(config)
@@ -962,7 +972,7 @@ class Microscope:
 
         def step_z(dz):
             self.stage.move_z(dz)
-            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
 
         saved_paths = []
         try:
@@ -973,7 +983,7 @@ class Microscope:
                 for config_idx, config in enumerate(configs):
                     if config_idx > 0 and NZ > 1:
                         self.stage.move_z_to(stack_start_mm)
-                        time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+                        time.sleep(squid.stage.utils.z_stabilization_time_s())
                     for z_level in range(NZ):
                         snap(config, z_level)
                         if z_level < NZ - 1:

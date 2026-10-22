@@ -839,8 +839,19 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
-        # Utils: per-instrument procedures that drive the hardware, not settings.
+        # Utils: per-instrument procedures that drive the hardware, not settings. The one Utils menu: main_hcs.py used
+        # to add a second one with the first three.
         utils_menu = menubar.addMenu("Utils")
+        stage_utils_action = QAction("Stage Utils", self)
+        stage_utils_action.triggered.connect(self.stageUtils.show)
+        utils_menu.addAction(stage_utils_action)
+        if USE_OBJECTIVE_TURRET:
+            reset_turret_action = QAction("Reset Objective Turret", self)
+            reset_turret_action.triggered.connect(self.resetObjectiveTurret)
+            utils_menu.addAction(reset_turret_action)
+        workflow_runner_action = QAction("Workflow Runner...", self)
+        workflow_runner_action.triggered.connect(self.openWorkflowRunner)
+        utils_menu.addAction(workflow_runner_action)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
@@ -1431,8 +1442,8 @@ class HighContentScreeningGui(QMainWindow):
         We want our main window to fit on the primary screen, so grab the users primary screen and return
         something slightly smaller than that.
         """
-        desktop_info = QDesktopWidget()
-        primary_screen_size = desktop_info.screen(desktop_info.primaryScreen()).size()
+        # QApplication.primaryScreen() works on Qt 5 and 6 (QDesktopWidget was removed in Qt 6).
+        primary_screen_size = QApplication.primaryScreen().size()
 
         height_min = int(0.9 * primary_screen_size.height())
         width_min = int(0.96 * primary_screen_size.width())
@@ -1767,6 +1778,10 @@ class HighContentScreeningGui(QMainWindow):
 
             # Make initial connections
             self.updateNapariConnections()
+
+            # Not in napari_connections: Performance Mode must not disconnect it. Enabled
+            # mid-acquisition, the viewer would otherwise stay in the 2D it was switched to.
+            self.multipointController.acquisition_finished.connect(self.napariMultiChannelWidget.finishAcquisition)
 
     def updateNapariConnections(self):
         """Performance mode disconnects the napari display widgets; leaving it reconnects them."""

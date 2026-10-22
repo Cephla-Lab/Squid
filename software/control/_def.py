@@ -3,7 +3,7 @@ import sys
 import glob
 from pathlib import Path
 from configparser import ConfigParser
-from typing import Union
+from typing import List, Optional, Union
 import json
 import csv
 import squid.logging
@@ -179,7 +179,6 @@ class CMD_SET:
     MOVETO_Y = 7
     MOVETO_Z = 8
     SET_LIM = 9
-    SET_LIM_SWITCH_POLARITY = 20
     CONFIGURE_STEPPER_DRIVER = 21
     SET_MAX_VELOCITY_ACCELERATION = 22
     SET_LEAD_SCREW_PITCH = 23
@@ -212,6 +211,7 @@ class CMD_SET:
     INITFILTERWHEEL = 253
     INITIALIZE = 254
     RESET = 255
+    SET_LIMIT_SWITCH_CONFIG = 64
 
 
 class CMD_SET2:
@@ -223,6 +223,8 @@ class CMD_SET2:
 
 BIT_POS_JOYSTICK_BUTTON = 0
 BIT_POS_SWITCH = 1
+BIT_POS_Z_LIMIT_LEFT = 2
+BIT_POS_Z_LIMIT_RIGHT = 3
 
 
 class ENCODER_REPORTING:
@@ -280,13 +282,91 @@ class LIMIT_CODE:
     Z_NEGATIVE = 5
 
 
+class LIMIT_SWITCH_BITS:
+    """Bits of the per-axis limit switch config nibble sent with SET_LIMIT_SWITCH_CONFIG."""
+
+    LEFT_ENABLED = 1
+    RIGHT_ENABLED = 2
+    LEFT_ACTIVE_HIGH = 4
+    RIGHT_ACTIVE_HIGH = 8
+
+
+LIMIT_SWITCH_DEFAULT_CONFIG = 0x03  # both inputs enabled, both active low
+# First firmware with SET_LIMIT_SWITCH_CONFIG. The single source for the Microcontroller's gate, FirmwareSimSerial's
+# cutoff and the tests' versions.
+LIMIT_SWITCH_CONFIG_MIN_FIRMWARE = (1, 7)
+
+
+class LIMIT_SWITCHES:
+    # Left blocks negative firmware motion, right blocks positive (before the X/Y flip).
+    # active_high = False is the stock hall sensor. enabled = False only when no switch is fitted;
+    # the input an axis homes on must stay enabled.
+    X_LEFT_ACTIVE_HIGH = False
+    X_LEFT_ENABLED = True
+    X_RIGHT_ACTIVE_HIGH = False
+    X_RIGHT_ENABLED = True
+    Y_LEFT_ACTIVE_HIGH = False
+    Y_LEFT_ENABLED = True
+    Y_RIGHT_ACTIVE_HIGH = False
+    Y_RIGHT_ENABLED = True
+    Z_LEFT_ACTIVE_HIGH = False
+    Z_LEFT_ENABLED = True
+    Z_RIGHT_ACTIVE_HIGH = False
+    Z_RIGHT_ENABLED = True
+
+
+_LIMIT_SWITCH_KEYS = tuple(
+    f"{axis}_{side}_{setting}" for axis in "XYZ" for side in ("LEFT", "RIGHT") for setting in ("ACTIVE_HIGH", "ENABLED")
+)
+
+
+def limit_switch_config_problems() -> List[str]:
+    """What is wrong with LIMIT_SWITCHES as loaded from [LIMIT_SWITCHES]; empty when nothing is.
+
+    The loader puts any key of the section on the class and its value through conf_attribute_reader, so a misspelled
+    key would be a stray attribute nobody reads and "no", "off" or 0 would be used by truthiness. Each unknown key and
+    each value that is not True or False is listed here. Importing _def never fails on it: the Microcontroller raises
+    LimitSwitchConfigError with this list before it sends anything beyond its firmware-version probe.
+    """
+    problems = []
+    for name, value in vars(LIMIT_SWITCHES).items():
+        if name.startswith("__") and name.endswith("__"):
+            continue
+        if name not in _LIMIT_SWITCH_KEYS:
+            problems.append(f"unknown key {name.lower()}")
+        elif type(value) is not bool:
+            problems.append(f"{name.lower()} = {value!r} is not True or False")
+    return problems
+
+
+def limit_switch_config_byte(axis: str) -> int:
+    """Config nibble for axis ("x", "y" or "z") built from LIMIT_SWITCHES."""
+    a = axis.upper()
+    byte = 0
+    for side in ("LEFT", "RIGHT"):
+        if getattr(LIMIT_SWITCHES, f"{a}_{side}_ENABLED"):
+            byte |= getattr(LIMIT_SWITCH_BITS, f"{side}_ENABLED")
+        if getattr(LIMIT_SWITCHES, f"{a}_{side}_ACTIVE_HIGH"):
+            byte |= getattr(LIMIT_SWITCH_BITS, f"{side}_ACTIVE_HIGH")
+    return byte
+
+
 class LIMIT_SWITCH_POLARITY:
+    # Retired (replaced by LIMIT_SWITCHES). Kept only so that field .txt configurations that still assign
+    # X/Y/Z_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.<...> exec without a NameError; nothing reads these.
     ACTIVE_LOW = 0
     ACTIVE_HIGH = 1
     DISABLED = 2
-    X_HOME = 1
-    Y_HOME = 1
-    Z_HOME = 2
+
+
+def legacy_limit_switch_warning(cfp: ConfigParser) -> Optional[str]:
+    """Warning text if cfp still has the retired [LIMIT_SWITCH_POLARITY] section, else None."""
+    if cfp.has_section("LIMIT_SWITCH_POLARITY"):
+        return (
+            "The [LIMIT_SWITCH_POLARITY] section in the configuration file is no longer used and is ignored; "
+            "limit switches are now configured in [LIMIT_SWITCHES] (x/y/z_left/right_active_high and _enabled)."
+        )
+    return None
 
 
 class ILLUMINATION_CODE:
@@ -1171,6 +1251,24 @@ PI_FOCUS_HOME_TO_POSITIVE_LIMIT = False
 # shrinks them permanently (until power cycle); >0 restores [0, this] at connect so the inversion
 # offset / soft-limit fencing don't drift across software restarts. Set to the V-308's travel (7).
 PI_FOCUS_Z_TRAVEL_MM = 0.0
+# On-target window (half-width) per Z move, written to the C-414's RAM: STEP_FRACTION x the move
+# distance, clamped to [MIN, MAX] um. A move counts as finished once Z stays inside the window for the
+# controller's dwell time, so small steps need a window well below the step (the controller's own
+# +/-1 um calls a 0.5-1 um step done before it moves) while long moves can be more forgiving.
+# Defaults: 0.5-1 um steps +/-0.1 um, 3 um +/-0.3 um, >=5 um +/-0.5 um. MIN = 0 keeps the controller's window.
+PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0.1
+PI_FOCUS_ON_TARGET_TOL_MAX_UM = 0.5
+PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION = 0.1
+# Pause after a Z move before imaging, replacing SCAN_STABILIZATION_TIME_MS_Z for the V-308: its moves already
+# wait for on-target inside the window above. Ignored (SCAN_STABILIZATION_TIME_MS_Z applies) when the window is
+# disabled (PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0).
+PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z = 0
+# Settle after a V-308 move no larger than its on-target window (e.g. a 0.05 um step with the 0.1 um minimum):
+# such a move is "on target" before Z moves, so the on-target wait cannot cover it and this fixed pause does.
+# 20 ms matches what these steps got before (+-1 um on-target, then SCAN_STABILIZATION_TIME_MS_Z). Measured on a
+# V-308 with the 2026-10-20 gains, a 0.05 um step is ~14% done after 20 ms, ~70% after 100 ms and done after
+# 200 ms (slow integrator creep): raise this for sub-0.1 um stacks, or tune the creep.
+PI_FOCUS_SUB_WINDOW_SETTLE_MS = 20
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 
@@ -1504,11 +1602,6 @@ def get_wellplate_settings(wellplate_format):
     return settings
 
 
-# limit switch
-X_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.X_HOME
-Y_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.Y_HOME
-Z_HOME_SWITCH_POLARITY = LIMIT_SWITCH_POLARITY.Z_HOME
-
 # home safety margin with (um) unit
 X_HOME_SAFETY_MARGIN_UM = 50
 Y_HOME_SAFETY_MARGIN_UM = 50
@@ -1684,6 +1777,9 @@ if config_files:
     # exec(open(config_files[0]).read())
     cfp = ConfigParser()
     cfp.read(config_files[0])
+    _legacy_limit_switch_msg = legacy_limit_switch_warning(cfp)
+    if _legacy_limit_switch_msg:
+        log.warning(_legacy_limit_switch_msg)
     var_items = list(locals().keys())
     for var_name in var_items:
         if type(locals()[var_name]) is type:

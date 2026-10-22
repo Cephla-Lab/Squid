@@ -755,9 +755,10 @@ void tmc4361A_enableHomingLimit(TMC4361ATypeDef *tmc4361A, uint8_t polarity, uin
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_readLimitSwitches() reads the limit switches and returns their state in the two low bits of a byte.
                 00 - both not pressed
-                01 - right switch pressed
-                10 - left
+                01 - left switch pressed (bit 0, STOPL)
+                10 - right (bit 1, STOPR)
                 11 - both
+               Protocol: Z's value is sent in status byte 18 bits 2-3 (lsc_status_bits).
 
   OPERATION:   We read the status register, mask the irrelevant bits, and shift the relevant bits down
 

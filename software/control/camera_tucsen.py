@@ -186,13 +186,15 @@ class TucsenCamera(AbstractCamera):
         self._trigger_attr = TUCAM_TRIGGER_ATTR()
         self._capture_mode_genicam = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
 
+        # None until the camera is configured, so configuring (which sets the binning) doesn't push an exposure.
+        self._exposure_time_ms: Optional[float] = None
         self._configure_camera()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
         # time stored on the camera.
         #
         # We just set it to some sane value to start.
-        self._exposure_time_ms: int = 20
+        self._exposure_time_ms = 20
 
         self.temperature_reading_callback = None
         self._terminate_temperature_event = threading.Event()
@@ -245,10 +247,12 @@ class TucsenCamera(AbstractCamera):
                 (2, 2): 1,
                 (4, 4): 2,
             }
+            # Aries 6510 datasheet: 83 / 150 / 88 fps over 3200 rows. Only a fallback: the strobe delay uses the
+            # camera's own row time (RollingSpeed), which follows its readout mode.
             mode_to_line_rate_us = {
-                ModeAries.HDR: 11.2,
-                ModeAries.SPEED: 7.2,
-                ModeAries.SENSITIVITY: 11.2,
+                ModeAries.HDR: 3.75,
+                ModeAries.SPEED: 2.08,
+                ModeAries.SENSITIVITY: 3.55,
             }
             pixel_size_um = 6.5
             has_temperature_control = False
@@ -302,6 +306,23 @@ class TucsenCamera(AbstractCamera):
             self.set_temperature(self._config.default_temperature)
         self.set_binning(*self._config.default_binning)
         # TODO: Set default roi
+        if self._model_properties.is_genicam:
+            self._log_link_mode()
+
+    def _log_link_mode(self):
+        # The Aries streams over one or two 10GigE links, chosen when it powers up. On one link full frames top out
+        # around 50 fps instead of 83 (HDR).
+        try:
+            mode = self._get_genicam_parameter("GigEMode")["value"]
+        except CameraError:
+            return
+        if mode == "SingleGigE":
+            self._log.warning(
+                "Camera is streaming over a single 10GigE link (GigEMode = SingleGigE), which limits full frames to "
+                "about 50 fps. Power-cycle the camera with both cables connected to use both links."
+            )
+        else:
+            self._log.info(f"Camera link: GigEMode = {mode}")
 
     def start_streaming(self):
         if self._is_streaming.is_set():
@@ -393,11 +414,16 @@ class TucsenCamera(AbstractCamera):
                 if not header.pImgData or header.uiImgSize == 0:
                     self._log.error("Invalid frame header (null pImgData / zero size) in callback")
                     return
-                np_image = self._convert_header_to_numpy(header)
+                # A single copy out of device memory: _process_raw_frame's rotate/flip returns a new array, so
+                # it reads straight from the driver's buffer rather than from a copy of it.
+                driver_view = self._header_to_numpy_view(header)
+                frame = self._process_raw_frame(driver_view)
+                if np.may_share_memory(frame, driver_view):
+                    frame = frame.copy()
                 camera_frame = CameraFrame(
                     frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
                     timestamp=time.time(),
-                    frame=self._process_raw_frame(np_image),
+                    frame=frame,
                     frame_format=self.get_frame_format(),
                     frame_pixel_format=self.get_pixel_format(),
                 )
@@ -410,11 +436,18 @@ class TucsenCamera(AbstractCamera):
 
     @staticmethod
     def _convert_header_to_numpy(header: TUCAM_RAWIMG_HEADER) -> np.ndarray:
+        """A copy of the frame that stays valid after the driver reuses its buffer."""
+        return TucsenCamera._header_to_numpy_view(header).copy()
+
+    @staticmethod
+    def _header_to_numpy_view(header: TUCAM_RAWIMG_HEADER) -> np.ndarray:
+        """A view of the frame in device memory: only valid until the driver reuses the buffer, i.e. while
+        _frame_lock is held in the frame callback."""
         # TODO: In the latest version of 400BSI V3, the readout data will match the
         # actual bit depth. We can't tell firmware version from SN yet, so we keep a
         # 16-bit buffer for old demo units. (Carried over from _convert_frame_to_numpy.)
         #
-        # Flat reshape of a contiguous w*h*2 copy is only correct with no row/column
+        # A flat reshape of the w*h*2 buffer is only correct with no row/column
         # padding, so reject padded frames rather than interleaving padding into pixels.
         if header.usXPadding or header.usYPadding:
             raise CameraError(
@@ -426,10 +459,8 @@ class TucsenCamera(AbstractCamera):
             raise CameraError(
                 f"Frame size {header.uiImgSize} < expected {expected} " f"({header.usWidth}x{header.usHeight} MONO16)"
             )
-        buf = create_string_buffer(expected)
-        memmove(buf, c_void_p(header.pImgData), expected)
-        # np.frombuffer keeps `buf` alive via the returned array's .base, so no extra bytes() copy is needed.
-        return np.frombuffer(buf, dtype=np.uint16).reshape((header.usHeight, header.usWidth))
+        pixels = (c_uint16 * (header.usWidth * header.usHeight)).from_address(header.pImgData)
+        return np.frombuffer(pixels, dtype=np.uint16).reshape((header.usHeight, header.usWidth))
 
     def read_camera_frame(self) -> Optional[CameraFrame]:
         if not self.get_is_streaming():
@@ -499,12 +530,20 @@ class TucsenCamera(AbstractCamera):
     def _calculate_strobe_delay(self):
         # Line rate: FL 26BW: 34.67 us for standard resolution; 69.3 us for low noise; 12.58 us for SenBin
         #            400BSI V3: 7.2 us for high speed; 11.2 us for other gain modes
+        #            Aries: read from the camera (RollingSpeed)
         # Right now we are only using 400BSI V3's HDR mode.
         # TODO: Support more modes.
         _, _, _, height = self.get_region_of_interest()
-        readout_time_ms = (
-            self._model_properties.mode_to_line_rate_us[self._camera_mode] * height * self._binning[1] / 1000.0
-        )
+        line_time_us = self._model_properties.mode_to_line_rate_us[self._camera_mode]
+        if self._model_properties.is_genicam:
+            try:
+                rolling_speed_us = float(self._get_genicam_parameter("RollingSpeed")["value"])
+            except CameraError as e:
+                self._log.warning(f"Could not read the camera's row time (RollingSpeed), using {line_time_us} us: {e}")
+            else:
+                if rolling_speed_us > 0:
+                    line_time_us = rolling_speed_us
+        readout_time_ms = line_time_us * height * self._binning[1] / 1000.0
 
         if self._model_properties.is_genicam:
             param_info = self._get_genicam_parameter("TriggerInputDelay")
@@ -569,13 +608,30 @@ class TucsenCamera(AbstractCamera):
         # TODO: Add support for FL26BW model
         if not (binning_factor_x, binning_factor_y) in self._model_properties.binning_to_set_value:
             raise CameraError(f"No binning option exists for {binning_factor_x}x{binning_factor_y}")
-        if self._model_properties.is_genicam:
-            self._raw_set_binning_genicam(
-                self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
-            )
-        else:
-            self._raw_set_resolution(self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)])
-        self._binning = (binning_factor_x, binning_factor_y)
+        # The raw setters recompute the readout (strobe) time from self._binning, so it must hold the new binning
+        # first; otherwise the readout time was the previous binning's (e.g. 48 ms instead of 12 ms going from
+        # 4x4 back to 1x1 on an Aries).
+        # One pause (and trigger lock) around the binning and the exposure re-apply: streaming must not resume, and
+        # no trigger fire, with the new binning but the previous exposure and MCU strobe delay. The raw setters'
+        # own pause nests inside this one.
+        with self._pause_streaming():
+            previous_binning = self._binning
+            self._binning = (binning_factor_x, binning_factor_y)
+            try:
+                if self._model_properties.is_genicam:
+                    self._raw_set_binning_genicam(
+                        self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
+                    )
+                else:
+                    self._raw_set_resolution(
+                        self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
+                    )
+            except Exception:
+                self._binning = previous_binning
+                raise
+            # In hardware trigger mode the camera exposure and the MCU strobe delay are derived from the readout time.
+            if self._exposure_time_ms is not None:
+                self.set_exposure_time(self._exposure_time_ms)
 
     def get_binning(self) -> Tuple[int, int]:
         return self._binning
@@ -655,23 +711,32 @@ class TucsenCamera(AbstractCamera):
 
         with self._pause_streaming():
             if self._model_properties.is_genicam:
-                self._set_genicam_parameter("MultiROIOffsetX", nHOffset, TUELEM_TYPE.TU_ElemInteger.value)
-                self._set_genicam_parameter("MultiROIOffsetY", nVOffset, TUELEM_TYPE.TU_ElemInteger.value)
-                self._set_genicam_parameter("MultiROIWidth", nWidth, TUELEM_TYPE.TU_ElemInteger.value)
-                self._set_genicam_parameter("MultiROIHeight", nHeight, TUELEM_TYPE.TU_ElemInteger.value)
+                # The region is Width/Height/OffsetX/OffsetY. The MultiROI* nodes are read-only while MultiROIMode
+                # is off, and writes to them were silently ignored. Offsets go to 0 first so the new size always
+                # fits the sensor, then the size, then the offsets.
+                integer = TUELEM_TYPE.TU_ElemInteger.value
+                self._set_genicam_parameter("OffsetX", 0, integer)
+                self._set_genicam_parameter("OffsetY", 0, integer)
+                self._set_genicam_parameter("Width", nWidth, integer)
+                self._set_genicam_parameter("Height", nHeight, integer)
+                self._set_genicam_parameter("OffsetX", nHOffset, integer)
+                self._set_genicam_parameter("OffsetY", nVOffset, integer)
             else:
                 if TUCAM_Cap_SetROI(self._camera, roi_attr) != TUCAMRET.TUCAMRET_SUCCESS:
                     raise CameraError(
                         f"Failed to set ROI: {roi_attr.nHOffset}, {roi_attr.nVOffset}, {roi_attr.nWidth}, {roi_attr.nHeight}"
                     )
             self._update_internal_settings()
+            # The readout (strobe) time follows the region height; in hardware trigger mode the camera exposure and
+            # the MCU strobe delay are derived from it, so re-apply them as a trigger-mode change does.
+            self.set_exposure_time(self._exposure_time_ms)
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         if self._model_properties.is_genicam:
-            h_offset = self._get_genicam_parameter("MultiROIOffsetX")["value"]
-            v_offset = self._get_genicam_parameter("MultiROIOffsetY")["value"]
-            width = self._get_genicam_parameter("MultiROIWidth")["value"]
-            height = self._get_genicam_parameter("MultiROIHeight")["value"]
+            h_offset = self._get_genicam_parameter("OffsetX")["value"]
+            v_offset = self._get_genicam_parameter("OffsetY")["value"]
+            width = self._get_genicam_parameter("Width")["value"]
+            height = self._get_genicam_parameter("Height")["value"]
             return (h_offset, v_offset, width, height)
         else:
             roi_attr = TUCAM_ROI_ATTR()

@@ -5,6 +5,7 @@ import pytest
 import control._def
 
 import control.gui_hcs
+import control.widgets
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -87,6 +88,33 @@ def test_acquisition_start_emits_selected_channels(qtbot, confirm_exit_yes):
         # Unwind the acquisition-running UI state (signal_acquisition_started=True
         # disabled the other tabs via toggleAcquisitionStart).
         win.toggleAcquisitionStart(False)
+
+
+def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypatch, confirm_exit_yes):
+    """The multichannel viewer coalesces refreshes and shows 2D while acquiring; the end of the
+    acquisition must reach it to draw the final plane and restore the user's 2D/3D mode."""
+    calls = []
+    monkeypatch.setattr(control.widgets.NapariMultiChannelWidget, "finishAcquisition", lambda self: calls.append(self))
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget]
+
+    # Performance Mode disconnects the napari display feeds; enabled mid-acquisition it must
+    # not cut the viewer off from the end of the run (it would stay in 2D).
+    win.performanceModeToggle.setChecked(True)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 2
+
+    # Leaving Performance Mode reconnects the feeds without connecting this a second time.
+    win.performanceModeToggle.setChecked(False)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 3
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
@@ -292,3 +320,16 @@ def test_pi_focus_stage_is_a_referenced_z_even_without_cephla_z_homing(qtbot, mo
 
     cache_position.assert_called_once()
     assert cache_position.call_args.kwargs["validate_z"] is True
+
+
+def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_exit_yes):
+    # main_hcs.py used to add a second "Utils" menu next to the one the GUI builds (two "Utils" in the menu bar)
+    monkeypatch.setattr(control.gui_hcs, "USE_OBJECTIVE_TURRET", True)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    menus = [action for action in win.menuBar().actions() if action.text() == "Utils"]
+    assert len(menus) == 1
+    items = [action.text() for action in menus[0].menu().actions()]
+    assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]

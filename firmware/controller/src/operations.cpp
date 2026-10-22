@@ -1,6 +1,7 @@
 #include "operations.h"
 
 #include "tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "limit_switches.h"                 // limit_switches_read*: homing and limit stops ignore disabled inputs
 
 /*
   THE OPERATOR-DRIVEN MOTION PATHS ARE PART OF THE FAIL-SAFE.
@@ -41,7 +42,7 @@ void prepare_homing_x()
   {
     if (homing_direction_X == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[x]) != LEFT_SW)
+      if (limit_switches_homing_read(x, LEFT_SW) != LEFT_SW)
       {
         is_preparing_for_homing_X = false;
         is_homing_X = true;
@@ -51,7 +52,7 @@ void prepare_homing_x()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[x]) != RGHT_SW)
+      if (limit_switches_homing_read(x, RGHT_SW) != RGHT_SW)
       {
         is_preparing_for_homing_X = false;
         is_homing_X = true;
@@ -68,7 +69,7 @@ void prepare_homing_y()
   {
     if (homing_direction_Y == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[y]) != LEFT_SW)
+      if (limit_switches_homing_read(y, LEFT_SW) != LEFT_SW)
       {
         is_preparing_for_homing_Y = false;
         is_homing_Y = true;
@@ -78,7 +79,7 @@ void prepare_homing_y()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[y]) != RGHT_SW)
+      if (limit_switches_homing_read(y, RGHT_SW) != RGHT_SW)
       {
         is_preparing_for_homing_Y = false;
         is_homing_Y = true;
@@ -95,7 +96,7 @@ void prepare_homing_z()
   {
     if (homing_direction_Z == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[z]) != LEFT_SW)
+      if (limit_switches_homing_read(z, LEFT_SW) != LEFT_SW)
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
@@ -105,7 +106,7 @@ void prepare_homing_z()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[z]) != RGHT_SW)
+      if (limit_switches_homing_read(z, RGHT_SW) != RGHT_SW)
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
@@ -176,7 +177,7 @@ void check_homing_x()
   {
     if (homing_direction_X == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[x]) == LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[x]) == LEFT_SW)
+      if (limit_switches_homing_event(x, LEFT_SW) == LEFT_SW || limit_switches_homing_read(x, LEFT_SW) == LEFT_SW)
       {
         home_X_found = true;
         us_since_x_home_found = 0;
@@ -190,7 +191,7 @@ void check_homing_x()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[x]) == RGHT_SW || tmc4361A_readLimitSwitches(&tmc4361[x]) == RGHT_SW)
+      if (limit_switches_homing_event(x, RGHT_SW) == RGHT_SW || limit_switches_homing_read(x, RGHT_SW) == RGHT_SW)
       {
         home_X_found = true;
         us_since_x_home_found = 0;
@@ -211,7 +212,7 @@ void check_homing_y()
   {
     if (homing_direction_Y == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[y]) == LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[y]) == LEFT_SW)
+      if (limit_switches_homing_event(y, LEFT_SW) == LEFT_SW || limit_switches_homing_read(y, LEFT_SW) == LEFT_SW)
       {
         home_Y_found = true;
         us_since_y_home_found = 0;
@@ -225,7 +226,7 @@ void check_homing_y()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[y]) == RGHT_SW || tmc4361A_readLimitSwitches(&tmc4361[y]) == RGHT_SW)
+      if (limit_switches_homing_event(y, RGHT_SW) == RGHT_SW || limit_switches_homing_read(y, RGHT_SW) == RGHT_SW)
       {
         home_Y_found = true;
         us_since_y_home_found = 0;
@@ -246,7 +247,7 @@ void check_homing_z()
   {
     if (homing_direction_Z == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[z]) == LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[z]) == LEFT_SW)
+      if (limit_switches_homing_event(z, LEFT_SW) == LEFT_SW || limit_switches_homing_read(z, LEFT_SW) == LEFT_SW)
       {
         home_Z_found = true;
         us_since_z_home_found = 0;
@@ -260,7 +261,7 @@ void check_homing_z()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[z]) == RGHT_SW || tmc4361A_readLimitSwitches(&tmc4361[z]) == RGHT_SW)
+      if (limit_switches_homing_event(z, RGHT_SW) == RGHT_SW || limit_switches_homing_read(z, RGHT_SW) == RGHT_SW)
       {
         home_Z_found = true;
         us_since_z_home_found = 0;
@@ -484,6 +485,16 @@ void do_camera_trigger()
 
 void check_joystick()
 {
+  // Panel gone (cable pulled, panel hung or rebooting): release the stick, so a move it was driving stops
+  // here through the rest-position branch below. The last update was at least JP_TIMEOUT_MS ago, so the
+  // interval gate is already open.
+  if (jp_check_timeout(&joystick_panel, millis()))
+  {
+    joystick_delta_x = 0;
+    joystick_delta_y = 0;
+    flag_read_joystick = true;
+  }
+
   if (flag_read_joystick)
   {
 	if (us_since_last_joystick_update > interval_send_joystick_update)
@@ -614,8 +625,7 @@ void check_limits()
   	// at limit
     if (X_commanded_movement_in_progress && !is_homing_X) // homing is handled separately
     {
-      uint8_t event = tmc4361A_readSwitchEvent(&tmc4361[x]);
-      // if( tmc4361A_readLimitSwitches(&tmc4361[x])==LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[x])==RGHT_SW )
+      uint8_t event = limit_switches_read_event(x);
       if ( ( X_direction == LEFT_DIR && event == LEFT_SW ) || ( X_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         X_commanded_movement_in_progress = false;
@@ -624,8 +634,7 @@ void check_limits()
     }
     if (Y_commanded_movement_in_progress && !is_homing_Y) // homing is handled separately
     {
-      uint8_t event = tmc4361A_readSwitchEvent(&tmc4361[y]);
-      //if( tmc4361A_readLimitSwitches(&tmc4361[y])==LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[y])==RGHT_SW )
+      uint8_t event = limit_switches_read_event(y);
       if ( ( Y_direction == LEFT_DIR && event == LEFT_SW ) || ( Y_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         Y_commanded_movement_in_progress = false;
@@ -634,8 +643,7 @@ void check_limits()
     }
     if (Z_commanded_movement_in_progress && !is_homing_Z) // homing is handled separately
     {
-      uint8_t event = tmc4361A_readSwitchEvent(&tmc4361[z]);
-      // if( tmc4361A_readLimitSwitches(&tmc4361[z])==LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[z])==RGHT_SW )
+      uint8_t event = limit_switches_read_event(z);
       if ( ( Z_direction == LEFT_DIR && event == LEFT_SW ) || ( Z_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         Z_commanded_movement_in_progress = false;

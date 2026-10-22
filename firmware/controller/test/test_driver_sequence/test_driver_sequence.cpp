@@ -538,6 +538,8 @@ void test_tmc2240_init_writes_expected_sequence(void)
     };
 
     g_axis.current_range = 1;
+
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 256;
     /* POISON, not the 3 that tmc4361A_init leaves behind. Seeding 3 here would
        make the driver_toff assertion below unfalsifiable: delete the caching
@@ -561,6 +563,7 @@ void test_tmc2240_init_writes_expected_sequence(void)
 void test_tmc2240_init_writes_spiout_conf_before_any_cover_datagram(void)
 {
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 256;
 
     tmc2240_driver_init(&g_axis, 16000000u);
@@ -592,6 +595,7 @@ void test_tmc2240_init_writes_spiout_conf_before_any_cover_datagram(void)
 void test_tmc2240_init_sets_reverse_motor_dir(void)
 {
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 256;
 
     tmc2240_driver_init(&g_axis, 16000000u);
@@ -641,6 +645,7 @@ void test_tmc2240_enable_sources_chopconf_from_shadow_without_reading(void)
     reset_trace();
     memset(&g_axis, 0, sizeof g_axis);
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 256;
     g_axis.driver_toff   = 0xAA;   /* poison, so the round trip cannot pass via
                                       enable()'s TMC2240_DEFAULT_TOFF fallback */
@@ -675,6 +680,7 @@ void test_tmc2240_set_microsteps_sources_chopconf_from_shadow_without_reading(vo
     reset_trace();
     memset(&g_axis, 0, sizeof g_axis);
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 256;
     tmc2240_driver_init(&g_axis, 16000000u);
     reset_trace();
@@ -722,6 +728,7 @@ void test_tmc2240_set_microsteps_refuses_invalid_sentinel(void)
 void test_tmc2240_set_current_refuses_out_of_range_sentinel(void)
 {
     g_axis.current_range        = 1;               /* 2.0 A peak, 1.414 A rms */
+    g_axis.current_range_floor = 1;
     g_axis.tmc2240_shadow[0x10] = 0xA5A5A5A5u;     /* poison: must survive */
 
     tmc2240_driver_set_current(&g_axis, 3000.0f, 0.5f);
@@ -869,6 +876,7 @@ void test_tmc2240_cover_write_guards_the_shadow_bounds(void)
 void test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count(void)
 {
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 0;          /* tmc4361A_init leaves this zero */
 
     tmc2240_driver_init(&g_axis, 16000000u);
@@ -882,6 +890,7 @@ void test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count(void)
     reset_trace();
     memset(&g_axis, 0, sizeof g_axis);
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
     g_axis.microsteps    = 100;        /* not a power of two */
     tmc2240_driver_init(&g_axis, 16000000u);
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00010183u, cover_write_value(0x6C),
@@ -907,6 +916,7 @@ void test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count(void)
 void test_tmc2240_set_current_clamps_hostile_hold_ratio(void)
 {
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
 
     tmc2240_driver_set_current(&g_axis, 1000.0f, -1.0f);
     TEST_ASSERT_EQUAL_HEX32_MESSAGE(0x00071515u, cover_write_value(0x10),
@@ -924,9 +934,61 @@ void test_tmc2240_set_current_clamps_hostile_hold_ratio(void)
         "would let it through");
 }
 
+/* Range step-up. The two ordering tests pin the safe write order, in which the
+   current on the wire never exceeds the higher of the old and new request: going
+   up writes IHOLD_IRUN (computed for the NEW range) before DRV_CONF raises the
+   full scale, and going down writes DRV_CONF first. */
+static unsigned cover_write_index(uint8_t reg2240)
+{
+    for (unsigned i = 0; i + 1 < g_n; i++)
+        if (g_ops[i].kind == OP_WRITE && g_ops[i].addr == 0x6D &&
+            g_ops[i].value == (uint32_t)(reg2240 | 0x80u) &&
+            g_ops[i + 1].kind == OP_WRITE && g_ops[i + 1].addr == 0x6C)
+            return i;
+    return g_n;
+}
+
+void test_tmc2240_set_current_steps_range_up_and_writes_drv_conf(void)
+{
+    g_axis.current_range = 0; g_axis.current_range_floor = 0;
+    TEST_ASSERT_TRUE(tmc2240_driver_set_current(&g_axis, 1000.0f, 0.5f));
+    TEST_ASSERT_EQUAL_HEX32(0x11u, cover_write_value(0x0A));
+    TEST_ASSERT_EQUAL_HEX32(0x00071515u, cover_write_value(0x10));   /* IRUN 21 */
+    TEST_ASSERT_EQUAL_UINT8(1, g_axis.current_range);
+    TEST_ASSERT_TRUE_MESSAGE(cover_write_index(0x10) < cover_write_index(0x0A),
+        "going up: IHOLD_IRUN must be written BEFORE DRV_CONF");
+}
+
+void test_tmc2240_set_current_steps_back_down_to_the_floor(void)
+{
+    g_axis.current_range = 1; g_axis.current_range_floor = 0;
+    TEST_ASSERT_TRUE(tmc2240_driver_set_current(&g_axis, 500.0f, 0.5f));
+    TEST_ASSERT_EQUAL_HEX32(0x10u, cover_write_value(0x0A));
+    TEST_ASSERT_EQUAL_HEX32(0x00071616u, cover_write_value(0x10));   /* IRUN 22 */
+    TEST_ASSERT_EQUAL_UINT8(0, g_axis.current_range);
+    TEST_ASSERT_TRUE_MESSAGE(cover_write_index(0x0A) < cover_write_index(0x10),
+        "going down: DRV_CONF must be written BEFORE IHOLD_IRUN");
+}
+
+void test_tmc2240_set_current_on_the_floor_writes_no_drv_conf(void)
+{
+    g_axis.current_range = 1; g_axis.current_range_floor = 1;
+    TEST_ASSERT_TRUE(tmc2240_driver_set_current(&g_axis, 1000.0f, 0.5f));
+    TEST_ASSERT_EQUAL_UINT32(0, count_cover_writes(0x0A));
+}
+
+void test_tmc2240_set_current_above_ceiling_leaves_range_alone(void)
+{
+    g_axis.current_range = 0; g_axis.current_range_floor = 0;
+    TEST_ASSERT_FALSE(tmc2240_driver_set_current(&g_axis, 2200.0f, 0.5f));
+    TEST_ASSERT_EQUAL_UINT32(0, g_n);
+    TEST_ASSERT_EQUAL_UINT8(0, g_axis.current_range);
+}
+
 void test_tmc2240_set_current_clamps_hold_ratio_above_one(void)
 {
     g_axis.current_range = 1;
+    g_axis.current_range_floor = 1;
 
     /* 2.0 x 255 = 510 overflows the 8-bit HOLD_SCALE_VAL field. */
     tmc2240_driver_set_current(&g_axis, 1000.0f, 2.0f);
@@ -967,6 +1029,7 @@ void test_hold_ratio_attenuates_exactly_once_on_both_drivers(void)
         memset(&g_axis, 0, sizeof g_axis);
         reset_trace();
         g_axis.current_range = 1;
+        g_axis.current_range_floor = 1;
         tmc2240_driver_set_current(&g_axis, 1000.0f, ratios[i]);
 
         uint32_t ihold_irun = cover_write_value(0x10);
@@ -1277,6 +1340,10 @@ int main(int argc, char **argv)
     RUN_TEST(test_tmc2240_init_falls_back_to_256_microsteps_on_invalid_count);
     RUN_TEST(test_tmc2240_set_current_clamps_hostile_hold_ratio);
     RUN_TEST(test_tmc2240_set_current_clamps_hold_ratio_above_one);
+    RUN_TEST(test_tmc2240_set_current_steps_range_up_and_writes_drv_conf);
+    RUN_TEST(test_tmc2240_set_current_steps_back_down_to_the_floor);
+    RUN_TEST(test_tmc2240_set_current_on_the_floor_writes_no_drv_conf);
+    RUN_TEST(test_tmc2240_set_current_above_ceiling_leaves_range_alone);
     RUN_TEST(test_hold_ratio_attenuates_exactly_once_on_both_drivers);
 
     RUN_TEST(test_probe_writes_probe_spiout_conf_first_and_does_not_restore);
