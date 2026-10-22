@@ -384,6 +384,7 @@ class Microscope:
                 ),
                 sub_window_settle_s=control._def.PI_FOCUS_SUB_WINDOW_SETTLE_MS / 1000.0,
                 stage_config=stage_config,
+                profile_state_path=control._def.PI_FOCUS_PROFILE_STATE_PATH,
             )
             lift = None
             if control._def.USE_Z_LIFT_STAGE:

@@ -3914,8 +3914,8 @@ class ObjectivesWidget(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
-        # A Z stage with a set_servo(bool) (the V-308's PIFocusStage): with no objective changer, a
-        # switch is a manual swap done with Z retracted and its servo released.
+        # A Z stage with set_servo(bool) and freeze_profile() (the V-308's PIFocusStage): with no objective
+        # changer, a switch is a manual swap done with Z retracted and its servo released.
         self.focus_servo = focus_servo
         # Returns True while something else drives Z (autofocus, an acquisition); a manual swap is
         # refused then, since it retracts Z and releases the servo under that work.
@@ -4058,7 +4058,9 @@ class ObjectivesWidget(QWidget):
 
         The voice coil is not self-locking, so with the servo off Z drifts (on a vertical mount it
         can run to the end of travel within a minute); retracting first keeps that drift clear of
-        the sample, and restoring returns to the pre-swap focus height.
+        the sample, and restoring returns to the pre-swap focus height. The controller's motion profile
+        is frozen at that focus height first: re-engaging then moves nothing wherever Z drifted, and
+        the restore that lands back there switches it on again (see PIFocusStage.freeze_profile).
 
         The stage calls run off the GUI thread in two phases around the dialog. Until the whole swap
         ends, the dropdown stays disabled as the re-entry guard and signal_swap_active holds True so
@@ -4082,6 +4084,7 @@ class ObjectivesWidget(QWidget):
 
     def _retract_z_and_release_servo(self):
         self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
+        self.focus_servo.freeze_profile()
         # home(z) drives the V-308 to its configured objective-clear position.
         self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
         self._swap_retracted = True

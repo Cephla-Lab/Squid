@@ -1298,6 +1298,10 @@ PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z = 0
 # V-308 with the 2026-10-20 gains, a 0.05 um step is ~14% done after 20 ms, ~70% after 100 ms and done after
 # 200 ms (slow integrator creep): raise this for sub-0.1 um stacks, or tune the creep.
 PI_FOCUS_SUB_WINDOW_SETTLE_MS = 20
+# The C-414's profile generator is switched off across a manual objective swap, holding its setpoint at the
+# pre-swap focus (squid.stage.pi.C414FocusStage.freeze_profile). The setpoint is kept here while it is off, so a
+# restart after Squid stopped mid-swap still knows where to switch it back on.
+PI_FOCUS_PROFILE_STATE_PATH = "cache/pi_focus_profile.json"
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 

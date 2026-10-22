@@ -76,6 +76,9 @@ class _RecordingServo:
     def get_pos(self):
         return Pos(x_mm=0.0, y_mm=0.0, z_mm=self.z_mm, theta_rad=None)
 
+    def freeze_profile(self):
+        self.events.append("freeze")
+
     def home(self, x, y, z, theta, blocking=True):
         if self.fail_on == "retract":
             raise RuntimeError("GCS error")
@@ -113,7 +116,7 @@ def test_servo_swap_disengages_confirms_then_reengages(qtbot):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
 
@@ -130,7 +133,7 @@ def test_servo_swap_cancel_reengages_and_keeps_previous(qtbot):
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert store.current_objective == store.default_objective
     assert widget.dropdown.currentText() == store.default_objective
     assert not emitted
@@ -166,7 +169,7 @@ def test_servo_swap_reports_failed_reengage_but_keeps_confirmed_objective(qtbot)
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog"]  # no restore without the servo
+    assert events == ["freeze", "retract", "servo_off", "dialog"]  # no restore without the servo
     critical.assert_called_once()
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
@@ -182,7 +185,7 @@ def test_servo_swap_aborts_with_servo_on_when_retract_fails(qtbot):
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == []  # the servo was never released
+    assert events == ["freeze"]  # the servo was never released
     question.assert_not_called()
     warning.assert_called_once()
     assert store.current_objective == store.default_objective
@@ -201,7 +204,7 @@ def test_servo_swap_warns_when_restore_fails_but_keeps_confirmed_objective(qtbot
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on"]
     warning.assert_called_once()
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
@@ -308,7 +311,7 @@ def test_servo_swap_to_higher_mag_lowers_the_lift_and_leaves_it_lowered(qtbot):
             widget.dropdown.setCurrentText("40x")
 
     # Lowered with the objective already retracted, before the servo lets go; never raised again here.
-    assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "lift_lower", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert "Z lift is lowered" in question.call_args.args[2]
 
 
@@ -322,7 +325,7 @@ def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert "Z lift" not in question.call_args.args[2]
 
 
