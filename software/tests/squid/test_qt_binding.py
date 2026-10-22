@@ -1,3 +1,5 @@
+import sys
+
 import pytest
 
 from squid.qt_binding import DEFAULT_QT_API, qt_api_from, qt_api_from_ini, resolve_qt_api, select_qt_api
@@ -96,7 +98,19 @@ def _write_cache(directory, cached_path):
     (directory / "cache" / "config_file_path.txt").write_text(cached_path, encoding="utf-8")
 
 
-@pytest.mark.parametrize("cached", ["./configuration_b.ini", "configuration_b.ini", ".\\configuration_b.ini"])
+@pytest.mark.parametrize(
+    "cached",
+    [
+        "./configuration_b.ini",
+        "configuration_b.ini",
+        # The form control._def writes on Windows. On POSIX a backslash is part of the file name (and Squid
+        # never writes one there), so this case is Windows-only.
+        pytest.param(
+            ".\\configuration_b.ini",
+            marks=pytest.mark.skipif(sys.platform != "win32", reason="backslash is a path separator only on Windows"),
+        ),
+    ],
+)
 def test_several_inis_use_the_cached_one_like_control_def(tmp_path, cached):
     """With several configuration*.ini, control._def loads the one cache/config_file_path.txt names."""
     _write_ini(tmp_path, "[GENERAL]\nqt_api = pyqt5\n", "configuration_a.ini")
