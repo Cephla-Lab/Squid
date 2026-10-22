@@ -18,6 +18,7 @@ import time
 from contextlib import suppress
 from typing import Optional, Tuple
 
+import squid.ftdi
 import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
@@ -844,6 +845,8 @@ def connect_pi_focus_stage(
     except Exception:
         backend.close()  # release the GCS handle on any connect/init failure
         raise
+    # On Windows the FTDI latency timer (16 ms by default) dominates every GCS query's round trip.
+    squid.ftdi.warn_if_latency_timer_high(port, "PI C-414 (V-308 focus)", _log)
     return PIFocusStage(
         backend,
         stage_config=stage_config,
