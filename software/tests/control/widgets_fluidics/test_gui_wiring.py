@@ -42,7 +42,7 @@ def test_the_display_and_record_tabs_are_added():
 
 
 def test_napari_toggle_exempts_the_fluidics_tab():
-    assert "self.FLUIDICS_TAB_NAME" in _source("toggleNapariTabs")
+    assert "self.FLUIDICS_TAB_NAME" in _source("_set_napari_tabs_enabled")
 
 
 def test_signals_are_connected_and_the_imaging_port_feeds_napari():
