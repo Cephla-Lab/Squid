@@ -218,34 +218,40 @@ class PIFocusStage(AbstractStage):
             self._c414.set_on_target_tolerance(tol_mm)
             self._on_target_tol_mm = tol_mm
 
-    def _settle_if_within_window(self, move_mm: float):
-        """Pause after a waited move no larger than the on-target window.
+    def _within_window(self, move_mm: Optional[float]) -> bool:
+        """True for a move no larger than the on-target window just set for it (call under the lock).
 
         Such a move starts out inside its own window, so the controller already reports it on target
-        before Z has moved and the on-target wait ends at once. These moves get a fixed settle instead
-        (called outside the lock, so get_pos()/get_state() are not held up meanwhile).
+        before Z has moved and the on-target wait ends at once: the caller gives it a fixed settle.
         """
-        if self._on_target_tol_mm is not None and abs(move_mm) <= self._on_target_tol_mm + 1e-12:
-            time.sleep(self._sub_window_settle_s)
+        return (
+            move_mm is not None
+            and self._on_target_tol_mm is not None
+            and abs(move_mm) <= self._on_target_tol_mm + 1e-12
+        )
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
             self._size_on_target_window(rel_mm)
+            # Decided under the lock, against this move's own window (another thread's move could
+            # change the window once the lock is released).
+            settle = blocking and self._within_window(rel_mm)
             # A relative move flips sign under inversion (squid+ = native-), no offset.
             self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
-        if blocking:
-            self._settle_if_within_window(rel_mm)
+        if settle:  # outside the lock, so get_pos()/get_state() are not held up meanwhile
+            time.sleep(self._sub_window_settle_s)
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
-        move_mm = None
         with self._lock:
             target_native = self._to_native(abs_mm)
+            move_mm = None
             if self._on_target_tolerance is not None:
                 move_mm = target_native - self._c414.get_position_mm()
                 self._size_on_target_window(move_mm)
+            settle = blocking and self._within_window(move_mm)
             self._c414.move_to(target_native, wait=blocking)
-        if blocking and move_mm is not None:
-            self._settle_if_within_window(move_mm)
+        if settle:
+            time.sleep(self._sub_window_settle_s)
 
     def get_pos(self) -> Pos:
         with self._lock:

@@ -951,3 +951,27 @@ def threading_probe(lock):
     t.start()
     t.join()
     return result[0]
+
+
+def test_pi_focus_settle_decision_uses_this_moves_window(monkeypatch):
+    # Another thread's move can change the cached window between this move's lock release and its
+    # settle; the decision must be the one taken for this move under the lock.
+    stage = squid.stage.pi.PIFocusStage(
+        _make_referenced_sim(), on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02
+    )
+    sleeps = []
+
+    def sleep(s):
+        sleeps.append(s)
+
+    real_move_relative = stage._c414.move_relative
+
+    def move_relative_then_other_thread_widens_window(*a, **k):
+        out = real_move_relative(*a, **k)
+        stage._on_target_tol_mm = 0.0005  # as if a concurrent 5 um move had just sized the window
+        return out
+
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
+    stage._c414.move_relative = move_relative_then_other_thread_widens_window
+    stage.move_z(0.0003)  # 0.3 um > its own 0.1 um window: no settle, whatever the cache says later
+    assert sleeps == []
