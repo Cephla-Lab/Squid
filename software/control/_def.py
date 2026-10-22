@@ -1173,6 +1173,16 @@ PI_FOCUS_Z_TRAVEL_MM = 0.0
 PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0.1
 PI_FOCUS_ON_TARGET_TOL_MAX_UM = 0.5
 PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION = 0.1
+# Pause after a Z move before imaging, replacing SCAN_STABILIZATION_TIME_MS_Z for the V-308: its moves already
+# wait for on-target inside the window above. Ignored (SCAN_STABILIZATION_TIME_MS_Z applies) when the window is
+# disabled (PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0).
+PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z = 0
+# Settle after a V-308 move no larger than its on-target window (e.g. a 0.05 um step with the 0.1 um minimum):
+# such a move is "on target" before Z moves, so the on-target wait cannot cover it and this fixed pause does.
+# 20 ms matches what these steps got before (+-1 um on-target, then SCAN_STABILIZATION_TIME_MS_Z). Measured on a
+# V-308 with the 2026-10-20 gains, a 0.05 um step is ~14% done after 20 ms, ~70% after 100 ms and done after
+# 200 ms (slow integrator creep): raise this for sub-0.1 um stacks, or tune the creep.
+PI_FOCUS_SUB_WINDOW_SETTLE_MS = 20
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 
