@@ -1108,6 +1108,10 @@ NL5_USE_DOUT = True
 # signal. A scan that has not finished after this long (plus 3 frame times) is aborted and the
 # trigger dropped, instead of holding the camera's trigger lock forever.
 NL5_TRIGGER_TIMEOUT_S = 2.0
+# Tucsen Aries (GenICam): expose all rows from the trigger (SensorShutterMode GlobalReset) instead of row by row.
+# The camera only accepts it in hardware trigger mode and drops back to Rolling whenever it leaves that mode, so
+# it is applied each time hardware trigger mode is set.
+TUCSEN_GLOBAL_RESET = False
 NL5_TRIGGER_PIN = 2
 NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 638: 4, 640: 4}
 # AION only: USB serial number of the SmarAct SCU controller driving the internal slit stage

@@ -361,3 +361,20 @@ def test_frame_callback_copies_the_frame_out_of_device_memory(monkeypatch, flip)
     np.testing.assert_array_equal(frames[0].frame, expected)
     ctypes.memset(backing, 0, len(backing))  # the driver reuses its buffer
     np.testing.assert_array_equal(frames[0].frame, expected)
+
+
+@pytest.mark.parametrize("global_reset, expected_index", [(True, 1), (False, 0)])
+def test_hardware_trigger_mode_sets_the_shutter_mode(monkeypatch, global_reset, expected_index):
+    """SensorShutterMode {Rolling, GlobalReset} is only accepted in hardware trigger mode and the camera reverts to
+    Rolling when it leaves it, so every switch to hardware trigger sets it (TUCSEN_GLOBAL_RESET)."""
+    import control.camera_tucsen as tucsen
+
+    monkeypatch.setattr(tucsen, "TUCSEN_GLOBAL_RESET", global_reset)
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+
+    TucsenCamera._set_acquisition_mode_imp(camera, tucsen.CameraAcquisitionMode.HARDWARE_TRIGGER)
+    TucsenCamera._set_acquisition_mode_imp(camera, tucsen.CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    TucsenCamera._set_acquisition_mode_imp(camera, tucsen.CameraAcquisitionMode.HARDWARE_TRIGGER)
+
+    shutter_writes = [value for name, value in camera.writes if name == "SensorShutterMode"]
+    assert shutter_writes == [expected_index, expected_index]  # on each switch to hardware trigger, not to software

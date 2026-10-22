@@ -769,6 +769,11 @@ class TucsenCamera(AbstractCamera):
                     self._set_genicam_parameter("TriggerPortEnable", 1, TUELEM_TYPE.TU_ElemEnumeration.value)
                     self._set_genicam_parameter("TriggerOutputSignal", 5, TUELEM_TYPE.TU_ElemEnumeration.value)
                     self._set_genicam_parameter("TriggerExposureType", 1, TUELEM_TYPE.TU_ElemEnumeration.value)
+                    # SensorShutterMode {Rolling, GlobalReset}: only accepted in hardware trigger mode, and the camera
+                    # reverts to Rolling when it leaves it, so it is set here every time (TUCSEN_GLOBAL_RESET).
+                    self._set_genicam_parameter(
+                        "SensorShutterMode", 1 if TUCSEN_GLOBAL_RESET else 0, TUELEM_TYPE.TU_ElemEnumeration.value
+                    )
                 else:
                     self._trigger_attr.nTgrMode = TUCAM_CAPTURE_MODES.TUCCM_TRIGGER_STANDARD.value
             else:
