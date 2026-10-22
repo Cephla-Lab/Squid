@@ -221,6 +221,43 @@ def test_binning_change_uses_the_new_binning_and_reapplies_exposure(hardware_tri
             assert camera.params["ExposureTime"] == 10000
 
 
+def test_binning_change_reapplies_exposure_before_streaming_resumes():
+    """Streaming (and with it live triggers) must not resume with the new binning but the previous exposure and MCU
+    strobe delay: both are pushed inside the same pause as the binning change."""
+    import contextlib
+
+    import control.camera_tucsen as tucsen
+
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+    camera.acquisition_mode = tucsen.CameraAcquisitionMode.HARDWARE_TRIGGER
+    events = []
+    depth = [0]
+
+    @contextlib.contextmanager
+    def pause_streaming():  # stops and restarts streaming only at the outermost level, like AbstractCamera's
+        depth[0] += 1
+        if depth[0] == 1:
+            events.append("stop streaming")
+        try:
+            yield
+        finally:
+            depth[0] -= 1
+            if depth[0] == 0:
+                events.append("start streaming")
+
+    camera._pause_streaming = pause_streaming
+    set_genicam = camera._set_genicam_parameter
+    camera._set_genicam_parameter = lambda name, value, t: (events.append(name), set_genicam(name, value, t))[1]
+    camera._hw_set_strobe_delay_ms_fn = lambda ms: events.append("MCU strobe delay")
+
+    TucsenCamera.set_binning(camera, 2, 2)
+
+    assert events[0] == "stop streaming" and events[-1] == "start streaming"
+    assert events.count("stop streaming") == 1 and events.count("start streaming") == 1
+    assert events.index("BinningSelector") < events.index("ExposureTime") < events.index("start streaming")
+    assert events.index("MCU strobe delay") < events.index("start streaming")
+
+
 def test_failed_binning_change_keeps_the_previous_binning():
     camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
 
