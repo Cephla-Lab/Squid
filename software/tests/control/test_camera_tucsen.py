@@ -115,6 +115,7 @@ class _FakeGenicamCamera:
 
     def __init__(self, params):
         import contextlib
+        import threading
 
         import control.camera_tucsen as tucsen
         import squid.logging
@@ -127,7 +128,12 @@ class _FakeGenicamCamera:
         self._camera = None
         self._log = squid.logging.get_logger("test")
         self._pause_streaming = contextlib.nullcontext
-        self._update_internal_settings = lambda: None
+        self._update_internal_settings = lambda: TucsenCamera._calculate_strobe_delay(self)
+        self.acquisition_mode = tucsen.CameraAcquisitionMode.SOFTWARE_TRIGGER
+        self.strobe_delays_ms = []
+        self._hw_set_strobe_delay_ms_fn = self.strobe_delays_ms.append
+        self._exposure_time_ms = 10.0
+        self._trigger_sent = threading.Event()
 
     def _get_genicam_parameter(self, name):
         if name not in self.params:
@@ -141,6 +147,15 @@ class _FakeGenicamCamera:
 
     def get_region_of_interest(self):
         return TucsenCamera.get_region_of_interest(self)
+
+    def get_acquisition_mode(self):
+        return self.acquisition_mode
+
+    def get_strobe_time(self):
+        return TucsenCamera.get_strobe_time(self)
+
+    def set_exposure_time(self, exposure_time_ms):
+        return TucsenCamera.set_exposure_time(self, exposure_time_ms)
 
 
 _FULL_FRAME = {"OffsetX": 0, "OffsetY": 0, "Width": 3200, "Height": 3200, "TriggerInputDelay": 0}
@@ -156,6 +171,25 @@ def test_aries_region_is_set_through_width_height_and_offsets():
     assert not any(name.startswith("MultiROI") for name, _ in camera.writes)
     # Offsets are cleared before the size changes, so a larger region never runs past the sensor edge.
     assert camera.writes[:2] == [("OffsetX", 0), ("OffsetY", 0)]
+
+
+def test_aries_region_change_reapplies_exposure_and_strobe_delay_in_hardware_trigger():
+    """The camera exposure (exposure + readout) and the MCU strobe delay are derived from the readout time, which
+    follows the region height: a region change must push both, or illumination can start before every row is
+    exposing."""
+    import control.camera_tucsen as tucsen
+
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+    camera.acquisition_mode = tucsen.CameraAcquisitionMode.HARDWARE_TRIGGER
+    TucsenCamera.set_region_of_interest(camera, 0, 1200, 3200, 800)
+    assert camera.strobe_delays_ms[-1] == pytest.approx(3.0)
+    assert camera.params["ExposureTime"] == 13000  # 10 ms + 3 ms readout, in us
+
+    TucsenCamera.set_region_of_interest(camera, 0, 0, 3200, 3200)
+
+    assert camera.strobe_delays_ms[-1] == pytest.approx(12.0)
+    assert camera.params["ExposureTime"] == 22000  # 10 ms + 12 ms readout
+    assert camera._exposure_time_ms == 10.0  # the user's exposure is unchanged
 
 
 def test_aries_readout_time_comes_from_the_camera_row_time():

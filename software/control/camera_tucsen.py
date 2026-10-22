@@ -698,6 +698,9 @@ class TucsenCamera(AbstractCamera):
                         f"Failed to set ROI: {roi_attr.nHOffset}, {roi_attr.nVOffset}, {roi_attr.nWidth}, {roi_attr.nHeight}"
                     )
             self._update_internal_settings()
+            # The readout (strobe) time follows the region height; in hardware trigger mode the camera exposure and
+            # the MCU strobe delay are derived from it, so re-apply them as a trigger-mode change does.
+            self.set_exposure_time(self._exposure_time_ms)
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         if self._model_properties.is_genicam:
