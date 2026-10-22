@@ -14,6 +14,7 @@ from control.microcontroller import CommandAborted, LimitSwitchConfigError, Micr
 # The version just before the first one that ships SET_LIMIT_SWITCH_CONFIG.
 OLD_FIRMWARE = (LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[0], LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[1] - 1)
 
+
 def _sim(version):
     if version == "old":
         version = OLD_FIRMWARE
