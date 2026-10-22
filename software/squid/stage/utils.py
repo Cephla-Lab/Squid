@@ -71,7 +71,8 @@ def z_stabilization_time_s() -> float:
     (PI_FOCUS_ON_TARGET_TOL_*, 0.1-0.5 um by default), so the stepper's fixed SCAN_STABILIZATION_TIME_MS_Z
     only adds time: the V-308 uses PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z (default 0) instead. With the window
     disabled (MIN = 0, the controller's own +/-1 um, which calls sub-um steps done before they move) the
-    stepper value applies.
+    stepper value applies. A move no larger than the window is "on target" before it starts; PIFocusStage
+    covers those with its own fixed settle (PI_FOCUS_SUB_WINDOW_SETTLE_MS).
     """
     if _def.USE_PI_FOCUS_STAGE and _def.PI_FOCUS_ON_TARGET_TOL_MIN_UM:
         return _def.PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z / 1000

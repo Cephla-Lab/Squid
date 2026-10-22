@@ -172,6 +172,7 @@ class PIFocusStage(AbstractStage):
         invert_z: bool = False,
         home_to_positive_limit: bool = False,
         on_target_tolerance: Optional[Tuple[float, float, float]] = None,
+        sub_window_settle_s: float = 0.0,
     ):
         super().__init__(stage_config)
         self._c414 = c414
@@ -181,6 +182,7 @@ class PIFocusStage(AbstractStage):
                 raise ValueError(f"on_target_tolerance needs 0 < min <= max (mm), got {on_target_tolerance}")
         self._on_target_tolerance = on_target_tolerance
         self._on_target_tol_mm: Optional[float] = None  # window last written to the controller
+        self._sub_window_settle_s = sub_window_settle_s
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
         self._closed = False
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
@@ -216,18 +218,34 @@ class PIFocusStage(AbstractStage):
             self._c414.set_on_target_tolerance(tol_mm)
             self._on_target_tol_mm = tol_mm
 
+    def _settle_if_within_window(self, move_mm: float):
+        """Pause after a waited move no larger than the on-target window.
+
+        Such a move starts out inside its own window, so the controller already reports it on target
+        before Z has moved and the on-target wait ends at once. These moves get a fixed settle instead
+        (called outside the lock, so get_pos()/get_state() are not held up meanwhile).
+        """
+        if self._on_target_tol_mm is not None and abs(move_mm) <= self._on_target_tol_mm + 1e-12:
+            time.sleep(self._sub_window_settle_s)
+
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
             self._size_on_target_window(rel_mm)
             # A relative move flips sign under inversion (squid+ = native-), no offset.
             self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
+        if blocking:
+            self._settle_if_within_window(rel_mm)
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
+        move_mm = None
         with self._lock:
             target_native = self._to_native(abs_mm)
             if self._on_target_tolerance is not None:
-                self._size_on_target_window(target_native - self._c414.get_position_mm())
+                move_mm = target_native - self._c414.get_position_mm()
+                self._size_on_target_window(move_mm)
             self._c414.move_to(target_native, wait=blocking)
+        if blocking and move_mm is not None:
+            self._settle_if_within_window(move_mm)
 
     def get_pos(self) -> Pos:
         with self._lock:
@@ -769,6 +787,7 @@ def connect_pi_focus_stage(
     home_to_positive_limit: bool = False,
     z_travel_mm: float = 0.0,
     on_target_tolerance: Optional[Tuple[float, float, float]] = None,
+    sub_window_settle_s: float = 0.0,
     stage_config: Optional[StageConfig] = None,
 ) -> PIFocusStage:
     """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
@@ -779,7 +798,8 @@ def connect_pi_focus_stage(
     system (see PIFocusStage). z_travel_mm>0 restores the controller's Position Range Limit to the
     full physical travel [0, z_travel_mm] at connect, so the inversion offset / fencing don't drift
     across restarts (qTMN/qTMX on the C-414 ARE the range-limit params). on_target_tolerance
-    (min_mm, max_mm, step_fraction) sizes the on-target window per move (see PIFocusStage).
+    (min_mm, max_mm, step_fraction) sizes the on-target window per move (see PIFocusStage), and
+    sub_window_settle_s is the pause after a waited move no larger than that window.
     """
     if simulated:
         backend = _SimulatedC414(axis=axis)
@@ -795,6 +815,7 @@ def connect_pi_focus_stage(
             invert_z=invert_z,
             home_to_positive_limit=home_to_positive_limit,
             on_target_tolerance=on_target_tolerance,
+            sub_window_settle_s=sub_window_settle_s,
         )
 
     # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
@@ -824,4 +845,5 @@ def connect_pi_focus_stage(
         invert_z=invert_z,
         home_to_positive_limit=home_to_positive_limit,
         on_target_tolerance=on_target_tolerance,
+        sub_window_settle_s=sub_window_settle_s,
     )

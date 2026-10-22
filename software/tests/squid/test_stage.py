@@ -880,3 +880,74 @@ def test_z_stabilization_time(monkeypatch, use_pi, tol_min_um, expected_s):
     monkeypatch.setattr(control._def, "SCAN_STABILIZATION_TIME_MS_Z", 20)
     monkeypatch.setattr(control._def, "PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z", 0)
     assert squid.stage.utils.z_stabilization_time_s() == pytest.approx(expected_s)
+
+
+@pytest.mark.parametrize(
+    "move, kwargs, settles",
+    [
+        ("rel", {"step_mm": 0.00005}, True),  # 0.05 um: inside the 0.1 um window, "on target" before it moves
+        ("rel", {"step_mm": 0.0001}, True),  # exactly the window
+        ("rel", {"step_mm": 0.00015}, False),  # 0.15 um > 0.1 um window: the on-target wait covers it
+        ("rel", {"step_mm": 0.0015}, False),
+        ("rel", {"step_mm": 0.00005, "blocking": False}, False),  # the caller is not waiting
+        ("abs", {"step_mm": 0.00005}, True),
+        ("abs", {"step_mm": 0.003}, False),
+    ],
+)
+def test_pi_focus_moves_within_the_window_get_a_fixed_settle(monkeypatch, move, kwargs, settles):
+    sleeps = []
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleeps.append)
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02)
+    stage.move_z_to(1.0)  # 1 mm: no settle
+    sleeps.clear()
+
+    blocking = kwargs.get("blocking", True)
+    if move == "rel":
+        stage.move_z(kwargs["step_mm"], blocking=blocking)
+    else:
+        stage.move_z_to(1.0 + kwargs["step_mm"], blocking=blocking)
+
+    assert sleeps == ([0.02] if settles else [])
+
+
+def test_pi_focus_without_window_policy_never_adds_a_settle(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleeps.append)
+    stage = squid.stage.pi.PIFocusStage(_make_referenced_sim(), sub_window_settle_s=0.02)
+    stage.move_z(0.00005)
+    stage.move_z_to(1.0)
+    assert sleeps == []  # the caller's stabilization pause (SCAN_STABILIZATION_TIME_MS_Z) applies instead
+
+
+def test_pi_focus_sub_window_settle_does_not_hold_the_stage_lock(monkeypatch):
+    stage = squid.stage.pi.PIFocusStage(
+        _make_referenced_sim(), on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02
+    )
+    held = []
+
+    def sleep(_):
+        acquired = threading_probe(stage._lock)
+        held.append(not acquired)
+
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
+    stage.move_z(0.00005)
+    assert held == [False]
+
+
+def threading_probe(lock):
+    """True if another thread can take ``lock`` right now."""
+    import threading
+
+    result = []
+
+    def take():
+        got = lock.acquire(blocking=False)
+        result.append(got)
+        if got:
+            lock.release()
+
+    t = threading.Thread(target=take)
+    t.start()
+    t.join()
+    return result[0]

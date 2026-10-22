@@ -381,6 +381,7 @@ class Microscope:
                     if control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM
                     else None
                 ),
+                sub_window_settle_s=control._def.PI_FOCUS_SUB_WINDOW_SETTLE_MS / 1000.0,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
