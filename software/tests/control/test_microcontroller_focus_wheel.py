@@ -10,6 +10,12 @@ from control.firmware_sim_serial import FirmwareSimSerial
 from control.microcontroller import Microcontroller
 
 
+@pytest.fixture(autouse=True)
+def _no_lift_unless_a_test_says_so(monkeypatch):
+    # On a Z lift machine's ini, connecting saves the wheel as TO_HOST; these tests start from the stock wheel.
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+
+
 def _mcu(version):
     sim = FirmwareSimSerial(strict=True, firmware_version=version)
     return Microcontroller(serial_device=sim, reset_and_initialize=False), sim

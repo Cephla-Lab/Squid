@@ -258,3 +258,33 @@ def test_stage_utils_dialog_toggle_follows_the_lift_guard(qtbot):
         dialog.switch_position()
     move.assert_called_once()
     assert guard.busy  # its own toggle holds the guard until it reports back
+
+
+def test_a_failed_return_from_loading_stays_at_loading(qtbot):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    guard = LiftMotionGuard(dialog)
+    dialog.set_lift_motion_guard(guard)
+    dialog._was_live = False
+    dialog.slide_position = "loading"
+    dialog.signal_loading_position_reached.emit()
+    assert guard.at_loading_position
+
+    with patch("control.widgets.move_to_scanning_position"):
+        dialog.switch_position()  # the return starts...
+    assert not guard.at_loading_position
+    reached = []
+    dialog.signal_scanning_position_reached.connect(lambda: reached.append("scanning"))
+    dialog.signal_loading_position_reached.connect(lambda: reached.append("loading"))
+    with patch.object(QMessageBox, "warning") as warning:
+        dialog._callback_scanning_position_reached(False, "timeout")  # ...and fails
+    warning.assert_called_once()
+    assert reached == ["loading"]  # still at loading: everything stays locked
+    assert dialog.slide_position == "loading" and guard.at_loading_position
+    assert dialog.btn_load_slide.text() == "Move to Scanning Position"  # retry offered

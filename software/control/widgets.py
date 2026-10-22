@@ -2977,6 +2977,13 @@ class StageUtils(QDialog):
 
     def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
         """Handle slide scanning position reached signal."""
+        if not success:
+            # The stage may not have left the loading position: it is still treated as there (a lift system keeps
+            # everything locked), and the button offers the move back to scanning again.
+            self._callback_loading_position_reached(
+                False, f"Could not move back to the scanning position:\n{error_message}\n\nTry again."
+            )
+            return
         self.slide_position = "scanning"
         self.btn_load_slide.setStyleSheet("background-color: #C2C2FF")
         self.btn_load_slide.setText("Move to Loading Position")

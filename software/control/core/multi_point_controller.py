@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import Any, Callable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -248,6 +248,9 @@ class MultiPointController:
         self.focus_map = None
         self.region_laser_af_offsets = {}
         self.gen_focus_map = False
+        # Optional check run before every start (GUI widgets, workflow runner, TCP server): returns why the acquisition
+        # must not start now, or None. A Z lift system uses it to refuse a start while the lift is moving.
+        self.start_blocker: Optional[Callable[[], Optional[str]]] = None
         self.focus_map_storage = []
         self.already_using_fmap = False
         self.selected_configurations = []
@@ -696,6 +699,12 @@ class MultiPointController:
         self.last_image_count = 0
         if not self.validate_acquisition_settings():
             # emit acquisition finished signal to re-enable the UI
+            self.last_end_reason = "failed_to_start"
+            self.callbacks.signal_acquisition_finished()
+            return False
+        refusal = self.start_blocker() if self.start_blocker is not None else None
+        if refusal:
+            self._log.error(f"Acquisition not started: {refusal}")
             self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
             return False

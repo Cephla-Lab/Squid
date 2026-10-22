@@ -186,6 +186,9 @@ class PIFocusStage(AbstractStage):
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
         self._closed = False
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
+        # Every Z move command (any caller) bumps this; the focus wheel router compares it with its own last
+        # move to notice that something else moved Z in between.
+        self.move_command_count = 0
 
         self._invert = invert_z
         native_lo, native_hi = c414.hardware_limits_mm()
@@ -232,6 +235,7 @@ class PIFocusStage(AbstractStage):
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
+            self.move_command_count += 1
             self._size_on_target_window(rel_mm)
             # Decided under the lock, against this move's own window (another thread's move could
             # change the window once the lock is released).
@@ -243,6 +247,7 @@ class PIFocusStage(AbstractStage):
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
+            self.move_command_count += 1
             target_native = self._to_native(abs_mm)
             move_mm = None
             if self._on_target_tolerance is not None:
@@ -303,6 +308,7 @@ class PIFocusStage(AbstractStage):
             with self._lock:
                 if self._closed:  # close() won the race; do not touch the torn-down handle
                     return
+                self.move_command_count += 1
                 if not self._c414.is_referenced():
                     self._c414.reference()
                 # _home_native_mm is a NATIVE target (positive travel limit for an upright retract,

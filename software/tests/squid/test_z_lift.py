@@ -530,3 +530,73 @@ def test_a_reconnected_panel_does_not_move_z(monkeypatch):
     mcu.focus_wheel_count = 413376 + 16  # turning on from there works, from the measured position
     router.poll()
     assert focus.targets == [pytest.approx(1.0 + 0.016)]
+
+
+class _CountingFocus(_FakeFocus):
+    """A focus stage that counts move commands like PIFocusStage.move_command_count."""
+
+    def __init__(self, z_mm=1.0):
+        super().__init__(z_mm)
+        self.move_command_count = 0
+
+    def move_z_to(self, abs_mm, blocking=True):
+        self.move_command_count += 1
+        self.targets.append(round(abs_mm, 9))
+
+
+def _counting_router(monkeypatch, enabled):
+    import squid.stage.lift as lift_module
+
+    clock = [100.0]
+    monkeypatch.setattr(lift_module.time, "monotonic", lambda: clock[0])
+    mcu = MagicMock()
+    mcu.focus_wheel_count = 0
+    focus = _CountingFocus(z_mm=1.0)
+    router = FocusWheelRouter(mcu, focus, mm_per_tick=0.001, enabled=lambda: enabled[0])
+    router.poll()
+    return router, mcu, focus, clock
+
+
+def test_a_disabled_poll_without_ticks_forgets_the_target(monkeypatch):
+    # Codex review: autofocus moved Z to 1.5 mm during a short pause; the next tick commanded 1.002 mm.
+    enabled = [True]
+    router, mcu, focus, clock = _counting_router(monkeypatch, enabled)
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 1
+    router.poll()
+    assert focus.targets == [pytest.approx(1.001)]
+    enabled[0] = False  # autofocus starts: no ticks arrive while it runs
+    clock[0] += 0.03
+    router.poll()
+    focus.z_mm = 1.5  # autofocus moved Z (on a stage without a move counter)
+    enabled[0] = True
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 2
+    router.poll()
+    assert focus.targets[-1] == pytest.approx(1.501)  # from the measured position, not the old target
+
+
+def test_a_move_by_anything_else_resyncs_the_target(monkeypatch):
+    enabled = [True]
+    router, mcu, focus, clock = _counting_router(monkeypatch, enabled)
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 1
+    router.poll()
+    focus.move_z_to(2.0)  # the GUI moves Z between two wheel ticks, within the resync time
+    focus.z_mm = 2.0
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 2
+    router.poll()
+    assert focus.targets[-1] == pytest.approx(2.001)
+
+
+def test_pi_focus_stage_counts_every_move_command():
+    import squid.stage.pi
+
+    sim = squid.stage.pi._SimulatedC414()
+    sim.initialize(reference=True)
+    stage = squid.stage.pi.PIFocusStage(sim)
+    stage.move_z_to(1.0)
+    stage.move_z(0.1)
+    stage.home(False, False, True, False, blocking=True)
+    assert stage.move_command_count == 3

@@ -245,6 +245,7 @@ class FocusWheelRouter:
         self._range_mm: Optional[Tuple[float, float]] = None
         self._last_tick_time = 0.0
         self._at_end_logged = False  # the end-of-travel trace is logged once per arrival at an end
+        self._own_move_count: Optional[int] = None  # the focus stage's move_command_count after our last move
 
     def set_enabled_check(self, enabled: Callable[[], bool]):
         self._enabled = enabled
@@ -272,6 +273,12 @@ class FocusWheelRouter:
                 _log.exception("Focus wheel: V-308 move failed")
                 self._target_mm = None
 
+    def _moved_by_someone_else(self) -> bool:
+        """True if Z was commanded by anything else (the GUI, a script) since our last move: start from the measured
+        position, never from our old target."""
+        count = getattr(self._focus, "move_command_count", None)
+        return count is not None and self._own_move_count is not None and count != self._own_move_count
+
     @staticmethod
     def _wrapped_delta(count: int, last: int) -> int:
         return ((count - last + 2**31) % 2**32) - 2**31
@@ -296,12 +303,18 @@ class FocusWheelRouter:
             self._target_mm = None  # the next real turn starts from the measured position
             return
         self._last_count = count
-        if ticks == 0:
-            return
         if not self._enabled():
+            # Checked on every poll, not only those with ticks: autofocus or an acquisition may move Z during a
+            # pause shorter than _RESYNC_AFTER_S, and the wheel must not then return Z to the old target.
             self._target_mm = None
             return
-        if self._target_mm is None or now - self._last_tick_time > self._RESYNC_AFTER_S:
+        if ticks == 0:
+            return
+        if (
+            self._target_mm is None
+            or now - self._last_tick_time > self._RESYNC_AFTER_S
+            or self._moved_by_someone_else()
+        ):
             self._target_mm = self._focus.get_pos().z_mm
             # Read with the position: the range can be fenced at runtime (set_limits).
             z_range = getattr(self._focus, "z_range_mm", None)
@@ -333,6 +346,7 @@ class FocusWheelRouter:
             self._at_end_logged = at_end
         t0 = time.perf_counter()
         self._focus.move_z_to(self._target_mm, blocking=False)
+        self._own_move_count = getattr(self._focus, "move_command_count", None)
         move_s = time.perf_counter() - t0
         if move_s > self._TRACE_SLOW_MOVE_S:
             _log.info(

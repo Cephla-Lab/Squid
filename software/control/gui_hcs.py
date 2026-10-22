@@ -2368,6 +2368,21 @@ class HighContentScreeningGui(QMainWindow):
                 widget.setEnabled(was_enabled)
         self._loading_position_saved_enabled = {}
 
+    def _claim_lift_for_acquisition(self):
+        """MultiPointController.start_blocker on a Z lift system: hold the lift for the acquisition, or say why not."""
+        guard = self.zLiftWidget.motion_guard
+        if guard.at_loading_position:
+            return "the stage is at the loading position (move it to the scanning position first)"
+        if not guard.claim():
+            return "the Z lift is moving (a lift move, the loading toggle or an objective change)"
+        self._acquisition_holds_lift = True
+        return None
+
+    def _release_lift_after_acquisition(self):
+        if self._acquisition_holds_lift:
+            self._acquisition_holds_lift = False
+            self.zLiftWidget.motion_guard.release()
+
     def _set_control_panel_lock(self, locked: bool):
         """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
         (firmware >= 1.8; older firmware cannot, which is logged)."""
@@ -2648,6 +2663,13 @@ class HighContentScreeningGui(QMainWindow):
         self.stageUtils.signal_scanning_position_reached.connect(self.navigationViewer.clear_slide)
 
         if self.zLiftWidget is not None:
+            # Z lift system: an acquisition holds the lift (no lift move, loading toggle or swap while it images),
+            # and does not start while the lift is moving or the stage is at the loading position. Every start
+            # goes through run_acquisition, so the check covers the GUI widgets, the workflow runner and the server.
+            self._acquisition_holds_lift = False
+            self.multipointController.start_blocker = self._claim_lift_for_acquisition
+            self.multipointController.acquisition_finished.connect(self._release_lift_after_acquisition)
+
             # Z lift system: nothing moves at the loading position (a sample is being loaded) until the toggle back
             # to scanning; the lift itself is held by its LiftMotionGuard, these are the rest.
             self.stageUtils.signal_loading_position_reached.connect(self._lock_stage_at_loading_position)
