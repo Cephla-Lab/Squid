@@ -167,7 +167,7 @@ class RCMInternalStage:
     def home(self):
         # Commands sent during homing abort it, so pause the oscillation and resume it afterwards.
         was_oscillating = self.is_oscillating()
-        self.stop_oscillation()
+        self._join_oscillation_thread()
         ch = self.SLIT_CHANNEL
         self._send(f"SCLF{ch}F5000")
         self._send(f"SST{ch}T22")
@@ -226,7 +226,7 @@ class RCMInternalStage:
         return self._oscillation_thread is not None and self._oscillation_thread.is_alive()
 
     def stop_oscillation(self):
-        """Stop the oscillation and return the slit to its centre."""
+        """Stop the oscillation, also one that ended on an error, and return the slit to its centre."""
         if self._oscillation_thread is None:
             return
         self._join_oscillation_thread()
@@ -238,6 +238,8 @@ class RCMInternalStage:
             self._oscillation_stop.set()
             self._oscillation_thread.join()
             self._oscillation_thread = None
+            # the thread's last move went out without the usual gap; give the SCU that gap now
+            time.sleep(self.COMMAND_GAP_S)
 
     def _oscillate(self):
         try:
@@ -253,8 +255,9 @@ class RCMInternalStage:
             plus_um, minus_um, frequency_hz = self.oscillation
             half_period_s = 0.5 / frequency_hz
             target = self._slit_centre() + int(round(plus_um if to_plus else -minus_um))
-            # Hold each end until the next move is due, so the closed loop does not let go in between.
-            hold_ms = math.ceil(half_period_s * 1000)
+            # Hold each end past the next move's due time, so a late move never finds the closed loop let go;
+            # the next move replaces the hold anyway.
+            hold_ms = math.ceil(2 * half_period_s * 1000)
             self._send(f"MPA{self.SLIT_CHANNEL}P{target}H{hold_ms}", gap_s=0)
             to_plus = not to_plus
             deadline += half_period_s
@@ -275,9 +278,11 @@ class RCMInternalStage:
                 time.sleep(min(remaining, self.STOP_POLL_S))
 
     def close(self):
-        self.stop_oscillation()
-        if self.ser.is_open:
-            self.ser.close()
+        try:
+            self.stop_oscillation()
+        finally:
+            if self.ser.is_open:
+                self.ser.close()
 
 
 class NL5(_ScanSpeedMixin):
@@ -451,6 +456,9 @@ class NL5_Simulation(_ScanSpeedMixin):
 
     def set_exposure_delay(self, exposure_delay_ms):
         self.exposure_delay_ms = exposure_delay_ms
+        pass
+
+    def start_slit_oscillation(self, plus_um, minus_um, frequency_hz):
         pass
 
     def stop_slit_oscillation(self):

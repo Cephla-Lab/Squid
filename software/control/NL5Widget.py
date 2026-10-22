@@ -174,7 +174,9 @@ class NL5Widget(QWidget):
             self.slit_osc_button.setCheckable(True)
             self.slit_osc_button.setToolTip(
                 "Move the slit back and forth between its centre (slit position + slit offset) + the first\n"
-                "value and its centre - the second value, at the set frequency. Unchecking returns it to the centre."
+                "value and its centre - the second value, at the set frequency. Unchecking returns it to the centre.\n"
+                "The stage needs ~134 ms to settle a 100 µm move: at 3 Hz a +/-50 µm swing reaches both ends,\n"
+                "larger swings need a lower frequency or they turn around short of the set positions."
             )
             self.slit_osc_button.toggled.connect(self.update_slit_oscillation)
             for widget in (
@@ -315,6 +317,13 @@ class NL5Widget(QWidget):
     def _sync_slit_oscillation_button(self):
         """Show whether the slit is actually oscillating, and watch it while it does."""
         oscillating = self.nl5.is_slit_oscillating()
+        if self.slit_osc_button.isChecked() and not oscillating:
+            # It ended on its own (serial error, failed homing): put the slit back at its centre, which also
+            # applies a slit or offset chosen while it oscillated.
+            try:
+                self.nl5.stop_slit_oscillation()
+            except Exception as e:
+                self._log.error(f"Could not return the slit to its centre: {e}")
         self.slit_osc_button.blockSignals(True)
         self.slit_osc_button.setChecked(oscillating)
         self.slit_osc_button.blockSignals(False)

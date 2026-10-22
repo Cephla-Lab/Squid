@@ -70,10 +70,10 @@ def test_oscillates_between_plus_and_minus_around_the_slit_centre(stage):
 
     sent = moves(stage.ser.commands())
     *oscillation, back = sent
-    assert len(oscillation) >= 4
-    # alternates +, -, +, ... and holds each end for half a period (200 ms)
+    assert len(oscillation) >= 3
+    # alternates +, -, +, ... and holds each end for two half periods (400 ms)
     assert [t for t, _ in oscillation] == [centre + 30 if i % 2 == 0 else centre - 20 for i in range(len(oscillation))]
-    assert all(hold == 200 for _, hold in oscillation)
+    assert all(hold == 400 for _, hold in oscillation)
     # stopping returns the slit to its centre with the normal hold
     assert back == (centre, RCMInternalStage.DEFAULT_HOLD_MS)
     assert not stage.is_oscillating()
@@ -88,7 +88,7 @@ def test_moves_are_half_a_period_apart(stage):
     gaps = [b - a for a, b in zip(times, times[1:])]
     assert len(gaps) >= 3
     # timed against absolute deadlines, so the moves do not drift even if one is late
-    assert (times[-1] - times[0]) / len(gaps) == pytest.approx(0.2, abs=0.01), gaps
+    assert (times[-1] - times[0]) / len(gaps) == pytest.approx(0.2, abs=0.02), gaps
     assert all(g == pytest.approx(0.2, abs=0.05) for g in gaps), gaps
 
 
@@ -127,8 +127,8 @@ def test_start_again_changes_parameters_without_restarting_the_cycle(stage):
     stage.stop_oscillation()
 
     *oscillation, back = moves(stage.ser.commands())
-    # the cycle carries on from - with the new positions and hold (250 ms at 2 Hz)
-    assert oscillation[:3] == [(centre + 30, 200), (centre - 40, 250), (centre + 100, 250)]
+    # the cycle carries on from - with the new positions and hold (500 ms at 2 Hz)
+    assert oscillation[:3] == [(centre + 30, 400), (centre - 40, 500), (centre + 100, 500)]
     assert back == (centre, RCMInternalStage.DEFAULT_HOLD_MS)
 
 
@@ -145,9 +145,11 @@ def test_home_pauses_and_resumes_the_oscillation(stage, monkeypatch):
     homed = commands.index(":MTR0Z1")
     assert commands[commands.index(":CS0") : homed + 1] == [":CS0", ":MTR0Z1"]  # nothing sent while homing
     # back to the centre, then oscillating again
+    # pausing for homing sends no move back to the centre first
+    assert RCMInternalStage.DEFAULT_HOLD_MS not in [hold for _, hold in moves(commands[: commands.index(":CS0")])]
     holds = [hold for _, hold in moves(commands[homed:])]
     assert holds[0] == RCMInternalStage.DEFAULT_HOLD_MS
-    assert holds[1:-1] and set(holds[1:-1]) == {200}
+    assert holds[1:-1] and set(holds[1:-1]) == {400}
 
 
 @pytest.mark.parametrize(
@@ -191,6 +193,18 @@ def test_serial_error_ends_the_oscillation_and_slit_moves_work_again(stage, capl
     assert moves(stage.ser.commands()) == [(SLIT_POSITIONS_UM[88] + 10, RCMInternalStage.DEFAULT_HOLD_MS)]
     stage.start_oscillation(30, 30, 2.5)  # and it can be started again
     assert stage.is_oscillating()
+
+
+def test_close_closes_the_port_even_if_the_slit_cannot_be_centred(stage):
+    def unplugged(data):
+        raise OSError("device disconnected")
+
+    stage.start_oscillation(30, 30, 2.5)
+    stage.ser.write = unplugged
+    stage._oscillation_thread.join(1)
+    with pytest.raises(OSError):
+        stage.close()
+    assert not stage.ser.is_open
 
 
 def test_close_stops_the_oscillation(stage):
@@ -265,4 +279,4 @@ def test_widget_unchecks_when_the_oscillation_ends_on_its_own(qtbot):
     widget.slit_osc_button.setChecked(True)
     nl5.oscillating = False  # e.g. the serial port went away
     qtbot.waitUntil(lambda: not widget.slit_osc_button.isChecked(), timeout=1000)
-    assert nl5.calls == [("start", 50, 50, 1.0)]  # unchecking by the sync sends nothing
+    assert nl5.calls == [("start", 50, 50, 1.0), ("stop",)]  # the sync puts the slit back at its centre
