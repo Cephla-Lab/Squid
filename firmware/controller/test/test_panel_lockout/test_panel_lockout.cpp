@@ -40,6 +40,7 @@ unsigned long tmc_test_delay_us_total = 0;   // declared by test_driver_sequence
 #include "globals.cpp"
 #include "functions.cpp"
 #include "operations.cpp"
+#include "utils/joystick_panel.cpp"   // the panel link (#734) that onJoystickPacketReceived() decodes packets with
 
 /* ------------------------------------------------------------------ recorder */
 
@@ -76,20 +77,26 @@ uint8_t tmc4361A_readLimitSwitches(TMC4361ATypeDef *) { return 0; }
 uint8_t tmc4361A_readSwitchEvent(TMC4361ATypeDef *) { return 0; }
 void    tmc4361A_set_PID(TMC4361ATypeDef *, uint8_t) {}
 void    tmc4361A_write_encoder(TMC4361ATypeDef *, int32_t) {}
+/* limit_switches.cpp (#710), which operations.cpp's homing and limit checks call: not under test either */
+uint8_t limit_switches_homing_read(uint8_t, uint8_t) { return 0; }
+uint8_t limit_switches_homing_event(uint8_t, uint8_t) { return 0; }
+uint8_t limit_switches_read_event(uint8_t) { return 0; }
 
 /* ------------------------------------------------------------------- helpers */
 
 static const int16_t STICK = 12000;   // a deflection, in panel units (full scale 32768)
 
+static int32_t panel_wheel = 0;   // the panel's absolute wheel count, sent with every packet
+
 static void packet(int16_t dx, int16_t dy)
 {
-  uint8_t b[JOYSTICK_MSG_LENGTH] = {0};
-  uint32_t wheel = uint32_t(focuswheel_pos);   // the wheel does not turn in these tests
+  uint8_t b[JP_MSG_LENGTH] = {0};
+  uint32_t wheel = uint32_t(panel_wheel);
   b[0] = wheel >> 24; b[1] = wheel >> 16; b[2] = wheel >> 8; b[3] = wheel;
   uint16_t rx = uint16_t(int16_t(JOYSTICK_SIGN_X * dx));
   uint16_t ry = uint16_t(int16_t(JOYSTICK_SIGN_Y * dy));
   b[4] = rx >> 8; b[5] = rx; b[6] = ry >> 8; b[7] = ry;
-  onJoystickPacketReceived(b, JOYSTICK_MSG_LENGTH);
+  onJoystickPacketReceived(b, JP_MSG_LENGTH);
 }
 
 /* check_joystick() with its 30 ms tick due or not */
@@ -114,8 +121,13 @@ void setUp(void)
   is_preparing_for_homing_W = is_preparing_for_homing_W2 = false;
   for (int a = 0; a < TOTAL_AXES; a++) tmc4361[a].driver_type = DRIVER_TMC2660;
   enable_offset_velocity = false;
-  first_packet_from_joystick_panel = false;
-  focuswheel_pos = 0;
+  // A connected, armed panel (#734): the link takes the wheel baseline from the first packet and reads the
+  // joystick only after JP_CENTERED_PACKETS centred packets in a row, as after a real (re)connect.
+  jp_reset(&joystick_panel);
+  panel_wheel = 0;
+  focusPosition = 0;
+  for (int i = 0; i < JP_CENTERED_PACKETS; i++)
+    packet(0, 0);
   joystick_delta_x = joystick_delta_y = 0;
   joystick_jogging_x = joystick_jogging_y = false;
   flag_read_joystick = false;
@@ -248,12 +260,32 @@ void test_deflection_between_back_to_back_commands_never_jogs(void)
   Z_commanded_movement_in_progress = false;
 }
 
+/* The wheel during a commanded Z move: its travel is dropped, not saved up, and only the travel after the
+   lock-out moves Z. (On the panel link of #734, which re-takes the wheel baseline with every packet.) */
+void test_wheel_travel_during_a_commanded_move_is_dropped(void)
+{
+  panel_wheel += 320;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(320, focusPosition, "precondition: a live wheel moves the Z target");
+  Z_commanded_movement_in_progress = true;
+  panel_wheel += 640;
+  packet(0, 0);
+  panel_wheel += 640;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(320, focusPosition, "no wheel travel reaches Z during the command");
+  Z_commanded_movement_in_progress = false;
+  panel_wheel += 64;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(384, focusPosition, "after the command only the new travel counts");
+}
+
 int main(int argc, char **argv)
 {
   UNITY_BEGIN();
   RUN_TEST(test_held_stick_is_stopped_for_a_short_command);
   RUN_TEST(test_newly_centred_stick_is_stopped_for_a_short_command);
   RUN_TEST(test_jog_is_stopped_without_a_packet_in_the_lockout);
+  RUN_TEST(test_wheel_travel_during_a_commanded_move_is_dropped);
   RUN_TEST(test_jog_is_stopped_when_a_homing_starts);
   RUN_TEST(test_idle_axes_are_not_touched);
   RUN_TEST(test_commanded_axis_is_left_to_the_command);

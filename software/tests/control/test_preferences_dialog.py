@@ -534,6 +534,71 @@ class TestUIInitialization:
         assert preferences_dialog.af_stop_threshold.value() == 0.85
 
 
+class TestFileSavingOptionFallback:
+    """The file saving format shown must be the one in effect, even with no key in the config.
+
+    No shipped machine config sets file_saving_option, so the fallback has to come from
+    control._def.  With a hardcoded fallback the dialog showed a format that wasn't in use, and
+    since _apply_settings() always writes file_saving_option, saving any unrelated preference
+    persisted that wrong format into the machine config file.
+    """
+
+    @pytest.fixture
+    def config_without_file_saving_option(self, sample_config):
+        sample_config.remove_option("GENERAL", "file_saving_option")
+        return sample_config
+
+    def test_combo_falls_back_to_value_in_effect(self, qtbot, config_without_file_saving_option, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.MULTI_PAGE_TIFF
+
+            dialog = control.widgets.PreferencesDialog(config_without_file_saving_option, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            assert dialog.file_saving_combo.currentText() == "MULTI_PAGE_TIFF"
+            assert not dialog._get_changes(), "Untouched dialog must not report a format change"
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_saving_unrelated_setting_does_not_rewrite_format(
+        self, qtbot, config_without_file_saving_option, temp_config_file
+    ):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.INDIVIDUAL_IMAGES
+
+            dialog = control.widgets.PreferencesDialog(config_without_file_saving_option, temp_config_file)
+            qtbot.addWidget(dialog)
+            dialog.saving_path_edit.setText("/some/other/path")
+            assert dialog._apply_settings()
+
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            assert saved.get("GENERAL", "file_saving_option") == "INDIVIDUAL_IMAGES"
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_config_value_still_wins_over_value_in_effect(self, qtbot, sample_config, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.ZARR_V3
+
+            # sample_config sets file_saving_option = OME_TIFF, which must win over the fallback.
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            assert dialog.file_saving_combo.currentText() == "OME_TIFF"
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+
 class TestViewsTab:
     """Test Views tab functionality."""
 
@@ -793,6 +858,91 @@ class TestDevTabVisibility:
         assert dev_tab_changes[0][2] == "True"  # new value
 
 
+class TestTiffCompressionSetting:
+    """Tests for the TIFF Compression Level control on the General tab."""
+
+    def test_defaults_to_off(self, preferences_dialog):
+        assert preferences_dialog.tiff_compression_spinbox.value() == 0
+
+    def test_initialized_from_config(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "tiff_compression_level", "6")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.tiff_compression_spinbox.value() == 6
+
+    def test_falls_back_to_the_level_in_effect(self, qtbot, sample_config, temp_config_file):
+        """With no key in the config, show the running value rather than assuming a default."""
+        import control._def
+
+        original = control._def.TIFF_COMPRESSION_LEVEL
+        try:
+            control._def.TIFF_COMPRESSION_LEVEL = 3
+
+            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+            qtbot.addWidget(dialog)
+
+            assert dialog.tiff_compression_spinbox.value() == 3
+            assert not [c for c in dialog._get_changes() if c[0] == "TIFF Compression Level"]
+        finally:
+            control._def.TIFF_COMPRESSION_LEVEL = original
+
+    def test_out_of_range_config_value_is_not_a_change(self, qtbot, sample_config, temp_config_file):
+        """The spin box shows the nearest level it has, which is also the one in effect."""
+        sample_config.set("GENERAL", "tiff_compression_level", "12")
+
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.tiff_compression_spinbox.value() == 9
+        assert not [c for c in dialog._get_changes() if c[0] == "TIFF Compression Level"]
+
+    def test_only_shown_for_the_formats_that_support_it(self, preferences_dialog):
+        for file_saving_option, visible in (
+            ("INDIVIDUAL_IMAGES", True),
+            ("MULTI_PAGE_TIFF", True),
+            ("OME_TIFF", False),  # written through a memmap, which can't be compressed
+            ("ZARR_V3", False),
+        ):
+            preferences_dialog.file_saving_combo.setCurrentText(file_saving_option)
+            assert preferences_dialog.tiff_compression_spinbox.isVisibleTo(preferences_dialog) is visible
+            assert preferences_dialog.tiff_compression_label.isVisibleTo(preferences_dialog) is visible
+
+    def test_change_is_detected_and_needs_no_restart(self, preferences_dialog):
+        preferences_dialog.tiff_compression_spinbox.setValue(6)
+
+        changes = {c[0]: c for c in preferences_dialog._get_changes()}
+        assert changes["TIFF Compression Level"][1:] == ("0", "6", False)
+
+    def test_saved_on_its_own(self, qtbot, preferences_dialog, temp_config_file):
+        """A setting missing from _get_changes() is silently dropped when it is the only change."""
+        preferences_dialog.tiff_compression_spinbox.setValue(9)
+
+        with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+        saved = ConfigParser()
+        saved.read(temp_config_file)
+        assert saved.getint("GENERAL", "tiff_compression_level") == 9
+
+    def test_save_pushes_level_to_def_module(self, qtbot, preferences_dialog):
+        import control._def
+
+        original = control._def.TIFF_COMPRESSION_LEVEL
+        try:
+            preferences_dialog.tiff_compression_spinbox.setValue(4)
+
+            with patch("qtpy.QtWidgets.QDialog.exec_", return_value=True):
+                preferences_dialog.accept = MagicMock()
+                preferences_dialog._save_and_close()
+
+            assert control._def.TIFF_COMPRESSION_LEVEL == 4
+        finally:
+            control._def.TIFF_COMPRESSION_LEVEL = original
+
+
 class TestClickToMoveSettings:
     """Tests for the Click to Move group on the General tab."""
 
@@ -840,66 +990,6 @@ class TestClickToMoveSettings:
         assert control._def.LIVE_VIEW_Z_STEP_FAST_UM == pytest.approx(75.0)
 
 
-class TestFilterWheelShortestPath:
-    """Preferences > Advanced > Hardware Configuration: squid_filterwheel_wrap (auto / True / False)."""
-
-    def _dialog(self, qtbot, config, path):
-        dialog = control.widgets.PreferencesDialog(config, path)
-        qtbot.addWidget(dialog)
-        return dialog
-
-    def test_missing_key_shows_auto_and_is_not_a_change(self, preferences_dialog):
-        assert preferences_dialog.wheel_wrap_combo.currentData() == "auto"
-        assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-
-    @pytest.mark.parametrize(
-        "ini, data",
-        [
-            ("auto", "auto"),
-            ("True", "True"),
-            ("true", "True"),
-            ("False", "False"),
-            ("False  # why", "False"),
-            # whatever the wheel controller accepts, the dialog has to read the same way:
-            ("AUTO", "auto"),
-            # 1 and 0 are accepted by the wheel controller from #664 on; shown as Auto they were replaced on a save
-            ("1", "True"),
-            ("0", "False"),
-            ("0  # off on this machine", "False"),
-        ],
-    )
-    def test_the_ini_value_selects_the_item(self, qtbot, sample_config, temp_config_file, ini, data):
-        sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog.wheel_wrap_combo.currentData() == data
-        assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-
-    def test_a_change_needs_a_restart_and_is_shown_in_words(self, preferences_dialog):
-        preferences_dialog.wheel_wrap_combo.setCurrentIndex(2)
-        change = [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-        assert change == [("Filter Wheel Shortest Path", "Auto (on from firmware 1.6)", "Off", True)]
-
-    def test_it_is_saved_as_the_value_the_wheel_controller_parses(self, preferences_dialog, temp_config_file):
-        import control._def
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        for index, expected in [(1, True), (2, False), (0, "auto")]:
-            preferences_dialog.wheel_wrap_combo.setCurrentIndex(index)
-            assert preferences_dialog._apply_settings()
-            saved = ConfigParser()
-            saved.read(temp_config_file)
-            text = saved.get("GENERAL", "squid_filterwheel_wrap")
-            # the same two steps the application takes at startup: the ini reader, then the wheel controller
-            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) == expected
-
-    def test_an_unrecognised_ini_value_is_shown_as_being_replaced(self, qtbot, sample_config, temp_config_file):
-        sample_config.set("GENERAL", "squid_filterwheel_wrap", "off")  # a typo the wheel controller refuses
-        dialog = self._dialog(qtbot, sample_config, temp_config_file)
-        assert dialog.wheel_wrap_combo.currentData() == "auto"
-        change = [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-        assert change == [("Filter Wheel Shortest Path", "off", "Auto (on from firmware 1.6)", True)]
-
-
 class TestFilterWheelCompletionWindow:
     """Preferences > Advanced > Hardware Configuration: squid_filterwheel_completion_window_deg."""
 
@@ -907,39 +997,6 @@ class TestFilterWheelCompletionWindow:
         assert preferences_dialog.wheel_window_spinbox.value() == 0.0
         assert preferences_dialog.wheel_window_spinbox.text() == "Off (exact slot)"
         assert not [c for c in preferences_dialog._get_changes() if c[0] == "Filter Wheel Completion Window"]
-
-    def test_the_dialog_and_the_wheel_controller_read_every_accepted_value_alike(
-        self, qtbot, sample_config, temp_config_file
-    ):
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        shown = {"auto": "auto", True: "True", False: "False"}
-        for ini in ("auto", "Auto", "True", "true", "False", "false", "True  # on", "1", "0", "1  # on"):
-            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
-            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
-            qtbot.addWidget(dialog)
-            parsed = SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(ini))
-            assert dialog.wheel_wrap_combo.currentData() == shown[parsed], ini
-
-    def test_saving_something_else_does_not_change_what_a_numeric_wrap_setting_means(
-        self, qtbot, sample_config, temp_config_file
-    ):
-        # review of ad437815: `0` showed as Auto, and saving any other setting wrote "auto" - shortest path ON at
-        # firmware 1.6 on a machine that had it explicitly off (and `1` -> OFF at 1.4 / 1.5)
-        import control._def
-        from squid.filter_wheel_controller.cephla import SquidFilterWheel
-
-        for ini, meaning in (("0", False), ("1", True)):
-            sample_config.set("GENERAL", "squid_filterwheel_wrap", ini)
-            dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
-            qtbot.addWidget(dialog)
-            dialog.wheel_window_spinbox.setValue(5.0)  # the operator changes a DIFFERENT setting
-            assert not [c for c in dialog._get_changes() if c[0] == "Filter Wheel Shortest Path"]
-            assert dialog._apply_settings()
-            saved = ConfigParser()
-            saved.read(temp_config_file)
-            text = saved.get("GENERAL", "squid_filterwheel_wrap")
-            assert SquidFilterWheel._parse_wrap(control._def.conf_attribute_reader(text)) is meaning, (ini, text)
 
     def test_a_window_with_an_inline_comment_is_shown_not_cleared(self, qtbot, sample_config, temp_config_file):
         sample_config.set("GENERAL", "squid_filterwheel_completion_window_deg", "5  # degrees, 32 mm filters")

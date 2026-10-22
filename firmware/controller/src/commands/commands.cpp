@@ -1,5 +1,7 @@
 #include "commands.h"
+#include "stage_commands.h"           // the readiness gate the move commands use
 
+#include "../limit_switches.h"
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
@@ -19,8 +21,8 @@ void init_callbacks()
     cmd_map[MOVETO_W] = &callback_move_to_w;
     cmd_map[MOVETO_W2] = &callback_move_to_w2;
     cmd_map[SET_LIM] = &callback_set_lim;
-    cmd_map[SET_LIM_SWITCH_POLARITY] = &callback_set_lim_switch_polarity;
     cmd_map[SET_HOME_SAFETY_MERGIN] = &callback_set_home_safety_margin;
+    cmd_map[SET_LIMIT_SWITCH_CONFIG] = &callback_set_limit_switch_config;
     cmd_map[SET_PID_ARGUMENTS] = &callback_set_pid_arguments;
     cmd_map[CONFIGURE_STEPPER_DRIVER] = &callback_configure_stepper_driver;
     cmd_map[SET_MAX_VELOCITY_ACCELERATION] = &callback_set_max_velocity_acceleration;
@@ -152,6 +154,13 @@ void callback_enable_stage_pid()
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;  // Invalid axis
 
+    // Closed loop on the filter wheels is not supported: refused like a bad move.
+    if (axis == w || axis == w2)
+    {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
+
     /*
       This is an actuator path, not a configuration write. PID_BPG0 sets
       ENC_IN_CONF.REGULATION_MODUS, which hands the axis to the TMC4361A's
@@ -185,40 +194,31 @@ void callback_set_encoder_reporting()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     uint8_t mode = buffer_rx[3];
+    bool on = axis != 0xFF && mode != ENCODER_REPORT_OFF && mode <= ENCODER_REPORT_ENC_AS_POSITION;
 
-    // Leaving mode 2 must hand the position field back to XACTUAL for every axis.
-    X_use_encoder = false;
-    Y_use_encoder = false;
-    Z_use_encoder = false;
+    // Reporting reads the chip every packet; a wheel's chip is only usable after INITFILTERWHEEL.
+    // A refused command changes nothing.
+    if (on && !axis_driver_ready(axis)) return;
 
-    if (axis == 0xFF || mode == ENCODER_REPORT_OFF || mode > ENCODER_REPORT_ENC_AS_POSITION)
-    {
-        encoder_report_axis = 0xFF;
-        encoder_report_mode = ENCODER_REPORT_OFF;
-        return;
-    }
-    encoder_report_axis = axis;
-    encoder_report_mode = mode;
-    if (mode == ENCODER_REPORT_ENC_AS_POSITION)
-    {
-        if (axis == x) X_use_encoder = true;
-        else if (axis == y) Y_use_encoder = true;
-        else if (axis == z) Z_use_encoder = true;
-    }
+    encoder_report_axis = on ? axis : 0xFF;
+    encoder_report_mode = on ? mode : ENCODER_REPORT_OFF;
+    bool as_position = on && mode == ENCODER_REPORT_ENC_AS_POSITION;
+    X_use_encoder = as_position && axis == x;
+    Y_use_encoder = as_position && axis == y;
+    Z_use_encoder = as_position && axis == z;
 }
 
 // SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
-// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. Not reset by
-// INITIALIZE (the host sets it once with the other motion parameters), but
-// INITFILTERWHEEL re-initialises the wheel's motion chip and with it the S-shape: set the
-// profile AFTER the wheel has been initialised. RESET
-// returns every axis to the S-shape, applied by the next ramp setup.
+// RAMP_PROFILE_SSHAPE (2). Rewrites the ramp registers at once. INITFILTERWHEEL and RESET
+// return the axis to the S-shape; INITIALIZE does not.
 void callback_set_ramp_profile()
 {
     uint8_t axis = protocol_axis_to_internal(buffer_rx[2]);
     if (axis == 0xFF) return;
     uint8_t profile = buffer_rx[3];
     if (profile != RAMP_PROFILE_TRAPEZOID && profile != RAMP_PROFILE_SSHAPE) return;
+    // The ramp init writes the chip; a wheel's chip is only usable after INITFILTERWHEEL.
+    if (!axis_driver_ready(axis)) return;
     tmc4361[axis].ramp_profile = profile;
     tmc4361A_sRampInit(&tmc4361[axis]);
 }
@@ -261,6 +261,7 @@ static void init_filterwheel_axis(uint8_t axis)
     // encodes CS = 0, i.e. minimum current.
     tmc4361[axis].r_sense = R_sense_w;
     tmc4361[axis].current_range = CURRENT_RANGE_W;
+    tmc4361[axis].current_range_floor = CURRENT_RANGE_W;
 
     // Probe EVERY time this runs, not only on the first INITFILTERWHEEL.
     // tmc4361A_init() on the first line of this function resets driver_type to
@@ -343,7 +344,7 @@ void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
-    first_packet_from_joystick_panel = true;
+    jp_forget_wheel(&joystick_panel);
     // Re-initialise the TMC4361A and its power stage on each stage axis.
     //
     // This path does NOT call tmc4361A_init(), so driver_type still holds the
@@ -402,12 +403,9 @@ void callback_initialize()
         mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
 
     // enable limit switch reading
-    tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);
-    tmc4361A_enableLimitSwitch(&tmc4361[x], rht_sw_pol[x], RGHT_SW, flip_limit_switch_x);
-    tmc4361A_enableLimitSwitch(&tmc4361[y], lft_sw_pol[y], LEFT_SW, flip_limit_switch_y);
-    tmc4361A_enableLimitSwitch(&tmc4361[y], rht_sw_pol[y], RGHT_SW, flip_limit_switch_y);
-    tmc4361A_enableLimitSwitch(&tmc4361[z], rht_sw_pol[z], RGHT_SW, false);
-    tmc4361A_enableLimitSwitch(&tmc4361[z], lft_sw_pol[z], LEFT_SW, false);
+    limit_switches_program(x, flip_limit_switch_x);
+    limit_switches_program(y, flip_limit_switch_y);
+    limit_switches_program(z, false);
 
     // motion profile
     uint32_t max_velocity_usteps[STAGE_AXES];
@@ -430,9 +428,9 @@ void callback_initialize()
     }
 
     // homing switch settings
-    tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
-    tmc4361A_enableHomingLimit(&tmc4361[y], lft_sw_pol[y], TMC4361_homing_sw[y], home_safety_margin[y]);
-    tmc4361A_enableHomingLimit(&tmc4361[z], rht_sw_pol[z], TMC4361_homing_sw[z], home_safety_margin[z]);
+    tmc4361A_enableHomingLimit(&tmc4361[x], limit_switch_homing_polarity(x), TMC4361_homing_sw[x], home_safety_margin[x]);
+    tmc4361A_enableHomingLimit(&tmc4361[y], limit_switch_homing_polarity(y), TMC4361_homing_sw[y], home_safety_margin[y]);
+    tmc4361A_enableHomingLimit(&tmc4361[z], limit_switch_homing_polarity(z), TMC4361_homing_sw[z], home_safety_margin[z]);
 
     // DAC init
     set_DAC8050x_config();

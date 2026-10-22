@@ -755,9 +755,10 @@ void tmc4361A_enableHomingLimit(TMC4361ATypeDef *tmc4361A, uint8_t polarity, uin
   -----------------------------------------------------------------------------
   DESCRIPTION: tmc4361A_readLimitSwitches() reads the limit switches and returns their state in the two low bits of a byte.
                 00 - both not pressed
-                01 - right switch pressed
-                10 - left
+                01 - left switch pressed (bit 0, STOPL)
+                10 - right (bit 1, STOPR)
                 11 - both
+               Protocol: Z's value is sent in status byte 18 bits 2-3 (lsc_status_bits).
 
   OPERATION:   We read the status register, mask the irrelevant bits, and shift the relevant bits down
 
@@ -967,10 +968,11 @@ void tmc4361A_moveToExtreme(TMC4361ATypeDef *tmc4361A, int32_t vel, int8_t dir) 
   -----------------------------------------------------------------------------
 */
 void tmc4361A_sRampInit(TMC4361ATypeDef *tmc4361A) {
-  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request).
-  // Clear the two profile bits first: a plain setBits cannot change SSHAPE (2) into TRAPEZ (1).
-  tmc4361A_rstBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
-  tmc4361A_setBits(tmc4361A, TMC4361A_RAMPMODE, TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE));
+  // positioning mode with the axis ramp profile (S-shape by default, trapezoid on request)
+  int32_t rampmode = tmc4361A_readInt(tmc4361A, TMC4361A_RAMPMODE);
+  rampmode &= ~(TMC4361A_RAMP_SSHAPE | TMC4361A_RAMP_TRAPEZ);
+  rampmode |= TMC4361A_RAMP_POSITION | (tmc4361A->ramp_profile == TMC4361A_RAMP_TRAPEZ ? TMC4361A_RAMP_TRAPEZ : TMC4361A_RAMP_SSHAPE);
+  tmc4361A_writeInt(tmc4361A, TMC4361A_RAMPMODE, rampmode);
   tmc4361A_rstBits(tmc4361A, TMC4361A_GENERAL_CONF, TMC4361A_USE_ASTART_AND_VSTART_MASK); // keep astart, vstart = 0
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW1, tmc4361A->rampParam[BOW1_IDX]); // determines the value which increases the absolute acceleration value.
   tmc4361A_writeInt(tmc4361A, TMC4361A_BOW2, tmc4361A->rampParam[BOW2_IDX]); // determines the value which decreases the absolute acceleration value.

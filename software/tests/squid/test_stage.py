@@ -1,7 +1,8 @@
 import builtins
 import logging
 import pytest
-import tempfile
+import time
+import unittest.mock
 
 import squid.stage.cephla
 import squid.stage.prior
@@ -9,6 +10,8 @@ import squid.stage.utils
 import squid.stage.pi
 import squid.config
 import squid.abc
+import control._def
+import control.microscope
 from tests.control.test_microcontroller import get_test_micro
 
 
@@ -26,8 +29,10 @@ def test_simulated_cephla_stage_ops():
     assert stage.get_pos() == squid.abc.Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=0.0)
 
 
-def test_position_caching():
-    (unused_temp_fd, temp_cache_path) = tempfile.mkstemp(".cache", "squid_testing_")
+def test_position_caching(tmp_path):
+    # A path, not mkstemp's open handle: cache_position() replaces the file atomically, which Windows refuses while
+    # another handle has it open.
+    temp_cache_path = str(tmp_path / "last_coords.cache")
 
     # Use 6 figures after the decimal so we test that we can capture nanometers
     p = squid.abc.Pos(x_mm=11.111111, y_mm=22.222222, z_mm=1.333333, theta_rad=None)
@@ -137,6 +142,69 @@ def test_cache_position_keeps_the_previous_position_when_the_write_fails(tmp_pat
     monkeypatch.undo()
 
     assert squid.stage.utils.get_cached_position(cache_path=cache_path) == already_cached
+
+
+def _pos_within_limits(stage_config, **overrides):
+    """A Pos in the middle of every axis' travel, with any coordinate overridden."""
+    mid = {
+        f"{axis}_mm": (cfg.MIN_POSITION + cfg.MAX_POSITION) / 2
+        for axis, cfg in (("x", stage_config.X_AXIS), ("y", stage_config.Y_AXIS), ("z", stage_config.Z_AXIS))
+    }
+    return squid.abc.Pos(theta_rad=None, **{**mid, **overrides})
+
+
+def test_cache_position_skips_the_z_soft_limits_when_z_is_not_validated(tmp_path):
+    """An XY-only Cephla stage reports the raw firmware Z (0 at boot, below the Z soft floor); with
+    validate_z=False that must not block caching X/Y."""
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    pos = _pos_within_limits(stage_config, z_mm=stage_config.Z_AXIS.MIN_POSITION - 1.0)
+
+    squid.stage.utils.cache_position(pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=False)
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) == pos
+
+
+def test_cache_position_still_validates_x_and_y_when_z_is_not(tmp_path):
+    cache_path = str(tmp_path / "last_coords.txt")
+    stage_config = squid.config.get_stage_config()
+    pos = _pos_within_limits(stage_config, x_mm=stage_config.X_AXIS.MIN_POSITION - 1.0)
+
+    with pytest.raises(ValueError, match="not cacheable"):
+        squid.stage.utils.cache_position(pos=pos, stage_config=stage_config, cache_path=cache_path, validate_z=False)
+
+    assert squid.stage.utils.get_cached_position(cache_path=cache_path) is None
+
+
+@pytest.mark.parametrize(
+    "homing_enabled_z, use_pi_focus_stage",
+    [
+        pytest.param(True, False, id="cephla-z-homed"),
+        pytest.param(False, False, id="xy-only-cephla-stage"),
+        pytest.param(False, True, id="pi-focus-stage-without-cephla-z-homing"),
+    ],
+)
+def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_focus_stage):
+    """z_is_referenced() must be True exactly when Microscope.home_xyz homes Z, or the position cache
+    drifts from the homing logic it describes."""
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", homing_enabled_z)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", use_pi_focus_stage)
+    monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", False)  # only the Z part of home_xyz matters here
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)  # an objective changer retracts Z at startup
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+    try:
+        home = unittest.mock.MagicMock()
+        monkeypatch.setattr(scope.stage, "home", home)
+
+        scope.home_xyz()
+
+        z_homed = any(call.kwargs.get("z") for call in home.call_args_list)
+        assert squid.stage.utils.z_is_referenced() is z_homed
+    finally:
+        scope.close()
 
 
 # --- PI V-308 / C-414 focus stage --------------------------------------------
@@ -268,6 +336,10 @@ def test_microscope_wraps_pi_focus_when_enabled(monkeypatch):
 
     monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True, raising=False)
     monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True, raising=False)
+    # An objective changer retracts Z when the microscope starts, which the V-308 refuses until it
+    # is referenced, so this can't depend on whether the machine's .ini has one.
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)
+    monkeypatch.setattr(control._def, "USE_XERYON", False)
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     assert isinstance(scope.stage, squid.stage.pi.CombinedStage)
     # skip_init leaves the V-308 unreferenced (reference=...and not skip_init); reference before moving.
@@ -493,3 +565,414 @@ def test_calc_move_timeout_scales_with_axis_speed():
     assert timeout(-60.0, 30.0) == pytest.approx(6.0)  # direction does not matter
     assert timeout(0.5, 2.0) == 3.0  # short moves get the 3 s floor
     assert timeout(1.0, 0.0) == pytest.approx(30.0)  # zero speed falls back to 0.1 mm/s instead of dividing by zero
+
+
+def test_pi_focus_servo_toggle_reaches_backend_and_blocks_moves():
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config())
+    combined = squid.stage.pi.CombinedStage(
+        xy_stage=unittest.mock.MagicMock(), z_stage=stage, stage_config=squid.config.get_stage_config()
+    )
+    assert combined.z_stage is stage
+    assert stage.is_servo_on()
+
+    stage.set_servo(False)
+    assert not sim.is_servo_on()
+    with pytest.raises(RuntimeError):
+        stage.move_z_to(1.0)
+
+    stage.set_servo(True)
+    assert stage.is_referenced()  # releasing the servo does not drop the reference
+    stage.move_z_to(1.0)
+    assert stage.get_pos().z_mm == pytest.approx(1.0)
+
+
+def test_c414_initialize_without_reference_still_reads_reference_state():
+    # A --skip-init restart connects with reference=False; an axis the controller reports as
+    # referenced must still accept moves.
+    stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
+    stage.axis = "1"
+    stage._is_referenced = False
+    stage._range_lo = stage._range_hi = None
+    stage.gcs = unittest.mock.MagicMock()
+    stage.gcs.qFRF.return_value = {"1": True}
+    stage.gcs.qPOS.return_value = {"1": 1.0}
+    stage._pitools = unittest.mock.MagicMock()
+
+    stage.initialize(reference=False)
+
+    stage.gcs.FRF.assert_not_called()
+    stage.move_to(1.0)
+    stage.gcs.MOV.assert_called_once_with("1", 1.0)
+
+
+class _FakeC414Gcs:
+    """GCS stand-in: on target after `polls_until_on_target` ONT? queries; records errcheck per poll."""
+
+    def __init__(self, polls_until_on_target, error=0):
+        self.polls_until_on_target = polls_until_on_target
+        self.error = error
+        self.errcheck = True
+        self.ont_polls = 0
+        self.errcheck_during_polls = set()
+        self.error_checks = 0
+        self.movs = []  # (target, errcheck when sent)
+        self.pos_queries = 0
+
+    def MOV(self, axis, target):
+        self.movs.append((target, self.errcheck))
+
+    def SVO(self, axis, values):
+        pass
+
+    def qPOS(self, axis):
+        self.pos_queries += 1
+        return {axis: 1.0}
+
+    def qONT(self, axis):
+        self.ont_polls += 1
+        self.errcheck_during_polls.add(self.errcheck)
+        return {axis: self.ont_polls > self.polls_until_on_target}
+
+    def checkerror(self):
+        self.error_checks += 1
+        if self.error:
+            raise RuntimeError(f"GCS error {self.error}")
+
+    def qERR(self):
+        self.error_checks += 1
+        error, self.error = self.error, 0  # reading clears it, as on the controller
+        return error
+
+
+class _FakeGCSError(Exception):
+    def __init__(self, code):
+        super().__init__(f"GCS error {code}")
+        self.code = code
+
+
+def _c414_with(gcs):
+    stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
+    stage.axis = "1"
+    stage._is_referenced = True
+    stage._range_lo = stage._range_hi = None
+    stage._target_mm = None
+    stage.gcs = gcs
+    stage._pitools = unittest.mock.MagicMock()
+    stage._GCSError = _FakeGCSError
+    return stage
+
+
+def test_c414_wait_polls_on_target_without_a_poll_delay():
+    # pitools.waitontarget slept 100 ms whenever the first ONT? was false; the wait must instead
+    # poll ONT? back to back, without pipython's per-query ERR?, then check the error once.
+    gcs = _FakeC414Gcs(polls_until_on_target=5)
+    stage = _c414_with(gcs)
+
+    t0 = time.monotonic()
+    stage.move_relative(0.0015)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.05
+    assert gcs.ont_polls == 6
+    assert gcs.errcheck_during_polls == {False}
+    assert gcs.errcheck is True  # restored
+    assert gcs.error_checks == 1
+    stage._pitools.waitontarget.assert_not_called()
+
+
+def test_c414_wait_raises_a_controller_error_after_settling():
+    gcs = _FakeC414Gcs(polls_until_on_target=0, error=5)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(RuntimeError, match="GCS error 5"):
+        stage.move_to(1.0)
+    assert gcs.errcheck is True
+
+
+def test_c414_wait_times_out_and_restores_error_checking():
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(TimeoutError):
+        stage.move_to(1.0, timeout=0.05)
+    assert gcs.errcheck is True
+
+
+def test_c414_on_target_tolerance_written_at_level_1_and_level_dropped_even_on_error():
+    stage = _c414_with(unittest.mock.MagicMock())
+    stage.set_on_target_tolerance(0.0001)
+    assert stage.gcs.mock_calls == [
+        unittest.mock.call.CCL(1, squid.stage.pi.CCL_PASSWORD),
+        unittest.mock.call.SPA("1", squid.stage.pi.PARAM_ON_TARGET_TOLERANCE, 0.0001),
+        unittest.mock.call.CCL(0),
+    ]
+
+    stage = _c414_with(unittest.mock.MagicMock())
+    stage.gcs.SPA.side_effect = RuntimeError("GCS error 60")
+    with pytest.raises(RuntimeError):
+        stage.set_on_target_tolerance(0.0001)
+    stage.gcs.CCL.assert_called_with(0)
+
+
+def _windowed_pi_stage(on_target_tolerance=(0.0001, 0.0005, 0.1)):
+    sim = _make_referenced_sim()
+    sim.set_on_target_tolerance = unittest.mock.Mock(wraps=sim.set_on_target_tolerance)
+    stage = squid.stage.pi.PIFocusStage(sim, home_mm=0.5, on_target_tolerance=on_target_tolerance)
+    return stage, sim
+
+
+def test_pi_focus_on_target_window_scales_with_the_move_and_is_clamped():
+    stage, sim = _windowed_pi_stage()
+    stage.move_z_to(1.0)  # 1 mm from 0: loosest window
+    assert sim._on_target_tol_mm == pytest.approx(0.0005)
+    for step_mm, tol_mm in (
+        (0.0005, 0.0001),
+        (0.001, 0.0001),
+        (0.0015, 0.00015),
+        (0.003, 0.0003),
+        (0.005, 0.0005),
+        (0.01, 0.0005),
+    ):
+        stage.move_z(step_mm)
+        assert sim._on_target_tol_mm == pytest.approx(tol_mm), step_mm
+    stage.move_z(-0.003)  # direction does not matter
+    assert sim._on_target_tol_mm == pytest.approx(0.0003)
+
+
+def test_pi_focus_on_target_window_written_only_when_it_changes():
+    stage, sim = _windowed_pi_stage()
+    for _ in range(10):  # a fixed-step Z-stack
+        stage.move_z(0.0015)
+    assert sim.set_on_target_tolerance.call_count == 1
+    stage.move_z(0.00151)  # rounds to the same 0.05 um grid point
+    assert sim.set_on_target_tolerance.call_count == 1
+
+
+def test_pi_focus_retract_uses_the_loosest_window():
+    stage, sim = _windowed_pi_stage()
+    stage.move_z(0.0005)
+    stage.home(False, False, True, False)
+    assert sim._on_target_tol_mm == pytest.approx(0.0005)
+
+
+def test_pi_focus_without_window_policy_leaves_the_controller_window():
+    stage, sim = _windowed_pi_stage(on_target_tolerance=None)
+    stage.move_z(0.0005)
+    stage.move_z_to(1.0)
+    sim.set_on_target_tolerance.assert_not_called()
+
+
+def test_connect_pi_focus_passes_the_window_policy():
+    stage = squid.stage.pi.connect_pi_focus_stage(simulated=True, on_target_tolerance=(0.0001, 0.0005, 0.1))
+    stage.move_z(0.003)
+    assert stage._c414._on_target_tol_mm == pytest.approx(0.0003)
+
+
+def test_c414_relative_moves_step_from_the_commanded_target_with_one_position_read():
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    stage = _c414_with(gcs)
+
+    for _ in range(3):
+        stage.move_relative(0.0015)
+
+    # POS? only for the first move (no target tracked yet); none after any move.
+    assert gcs.pos_queries == 1
+    assert [t for t, _ in gcs.movs] == pytest.approx([1.0015, 1.003, 1.0045])
+    # MOV goes out without pipython's per-command ERR?; one ERR? per move covers it.
+    assert {errcheck for _, errcheck in gcs.movs} == {False}
+    assert gcs.error_checks == 3
+    assert gcs.errcheck is True
+
+
+def test_c414_non_waiting_move_keeps_the_immediate_error_check():
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    stage = _c414_with(gcs)
+    stage.move_to(1.0, wait=False)
+    assert gcs.movs == [(1.0, True)]
+    assert gcs.ont_polls == 0
+
+
+@pytest.mark.parametrize(
+    "invalidate",
+    [lambda st: st.set_servo(True), lambda st: st.stop(), lambda st: st.initialize(reference=False)],
+    ids=["servo", "stop", "initialize"],
+)
+def test_c414_target_tracking_reset_when_the_controller_may_move_its_target(invalidate):
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    gcs.RON = gcs.StopAll = lambda *a, **k: None
+    gcs.qFRF = lambda axis: {axis: True}
+    stage = _c414_with(gcs)
+    stage._GCSError = RuntimeError
+    stage.move_to(2.0)
+    invalidate(stage)
+    stage.move_relative(0.001)
+    assert gcs.pos_queries == 1
+    assert gcs.movs[-1][0] == pytest.approx(1.001)  # from the read position (1.0), not 2.0
+
+
+def test_c414_failed_move_drops_the_tracked_target():
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    stage = _c414_with(gcs)
+    stage.move_to(2.0)
+    gcs.error = 5
+    with pytest.raises(RuntimeError):
+        stage.move_to(3.0)
+    gcs.error = 0
+    stage.move_relative(0.001)
+    assert gcs.movs[-1][0] == pytest.approx(1.001)
+
+
+def test_c414_timeout_reports_and_clears_a_pending_controller_error():
+    # A rejected MOV with the axis off target (e.g. servo off): the wait must not end with a bare
+    # timeout that leaves the controller's error pending for some later, unrelated command.
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9, error=5)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(_FakeGCSError) as exc:
+        stage.move_to(1.0, timeout=0.05)
+    assert exc.value.code == 5
+    assert isinstance(exc.value.__cause__, TimeoutError)
+    assert gcs.error == 0  # drained
+    assert gcs.errcheck is True
+
+
+def test_c414_timeout_without_controller_error_stays_a_timeout():
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9)
+    stage = _c414_with(gcs)
+    with pytest.raises(TimeoutError):
+        stage.move_to(1.0, timeout=0.05)
+    assert gcs.error_checks == 1
+
+
+@pytest.mark.parametrize(
+    "policy_um, step_um, expected_um",
+    [
+        ((0.01, 0.5, 0.1), 0.05, 0.01),  # rounds to 0 on the grid: clamped up to min, never a zero window
+        ((0.12, 0.48, 0.1), 1.15, 0.12),  # 0.115 rounds to 0.10: clamped up to min
+        ((0.12, 0.48, 0.1), 4.9, 0.48),  # 0.49 rounds to 0.50: clamped down to max
+    ],
+)
+def test_pi_focus_on_target_window_stays_inside_the_configured_bounds(policy_um, step_um, expected_um):
+    lo, hi, frac = policy_um
+    stage, sim = _windowed_pi_stage(on_target_tolerance=(lo / 1000, hi / 1000, frac))
+    stage.move_z(step_um / 1000)
+    assert sim._on_target_tol_mm == pytest.approx(expected_um / 1000)
+
+
+@pytest.mark.parametrize("policy", [(0.0, 0.0005, 0.1), (-0.0001, 0.0005, 0.1), (0.0005, 0.0001, 0.1)])
+def test_pi_focus_rejects_an_unusable_window_policy(policy):
+    with pytest.raises(ValueError):
+        squid.stage.pi.PIFocusStage(_make_referenced_sim(), on_target_tolerance=policy)
+
+
+@pytest.mark.parametrize(
+    "use_pi, tol_min_um, expected_s",
+    [
+        (False, 0.1, 0.02),  # stepper Z: SCAN_STABILIZATION_TIME_MS_Z
+        (True, 0.1, 0.0),  # V-308 with its on-target window: PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z
+        (True, 0.0, 0.02),  # V-308 with the window disabled (controller's +-1 um): back to the stepper value
+    ],
+    ids=["stepper", "v308-window", "v308-no-window"],
+)
+def test_z_stabilization_time(monkeypatch, use_pi, tol_min_um, expected_s):
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", use_pi)
+    monkeypatch.setattr(control._def, "PI_FOCUS_ON_TARGET_TOL_MIN_UM", tol_min_um)
+    monkeypatch.setattr(control._def, "SCAN_STABILIZATION_TIME_MS_Z", 20)
+    monkeypatch.setattr(control._def, "PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z", 0)
+    assert squid.stage.utils.z_stabilization_time_s() == pytest.approx(expected_s)
+
+
+@pytest.mark.parametrize(
+    "move, kwargs, settles",
+    [
+        ("rel", {"step_mm": 0.00005}, True),  # 0.05 um: inside the 0.1 um window, "on target" before it moves
+        ("rel", {"step_mm": 0.0001}, True),  # exactly the window
+        ("rel", {"step_mm": 0.00015}, False),  # 0.15 um > 0.1 um window: the on-target wait covers it
+        ("rel", {"step_mm": 0.0015}, False),
+        ("rel", {"step_mm": 0.00005, "blocking": False}, False),  # the caller is not waiting
+        ("abs", {"step_mm": 0.00005}, True),
+        ("abs", {"step_mm": 0.003}, False),
+    ],
+)
+def test_pi_focus_moves_within_the_window_get_a_fixed_settle(monkeypatch, move, kwargs, settles):
+    sleeps = []
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleeps.append)
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02)
+    stage.move_z_to(1.0)  # 1 mm: no settle
+    sleeps.clear()
+
+    blocking = kwargs.get("blocking", True)
+    if move == "rel":
+        stage.move_z(kwargs["step_mm"], blocking=blocking)
+    else:
+        stage.move_z_to(1.0 + kwargs["step_mm"], blocking=blocking)
+
+    assert sleeps == ([0.02] if settles else [])
+
+
+def test_pi_focus_without_window_policy_never_adds_a_settle(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleeps.append)
+    stage = squid.stage.pi.PIFocusStage(_make_referenced_sim(), sub_window_settle_s=0.02)
+    stage.move_z(0.00005)
+    stage.move_z_to(1.0)
+    assert sleeps == []  # the caller's stabilization pause (SCAN_STABILIZATION_TIME_MS_Z) applies instead
+
+
+def test_pi_focus_sub_window_settle_does_not_hold_the_stage_lock(monkeypatch):
+    stage = squid.stage.pi.PIFocusStage(
+        _make_referenced_sim(), on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02
+    )
+    held = []
+
+    def sleep(_):
+        acquired = threading_probe(stage._lock)
+        held.append(not acquired)
+
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
+    stage.move_z(0.00005)
+    assert held == [False]
+
+
+def threading_probe(lock):
+    """True if another thread can take ``lock`` right now."""
+    import threading
+
+    result = []
+
+    def take():
+        got = lock.acquire(blocking=False)
+        result.append(got)
+        if got:
+            lock.release()
+
+    t = threading.Thread(target=take)
+    t.start()
+    t.join()
+    return result[0]
+
+
+def test_pi_focus_settle_decision_uses_this_moves_window(monkeypatch):
+    # Another thread's move can change the cached window between this move's lock release and its
+    # settle; the decision must be the one taken for this move under the lock.
+    stage = squid.stage.pi.PIFocusStage(
+        _make_referenced_sim(), on_target_tolerance=(0.0001, 0.0005, 0.1), sub_window_settle_s=0.02
+    )
+    sleeps = []
+
+    def sleep(s):
+        sleeps.append(s)
+
+    real_move_relative = stage._c414.move_relative
+
+    def move_relative_then_other_thread_widens_window(*a, **k):
+        out = real_move_relative(*a, **k)
+        stage._on_target_tol_mm = 0.0005  # as if a concurrent 5 um move had just sized the window
+        return out
+
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", sleep)
+    stage._c414.move_relative = move_relative_then_other_thread_widens_window
+    stage.move_z(0.0003)  # 0.3 um > its own 0.1 um window: no settle, whatever the cache says later
+    assert sleeps == []

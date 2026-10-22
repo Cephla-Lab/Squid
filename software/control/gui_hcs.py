@@ -43,6 +43,7 @@ from control._def import *
 
 # app specific libraries
 from control.laser_engine_widget import LaserEngineWidget
+from control.versalase_widget import VersaLaseWidget
 from control.NL5Widget import NL5Widget
 from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
@@ -615,6 +616,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._skip_init = skip_init
+        # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
+        self._objective_swap_active = False
+        self._objective_swap_saved_enabled = {}
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -697,7 +701,7 @@ class HighContentScreeningGui(QMainWindow):
 
         # Pre-declare and give types to all our widgets so type hinting tools work.  You should
         # add to this as you add widgets.
-        self.spinningDiskConfocalWidget: Optional[widgets.SpinningDiskConfocalWidget] = None
+        self.spinningDiskConfocalWidget: Optional[QWidget] = None  # X-Light or Dragonfly widget
         self.nl5Wdiget: Optional[NL5Widget] = None
         self.cameraSettingWidget: Optional[widgets.CameraSettingsWidget] = None
         self.profileWidget: Optional[widgets.ProfileWidget] = None
@@ -711,6 +715,7 @@ class HighContentScreeningGui(QMainWindow):
         self.filterControllerWidget: Optional[widgets.FilterControllerWidget] = None
         self.squidFilterWidget: Optional[widgets.SquidFilterWidget] = None
         self.laserEngineWidget: Optional[LaserEngineWidget] = None
+        self.versaLaseWidget: Optional[VersaLaseWidget] = None
         self.recordingControlWidget: Optional[widgets.RecordingWidget] = None
         self.wellplateFormatWidget: Optional[widgets.WellplateFormatWidget] = None
         self.wellSelectionWidget: Optional[widgets.WellSelectionWidget] = None
@@ -763,32 +768,34 @@ class HighContentScreeningGui(QMainWindow):
                     self.stage.move_z_to(target_z_mm)
             else:
                 self.log.info("Skipping cached position restoration (--skip-init flag set)")
-        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and HOMING_ENABLED_Z:
+        elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
-            if cached_pos := squid.stage.utils.get_cached_position():
-                self.log.info(
-                    f"Cache position exists.  Moving to: ({cached_pos.x_mm},{cached_pos.y_mm},{cached_pos.z_mm}) [mm]"
-                )
+            cached_pos = squid.stage.utils.get_cached_position()
+            if cached_pos:
+                self.log.info(f"Cache position exists.  Moving X/Y to: ({cached_pos.x_mm},{cached_pos.y_mm}) [mm]")
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-                if USE_PI_FOCUS_STAGE:
+            if squid.stage.utils.z_is_referenced():
+                if not cached_pos:
+                    self.log.info("No cached position.  Moving Z axis to safety position")
+                    squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+                elif USE_PI_FOCUS_STAGE:
                     # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
                     # The PI driver clamps every move to the configured Z limits, so a stale
                     # cached Z cannot command an out-of-range move.
                     self.stage.move_z_to(cached_pos.z_mm)
-                elif (int(Z_HOME_SAFETY_POINT) / 1000.0) < cached_pos.z_mm:
-                    self.stage.move_z_to(cached_pos.z_mm)
                 else:
-                    self.log.info(f"Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT")
-                    self.stage.move_z_to(int(Z_HOME_SAFETY_POINT) / 1000.0)
-            else:
-                self.log.info(f"Cache position is not exists.  Moving Z axis to safety position")
-                squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+                    if cached_pos.z_mm < safety_z_mm:
+                        self.log.info(
+                            "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
+                        )
+                    self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
 
-            if ENABLE_WELLPLATE_MULTIPOINT:
-                self.wellplateMultiPointWidget.init_z()
-            self.flexibleMultiPointWidget.init_z()
+                if ENABLE_WELLPLATE_MULTIPOINT:
+                    self.wellplateMultiPointWidget.init_z()
+                self.flexibleMultiPointWidget.init_z()
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -832,8 +839,19 @@ class HighContentScreeningGui(QMainWindow):
             filter_wheel_config_action.triggered.connect(self.openFilterWheelConfigEditor)
             advanced_menu.addAction(filter_wheel_config_action)
 
-        # Utils: per-instrument procedures that drive the hardware, not settings.
+        # Utils: per-instrument procedures that drive the hardware, not settings. The one Utils menu: main_hcs.py used
+        # to add a second one with the first three.
         utils_menu = menubar.addMenu("Utils")
+        stage_utils_action = QAction("Stage Utils", self)
+        stage_utils_action.triggered.connect(self.stageUtils.show)
+        utils_menu.addAction(stage_utils_action)
+        if USE_OBJECTIVE_TURRET:
+            reset_turret_action = QAction("Reset Objective Turret", self)
+            reset_turret_action.triggered.connect(self.resetObjectiveTurret)
+            utils_menu.addAction(reset_turret_action)
+        workflow_runner_action = QAction("Workflow Runner...", self)
+        workflow_runner_action.triggered.connect(self.openWorkflowRunner)
+        utils_menu.addAction(workflow_runner_action)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
@@ -964,7 +982,13 @@ class HighContentScreeningGui(QMainWindow):
         if self.piezo:
             self.piezoWidget = widgets.PiezoWidget(self.piezo)
 
-        self.objectivesWidget = widgets.ObjectivesWidget(self.objectiveStore, self.objective_changer)
+        self.objectivesWidget = widgets.ObjectivesWidget(
+            self.objectiveStore,
+            self.objective_changer,
+            focus_servo=self.stage.z_stage if USE_PI_FOCUS_STAGE else None,
+            z_in_use=lambda: self.autofocusController.autofocus_in_progress
+            or self.multipointController.acquisition_in_progress(),
+        )
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
@@ -973,6 +997,13 @@ class HighContentScreeningGui(QMainWindow):
 
         if USE_SQUID_LASER_ENGINE and self.microscope.addons.squid_laser_engine is not None:
             self.laserEngineWidget = LaserEngineWidget(self.microscope.addons.squid_laser_engine)
+
+        if self.microscope.illumination_controller.light_source_type == LightSourceType.VersaLase:
+            self.versaLaseWidget = VersaLaseWidget(
+                self.microscope.illumination_controller.light_source,
+                is_busy=lambda: self.multipointController is not None
+                and self.multipointController.acquisition_in_progress(),
+            )
 
         self.recordingControlWidget = widgets.RecordingWidget(
             self.streamHandler,
@@ -1316,6 +1347,8 @@ class HighContentScreeningGui(QMainWindow):
         self.cameraTabWidget.addTab(self.focusMapWidget, "Focus Map")
         if self.laserEngineWidget:
             self.cameraTabWidget.addTab(self.laserEngineWidget, "Laser Engine")
+        if self.versaLaseWidget:
+            self.cameraTabWidget.addTab(self.versaLaseWidget, "VersaLase")
         self.cameraTabWidget.currentChanged.connect(lambda: self.resizeCurrentTab(self.cameraTabWidget))
         self.resizeCurrentTab(self.cameraTabWidget)
 
@@ -1409,8 +1442,8 @@ class HighContentScreeningGui(QMainWindow):
         We want our main window to fit on the primary screen, so grab the users primary screen and return
         something slightly smaller than that.
         """
-        desktop_info = QDesktopWidget()
-        primary_screen_size = desktop_info.screen(desktop_info.primaryScreen()).size()
+        # QApplication.primaryScreen() works on Qt 5 and 6 (QDesktopWidget was removed in Qt 6).
+        primary_screen_size = QApplication.primaryScreen().size()
 
         height_min = int(0.9 * primary_screen_size.height())
         width_min = int(0.96 * primary_screen_size.width())
@@ -1478,6 +1511,7 @@ class HighContentScreeningGui(QMainWindow):
 
         self.navigationViewer.signal_coordinates_clicked.connect(self.move_from_click_mm)
         self.objectivesWidget.signal_objective_changed.connect(self.navigationViewer.redraw_fov)
+        self.objectivesWidget.signal_swap_active.connect(self._on_objective_swap_active)
         self.cameraSettingWidget.signal_binning_changed.connect(self.navigationViewer.redraw_fov)
         # Sensor mode changes (readout speed) can shift the valid exposure range;
         # refresh the exposure control the user actually sees (LiveControlWidget's),
@@ -1544,7 +1578,7 @@ class HighContentScreeningGui(QMainWindow):
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.scanCoordinates.update_wellplate_settings)
         self.wellplateFormatWidget.signalWellplateSettings.connect(self.wellSelectionWidget.onWellplateChanged)
         self.wellplateFormatWidget.signalWellplateSettings.connect(
-            lambda format_, *args: self.onWellplateChanged(format_)
+            lambda settings: self.onWellplateChanged(settings.format)
         )
 
         self.wellSelectionWidget.signal_wellSelectedPos.connect(self.move_to_mm)
@@ -1623,6 +1657,8 @@ class HighContentScreeningGui(QMainWindow):
                     self.liveControlWidget.currentConfiguration.name
                 )
             )
+        # Per-channel iris values exist only on the X-Light widget; the Dragonfly has no irises.
+        if isinstance(self.spinningDiskConfocalWidget, widgets.SpinningDiskConfocalWidget):
             # Update iris UI when channel changes
             self.liveControlWidget.signal_live_configuration.connect(
                 self.spinningDiskConfocalWidget.update_iris_from_config
@@ -1742,6 +1778,10 @@ class HighContentScreeningGui(QMainWindow):
 
             # Make initial connections
             self.updateNapariConnections()
+
+            # Not in napari_connections: Performance Mode must not disconnect it. Enabled
+            # mid-acquisition, the viewer would otherwise stay in the 2D it was switched to.
+            self.multipointController.acquisition_finished.connect(self.napariMultiChannelWidget.finishAcquisition)
 
     def updateNapariConnections(self):
         """Performance mode disconnects the napari display widgets; leaving it reconnects them."""
@@ -2053,14 +2093,18 @@ class HighContentScreeningGui(QMainWindow):
             return
         self.log.info("Resetting objective turret")
         try:
-            self.objective_changer.clear_alarm()
-            self.objective_changer.enable()
-            # Re-home so the position tracker matches the physical slot: avoids short-circuiting the
-            # rotate in move_to_objective if the tracker is stale from a fault mid-rotation.
-            self.objective_changer.home()
-            current = self.objectiveStore.current_objective
-            if current:
-                self.objective_changer.move_to_objective(current)
+            current = self.objectiveStore.current_objective or None
+            if hasattr(self.objective_changer, "reset"):
+                # Turret: clear, enable, re-home with Z retracted (so the position tracker matches the
+                # physical slot without short-circuiting the rotate), rotate back, and restore Z only
+                # then - under the selected objective, not at the sensor reference. One Z round trip.
+                self.objective_changer.reset(current)
+            else:
+                self.objective_changer.clear_alarm()
+                self.objective_changer.enable()
+                self.objective_changer.home()
+                if current:
+                    self.objective_changer.move_to_objective(current)
         except Exception as exc:
             self.log.exception("Reset of objective turret failed")
             QMessageBox.warning(
@@ -2197,6 +2241,46 @@ class HighContentScreeningGui(QMainWindow):
         """Stop the workflow after current sequence."""
         if self.workflowRunner:
             self.workflowRunner.request_stop()
+
+    # Controls that can move the stage, run autofocus or start an acquisition.
+    _OBJECTIVE_SWAP_BLOCKED_WIDGETS = (
+        "navigationWidget",
+        "stageUtils",
+        "autofocusWidget",
+        "piezoWidget",
+        "laserAutofocusControlWidget",
+        "laserAutofocusSettingWidget",
+        "focusMapWidget",
+        "wellSelectionWidget",
+        "recordTabWidget",
+    )
+
+    def _on_objective_swap_active(self, active: bool):
+        """Block every other stage / focus / acquisition control for the whole manual objective swap.
+
+        The swap retracts Z and releases the V-308 servo from background threads, so anything else
+        driving the stage meanwhile would interleave with it or fail with the servo off. Each widget
+        gets back the enabled state it had when the swap began.
+        """
+        self._objective_swap_active = active
+        if active:
+            self._objective_swap_saved_enabled = {}
+            for name in self._OBJECTIVE_SWAP_BLOCKED_WIDGETS:
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    self._objective_swap_saved_enabled[name] = widget.isEnabled()
+                    widget.setEnabled(False)
+        else:
+            for name, was_enabled in self._objective_swap_saved_enabled.items():
+                widget = getattr(self, name, None)
+                if widget is not None:
+                    widget.setEnabled(was_enabled)
+            self._objective_swap_saved_enabled = {}
+
+    def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
+        if self._objective_swap_active:
+            self.log.info(f"{what} ignored: an objective change is in progress")
+        return self._objective_swap_active
 
     def _set_workflow_controls_enabled(self, enabled: bool):
         """Enable/disable main window controls during workflow.
@@ -2663,6 +2747,8 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayTabs.setCurrentIndex(0)
 
     def move_from_click_image(self, click_x, click_y, image_width, image_height):
+        if self._stage_moves_blocked_by_objective_swap("Click to move"):
+            return
         if not self.navigationWidget.get_click_to_move_enabled():
             self.log.debug(f"Click to move disabled, ignoring click at {click_x=}, {click_y=}")
             return
@@ -2675,6 +2761,8 @@ class HighContentScreeningGui(QMainWindow):
         self._move_stage_by_image_delta(click_x, click_y, pixel_size_um)
 
     def move_z_from_scroll(self, delta_um: float):
+        if self._stage_moves_blocked_by_objective_swap("Z scroll"):
+            return
         if not self.navigationWidget.get_click_to_move_enabled():
             return
         if self.stage.get_state().busy:
@@ -2698,6 +2786,8 @@ class HighContentScreeningGui(QMainWindow):
             self.log.debug(f"Click to move disabled, ignoring click request for {x_mm=}, {y_mm=}")
 
     def move_to_mm(self, x_mm, y_mm):
+        if self._stage_moves_blocked_by_objective_swap("Stage move"):
+            return
         self.stage.move_x_to(x_mm)
         self.stage.move_y_to(y_mm)
 
@@ -2778,7 +2868,11 @@ class HighContentScreeningGui(QMainWindow):
 
         # Cache position and settings
         try:
-            squid.stage.utils.cache_position(pos=self.stage.get_pos(), stage_config=self.stage.get_config())
+            squid.stage.utils.cache_position(
+                pos=self.stage.get_pos(),
+                stage_config=self.stage.get_config(),
+                validate_z=squid.stage.utils.z_is_referenced(),
+            )
         except ValueError as e:
             # ValueError is expected when position is out of bounds
             self.log.error(f"Couldn't cache position while closing for {context}. Error: {e}")
@@ -2863,6 +2957,16 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
+        # Release the Dragonfly serial port so a restarted process can open it
+        if self.dragonfly is not None:
+            try:
+                self.dragonfly.close()
+            except Exception:
+                if for_restart:
+                    self.log.exception(f"Error closing Dragonfly during {context}")
+                else:
+                    raise
+
         # Stop laser autofocus
         if SUPPORT_LASER_AUTOFOCUS:
             try:
@@ -2885,12 +2989,28 @@ class HighContentScreeningGui(QMainWindow):
             else:
                 raise
 
+        # Turn off and release an external light source (VersaLase, CELESTA, LDI, Andor) once live view,
+        # which may still switch it, has stopped. Only logged on failure, even on a full shutdown: a light
+        # source that has dropped off its link must not keep the stage and microcontroller from closing.
+        if self.microscope.illumination_controller.light_source is not None:
+            try:
+                if self.versaLaseWidget is not None:
+                    self.versaLaseWidget.stop()  # no status read may use the lasers while they shut down
+                self.microscope.illumination_controller.close()
+            except Exception:
+                self.log.exception(f"Error closing the light source during {context}")
+
         # Z-retract + Xeryon zero: needed on full shutdown, and on Xeryon restart
         # (Xeryon must be zeroed before re-init).
         if not for_restart or USE_XERYON:
             z_retracted = False
             try:
-                self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+                if USE_PI_FOCUS_STAGE:
+                    # The V-308's home(z) is its configured objective-clear retract, which on an
+                    # upright system is the positive travel limit rather than OBJECTIVE_RETRACTED_POS_MM.
+                    self.stage.home(x=False, y=False, z=True, theta=False)
+                else:
+                    self.stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
                 z_retracted = True
             except Exception:
                 if for_restart:

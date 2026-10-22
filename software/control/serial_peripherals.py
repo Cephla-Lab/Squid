@@ -92,6 +92,7 @@ class SerialDevice:
         attempt_delay=1,
         check_prefix=True,
         print_response=False,
+        match_anywhere=False,
     ):
         # Write a command and check the response
         for attempt in range(max_attempts):
@@ -117,6 +118,10 @@ class SerialDevice:
             if check_prefix:
                 if response.startswith(expected_response):
                     return response
+
+            # the expected response may follow the unread reply to an earlier command
+            if match_anywhere and expected_response in response.split():
+                return response
 
             # Log mismatch for debugging (response didn't match exactly or by prefix)
             if response:
@@ -169,6 +174,8 @@ class XLight_Simulation:
         self.illumination_iris = 0
         self.emission_iris = 0
         self.slider_position = 0
+        self.dichroic_positions = XLight.V3_DICHROIC_POSITIONS
+        self.filter_slider_positions = XLight.V3_FILTER_SLIDER_POSITIONS
 
     def set_emission_filter(self, position, extraction=False, validate=False):
         self.emission_wheel_pos = position
@@ -219,7 +226,7 @@ class XLight_Simulation:
         return self.emission_iris
 
     def set_filter_slider(self, position):
-        if str(position) not in ["0", "1", "2", "3"]:
+        if str(position) not in [str(i) for i in range(self.filter_slider_positions)]:
             raise ValueError("Invalid slider position!")
         self.slider_position = position
         return self.slider_position
@@ -239,6 +246,11 @@ class XLight:
     Supports V1, V2, V3, and Cicero with automatic protocol detection.
     """
 
+    # Number of positions. V3 units are asked for theirs; these are used when they don't answer.
+    V2_DICHROIC_POSITIONS = 5
+    V3_DICHROIC_POSITIONS = 3
+    V3_FILTER_SLIDER_POSITIONS = 3
+
     def __init__(self, SN, sleep_time_for_wheel=0.25, disable_emission_filter_wheel=False):
         self.log = squid.logging.get_logger(self.__class__.__name__)
 
@@ -254,10 +266,13 @@ class XLight:
         self.sleep_time_for_wheel = sleep_time_for_wheel
         self.disable_emission_filter_wheel = disable_emission_filter_wheel
         self.slider_position = 0
-        self.illumination_iris = 0
-        self.emission_iris = 0
+        # Iris positions are unknown (None) until the device acknowledges a command
+        self.illumination_iris = None
+        self.emission_iris = None
         self.emission_wheel_pos = None
         self._emission_wheel_extracted = False
+        self.dichroic_positions = self.V2_DICHROIC_POSITIONS
+        self.filter_slider_positions = self.V3_FILTER_SLIDER_POSITIONS
 
         # Auto-detect protocol: try V3 (115200) first, then V1/V2 (9600)
         self.protocol_version = self._connect_and_detect(SN)
@@ -272,6 +287,10 @@ class XLight:
         else:
             # V3/Cicero: use idc command for config
             self.parse_idc_response(self.serial_connection.write_and_read("idc\r"))
+            if self.has_dichroic_filters_wheel:
+                self.dichroic_positions = self._query_position_count("C", self.V3_DICHROIC_POSITIONS)
+            if self.has_dichroic_filter_slider:
+                self.filter_slider_positions = self._query_position_count("P", self.V3_FILTER_SLIDER_POSITIONS)
 
         self.print_config()
 
@@ -319,6 +338,31 @@ class XLight:
         self.has_emission_iris_diaphragm = bool(config_value & 0x00000400)
         self.has_dichroic_filter_slider = bool(config_value & 0x00000800)
         self.has_ttl_control = bool(config_value & 0x00001000)
+
+    def _query_position_count(self, prefix, default):
+        """Ask the device how many positions a wheel or slider has ("r<prefix>N")."""
+        query = "r" + prefix + "N"
+        try:
+            response = self.serial_connection.write_and_check(query + "\r", query, read_delay=0.01, max_attempts=2)
+            count = int(response[len(query) :])
+        except (SerialDeviceError, ValueError) as e:
+            self.log.warning(f"Could not read number of positions with '{query}' ({e}), assuming {default}")
+            return default
+        if count < 1:
+            self.log.warning(f"X-Light reported {count} positions for '{query}', assuming {default}")
+            return default
+        self.log.info(f"X-Light reported {count} positions for '{query}'")
+        return count
+
+    def _send_iris_command(self, command):
+        """Send an iris command and confirm that the device acknowledged it.
+
+        The acknowledgement can follow the unread reply of an earlier unvalidated command
+        (e.g. "B1\\rJ800" after an emission wheel move), so it is accepted anywhere in the response.
+        """
+        self.serial_connection.write_and_check(
+            command + "\r", command, read_delay=2, max_attempts=3, check_prefix=False, match_anywhere=True
+        )
 
     def print_config(self):
         self.log.info(
@@ -376,8 +420,8 @@ class XLight:
         return self.emission_wheel_pos
 
     def set_dichroic(self, position, extraction=False):
-        if str(position) not in ["1", "2", "3", "4", "5"]:
-            raise ValueError("Invalid dichroic wheel position!")
+        if str(position) not in [str(i + 1) for i in range(self.dichroic_positions)]:
+            raise ValueError(f"Invalid dichroic wheel position {position}, must be 1-{self.dichroic_positions}")
         position_to_write = str(position)
         position_to_read = str(position)
         if extraction:
@@ -416,8 +460,10 @@ class XLight:
         # value: 0 - 100
         if value == self.illumination_iris:
             return self.illumination_iris
+        # Unknown until acknowledged, so that a failed command is sent again on the next call
+        self.illumination_iris = None
+        self._send_iris_command("J" + str(int(10 * value)))
         self.illumination_iris = value
-        self.serial_connection.write_and_read("J" + str(int(10 * value)) + "\r", read_delay=2)
         return self.illumination_iris
 
     def get_illumination_iris(self):
@@ -429,8 +475,10 @@ class XLight:
         # value: 0 - 100
         if value == self.emission_iris:
             return self.emission_iris
+        # Unknown until acknowledged, so that a failed command is sent again on the next call
+        self.emission_iris = None
+        self._send_iris_command("V" + str(int(10 * value)))
         self.emission_iris = value
-        self.serial_connection.write_and_read("V" + str(int(10 * value)) + "\r", read_delay=2)
         return self.emission_iris
 
     def get_emission_iris(self):
@@ -439,8 +487,8 @@ class XLight:
         return self.emission_iris
 
     def set_filter_slider(self, position):
-        if str(position) not in ["0", "1", "2", "3"]:
-            raise ValueError("Invalid slider position!")
+        if str(position) not in [str(i) for i in range(self.filter_slider_positions)]:
+            raise ValueError(f"Invalid slider position {position}, must be 0-{self.filter_slider_positions - 1}")
         self.slider_position = position
         position_to_write = str(position)
         position_to_read = str(position)
@@ -475,6 +523,16 @@ class XLight:
         current_pos = self.serial_connection.write_and_check("rN\r", "rN", read_delay=0.01)
         self.disk_motor_state = bool(int(current_pos[2]))
         return self.disk_motor_state
+
+
+def dragonfly_camera_port_for_dichroic(dichroic_name: str) -> int:
+    """Which camera port a port-selection dichroic feeds: only the all-pass and all-reflect
+    positions route everything to one port; the real dichroics split by wavelength."""
+    if dichroic_name.endswith("100% Pass"):
+        return 1
+    if dichroic_name.endswith("100% Reflect"):
+        return 2
+    raise ValueError(f"Unknown camera port: {dichroic_name}")
 
 
 class Dragonfly:
@@ -587,7 +645,8 @@ class Dragonfly:
             position: Target position
         """
         command = f"AT_PS_POS,1,{position}"
-        response = self._send_command(command)
+        self._send_command(command)
+        self.current_port_selection_dichroic = position  # get_camera_port() reads this
         return position
 
     def get_port_selection_dichroic(self) -> int:
@@ -612,12 +671,7 @@ class Dragonfly:
         if not self.ps_info or not (1 <= self.current_port_selection_dichroic <= len(self.ps_info)):
             raise ValueError(f"Port selection dichroic info does not match current position: {self.ps_info}")
 
-        if self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Pass"):
-            return 1
-        elif self.ps_info[self.current_port_selection_dichroic - 1].endswith("100% Reflect"):
-            return 2
-        else:
-            raise ValueError(f"Unknown camera port: {self.ps_info[self.current_port_selection_dichroic - 1]}")
+        return dragonfly_camera_port_for_dichroic(self.ps_info[self.current_port_selection_dichroic - 1])
 
     def set_modality(self, modality: str):
         """Set imaging modality
@@ -736,7 +790,7 @@ class Dragonfly:
             return []
         else:
             info = []
-            for i in range(1, 8):  # Assume there are 8 positions on the emission filter wheel
+            for i in range(1, 9):  # There are 8 positions on the emission filter wheel
                 info.append(str(i) + ":" + self._get_component_info("FW", port, i))
             return info
 
@@ -803,11 +857,8 @@ class Dragonfly_Simulation:
         return self.dichroic_position
 
     def get_camera_port(self) -> int:
-        """Get current camera port"""
-        if self.dichroic_position == 1:
-            return 1
-        else:
-            return 2
+        """Get current camera port, by the same rule as the hardware driver"""
+        return dragonfly_camera_port_for_dichroic(self.get_port_selection_dichroic_info()[self.dichroic_position - 1])
 
     def set_modality(self, modality: str):
         """Set imaging modality"""
@@ -849,10 +900,10 @@ class Dragonfly_Simulation:
         """Set filter wheel rotation speed"""
         self.log.debug(f"Set filter wheel port {port} speed to {speed}")
 
-    def set_field_aperture_wheel_position(self, port: int, position: int):
+    def set_field_aperture_wheel_position(self, position: int):
         """Set aperture position"""
-        self.field_aperture_positions[port] = position
-        self.log.debug(f"Set field aperture port {port} to position {position}")
+        self.field_aperture_positions[1] = position
+        self.log.debug(f"Set field aperture to position {position}")
 
     def get_field_aperture_wheel_position(self) -> int:
         """Get current aperture position"""
@@ -862,14 +913,17 @@ class Dragonfly_Simulation:
         """Get information about a component"""
         return f"Component {component_type} Port {port} - Simulation"
 
+    # Names in the same shape the hardware reports them: the widget lists them verbatim and
+    # get_camera_port() keys on the "100% Pass" / "100% Reflect" dichroic names.
     def get_emission_filter_info(self, port: int) -> list[str]:
-        return [str(i) for i in range(1, 9)]
+        names = ["445/45", "525/50", "600/50", "700/75", "Empty", "Empty", "Empty", "Empty"]
+        return [f"{i}:{name}" for i, name in enumerate(names, start=1)]
 
     def get_field_aperture_info(self) -> list[str]:
-        return [str(i) for i in range(1, 11)]
+        return [f"Aperture {i}" for i in range(1, 11)]
 
     def get_port_selection_dichroic_info(self) -> list[str]:
-        return [str(i) for i in range(1, 5)]
+        return ["100% Pass", "Dichroic 1", "Dichroic 2", "100% Reflect"]
 
     def close(self):
         """Close the simulated connection"""

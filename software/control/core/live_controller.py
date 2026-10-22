@@ -8,7 +8,9 @@ from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control.microcontroller import Microcontroller
+from control.serial_peripherals import SerialDeviceError
 from squid.abc import CameraAcquisitionMode, AbstractCamera
+from control.rcm_scan_trigger import ConfocalScanFailedError
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
@@ -51,6 +53,7 @@ class LiveController(QObject):
         self.fps_trigger = 1
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count = 0
+        self._confocal_scan_failed = False  # log a confocal-unit trigger failure once, not on every frame
         self.timer_trigger: Optional[threading.Timer] = None
 
         self.trigger_ID = -1
@@ -338,23 +341,32 @@ class LiveController(QObject):
                     )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
-            # Apply per-channel iris values
+            # Apply per-channel iris values. A channel without its own value gets the default, which
+            # is what the confocal widget shows for it.
             hw_settings = self.currentConfiguration.confocal_hardware_settings
-            if hw_settings is not None:
-                xlight = self.microscope.addons.xlight
+            xlight = self.microscope.addons.xlight
+            if xlight.has_illumination_iris_diaphragm:
+                iris_val = getattr(hw_settings, "illumination_iris", None)
                 try:
-                    if hw_settings.illumination_iris is not None and xlight.has_illumination_iris_diaphragm:
-                        xlight.set_illumination_iris(int(hw_settings.illumination_iris))
-                    if hw_settings.emission_iris is not None and xlight.has_emission_iris_diaphragm:
-                        xlight.set_emission_iris(int(hw_settings.emission_iris))
-                except (OSError, ValueError) as e:
-                    self._log.warning(f"Not setting iris values: {e}")
+                    xlight.set_illumination_iris(
+                        int(iris_val if iris_val is not None else XLIGHT_ILLUMINATION_IRIS_DEFAULT)
+                    )
+                except (OSError, ValueError, SerialDeviceError) as e:
+                    self._log.error(f"Not setting illumination iris: {e}")
+            if xlight.has_emission_iris_diaphragm:
+                iris_val = getattr(hw_settings, "emission_iris", None)
+                try:
+                    xlight.set_emission_iris(int(iris_val if iris_val is not None else XLIGHT_EMISSION_IRIS_DEFAULT))
+                except (OSError, ValueError, SerialDeviceError) as e:
+                    self._log.error(f"Not setting emission iris: {e}")
         elif ENABLE_SPINNING_DISK_CONFOCAL and USE_DRAGONFLY and self.microscope.addons.dragonfly:
             try:
-                self.microscope.addons.dragonfly.set_emission_filter(
-                    self.microscope.addons.dragonfly.get_camera_port(),
-                    self.currentConfiguration.emission_filter_position,
-                )
+                if self.currentConfiguration.emission_filter_position:
+                    # The channel's filter position applies to the wheel on the port the camera is on
+                    self.microscope.addons.dragonfly.set_emission_filter(
+                        self.microscope.addons.dragonfly.get_camera_port(),
+                        self.currentConfiguration.emission_filter_position,
+                    )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
 
@@ -390,6 +402,7 @@ class LiveController(QObject):
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
     def stop_live(self):
+        self._confocal_scan_failed = False
         if self.is_live:
             self.is_live = False
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -460,7 +473,11 @@ class LiveController(QObject):
             # CONTINUOUS free-runs, so there is no trigger to send.
             if self.trigger_mode in (TriggerMode.HARDWARE, TriggerMode.SOFTWARE):
                 self.trigger_ID = self.trigger_ID + 1
-                self.camera.send_trigger(self.camera.get_exposure_time())
+                try:
+                    self.camera.send_trigger(self.camera.get_exposure_time())
+                except ConfocalScanFailedError as e:
+                    self._log.error(f"Snap: {e}")
+                    return False
 
             got_frame = self.camera.read_frame() is not None
             if not got_frame:
@@ -529,7 +546,17 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        self.camera.send_trigger(self.camera.get_exposure_time())
+        try:
+            self.camera.send_trigger(self.camera.get_exposure_time())
+        except ConfocalScanFailedError as e:
+            # Keep live view going (the timer only reschedules when this returns) and say why it is blank.
+            if not self._confocal_scan_failed:
+                self._log.error(f"Live view: {e}")
+                self._confocal_scan_failed = True
+            return True
+        if self._confocal_scan_failed:
+            self._log.info("Live view: confocal triggering works again")
+            self._confocal_scan_failed = False
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -569,6 +596,7 @@ class LiveController(QObject):
 
     # trigger mode and settings
     def set_trigger_mode(self, mode):
+        self._confocal_scan_failed = False
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger

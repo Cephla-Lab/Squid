@@ -11,6 +11,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
+from control.rcm_scan_trigger import ConfocalScanFailedError, RcmScanTrigger
 
 from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
 from control.microcontroller import Microcontroller
@@ -21,6 +22,7 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
+import control.illumination_versalase
 import control.microcontroller
 import control.serial_peripherals as serial_peripherals
 import control.squid_laser_engine as squid_laser_engine
@@ -370,6 +372,16 @@ class Microscope:
                 invert_z=control._def.PI_FOCUS_INVERT_Z,
                 home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                on_target_tolerance=(
+                    (
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MAX_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION,
+                    )
+                    if control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM
+                    else None
+                ),
+                sub_window_settle_s=control._def.PI_FOCUS_SUB_WINDOW_SETTLE_MS / 1000.0,
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
@@ -380,11 +392,37 @@ class Microscope:
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
 
+        def rearm_camera_after_stalled_scan():
+            # The camera stopped signalling ready to the confocal unit. Re-applying hardware trigger mode
+            # (stop streaming, set the trigger, start streaming) re-arms it, as toggling the trigger mode did.
+            # Runs on the triggering thread inside send_trigger(), which holds the camera's (reentrant)
+            # trigger lock, so the check and the set are not interleaved with another thread's mode change.
+            try:
+                if camera.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                    cam_trigger_log.warning("Re-armed the camera's hardware trigger after a stalled confocal scan")
+            except Exception as e:
+                cam_trigger_log.error(f"Could not re-arm the camera after a stalled confocal scan: {e}")
+
+        rcm_scan_trigger = RcmScanTrigger(
+            control._def.NL5_TRIGGER_TIMEOUT_S,
+            rearm=rearm_camera_after_stalled_scan,
+            frame_id=lambda: camera.get_frame_id(),
+        )
+
         def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
             # NOTE(imo): If this succeeds, it means we sent the request,
             # but we didn't necessarily get confirmation of success.
             if addons.nl5 and control._def.NL5_USE_DOUT:
-                addons.nl5.start_acquisition()
+                # The confocal unit triggers the camera; a scan it cannot finish is aborted, not waited on.
+                # The timeout scales with the whole frame time (exposure plus readout), not just the exposure.
+                frame_time_ms = max(illumination_time or 0.0, camera.get_total_frame_time())
+                if not rcm_scan_trigger.trigger(addons.nl5, frame_time_ms / 1000.0):
+                    raise ConfocalScanFailedError(
+                        "The confocal scan stalled and re-arming the camera did not recover it "
+                        "(or an earlier aborted scan is still stuck)"
+                    )
+                return True
             else:
                 illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
                 cam_trigger_log.debug(
@@ -435,6 +473,26 @@ class Microscope:
                 ShutterControlMode.TTL,
                 LightSourceType.AndorLaser,
                 andor_laser,
+            )
+        elif control._def.USE_VORTRAN_LASER_CONTROL and not simulated:
+            if control._def.VORTRAN_SHUTTER_CONTROL_MODE == "TTL":
+                shutter_mode = ShutterControlMode.TTL
+            elif control._def.VORTRAN_SHUTTER_CONTROL_MODE == "Software":
+                shutter_mode = ShutterControlMode.Software
+            else:
+                raise ValueError(
+                    f"VORTRAN_SHUTTER_CONTROL_MODE must be 'TTL' or 'Software', got {control._def.VORTRAN_SHUTTER_CONTROL_MODE!r}"
+                )
+            versalase = control.illumination_versalase.VersaLase(
+                shutter_mode=shutter_mode,
+                ttl_input=control.illumination_versalase.TtlInput(control._def.VORTRAN_TTL_INPUT),
+            )
+            illumination_controller = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                shutter_mode,
+                LightSourceType.VersaLase,
+                versalase,
             )
         else:
             illumination_controller = IlluminationController(low_level_devices.microcontroller)
@@ -598,7 +656,7 @@ class Microscope:
             # across close()/re-init (the motor is de-energized but the drive stays
             # powered), so a re-home would just be wasted motion.
             if control._def.USE_XERYON or not skip_init:
-                self.addons.objective_changer.home()
+                self.addons.objective_changer.home()  # a turret homes with Z retracted and leaves it there
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
             try:
@@ -895,7 +953,7 @@ class Microscope:
         # Move to start of z-stack
         if NZ > 1 and z_stacking_config == "FROM CENTER":
             self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
-            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
 
         saved_paths = []
         try:
@@ -913,7 +971,7 @@ class Microscope:
 
                 if z_level < NZ - 1:
                     self.stage.move_z(deltaZ)
-                    time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+                    time.sleep(squid.stage.utils.z_stabilization_time_s())
         finally:
             # Always return Z to starting position
             try:
@@ -1090,6 +1148,12 @@ class Microscope:
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
 
+        # Turn an external light source's lines off first, while everything else is still connected.
+        try:
+            self.illumination_controller.close()
+        except Exception as e:
+            self._log.warning(f"Error closing illumination: {e}")
+
         try:
             self.stage.close()  # stage-owned transports, e.g. the PI C-414 serial handle
         except Exception as e:
@@ -1118,6 +1182,12 @@ class Microscope:
                 self.addons.squid_laser_engine.close()
             except Exception as e:
                 self._log.warning(f"Error closing squid laser engine: {e}")
+
+        if self.addons.dragonfly is not None:
+            try:
+                self.addons.dragonfly.close()
+            except Exception as e:
+                self._log.warning(f"Error closing Dragonfly: {e}")
 
         if self.addons.fluidics is not None:
             try:

@@ -120,9 +120,8 @@ int16_t joystick_delta_y = 0;
 bool joystick_button_pressed = false;
 long joystick_button_pressed_timestamp = 0;
 
-// focus
-int32_t focuswheel_pos = 0;
-bool first_packet_from_joystick_panel = true;
+// focus wheel and link state; starts disconnected, so the first packet only takes the wheel baseline
+JoystickPanelLink joystick_panel = {false, 0, false, 0, false, 0};
 
 // btns
 uint8_t btns;

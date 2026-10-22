@@ -569,6 +569,7 @@ void ISR_strobeTimer()
 /***************************************************************************************************/
 PacketSerial joystick_packetSerial;
 
+// Reconnect safety (wheel baseline, timeout, joystick arming, packet checks) is in utils/joystick_panel.h.
 // The panel is the operator's tool for BETWEEN commands (operator's rule, 2026-09-20: "the joystick panel
 // should be disabled during commanded moves"). While the host has a move or a homing in progress on any
 // axis, what the panel sends is DROPPED, not queued: a wheel count that rewrote the ramp target of a
@@ -587,39 +588,28 @@ bool panel_locked_out()
 
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 {
-
-  if (size != JOYSTICK_MSG_LENGTH)
+  JoystickPanelInput in;
+  if (!jp_on_packet(&joystick_panel, buffer, size, millis(), &in))
   {
     if (DEBUG_MODE)
-      Serial.println("! wrong number of bytes received !");
+      Serial.println("! joystick packet dropped !");
     return;
   }
 
-  if (first_packet_from_joystick_panel)
-  {
-    focuswheel_pos = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
-    first_packet_from_joystick_panel = false;
-  }
-  else
-  {
-    int32_t wheel = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
-    // Locked out: the wheel's travel is dropped, not accumulated. focuswheel_pos still follows the
-    // panel, so the travel is not released as one motion when the lock-out ends.
-    if (!panel_locked_out() && wheel != focuswheel_pos)
-      focusPosition = focusPosition + (wheel - focuswheel_pos);
-    focuswheel_pos = wheel;
-  }
-
-  joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );
-  joystick_delta_y = JOYSTICK_SIGN_Y * int16_t( uint16_t(buffer[6]) * 256 + uint16_t(buffer[7]) );
-  // locked out: an undeflected joystick. An axis the joystick was already driving is brought to rest by
-  // check_joystick() when the lock-out begins, whatever the packets say (a stick centred as the command
-  // starts reads the same as one that was never deflected).
+  // Locked out (a commanded move or homing in progress, panel_locked_out()): the wheel's travel and the
+  // joystick are dropped. The link has already taken this packet's wheel position as its baseline, so
+  // nothing is released when the lock-out ends. An axis the joystick was already driving is brought to
+  // rest by check_joystick() when the lock-out begins.
   if (panel_locked_out())
   {
-    joystick_delta_x = 0; joystick_delta_y = 0;
+    in.focus_delta = 0;
+    in.delta_x = 0;
+    in.delta_y = 0;
   }
-  btns = buffer[8];
+  focusPosition = focusPosition + in.focus_delta;
+  joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;
+  joystick_delta_y = JOYSTICK_SIGN_Y * in.delta_y;
+  btns = in.buttons;
 
   // temporary
   /*
