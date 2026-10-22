@@ -103,6 +103,19 @@ def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypa
     win.multipointController.acquisition_finished.emit()
     assert calls == [win.napariMultiChannelWidget]
 
+    # Performance Mode disconnects the napari display feeds; enabled mid-acquisition it must
+    # not cut the viewer off from the end of the run (it would stay in 2D).
+    win.performanceModeToggle.setChecked(True)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 2
+
+    # Leaving Performance Mode reconnects the feeds without connecting this a second time.
+    win.performanceModeToggle.setChecked(False)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 3
+
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: make_connections and makeNapariConnections both used to wire the

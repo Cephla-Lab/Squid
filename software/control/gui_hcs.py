@@ -1700,7 +1700,6 @@ class HighContentScreeningGui(QMainWindow):
             self.napari_connections += [
                 (self.multipointController.napari_layers_init, self.napariMultiChannelWidget.initLayers),
                 (self.multipointController.napari_layers_update, self.napariMultiChannelWidget.updateLayers),
-                (self.multipointController.acquisition_finished, self.napariMultiChannelWidget.finishAcquisition),
             ]
 
             if ENABLE_FLEXIBLE_MULTIPOINT:
@@ -1768,6 +1767,10 @@ class HighContentScreeningGui(QMainWindow):
 
             # Make initial connections
             self.updateNapariConnections()
+
+            # Not in napari_connections: Performance Mode must not disconnect it. Enabled
+            # mid-acquisition, the viewer would otherwise stay in the 2D it was switched to.
+            self.multipointController.acquisition_finished.connect(self.napariMultiChannelWidget.finishAcquisition)
 
     def updateNapariConnections(self):
         """Performance mode disconnects the napari display widgets; leaving it reconnects them."""
