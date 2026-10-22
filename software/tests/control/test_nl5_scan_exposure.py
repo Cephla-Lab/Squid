@@ -37,9 +37,14 @@ class ScanTiming(_ScanSpeedMixin):
         self.line_speed = line_speed
         self.line_speed_writes = []
 
-    def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = self.clamp_line_speed(speed)
-        self.line_speed_writes.append(self.line_speed)
+    def _send_line_speed(self, line_speed):
+        self.line_speed_writes.append(line_speed)
+
+    def load_settings(self):
+        pass
+
+    def save_settings(self):
+        pass
 
 
 FakeAion = FakeConfocalUnit  # the fake unit carries the same scan timing
@@ -99,6 +104,18 @@ def test_apply_exposure_writes_the_line_speed_only_when_it_changes():
     assert unit.line_speed_writes == [3000, 7300]
     assert unit.apply_exposure_time(5.0) == pytest.approx(10 + 1000 * SWEEP_MRAD / LINE_SPEED_MAX)
     assert unit.line_speed_writes == [3000, 7300, LINE_SPEED_MAX]
+
+
+def test_a_manual_line_speed_change_is_not_mistaken_for_the_applied_one():
+    """set_line_speed() from the NL5 tab (outside hardware trigger) used to leave the cache at the exposure-derived
+    speed, so re-applying that exposure skipped the write and the unit stayed at the manual speed."""
+    unit = ScanTiming()
+    unit.apply_exposure_time(30.0)
+    unit.set_line_speed(3000)  # manual, as the NL5 tab does
+    assert unit.apply_exposure_time(30.0) == pytest.approx(30.0)
+    assert unit.line_speed_writes == [7300, 3000, 7300]
+    unit.apply_exposure_time(30.0)
+    assert unit.line_speed_writes == [7300, 3000, 7300]  # still no write when nothing changed
 
 
 def test_scan_timing_metadata_describes_the_exposure():
@@ -206,6 +223,29 @@ def test_in_hardware_trigger_the_channel_exposure_sets_the_line_speed_and_the_ca
     assert camera.get_exposure_time() == pytest.approx(unit.exposure_limits_ms()[0])
 
 
+def test_a_manual_line_speed_in_software_trigger_is_overridden_when_hardware_trigger_returns(aion_scope):
+    """Apply 30 ms in hardware trigger, switch to software trigger, set the scanner to 3000 mrad/s by hand, switch
+    back: the unit must be at the 30 ms line speed again, as the camera and the metadata say."""
+    camera = aion_scope.camera
+    unit = FakeAion(camera)
+    mpc, _tracker = _fluorescence_acquisition(aion_scope, unit)
+    live = mpc.liveController
+    channel = _channel(mpc, mpc.selected_configurations[0].name)
+    channel.exposure_time = 30.0
+    live.set_microscope_mode(channel)
+    assert unit.line_speed == 7300
+
+    live.set_trigger_mode(TriggerMode.SOFTWARE)
+    unit.set_line_speed(3000)
+    assert unit.line_speed == 3000
+
+    live.set_trigger_mode(TriggerMode.HARDWARE)
+    assert unit.line_speed == 7300
+    assert unit.line_speed_writes[-1] == 7300
+    assert camera.get_exposure_time() == pytest.approx(30.0)
+    assert live.current_configuration_as_applied().exposure_time == pytest.approx(30.0)
+
+
 def test_a_scan_timing_change_reapplies_the_current_exposure(aion_scope):
     camera = aion_scope.camera
     unit = FakeAion(camera)
@@ -310,9 +350,8 @@ class _StubNl5(ScanTiming):
         self.speed_input_mode = "line_speed"
         self.calls = []
 
-    def set_line_speed(self, speed, save_setting=False):
-        super().set_line_speed(speed)
-        self.calls.append(("set_line_speed", speed))
+    def _send_line_speed(self, line_speed):
+        self.calls.append(("set_line_speed", line_speed))
 
     def set_exposure_delay(self, exposure_delay_ms):
         self.exposure_delay_ms = exposure_delay_ms

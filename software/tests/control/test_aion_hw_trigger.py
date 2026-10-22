@@ -59,9 +59,8 @@ class FakeConfocalUnit(_ScanSpeedMixin):
         self.internal_stage = None
         self.device_name = "AION"
 
-    def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = self.clamp_line_speed(speed)
-        self.line_speed_writes.append(self.line_speed)
+    def _send_line_speed(self, line_speed):
+        self.line_speed_writes.append(line_speed)
 
     def set_exposure_delay(self, exposure_delay_ms):
         self.exposure_delay_ms = exposure_delay_ms

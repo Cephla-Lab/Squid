@@ -81,17 +81,31 @@ class _ScanSpeedMixin:
         """(min, max) exposure the unit can produce with the current delay, amplitude and FOV."""
         return self.exposure_time_ms(LINE_SPEED_MAX), self.exposure_time_ms(LINE_SPEED_MIN)
 
+    # The line speed last written to the unit by set_line_speed(), whoever called it. None until the first write:
+    # the unit's line speed at start-up is not known to match the saved one.
+    _line_speed_written = None
+
+    def set_line_speed(self, speed, save_setting=False):
+        """Clamp, send to the unit (_send_line_speed) and record what was written, so that apply_exposure_time()
+        knows the unit's real line speed after a manual change too."""
+        self.line_speed = self.clamp_line_speed(speed)
+        self._send_line_speed(self.line_speed)
+        self._line_speed_written = self.line_speed
+        if save_setting:
+            self.save_settings()
+
+    def _send_line_speed(self, line_speed):
+        raise NotImplementedError
+
     def apply_exposure_time(self, exposure_ms):
         """Set the line speed for this exposure; returns the exposure the unit will actually produce.
 
-        The line speed is sent to the unit only when it changes (at most one write per channel change).
-        The first call always writes, since the unit's line speed at start-up is not known to match
-        the saved one.
+        The line speed is sent to the unit only when it differs from the last one written, by this path or by a
+        manual set_line_speed() (at most one write per channel change). The first call always writes.
         """
         speed = self.line_speed_for_exposure(exposure_ms)
-        if speed != getattr(self, "_line_speed_applied", None):
+        if speed != self._line_speed_written:
             self.set_line_speed(speed)
-            self._line_speed_applied = speed
         return self.exposure_time_ms()
 
     def scan_timing_metadata(self, line_speed=None):
@@ -319,11 +333,8 @@ class NL5(_ScanSpeedMixin):
         self.bypass_offset = offset
         self.rcm.set_float_parameter(self.rcm.BYPASS_OFFSET, offset)
 
-    def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = self.clamp_line_speed(speed)
-        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, self.line_speed)  # speed in mrad/s
-        if save_setting:
-            self.save_settings()
+    def _send_line_speed(self, line_speed):
+        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, line_speed)  # speed in mrad/s
 
     def set_fov_x(self, fov_x):
         self.fov_x = fov_x
@@ -433,10 +444,8 @@ class NL5_Simulation(_ScanSpeedMixin):
         self.bypass_offset = offset
         pass
 
-    def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = self.clamp_line_speed(speed)
-        if save_setting:
-            self.save_settings()
+    def _send_line_speed(self, line_speed):
+        pass
 
     def set_fov_x(self, fov_x):
         self.fov_x = fov_x
