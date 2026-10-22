@@ -82,6 +82,9 @@ class _RecordingServo:
     def get_pos(self):
         return Pos(x_mm=0.0, y_mm=0.0, z_mm=self.z_mm, theta_rad=None)
 
+    def freeze_profile(self):
+        self.events.append("freeze")
+
     def home(self, x, y, z, theta, blocking=True):
         self.homes = getattr(self, "homes", 0) + 1
         if self.fail_on == "retract" or (self.fail_on == "re_retract" and self.homes == 2):
@@ -120,7 +123,7 @@ def test_servo_swap_disengages_confirms_then_reengages(qtbot):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
 
@@ -137,7 +140,7 @@ def test_servo_swap_cancel_reengages_and_keeps_previous(qtbot):
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert store.current_objective == store.default_objective
     assert widget.dropdown.currentText() == store.default_objective
     assert not emitted
@@ -173,7 +176,7 @@ def test_servo_swap_reports_failed_reengage_but_keeps_confirmed_objective(qtbot)
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog"]  # no restore without the servo
+    assert events == ["freeze", "retract", "servo_off", "dialog"]  # no restore without the servo
     critical.assert_called_once()
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
@@ -189,7 +192,7 @@ def test_servo_swap_aborts_with_servo_on_when_retract_fails(qtbot):
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == []  # the servo was never released
+    assert events == ["freeze"]  # the servo was never released
     question.assert_not_called()
     warning.assert_called_once()
     assert store.current_objective == store.default_objective
@@ -208,7 +211,7 @@ def test_servo_swap_warns_when_restore_fails_but_keeps_confirmed_objective(qtbot
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on"]
     warning.assert_called_once()
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
@@ -295,20 +298,34 @@ def test_refused_swap_never_reports_swap_active(qtbot):
 
 
 class _RecordingLift:
-    """A Z lift that records lower() and move_to() into the shared event list."""
+    """A Z lift (0..10 mm, at ``height``) that records its moves into the shared event list: a move down as
+    "lift_lower" (a changer switch's lower(), or a manual swap's lowering by Z_LIFT_SWAP_LOWER_MM), a move up as
+    "lift_to_<mm>". ``fail_move`` makes the moves up fail."""
 
-    def __init__(self, events, fail_move=False):
+    def __init__(self, events, fail_move=False, height=4.0):
         self.events = events
         self.fail_move = fail_move
+        self.height = height
+
+    def get_position_mm(self):
+        return self.height
+
+    def clamp(self, mm):
+        return min(max(mm, 0.0), 10.0)
 
     def lower(self):
+        before, self.height = self.height, 0.0
         self.events.append("lift_lower")
-        return 4.0
+        return before
 
     def move_to(self, mm, blocking=True):
-        if self.fail_move:
+        if mm < self.height:
+            self.events.append("lift_lower")
+        elif self.fail_move:
             raise TimeoutError("lift stalled")
-        self.events.append(f"lift_to_{mm}")
+        else:
+            self.events.append(f"lift_to_{mm}")
+        self.height = mm
 
 
 def test_servo_swap_to_higher_mag_lowers_the_lift_then_raises_it_before_z_returns(qtbot):
@@ -325,7 +342,16 @@ def test_servo_swap_to_higher_mag_lowers_the_lift_then_raises_it_before_z_return
 
     # Lowered with the objective already retracted, before the servo lets go; raised back once the servo holds Z
     # again, before the objective comes back down (straight down: no retract and back).
-    assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on", "lift_to_4.0", "restore_2.5"]
+    assert events == [
+        "freeze",
+        "retract",
+        "lift_lower",
+        "servo_off",
+        "dialog",
+        "servo_on",
+        "lift_to_4.0",
+        "restore_2.5",
+    ]
     assert "goes back up to 4.000 mm" in question.call_args.args[2]
 
 
@@ -346,7 +372,7 @@ def test_servo_swap_can_leave_z_retracted(qtbot, with_lift):
     # retracted again after servo-on, since "retracted" must not mean wherever Z drifted to.
     lift = ["lift_lower"] if with_lift else []
     raised = ["lift_to_4.0"] if with_lift else []
-    assert events == ["retract", *lift, "servo_off", "dialog", "servo_on", "retract", *raised]
+    assert events == ["freeze", "retract", *lift, "servo_off", "dialog", "servo_on", "retract", *raised]
     assert store.current_objective == "40x"
 
 
@@ -362,7 +388,7 @@ def test_a_lift_that_fails_to_rise_after_a_swap_leaves_z_retracted(qtbot):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("40x")
 
-    assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on"]  # Z never came back down
+    assert events == ["freeze", "retract", "lift_lower", "servo_off", "dialog", "servo_on"]  # Z never came back down
     assert warning.call_args.args[1] == "Z Lift Not Raised"
 
 
@@ -389,7 +415,8 @@ class _LiftCheckingZ(_RecordingLift):
         self.z_when_raised = None
 
     def move_to(self, mm, blocking=True):
-        self.z_when_raised = self.servo.z_mm
+        if mm > self.height:
+            self.z_when_raised = self.servo.z_mm
         super().move_to(mm, blocking)
 
 
@@ -434,7 +461,7 @@ def test_a_failed_move_clear_after_servo_on_keeps_the_lift_lowered(qtbot, answer
     assert "Z lift stays lowered" in warning.call_args.args[2]
 
 
-def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):
+def test_servo_swap_to_lower_mag_lowers_the_lift_too(qtbot):
     store = ts.get_test_objective_store()
     events = []
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
@@ -446,8 +473,105 @@ def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == [
+        "freeze",
+        "retract",
+        "lift_lower",
+        "servo_off",
+        "dialog",
+        "servo_on",
+        "lift_to_4.0",
+        "restore_2.5",
+    ]
+    assert "goes back up to 4.000 mm" in question.call_args.args[2]
+
+
+@pytest.mark.parametrize("height, lowered_to", [(8.0, 3.0), (4.0, 0.0)])
+def test_servo_swap_lowers_the_lift_by_the_swap_distance_not_below_its_minimum(qtbot, height, lowered_to):
+    store = ts.get_test_objective_store()
+    events = []
+    lift = _RecordingLift(events, height=height)
+    heights = []
+    real_move_to = lift.move_to
+    lift.move_to = lambda mm, blocking=True: (heights.append(mm), real_move_to(mm, blocking))
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=lift)
+    qtbot.addWidget(widget)
+
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    assert heights == [lowered_to, height]  # Z_LIFT_SWAP_LOWER_MM (5) down, then back to where it was
+
+
+def test_servo_swap_with_the_lift_at_its_bottom_does_not_move_it(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events, height=0.0))
+    qtbot.addWidget(widget)
+
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert "Z lift" not in question.call_args.args[2]
+
+
+class _FreezingServo(_RecordingServo):
+    """Models PIFocusStage's profile freeze: frozen at the Z where freeze_profile() was called, back on when a move
+    lands there."""
+
+    def __init__(self, events, **kwargs):
+        super().__init__(events, **kwargs)
+        self.frozen_at = None
+
+    def freeze_profile(self):
+        super().freeze_profile()
+        self.frozen_at = self.z_mm
+
+    def is_profile_frozen(self):
+        return self.frozen_at is not None
+
+    def move_z_to(self, abs_mm, blocking=True):
+        super().move_z_to(abs_mm, blocking)
+        if self.frozen_at is not None and abs(abs_mm - self.frozen_at) < 1e-6:
+            self.frozen_at = None
+
+
+def _frozen_swap(qtbot, answer, with_lift):
+    store = ts.get_test_objective_store()  # starts on 20x, Z at 2.5 mm
+    events = []
+    servo = _FreezingServo(events)
+    widget = ObjectivesWidget(store, focus_servo=servo, z_lift=_RecordingLift(events) if with_lift else None)
+    qtbot.addWidget(widget)
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, answer)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+    return events, servo
+
+
+def test_return_z_after_a_quiet_swap_switches_the_profile_back_on(qtbot):
+    events, servo = _frozen_swap(qtbot, QMessageBox.Ok, with_lift=True)
+    assert events[-3:] == ["servo_on", "lift_to_4.0", "restore_2.5"]
+    assert not servo.is_profile_frozen()
+
+
+def test_keep_z_retracted_after_a_quiet_swap_goes_to_the_focus_height_first_with_the_lift_down(qtbot):
+    events, servo = _frozen_swap(qtbot, QMessageBox.No, with_lift=True)
+    # servo on -> down to the frozen focus height while the lift is still lowered (the profile comes back on) ->
+    # retracted with it on -> lift back up
+    assert events[-4:] == ["servo_on", "restore_2.5", "retract", "lift_to_4.0"]
+    assert not servo.is_profile_frozen()
+
+
+def test_keep_z_retracted_without_a_lift_leaves_the_profile_frozen(qtbot, caplog):
+    events, servo = _frozen_swap(qtbot, QMessageBox.No, with_lift=False)
+    assert events[-2:] == ["servo_on", "retract"]  # no trip toward a sample at its working height
+    assert servo.is_profile_frozen()
+    assert any("stays frozen" in record.getMessage() for record in caplog.records)
 
 
 def test_changer_switch_to_higher_mag_lowers_the_lift_first(qtbot):

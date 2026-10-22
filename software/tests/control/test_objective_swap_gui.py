@@ -32,6 +32,9 @@ class _GatedFocusServo:
         self.retract_entered.set()
         assert self.retract_gate.wait(timeout=10)
 
+    def freeze_profile(self):
+        pass
+
     def set_servo(self, enabled):
         pass
 
