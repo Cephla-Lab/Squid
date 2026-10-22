@@ -15,10 +15,18 @@ from qtpy.QtWidgets import (
     QDialogButtonBox,
     QSizePolicy,
 )
-from qtpy.QtCore import Qt
+from qtpy.QtCore import Qt, QTimer
 
 import control._def
-from control.NL5 import SLIT_POSITIONS_UM, LINE_SPEED_MIN, LINE_SPEED_MAX
+import squid.logging
+from control.NL5 import (
+    SLIT_POSITIONS_UM,
+    LINE_SPEED_MIN,
+    LINE_SPEED_MAX,
+    SLIT_OSCILLATION_MAX_UM,
+    SLIT_OSCILLATION_MIN_HZ,
+    SLIT_OSCILLATION_MAX_HZ,
+)
 
 
 class NL5SettingsDialog(QDialog):
@@ -89,6 +97,7 @@ class NL5Widget(QWidget):
     def __init__(self, nl5):
         super().__init__()
 
+        self._log = squid.logging.get_logger(self.__class__.__name__)
         self.nl5 = nl5
 
         # Create layout
@@ -154,6 +163,34 @@ class NL5Widget(QWidget):
             self.slit_combo.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             layout2.addWidget(self.slit_combo)
 
+            # Slit oscillation: back and forth between centre + "+" and centre - "−" µm. Changes apply
+            # from the next move while it runs; the values are not saved.
+            self.slit_osc_plus_input = self._oscillation_spinbox(0, SLIT_OSCILLATION_MAX_UM, 50, 0, " µm", "+ ")
+            self.slit_osc_minus_input = self._oscillation_spinbox(0, SLIT_OSCILLATION_MAX_UM, 50, 0, " µm", "− ")
+            self.slit_osc_freq_input = self._oscillation_spinbox(
+                SLIT_OSCILLATION_MIN_HZ, SLIT_OSCILLATION_MAX_HZ, 1.0, 1, " Hz"
+            )
+            self.slit_osc_button = QPushButton("Oscillate Slit")
+            self.slit_osc_button.setCheckable(True)
+            self.slit_osc_button.setToolTip(
+                "Move the slit back and forth between its centre (slit position + slit offset) + the first\n"
+                "value and its centre - the second value, at the set frequency. Unchecking returns it to the centre.\n"
+                "The stage needs ~134 ms to settle a 100 µm move: at 3 Hz a +/-50 µm swing reaches both ends,\n"
+                "larger swings need a lower frequency or they turn around short of the set positions."
+            )
+            self.slit_osc_button.toggled.connect(self.update_slit_oscillation)
+            for widget in (
+                self.slit_osc_plus_input,
+                self.slit_osc_minus_input,
+                self.slit_osc_freq_input,
+                self.slit_osc_button,
+            ):
+                layout2.addWidget(widget)
+            # The oscillation can end on its own (serial error, failed homing); keep the button honest.
+            self.slit_osc_sync_timer = QTimer(self)
+            self.slit_osc_sync_timer.setInterval(1000)
+            self.slit_osc_sync_timer.timeout.connect(self._sync_slit_oscillation_button)
+
         # Bypass control (hidden on systems without a brightfield path, see NL5_SHOW_BYPASS_BUTTON)
         self.bypass_button = QPushButton("Enable Bypass")
         self.bypass_button.setCheckable(True)
@@ -183,6 +220,8 @@ class NL5Widget(QWidget):
         dialog.exec_()
         # the scan amplitude may have changed, which changes the frame rate for the same line speed
         self._refresh_speed_display()
+        if self.slit_combo is not None:
+            self._sync_slit_oscillation_button()  # homing pauses the oscillation and may fail to resume it
 
     def update_bypass(self, checked):
         self.nl5.set_bypass(checked)
@@ -245,6 +284,53 @@ class NL5Widget(QWidget):
         width = self.slit_combo.currentData()
         if width is not None:
             self.nl5.set_slit_width(width)
+
+    def _oscillation_spinbox(self, minimum, maximum, value, decimals, suffix, prefix=""):
+        box = QDoubleSpinBox()
+        box.setRange(minimum, maximum)
+        box.setDecimals(decimals)
+        box.setValue(value)
+        box.setPrefix(prefix)
+        box.setSuffix(suffix)
+        box.setKeyboardTracking(False)
+        box.valueChanged.connect(self._update_slit_oscillation_parameters)
+        return box
+
+    def _update_slit_oscillation_parameters(self, _value):
+        if self.slit_osc_button.isChecked():
+            self.update_slit_oscillation(True)
+
+    def update_slit_oscillation(self, checked):
+        try:
+            if checked:
+                self.nl5.start_slit_oscillation(
+                    self.slit_osc_plus_input.value(),
+                    self.slit_osc_minus_input.value(),
+                    self.slit_osc_freq_input.value(),
+                )
+            else:
+                self.nl5.stop_slit_oscillation()
+        except Exception as e:
+            self._log.error(f"Slit oscillation failed: {e}")
+        self._sync_slit_oscillation_button()
+
+    def _sync_slit_oscillation_button(self):
+        """Show whether the slit is actually oscillating, and watch it while it does."""
+        oscillating = self.nl5.is_slit_oscillating()
+        if self.slit_osc_button.isChecked() and not oscillating:
+            # It ended on its own (serial error, failed homing): put the slit back at its centre, which also
+            # applies a slit or offset chosen while it oscillated.
+            try:
+                self.nl5.stop_slit_oscillation()
+            except Exception as e:
+                self._log.error(f"Could not return the slit to its centre: {e}")
+        self.slit_osc_button.blockSignals(True)
+        self.slit_osc_button.setChecked(oscillating)
+        self.slit_osc_button.blockSignals(False)
+        if oscillating:
+            self.slit_osc_sync_timer.start()
+        else:
+            self.slit_osc_sync_timer.stop()
 
 
 if __name__ == "__main__":
