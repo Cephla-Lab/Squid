@@ -30,9 +30,9 @@ WELLPLATE_OFFSET for that format, so exactly one correction is ever live.
 """
 
 import os
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Set
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from control.models.yaml_store import load_yaml_model, load_yaml_model_for_edit, save_yaml_model_atomic, SidecarModel
 
@@ -211,6 +211,70 @@ def load_user_sample_formats_for_edit(path: str = USER_SAMPLE_FORMATS_PATH) -> U
 
 def save_user_sample_formats(user_formats: UserSampleFormats, path: str = USER_SAMPLE_FORMATS_PATH) -> None:
     save_yaml_model_atomic(user_formats, path)
+
+
+DISABLED_SAMPLE_FORMATS_PATH = os.path.join("objective_and_sample_formats", "sample_formats_disabled.yaml")
+
+
+class DisabledSampleFormats(SidecarModel):
+    """Formats the lab has switched off in the Sample Format dropdown.
+
+    Its own file rather than a key in sample_formats_user.yaml: that model
+    forbids unknown keys, so a build without this feature would reject the
+    whole user file - and every calibration in it - over one list. Here an
+    older build simply never reads the file and lists every format.
+
+    Disabling only hides a format from the dropdowns. Its definition stays
+    loaded, so saved settings and acquisitions that name it keep resolving.
+    """
+
+    version: int = 1
+    disabled: List[str] = Field(default_factory=list)
+
+    @field_validator("disabled", mode="before")
+    @classmethod
+    def _bare_sizes_are_plates(cls, value):
+        # A hand-edited `disabled: [384, 1536]` must not make the whole file
+        # "damaged": a bare size names "<n> well plate", the same rule _def
+        # applies to the cached startup format.
+        if not isinstance(value, list):
+            return value
+        return [f"{v} well plate" if str(v).isdigit() else v for v in value]
+
+
+def _disabled_damage_message(path: str) -> str:
+    return f"Disabled sample formats at {path} are unreadable; showing every format."
+
+
+def load_disabled_sample_formats(path: str = DISABLED_SAMPLE_FORMATS_PATH) -> Set[str]:
+    """Empty when absent. Damage logs loudly and lists every format - hiding
+    nothing is the safe failure for a visibility preference."""
+    # copy=False: read-only here, and turned into a fresh set straight away
+    model = load_yaml_model(path, DisabledSampleFormats, _disabled_damage_message(path), copy=False)
+    return set(model.disabled) if model is not None else set()
+
+
+def load_disabled_sample_formats_for_edit(path: str = DISABLED_SAMPLE_FORMATS_PATH) -> Set[str]:
+    """For load->edit->save: raises YamlStoreDamaged rather than hand back an
+    empty set for a file that exists but cannot be read."""
+    return set(load_yaml_model_for_edit(path, DisabledSampleFormats, _disabled_damage_message(path)).disabled)
+
+
+def save_disabled_sample_formats(disabled: Iterable[str], path: str = DISABLED_SAMPLE_FORMATS_PATH) -> None:
+    save_yaml_model_atomic(DisabledSampleFormats(disabled=sorted(set(disabled))), path)
+
+
+def listed_sample_formats(
+    format_keys: Iterable[str], always: Iterable[str] = (), path: str = DISABLED_SAMPLE_FORMATS_PATH
+) -> List[str]:
+    """The format keys the dropdowns list: all but the disabled ones.
+
+    `always` names formats listed even when disabled - the loaded plate (so a
+    dropdown never shows a plate other than the one in use) and a plate about
+    to be selected.
+    """
+    disabled = load_disabled_sample_formats(path) - set(always)
+    return [f for f in format_keys if f not in disabled]
 
 
 def apply_user_sample_formats(sample_formats: Dict[str, dict], user_formats: Optional[UserSampleFormats]) -> None:
