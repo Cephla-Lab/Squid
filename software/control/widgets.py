@@ -46,6 +46,7 @@ from control.core.holder_alignment import (
 from control.core.plate_fit import circumcenter, PlateFitError
 from control.models.sample_format_config import (
     listed_sample_formats,
+    load_disabled_sample_formats,
     load_disabled_sample_formats_for_edit,
     save_disabled_sample_formats,
 )
@@ -12123,7 +12124,8 @@ class WellplateFormatWidget(QWidget):
     def populate_combo_box(self, current=None):
         """`current`: the plate that will be selected, if not self.wellplate_format."""
         self.comboBox.clear()
-        for format_ in self._formats_to_list(self.wellplate_format if current is None else current):
+        self._listed_formats = self._formats_to_list(self.wellplate_format if current is None else current)
+        for format_ in self._listed_formats:
             self.comboBox.addItem(format_, format_)
 
         # Action items, in italics to set them apart from the formats
@@ -12159,8 +12161,7 @@ class WellplateFormatWidget(QWidget):
             self.manage_formats()
         else:
             self.wellplate_format = selected
-            listed = [self.comboBox.itemData(i) for i in range(self.comboBox.count())][:-2]  # minus the actions
-            if listed != self._formats_to_list(selected):
+            if self._listed_formats != self._formats_to_list(selected):
                 self._relist_silently()  # e.g. drop the disabled plate just switched away from
             self.setWellplateSettings(self.wellplate_format)
 
@@ -12169,7 +12170,9 @@ class WellplateFormatWidget(QWidget):
         self.comboBox.blockSignals(True)
         try:
             self.populate_combo_box()
-            self.comboBox.setCurrentIndex(self.comboBox.findData(self.wellplate_format))
+            index = self.comboBox.findData(self.wellplate_format)
+            if index >= 0:
+                self.comboBox.setCurrentIndex(index)
         finally:
             self.comboBox.blockSignals(False)
 
@@ -13187,6 +13190,23 @@ class WellplateCalibration(QDialog):
         if not self.nameInput.text():
             QMessageBox.warning(self, "Incomplete Information", "Please enter a name for the format.")
             return
+        existing = self.nameInput.text()
+        if existing in WELLPLATE_FORMAT_SETTINGS:
+            # A disabled format is in neither dropdown, so the name looks free.
+            hidden = (
+                " It is disabled, so it is hidden from the dropdowns."
+                if existing in load_disabled_sample_formats()
+                else ""
+            )
+            reply = QMessageBox.question(
+                self,
+                "Format Already Exists",
+                f"A format named '{existing}' already exists.{hidden}\n\nReplace its definition with this new one?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
 
         calibration_data = self._get_calibration_data()
         if calibration_data is None:
@@ -13297,17 +13317,18 @@ class WellplateCalibration(QDialog):
         # without a reload.
         WELLPLATE_FORMAT_SETTINGS[format_key] = user_formats.formats[format_key].to_settings()
 
-    def _finish_calibration(self, format_id, success_message: str):
-        """Complete calibration by updating UI and showing success message."""
-        # Calibrating a plate is asking to use it, so one calibrated (or created
-        # under a name) that was disabled comes back into the dropdowns.
+        # Calibrating or editing a plate is asking to use it, so a disabled one
+        # comes back into the dropdowns. Best effort: the definition is saved.
         try:
             disabled = load_disabled_sample_formats_for_edit()
-            if format_id in disabled:
-                disabled.discard(format_id)
+            if format_key in disabled:
+                disabled.discard(format_key)
                 save_disabled_sample_formats(disabled)
         except Exception:
-            logger.exception(f"Could not re-enable sample format {format_id!r}; it stays hidden once unloaded")
+            logger.exception(f"Could not re-enable sample format {format_key!r}; it stays hidden once unloaded")
+
+    def _finish_calibration(self, format_id, success_message: str):
+        """Complete calibration by updating UI and showing success message."""
         self.wellplateFormatWidget.select_format_silently(format_id)
 
         QMessageBox.information(self, "Calibration Successful", success_message)

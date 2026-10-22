@@ -14,6 +14,9 @@ import pytest
 from control.core.core import ImageDisplayWindow
 from control.firmware_sim_serial import FirmwareSimSerial
 
+# software/, wherever pytest was started from
+SOFTWARE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 @pytest.fixture
 def image_display_window(qtbot):
@@ -66,13 +69,12 @@ def format_catalog(tmp_path, monkeypatch):
     patch.dict swaps it in place, because widgets.py binds the dict by name."""
     import control._def as _def
 
-    repo = os.getcwd()
     (tmp_path / "objective_and_sample_formats").mkdir()
     (tmp_path / "machine_configs").mkdir()
     (tmp_path / "cache").mkdir()
     for name in ("sample_formats.csv", "objectives.csv"):
         shutil.copy(
-            os.path.join(repo, "objective_and_sample_formats", name),
+            os.path.join(SOFTWARE_DIR, "objective_and_sample_formats", name),
             tmp_path / "objective_and_sample_formats" / name,
         )
     monkeypatch.chdir(tmp_path)
@@ -85,8 +87,7 @@ def format_catalog(tmp_path, monkeypatch):
 @pytest.fixture
 def catalog_tree(format_catalog):
     """format_catalog plus images/, symlinked read-only for widgets that draw."""
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    os.symlink(os.path.join(repo, "images"), format_catalog / "images")
+    os.symlink(os.path.join(SOFTWARE_DIR, "images"), format_catalog / "images")
     return format_catalog
 
 

@@ -239,7 +239,8 @@ def _disabled_damage_message(path: str) -> str:
 def load_disabled_sample_formats(path: str = DISABLED_SAMPLE_FORMATS_PATH) -> Set[str]:
     """Empty when absent. Damage logs loudly and lists every format - hiding
     nothing is the safe failure for a visibility preference."""
-    model = load_yaml_model(path, DisabledSampleFormats, _disabled_damage_message(path))
+    # copy=False: read-only here, and turned into a fresh set straight away
+    model = load_yaml_model(path, DisabledSampleFormats, _disabled_damage_message(path), copy=False)
     return set(model.disabled) if model is not None else set()
 
 
@@ -253,14 +254,16 @@ def save_disabled_sample_formats(disabled: Iterable[str], path: str = DISABLED_S
     save_yaml_model_atomic(DisabledSampleFormats(disabled=sorted(set(disabled))), path)
 
 
-def listed_sample_formats(format_keys: Iterable[str], always: Iterable[str] = ()) -> List[str]:
+def listed_sample_formats(
+    format_keys: Iterable[str], always: Iterable[str] = (), path: str = DISABLED_SAMPLE_FORMATS_PATH
+) -> List[str]:
     """The format keys the dropdowns list: all but the disabled ones.
 
     `always` names formats listed even when disabled - the loaded plate (so a
     dropdown never shows a plate other than the one in use) and a plate about
     to be selected.
     """
-    disabled = load_disabled_sample_formats() - set(always)
+    disabled = load_disabled_sample_formats(path) - set(always)
     return [f for f in format_keys if f not in disabled]
 
 

@@ -260,19 +260,33 @@ def test_select_format_silently_lists_a_disabled_target_without_re_enabling_it(q
     assert load_disabled_sample_formats() == {"384 well plate"}  # selecting is not a preference change
 
 
-def test_finishing_a_calibration_re_enables_the_format(qtbot):
-    """A plate just calibrated (or created under a disabled name) must not vanish
-    from the dropdown once another plate is loaded."""
+def test_saving_a_format_definition_re_enables_it(qtbot):
+    """Every definition write - new format, recalibration, parameter update - goes
+    through _save_format_definition, so a plate just calibrated or edited must not
+    vanish from the dropdown once another plate is loaded."""
     save_disabled_sample_formats(["384 well plate", "6 well plate"])
-    widget = _make_widget(qtbot)
-    _select_data(widget, "96 well plate")
-    calibration = MagicMock(wellplateFormatWidget=widget)
+    calibration = MagicMock(_CARRIED_MEASUREMENTS=control.widgets.WellplateCalibration._CARRIED_MEASUREMENTS)
 
-    with patch.object(control.widgets.QMessageBox, "information"):
-        control.widgets.WellplateCalibration._finish_calibration(calibration, "384 well plate", "done")
+    control.widgets.WellplateCalibration._save_format_definition(
+        calibration, "384 well plate", {"well_spacing_mm": 4.5, "well_size_mm": 3.3}
+    )
 
     assert load_disabled_sample_formats() == {"6 well plate"}
-    assert widget.comboBox.currentData() == "384 well plate"
+
+
+def test_new_format_under_an_existing_hidden_name_asks_first(qtbot):
+    """A disabled format is in neither dropdown, so its name looks free - creating
+    a 'new' one must not silently replace its definition."""
+    save_disabled_sample_formats(["6 well plate"])
+    calibration = MagicMock()
+    calibration.nameInput.text.return_value = "6 well plate"
+
+    with patch.object(control.widgets.QMessageBox, "question", return_value=control.widgets.QMessageBox.No) as ask:
+        control.widgets.WellplateCalibration._calibrate_new_format(calibration)
+
+    assert "disabled" in ask.call_args.args[2]
+    calibration._get_calibration_data.assert_not_called()
+    calibration._save_format_definition.assert_not_called()
 
 
 def _widget_on_disabled_96(qtbot):
