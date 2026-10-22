@@ -26,18 +26,42 @@ INI_SECTION = "GENERAL"
 INI_KEY = "qt_api"
 
 
-def qt_api_from_ini(directory: str = ".") -> Optional[str]:
-    """``qt_api`` from [GENERAL] of the single configuration*.ini in ``directory``, or None if unset.
+def machine_config_file(directory: str = ".") -> Optional[str]:
+    """The configuration*.ini control._def loads from ``directory``, or None if it would load none.
 
-    None too when there is no ini, more than one, or it cannot be parsed: control._def reports those cases
-    when it loads the configuration.
+    Same rule as control._def: the only configuration*.ini; with several, the one named by the first line of
+    cache/config_file_path.txt (the last one loaded), and none if that names none of them (control._def exits).
     """
     files = glob.glob(os.path.join(directory, "configuration*.ini"))
-    if len(files) != 1:
+    if len(files) <= 1:
+        return files[0] if files else None
+    try:
+        with open(os.path.join(directory, "cache", "config_file_path.txt"), "r") as f:
+            cached = f.readline().strip()
+    except OSError:
+        return None
+    if not cached:
+        return None
+    # The cached path is relative to the software folder, as control._def writes and reads it.
+    cached_path = os.path.normcase(os.path.abspath(os.path.join(directory, cached)))
+    for path in files:
+        if os.path.normcase(os.path.abspath(path)) == cached_path:
+            return path
+    return None
+
+
+def qt_api_from_ini(directory: str = ".") -> Optional[str]:
+    """``qt_api`` from [GENERAL] of the configuration*.ini control._def loads (machine_config_file), or None.
+
+    None too when there is no such ini or it cannot be parsed: control._def reports those cases when it loads
+    the configuration.
+    """
+    config_file = machine_config_file(directory)
+    if config_file is None:
         return None
     parser = configparser.ConfigParser(interpolation=None)
     try:
-        parser.read(files[0])
+        parser.read(config_file)
         value = parser.get(INI_SECTION, INI_KEY, fallback=None)
     except configparser.Error:
         return None

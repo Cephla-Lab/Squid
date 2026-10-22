@@ -89,3 +89,36 @@ def test_select_reads_the_ini_and_sets_qt_api_for_qtpy(tmp_path):
     environ = {"QT_API": "pyqt5"}
     assert select_qt_api(["main_hcs.py"], environ, str(tmp_path)) == ("pyqt6", "[GENERAL] qt_api")
     assert environ["QT_API"] == "pyqt6"
+
+
+def _write_cache(directory, cached_path):
+    (directory / "cache").mkdir(exist_ok=True)
+    (directory / "cache" / "config_file_path.txt").write_text(cached_path, encoding="utf-8")
+
+
+@pytest.mark.parametrize("cached", ["./configuration_b.ini", "configuration_b.ini", ".\\configuration_b.ini"])
+def test_several_inis_use_the_cached_one_like_control_def(tmp_path, cached):
+    """With several configuration*.ini, control._def loads the one cache/config_file_path.txt names."""
+    _write_ini(tmp_path, "[GENERAL]\nqt_api = pyqt5\n", "configuration_a.ini")
+    _write_ini(tmp_path, "[GENERAL]\nqt_api = pyqt6\n", "configuration_b.ini")
+    _write_cache(tmp_path, cached)
+
+    assert qt_api_from_ini(str(tmp_path)) == "pyqt6"
+    assert select_qt_api(["main_hcs.py"], {}, str(tmp_path)) == ("pyqt6", "[GENERAL] qt_api")
+
+
+@pytest.mark.parametrize("cached", ["./configuration_c.ini", ""])
+def test_several_inis_and_a_cache_naming_none_of_them_is_unset(tmp_path, cached):
+    """control._def exits in this case; the selector just reads no ini."""
+    _write_ini(tmp_path, "[GENERAL]\nqt_api = pyqt6\n", "configuration_a.ini")
+    _write_ini(tmp_path, "[GENERAL]\nqt_api = pyqt6\n", "configuration_b.ini")
+    _write_cache(tmp_path, cached)
+
+    assert qt_api_from_ini(str(tmp_path)) is None
+
+
+def test_single_ini_ignores_the_cache(tmp_path):
+    _write_ini(tmp_path, "[GENERAL]\nqt_api = pyqt6\n", "configuration_a.ini")
+    _write_cache(tmp_path, "./configuration_old.ini")
+
+    assert qt_api_from_ini(str(tmp_path)) == "pyqt6"
