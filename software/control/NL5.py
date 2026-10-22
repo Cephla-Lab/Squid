@@ -16,11 +16,12 @@ DEFAULT_RCM_INTERNAL_STAGE_SN = "AL05NB1GA"
 
 SLIT_POSITIONS_UM = {88: 1500, 44: 900, 22: 300, 33: -300, 66: -900, 132: -1500}
 
-# Slit oscillation limits accepted by the GUI. One cycle is two moves; each move command takes ~16 ms
-# at 9600 baud, so the serial link alone would allow ~30 Hz, but the stage needs time to travel and settle.
+# Slit oscillation limits accepted by the GUI. The serial link would allow ~30 Hz (two ~16 ms move commands
+# per cycle), but the stage has to travel and settle: measured on AION, a 100 µm move is within 1 µm of its
+# target after ~134 ms, so at 3 Hz (167 ms per end) a +/-50 µm swing reaches both ends.
 SLIT_OSCILLATION_MAX_UM = 500
 SLIT_OSCILLATION_MIN_HZ = 0.1
-SLIT_OSCILLATION_MAX_HZ = 5.0
+SLIT_OSCILLATION_MAX_HZ = 3.0
 
 # Scanner line speed (LINE_FREQUENCY, mrad/s) limits accepted by the GUI.
 LINE_SPEED_MIN = 100
