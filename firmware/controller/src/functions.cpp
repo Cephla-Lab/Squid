@@ -1,5 +1,7 @@
 #include "functions.h"
 
+#include "trigger_pins.h"
+
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
   uint16_t value = 0;
@@ -188,7 +190,7 @@ void turn_on_LED_matrix_pattern(CRGB * matrix, int pattern, uint8_t led_matrix_r
 /***************************************************************************************************/
 /************************************ camera trigger and strobe ************************************/
 /***************************************************************************************************/
-bool trigger_output_level[6] = {HIGH, HIGH, HIGH, HIGH, HIGH, HIGH};
+bool trigger_asserted[6] = {false, false, false, false, false, false};
 bool control_strobe[6] = {false, false, false, false, false, false};
 bool strobe_output_level[6] = {LOW, LOW, LOW, LOW, LOW, LOW};
 bool strobe_on[6] = {false, false, false, false, false, false};
@@ -505,7 +507,7 @@ void turn_off_all_ports()
 
 void ISR_strobeTimer()
 {
-  for (int camera_channel = 0; camera_channel < 4; camera_channel++)
+  for (int camera_channel = 0; camera_channel < NUM_CAMERA_TRIGGERS; camera_channel++)
   {
     // strobe pulse
     if (control_strobe[camera_channel])
