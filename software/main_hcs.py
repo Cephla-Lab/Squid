@@ -2,10 +2,13 @@
 import argparse
 import logging
 import os
-
-os.environ["QT_API"] = "pyqt5"
 import signal
 import sys
+
+from squid.qt_binding import SUPPORTED_QT_APIS, select_qt_api
+
+# Before the first qtpy import, which fixes the binding: --qt-api, then SQUID_QT_API, then PyQt5.
+QT_API = select_qt_api(sys.argv)
 
 # qt libraries
 from qtpy.QtWidgets import *
@@ -53,6 +56,11 @@ if __name__ == "__main__":
         help="Skip hardware initialization and homing (for restart after settings change)",
         action="store_true",
     )
+    parser.add_argument(
+        "--qt-api",
+        choices=SUPPORTED_QT_APIS,
+        help="Qt binding to run on (default: the SQUID_QT_API environment variable, else pyqt5)",
+    )
     args = parser.parse_args()
 
     # Construct QApplication first so the single-instance check can show a
@@ -98,6 +106,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
+    import qtpy
+
+    log.info(f"Qt binding: {qtpy.API_NAME}, Qt {qtpy.QT_VERSION}")
 
     # Auto-migrate legacy acquisition configurations if present
     run_auto_migration()
