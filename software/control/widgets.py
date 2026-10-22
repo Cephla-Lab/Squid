@@ -2810,6 +2810,9 @@ class StageUtils(QDialog):
         self.live_controller = live_controller
         self.is_wellplate = is_wellplate
         self.slide_position = None
+        # On a Z lift system, the lift's LiftMotionGuard (control/widgets_z_lift.py): the loading toggle is refused,
+        # and its button disabled, while a lift move or an objective swap holds it. See set_lift_motion_guard().
+        self.lift_motion_guard = None
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -2926,8 +2929,20 @@ class StageUtils(QDialog):
         """Zero Z axis position."""
         self.stage.zero(x=False, y=False, z=True, theta=False)
 
+    def set_lift_motion_guard(self, guard):
+        self.lift_motion_guard = guard
+        guard.signal_busy_changed.connect(self._on_lift_busy_changed)
+
+    def _on_lift_busy_changed(self, busy: bool):
+        # Busy also covers this dialog's own toggle (the guard tracks it from the signals below), so this enables the
+        # button exactly when the toggle could start.
+        self.btn_load_slide.setEnabled(not busy)
+
     def switch_position(self):
         """Switch between loading and scanning positions."""
+        if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
+            self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
+            return
         self._was_live = self.live_controller.is_live
         if self._was_live:
             self.live_controller.stop_live()

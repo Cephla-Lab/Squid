@@ -217,3 +217,29 @@ def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
     with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
         release.set()
     qtbot.waitUntil(lambda: row_button.isEnabled(), timeout=3000)
+
+
+def test_stage_utils_dialog_toggle_follows_the_lift_guard(qtbot):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    guard = LiftMotionGuard(dialog)
+    dialog.set_lift_motion_guard(guard)
+
+    assert guard.claim()  # e.g. an objective swap is running
+    assert not dialog.btn_load_slide.isEnabled()
+    with patch("control.widgets.move_to_loading_position") as move:
+        dialog.switch_position()  # refused even if a click got through
+    move.assert_not_called()
+
+    guard.release()
+    assert dialog.btn_load_slide.isEnabled()
+    with patch("control.widgets.move_to_loading_position") as move:
+        dialog.switch_position()
+    move.assert_called_once()
+    assert guard.busy  # its own toggle holds the guard until it reports back

@@ -987,6 +987,8 @@ class HighContentScreeningGui(QMainWindow):
                 parent=self,
             )
             self.zLiftLoadingButton = LoadingPositionButton(self.stageUtils, self.zLiftWidget.motion_guard)
+            # Utils > Stage Utils has its own loading button: it follows the same guard.
+            self.stageUtils.set_lift_motion_guard(self.zLiftWidget.motion_guard)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
