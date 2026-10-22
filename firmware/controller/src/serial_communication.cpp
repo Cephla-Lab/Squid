@@ -1,4 +1,5 @@
 #include "serial_communication.h"
+#include "utils/limit_switch_config.h"
 
 void process_serial_message()
 {
@@ -111,6 +112,10 @@ void send_position_update()
 
     buffer_tx[18] &= ~ (1 << BIT_POS_JOYSTICK_BUTTON); // clear the joystick button bit
     buffer_tx[18] = buffer_tx[18] | joystick_button_pressed << BIT_POS_JOYSTICK_BUTTON;
+
+    // Z limit inputs, bits 2-3 (left, right)
+    buffer_tx[18] &= ~((1 << BIT_POS_Z_LIMIT_LEFT) | (1 << BIT_POS_Z_LIMIT_RIGHT));
+    buffer_tx[18] |= lsc_status_bits(tmc4361A_readLimitSwitches(&tmc4361[z]));
 
     // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved)
     // are zero unless encoder reporting is on. The host ignores all of them

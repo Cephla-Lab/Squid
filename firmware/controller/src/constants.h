@@ -32,8 +32,26 @@
 //               byte-identical to 1.5). For every axis: a status packet is sent the
 //               moment a command completes, and completion is checked every 1 ms
 //               (was 10 ms), so the host learns of completion up to ~20 ms sooner.
+// Version 1.7 = configurable limit switches. SET_LIMIT_SWITCH_CONFIG (64) sets one
+//               axis's (X/Y/Z) limit inputs - enable and polarity per side, the
+//               LIMIT_SWITCH_* nibble - applies it at once and saves it in EEPROM
+//               bytes 0-6 ('L', 'S', record version 1, X, Y, Z nibbles, CRC-8;
+//               written only when it changes). Boot, INITIALIZE and the home safety
+//               margin program X/Y/Z from that record (blank or invalid: both inputs
+//               enabled, active-low, as before), so the settings hold from power-up,
+//               before a host connects. Status byte 18 bits 2-3 report Z's left and
+//               right limit inputs as triggered (always 0 before 1.7). Homing and
+//               the move-completion check ignore a disabled input (it still reads
+//               active in STATUS), except the input being homed toward.
+//               SET_LIM_SWITCH_POLARITY (20) is retired: no handler, so it answers
+//               success and does nothing like any unknown command; never reuse 20.
+//               TMC2240: CURRENT_RANGE_XY/Z/W became per-axis floors, stepped up
+//               only when a current needs it, so a current 1.6 refused (e.g. Z
+//               1000 mA) is now accepted; every current 1.6 accepted keeps its range.
+//               The number may move to the next free minor at merge: the hardware
+//               sequencer (#655/#656) also claims 1.7.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 6
+#define FIRMWARE_VERSION_MINOR 7
 
 #include "def/def_v1.h"
 

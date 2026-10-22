@@ -152,6 +152,26 @@ def design_travel_limits(monkeypatch):
     monkeypatch.setattr(_def, "WELLPLATE_OFFSET_Y_mm", 0.0)
 
 
+@pytest.fixture
+def load_limit_switches(monkeypatch):
+    """Load ini text's [LIMIT_SWITCHES] into _def.LIMIT_SWITCHES the way _def's loader fills a class section
+    (cfp.items + populate_class_from_dict), stray keys included; the class is restored after the test."""
+    from configparser import ConfigParser
+
+    import control._def as _def
+
+    def load(text):
+        cfp = ConfigParser()
+        cfp.read_string(text)
+        items = cfp.items("LIMIT_SWITCHES")
+        for key, _ in items:
+            attr = key.upper()
+            monkeypatch.setattr(_def.LIMIT_SWITCHES, attr, getattr(_def.LIMIT_SWITCHES, attr, None), raising=False)
+        _def.populate_class_from_dict(_def.LIMIT_SWITCHES, items)
+
+    return load
+
+
 @pytest.fixture(scope="session")
 def fluidics_config_path(tmp_path_factory) -> str:
     """A simulated-instrument FluidicsConfig written once per session."""
