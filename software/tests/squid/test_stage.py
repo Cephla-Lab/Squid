@@ -193,6 +193,7 @@ def test_z_is_referenced_mirrors_home_xyz(monkeypatch, homing_enabled_z, use_pi_
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
     monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", False)  # an objective changer retracts Z at startup
     monkeypatch.setattr(control._def, "USE_XERYON", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)  # a lift needs the V-308; this test varies it
     scope = control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
     try:
         home = unittest.mock.MagicMock()
