@@ -105,7 +105,37 @@ def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACH
     os.replace(tmp_path, cache_path)
 
 
+def _lower_lift_for_loading(stage: AbstractStage):
+    # A Z lift (CombinedStage.lift) goes down before XY moves, taking the sample away from the objective.
+    lift = getattr(stage, "lift", None)
+    if lift is not None:
+        stage._scanning_position_lift_mm = (lift.lower(), lift.current_format())
+
+
+def _restore_lift_after_loading(stage: AbstractStage):
+    # Leaving the loading position, the lift rises to the working height saved for the sample format now selected
+    # (it may have changed with the sample). With none saved it goes back to the height it left, but only for the
+    # same format: a different sample with no height of its own stays lowered.
+    lift = getattr(stage, "lift", None)
+    if lift is None or stage._scanning_position_lift_mm is None:
+        return
+    left_mm, left_format = stage._scanning_position_lift_mm
+    stage._scanning_position_lift_mm = None
+    sample_format = lift.current_format()
+    target = lift.sample_height_mm()
+    if target is not None:
+        _log.info(f"Raising the Z lift to the {sample_format} height, {target:.3f} mm.")
+    elif sample_format == left_format:
+        target = left_mm
+        _log.info(f"Raising the Z lift back to {target:.3f} mm (no height saved for {sample_format}).")
+    else:
+        _log.info(f"Z lift stays lowered: no height saved for {sample_format}.")
+        return
+    lift.move_to(target)
+
+
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+    _lower_lift_for_loading(stage)
     # Set our limits to something large.  Then later reset them back to the safe values.
     if is_wellplate:
         a_large_limit_mm = 125
@@ -149,6 +179,7 @@ def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool):
     else:
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+    _restore_lift_after_loading(stage)
 
 
 def move_to_loading_position(

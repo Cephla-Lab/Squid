@@ -485,6 +485,16 @@ void do_camera_trigger()
 
 void check_joystick()
 {
+  // Panel gone (cable pulled, panel hung or rebooting): release the stick, so a move it was driving stops
+  // here through the rest-position branch below. The last update was at least JP_TIMEOUT_MS ago, so the
+  // interval gate is already open.
+  if (jp_check_timeout(&joystick_panel, millis()))
+  {
+    joystick_delta_x = 0;
+    joystick_delta_y = 0;
+    flag_read_joystick = true;
+  }
+
   if (flag_read_joystick)
   {
 	if (us_since_last_joystick_update > interval_send_joystick_update)

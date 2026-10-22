@@ -1,6 +1,5 @@
 import ctypes
 from ctypes import c_int, c_double, c_char_p, byref, create_string_buffer
-from pycparser import c_parser, c_ast, parse_file
 import re
 import sys
 

@@ -930,6 +930,12 @@ class ImageDisplayWindow(QMainWindow):
         self.stage_position_label.setMinimumWidth(200)
         self.piezo_position_label = QLabel()
         self.piezo_position_label.setMinimumWidth(150)
+        # The Z lift (squid/stage/lift.py), shown only on a system that has one
+        self.lift_position_label = QLabel()
+        self.lift_position_label.setMinimumWidth(120)
+        self.lift_position_label.setVisible(False)
+        self.lift_separator = QLabel(" | ")
+        self.lift_separator.setVisible(False)
 
         # Add line profiler toggle button
         self.btn_line_profiler = QPushButton("Line Profiler")
@@ -987,6 +993,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.pixel_value_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.stage_position_label)
+        status_layout.addWidget(self.lift_separator)
+        status_layout.addWidget(self.lift_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
@@ -1138,6 +1146,12 @@ class ImageDisplayWindow(QMainWindow):
                     )
                 else:
                     self.stage_position_label.setText("Stage: N/A")
+
+                lift = getattr(self.liveController.microscope, "z_lift", None)
+                if lift is not None:
+                    self.lift_position_label.setText(f"Lift: {lift.get_position_mm():.3f} mm")
+                self.lift_position_label.setVisible(lift is not None)
+                self.lift_separator.setVisible(lift is not None)
 
                 piezo = self.liveController.microscope.addons.piezo_stage
                 if piezo:
