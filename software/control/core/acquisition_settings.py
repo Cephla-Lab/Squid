@@ -162,6 +162,10 @@ def apply_acquisition_settings(
         raise ValueError(
             f"Unknown z_stacking_config '{data.z_stacking_config}'; expected one of {sorted(valid_z_configs)}"
         )
+    if data.z_stack_order not in control._def.Z_STACK_ORDERS:
+        raise ValueError(
+            f"Unknown z_stack_order '{data.z_stack_order}'; expected one of {list(control._def.Z_STACK_ORDERS)}"
+        )
     _configure_regions(scan_coordinates, microscope, data, wells)
 
     controller.set_NX(1)  # grids are expanded into FOVs by the region builders
@@ -174,6 +178,7 @@ def apply_acquisition_settings(
     controller.set_reflection_af_flag(data.laser_af)
     controller.set_use_piezo(data.use_piezo)
     controller.z_stacking_config = data.z_stacking_config
+    controller.set_z_stack_order(data.z_stack_order)
     if data.z_range_mm:
         controller.set_z_range(float(data.z_range_mm[0]), float(data.z_range_mm[1]))
     else:
@@ -220,6 +225,7 @@ def export_acquisition_settings(controller, scan_coordinates, objective_store, c
             "nz": int(controller.NZ),
             "delta_z_um": float(controller.deltaZ) * 1000.0,
             "config": serialize_for_yaml(controller.z_stacking_config),
+            "order": controller.z_stack_order,
             "use_piezo": bool(controller.use_piezo),
             "z_range_mm": [float(v) for v in controller.z_range] if controller.z_range else None,
         },
@@ -265,6 +271,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         nz=int(z_stack.get("nz", 1)),
         delta_z_um=float(z_stack.get("delta_z_um", 1.0)),
         z_stacking_config=str(z_stack.get("config", "FROM CENTER")),
+        z_stack_order=str(z_stack.get("order", "CHANNEL FIRST")),
         use_piezo=bool(z_stack.get("use_piezo", False)),
         nt=1,
         delta_t_s=0.0,

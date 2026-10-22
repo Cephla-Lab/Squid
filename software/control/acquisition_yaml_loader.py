@@ -28,6 +28,7 @@ class AcquisitionYAMLData:
     nz: int = 1
     delta_z_um: float = 1.0  # Stored in um (converted from mm when loading)
     z_stacking_config: str = "FROM BOTTOM"
+    z_stack_order: str = "CHANNEL FIRST"
     use_piezo: bool = False
 
     # Time series
@@ -155,6 +156,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         nz=z_stack.get("nz", 1),
         delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
+        z_stack_order=z_stack.get("order", "CHANNEL FIRST"),
         use_piezo=z_stack.get("use_piezo", False),
         # Time series
         nt=time_series.get("nt", 1),

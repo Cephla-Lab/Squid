@@ -2958,6 +2958,7 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         entry_maxZ=widget(value=200.0),
         entry_deltaZ=widget(value=1.5),
         entry_NZ=widget(value=3),
+        combobox_z_order=widget(currentData="Z FIRST"),
         entry_dt=widget(value=0.0),
         entry_Nt=widget(value=1),
         checkbox_useFocusMap=widget(isChecked=use_focus_map),
@@ -2988,6 +2989,7 @@ def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_sta
     mpc.set_focus_map.assert_called_once_with(None)
     mpc.set_deltaZ.assert_called_once_with(1.5)
     mpc.set_NZ.assert_called_once_with(3)
+    mpc.set_z_stack_order.assert_called_once_with("Z FIRST")
     mpc.set_af_flag.assert_called_once_with(True)
     mpc.set_base_path.assert_called_once_with("/tmp/saving")
     mpc.set_widget_type.assert_called_once_with("wellplate")
