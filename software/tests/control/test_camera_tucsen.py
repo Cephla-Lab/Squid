@@ -143,7 +143,12 @@ class _FakeGenicamCamera:
     def _set_genicam_parameter(self, name, value, param_type):
         self.writes.append((name, value))
         self.params[name] = value
+        if name == "BinningSelector":  # the Aries bins after readout; Height is in binned rows
+            self.params["Height"] = 3200 >> value
         return True
+
+    def _raw_set_binning_genicam(self, binning_value):
+        return TucsenCamera._raw_set_binning_genicam(self, binning_value)
 
     def get_region_of_interest(self):
         return TucsenCamera.get_region_of_interest(self)
@@ -190,6 +195,80 @@ def test_aries_region_change_reapplies_exposure_and_strobe_delay_in_hardware_tri
     assert camera.strobe_delays_ms[-1] == pytest.approx(12.0)
     assert camera.params["ExposureTime"] == 22000  # 10 ms + 12 ms readout
     assert camera._exposure_time_ms == 10.0  # the user's exposure is unchanged
+
+
+@pytest.mark.parametrize("hardware_trigger", [True, False])
+def test_binning_change_uses_the_new_binning_and_reapplies_exposure(hardware_trigger):
+    """The readout time was computed before self._binning was updated (48 ms instead of 12 going 4x4 -> 1x1 on an
+    Aries), and a binning change never pushed the camera exposure or the MCU strobe delay."""
+    import control.camera_tucsen as tucsen
+
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+    if hardware_trigger:
+        camera.acquisition_mode = tucsen.CameraAcquisitionMode.HARDWARE_TRIGGER
+
+    for binning in ((4, 4), (1, 1), (2, 2)):
+        TucsenCamera.set_binning(camera, *binning)
+
+        assert camera._binning == binning
+        # Binning happens after readout: all 3200 rows are still read, 12 ms at 3.75 us per row.
+        assert camera._strobe_delay_ms == pytest.approx(12.0)
+        if hardware_trigger:
+            assert camera.strobe_delays_ms[-1] == pytest.approx(12.0)
+            assert camera.params["ExposureTime"] == 22000  # 10 ms + 12 ms readout, in us
+        else:
+            assert camera.strobe_delays_ms == []
+            assert camera.params["ExposureTime"] == 10000
+
+
+def test_binning_change_reapplies_exposure_before_streaming_resumes():
+    """Streaming (and with it live triggers) must not resume with the new binning but the previous exposure and MCU
+    strobe delay: both are pushed inside the same pause as the binning change."""
+    import contextlib
+
+    import control.camera_tucsen as tucsen
+
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+    camera.acquisition_mode = tucsen.CameraAcquisitionMode.HARDWARE_TRIGGER
+    events = []
+    depth = [0]
+
+    @contextlib.contextmanager
+    def pause_streaming():  # stops and restarts streaming only at the outermost level, like AbstractCamera's
+        depth[0] += 1
+        if depth[0] == 1:
+            events.append("stop streaming")
+        try:
+            yield
+        finally:
+            depth[0] -= 1
+            if depth[0] == 0:
+                events.append("start streaming")
+
+    camera._pause_streaming = pause_streaming
+    set_genicam = camera._set_genicam_parameter
+    camera._set_genicam_parameter = lambda name, value, t: (events.append(name), set_genicam(name, value, t))[1]
+    camera._hw_set_strobe_delay_ms_fn = lambda ms: events.append("MCU strobe delay")
+
+    TucsenCamera.set_binning(camera, 2, 2)
+
+    assert events[0] == "stop streaming" and events[-1] == "start streaming"
+    assert events.count("stop streaming") == 1 and events.count("start streaming") == 1
+    assert events.index("BinningSelector") < events.index("ExposureTime") < events.index("start streaming")
+    assert events.index("MCU strobe delay") < events.index("start streaming")
+
+
+def test_failed_binning_change_keeps_the_previous_binning():
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+
+    def fail(binning_value):
+        raise CameraError("Cannot set camera binning.")
+
+    camera._raw_set_binning_genicam = fail
+    with pytest.raises(CameraError):
+        TucsenCamera.set_binning(camera, 2, 2)
+
+    assert camera._binning == (1, 1)
 
 
 def test_aries_readout_time_comes_from_the_camera_row_time():

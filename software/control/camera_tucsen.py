@@ -186,13 +186,15 @@ class TucsenCamera(AbstractCamera):
         self._trigger_attr = TUCAM_TRIGGER_ATTR()
         self._capture_mode_genicam = TUCAM_CAPTURE_MODES.TUCCM_SEQUENCE.value
 
+        # None until the camera is configured, so configuring (which sets the binning) doesn't push an exposure.
+        self._exposure_time_ms: Optional[float] = None
         self._configure_camera()
 
         # We store exposure time so we don't need to worry about backing out strobe time from the
         # time stored on the camera.
         #
         # We just set it to some sane value to start.
-        self._exposure_time_ms: int = 20
+        self._exposure_time_ms = 20
 
         self.temperature_reading_callback = None
         self._terminate_temperature_event = threading.Event()
@@ -606,13 +608,30 @@ class TucsenCamera(AbstractCamera):
         # TODO: Add support for FL26BW model
         if not (binning_factor_x, binning_factor_y) in self._model_properties.binning_to_set_value:
             raise CameraError(f"No binning option exists for {binning_factor_x}x{binning_factor_y}")
-        if self._model_properties.is_genicam:
-            self._raw_set_binning_genicam(
-                self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
-            )
-        else:
-            self._raw_set_resolution(self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)])
-        self._binning = (binning_factor_x, binning_factor_y)
+        # The raw setters recompute the readout (strobe) time from self._binning, so it must hold the new binning
+        # first; otherwise the readout time was the previous binning's (e.g. 48 ms instead of 12 ms going from
+        # 4x4 back to 1x1 on an Aries).
+        # One pause (and trigger lock) around the binning and the exposure re-apply: streaming must not resume, and
+        # no trigger fire, with the new binning but the previous exposure and MCU strobe delay. The raw setters'
+        # own pause nests inside this one.
+        with self._pause_streaming():
+            previous_binning = self._binning
+            self._binning = (binning_factor_x, binning_factor_y)
+            try:
+                if self._model_properties.is_genicam:
+                    self._raw_set_binning_genicam(
+                        self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
+                    )
+                else:
+                    self._raw_set_resolution(
+                        self._model_properties.binning_to_set_value[(binning_factor_x, binning_factor_y)]
+                    )
+            except Exception:
+                self._binning = previous_binning
+                raise
+            # In hardware trigger mode the camera exposure and the MCU strobe delay are derived from the readout time.
+            if self._exposure_time_ms is not None:
+                self.set_exposure_time(self._exposure_time_ms)
 
     def get_binning(self) -> Tuple[int, int]:
         return self._binning
