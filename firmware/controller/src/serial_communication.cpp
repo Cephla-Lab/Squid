@@ -168,7 +168,7 @@ void send_position_update()
     else
     {
       SerialUSB.print("focus: ");
-      SerialUSB.print(focuswheel_pos);
+      SerialUSB.print(joystick_panel.wheel_pos);
       // Serial.print(buffer[3]);
       SerialUSB.print(", joystick delta x: ");
       SerialUSB.print(joystick_delta_x);

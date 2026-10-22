@@ -570,32 +570,23 @@ void ISR_strobeTimer()
 /***************************************************************************************************/
 PacketSerial joystick_packetSerial;
 
+// Reconnect safety (wheel baseline, timeout, joystick arming, packet checks) is in utils/joystick_panel.h.
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 {
-
-  if (size != JOYSTICK_MSG_LENGTH)
+  JoystickPanelInput in;
+  if (!jp_on_packet(&joystick_panel, buffer, size, millis(), &in))
   {
     if (DEBUG_MODE)
-      Serial.println("! wrong number of bytes received !");
+      Serial.println("! joystick packet dropped !");
     return;
   }
 
-  if (first_packet_from_joystick_panel)
-  {
-    focuswheel_pos = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
-    first_packet_from_joystick_panel = false;
-  }
-  else
-  {
-    int32_t wheel = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
-    // FOCUS_WHEEL_TO_HOST: the wheel moves nothing here; the status packet reports the count (SET_FOCUS_WHEEL_MODE)
-    fw_route_delta(focus_wheel_mode, fw_wheel_delta(wheel, focuswheel_pos), &focusPosition, &focus_wheel_host_count);
-    focuswheel_pos = wheel;
-  }
-
-  joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );
-  joystick_delta_y = JOYSTICK_SIGN_Y * int16_t( uint16_t(buffer[6]) * 256 + uint16_t(buffer[7]) );
-  btns = buffer[8];
+  // The wheel delta the link accepted (reconnects re-based, noise dropped) goes to Z, or with FOCUS_WHEEL_TO_HOST to
+  // the count the status packet reports (SET_FOCUS_WHEEL_MODE)
+  fw_route_delta(focus_wheel_mode, in.focus_delta, &focusPosition, &focus_wheel_host_count);
+  joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;
+  joystick_delta_y = JOYSTICK_SIGN_Y * in.delta_y;
+  btns = in.buttons;
 
   // temporary
   /*
