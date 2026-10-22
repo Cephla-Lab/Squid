@@ -364,6 +364,9 @@ class _StubNl5(ScanTiming):
     def set_speed_input_mode(self, mode):
         self.speed_input_mode = mode
 
+    def save_settings(self):
+        self.calls.append(("save_settings",))
+
     def start_acquisition(self):
         pass
 
@@ -397,6 +400,7 @@ def test_nl5_widget_line_speed_box_follows_the_exposure(qtbot):
     widget.signal_scan_timing_changed.connect(lambda: changes.append(1))
     widget.exposure_delay_input.setValue(20)
     assert ("set_exposure_delay", 20) in nl5.calls
+    assert ("save_settings",) in nl5.calls  # the delay is persisted (global reset: 0 ms, kept across restarts)
     assert changes == [1]
 
     widget.set_line_speed_follows_exposure(False)

@@ -206,6 +206,8 @@ class NL5Widget(QWidget):
 
     def update_exposure_delay(self, value):
         self.nl5.set_exposure_delay(value)
+        # Persist it: with the scan-speed box read-only (the exposure sets it), nothing else would save the delay.
+        self.nl5.save_settings()
         self.signal_scan_timing_changed.emit()
 
     def _speed_mode(self):
