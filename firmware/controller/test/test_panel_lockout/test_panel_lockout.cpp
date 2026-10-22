@@ -41,6 +41,9 @@ unsigned long tmc_test_delay_us_total = 0;   // declared by test_driver_sequence
 #include "functions.cpp"
 #include "operations.cpp"
 #include "utils/joystick_panel.cpp"   // the panel link (#734) that onJoystickPacketReceived() decodes packets with
+#include "utils/focus_wheel.cpp"      // fw_route_delta(): the wheel delta to Z or to the host's count (firmware 1.8)
+#include "utils/panel_lock.cpp"       // pl_apply(): the host's SET_PANEL_LOCK (firmware 1.8)
+#include "utils/crc8.cpp"             // focus_wheel.cpp's power-up record checksum
 
 /* ------------------------------------------------------------------ recorder */
 
@@ -133,6 +136,9 @@ void setUp(void)
   jp_reset(&joystick_panel);
   panel_wheel = 0;
   focusPosition = 0;
+  focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;   // the stock wheel; the lift system's mode is tested below
+  focus_wheel_host_count = 0;
+  panel_locked_by_host = false;
   for (int i = 0; i < JP_CENTERED_PACKETS; i++)
     packet(0, 0);
   joystick_delta_x = joystick_delta_y = 0;
@@ -323,6 +329,55 @@ void test_focus_control_stays_off_a_commanded_z_move(void)
   TEST_ASSERT_EQUAL_UINT_MESSAGE(0, z_move_calls, "no wheel re-issue during a Z homing");
 }
 
+/* A Z lift system (firmware 1.8, FOCUS_WHEEL_TO_HOST): the wheel's travel goes to the count the host turns
+   into V-308 moves, not to Z. During a commanded move it is dropped there too, not saved up: neither the count
+   nor Z moves, and only the travel after the command counts. */
+void test_to_host_wheel_travel_during_a_commanded_move_is_dropped(void)
+{
+  focus_wheel_mode = FOCUS_WHEEL_TO_HOST;
+  panel_wheel += 320;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(320, focus_wheel_host_count, "precondition: a live wheel adds to the host's count");
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(0, focusPosition, "precondition: in TO_HOST the wheel never moves Z");
+  Y_commanded_movement_in_progress = true;
+  panel_wheel += 640;
+  packet(0, 0);
+  panel_wheel += 640;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(320, focus_wheel_host_count, "no wheel travel reaches the host during the command");
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(0, focusPosition, "nor Z");
+  Y_commanded_movement_in_progress = false;
+  panel_wheel += 64;
+  packet(0, 0);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(384, focus_wheel_host_count, "after the command only the new travel counts");
+  TEST_ASSERT_EQUAL_INT32(0, focusPosition);
+}
+
+/* The host's lock (SET_PANEL_LOCK, a Z lift system at its loading position) and the commanded-move lock-out
+   are separate: a lock-out ending does not lift the host's lock. Only its unlock does, and then only the
+   wheel travel after it counts. */
+void test_host_lock_holds_when_a_lockout_ends(void)
+{
+  panel_locked_by_host = true;
+  Z_commanded_movement_in_progress = true;
+  panel_wheel += 640;
+  packet(STICK, 0);
+  joystick_pass(true);
+  Z_commanded_movement_in_progress = false;   // the command ends: the lock-out is over, the host's lock is not
+  panel_wheel += 64;
+  packet(STICK, 0);
+  joystick_pass(true);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(0, focusPosition, "the host's lock still drops the wheel");
+  TEST_ASSERT_EQUAL_MESSAGE(0, motor_speed[x], "and the joystick");
+
+  panel_locked_by_host = false;               // SET_PANEL_LOCK 0
+  panel_wheel += 32;
+  packet(STICK, 0);
+  joystick_pass(true);
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(32, focusPosition, "after the unlock only the new travel counts");
+  TEST_ASSERT_NOT_EQUAL_MESSAGE(0, motor_speed[x], "and a held stick jogs again");
+}
+
 int main(int argc, char **argv)
 {
   UNITY_BEGIN();
@@ -336,5 +391,7 @@ int main(int argc, char **argv)
   RUN_TEST(test_commanded_axis_is_left_to_the_command);
   RUN_TEST(test_deflection_never_reaches_a_motor_while_locked_out);
   RUN_TEST(test_deflection_between_back_to_back_commands_never_jogs);
+  RUN_TEST(test_to_host_wheel_travel_during_a_commanded_move_is_dropped);
+  RUN_TEST(test_host_lock_holds_when_a_lockout_ends);
   return UNITY_END();
 }

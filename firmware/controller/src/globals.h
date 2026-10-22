@@ -129,6 +129,10 @@ extern long joystick_button_pressed_timestamp;
 
 // focus wheel and link state
 extern JoystickPanelLink joystick_panel;
+extern uint8_t focus_wheel_mode;          // FOCUS_WHEEL_* (firmware 1.8, SET_FOCUS_WHEEL_MODE)
+extern uint8_t focus_wheel_power_up_mode; // the mode at power-up / RESET / INITIALIZE, saved in EEPROM 8-11
+extern int32_t focus_wheel_host_count;    // wheel ticks since FOCUS_WHEEL_TO_HOST was enabled (wraps)
+extern bool panel_locked_by_host;         // SET_PANEL_LOCK (firmware 1.8): the control panel moves nothing
 
 // btns
 extern uint8_t btns;

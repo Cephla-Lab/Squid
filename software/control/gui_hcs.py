@@ -618,6 +618,7 @@ class HighContentScreeningGui(QMainWindow):
         self._skip_init = skip_init
         # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
         self._objective_swap_active = False
+        self._loading_position_locked = False  # a Z lift system at the loading position: nothing moves
         self._objective_swap_saved_enabled = {}
 
         self.microscope: control.microscope.Microscope = microscope
@@ -708,6 +709,10 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
         self.stageUtils: Optional[widgets.StageUtils] = None
+        self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget (Utils > Z Lift...) on a Z lift system
+        self.zLiftLoadingButton = (
+            None  # the loading-position toggle in the Stages tab (shares the window's motion guard)
+        )
         self.dacControlWidget: Optional[widgets.DACControWidget] = None
         self.autofocusWidget: Optional[widgets.AutoFocusWidget] = None
         self.piezoWidget: Optional[widgets.PiezoWidget] = None
@@ -852,6 +857,13 @@ class HighContentScreeningGui(QMainWindow):
         workflow_runner_action = QAction("Workflow Runner...", self)
         workflow_runner_action.triggered.connect(self.openWorkflowRunner)
         utils_menu.addAction(workflow_runner_action)
+        if self.zLiftWidget is not None:
+            z_lift_action = QAction("Z Lift...", self)
+            z_lift_action.setMenuRole(QAction.NoRole)
+            z_lift_action.triggered.connect(
+                lambda: (self.zLiftWidget.show(), self.zLiftWidget.raise_(), self.zLiftWidget.activateWindow())
+            )
+            utils_menu.addAction(z_lift_action)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
@@ -977,6 +989,18 @@ class HighContentScreeningGui(QMainWindow):
             self.stage, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
         self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
+        if self.microscope.z_lift is not None:
+            from control.widgets_z_lift import LoadingPositionButton, ZLiftWidget
+
+            self.zLiftWidget = ZLiftWidget(
+                self.microscope.z_lift,
+                lambda: list(control._def.WELLPLATE_FORMAT_SETTINGS),
+                stage_utils=self.stageUtils,
+                parent=self,
+            )
+            self.zLiftLoadingButton = LoadingPositionButton(self.stageUtils, self.zLiftWidget.motion_guard)
+            # Utils > Stage Utils has its own loading button: it follows the same guard.
+            self.stageUtils.set_lift_motion_guard(self.zLiftWidget.motion_guard)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -988,7 +1012,17 @@ class HighContentScreeningGui(QMainWindow):
             focus_servo=self.stage.z_stage if USE_PI_FOCUS_STAGE else None,
             z_in_use=lambda: self.autofocusController.autofocus_in_progress
             or self.multipointController.acquisition_in_progress(),
+            z_lift=self.microscope.z_lift,
+            lift_motion_guard=self.zLiftWidget.motion_guard if self.zLiftWidget is not None else None,
         )
+        if self.microscope.focus_wheel_router is not None:
+            # The focus wheel moves the V-308 only when nothing else is driving it (or has its servo off).
+            self.microscope.focus_wheel_router.set_enabled_check(
+                lambda: not self._objective_swap_active
+                and not self._loading_position_locked
+                and not self.autofocusController.autofocus_in_progress
+                and not self.multipointController.acquisition_in_progress()
+            )
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
@@ -1013,6 +1047,10 @@ class HighContentScreeningGui(QMainWindow):
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )
+        if self.microscope.z_lift is not None:
+            # The lift's working height follows the sample format selected here.
+            self.microscope.z_lift.current_format_fn = lambda: self.wellplateFormatWidget.wellplate_format
+            self.wellplateFormatWidget.signalWellplateSettings.connect(self.zLiftWidget.refresh_formats)
         if WELLPLATE_FORMAT != "1536 well plate":
             self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT, self.wellplateFormatWidget)
         else:
@@ -1331,7 +1369,15 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow.invalidate_current_image()  # the frame on screen predates this move
 
     def setupCameraTabWidget(self):
-        self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
+        if self.zLiftLoadingButton is not None:
+            stages_tab = QWidget()
+            stages_layout = QVBoxLayout(stages_tab)
+            stages_layout.setContentsMargins(0, 0, 0, 0)
+            stages_layout.addWidget(self.navigationWidget)
+            stages_layout.addWidget(self.zLiftLoadingButton)
+            self.cameraTabWidget.addTab(stages_tab, "Stages")
+        else:
+            self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
@@ -2246,6 +2292,8 @@ class HighContentScreeningGui(QMainWindow):
     _OBJECTIVE_SWAP_BLOCKED_WIDGETS = (
         "navigationWidget",
         "stageUtils",
+        "zLiftWidget",
+        "zLiftLoadingButton",
         "autofocusWidget",
         "piezoWidget",
         "laserAutofocusControlWidget",
@@ -2277,10 +2325,96 @@ class HighContentScreeningGui(QMainWindow):
                     widget.setEnabled(was_enabled)
             self._objective_swap_saved_enabled = {}
 
+    # Controls that move the stage or focus, disabled at the loading position on a Z lift system. Not the Z Lift
+    # window or the loading buttons: they hold the toggle back to scanning, and the lift's own moves are refused by
+    # its LiftMotionGuard.
+    _LOADING_POSITION_BLOCKED_WIDGETS = (
+        "navigationWidget",
+        "stageUtils",
+        "liveControlWidget",  # live stays off at the loading position (StageUtils.keep_live_off_at_loading)
+        "objectivesWidget",
+        "autofocusWidget",
+        "piezoWidget",
+        "laserAutofocusControlWidget",
+        "laserAutofocusSettingWidget",
+        "focusMapWidget",
+        "wellSelectionWidget",
+        "recordTabWidget",
+    )
+
+    def _connect_loading_position_lock(self):
+        """Z lift system: nothing moves from the moment the loading toggle starts (the move to the loading position,
+        the stay there while a sample is loaded, and the move back) until the stage is back at the scanning
+        position. A failed move either way still ends "at the loading position", so it stays locked."""
+        self.stageUtils.signal_threaded_stage_move_started.connect(self._lock_stage_at_loading_position)
+        self.stageUtils.signal_loading_position_reached.connect(self._lock_stage_at_loading_position)
+        self.stageUtils.signal_scanning_position_reached.connect(self._unlock_stage_after_loading_position)
+
+    def _lock_stage_at_loading_position(self):
+        """Moving to, at, or moving back from the loading position nothing else may move: every stage / focus /
+        live / acquisition control is disabled until the stage is back at the scanning position, each getting back
+        the enabled state it had. Click-to-move, Z scroll and map moves are refused through
+        _stage_moves_blocked_by_objective_swap."""
+        if self._loading_position_locked:
+            return
+        self._loading_position_locked = True
+        self.log.info("Loading position: stage, focus, live and lift controls are locked until scanning position")
+        self._loading_position_saved_enabled = {}
+        for name in self._LOADING_POSITION_BLOCKED_WIDGETS:
+            widget = getattr(self, name, None)
+            if widget is not None:
+                self._loading_position_saved_enabled[name] = widget.isEnabled()
+                widget.setEnabled(False)
+        self._set_control_panel_lock(True)
+
+    def _unlock_stage_after_loading_position(self):
+        if not self._loading_position_locked:
+            return
+        self._loading_position_locked = False
+        self._set_control_panel_lock(False)
+        for name, was_enabled in self._loading_position_saved_enabled.items():
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(was_enabled)
+        self._loading_position_saved_enabled = {}
+
+    def _claim_lift_for_acquisition(self):
+        """MultiPointController.start_blocker on a Z lift system: hold the lift for the acquisition, or say why not."""
+        guard = self.zLiftWidget.motion_guard
+        if guard.at_loading_position:
+            return "the stage is at the loading position (move it to the scanning position first)"
+        if not guard.claim():
+            return "the Z lift is moving (a lift move, the loading toggle or an objective change)"
+        self._acquisition_holds_lift = True
+        return None
+
+    def _release_lift_after_acquisition(self):
+        if self._acquisition_holds_lift:
+            self._acquisition_holds_lift = False
+            self.zLiftWidget.motion_guard.release()
+
+    def _set_control_panel_lock(self, locked: bool):
+        """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
+        (firmware >= 1.8; older firmware cannot, which is logged)."""
+        mcu = self.microcontroller
+        if mcu is None:
+            return
+        if not mcu.supports_panel_lock():
+            if locked:
+                self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
+            return
+        try:
+            mcu.set_panel_lock(locked)
+        except Exception:
+            self.log.exception("Could not change the control panel lock")
+
     def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
+        """True (and logged) while an objective swap runs, or on a Z lift system at the loading position."""
         if self._objective_swap_active:
             self.log.info(f"{what} ignored: an objective change is in progress")
-        return self._objective_swap_active
+        elif self._loading_position_locked:
+            self.log.info(f"{what} ignored: the stage is at (or moving to or from) the loading position")
+        return self._objective_swap_active or self._loading_position_locked
 
     def _set_workflow_controls_enabled(self, enabled: bool):
         """Enable/disable main window controls during workflow.
@@ -2538,6 +2672,20 @@ class HighContentScreeningGui(QMainWindow):
 
         self.stageUtils.signal_scanning_position_reached.connect(self.navigationViewer.clear_slide)
 
+        if self.zLiftWidget is not None:
+            # Z lift system: an acquisition holds the lift (no lift move, loading toggle or swap while it images),
+            # and does not start while the lift is moving or the stage is at the loading position. Every start
+            # goes through run_acquisition, so the check covers the GUI widgets, the workflow runner and the server.
+            self._acquisition_holds_lift = False
+            self.multipointController.start_blocker = self._claim_lift_for_acquisition
+            self.multipointController.acquisition_finished.connect(self._release_lift_after_acquisition)
+
+            # Z lift system: nothing moves from the start of the move to the loading position until the stage is
+            # back at scanning; the lift itself is held by its LiftMotionGuard, these are the rest.
+            self._connect_loading_position_lock()
+            self.stageUtils.keep_live_off_at_loading = True
+            self.stageUtils.ask_objective_return = True
+
     def replaceWellSelectionWidget(self, new_widget):
         self.wellSelectionWidget.setParent(None)
         self.wellSelectionWidget.deleteLater()
@@ -2587,6 +2735,11 @@ class HighContentScreeningGui(QMainWindow):
 
         # click to move off during acquisition
         self.navigationWidget.set_click_to_move(not acquisition_started)
+
+        # the Z lift holds still during an acquisition (it carries the sample being focused on)
+        for lift_widget in (self.zLiftWidget, self.zLiftLoadingButton):
+            if lift_widget is not None:
+                lift_widget.setEnabled(not acquisition_started)
 
         # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()
@@ -2865,6 +3018,11 @@ class HighContentScreeningGui(QMainWindow):
                         restart skips this block (turret re-inits cleanly from any position).
         """
         context = "restart" if for_restart else "shutdown"
+
+        # A Z lift system closed at the loading position: unlock the control panel first, before any step below
+        # can fail and abort the rest (Microscope.close() unlocks it too), so the joystick works without Squid.
+        if self._loading_position_locked:
+            self._set_control_panel_lock(False)
 
         # Cache position and settings
         try:

@@ -1,4 +1,6 @@
 #include "functions.h"
+#include "utils/focus_wheel.h"
+#include "utils/panel_lock.h"
 
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
@@ -606,7 +608,13 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
     in.delta_x = 0;
     in.delta_y = 0;
   }
-  focusPosition = focusPosition + in.focus_delta;
+
+  // Locked by the host (SET_PANEL_LOCK): the joystick reads centred and the wheel moves nothing
+  pl_apply(panel_locked_by_host, &in);
+
+  // The wheel delta the link accepted (reconnects re-based, noise dropped, and neither lock dropping it) goes
+  // to Z, or with FOCUS_WHEEL_TO_HOST to the count the status packet reports (SET_FOCUS_WHEEL_MODE)
+  fw_route_delta(focus_wheel_mode, in.focus_delta, &focusPosition, &focus_wheel_host_count);
   joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;
   joystick_delta_y = JOYSTICK_SIGN_Y * in.delta_y;
   btns = in.buttons;

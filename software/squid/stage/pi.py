@@ -186,6 +186,9 @@ class PIFocusStage(AbstractStage):
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
         self._closed = False
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
+        # Every Z move command (any caller) bumps this; the focus wheel router compares it with its own last
+        # move to notice that something else moved Z in between.
+        self.move_command_count = 0
 
         self._invert = invert_z
         native_lo, native_hi = c414.hardware_limits_mm()
@@ -232,6 +235,7 @@ class PIFocusStage(AbstractStage):
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
+            self.move_command_count += 1
             self._size_on_target_window(rel_mm)
             # Decided under the lock, against this move's own window (another thread's move could
             # change the window once the lock is released).
@@ -243,6 +247,7 @@ class PIFocusStage(AbstractStage):
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
+            self.move_command_count += 1
             target_native = self._to_native(abs_mm)
             move_mm = None
             if self._on_target_tolerance is not None:
@@ -267,6 +272,12 @@ class PIFocusStage(AbstractStage):
     def is_referenced(self) -> bool:
         with self._lock:
             return self._c414.is_referenced()
+
+    def z_range_mm(self) -> Tuple[float, float]:
+        """The reachable Z range (min, max) in Squid mm: the controller's current, possibly fenced, range limit."""
+        with self._lock:
+            ends = [self._to_squid(native) for native in self._c414.hardware_limits_mm()]
+        return min(ends), max(ends)
 
     def set_servo(self, enabled: bool):
         """Engage / disengage the closed-loop servo, e.g. to release Z while an objective is swapped.
@@ -297,6 +308,7 @@ class PIFocusStage(AbstractStage):
             with self._lock:
                 if self._closed:  # close() won the race; do not touch the torn-down handle
                     return
+                self.move_command_count += 1
                 if not self._c414.is_referenced():
                     self._c414.reference()
                 # _home_native_mm is a NATIVE target (positive travel limit for an upright retract,
@@ -369,14 +381,24 @@ class PIFocusStage(AbstractStage):
 class CombinedStage(AbstractStage):
     """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
 
-    def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
+    def __init__(
+        self,
+        xy_stage: AbstractStage,
+        z_stage: AbstractStage,
+        stage_config: Optional[StageConfig] = None,
+        lift=None,
+    ):
         super().__init__(stage_config or xy_stage.get_config())
         self._xy = xy_stage
         self._z = z_stage
         self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
+        self._scanning_position_lift_mm = None  # likewise, for the Z lift
 
         # The GUI reaches the V-308 directly for servo control during a manual objective swap.
         self.z_stage = z_stage
+        # The Z lift (squid.stage.lift.LiftStage) when the XY stage's own Z stepper lifts the sample; None otherwise.
+        # Loading position, homing and objective swaps lower it.
+        self.lift = lift
 
         # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
         # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own
@@ -420,11 +442,23 @@ class CombinedStage(AbstractStage):
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         xy_requested = x or y or theta
+        if xy_requested and self.lift is not None:
+            # Homing sweeps XY end to end: the sample must be clear of the objective, whoever asks for it.
+            self._lower_lift_for_xy_homing()
         if z:
             # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
             self._z.home(False, False, True, False, blocking or xy_requested)
         if xy_requested:
             self._xy.home(x, y, False, theta, blocking)
+
+    def _lower_lift_for_xy_homing(self):
+        """Lower the Z lift and check it got there; raise (homing nothing) if it did not."""
+        self.lift.lower()
+        if not self.lift.is_lowered():
+            raise RuntimeError(
+                f"XY homing refused: the Z lift reads {self.lift.get_position_mm():.3f} mm, not lowered "
+                f"({self.lift.lowered_mm:.3f} mm)."
+            )
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x or y or theta:
@@ -617,7 +651,7 @@ class C414FocusStage:
                 self.gcs.WPA(WPA_PASSWORD)
         finally:
             self.gcs.CCL(0)
-        self._range_lo, self._range_hi = min_mm, max_mm  # refresh the clamp cache
+        self._refresh_range_cache()
 
     def reset_range_limit(self, max_mm: float, min_mm: float = 0.0) -> None:
         """Restore the Position Range Limit to the full physical travel [min_mm, max_mm].
@@ -634,7 +668,13 @@ class C414FocusStage:
             self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, float(max_mm))
         finally:
             self.gcs.CCL(0)
-        self._range_lo, self._range_hi = float(min_mm), float(max_mm)  # refresh the clamp cache
+        self._refresh_range_cache()
+
+    def _refresh_range_cache(self) -> None:
+        # From the controller's read-back, not the values written: it stores the limits at its own precision
+        # (0.05 reads back as 0.049999996), and moves must be clamped to the range it enforces and reports
+        # (hardware_limits_mm), or a target clamped to the reported range is "outside" the written one by a few nm.
+        self._range_lo, self._range_hi = self.hardware_limits_mm()
 
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
