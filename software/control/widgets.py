@@ -11111,6 +11111,7 @@ class NapariMultiChannelWidget(QWidget):
         if self.grid_enabled:
             self.viewer.grid.enabled = True
         self.viewer.dims.axis_labels = ["Z-axis", "Y-axis", "X-axis"]
+        self.viewer.dims.events.ndisplay.connect(self._onNdisplayChanged)
         self.viewerWidget = self.viewer.window._qt_window
         self.layout = QVBoxLayout()
         self.layout.addWidget(self.viewerWidget)
@@ -11187,8 +11188,9 @@ class NapariMultiChannelWidget(QWidget):
         # takes seconds for a large z-stack. Show 2D while acquiring; finishAcquisition()
         # restores the user's mode.
         if self._ndisplay_before_acquisition is None:
-            self._ndisplay_before_acquisition = self.viewer.dims.ndisplay
-            self.viewer.dims.ndisplay = 2
+            ndisplay = self.viewer.dims.ndisplay
+            self.viewer.dims.ndisplay = 2  # before recording it, so _onNdisplayChanged ignores this switch
+            self._ndisplay_before_acquisition = ndisplay
 
     def updateLayers(self, image, x, y, k, channel_name):
         """Updates the appropriate slice of the canvas with the new image data."""
@@ -11278,6 +11280,12 @@ class NapariMultiChannelWidget(QWidget):
         self._refreshDisplay()
         self.viewer.dims.ndisplay = self._ndisplay_before_acquisition
         self._ndisplay_before_acquisition = None
+
+    def _onNdisplayChanged(self, event=None):
+        # A 2D/3D switch the user makes mid-acquisition is the mode to end in, not the one from
+        # before the run.
+        if self._ndisplay_before_acquisition is not None:
+            self._ndisplay_before_acquisition = self.viewer.dims.ndisplay
 
     def signalContrastLimits(self, event):
         layer = event.source

@@ -92,6 +92,38 @@ def test_acquisition_displays_2d_and_restores_3d(napari_widget):
     assert napari_widget.viewer.dims.ndisplay == 3
 
 
+def test_acquisition_started_in_2d_ends_in_2d(napari_widget):
+    _start_acquisition(napari_widget)
+    napari_widget.updateLayers(_frame(0), 0.0, 0.0, 0, CHANNEL)
+    napari_widget.finishAcquisition()
+    assert napari_widget.viewer.dims.ndisplay == 2
+
+
+@pytest.mark.parametrize(
+    "start, switches, end",
+    [
+        (2, [3], 3),  # switched to 3D mid-run: stays 3D, not back to the 2D from before the run
+        (3, [3, 2], 2),  # started in 3D, last chose 2D mid-run: stays 2D
+    ],
+)
+def test_mid_acquisition_ndisplay_choice_is_kept(napari_widget, start, switches, end):
+    napari_widget.viewer.dims.ndisplay = start
+    _start_acquisition(napari_widget)
+    napari_widget.updateLayers(_frame(0), 0.0, 0.0, 0, CHANNEL)
+    for ndisplay in switches:
+        napari_widget.viewer.dims.ndisplay = ndisplay
+    napari_widget.updateLayers(_frame(1), 0.0, 0.0, 1, CHANNEL)
+
+    napari_widget.finishAcquisition()
+    assert napari_widget.viewer.dims.ndisplay == end
+
+    # The choice doesn't leak into the next run: it starts from the mode the user ended in.
+    _start_acquisition(napari_widget)
+    assert napari_widget.viewer.dims.ndisplay == 2
+    napari_widget.finishAcquisition()
+    assert napari_widget.viewer.dims.ndisplay == end
+
+
 def test_frames_do_not_refresh_the_viewer_synchronously(napari_widget, thumbnail_calls, refresh_calls, qtbot):
     napari_widget.viewer.dims.ndisplay = 3
     _start_acquisition(napari_widget)
