@@ -1298,8 +1298,11 @@ Z_LIFT_LOWERED_MM = 0.0
 Z_LIFT_HEIGHTS_PATH = "cache/z_lift_heights.json"
 # Route the control panel's focus wheel to the V-308 (the lift is then moved only from the software).
 Z_LIFT_FOCUS_WHEEL_DRIVES_PI = True
-# V-308 travel per focus wheel tick, in um. 0 = the distance one tick moved the Z stepper, so the wheel feels the same.
-PI_FOCUS_WHEEL_UM_PER_TICK = 0.0
+# V-308 travel per focus wheel count, in um. The control panel sends 2^(Z sensitivity knob, 0-8) / 4 counts per encoder
+# click, in multiples of 16 (made for the 16-microstep Z stepper), so 0.00625 makes its smallest step 0.1 um: about
+# 0.4 um per click at knob 8, 0.1 um per 4 clicks at knob 4. 0 = one Z stepper microstep per count (far too coarse
+# for the V-308: 20 um per click at knob 8 on the 1 mm-pitch lift).
+PI_FOCUS_WHEEL_UM_PER_TICK = 0.00625
 PI_FOCUS_WHEEL_INVERT = False
 # Fastest the focus wheel moves the V-308, in um/s; turning faster drops the extra ticks (Z stops with the wheel).
 # 0 = no cap. Autofocus, z-stacks and other moves keep the V-308's own speed.

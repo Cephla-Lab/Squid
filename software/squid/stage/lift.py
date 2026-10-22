@@ -213,6 +213,10 @@ class FocusWheelRouter:
     _POLL_S = 0.03
     _RESYNC_AFTER_S = 0.5
     _MAX_POLL_GAP_S = 0.1  # a late poll (a stalled thread) must not turn into one large step
+    # Diagnostics (logged, nothing changes): a poll this late, a wheel count jump this large, a V-308 move this slow
+    _TRACE_LATE_POLL_S = 0.06
+    _TRACE_BIG_TICKS = 20000  # ~3x the fastest spin seen (6720 counts per poll at the panel's knob 8)
+    _TRACE_SLOW_MOVE_S = 0.02
 
     def __init__(
         self,
@@ -234,6 +238,7 @@ class FocusWheelRouter:
         self._target_mm: Optional[float] = None
         self._range_mm: Optional[Tuple[float, float]] = None
         self._last_tick_time = 0.0
+        self._at_end_logged = False  # the end-of-travel trace is logged once per arrival at an end
 
     def set_enabled_check(self, enabled: Callable[[], bool]):
         self._enabled = enabled
@@ -277,6 +282,8 @@ class FocusWheelRouter:
             self._last_count = count
             return
         ticks = self._wrapped_delta(count, self._last_count)
+        if abs(ticks) > self._TRACE_BIG_TICKS:
+            _log.info(f"Focus wheel trace: count jumped {self._last_count} -> {count} ({ticks:+d} ticks in one poll)")
         self._last_count = count
         if ticks == 0:
             return
@@ -294,17 +301,39 @@ class FocusWheelRouter:
             max_step_mm = self._max_speed_mm_s * poll_gap_s
             if abs(step_mm) > max_step_mm:
                 step_mm = math.copysign(max_step_mm, step_mm)  # the extra ticks are dropped, not queued
+        if poll_gap_s > self._TRACE_LATE_POLL_S:
+            _log.info(
+                f"Focus wheel trace: late poll ({poll_gap_s * 1000:.0f} ms), {ticks:+d} ticks, "
+                f"step {step_mm * 1000:+.1f} um"
+            )
         self._target_mm += step_mm
         if self._range_mm is not None:
             # Keep the target reachable: the stage clamps the move anyway, and an unclamped target would make
             # the wheel turned back do nothing until the extra ticks were unwound.
+            unclamped_mm = self._target_mm
             self._target_mm = min(max(self._target_mm, self._range_mm[0]), self._range_mm[1])
+            at_end = self._target_mm != unclamped_mm
+            if at_end and not self._at_end_logged:
+                # Where Z really is when the wheel holds it against an end (overshoot past the range limit?)
+                _log.info(
+                    f"Focus wheel trace: at the end of travel, target {self._target_mm:.4f} mm, "
+                    f"measured {self._focus.get_pos().z_mm:.4f} mm"
+                )
+            self._at_end_logged = at_end
+        t0 = time.perf_counter()
         self._focus.move_z_to(self._target_mm, blocking=False)
+        move_s = time.perf_counter() - t0
+        if move_s > self._TRACE_SLOW_MOVE_S:
+            _log.info(
+                f"Focus wheel trace: V-308 move command took {move_s * 1000:.0f} ms "
+                f"(target {self._target_mm:.4f} mm, step {step_mm * 1000:+.1f} um)"
+            )
 
 
 def default_focus_wheel_mm_per_tick(z_axis_config: AxisConfig) -> float:
-    """PI_FOCUS_WHEEL_UM_PER_TICK, or (when 0) the distance one tick moved the Z stepper, signed by
-    PI_FOCUS_WHEEL_INVERT and the Z movement sign so that turning the wheel focuses the same way it did."""
+    """PI_FOCUS_WHEEL_UM_PER_TICK (default 0.00625 um per panel count), or (when 0) the distance one count moved the
+    Z stepper, signed by PI_FOCUS_WHEEL_INVERT and the Z movement sign so that turning the wheel focuses the same way
+    it did."""
     if _def.PI_FOCUS_WHEEL_UM_PER_TICK:
         mm = _def.PI_FOCUS_WHEEL_UM_PER_TICK / 1000.0
     else:

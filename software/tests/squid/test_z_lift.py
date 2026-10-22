@@ -506,3 +506,9 @@ def test_no_cap_when_max_speed_is_zero(monkeypatch):
     mcu.focus_wheel_count = 50
     router.poll()
     assert focus.targets == [pytest.approx(1.050)]
+
+
+def test_default_wheel_scale_is_fine_enough_for_the_v308(z_axis):
+    # The panel's smallest step is 16 counts; at the default scale that is 0.1 um of V-308 travel.
+    assert _def.PI_FOCUS_WHEEL_UM_PER_TICK == 0.00625
+    assert abs(default_focus_wheel_mm_per_tick(z_axis)) * 16 * 1000 == pytest.approx(0.1)
