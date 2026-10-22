@@ -513,3 +513,20 @@ def test_default_wheel_scale_is_fine_enough_for_the_v308(z_axis):
     # The panel's smallest step is 16 counts; at the default scale that is 0.1 um of V-308 travel.
     assert _def.PI_FOCUS_WHEEL_UM_PER_TICK == 0.00625
     assert abs(default_focus_wheel_mm_per_tick(z_axis)) * 16 * 1000 == pytest.approx(0.1)
+
+
+def test_a_reconnected_panel_does_not_move_z(monkeypatch):
+    # Seen on the instrument: after a panel reconnect the count jumped 128112 -> 413376 in one poll.
+    router, mcu, focus, clock = _capped_router(monkeypatch, max_speed_mm_s=2.0)
+    mcu.focus_wheel_count = 128112
+    clock[0] += 0.03
+    router.poll()  # a real turn from the baseline 0 is fine...
+    focus.targets.clear()
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 413376  # ...but this is a glitch
+    router.poll()
+    assert focus.targets == []
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 413376 + 16  # turning on from there works, from the measured position
+    router.poll()
+    assert focus.targets == [pytest.approx(1.0 + 0.016)]

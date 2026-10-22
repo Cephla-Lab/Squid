@@ -205,6 +205,8 @@ class FocusWheelRouter:
     ``enabled()`` is False (an acquisition, autofocus, an objective swap with the servo off) are dropped, not saved
     for later.
 
+    A count jump larger than ``_GLITCH_TICKS`` in one poll (a reconnected panel, a corrupted packet) is ignored.
+
     ``max_speed_mm_s`` (>0) caps how fast the wheel moves Z: each poll the target advances at most that speed times
     the time since the previous poll, and the ticks beyond it are dropped rather than queued, so Z stops when the
     wheel stops instead of running on toward the sample.
@@ -215,7 +217,11 @@ class FocusWheelRouter:
     _MAX_POLL_GAP_S = 0.1  # a late poll (a stalled thread) must not turn into one large step
     # Diagnostics (logged, nothing changes): a poll this late, a wheel count jump this large, a V-308 move this slow
     _TRACE_LATE_POLL_S = 0.06
-    _TRACE_BIG_TICKS = 20000  # ~3x the fastest spin seen (6720 counts per poll at the panel's knob 8)
+    # A count change this large in one poll is not a hand turning the wheel (~3x the fastest spin seen, 6720 counts
+    # per poll at the panel's knob 8) but a glitch: a control panel reconnected (it restarts its count at 0) or a
+    # corrupted panel packet, on firmware without #734's reconnect handling. Ignored: the count is re-based and
+    # nothing moves.
+    _GLITCH_TICKS = 20000
     _TRACE_SLOW_MOVE_S = 0.02
 
     def __init__(
@@ -281,8 +287,14 @@ class FocusWheelRouter:
             self._last_count = count
             return
         ticks = self._wrapped_delta(count, self._last_count)
-        if abs(ticks) > self._TRACE_BIG_TICKS:
-            _log.info(f"Focus wheel trace: count jumped {self._last_count} -> {count} ({ticks:+d} ticks in one poll)")
+        if abs(ticks) > self._GLITCH_TICKS:
+            _log.warning(
+                f"Focus wheel: ignored a count jump {self._last_count} -> {count} ({ticks:+d} in one poll); "
+                "a reconnected control panel or a corrupted packet, not a turn of the wheel"
+            )
+            self._last_count = count
+            self._target_mm = None  # the next real turn starts from the measured position
+            return
         self._last_count = count
         if ticks == 0:
             return
