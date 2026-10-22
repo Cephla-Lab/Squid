@@ -407,3 +407,54 @@ def test_without_a_lift_leaving_loading_does_not_ask(qtbot):
     with patch("control.widgets._ask_objective_z_return") as ask, patch("control.widgets.move_to_scanning_position"):
         dialog.switch_position()
     ask.assert_not_called()
+
+
+def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until_scanning(qtbot):
+    from unittest.mock import MagicMock
+
+    from qtpy.QtWidgets import QPushButton
+
+    from control.gui_hcs import HighContentScreeningGui as Gui
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    stage_utils = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(stage_utils)
+    panel = []
+
+    class _Gui:  # Qt connects bound methods through weak references: SimpleNamespace has none
+        pass
+
+    fake = _Gui()
+    fake.__dict__.update(
+        stageUtils=stage_utils,
+        log=MagicMock(),
+        _loading_position_locked=False,
+        _loading_position_saved_enabled={},
+        _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget", "liveControlWidget"),
+        navigationWidget=QPushButton(),
+        liveControlWidget=QPushButton(),
+        _set_control_panel_lock=panel.append,
+    )
+    for name in (
+        "_connect_loading_position_lock",
+        "_lock_stage_at_loading_position",
+        "_unlock_stage_after_loading_position",
+    ):
+        setattr(fake, name, getattr(Gui, name).__get__(fake))
+    fake._connect_loading_position_lock()
+
+    def locked():
+        return not fake.navigationWidget.isEnabled() and not fake.liveControlWidget.isEnabled() and panel[-1] is True
+
+    with patch("control.widgets.move_to_loading_position"):
+        stage_utils.switch_position()  # the move to the loading position starts
+    assert locked()  # before the stage gets there
+    stage_utils._callback_loading_position_reached(True, None)
+    assert locked()
+    with patch("control.widgets.move_to_scanning_position"):
+        stage_utils.switch_position()  # the move back starts
+    assert locked()
+    stage_utils._callback_scanning_position_reached(True, None)
+    assert fake.navigationWidget.isEnabled() and fake.liveControlWidget.isEnabled() and panel == [True, False]

@@ -2342,14 +2342,23 @@ class HighContentScreeningGui(QMainWindow):
         "recordTabWidget",
     )
 
+    def _connect_loading_position_lock(self):
+        """Z lift system: nothing moves from the moment the loading toggle starts (the move to the loading position,
+        the stay there while a sample is loaded, and the move back) until the stage is back at the scanning
+        position. A failed move either way still ends "at the loading position", so it stays locked."""
+        self.stageUtils.signal_threaded_stage_move_started.connect(self._lock_stage_at_loading_position)
+        self.stageUtils.signal_loading_position_reached.connect(self._lock_stage_at_loading_position)
+        self.stageUtils.signal_scanning_position_reached.connect(self._unlock_stage_after_loading_position)
+
     def _lock_stage_at_loading_position(self):
-        """At the loading position nothing may move (a sample is being loaded): every stage / focus / acquisition
-        control is disabled until the stage is back at the scanning position, each getting back the enabled state
-        it had. Click-to-move, Z scroll and map moves are refused through _stage_moves_blocked_by_objective_swap."""
+        """Moving to, at, or moving back from the loading position nothing else may move: every stage / focus /
+        live / acquisition control is disabled until the stage is back at the scanning position, each getting back
+        the enabled state it had. Click-to-move, Z scroll and map moves are refused through
+        _stage_moves_blocked_by_objective_swap."""
         if self._loading_position_locked:
             return
         self._loading_position_locked = True
-        self.log.info("At the loading position: stage, focus and lift moves are locked until scanning position")
+        self.log.info("Loading position: stage, focus, live and lift controls are locked until scanning position")
         self._loading_position_saved_enabled = {}
         for name in self._LOADING_POSITION_BLOCKED_WIDGETS:
             widget = getattr(self, name, None)
@@ -2404,7 +2413,7 @@ class HighContentScreeningGui(QMainWindow):
         if self._objective_swap_active:
             self.log.info(f"{what} ignored: an objective change is in progress")
         elif self._loading_position_locked:
-            self.log.info(f"{what} ignored: the stage is at the loading position")
+            self.log.info(f"{what} ignored: the stage is at (or moving to or from) the loading position")
         return self._objective_swap_active or self._loading_position_locked
 
     def _set_workflow_controls_enabled(self, enabled: bool):
@@ -2671,10 +2680,9 @@ class HighContentScreeningGui(QMainWindow):
             self.multipointController.start_blocker = self._claim_lift_for_acquisition
             self.multipointController.acquisition_finished.connect(self._release_lift_after_acquisition)
 
-            # Z lift system: nothing moves at the loading position (a sample is being loaded) until the toggle back
-            # to scanning; the lift itself is held by its LiftMotionGuard, these are the rest.
-            self.stageUtils.signal_loading_position_reached.connect(self._lock_stage_at_loading_position)
-            self.stageUtils.signal_scanning_position_reached.connect(self._unlock_stage_after_loading_position)
+            # Z lift system: nothing moves from the start of the move to the loading position until the stage is
+            # back at scanning; the lift itself is held by its LiftMotionGuard, these are the rest.
+            self._connect_loading_position_lock()
             self.stageUtils.keep_live_off_at_loading = True
             self.stageUtils.ask_objective_return = True
 

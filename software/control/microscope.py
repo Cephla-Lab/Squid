@@ -1233,6 +1233,12 @@ class Microscope:
 
         if self.low_level_drivers.microcontroller:
             try:
+                # A lock the GUI set (a Z lift system at the loading position) is not left behind: with Squid
+                # closed the joystick works on its own again.
+                self.low_level_drivers.microcontroller.unlock_panel()
+            except Exception as e:
+                self._log.warning(f"Error unlocking the control panel: {e}")
+            try:
                 self.low_level_drivers.microcontroller.close()
             except Exception as e:
                 self._log.warning(f"Error closing microcontroller: {e}")
