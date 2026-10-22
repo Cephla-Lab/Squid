@@ -5,6 +5,7 @@ import pytest
 import control._def
 
 import control.gui_hcs
+import control.widgets
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -87,6 +88,33 @@ def test_acquisition_start_emits_selected_channels(qtbot, confirm_exit_yes):
         # Unwind the acquisition-running UI state (signal_acquisition_started=True
         # disabled the other tabs via toggleAcquisitionStart).
         win.toggleAcquisitionStart(False)
+
+
+def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypatch, confirm_exit_yes):
+    """The multichannel viewer coalesces refreshes and shows 2D while acquiring; the end of the
+    acquisition must reach it to draw the final plane and restore the user's 2D/3D mode."""
+    calls = []
+    monkeypatch.setattr(control.widgets.NapariMultiChannelWidget, "finishAcquisition", lambda self: calls.append(self))
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget]
+
+    # Performance Mode disconnects the napari display feeds; enabled mid-acquisition it must
+    # not cut the viewer off from the end of the run (it would stay in 2D).
+    win.performanceModeToggle.setChecked(True)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 2
+
+    # Leaving Performance Mode reconnects the feeds without connecting this a second time.
+    win.performanceModeToggle.setChecked(False)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 3
 
 
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):

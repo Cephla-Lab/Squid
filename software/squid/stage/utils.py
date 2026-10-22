@@ -64,6 +64,21 @@ def z_is_referenced() -> bool:
     return _def.HOMING_ENABLED_Z or _def.USE_PI_FOCUS_STAGE
 
 
+def z_stabilization_time_s() -> float:
+    """Pause after a Z move before imaging.
+
+    A blocking PI V-308 move returns only once the C-414 reports Z on target inside its per-move window
+    (PI_FOCUS_ON_TARGET_TOL_*, 0.1-0.5 um by default), so the stepper's fixed SCAN_STABILIZATION_TIME_MS_Z
+    only adds time: the V-308 uses PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z (default 0) instead. With the window
+    disabled (MIN = 0, the controller's own +/-1 um, which calls sub-um steps done before they move) the
+    stepper value applies. A move no larger than the window is "on target" before it starts; PIFocusStage
+    covers those with its own fixed settle (PI_FOCUS_SUB_WINDOW_SETTLE_MS).
+    """
+    if _def.USE_PI_FOCUS_STAGE and _def.PI_FOCUS_ON_TARGET_TOL_MIN_UM:
+        return _def.PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z / 1000
+    return _def.SCAN_STABILIZATION_TIME_MS_Z / 1000
+
+
 def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACHE_PATH, validate_z: bool = True):
     """Write out the current x, y, z position, in mm, so we can use it later as a cached position.
 

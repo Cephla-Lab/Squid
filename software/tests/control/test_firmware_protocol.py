@@ -23,7 +23,9 @@ from control._def import (
     AXIS,
     HOME_OR_ZERO,
     LIMIT_CODE,
-    LIMIT_SWITCH_POLARITY,
+    LIMIT_SWITCH_BITS,
+    BIT_POS_Z_LIMIT_LEFT,
+    BIT_POS_Z_LIMIT_RIGHT,
     CMD_EXECUTION_STATUS,
     ILLUMINATION_CODE,
 )
@@ -119,7 +121,7 @@ class TestProtocolConsistency:
             "ANALOG_WRITE_ONBOARD_DAC": CMD_SET.ANALOG_WRITE_ONBOARD_DAC,
             "SET_DAC80508_REFDIV_GAIN": CMD_SET.SET_DAC80508_REFDIV_GAIN,
             "SET_ILLUMINATION_INTENSITY_FACTOR": CMD_SET.SET_ILLUMINATION_INTENSITY_FACTOR,
-            "SET_LIM_SWITCH_POLARITY": CMD_SET.SET_LIM_SWITCH_POLARITY,
+            "SET_LIMIT_SWITCH_CONFIG": CMD_SET.SET_LIMIT_SWITCH_CONFIG,
             "CONFIGURE_STEPPER_DRIVER": CMD_SET.CONFIGURE_STEPPER_DRIVER,
             "SET_MAX_VELOCITY_ACCELERATION": CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
             "SET_LEAD_SCREW_PITCH": CMD_SET.SET_LEAD_SCREW_PITCH,
@@ -228,12 +230,15 @@ class TestProtocolConsistency:
 
         assert len(mismatches) == 0, f"Limit code mismatches:\n" + "\n".join(mismatches)
 
-    def test_limit_switch_polarity_values_match(self, firmware_constants):
-        """Verify limit switch polarity values match."""
+    def test_limit_switch_config_values_match(self, firmware_constants):
+        """Verify limit switch config nibble and byte-18 bit positions match."""
         polarity_mapping = {
-            "ACTIVE_LOW": LIMIT_SWITCH_POLARITY.ACTIVE_LOW,
-            "ACTIVE_HIGH": LIMIT_SWITCH_POLARITY.ACTIVE_HIGH,
-            "DISABLED": LIMIT_SWITCH_POLARITY.DISABLED,
+            "LIMIT_SWITCH_LEFT_ENABLED": LIMIT_SWITCH_BITS.LEFT_ENABLED,
+            "LIMIT_SWITCH_RIGHT_ENABLED": LIMIT_SWITCH_BITS.RIGHT_ENABLED,
+            "LIMIT_SWITCH_LEFT_ACTIVE_HIGH": LIMIT_SWITCH_BITS.LEFT_ACTIVE_HIGH,
+            "LIMIT_SWITCH_RIGHT_ACTIVE_HIGH": LIMIT_SWITCH_BITS.RIGHT_ACTIVE_HIGH,
+            "BIT_POS_Z_LIMIT_LEFT": BIT_POS_Z_LIMIT_LEFT,
+            "BIT_POS_Z_LIMIT_RIGHT": BIT_POS_Z_LIMIT_RIGHT,
         }
 
         mismatches = []
@@ -245,7 +250,7 @@ class TestProtocolConsistency:
             else:
                 mismatches.append(f"{fw_name}: not found in firmware")
 
-        assert len(mismatches) == 0, f"Limit switch polarity mismatches:\n" + "\n".join(mismatches)
+        assert len(mismatches) == 0, f"Limit switch config mismatches:\n" + "\n".join(mismatches)
 
     def test_illumination_source_codes_match(self, firmware_constants):
         """Verify illumination source codes match."""

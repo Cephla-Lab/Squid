@@ -31,6 +31,7 @@ from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
+import squid.stage.utils
 from control.rcm_scan_trigger import ConfocalScanFailedError
 import squid.logging
 import control.core.job_processing
@@ -206,6 +207,10 @@ class MultiPointWorker:
         self._current_capture_info: Optional[CaptureInfo] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
+        # A copy of the channel last applied with set_microscope_mode. Within one position, an image whose channel
+        # is unchanged skips re-applying it (camera, MCU, illumination and filter wheel commands on every z level).
+        # Cleared at every position, so whatever runs between positions (autofocus, laser AF) can't leave it stale.
+        self._applied_config: Optional[AcquisitionChannel] = None
 
         self.skip_saving = acquisition_parameters.skip_saving
         # The settings in effect now, for the whole acquisition.
@@ -844,7 +849,7 @@ class MultiPointWorker:
     def move_to_z_level(self, z_mm):
         self._log.debug("moving z")
         self.stage.move_z_to(z_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
         """Process job results from output queues.
@@ -1085,6 +1090,7 @@ class MultiPointWorker:
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
+        self._applied_config = None
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
@@ -1178,6 +1184,20 @@ class MultiPointWorker:
         self.callbacks.signal_current_configuration(config)
         self.liveController.set_microscope_mode(config)
         self.wait_till_operation_is_completed()
+        self._applied_config = config.model_copy(deep=True)
+
+    def _config_already_applied(self, config: AcquisitionChannel) -> bool:
+        # Compared by value against the copy, so a channel edited since it was applied is applied again.
+        return (
+            self._applied_config is not None
+            and config == self._applied_config
+            and self.liveController.currentConfiguration == config
+        )
+
+    def _scan_unit_triggers_camera(self) -> bool:
+        # With an NL5/AION and NL5_USE_DOUT, camera.send_trigger() runs one confocal scan and returns once the
+        # unit has triggered the camera (see microscope.py's acquisition_camera_hw_trigger_fn).
+        return self.microscope.addons.nl5 is not None and control._def.NL5_USE_DOUT
 
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
@@ -1232,8 +1252,8 @@ class MultiPointWorker:
         # move to bottom of the z stack
         if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
@@ -1271,7 +1291,7 @@ class MultiPointWorker:
         else:
             self.stage.move_z(delta_um / 1000)
             self.wait_till_operation_is_completed()
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
             self._log.info(
                 f"[z-offset] moved {delta_um:+.2f} µm via stage; actual z = {self.stage.get_pos().z_mm:.5f} mm"
             )
@@ -1455,7 +1475,8 @@ class MultiPointWorker:
     def acquire_camera_image(
         self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
     ):
-        self._select_config(config)
+        if not self._config_already_applied(config):
+            self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
@@ -1522,7 +1543,13 @@ class MultiPointWorker:
                 return
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
-            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            if self.liveController.trigger_mode == TriggerMode.HARDWARE and self._scan_unit_triggers_camera():
+                # send_trigger() above already blocked through the confocal scan, so sleeping a full frame time
+                # from here on ended long after the frame had arrived (AION: ~40 ms per image). The frame arriving
+                # proves its exposure has ended; waiting at most a frame time keeps the old upper bound when it
+                # doesn't come (a dropped trigger is still caught by the next image's _ready_for_next_trigger wait).
+                self._ready_for_next_trigger.wait(self.camera.get_total_frame_time() / 1e3)
+            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
                 exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
                 # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
                 # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
@@ -1719,7 +1746,7 @@ class MultiPointWorker:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
             self.stage.move_z(self.deltaZ)
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def move_z_back_after_stack(self, steps_taken: Optional[int] = None):
         """Return Z to where the stack started, undoing steps_taken z steps (default: a full stack)."""
