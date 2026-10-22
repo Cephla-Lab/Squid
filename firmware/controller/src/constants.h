@@ -50,8 +50,23 @@
 //               1000 mA) is now accepted; every current 1.6 accepted keeps its range.
 //               The number may move to the next free minor at merge: the hardware
 //               sequencer (#655/#656) also claims 1.7.
+// Version 1.8 = focus wheel to host. SET_FOCUS_WHEEL_MODE (65) FOCUS_WHEEL_TO_HOST
+//               stops the control panel's focus wheel from moving Z and counts
+//               its ticks instead: status bytes 14-17 carry the count (int32,
+//               wrapping, 0 when enabled) and byte 19 bit 7 marks it, so the host
+//               can drive another focus axis (a PI V-308 while Z is a lift).
+//               Refused while encoder reporting is on (same bytes) and the other
+//               way round. FOCUS_WHEEL_DRIVES_Z is the 1.7 behaviour, packet
+//               unchanged. With FOCUS_WHEEL_SAVE_AS_POWER_UP ([3]) the mode is
+//               also saved (EEPROM 8-11, written only on change) and used at
+//               power-up and after RESET and INITIALIZE; unsaved, that is
+//               DRIVES_Z. A lift system saves TO_HOST: with no host running,
+//               the wheel moves nothing instead of the lift.
+//               SET_PANEL_LOCK (66) locks the control panel: joystick X/Y reads
+//               centred and wheel turns are dropped (a lift system at its
+//               loading position). Not saved; RESET and INITIALIZE unlock.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 7
+#define FIRMWARE_VERSION_MINOR 8
 
 #include "def/def_v1.h"
 
