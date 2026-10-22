@@ -10,6 +10,19 @@
 #include <FastLED.h>
 #include <PacketSerial.h>
 
+// No library may print on the protocol serial port (platformio.ini, FASTLED_LOG_VERBOSITY=0): FastLED
+// logs to that same USB port and the host loses packet sync. Check the log level FastLED itself
+// RESOLVED, not our flag: since 3.10.8 that is FL_LOG_LEVEL (a -DFL_LOG_LEVEL overrides
+// FASTLED_LOG_VERBOSITY, and with neither set errors still print); earlier 3.10.x resolve
+// FASTLED_LOG_VERBOSITY.
+#if defined(FL_LOG_LEVEL)
+#if FL_LOG_LEVEL != 0
+#error "FastLED logging is compiled in (FL_LOG_LEVEL != 0) - it would print on the protocol serial port"
+#endif
+#elif !defined(FASTLED_LOG_VERBOSITY) || FASTLED_LOG_VERBOSITY != 0
+#error "FastLED logging is compiled in (FASTLED_LOG_VERBOSITY != 0) - it would print on the protocol serial port"
+#endif
+
 void set_DAC8050x_gain(uint8_t div, uint8_t gains);
 void set_DAC8050x_default_gain();
 void set_DAC8050x_config();
