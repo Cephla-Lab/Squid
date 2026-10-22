@@ -4906,7 +4906,7 @@ class LiveControlWidget(QFrame):
 
         # connections
         self.entry_triggerFPS.valueChanged.connect(self.liveController.set_trigger_fps)
-        self.dropdown_modeSelection.activated[str].connect(self.select_new_microscope_mode_by_name)
+        self.dropdown_modeSelection.textActivated.connect(self.select_new_microscope_mode_by_name)
         self.dropdown_triggerManu.currentIndexChanged.connect(self.update_trigger_mode)
         self.btn_live.clicked.connect(self.toggle_live)
         self.btn_snap.clicked.connect(self.snap)
