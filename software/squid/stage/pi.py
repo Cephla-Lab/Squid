@@ -175,6 +175,10 @@ class PIFocusStage(AbstractStage):
     ):
         super().__init__(stage_config)
         self._c414 = c414
+        if on_target_tolerance is not None:
+            tol_min_mm, tol_max_mm, _ = on_target_tolerance
+            if not 0 < tol_min_mm <= tol_max_mm:
+                raise ValueError(f"on_target_tolerance needs 0 < min <= max (mm), got {on_target_tolerance}")
         self._on_target_tolerance = on_target_tolerance
         self._on_target_tol_mm: Optional[float] = None  # window last written to the controller
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
@@ -203,8 +207,11 @@ class PIFocusStage(AbstractStage):
         if self._on_target_tolerance is None:
             return
         tol_min_mm, tol_max_mm, step_fraction = self._on_target_tolerance
-        tol_mm = min(max(step_fraction * abs(move_mm), tol_min_mm), tol_max_mm)
+        # Round to the grid first, then clamp, so the window always stays inside [min, max] (and > 0).
+        # (Capping at max before rounding keeps an infinite move -- the retract -- finite.)
+        tol_mm = min(step_fraction * abs(move_mm), tol_max_mm)
         tol_mm = round(tol_mm / _ON_TARGET_TOL_GRID_MM) * _ON_TARGET_TOL_GRID_MM
+        tol_mm = min(max(tol_mm, tol_min_mm), tol_max_mm)
         if self._on_target_tol_mm is None or abs(tol_mm - self._on_target_tol_mm) > 1e-12:
             self._c414.set_on_target_tolerance(tol_mm)
             self._on_target_tol_mm = tol_mm
@@ -673,7 +680,9 @@ class C414FocusStage:
         whenever the first ONT? is false, so every move not settled by the first poll took >100 ms.
         This sends MOV and polls ONT? alone, back to back, with pipython's per-command ERR? suspended
         (it doubles every round trip); the single ERR? at the end surfaces any error from either,
-        including a rejected MOV (the axis then stays on its old target, so polling ends at once).
+        including a rejected MOV (the axis then stays on its old target, so polling ends at once). If
+        the axis never gets on target (e.g. a rejected MOV with the servo off), the timeout path reads
+        the error too, so the controller's reason is raised and does not linger for a later command.
         """
         self._target_mm = None  # unknown until the move is known to have been accepted
         if not wait:
@@ -688,6 +697,13 @@ class C414FocusStage:
             while not self.gcs.qONT(self.axis)[self.axis]:
                 if time.monotonic() > deadline:
                     raise TimeoutError(f"C-414 axis {self.axis} not on target within {timeout:.1f} s")
+        except TimeoutError as timeout:
+            error = 0
+            with suppress(Exception):  # a failing ERR? must not mask the timeout
+                error = self.gcs.qERR()  # reading the error also clears it on the controller
+            if error:
+                raise self._GCSError(error) from timeout
+            raise
         finally:
             self.gcs.errcheck = errcheck
         self.gcs.checkerror()

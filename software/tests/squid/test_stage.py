@@ -638,6 +638,17 @@ class _FakeC414Gcs:
         if self.error:
             raise RuntimeError(f"GCS error {self.error}")
 
+    def qERR(self):
+        self.error_checks += 1
+        error, self.error = self.error, 0  # reading clears it, as on the controller
+        return error
+
+
+class _FakeGCSError(Exception):
+    def __init__(self, code):
+        super().__init__(f"GCS error {code}")
+        self.code = code
+
 
 def _c414_with(gcs):
     stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
@@ -647,6 +658,7 @@ def _c414_with(gcs):
     stage._target_mm = None
     stage.gcs = gcs
     stage._pitools = unittest.mock.MagicMock()
+    stage._GCSError = _FakeGCSError
     return stage
 
 
@@ -808,3 +820,46 @@ def test_c414_failed_move_drops_the_tracked_target():
     gcs.error = 0
     stage.move_relative(0.001)
     assert gcs.movs[-1][0] == pytest.approx(1.001)
+
+
+def test_c414_timeout_reports_and_clears_a_pending_controller_error():
+    # A rejected MOV with the axis off target (e.g. servo off): the wait must not end with a bare
+    # timeout that leaves the controller's error pending for some later, unrelated command.
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9, error=5)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(_FakeGCSError) as exc:
+        stage.move_to(1.0, timeout=0.05)
+    assert exc.value.code == 5
+    assert isinstance(exc.value.__cause__, TimeoutError)
+    assert gcs.error == 0  # drained
+    assert gcs.errcheck is True
+
+
+def test_c414_timeout_without_controller_error_stays_a_timeout():
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9)
+    stage = _c414_with(gcs)
+    with pytest.raises(TimeoutError):
+        stage.move_to(1.0, timeout=0.05)
+    assert gcs.error_checks == 1
+
+
+@pytest.mark.parametrize(
+    "policy_um, step_um, expected_um",
+    [
+        ((0.01, 0.5, 0.1), 0.05, 0.01),  # rounds to 0 on the grid: clamped up to min, never a zero window
+        ((0.12, 0.48, 0.1), 1.15, 0.12),  # 0.115 rounds to 0.10: clamped up to min
+        ((0.12, 0.48, 0.1), 4.9, 0.48),  # 0.49 rounds to 0.50: clamped down to max
+    ],
+)
+def test_pi_focus_on_target_window_stays_inside_the_configured_bounds(policy_um, step_um, expected_um):
+    lo, hi, frac = policy_um
+    stage, sim = _windowed_pi_stage(on_target_tolerance=(lo / 1000, hi / 1000, frac))
+    stage.move_z(step_um / 1000)
+    assert sim._on_target_tol_mm == pytest.approx(expected_um / 1000)
+
+
+@pytest.mark.parametrize("policy", [(0.0, 0.0005, 0.1), (-0.0001, 0.0005, 0.1), (0.0005, 0.0001, 0.1)])
+def test_pi_focus_rejects_an_unusable_window_policy(policy):
+    with pytest.raises(ValueError):
+        squid.stage.pi.PIFocusStage(_make_referenced_sim(), on_target_tolerance=policy)
