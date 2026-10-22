@@ -55,11 +55,6 @@ extern int JOYSTICK_SIGN_X;
 extern int JOYSTICK_SIGN_Y;
 extern int JOYSTICK_SIGN_Z;
 
-// limit switch polarity
-extern bool LIM_SWITCH_X_ACTIVE_LOW;
-extern bool LIM_SWITCH_Y_ACTIVE_LOW;
-extern bool LIM_SWITCH_Z_ACTIVE_LOW;
-
 // offset velocity enable/disable
 extern bool enable_offset_velocity;
 
