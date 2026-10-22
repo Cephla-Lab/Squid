@@ -999,6 +999,7 @@ class HighContentScreeningGui(QMainWindow):
             z_in_use=lambda: self.autofocusController.autofocus_in_progress
             or self.multipointController.acquisition_in_progress(),
             z_lift=self.microscope.z_lift,
+            lift_motion_guard=self.zLiftWidget.motion_guard if self.zLiftWidget is not None else None,
         )
         if self.microscope.focus_wheel_router is not None:
             # The focus wheel moves the V-308 only when nothing else is driving it (or has its servo off).

@@ -3886,7 +3886,15 @@ class ObjectivesWidget(QWidget):
     # phases and the confirmation dialog: the GUI blocks every other stage / focus control meanwhile.
     signal_swap_active = Signal(bool)
 
-    def __init__(self, objective_store, objective_changer=None, focus_servo=None, z_in_use=None, z_lift=None):
+    def __init__(
+        self,
+        objective_store,
+        objective_changer=None,
+        focus_servo=None,
+        z_in_use=None,
+        z_lift=None,
+        lift_motion_guard=None,
+    ):
         super(ObjectivesWidget, self).__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
@@ -3900,6 +3908,11 @@ class ObjectivesWidget(QWidget):
         # A Z lift (squid.stage.lift.LiftStage): a switch to a higher magnification lowers it first, and leaves it
         # lowered (raised again from Utils > Z Lift...).
         self.z_lift = z_lift
+        # The Z lift's LiftMotionGuard (control/widgets_z_lift.py): a swap that moves anything claims it for its whole
+        # run, and is refused while a loading / scanning move or a lift move holds it, so neither can move the lift
+        # under the other.
+        self.lift_motion_guard = lift_motion_guard
+        self._lift_claimed = False
         self._swap_lowers_lift = False
         self._swap_lift_lowered = False
         self._changer_swap_guarded = False
@@ -3936,6 +3949,27 @@ class ObjectivesWidget(QWidget):
             self._swap_lift_lowered = True
         return move(**kwargs)
 
+    def _claim_lift(self) -> bool:
+        """Claim the lift for this swap; on refusal warn, revert the dropdown and return False."""
+        if self.lift_motion_guard is None:
+            return True
+        if not self.lift_motion_guard.claim():
+            QMessageBox.warning(
+                self,
+                "Objective Change Unavailable",
+                "The Z lift is moving (the loading position or a lift move). Wait for it to finish, then change the "
+                "objective.",
+            )
+            self._revert_dropdown()
+            return False
+        self._lift_claimed = True
+        return True
+
+    def _release_lift(self):
+        if self._lift_claimed:
+            self._lift_claimed = False
+            self.lift_motion_guard.release()
+
     def on_objective_changed(self, objective_name):
         self._swap_lowers_lift = self._lowers_lift(objective_name)
         self._swap_lift_lowered = False
@@ -3945,6 +3979,8 @@ class ObjectivesWidget(QWidget):
         if self.objective_changer is None:
             self.objectiveStore.set_current_objective(objective_name)
             self.signal_objective_changed.emit()
+            return
+        if not self._claim_lift():
             return
         # A switch blocks for seconds (Z retract, changer motion, Z restore): run it off
         # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
@@ -3998,6 +4034,7 @@ class ObjectivesWidget(QWidget):
         if self._changer_swap_guarded:
             self._changer_swap_guarded = False
             self.signal_swap_active.emit(False)
+        self._release_lift()
 
     def _swap_objective_with_servo_off(self, objective_name):
         """Manual swap: retract Z, disengage the focus servo, wait for the user to confirm the new
@@ -4018,6 +4055,8 @@ class ObjectivesWidget(QWidget):
                 "Z is in use by autofocus or an acquisition. Wait for it to finish, then change the objective.",
             )
             self._revert_dropdown()
+            return
+        if not self._claim_lift():
             return
         self.dropdown.setEnabled(False)
         self.signal_swap_active.emit(True)
@@ -4106,6 +4145,7 @@ class ObjectivesWidget(QWidget):
     def _end_swap(self):
         self.dropdown.setEnabled(True)
         self.signal_swap_active.emit(False)
+        self._release_lift()
 
     def _revert_dropdown(self):
         self.dropdown.blockSignals(True)

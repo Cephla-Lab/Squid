@@ -45,7 +45,7 @@ _CLEAR_STYLE = "background-color: #C2FFC2; border: 1px solid #080; padding: 2px 
 
 
 class LiftMotionGuard(QObject):
-    """One lift motion at a time: a lift move from the GUI, or the loading / scanning toggle.
+    """One lift motion at a time: a lift move from the GUI, the loading / scanning toggle, or an objective swap.
 
     The toggle runs in StageUtils' worker thread and lowers the lift, moves XY, and (back to scanning) raises it
     again; LiftStage's lock only covers each single lift move, so a GUI move in between would raise the sample
@@ -60,6 +60,7 @@ class LiftMotionGuard(QObject):
         super().__init__(parent)
         self._lift_move = False
         self._loading = False
+        self._claimed = False  # held by an operation run elsewhere: an objective swap
         if stage_utils is not None:
             # signal_threaded_stage_move_started is emitted on the GUI thread before the toggle's thread starts,
             # so the guard is busy before any of its motion; the "reached" signals arrive from that thread.
@@ -70,7 +71,20 @@ class LiftMotionGuard(QObject):
 
     @property
     def busy(self) -> bool:
-        return self._lift_move or self._loading
+        return self._lift_move or self._loading or self._claimed
+
+    def claim(self) -> bool:
+        """Hold the lift for an operation that moves it on its own (an objective swap lowers it), from its start to
+        its end. False (nothing held) while anything else is moving the lift: the caller must not start then."""
+        if self.busy:
+            return False
+        self._claimed = True
+        self.signal_busy_changed.emit(True)
+        return True
+
+    def release(self):
+        self._claimed = False
+        self.signal_busy_changed.emit(self.busy)
 
     def run(self, operation: Callable, **kwargs) -> bool:
         """Run a lift move in a worker thread; False (nothing started) while anything else is moving the lift."""
