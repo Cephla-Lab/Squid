@@ -340,19 +340,10 @@ def test_hand_edited_bare_plate_sizes_are_read_as_plates():
 def test_calibration_dialog_lists_disabled_formats_marked(qtbot):
     """Recalibrating or editing is how a hidden plate comes back, so the
     calibration dialog must still offer it."""
-    from qtpy.QtWidgets import QComboBox
-
     save_disabled_sample_formats(["384 well plate"])
-    calibration = MagicMock()
-    calibration.existing_format_combo = QComboBox()
-    qtbot.addWidget(calibration.existing_format_combo)
-    calibration._format_display_name = lambda f: control.widgets.WellplateCalibration._format_display_name(
-        calibration, f
-    )
 
-    control.widgets.WellplateCalibration.populate_existing_formats(calibration)
+    combo = _populated_existing_formats(qtbot, "96 well plate")
 
-    combo = calibration.existing_format_combo
     labels = {combo.itemData(i): combo.itemText(i) for i in range(combo.count())}
     assert labels["384 well plate"].endswith("(disabled)")
     assert not labels["96 well plate"].endswith("(disabled)")
@@ -380,3 +371,30 @@ def test_new_format_replacing_an_existing_one_keeps_none_of_its_geometry(qtbot):
     assert (settings["rows"], settings["cols"]) == (8, 12)
     assert settings["well_spacing_x_mm"] == settings["well_spacing_y_mm"] == 9.0
     assert settings["well_size_x_mm"] == settings["well_size_y_mm"] == 6.0
+
+
+def _populated_existing_formats(qtbot, loaded_format):
+    from qtpy.QtWidgets import QComboBox
+
+    calibration = MagicMock()
+    calibration.wellplateFormatWidget.wellplate_format = loaded_format
+    calibration.existing_format_combo = QComboBox()
+    qtbot.addWidget(calibration.existing_format_combo)
+    calibration._format_display_name = lambda f: control.widgets.WellplateCalibration._format_display_name(
+        calibration, f
+    )
+    control.widgets.WellplateCalibration.populate_existing_formats(calibration)
+    return calibration.existing_format_combo
+
+
+def test_calibrate_existing_starts_on_the_loaded_plate(qtbot):
+    combo = _populated_existing_formats(qtbot, "384 well plate")
+
+    assert combo.currentData() == "384 well plate"
+
+
+def test_calibrate_existing_with_a_glass_slide_loaded_starts_on_the_first_plate(qtbot):
+    combo = _populated_existing_formats(qtbot, "glass slide")
+
+    assert combo.currentIndex() == 0
+    assert combo.currentData() != "glass slide"

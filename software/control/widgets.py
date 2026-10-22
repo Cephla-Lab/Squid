@@ -12618,6 +12618,11 @@ class WellplateCalibration(QDialog):
                 if format_ in disabled:
                     label += "  (disabled)"
                 self.existing_format_combo.addItem(label, format_)
+        # Start on the loaded plate: it is the one on the stage. (A glass slide
+        # is not listed, so the first plate stays selected.)
+        index = self.existing_format_combo.findData(self.wellplateFormatWidget.wellplate_format)
+        if index >= 0:
+            self.existing_format_combo.setCurrentIndex(index)
 
     def toggle_input_mode(self):
         # The mode radios share an exclusive QButtonGroup: exactly one is true.
