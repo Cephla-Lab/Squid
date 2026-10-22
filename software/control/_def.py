@@ -1165,6 +1165,14 @@ PI_FOCUS_HOME_TO_POSITIVE_LIMIT = False
 # shrinks them permanently (until power cycle); >0 restores [0, this] at connect so the inversion
 # offset / soft-limit fencing don't drift across software restarts. Set to the V-308's travel (7).
 PI_FOCUS_Z_TRAVEL_MM = 0.0
+# On-target window (half-width) per Z move, written to the C-414's RAM: STEP_FRACTION x the move
+# distance, clamped to [MIN, MAX] um. A move counts as finished once Z stays inside the window for the
+# controller's dwell time, so small steps need a window well below the step (the controller's own
+# +/-1 um calls a 0.5-1 um step done before it moves) while long moves can be more forgiving.
+# Defaults: 0.5-1 um steps +/-0.1 um, 3 um +/-0.3 um, >=5 um +/-0.5 um. MIN = 0 keeps the controller's window.
+PI_FOCUS_ON_TARGET_TOL_MIN_UM = 0.1
+PI_FOCUS_ON_TARGET_TOL_MAX_UM = 0.5
+PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION = 0.1
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 
