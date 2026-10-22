@@ -190,7 +190,7 @@ def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
         stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
 
 
-def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool):
+def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool, restore_z: bool = True):
     if is_wellplate:
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
@@ -198,7 +198,13 @@ def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool):
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
     _restore_lift_after_loading(stage)
-    _restore_objective_after_loading(stage)
+    if restore_z:
+        _restore_objective_after_loading(stage)
+    elif getattr(stage, "_scanning_position_z_mm", None) is not None:
+        # Asked to leave it retracted (StageUtils asks on a Z lift system): the saved Z is forgotten only once the
+        # lift got there, like a restore.
+        _log.info(f"The objective stays retracted (it was at {stage._scanning_position_z_mm:.4f} mm).")
+        stage._scanning_position_z_mm = None
 
 
 def move_to_loading_position(
@@ -234,6 +240,7 @@ def move_to_scanning_position(
     blocking: bool = True,
     callback: Optional[Callable[[bool, Optional[str]], None]] = None,
     is_wellplate: bool = True,
+    restore_z: bool = True,
 ):
     """Move the stage back to scanning position from loading position.
     Args:
@@ -241,6 +248,7 @@ def move_to_scanning_position(
                     If False, return immediately and run the operation in a separate thread. callback will be called when done.
         callback: Optional callback function called when movement completes.
                     Receives (success: bool, error_message: Optional[str])
+        restore_z: False leaves an objective retracted for the loading position there (after the Z lift rose).
         **kwargs: Additional arguments to pass to the operation.
     Returns:
         threading.Thread: The thread handling the movement. None if blocking is True.
@@ -249,11 +257,11 @@ def move_to_scanning_position(
         raise ValueError("Callback is not supported when blocking is True")
     if blocking:
         _log.info(f"Moving to scanning position. Blocking is True.")
-        _move_to_scanning_position_impl(stage, is_wellplate)
+        _move_to_scanning_position_impl(stage, is_wellplate, restore_z)
         _log.info("Successfully moved to scanning position")
     else:
         return control.utils.threaded_operation_helper(
-            _move_to_scanning_position_impl, callback, stage=stage, is_wellplate=is_wellplate
+            _move_to_scanning_position_impl, callback, stage=stage, is_wellplate=is_wellplate, restore_z=restore_z
         )
 
 

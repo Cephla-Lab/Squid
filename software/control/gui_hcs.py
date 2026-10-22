@@ -2676,6 +2676,7 @@ class HighContentScreeningGui(QMainWindow):
             self.stageUtils.signal_loading_position_reached.connect(self._lock_stage_at_loading_position)
             self.stageUtils.signal_scanning_position_reached.connect(self._unlock_stage_after_loading_position)
             self.stageUtils.keep_live_off_at_loading = True
+            self.stageUtils.ask_objective_return = True
 
     def replaceWellSelectionWidget(self, new_widget):
         self.wellSelectionWidget.setParent(None)

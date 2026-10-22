@@ -2816,6 +2816,9 @@ class StageUtils(QDialog):
         # True on a Z lift system, where the live controls are locked at the loading position: live stays off there
         # and comes back (if it was on) only at the scanning position.
         self.keep_live_off_at_loading = False
+        # True on a Z lift system: leaving the loading position asks whether the objective, retracted for loading,
+        # returns to its Z once the lift is back up, or stays retracted.
+        self.ask_objective_return = False
         self._was_live = False
 
         self.setWindowTitle("Stage Utils")
@@ -2947,6 +2950,11 @@ class StageUtils(QDialog):
         if self.lift_motion_guard is not None and self.lift_motion_guard.busy:
             self.log.info("Loading / scanning position refused: the Z lift is moving or an objective swap is running")
             return
+        restore_z = True
+        if self.slide_position == "loading" and self.ask_objective_return:
+            restore_z = self._ask_objective_return()
+            if restore_z is None:
+                return  # cancelled: nothing moves
         if not (self.keep_live_off_at_loading and self.slide_position == "loading"):
             # (leaving a loading position where live was kept off: _was_live still holds what it was before)
             self._was_live = self.live_controller.is_live
@@ -2966,8 +2974,26 @@ class StageUtils(QDialog):
                 blocking=False,
                 callback=self._callback_scanning_position_reached,
                 is_wellplate=self.is_wellplate,
+                restore_z=restore_z,
             )
         self.btn_load_slide.setEnabled(False)
+
+    def _ask_objective_return(self) -> Optional[bool]:
+        """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
+        leave it retracted, None if cancelled. Not asked when the objective was not retracted for loading."""
+        z_mm = getattr(self.stage, "_scanning_position_z_mm", None)
+        if not isinstance(z_mm, (int, float)) or z_mm <= OBJECTIVE_RETRACTED_POS_MM:
+            return True
+        reply = _ask_objective_z_return(
+            self,
+            "Move to Scanning Position",
+            "The objective is retracted for loading. Once the stage is back and the Z lift has risen, should the "
+            f"objective return to {z_mm:.4f} mm, or stay retracted?",
+            z_mm,
+        )
+        if reply == QMessageBox.Cancel:
+            return None
+        return reply == QMessageBox.Ok
 
     def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
         """Handle slide loading position reached signal."""
@@ -2999,6 +3025,27 @@ class StageUtils(QDialog):
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+
+def _ask_objective_z_return(parent, title: str, text: str, z_mm: float):
+    """Where the objective goes once the sample is back under it (a Z lift system leaving the loading position, or a
+    manual objective swap): back to z_mm, or staying retracted. Returns QMessageBox.Ok (back to z_mm),
+    QMessageBox.No (stays retracted) or QMessageBox.Cancel."""
+    msg = QMessageBox(parent)
+    msg.setWindowTitle(title)
+    msg.setText(text)
+    msg.setIcon(QMessageBox.Question)
+    back_btn = msg.addButton(f"Return Z to {z_mm:.4f} mm", QMessageBox.AcceptRole)
+    stay_btn = msg.addButton("Keep Z Retracted", QMessageBox.NoRole)
+    cancel_btn = msg.addButton(QMessageBox.Cancel)
+    msg.setDefaultButton(back_btn)
+    msg.setEscapeButton(cancel_btn)
+    msg.exec_()
+    if msg.clickedButton() == back_btn:
+        return QMessageBox.Ok
+    if msg.clickedButton() == stay_btn:
+        return QMessageBox.No
+    return QMessageBox.Cancel
 
 
 def _sync_live_button(widget, live_text, idle_text, companion):
@@ -3946,6 +3993,7 @@ class ObjectivesWidget(QWidget):
         self._swap_lift_lowered = False
         self._swap_lift_height_mm = None  # the lift height a manual swap lowered from, raised back to after it
         self._swap_lift_raised = False
+        self._swap_return_z = True  # False: the user chose to leave Z retracted after the swap
         self._changer_swap_guarded = False
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
@@ -4125,22 +4173,23 @@ class ObjectivesWidget(QWidget):
         self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
 
         lift_note = (
-            f"The Z lift is lowered; it goes back up to {self._swap_lift_height_mm:.3f} mm before Z returns.\n\n"
+            f"The Z lift is lowered; it goes back up to {self._swap_lift_height_mm:.3f} mm first.\n\n"
             if self._swap_lift_lowered
             else ""
         )
-        reply = QMessageBox.question(
+        reply = _ask_objective_z_return(
             self,
             "Change Objective",
             f"Z is retracted and the focus servo is disengaged.\n\n"
             f"{lift_note}"
-            f"Load the {objective_name} objective and make sure it is securely seated, then click OK "
-            f"to re-engage the servo and return Z to {self._swap_z_before_mm:.4f} mm.\n\n"
-            f"Click Cancel to keep {previous_objective} (put it back first if you removed it).",
-            QMessageBox.Ok | QMessageBox.Cancel,
-            QMessageBox.Ok,
+            f"Load the {objective_name} objective and make sure it is securely seated. Then choose where Z goes "
+            f"once the servo is re-engaged: back to {self._swap_z_before_mm:.4f} mm, or staying retracted.\n\n"
+            f"Cancel keeps {previous_objective} (put it back first if you removed it); Z then returns to "
+            f"{self._swap_z_before_mm:.4f} mm.",
+            self._swap_z_before_mm,
         )
-        self._swap_confirmed = reply == QMessageBox.Ok
+        self._swap_confirmed = reply in (QMessageBox.Ok, QMessageBox.No)
+        self._swap_return_z = reply != QMessageBox.No
         self._swap_servo_on = False
         self._swap_lift_raised = False
         utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
@@ -4155,6 +4204,9 @@ class ObjectivesWidget(QWidget):
             self.z_lift.move_to(self._swap_lift_height_mm)
             self._swap_lift_raised = True
             self._log.info(f"Z lift raised back to {self._swap_lift_height_mm:.3f} mm after objective change")
+        if not self._swap_return_z:
+            self._log.info(f"Z left retracted after objective change (it was at {self._swap_z_before_mm:.4f} mm)")
+            return
         self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
         self._log.info(f"Z restored to {self._swap_z_before_mm:.4f} mm after objective change")
 

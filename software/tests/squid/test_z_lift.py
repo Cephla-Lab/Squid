@@ -338,6 +338,16 @@ def test_unloading_without_a_saved_height_goes_back_for_the_same_format_only():
     assert events == ["y", "x", "z_to_2.5"]  # a different sample with no height of its own: stays lowered
 
 
+def test_unloading_can_leave_the_objective_retracted():
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False, restore_z=False)
+    assert events == ["y", "x", "lift_to_6.25"]  # the lift still rises; the objective stays up
+    assert stage._scanning_position_z_mm is None
+
+
 def test_an_objective_above_the_retracted_position_is_not_lowered_for_loading():
     events = []
     stage = _recording_stage(events, z_mm=_def.OBJECTIVE_RETRACTED_POS_MM / 2)

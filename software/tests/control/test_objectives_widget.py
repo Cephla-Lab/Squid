@@ -109,7 +109,7 @@ def test_servo_swap_disengages_confirms_then_reengages(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)):
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 
@@ -126,7 +126,7 @@ def test_servo_swap_cancel_reengages_and_keeps_previous(qtbot):
     emitted = []
     widget.signal_objective_changed.connect(lambda: emitted.append(True))
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Cancel)):
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Cancel)):
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
@@ -143,7 +143,7 @@ def test_servo_swap_aborts_without_dialog_when_disengage_fails(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on=False))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question") as question, patch.object(QMessageBox, "warning") as warning:
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
@@ -160,9 +160,9 @@ def test_servo_swap_reports_failed_reengage_but_keeps_confirmed_objective(qtbot)
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on=True))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)), patch.object(
-        QMessageBox, "critical"
-    ) as critical:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ), patch.object(QMessageBox, "critical") as critical:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
@@ -178,7 +178,7 @@ def test_servo_swap_aborts_with_servo_on_when_retract_fails(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on="retract"))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question") as question, patch.object(QMessageBox, "warning") as warning:
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
@@ -195,9 +195,9 @@ def test_servo_swap_warns_when_restore_fails_but_keeps_confirmed_objective(qtbot
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on="restore"))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)), patch.object(
-        QMessageBox, "warning"
-    ) as warning:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ), patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
@@ -214,7 +214,7 @@ def test_servo_swap_runs_stage_calls_off_the_gui_thread(qtbot):
     widget = ObjectivesWidget(store, focus_servo=servo)
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)):
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
             assert not widget.dropdown.isEnabled()
@@ -229,7 +229,7 @@ def test_servo_swap_refused_while_z_is_in_use(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_in_use=lambda: True)
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question") as question, patch.object(QMessageBox, "warning") as warning:
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
 
     assert events == []  # Z never retracted, servo never released
@@ -264,7 +264,7 @@ def test_servo_swap_holds_swap_active_until_every_end(qtbot, fail_on, answer):
     qtbot.addWidget(widget)
     swap_active = _swap_active_log(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, answer)), patch.object(
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, answer)), patch.object(
         QMessageBox, "warning"
     ), patch.object(QMessageBox, "critical"):
         widget.dropdown.setCurrentText("10x")
@@ -309,7 +309,9 @@ def test_servo_swap_to_higher_mag_lowers_the_lift_then_raises_it_before_z_return
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)) as question:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("40x")
 
@@ -319,15 +321,35 @@ def test_servo_swap_to_higher_mag_lowers_the_lift_then_raises_it_before_z_return
     assert "goes back up to 4.000 mm" in question.call_args.args[2]
 
 
+@pytest.mark.parametrize("with_lift", [True, False])
+def test_servo_swap_can_leave_z_retracted(qtbot, with_lift):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(
+        store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events) if with_lift else None
+    )
+    qtbot.addWidget(widget)
+
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.No)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    # The swap goes through (the new objective is current) and the lift still rises, but Z stays retracted.
+    lift = ["lift_lower"] if with_lift else []
+    raised = ["lift_to_4.0"] if with_lift else []
+    assert events == ["retract", *lift, "servo_off", "dialog", "servo_on", *raised]
+    assert store.current_objective == "40x"
+
+
 def test_a_lift_that_fails_to_rise_after_a_swap_leaves_z_retracted(qtbot):
     store = ts.get_test_objective_store()  # starts on 20x
     events = []
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events, fail_move=True))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)), patch.object(
-        QMessageBox, "warning"
-    ) as warning:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ), patch.object(QMessageBox, "warning") as warning:
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("40x")
 
@@ -341,7 +363,9 @@ def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)) as question:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 

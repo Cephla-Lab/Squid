@@ -352,3 +352,58 @@ def test_set_to_current_is_blocked_at_the_loading_position(qtbot, tmp_path):
         widget._set_selected_height_to_current()  # refused even if a click got through
     question.assert_not_called()
     assert lift.heights.get("96 well plate") is None
+
+
+def _dialog_at_loading(qtbot, saved_z_mm):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    stage = MagicMock()
+    stage._scanning_position_z_mm = saved_z_mm
+    dialog = StageUtils(stage, live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    dialog.ask_objective_return = True
+    dialog.slide_position = "loading"
+    return dialog
+
+
+def test_leaving_loading_asks_where_the_objective_goes(qtbot):
+    import control._def
+
+    for reply, restore_z in ((QMessageBox.Ok, True), (QMessageBox.No, False)):
+        dialog = _dialog_at_loading(qtbot, 2.5)
+        with patch("control.widgets._ask_objective_z_return", return_value=reply) as ask, patch(
+            "control.widgets.move_to_scanning_position"
+        ) as move:
+            dialog.switch_position()
+        assert "2.5000 mm" in ask.call_args.args[2]
+        assert move.call_args.kwargs["restore_z"] is restore_z
+
+    dialog = _dialog_at_loading(qtbot, 2.5)
+    with patch("control.widgets._ask_objective_z_return", return_value=QMessageBox.Cancel), patch(
+        "control.widgets.move_to_scanning_position"
+    ) as move:
+        dialog.switch_position()
+    move.assert_not_called()  # cancelled: nothing moves, still at loading
+    assert dialog.slide_position == "loading" and dialog.btn_load_slide.isEnabled()
+
+    # Not asked when the objective was not retracted for loading
+    for saved in (None, control._def.OBJECTIVE_RETRACTED_POS_MM):
+        dialog = _dialog_at_loading(qtbot, saved)
+        with patch("control.widgets._ask_objective_z_return") as ask, patch(
+            "control.widgets.move_to_scanning_position"
+        ) as move:
+            dialog.switch_position()
+        ask.assert_not_called()
+        assert move.call_args.kwargs["restore_z"] is True
+
+
+def test_without_a_lift_leaving_loading_does_not_ask(qtbot):
+    dialog = _dialog_at_loading(qtbot, 2.5)
+    dialog.ask_objective_return = False
+    with patch("control.widgets._ask_objective_z_return") as ask, patch("control.widgets.move_to_scanning_position"):
+        dialog.switch_position()
+    ask.assert_not_called()
