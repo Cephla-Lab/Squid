@@ -1,5 +1,6 @@
 #include "serial_communication.h"
 #include "utils/limit_switch_config.h"
+#include "utils/focus_wheel.h"
 
 void process_serial_message()
 {
@@ -138,6 +139,11 @@ void send_position_update()
       buffer_tx[20] = byte(dev_u >> 8);
       buffer_tx[21] = byte(dev_u & 0xFF);
     }
+    else if (focus_wheel_mode == FOCUS_WHEEL_TO_HOST)
+    {
+      // Firmware 1.8: the same bytes carry the focus wheel count instead (the two are mutually exclusive)
+      fw_status_fields(focus_wheel_host_count, &buffer_tx[14]);
+    }
     else
     {
       buffer_tx[14] = 0;
@@ -162,7 +168,7 @@ void send_position_update()
     else
     {
       SerialUSB.print("focus: ");
-      SerialUSB.print(focuswheel_pos);
+      SerialUSB.print(joystick_panel.wheel_pos);
       // Serial.print(buffer[3]);
       SerialUSB.print(", joystick delta x: ");
       SerialUSB.print(joystick_delta_x);

@@ -4,10 +4,12 @@ import threading
 from unittest.mock import patch
 
 import pytest
+from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox
 
 import tests.control.test_stubs as ts
 from control.widgets import ObjectivesWidget
+from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton
 from squid.abc import Pos
 
 
@@ -282,3 +284,177 @@ def test_refused_swap_never_reports_swap_active(qtbot):
         widget.dropdown.setCurrentText("10x")
 
     assert swap_active == []
+
+
+class _RecordingLift:
+    """A Z lift that records lower() into the shared event list."""
+
+    def __init__(self, events):
+        self.events = events
+
+    def lower(self):
+        self.events.append("lift_lower")
+        return 4.0
+
+
+def test_servo_swap_to_higher_mag_lowers_the_lift_and_leaves_it_lowered(qtbot):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    # Lowered with the objective already retracted, before the servo lets go; never raised again here.
+    assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert "Z lift is lowered" in question.call_args.args[2]
+
+
+def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("10x")
+
+    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert "Z lift" not in question.call_args.args[2]
+
+
+def test_changer_switch_to_higher_mag_lowers_the_lift_first(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "information") as information:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("60x")
+
+    assert events == ["lift_lower"]
+    assert changer.calls == ["60x"]
+    information.assert_called_once()
+
+
+def test_changer_switch_with_a_lift_holds_swap_active_until_it_ends(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    changer = _BlockingChanger(fail_with=RuntimeError("stalled"))
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+
+    with patch.object(QMessageBox, "warning"), patch.object(QMessageBox, "information"):
+        widget.dropdown.setCurrentText("60x")
+        assert active == [True]  # held while the lift is lowered and the changer moves
+        changer.release.set()
+        qtbot.waitUntil(lambda: widget.dropdown.isEnabled(), timeout=3000)
+
+    assert active == [True, False]  # released after the failure too
+
+
+def test_changer_switch_without_a_lift_does_not_hold_swap_active(qtbot):
+    store = ts.get_test_objective_store()
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer)
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+    with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+        widget.dropdown.setCurrentText("60x")
+    assert active == []
+
+
+class _FakeStageUtils(QObject):
+    signal_threaded_stage_move_started = Signal()
+    signal_loading_position_reached = Signal()
+    signal_scanning_position_reached = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.slide_position = "loading"
+        self.switches = 0
+
+    def switch_position(self):
+        self.switches += 1
+        self.signal_threaded_stage_move_started.emit()
+
+
+def test_changer_swap_is_refused_while_the_scanning_return_is_moving_the_lift(qtbot):
+    # The order from review: the scanning return is under way (it will raise the lift once XY is back), then a
+    # higher-magnification switch is asked for. It must not start: nothing lowered, the changer not moved.
+    store = ts.get_test_objective_store()
+    events = []
+    utils = _FakeStageUtils()
+    guard = LiftMotionGuard(utils)
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events), lift_motion_guard=guard)
+    qtbot.addWidget(widget)
+
+    utils.switch_position()  # scanning return started, worker still running
+    with patch.object(QMessageBox, "warning") as warning:
+        widget.dropdown.setCurrentText("60x")
+
+    warning.assert_called_once()
+    assert events == [] and changer.calls == []
+    assert store.current_objective == "20x" and widget.dropdown.currentText() == "20x"
+    assert widget.dropdown.isEnabled()
+
+    utils.signal_scanning_position_reached.emit()  # once it is done, the switch goes through
+    with patch.object(QMessageBox, "information"):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("60x")
+    assert events == ["lift_lower"] and changer.calls == ["60x"]
+    assert not guard.busy
+
+
+def test_servo_swap_is_refused_while_the_loading_toggle_runs(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    utils = _FakeStageUtils()
+    guard = LiftMotionGuard(utils)
+    widget = ObjectivesWidget(
+        store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events), lift_motion_guard=guard
+    )
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+
+    utils.switch_position()
+    with patch.object(QMessageBox, "warning") as warning:
+        widget.dropdown.setCurrentText("40x")
+    warning.assert_called_once()
+    assert events == [] and active == []  # never retracted, never reported active
+    assert store.current_objective == "20x"
+
+
+@pytest.mark.parametrize("fail_with", [None, RuntimeError("stalled")])
+def test_a_running_swap_holds_the_lift_against_loading_until_it_ends(qtbot, fail_with):
+    store = ts.get_test_objective_store()
+    utils = _FakeStageUtils()
+    guard = LiftMotionGuard(utils)
+    changer = _BlockingChanger(fail_with=fail_with)
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift([]), lift_motion_guard=guard)
+    qtbot.addWidget(widget)
+    button = LoadingPositionButton(utils, guard)
+    qtbot.addWidget(button)
+
+    with patch.object(QMessageBox, "warning"), patch.object(QMessageBox, "information"):
+        widget.dropdown.setCurrentText("60x")
+        assert guard.busy and not button.isEnabled()
+        button._toggle()  # refused even if a click got through
+        assert utils.switches == 0
+        changer.release.set()
+        qtbot.waitUntil(lambda: widget.dropdown.isEnabled(), timeout=3000)
+
+    assert not guard.busy and button.isEnabled()  # released after success and after failure
