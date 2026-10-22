@@ -1,7 +1,7 @@
 """The Z lift of an upright V-308 system in the GUI (squid/stage/lift.py).
 
-ZLiftControls is the Stages tab's row: the lift's position and sensors, a button that raises it to the current sample
-format's working height, and the loading-position toggle. ZLiftWidget (Utils > Z Lift...) is the full window: jog up /
+ZLiftControls is the control panel's line under the live controls: the lift's position and the loading-position
+toggle. ZLiftWidget (Utils > Z Lift...) is the full window: the two limit sensors, jog up /
 down by a step, move to a height, lower, home, and the working height for each sample format, editable in a table and
 saved to Z_LIFT_HEIGHTS_PATH. The lift rises to the current format's height after the startup homing and on leaving
 the loading position.
@@ -127,7 +127,7 @@ def _set_sensor_label(label: QLabel, name: str, triggered: bool):
 
 
 class ZLiftControls(QWidget):
-    """The Stages tab's row: position and sensors, raise to the sample format's height, and the loading toggle."""
+    """The control panel's line under the live controls: the lift's position, and the loading toggle."""
 
     def __init__(self, lift: LiftStage, motion_guard: LiftMotionGuard, stage_utils, parent=None):
         super().__init__(parent)
@@ -136,26 +136,15 @@ class ZLiftControls(QWidget):
 
         self.label_position = QLabel()
         self.label_position.setStyleSheet("font-weight: bold;")
-        self.label_bottom = QLabel()
-        self.label_top = QLabel()
-        self.btn_raise = QPushButton("Raise To Sample Height")
-        self.btn_raise.clicked.connect(self._raise_to_sample_height)
         self.btn_loading = LoadingPositionButton(stage_utils, motion_guard)
         motion_guard.signal_busy_changed.connect(self.refresh)
 
-        readout = QHBoxLayout()
-        readout.addWidget(QLabel("Z lift"))
-        readout.addWidget(self.label_position)
-        readout.addStretch()
-        readout.addWidget(self.label_bottom)
-        readout.addWidget(self.label_top)
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.btn_raise)
-        buttons.addWidget(self.btn_loading)
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(readout)
-        layout.addLayout(buttons)
+        layout.addWidget(QLabel("Z lift"))
+        layout.addWidget(self.label_position)
+        layout.addStretch()
+        layout.addWidget(self.btn_loading)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self.refresh)
@@ -165,24 +154,10 @@ class ZLiftControls(QWidget):
     def refresh(self, *_):
         try:
             position = self.lift.get_position_mm()
-            bottom, top = self.lift.limit_switches()
-            sample_format, height = self.lift.current_format(), self.lift.sample_height_mm()
         except Exception as e:  # never let a readout error kill the timer
             self.label_position.setText(f"unavailable ({e})")
             return
         self.label_position.setText(f"{position:.3f} mm" + ("  (moving)" if self.motion_guard.busy else ""))
-        _set_sensor_label(self.label_bottom, "Bottom", bottom)
-        _set_sensor_label(self.label_top, "Top", top)
-        if height is None:
-            self.btn_raise.setToolTip(f"No lift height saved for {sample_format} (Utils > Z Lift...)")
-        else:
-            self.btn_raise.setToolTip(f"Raise the lift to the {sample_format} height, {height:.3f} mm")
-        self.btn_raise.setEnabled(height is not None and not self.motion_guard.busy)
-
-    def _raise_to_sample_height(self):
-        height = self.lift.sample_height_mm()
-        if height is not None:
-            self.motion_guard.run(self.lift.move_to, mm=height)
 
 
 class ZLiftWidget(QDialog):

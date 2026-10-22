@@ -1,4 +1,4 @@
-"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, heights per sample format, the Stages tab row."""
+"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, heights per sample format, the control panel row."""
 
 import threading
 from unittest.mock import patch
@@ -127,7 +127,7 @@ def test_editing_a_height_cell_validates(qtbot, tmp_path):
     assert lift.heights.get("glass slide") is None
 
 
-def test_stages_row_shows_the_lift_and_raises_to_the_sample_height(qtbot, tmp_path):
+def test_control_panel_row_shows_the_lift_position(qtbot, tmp_path):
     utils = _FakeStageUtils()
     widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
     row = ZLiftControls(lift, widget.motion_guard, utils)
@@ -135,14 +135,6 @@ def test_stages_row_shows_the_lift_and_raises_to_the_sample_height(qtbot, tmp_pa
     lift.height = 1.5
     row.refresh()
     assert row.label_position.text() == "1.500 mm"
-    assert not row.btn_raise.isEnabled()  # no height for 96 well plate yet
-
-    lift.heights.set("96 well plate", 6.0)
-    row.refresh()
-    assert row.btn_raise.isEnabled()
-    with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
-        row.btn_raise.click()
-    assert lift.calls == [("move_to", 6.0)]
 
 
 class _FakeStageUtils(QObject):
@@ -179,20 +171,18 @@ def test_loading_buttons_share_one_toggle(qtbot):
 def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
     utils = _FakeStageUtils()
     widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
-    lift.heights.set("96 well plate", 6.0)
     row = ZLiftControls(lift, widget.motion_guard, utils)
     qtbot.addWidget(row)
 
-    row.btn_loading.click()  # the Stages-tab button, not the window's
+    row.btn_loading.click()  # the control panel's button, not the window's
     assert utils.switches == 1
     assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
-    assert not widget.btn_loading.isEnabled() and not row.btn_raise.isEnabled()
+    assert not widget.btn_loading.isEnabled()
     widget._jog(+1)  # refused even if a click got through
-    row._raise_to_sample_height()
     assert lift.calls == []
 
     utils.signal_loading_position_reached.emit()
-    assert widget.btn_up.isEnabled() and row.btn_loading.isEnabled() and row.btn_raise.isEnabled()
+    assert widget.btn_up.isEnabled() and row.btn_loading.isEnabled()
 
 
 def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
