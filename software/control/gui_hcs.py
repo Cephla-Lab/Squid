@@ -709,7 +709,9 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
         self.stageUtils: Optional[widgets.StageUtils] = None
         self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget (Utils > Z Lift...) on a Z lift system
-        self.zLiftControls = None  # its control panel row under the live controls (position, loading position)
+        self.zLiftLoadingButton = (
+            None  # the loading-position toggle in the Stages tab (shares the window's motion guard)
+        )
         self.dacControlWidget: Optional[widgets.DACControWidget] = None
         self.autofocusWidget: Optional[widgets.AutoFocusWidget] = None
         self.piezoWidget: Optional[widgets.PiezoWidget] = None
@@ -976,7 +978,7 @@ class HighContentScreeningGui(QMainWindow):
         )
         self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
         if self.microscope.z_lift is not None:
-            from control.widgets_z_lift import ZLiftControls, ZLiftWidget
+            from control.widgets_z_lift import LoadingPositionButton, ZLiftWidget
 
             self.zLiftWidget = ZLiftWidget(
                 self.microscope.z_lift,
@@ -984,7 +986,7 @@ class HighContentScreeningGui(QMainWindow):
                 stage_utils=self.stageUtils,
                 parent=self,
             )
-            self.zLiftControls = ZLiftControls(self.microscope.z_lift, self.zLiftWidget.motion_guard, self.stageUtils)
+            self.zLiftLoadingButton = LoadingPositionButton(self.stageUtils, self.zLiftWidget.motion_guard)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -1351,7 +1353,15 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow.invalidate_current_image()  # the frame on screen predates this move
 
     def setupCameraTabWidget(self):
-        self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
+        if self.zLiftLoadingButton is not None:
+            stages_tab = QWidget()
+            stages_layout = QVBoxLayout(stages_tab)
+            stages_layout.setContentsMargins(0, 0, 0, 0)
+            stages_layout.addWidget(self.navigationWidget)
+            stages_layout.addWidget(self.zLiftLoadingButton)
+            self.cameraTabWidget.addTab(stages_tab, "Stages")
+        else:
+            self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
@@ -1403,8 +1413,6 @@ class HighContentScreeningGui(QMainWindow):
 
         layout.addWidget(self.profileWidget)
         layout.addWidget(self.liveControlWidget)
-        if self.zLiftControls is not None:
-            layout.addWidget(self.zLiftControls)  # the lift's position, under the live controls
 
         layout.addWidget(self.cameraTabWidget)
 
@@ -2269,7 +2277,7 @@ class HighContentScreeningGui(QMainWindow):
         "navigationWidget",
         "stageUtils",
         "zLiftWidget",
-        "zLiftControls",
+        "zLiftLoadingButton",
         "autofocusWidget",
         "piezoWidget",
         "laserAutofocusControlWidget",
@@ -2613,7 +2621,7 @@ class HighContentScreeningGui(QMainWindow):
         self.navigationWidget.set_click_to_move(not acquisition_started)
 
         # the Z lift holds still during an acquisition (it carries the sample being focused on)
-        for lift_widget in (self.zLiftWidget, self.zLiftControls):
+        for lift_widget in (self.zLiftWidget, self.zLiftLoadingButton):
             if lift_widget is not None:
                 lift_widget.setEnabled(not acquisition_started)
 

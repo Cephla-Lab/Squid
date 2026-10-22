@@ -1,4 +1,4 @@
-"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, heights per sample format, the control panel row."""
+"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, heights per sample format, and the status-bar readout."""
 
 import threading
 from unittest.mock import patch
@@ -6,7 +6,7 @@ from unittest.mock import patch
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox
 
-from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton, ZLiftControls, ZLiftWidget
+from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton, ZLiftWidget
 from squid.stage.lift import LiftHeights
 
 
@@ -127,14 +127,25 @@ def test_editing_a_height_cell_validates(qtbot, tmp_path):
     assert lift.heights.get("glass slide") is None
 
 
-def test_control_panel_row_shows_the_lift_position(qtbot, tmp_path):
-    utils = _FakeStageUtils()
-    widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
-    row = ZLiftControls(lift, widget.motion_guard, utils)
-    qtbot.addWidget(row)
-    lift.height = 1.5
-    row.refresh()
-    assert row.label_position.text() == "1.500 mm"
+def test_status_bar_shows_the_lift_next_to_the_stage(qtbot):
+    from unittest.mock import MagicMock
+
+    from control.core.core import ImageDisplayWindow
+    from squid.abc import Pos
+
+    live = MagicMock()
+    live.microscope.stage.get_pos.return_value = Pos(x_mm=1.0, y_mm=2.0, z_mm=0.3, theta_rad=None)
+    live.microscope.addons.piezo_stage = None
+    live.microscope.z_lift.get_position_mm.return_value = 6.25
+    window = ImageDisplayWindow(live)
+    qtbot.addWidget(window)
+    window.update_stage_piezo_positions()
+    assert window.lift_position_label.text() == "Lift: 6.250 mm"
+    assert not window.lift_position_label.isHidden()
+
+    live.microscope.z_lift = None  # a system without a lift shows nothing extra
+    window.update_stage_piezo_positions()
+    assert window.lift_position_label.isHidden() and window.lift_separator.isHidden()
 
 
 class _FakeStageUtils(QObject):
@@ -171,10 +182,10 @@ def test_loading_buttons_share_one_toggle(qtbot):
 def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
     utils = _FakeStageUtils()
     widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
-    row = ZLiftControls(lift, widget.motion_guard, utils)
-    qtbot.addWidget(row)
+    row_button = LoadingPositionButton(utils, widget.motion_guard)  # the Stages tab's button
+    qtbot.addWidget(row_button)
 
-    row.btn_loading.click()  # the control panel's button, not the window's
+    row_button.click()
     assert utils.switches == 1
     assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
     assert not widget.btn_loading.isEnabled()
@@ -182,7 +193,7 @@ def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
     assert lift.calls == []
 
     utils.signal_loading_position_reached.emit()
-    assert widget.btn_up.isEnabled() and row.btn_loading.isEnabled()
+    assert widget.btn_up.isEnabled() and row_button.isEnabled()
 
 
 def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
@@ -196,13 +207,13 @@ def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
         real_move(delta_mm)
 
     lift.move_relative = slow_move_relative
-    row = ZLiftControls(lift, widget.motion_guard, utils)
-    qtbot.addWidget(row)
+    row_button = LoadingPositionButton(utils, widget.motion_guard)
+    qtbot.addWidget(row_button)
 
     widget.btn_up.click()
-    assert not row.btn_loading.isEnabled() and not widget.btn_loading.isEnabled()
-    row.btn_loading._toggle()
+    assert not row_button.isEnabled() and not widget.btn_loading.isEnabled()
+    row_button._toggle()
     assert utils.switches == 0
     with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
         release.set()
-    qtbot.waitUntil(lambda: row.btn_loading.isEnabled(), timeout=3000)
+    qtbot.waitUntil(lambda: row_button.isEnabled(), timeout=3000)

@@ -1,12 +1,13 @@
 """The Z lift of an upright V-308 system in the GUI (squid/stage/lift.py).
 
-ZLiftControls is the control panel's line under the live controls: the lift's position and the loading-position
-toggle. ZLiftWidget (Utils > Z Lift...) is the full window: the two limit sensors, jog up /
+The lift's position is shown in the image display's status bar, next to the stage coordinates (core.ImageDisplayWindow),
+and a LoadingPositionButton sits in the Stages tab. ZLiftWidget (Utils > Z Lift...) is the full window: the two limit
+sensors, jog up /
 down by a step, move to a height, lower, home, and the working height for each sample format, editable in a table and
 saved to Z_LIFT_HEIGHTS_PATH. The lift rises to the current format's height after the startup homing and on leaving
 the loading position.
 
-Every move runs in a worker thread, one at a time. A LiftMotionGuard, shared by the window, the row and every
+Every move runs in a worker thread, one at a time. A LiftMotionGuard, shared by the window and every
 loading-position button, keeps lift moves and the loading / scanning toggle (which lowers and raises the lift around
 its XY travel) from overlapping: while either runs, every control that would start the other is disabled and refused.
 """
@@ -126,40 +127,6 @@ def _set_sensor_label(label: QLabel, name: str, triggered: bool):
     label.setStyleSheet(_TRIGGERED_STYLE if triggered else _CLEAR_STYLE)
 
 
-class ZLiftControls(QWidget):
-    """The control panel's line under the live controls: the lift's position, and the loading toggle."""
-
-    def __init__(self, lift: LiftStage, motion_guard: LiftMotionGuard, stage_utils, parent=None):
-        super().__init__(parent)
-        self.lift = lift
-        self.motion_guard = motion_guard
-
-        self.label_position = QLabel()
-        self.label_position.setStyleSheet("font-weight: bold;")
-        self.btn_loading = LoadingPositionButton(stage_utils, motion_guard)
-        motion_guard.signal_busy_changed.connect(self.refresh)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(QLabel("Z lift"))
-        layout.addWidget(self.label_position)
-        layout.addStretch()
-        layout.addWidget(self.btn_loading)
-
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self.refresh)
-        self._timer.start(200)
-        self.refresh()
-
-    def refresh(self, *_):
-        try:
-            position = self.lift.get_position_mm()
-        except Exception as e:  # never let a readout error kill the timer
-            self.label_position.setText(f"unavailable ({e})")
-            return
-        self.label_position.setText(f"{position:.3f} mm" + ("  (moving)" if self.motion_guard.busy else ""))
-
-
 class ZLiftWidget(QDialog):
     """Utils > Z Lift...: move the lift, and edit the working height for each sample format."""
 
@@ -171,7 +138,7 @@ class ZLiftWidget(QDialog):
         self.sample_formats: List[str] = []
         # StageUtils owns the loading / scanning toggle (and the GUI's reactions to it); None hides the button.
         self.stage_utils = stage_utils
-        # Shared with the Stages tab's row and every loading button.
+        # Shared with every loading button (the Stages tab's takes it from here).
         self.motion_guard = LiftMotionGuard(stage_utils, parent=self)
         self.motion_guard.signal_busy_changed.connect(self._on_busy_changed)
         self.motion_guard.signal_move_finished.connect(self._on_move_finished)
