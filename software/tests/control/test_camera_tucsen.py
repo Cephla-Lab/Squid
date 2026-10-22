@@ -108,3 +108,88 @@ def test_close_waits_for_a_trigger_in_progress(monkeypatch):
     sender.join(5)
 
     assert events == ["trigger finished", "stop_streaming", "Dev_Close", "Api_Uninit"]
+
+
+class _FakeGenicamCamera:
+    """Just enough of an Aries (GenICam) TucsenCamera for the region, readout-time and link-mode code."""
+
+    def __init__(self, params):
+        import contextlib
+
+        import control.camera_tucsen as tucsen
+        import squid.logging
+
+        self.params = dict(params)
+        self.writes = []
+        self._model_properties = TucsenCamera._get_model_properties(tucsen.TucsenCameraModel.ARIES_6510)
+        self._camera_mode = tucsen.ModeAries.HDR
+        self._binning = (1, 1)
+        self._camera = None
+        self._log = squid.logging.get_logger("test")
+        self._pause_streaming = contextlib.nullcontext
+        self._update_internal_settings = lambda: None
+
+    def _get_genicam_parameter(self, name):
+        if name not in self.params:
+            raise CameraError(f"Failed to get GenICam parameter attributes for '{name}'")
+        return {"name": name, "value": self.params[name]}
+
+    def _set_genicam_parameter(self, name, value, param_type):
+        self.writes.append((name, value))
+        self.params[name] = value
+        return True
+
+    def get_region_of_interest(self):
+        return TucsenCamera.get_region_of_interest(self)
+
+
+_FULL_FRAME = {"OffsetX": 0, "OffsetY": 0, "Width": 3200, "Height": 3200, "TriggerInputDelay": 0}
+
+
+def test_aries_region_is_set_through_width_height_and_offsets():
+    """The MultiROI* nodes are read-only on the Aries, so writing them left the full frame in place."""
+    camera = _FakeGenicamCamera(_FULL_FRAME)
+
+    TucsenCamera.set_region_of_interest(camera, 0, 1200, 3200, 800)
+
+    assert TucsenCamera.get_region_of_interest(camera) == (0, 1200, 3200, 800)
+    assert not any(name.startswith("MultiROI") for name, _ in camera.writes)
+    # Offsets are cleared before the size changes, so a larger region never runs past the sensor edge.
+    assert camera.writes[:2] == [("OffsetX", 0), ("OffsetY", 0)]
+
+
+def test_aries_readout_time_comes_from_the_camera_row_time():
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "RollingSpeed": 3.75})
+
+    TucsenCamera._calculate_strobe_delay(camera)
+
+    assert camera._strobe_delay_ms == pytest.approx(12.0)  # 3200 rows x 3.75 us
+
+
+def test_aries_readout_time_follows_the_region_height():
+    camera = _FakeGenicamCamera({**_FULL_FRAME, "Height": 800, "RollingSpeed": 3.75})
+
+    TucsenCamera._calculate_strobe_delay(camera)
+
+    assert camera._strobe_delay_ms == pytest.approx(3.0)
+
+
+def test_aries_readout_time_falls_back_to_the_datasheet_row_time():
+    camera = _FakeGenicamCamera(_FULL_FRAME)  # no RollingSpeed node
+
+    TucsenCamera._calculate_strobe_delay(camera)
+
+    assert camera._strobe_delay_ms == pytest.approx(12.0)  # HDR: 83 fps over 3200 rows
+
+
+@pytest.mark.parametrize("mode, level", [("SingleGigE", "WARNING"), ("DoubleGigE", "INFO")])
+def test_aries_link_mode_is_logged(caplog, mode, level):
+    import logging
+
+    camera = _FakeGenicamCamera({"GigEMode": mode})
+    camera._log.propagate = True
+
+    with caplog.at_level(logging.INFO):
+        TucsenCamera._log_link_mode(camera)
+
+    assert [r.levelname for r in caplog.records if "GigEMode" in r.getMessage()] == [level]

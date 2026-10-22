@@ -245,10 +245,12 @@ class TucsenCamera(AbstractCamera):
                 (2, 2): 1,
                 (4, 4): 2,
             }
+            # Aries 6510 datasheet: 83 / 150 / 88 fps over 3200 rows. Only a fallback: the strobe delay uses the
+            # camera's own row time (RollingSpeed), which follows its readout mode.
             mode_to_line_rate_us = {
-                ModeAries.HDR: 11.2,
-                ModeAries.SPEED: 7.2,
-                ModeAries.SENSITIVITY: 11.2,
+                ModeAries.HDR: 3.75,
+                ModeAries.SPEED: 2.08,
+                ModeAries.SENSITIVITY: 3.55,
             }
             pixel_size_um = 6.5
             has_temperature_control = False
@@ -302,6 +304,23 @@ class TucsenCamera(AbstractCamera):
             self.set_temperature(self._config.default_temperature)
         self.set_binning(*self._config.default_binning)
         # TODO: Set default roi
+        if self._model_properties.is_genicam:
+            self._log_link_mode()
+
+    def _log_link_mode(self):
+        # The Aries streams over one or two 10GigE links, chosen when it powers up. On one link full frames top out
+        # around 50 fps instead of 83 (HDR).
+        try:
+            mode = self._get_genicam_parameter("GigEMode")["value"]
+        except CameraError:
+            return
+        if mode == "SingleGigE":
+            self._log.warning(
+                "Camera is streaming over a single 10GigE link (GigEMode = SingleGigE), which limits full frames to "
+                "about 50 fps. Power-cycle the camera with both cables connected to use both links."
+            )
+        else:
+            self._log.info(f"Camera link: GigEMode = {mode}")
 
     def start_streaming(self):
         if self._is_streaming.is_set():
@@ -499,12 +518,20 @@ class TucsenCamera(AbstractCamera):
     def _calculate_strobe_delay(self):
         # Line rate: FL 26BW: 34.67 us for standard resolution; 69.3 us for low noise; 12.58 us for SenBin
         #            400BSI V3: 7.2 us for high speed; 11.2 us for other gain modes
+        #            Aries: read from the camera (RollingSpeed)
         # Right now we are only using 400BSI V3's HDR mode.
         # TODO: Support more modes.
         _, _, _, height = self.get_region_of_interest()
-        readout_time_ms = (
-            self._model_properties.mode_to_line_rate_us[self._camera_mode] * height * self._binning[1] / 1000.0
-        )
+        line_time_us = self._model_properties.mode_to_line_rate_us[self._camera_mode]
+        if self._model_properties.is_genicam:
+            try:
+                rolling_speed_us = float(self._get_genicam_parameter("RollingSpeed")["value"])
+            except CameraError as e:
+                self._log.warning(f"Could not read the camera's row time (RollingSpeed), using {line_time_us} us: {e}")
+            else:
+                if rolling_speed_us > 0:
+                    line_time_us = rolling_speed_us
+        readout_time_ms = line_time_us * height * self._binning[1] / 1000.0
 
         if self._model_properties.is_genicam:
             param_info = self._get_genicam_parameter("TriggerInputDelay")
@@ -655,10 +682,16 @@ class TucsenCamera(AbstractCamera):
 
         with self._pause_streaming():
             if self._model_properties.is_genicam:
-                self._set_genicam_parameter("MultiROIOffsetX", nHOffset, TUELEM_TYPE.TU_ElemInteger.value)
-                self._set_genicam_parameter("MultiROIOffsetY", nVOffset, TUELEM_TYPE.TU_ElemInteger.value)
-                self._set_genicam_parameter("MultiROIWidth", nWidth, TUELEM_TYPE.TU_ElemInteger.value)
-                self._set_genicam_parameter("MultiROIHeight", nHeight, TUELEM_TYPE.TU_ElemInteger.value)
+                # The region is Width/Height/OffsetX/OffsetY. The MultiROI* nodes are read-only while MultiROIMode
+                # is off, and writes to them were silently ignored. Offsets go to 0 first so the new size always
+                # fits the sensor, then the size, then the offsets.
+                integer = TUELEM_TYPE.TU_ElemInteger.value
+                self._set_genicam_parameter("OffsetX", 0, integer)
+                self._set_genicam_parameter("OffsetY", 0, integer)
+                self._set_genicam_parameter("Width", nWidth, integer)
+                self._set_genicam_parameter("Height", nHeight, integer)
+                self._set_genicam_parameter("OffsetX", nHOffset, integer)
+                self._set_genicam_parameter("OffsetY", nVOffset, integer)
             else:
                 if TUCAM_Cap_SetROI(self._camera, roi_attr) != TUCAMRET.TUCAMRET_SUCCESS:
                     raise CameraError(
@@ -668,10 +701,10 @@ class TucsenCamera(AbstractCamera):
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
         if self._model_properties.is_genicam:
-            h_offset = self._get_genicam_parameter("MultiROIOffsetX")["value"]
-            v_offset = self._get_genicam_parameter("MultiROIOffsetY")["value"]
-            width = self._get_genicam_parameter("MultiROIWidth")["value"]
-            height = self._get_genicam_parameter("MultiROIHeight")["value"]
+            h_offset = self._get_genicam_parameter("OffsetX")["value"]
+            v_offset = self._get_genicam_parameter("OffsetY")["value"]
+            width = self._get_genicam_parameter("Width")["value"]
+            height = self._get_genicam_parameter("Height")["value"]
             return (h_offset, v_offset, width, height)
         else:
             roi_attr = TUCAM_ROI_ATTR()
