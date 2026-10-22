@@ -1166,9 +1166,11 @@ class MultiPointWorker:
                 if self.abort_requested_fn():
                     break
                 if config_idx > 0:
-                    self._move_z_to_stack_start(z_steps_taken)
+                    self._move_z_to_stack_start(stack_start)
                     z_steps_taken = 0
                 self._apply_channel_z_offset(config, af_succeeded)
+                # Where this channel's stack starts (piezo um or stage mm), offset included.
+                stack_start = self.z_piezo_um if self.use_piezo else self.stage.get_pos().z_mm
                 first_pass = config_idx == 0
                 for z_level in range(self.NZ):
                     if self.abort_requested_fn():
@@ -1792,17 +1794,20 @@ class MultiPointWorker:
             self.stage.move_z(self.deltaZ)
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
-    def _move_z_to_stack_start(self, steps_taken: int):
-        """Undo steps_taken z steps, back to the first z level of the stack (z-first order, between channels)."""
-        if steps_taken == 0:
-            return
+    def _move_z_to_stack_start(self, stack_start: float):
+        """Return to the first z level of the stack (z-first order, between channels).
+
+        An absolute move to the recorded start (piezo um, or stage mm): a relative move back would not
+        exactly undo the stack's steps, since the stage rounds each move to whole microsteps, and the
+        error would build up channel after channel.
+        """
         if self.use_piezo:
-            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * steps_taken
+            self.z_piezo_um = stack_start
             self.piezo.move_to(self.z_piezo_um)
             if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
-            self.stage.move_z(-self.deltaZ * steps_taken)
+            self.stage.move_z_to(stack_start)
             self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
 
     def move_z_back_after_stack(self, steps_taken: Optional[int] = None):

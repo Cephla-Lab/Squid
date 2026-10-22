@@ -24,6 +24,9 @@ class _FakeStage:
     def move_z(self, dz_mm):
         self.z_mm += dz_mm
 
+    def move_z_to(self, z_mm):
+        self.z_mm = z_mm
+
 
 class _FakePiezo:
     range_um = 300.0
@@ -161,3 +164,26 @@ def test_abort_mid_stack_stops_and_returns_z_to_the_stack_start(order, abort_aft
 
     assert len(w.frames) == abort_after_frames
     assert w.stage.z_mm == pytest.approx(start_z_mm)
+
+
+class _MicrostepStage(_FakeStage):
+    """Rounds every move to whole microsteps, like a real stepper stage."""
+
+    USTEP_MM = 0.0000305
+
+    def move_z(self, dz_mm):
+        self.z_mm += round(dz_mm / self.USTEP_MM) * self.USTEP_MM
+
+    def move_z_to(self, z_mm):
+        self.z_mm = round(z_mm / self.USTEP_MM) * self.USTEP_MM
+
+
+def test_z_first_channels_image_the_same_planes_despite_microstep_rounding():
+    w = _worker("Z FIRST", channels=("A", "B", "C", "D"))
+    w.stage = _MicrostepStage(z_mm=round(1.0 / _MicrostepStage.USTEP_MM) * _MicrostepStage.USTEP_MM)
+    w.acquire_at_position("A1", "/tmp", 0)
+
+    planes_by_channel = {}
+    for z_level, name, z_um in w.frames:
+        planes_by_channel.setdefault(name, []).append(z_um)
+    assert len(set(map(tuple, planes_by_channel.values()))) == 1, planes_by_channel
