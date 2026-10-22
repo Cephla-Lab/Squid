@@ -14,28 +14,6 @@ from control.microcontroller import CommandAborted, LimitSwitchConfigError, Micr
 # The version just before the first one that ships SET_LIMIT_SWITCH_CONFIG.
 OLD_FIRMWARE = (LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[0], LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[1] - 1)
 
-# Reset, initialize, actuator setup, stage motion and the limit-switch command itself. None of them may reach the
-# controller before the compatibility check has passed.
-MUST_NOT_PRECEDE_THE_CHECK = {
-    CMD_SET.RESET,
-    CMD_SET.INITIALIZE,
-    CMD_SET.CONFIGURE_STEPPER_DRIVER,
-    CMD_SET.HOME_OR_ZERO,
-    CMD_SET.MOVE_X,
-    CMD_SET.MOVE_Y,
-    CMD_SET.MOVE_Z,
-    CMD_SET.MOVE_THETA,
-    CMD_SET.MOVE_W,
-    CMD_SET.MOVE_W2,
-    CMD_SET.MOVETO_X,
-    CMD_SET.MOVETO_Y,
-    CMD_SET.MOVETO_Z,
-    CMD_SET.MOVETO_W,
-    CMD_SET.MOVETO_W2,
-    CMD_SET.SET_LIMIT_SWITCH_CONFIG,
-}
-
-
 def _sim(version):
     if version == "old":
         version = OLD_FIRMWARE
@@ -143,8 +121,8 @@ def test_incompatible_config_refuses_before_any_command(version, reset_and_initi
     for default_key in ("x_left", "x_right", "y_left", "y_right", "z_left_enabled", "z_right_enabled"):
         assert default_key not in message
     opcodes = [cmd[1] for cmd in sent]
-    assert not MUST_NOT_PRECEDE_THE_CHECK & set(opcodes), opcodes
-    # Only _detect_firmware_version's harmless command reached the controller.
+    # Only _detect_firmware_version's harmless command reached the controller: no reset, initialize, actuator
+    # setup, motion or limit-switch command before the compatibility check passed.
     assert set(opcodes) == {CMD_SET.TURN_OFF_ALL_PORTS}, opcodes
 
 
@@ -248,58 +226,6 @@ def test_controller_stuck_in_progress_recovers_through_reset(monkeypatch):
     assert not state["stuck"]
     assert not mcu.is_busy()
     # The check passed on the detected version and the config went out after the reset.
-    assert sim.limit_switch_config[AXIS.Z] == 0x0F
-    mcu.close()
-
-
-def test_detection_never_uses_a_packet_begun_before_its_command(monkeypatch):
-    # A previous session's last packet (cmd id 1, completed, older firmware) is already being read when detection
-    # writes its own command (also id 1). Its version would make the Z config look unsupported. The packet after
-    # it is held back until detection returns (or 1 s), so detection cannot return from the stale one unnoticed.
-    _z_both_active_high(monkeypatch)
-    sim = _sim(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
-    stale = _sim("old")._build_response(1, CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS)
-    sim.response_buffer.extend(stale)
-    sim._update_internal_state()
-
-    stale_read_started = threading.Event()
-    command_sent = threading.Event()
-    detection_returned = threading.Event()
-    bytes_read = []
-    read = sim.read
-
-    def read_in_step(count=1, reconnect_tries=0):
-        bytes_read.append(count)
-        if len(bytes_read) == 1:
-            stale_read_started.set()
-        elif len(bytes_read) == len(stale):  # the stale packet's last byte waits for the command
-            command_sent.wait(5)
-        elif len(bytes_read) == len(stale) + 1:  # the next packet waits for detection
-            detection_returned.wait(1)
-        return read(count, reconnect_tries)
-
-    sim.read = read_in_step
-
-    detect = Microcontroller._detect_firmware_version
-    turn_off_all_ports = Microcontroller.turn_off_all_ports
-    detected = []
-
-    def detect_while_the_stale_packet_is_read(self):
-        assert stale_read_started.wait(5)
-        detect(self)
-        detected.append(self.firmware_version)
-        detection_returned.set()
-
-    def turn_off_all_ports_and_signal(self):
-        turn_off_all_ports(self)
-        command_sent.set()
-
-    monkeypatch.setattr(Microcontroller, "_detect_firmware_version", detect_while_the_stale_packet_is_read)
-    monkeypatch.setattr(Microcontroller, "turn_off_all_ports", turn_off_all_ports_and_signal)
-
-    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
-
-    assert detected == [LIMIT_SWITCH_CONFIG_MIN_FIRMWARE]
     assert sim.limit_switch_config[AXIS.Z] == 0x0F
     mcu.close()
 

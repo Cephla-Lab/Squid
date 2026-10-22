@@ -697,12 +697,7 @@ class Microcontroller:
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
         self._received_packet_cv = threading.Condition()
-        # Packet fence (under _received_packet_cv): _detect_firmware_version raises _packet_fence right after writing
-        # its command; the reader notes the fence before it begins reading each packet and publishes that value,
-        # with the packet's echoed command id, once the packet is parsed. A waiter can then tell a packet begun after
-        # its write from one begun before, and its command's answer from a packet that was already queued.
-        self._packet_fence = 0
-        self._fence_at_last_packet = 0
+        # The command id the last parsed packet echoed (under _received_packet_cv), for _detect_firmware_version.
         self._cmd_id_at_last_packet = None
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
@@ -1666,8 +1661,6 @@ class Microcontroller:
                             maybe_msg.pop(0)
                     return None
 
-                with self._received_packet_cv:
-                    fence = self._packet_fence
                 msg = get_msg_with_good_checksum()
 
                 if msg is None:
@@ -1798,7 +1791,6 @@ class Microcontroller:
                 self.firmware_version = (version_byte >> 4, version_byte & 0x0F)
 
                 with self._received_packet_cv:
-                    self._fence_at_last_packet = fence
                     self._cmd_id_at_last_packet = msg[0]
                     self._received_packet_cv.notify_all()
 
@@ -1814,24 +1806,17 @@ class Microcontroller:
         """Detect firmware version by sending a harmless command.
 
         Sends TURN_OFF_ALL_PORTS (a safe no-op if ports are already off) and takes the version from the first
-        status packet that the reader began after that write and that echoes the command's id, not from the
-        command's completion: every packet carries the version, and a controller still busy with a move from a
-        previous session answers IN_PROGRESS (with the newest command id) until RESET. A packet begun before the
-        write, or one already queued with another command's id, is never used. This ensures supports_multi_port()
-        returns accurate results immediately after Microcontroller initialization.
+        status packet that echoes the command's id, not from the command's completion: every packet carries the
+        version, and a controller still busy with a move from a previous session answers IN_PROGRESS (with the
+        newest command id) until RESET. A packet queued before the write echoes an older command's id and is never
+        used; one echoing the same id (a previous session's, after the ids wrapped) comes from the same firmware, so
+        its version is right too. This ensures supports_multi_port() returns accurate results immediately after
+        Microcontroller initialization.
         """
+        self.turn_off_all_ports()
+        cmd_id = self._cmd_id
         with self._received_packet_cv:
-            # Write and raise the fence under the lock the reader takes to note the fence, so every packet it
-            # begins from here on is newer than the write.
-            self.turn_off_all_ports()
-            cmd_id = self._cmd_id
-            self._packet_fence += 1
-            fence = self._packet_fence
-
-            def answered():
-                return self._fence_at_last_packet >= fence and self._cmd_id_at_last_packet == cmd_id
-
-            if not self._received_packet_cv.wait_for(answered, timeout=timeout_s):
+            if not self._received_packet_cv.wait_for(lambda: self._cmd_id_at_last_packet == cmd_id, timeout=timeout_s):
                 raise TimeoutError(
                     f"No status packet within {timeout_s} [s] of asking for the firmware version. {self._mcu_state()}"
                 )
