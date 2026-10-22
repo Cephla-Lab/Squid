@@ -1,4 +1,5 @@
 #include "focus_wheel.h"
+#include "crc8.h"
 #include "../constants_protocol.h"
 
 // Wrapping arithmetic is done in uint32_t: signed overflow is undefined in C++.
@@ -33,4 +34,17 @@ void fw_status_fields(int32_t host_count, uint8_t out[8]) {
     out[5] = (uint8_t)(1 << FOCUS_WHEEL_FLAG_REPORTING);
     out[6] = 0;
     out[7] = 0;
+}
+
+void fw_record_pack(uint8_t mode, uint8_t out[FW_RECORD_LEN]) {
+    out[0] = 'F';
+    out[1] = 'W';
+    out[2] = mode;
+    out[3] = crc8ccitt(out, 3);
+}
+
+uint8_t fw_record_unpack(const uint8_t in[FW_RECORD_LEN]) {
+    bool ok = in[0] == 'F' && in[1] == 'W' && in[3] == crc8ccitt(in, 3) &&
+              (in[2] == FOCUS_WHEEL_DRIVES_Z || in[2] == FOCUS_WHEEL_TO_HOST);
+    return ok ? in[2] : (uint8_t)FOCUS_WHEEL_DRIVES_Z;
 }

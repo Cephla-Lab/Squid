@@ -25,4 +25,11 @@ bool fw_encoder_reporting_allowed(bool turning_on, uint8_t wheel_mode);
 // FOCUS_WHEEL_FLAG_REPORTING flag, 18 untouched (out[4] is left as is), 20-21 zero.
 void fw_status_fields(int32_t host_count, uint8_t out[8]);
 
+// The power-up mode record in EEPROM, after the limit-switch record (bytes 0-6): 'F', 'W', mode, crc8ccitt of the
+// first three bytes. A blank or invalid record, or an unknown mode, gives FOCUS_WHEEL_DRIVES_Z (the pre-1.8 wheel).
+static const uint8_t FW_RECORD_ADDR = 8;
+static const uint8_t FW_RECORD_LEN = 4;
+void fw_record_pack(uint8_t mode, uint8_t out[FW_RECORD_LEN]);
+uint8_t fw_record_unpack(const uint8_t in[FW_RECORD_LEN]);
+
 #endif /* FOCUS_WHEEL_H_ */

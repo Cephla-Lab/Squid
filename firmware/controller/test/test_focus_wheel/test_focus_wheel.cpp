@@ -5,6 +5,7 @@
 
 // Include sources directly for native tests (env:native builds no src/ code into tests)
 #include "utils/focus_wheel.cpp"
+#include "utils/crc8.cpp"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -74,6 +75,29 @@ void test_status_flag_is_not_an_encoder_report(void) {
     TEST_ASSERT_EQUAL_UINT8(0, out[5] & (1 << ENC_FLAG_REPORTING));
 }
 
+void test_power_up_record_round_trips(void) {
+    uint8_t rec[FW_RECORD_LEN];
+    fw_record_pack(FOCUS_WHEEL_TO_HOST, rec);
+    TEST_ASSERT_EQUAL_UINT8('F', rec[0]);
+    TEST_ASSERT_EQUAL_UINT8('W', rec[1]);
+    TEST_ASSERT_EQUAL_UINT8(FOCUS_WHEEL_TO_HOST, fw_record_unpack(rec));
+    fw_record_pack(FOCUS_WHEEL_DRIVES_Z, rec);
+    TEST_ASSERT_EQUAL_UINT8(FOCUS_WHEEL_DRIVES_Z, fw_record_unpack(rec));
+    // the record sits after the limit-switch record (EEPROM 0-6)
+    TEST_ASSERT_TRUE(FW_RECORD_ADDR >= 7);
+}
+
+void test_blank_or_invalid_power_up_record_drives_z(void) {
+    uint8_t blank[FW_RECORD_LEN] = {0xFF, 0xFF, 0xFF, 0xFF};
+    TEST_ASSERT_EQUAL_UINT8(FOCUS_WHEEL_DRIVES_Z, fw_record_unpack(blank));
+    uint8_t rec[FW_RECORD_LEN];
+    fw_record_pack(FOCUS_WHEEL_TO_HOST, rec);
+    rec[3] ^= 0x01;  // bad checksum
+    TEST_ASSERT_EQUAL_UINT8(FOCUS_WHEEL_DRIVES_Z, fw_record_unpack(rec));
+    fw_record_pack(7, rec);  // unknown mode, valid checksum
+    TEST_ASSERT_EQUAL_UINT8(FOCUS_WHEEL_DRIVES_Z, fw_record_unpack(rec));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_wheel_delta_is_the_difference);
@@ -85,5 +109,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_encoder_reporting_allowed);
     RUN_TEST(test_status_fields_pack_count_and_flag);
     RUN_TEST(test_status_flag_is_not_an_encoder_report);
+    RUN_TEST(test_power_up_record_round_trips);
+    RUN_TEST(test_blank_or_invalid_power_up_record_drives_z);
     return UNITY_END();
 }

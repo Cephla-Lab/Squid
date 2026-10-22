@@ -251,13 +251,12 @@ class FocusWheelRouter:
         speed = f"at most {self._max_speed_mm_s * 1000:g} um/s" if self._max_speed_mm_s > 0 else "no speed cap"
         _log.info(f"Focus wheel drives the V-308 ({self._mm_per_tick * 1000:.4f} um per tick, {speed}).")
 
-    def stop(self, restore_wheel_to_z: bool = True):
+    def stop(self):
+        """Stop routing. The wheel stays in TO_HOST, the controller's saved power-up mode on a lift system
+        (Microcontroller.apply_focus_wheel_power_up_mode): it moves nothing until Squid routes it again."""
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
-        if restore_wheel_to_z:
-            self._microcontroller.set_focus_wheel_mode(_def.FOCUS_WHEEL_MODE.DRIVES_Z)
-            self._microcontroller.wait_till_operation_is_completed()
 
     def _run(self):
         while not self._stop.wait(self._POLL_S):

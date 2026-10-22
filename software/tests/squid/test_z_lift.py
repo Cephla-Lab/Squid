@@ -236,14 +236,15 @@ def test_router_ignores_packets_without_a_wheel_count():
     assert focus.targets == []
 
 
-def test_router_start_and_stop_switch_the_firmware_mode(mcu, sim):
+def test_router_start_routes_the_wheel_and_stop_leaves_it_moving_nothing(mcu, sim):
     router = FocusWheelRouter(mcu, _FakeFocus(), mm_per_tick=0.001)
     router.start()
     try:
         assert sim.focus_wheel_mode == _def.FOCUS_WHEEL_MODE.TO_HOST
     finally:
         router.stop()
-    assert sim.focus_wheel_mode == _def.FOCUS_WHEEL_MODE.DRIVES_Z
+    # Closing Squid must not hand the wheel back to the lift stepper
+    assert sim.focus_wheel_mode == _def.FOCUS_WHEEL_MODE.TO_HOST
 
 
 def test_default_wheel_step_matches_one_stepper_microstep(z_axis, monkeypatch):

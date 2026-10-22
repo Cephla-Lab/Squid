@@ -56,8 +56,12 @@
 //               wrapping, 0 when enabled) and byte 19 bit 7 marks it, so the host
 //               can drive another focus axis (a PI V-308 while Z is a lift).
 //               Refused while encoder reporting is on (same bytes) and the other
-//               way round. FOCUS_WHEEL_DRIVES_Z (default; RESET and INITIALIZE
-//               return to it; not saved) is the 1.7 behaviour, packet unchanged.
+//               way round. FOCUS_WHEEL_DRIVES_Z is the 1.7 behaviour, packet
+//               unchanged. With FOCUS_WHEEL_SAVE_AS_POWER_UP ([3]) the mode is
+//               also saved (EEPROM 8-11, written only on change) and used at
+//               power-up and after RESET and INITIALIZE; unsaved, that is
+//               DRIVES_Z. A lift system saves TO_HOST: with no host running,
+//               the wheel moves nothing instead of the lift.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 8
 

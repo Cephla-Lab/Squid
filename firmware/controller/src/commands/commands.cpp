@@ -3,6 +3,7 @@
 
 #include "../limit_switches.h"
 #include "../utils/focus_wheel.h"
+#include "../focus_wheel_power_up.h"
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
@@ -216,26 +217,39 @@ void callback_set_encoder_reporting()
     Z_use_encoder = as_position && axis == z;
 }
 
-// SET_FOCUS_WHEEL_MODE (65): [2] FOCUS_WHEEL_DRIVES_Z or FOCUS_WHEEL_TO_HOST.
+// Switch the wheel's routing. Entering TO_HOST restarts the count; entering DRIVES_Z takes Z's
+// target, so the wheel resumes from where Z is headed and do_focus_control() cannot move it (host
+// moves keep focusPosition in step already).
+static void focus_wheel_enter(uint8_t mode)
+{
+    if (mode == FOCUS_WHEEL_TO_HOST && focus_wheel_mode != FOCUS_WHEEL_TO_HOST)
+        focus_wheel_host_count = 0;
+    if (mode == FOCUS_WHEEL_DRIVES_Z && focus_wheel_mode != FOCUS_WHEEL_DRIVES_Z)
+        focusPosition = tmc4361A_targetPosition(&tmc4361[z]);
+    focus_wheel_mode = mode;
+}
+
+// SET_FOCUS_WHEEL_MODE (65): [2] FOCUS_WHEEL_DRIVES_Z or FOCUS_WHEEL_TO_HOST, [3] flags.
 // TO_HOST stops the wheel from moving Z and counts its ticks for the status packet
-// (bytes 14-17, from 0 when enabled), so the host can drive another focus axis. Refused
-// for an unknown mode, and for TO_HOST while encoder reporting holds those bytes.
-// Not saved: RESET and INITIALIZE return to DRIVES_Z.
+// (bytes 14-17, from 0 when enabled), so the host can drive another focus axis. With
+// FOCUS_WHEEL_SAVE_AS_POWER_UP the mode is also stored as the power-up mode (EEPROM, written
+// only when it changes), which power-up, RESET and INITIALIZE use. Refused for an unknown mode
+// or flag, and for TO_HOST while encoder reporting holds those bytes; nothing changes then.
 void callback_set_focus_wheel_mode()
 {
     uint8_t mode = buffer_rx[2];
-    if (!fw_mode_allowed(mode, encoder_report_axis != 0xFF))
+    uint8_t flags = buffer_rx[3];
+    if (!fw_mode_allowed(mode, encoder_report_axis != 0xFF) || (flags & ~FOCUS_WHEEL_SAVE_AS_POWER_UP))
     {
         mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
         return;
     }
-    if (mode == FOCUS_WHEEL_TO_HOST && focus_wheel_mode != FOCUS_WHEEL_TO_HOST)
-        focus_wheel_host_count = 0;
-    if (mode == FOCUS_WHEEL_DRIVES_Z && focus_wheel_mode != FOCUS_WHEEL_DRIVES_Z)
-        // Host moves keep focusPosition in step already; take Z's target anyway so the
-        // wheel resumes from where Z is headed and do_focus_control() cannot move it.
-        focusPosition = tmc4361A_targetPosition(&tmc4361[z]);
-    focus_wheel_mode = mode;
+    if (flags & FOCUS_WHEEL_SAVE_AS_POWER_UP)
+    {
+        focus_wheel_power_up_mode = mode;
+        focus_wheel_power_up_save(mode);
+    }
+    focus_wheel_enter(mode);
 }
 
 // SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
@@ -477,8 +491,11 @@ void callback_initialize()
     Y_use_encoder = false;
     Z_use_encoder = false;
 
-    // So is the focus wheel routing (1.8). focusPosition was zeroed above.
-    focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;
+    // The focus wheel goes back to its saved power-up mode (1.8). focusPosition was zeroed above, which
+    // is what DRIVES_Z resumes from here: no resync from Z's target.
+    if (focus_wheel_power_up_mode == FOCUS_WHEEL_TO_HOST && focus_wheel_mode != FOCUS_WHEEL_TO_HOST)
+        focus_wheel_host_count = 0;
+    focus_wheel_mode = focus_wheel_power_up_mode;
 }
 
 void callback_reset()
@@ -515,12 +532,8 @@ void callback_reset()
     X_use_encoder = false;
     Y_use_encoder = false;
     Z_use_encoder = false;
-    if (focus_wheel_mode != FOCUS_WHEEL_DRIVES_Z)
-    {
-        // Firmware 1.8: the wheel drives Z again, from where Z is headed (see callback_set_focus_wheel_mode)
-        focusPosition = tmc4361A_targetPosition(&tmc4361[z]);
-        focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;
-    }
+    // Firmware 1.8: the focus wheel goes back to its saved power-up mode (encoder reporting is off by now)
+    focus_wheel_enter(focus_wheel_power_up_mode);
     for (uint8_t i = 0; i < TOTAL_AXES; i++)
     {
         completion_window_units[i] = 0;

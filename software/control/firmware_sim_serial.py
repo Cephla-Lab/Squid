@@ -188,6 +188,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.z_limit_right = False
         # SET_FOCUS_WHEEL_MODE: in TO_HOST the wheel's ticks (turn_focus_wheel) are reported instead of moving Z
         self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
+        self.focus_wheel_power_up_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)  # EEPROM 8-11
         self.focus_wheel_count = 0
 
         # Validation tracking
@@ -435,11 +436,11 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.theta = 0
             self.w = 0
             self.w2 = 0
-            self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
+            self._enter_focus_wheel_mode(self.focus_wheel_power_up_mode)
         elif cmd_code == self.fw.get("INITIALIZE"):
-            self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
+            self._enter_focus_wheel_mode(self.focus_wheel_power_up_mode)
         elif cmd_code == self.fw.get("SET_FOCUS_WHEEL_MODE"):
-            if not self._set_focus_wheel_mode(cmd[2]):
+            if not self._set_focus_wheel_mode(cmd[2], cmd[3]):
                 status = self.fw.get("CMD_EXECUTION_ERROR", 4)
         elif cmd_code == self.fw.get("SET_LIMIT_SWITCH_CONFIG"):
             if not self._set_limit_switch_config(cmd[2], cmd[3]):
@@ -450,18 +451,25 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.response_buffer.extend(response)
         self._update_internal_state()
 
-    def _set_focus_wheel_mode(self, mode: int) -> bool:
+    def _set_focus_wheel_mode(self, mode: int, flags: int = 0) -> bool:
         """SET_FOCUS_WHEEL_MODE. Older firmware has no handler (callback_default: success, nothing happens); newer
-        firmware refuses an unknown mode, and resets the count on entering TO_HOST."""
+        firmware refuses an unknown mode or flag, stores the power-up mode when asked, and resets the count on
+        entering TO_HOST."""
         if self.firmware_version < FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE:
             return True
         drives_z, to_host = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0), self.fw.get("FOCUS_WHEEL_TO_HOST", 1)
-        if mode not in (drives_z, to_host):
+        save = self.fw.get("FOCUS_WHEEL_SAVE_AS_POWER_UP", 1)
+        if mode not in (drives_z, to_host) or flags & ~save:
             return False
-        if mode == to_host and self.focus_wheel_mode != to_host:
+        if flags & save:
+            self.focus_wheel_power_up_mode = mode
+        self._enter_focus_wheel_mode(mode)
+        return True
+
+    def _enter_focus_wheel_mode(self, mode: int) -> None:
+        if mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1) and self.focus_wheel_mode != mode:
             self.focus_wheel_count = 0
         self.focus_wheel_mode = mode
-        return True
 
     def turn_focus_wheel(self, ticks: int) -> None:
         """Simulate the control panel's focus wheel: moves Z in DRIVES_Z, counts in TO_HOST (wrapping int32)."""

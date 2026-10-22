@@ -615,12 +615,27 @@ void test_focus_wheel_mode_is_registered_and_gated(void)
     TEST_ASSERT_NOT_NULL(cmds);
     TEST_ASSERT_NOT_NULL(strstr(cmds, "cmd_map[SET_FOCUS_WHEEL_MODE]"));
     assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_focus_wheel_mode()",
-                                 "fw_mode_allowed(", "focus_wheel_mode = mode");
+                                 "fw_mode_allowed(", "focus_wheel_enter(mode);");
+    assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_focus_wheel_mode()",
+                                 "fw_mode_allowed(", "focus_wheel_power_up_save(mode);");
     assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_encoder_reporting()",
                                  "fw_encoder_reporting_allowed(", "encoder_report_axis = on");
-    // RESET and INITIALIZE hand the wheel back to Z, and nothing else assigns the mode
-    TEST_ASSERT_EQUAL_UINT32(2, count_occurrences(cmds, "focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;"));
-    TEST_ASSERT_EQUAL_UINT32(3, count_occurrences(cmds, "focus_wheel_mode ="));
+    // The mode is assigned in exactly two places: the switch helper (the command and RESET) and
+    // INITIALIZE, which restores the saved power-up mode without the helper's resync
+    TEST_ASSERT_EQUAL_UINT32(2, count_occurrences(cmds, "focus_wheel_mode ="));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_enter(focus_wheel_power_up_mode);"));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_mode = focus_wheel_power_up_mode;"));
+    // The power-up mode changes only on request, and is saved then; boot loads it
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_power_up_mode = mode;"));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_power_up_save(mode);"));
+    const char *init = load_source("src/init.cpp");
+    TEST_ASSERT_NOT_NULL(init);
+    TEST_ASSERT_NOT_NULL(strstr(init, "focus_wheel_power_up_mode = focus_wheel_power_up_load();"));
+    // The record is written through EEPROM.update only (no wear for an unchanged mode)
+    const char *store = load_source("src/focus_wheel_power_up.cpp");
+    TEST_ASSERT_NOT_NULL(store);
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(store, "EEPROM.update("));
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(store, "EEPROM.write("));
 }
 
 void test_focus_wheel_delta_is_routed_by_mode(void)

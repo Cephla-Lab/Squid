@@ -1222,7 +1222,7 @@ class Microscope:
 
         if self.focus_wheel_router is not None:
             try:
-                self.focus_wheel_router.stop()  # the wheel moves the lift again, as on a controller with no host
+                self.focus_wheel_router.stop()  # the wheel stays in TO_HOST: with no Squid it moves nothing
             except Exception as e:
                 self._log.warning(f"Error stopping the focus wheel router: {e}")
 

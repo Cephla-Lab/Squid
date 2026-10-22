@@ -724,6 +724,7 @@ class Microcontroller:
 
             # On both startup paths (--skip-init skips the block above).
             self.apply_limit_switch_config()
+            self.apply_focus_wheel_power_up_mode()
         except BaseException:
             # A failed constructor leaves no reader thread or open port behind: headless callers may catch this
             # and keep their process.
@@ -1122,19 +1123,38 @@ class Microcontroller:
         cmd[3] = int(mode)
         self.send_command(cmd)
 
-    def set_focus_wheel_mode(self, mode: int):
+    def set_focus_wheel_mode(self, mode: int, save_as_power_up: bool = False):
         """Route the control panel's focus wheel (firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE; callers gate on it).
 
         FOCUS_WHEEL_MODE.TO_HOST stops the wheel moving the Z stepper and reports its ticks in focus_wheel_count;
-        DRIVES_Z restores the firmware default. RESET and INITIALIZE restore DRIVES_Z too.
+        DRIVES_Z lets it move the Z stepper. With save_as_power_up the controller also stores the mode (EEPROM, written
+        only when it changes) and uses it at power-up and after RESET and INITIALIZE.
         """
         if mode not in (FOCUS_WHEEL_MODE.DRIVES_Z, FOCUS_WHEEL_MODE.TO_HOST):
             raise ValueError("focus wheel mode must be FOCUS_WHEEL_MODE.DRIVES_Z or TO_HOST")
-        self.log.info(f"Set focus wheel mode: {mode}")
+        saved = " (saved as the power-up mode)" if save_as_power_up else ""
+        self.log.info(f"Set focus wheel mode: {mode}{saved}")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.SET_FOCUS_WHEEL_MODE
         cmd[2] = int(mode)
+        cmd[3] = FOCUS_WHEEL_SAVE_AS_POWER_UP if save_as_power_up else 0
         self.send_command(cmd)
+
+    def apply_focus_wheel_power_up_mode(self) -> None:
+        """Save the focus wheel's power-up mode for this configuration, if the firmware supports it.
+
+        On a Z lift system whose wheel drives the V-308 (USE_Z_LIFT_STAGE and Z_LIFT_FOCUS_WHEEL_DRIVES_PI) the wheel
+        must never move the lift, so TO_HOST is saved: it then moves nothing whenever Squid is not driving the V-308
+        with it (before start-up, after close, after a crash). Every other configuration saves DRIVES_Z, the
+        firmware's own default, so a controller moved from a lift system back to a stock one gets the stock wheel.
+        Run on every connect, --skip-init included; the controller writes EEPROM only when the mode changes.
+        """
+        if not self.supports_focus_wheel_to_host():
+            return
+        lift_wheel = control._def.USE_Z_LIFT_STAGE and control._def.Z_LIFT_FOCUS_WHEEL_DRIVES_PI
+        mode = FOCUS_WHEEL_MODE.TO_HOST if lift_wheel else FOCUS_WHEEL_MODE.DRIVES_Z
+        self.set_focus_wheel_mode(mode, save_as_power_up=True)
+        self.wait_till_operation_is_completed()
 
     def supports_focus_wheel_to_host(self) -> bool:
         """True if the firmware has SET_FOCUS_WHEEL_MODE."""

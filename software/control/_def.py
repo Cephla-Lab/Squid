@@ -265,6 +265,9 @@ class FOCUS_WHEEL_MODE:
 
 
 FOCUS_WHEEL_FLAG_REPORTING = 7  # status byte 19 bit: bytes 14-17 carry the focus wheel count
+# SET_FOCUS_WHEEL_MODE [3] flag: also store the mode as the controller's power-up mode (EEPROM; RESET and INITIALIZE
+# use it too). Squid saves TO_HOST on a lift system, so the wheel moves nothing while Squid is not running.
+FOCUS_WHEEL_SAVE_AS_POWER_UP = 1
 FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE = (1, 8)
 
 
