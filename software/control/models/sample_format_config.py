@@ -32,7 +32,7 @@ WELLPLATE_OFFSET for that format, so exactly one correction is ever live.
 import os
 from typing import Dict, Iterable, List, Optional, Set
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from control.models.yaml_store import load_yaml_model, load_yaml_model_for_edit, save_yaml_model_atomic, SidecarModel
 
@@ -230,6 +230,16 @@ class DisabledSampleFormats(SidecarModel):
 
     version: int = 1
     disabled: List[str] = Field(default_factory=list)
+
+    @field_validator("disabled", mode="before")
+    @classmethod
+    def _bare_sizes_are_plates(cls, value):
+        # A hand-edited `disabled: [384, 1536]` must not make the whole file
+        # "damaged": a bare size names "<n> well plate", the same rule _def
+        # applies to the cached startup format.
+        if not isinstance(value, list):
+            return value
+        return [f"{v} well plate" if str(v).isdigit() else v for v in value]
 
 
 def _disabled_damage_message(path: str) -> str:

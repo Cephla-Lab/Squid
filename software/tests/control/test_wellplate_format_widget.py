@@ -319,3 +319,64 @@ def test_select_format_silently_drops_a_disabled_outgoing_plate(qtbot):
     assert "96 well plate" not in _combo_formats(widget)
     assert widget.comboBox.currentData() == "384 well plate"
     assert emissions == ["384 well plate"]
+
+
+def test_select_format_silently_with_an_unknown_format_keeps_the_loaded_plate(qtbot):
+    widget = _widget_on_disabled_96(qtbot)
+
+    assert widget.select_format_silently("no such plate") == -1
+
+    assert widget.comboBox.currentData() == "96 well plate"
+    assert widget.wellplate_format == "96 well plate"
+
+
+def test_hand_edited_bare_plate_sizes_are_read_as_plates():
+    with open(DISABLED_SAMPLE_FORMATS_PATH, "w") as f:
+        f.write("version: 1" + chr(10) + "disabled: [384, 1536]" + chr(10))
+
+    assert load_disabled_sample_formats() == {"384 well plate", "1536 well plate"}
+
+
+def test_calibration_dialog_lists_disabled_formats_marked(qtbot):
+    """Recalibrating or editing is how a hidden plate comes back, so the
+    calibration dialog must still offer it."""
+    from qtpy.QtWidgets import QComboBox
+
+    save_disabled_sample_formats(["384 well plate"])
+    calibration = MagicMock()
+    calibration.existing_format_combo = QComboBox()
+    qtbot.addWidget(calibration.existing_format_combo)
+    calibration._format_display_name = lambda f: control.widgets.WellplateCalibration._format_display_name(
+        calibration, f
+    )
+
+    control.widgets.WellplateCalibration.populate_existing_formats(calibration)
+
+    combo = calibration.existing_format_combo
+    labels = {combo.itemData(i): combo.itemText(i) for i in range(combo.count())}
+    assert labels["384 well plate"].endswith("(disabled)")
+    assert not labels["96 well plate"].endswith("(disabled)")
+
+
+def test_new_format_replacing_an_existing_one_keeps_none_of_its_geometry(qtbot):
+    """ "Replace its definition?" must mean replace: the shipped 6-well's derived
+    per-axis pitch (39.2 mm) used to win over the new scalar spacing."""
+    calibration = MagicMock(_CARRIED_MEASUREMENTS=control.widgets.WellplateCalibration._CARRIED_MEASUREMENTS)
+    new_format = {
+        "a1_x_mm": 10.0,
+        "a1_y_mm": 10.0,
+        "a1_x_pixel": 0,
+        "a1_y_pixel": 0,
+        "well_size_mm": 6.0,
+        "well_spacing_mm": 9.0,
+        "number_of_skip": 0,
+        "rows": 8,
+        "cols": 12,
+    }
+
+    control.widgets.WellplateCalibration._save_format_definition(calibration, "6 well plate", new_format, replace=True)
+
+    settings = _def.get_wellplate_settings("6 well plate")
+    assert (settings["rows"], settings["cols"]) == (8, 12)
+    assert settings["well_spacing_x_mm"] == settings["well_spacing_y_mm"] == 9.0
+    assert settings["well_size_x_mm"] == settings["well_size_y_mm"] == 6.0

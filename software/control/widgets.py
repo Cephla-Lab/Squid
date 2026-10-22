@@ -12116,16 +12116,15 @@ class WellplateFormatWidget(QWidget):
         if index >= 0:
             self.comboBox.setCurrentIndex(index)
 
-    def _formats_to_list(self, current):
-        # The plate in use is listed even when disabled, so the dropdown never
-        # names a plate other than the loaded one; once it is unloaded it goes.
-        return listed_sample_formats(WELLPLATE_FORMAT_SETTINGS, always=(current,))
-
     def populate_combo_box(self, current=None):
-        """`current`: the plate that will be selected, if not self.wellplate_format."""
+        """`current`: the plate that will be selected, if not self.wellplate_format.
+
+        That plate is listed even when disabled, so the dropdown never names a
+        plate other than the loaded one; once it is unloaded it goes.
+        """
         self.comboBox.clear()
-        self._listed_formats = self._formats_to_list(self.wellplate_format if current is None else current)
-        for format_ in self._listed_formats:
+        current = self.wellplate_format if current is None else current
+        for format_ in listed_sample_formats(WELLPLATE_FORMAT_SETTINGS, always=(current,)):
             self.comboBox.addItem(format_, format_)
 
         # Action items, in italics to set them apart from the formats
@@ -12161,20 +12160,25 @@ class WellplateFormatWidget(QWidget):
             self.manage_formats()
         else:
             self.wellplate_format = selected
-            if self._listed_formats != self._formats_to_list(selected):
-                self._relist_silently()  # e.g. drop the disabled plate just switched away from
+            self._relist_silently()  # e.g. drop the disabled plate just switched away from
             self.setWellplateSettings(self.wellplate_format)
 
-    def _relist_silently(self):
-        """Rebuild the format items and reselect the loaded plate, emitting nothing."""
+    def _rebuild_and_select(self, format_id):
+        """Rebuild the list for format_id as the plate in use and select it,
+        emitting nothing. Returns its index, -1 if it is not a known format."""
         self.comboBox.blockSignals(True)
         try:
-            self.populate_combo_box()
-            index = self.comboBox.findData(self.wellplate_format)
+            self.populate_combo_box(current=format_id)
+            index = self.comboBox.findData(format_id)
             if index >= 0:
                 self.comboBox.setCurrentIndex(index)
         finally:
             self.comboBox.blockSignals(False)
+        return index
+
+    def _relist_silently(self):
+        """Rebuild the format items and reselect the loaded plate, emitting nothing."""
+        self._rebuild_and_select(self.wellplate_format)
 
     def manage_formats(self):
         """Edit which formats the dropdowns list. The loaded plate does not change."""
@@ -12202,18 +12206,13 @@ class WellplateFormatWidget(QWidget):
         index-0 emission momentarily reconfigures the whole app for whatever
         format happens to be first in the dict.
         """
-        self.comboBox.blockSignals(True)
-        try:
-            # List for the plate being selected, not the one it replaces: format_id
-            # shows even if disabled, and a disabled outgoing plate is dropped.
-            self.populate_combo_box(current=format_id)
-            index = self.comboBox.findData(format_id)
-            if index >= 0:
-                self.comboBox.setCurrentIndex(index)
-        finally:
-            self.comboBox.blockSignals(False)
+        # List for the plate being selected, not the one it replaces: format_id
+        # shows even if disabled, and a disabled outgoing plate is dropped.
+        index = self._rebuild_and_select(format_id)
         if index >= 0:
             self.wellplateChanged(index)
+        else:
+            self._relist_silently()  # unknown format: the loaded plate stays listed and selected
         return index
 
     def setWellplateSettings(self, wellplate_format):
@@ -12608,13 +12607,17 @@ class WellplateCalibration(QDialog):
 
     def populate_existing_formats(self):
         self.existing_format_combo.clear()
-        for format_ in listed_sample_formats(
-            WELLPLATE_FORMAT_SETTINGS, always=(self.wellplateFormatWidget.wellplate_format,)
-        ):
+        # Every format, disabled ones marked: this is where a hidden plate gets
+        # recalibrated or edited (which re-enables it).
+        disabled = load_disabled_sample_formats()
+        for format_ in WELLPLATE_FORMAT_SETTINGS:
             # nothing to calibrate on a glass slide, and the user-format model
             # could not save it anyway (spacing must be positive)
             if has_well_grid(control._def.get_wellplate_settings(format_)):
-                self.existing_format_combo.addItem(self._format_display_name(format_), format_)
+                label = self._format_display_name(format_)
+                if format_ in disabled:
+                    label += "  (disabled)"
+                self.existing_format_combo.addItem(label, format_)
 
     def toggle_input_mode(self):
         # The mode radios share an exclusive QButtonGroup: exactly one is true.
@@ -13187,21 +13190,24 @@ class WellplateCalibration(QDialog):
 
     def _calibrate_new_format(self):
         """Create and calibrate a new wellplate format."""
-        if not self.nameInput.text():
+        name = self.nameInput.text().strip()
+        if not name:
             QMessageBox.warning(self, "Incomplete Information", "Please enter a name for the format.")
             return
-        existing = self.nameInput.text()
-        if existing in WELLPLATE_FORMAT_SETTINGS:
-            # A disabled format is in neither dropdown, so the name looks free.
+        if name.isdigit():
+            name = f"{name} well plate"  # the key a bare plate size resolves to everywhere else (see _def)
+        if name in WELLPLATE_FORMAT_SETTINGS:
+            # A disabled format is in the main dropdown only while loaded, so
+            # the name can look free.
             hidden = (
-                " It is disabled, so it is hidden from the dropdowns."
-                if existing in load_disabled_sample_formats()
+                " It is disabled, so it is hidden from the Sample Format dropdown."
+                if name in load_disabled_sample_formats()
                 else ""
             )
             reply = QMessageBox.question(
                 self,
                 "Format Already Exists",
-                f"A format named '{existing}' already exists.{hidden}\n\nReplace its definition with this new one?",
+                f"A format named '{name}' already exists.{hidden}\n\nReplace its definition with this new one?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -13213,7 +13219,6 @@ class WellplateCalibration(QDialog):
             return
         a1_x_mm, a1_y_mm, well_size_mm = calibration_data
 
-        name = self.nameInput.text()
         plate_width_mm = self.plateWidthInput.value()
         plate_height_mm = self.plateHeightInput.value()
 
@@ -13235,7 +13240,9 @@ class WellplateCalibration(QDialog):
         # writes the format table too; the combo is selected once, after the
         # save, in _finish_calibration (selecting before the save applied a
         # machine's wellplate_offset to the measured A1 for a moment).
-        self._save_format_definition(name, new_format, measured=self._measurement_record(a1_x_mm, a1_y_mm))
+        self._save_format_definition(
+            name, new_format, measured=self._measurement_record(a1_x_mm, a1_y_mm), replace=True
+        )
         self.create_wellplate_image(name, new_format, plate_width_mm, plate_height_mm)
 
         self._finish_calibration(name, f"New format '{name}' has been successfully created and calibrated.")
@@ -13280,7 +13287,7 @@ class WellplateCalibration(QDialog):
             points=points, method=method, timestamp=datetime.datetime.now().isoformat(timespec="seconds")
         )
 
-    def _save_format_definition(self, format_key, updates, measured=None):
+    def _save_format_definition(self, format_key, updates, measured=None, replace=False):
         """Write a COMPLETE definition for `format_key` to the user file.
 
         Every calibration and every parameter edit goes through here, for
@@ -13289,6 +13296,10 @@ class WellplateCalibration(QDialog):
         wholesale (owner decision, 2026-08-16). `updates` are the newly
         measured/edited settings keys; everything else is carried over from
         what the app currently knows about the format.
+
+        replace=True ("Add New Format", possibly under an existing name) starts
+        from nothing instead: `updates` is the whole definition, and no earlier
+        geometry (per-axis pitch, shape) or measurement (rotation) carries over.
         """
         from control.models.sample_format_config import (
             load_user_sample_formats_for_edit,
@@ -13297,7 +13308,7 @@ class WellplateCalibration(QDialog):
         )
 
         try:
-            settings = dict(control._def.get_wellplate_settings(format_key))
+            settings = {} if replace else dict(control._def.get_wellplate_settings(format_key))
         except ValueError:
             settings = {}  # brand-new format: `updates` carries the whole definition
         settings.update(updates)
@@ -13307,7 +13318,9 @@ class WellplateCalibration(QDialog):
         # Everything measured survives an unrelated edit: a spacing tweak must
         # never erase a calibration. Named once, so a future measurement kind
         # is added in the model rather than remembered at every call site.
-        carried = previous.model_dump(include=self._CARRIED_MEASUREMENTS) if previous is not None else {}
+        carried = (
+            previous.model_dump(include=self._CARRIED_MEASUREMENTS) if previous is not None and not replace else {}
+        )
         if measured is not None:
             carried["measured"] = measured
         user_formats.formats[format_key] = SampleFormat.from_settings(settings, **carried)
