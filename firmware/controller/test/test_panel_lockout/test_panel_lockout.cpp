@@ -70,7 +70,14 @@ void    tmc4361A_writeInt(TMC4361ATypeDef *, uint8_t, int32_t) {}
 int32_t tmc4361A_currentPosition(TMC4361ATypeDef *) { return 0; }
 int32_t tmc4361A_targetPosition(TMC4361ATypeDef *) { return 0; }
 int8_t  tmc4361A_setCurrentPosition(TMC4361ATypeDef *, int32_t) { return 0; }
-int8_t  tmc4361A_moveTo(TMC4361ATypeDef *, int32_t) { return 0; }
+/* moveTo on Z is do_focus_control()'s every-loop re-issue of the wheel's target: recorded */
+static unsigned z_move_calls;
+static int32_t z_move_target;
+int8_t tmc4361A_moveTo(TMC4361ATypeDef *t, int32_t target)
+{
+  if (axis_of(t) == z) { z_move_calls++; z_move_target = target; }
+  return 0;
+}
 bool    tmc4361A_isRunning(TMC4361ATypeDef *, bool) { return false; }
 int32_t tmc4361A_xmmToMicrosteps(TMC4361ATypeDef *, float) { return 0; }
 uint8_t tmc4361A_readLimitSwitches(TMC4361ATypeDef *) { return 0; }
@@ -279,6 +286,43 @@ void test_wheel_travel_during_a_commanded_move_is_dropped(void)
   TEST_ASSERT_EQUAL_INT32_MESSAGE(384, focusPosition, "after the command only the new travel counts");
 }
 
+/* The central fix: do_focus_control() runs every loop and re-issues the wheel's Z target. During a
+   commanded Z move it must not, or it rewrites the command's ramp target and the command never completes
+   (bench 2026-09-20); after the command it resumes, from the target the command left. A Z homing too. */
+void test_focus_control_stays_off_a_commanded_z_move(void)
+{
+  Z_POS_LIMIT = 1L << 30;
+  Z_NEG_LIMIT = -(1L << 30);
+  focusPosition = 1000;
+  z_move_calls = 0;
+  do_focus_control();
+  TEST_ASSERT_EQUAL_UINT_MESSAGE(1, z_move_calls, "precondition: with no command the wheel target is re-issued");
+  TEST_ASSERT_EQUAL_INT32(1000, z_move_target);
+
+  Z_commanded_movement_in_progress = true;   // callback_move_z: the command owns Z ...
+  focusPosition = 5000;                      // ... and sets the wheel target to its own target
+  z_move_calls = 0;
+  for (int pass = 0; pass < 5; pass++)
+  {
+    panel_wheel += 640;                      // the operator turns the wheel meanwhile
+    packet(0, 0);
+    do_focus_control();
+  }
+  TEST_ASSERT_EQUAL_UINT_MESSAGE(0, z_move_calls, "no Z move may be issued while a commanded Z move is in progress");
+  TEST_ASSERT_EQUAL_INT32_MESSAGE(5000, focusPosition, "the wheel did not change the target during the command");
+
+  Z_commanded_movement_in_progress = false;  // check_position(): the command ends
+  do_focus_control();
+  TEST_ASSERT_EQUAL_UINT_MESSAGE(1, z_move_calls, "after the command the re-issue resumes");
+  TEST_ASSERT_EQUAL_INT32(5000, z_move_target);
+
+  is_homing_Z = true;
+  z_move_calls = 0;
+  do_focus_control();
+  is_homing_Z = false;
+  TEST_ASSERT_EQUAL_UINT_MESSAGE(0, z_move_calls, "no wheel re-issue during a Z homing");
+}
+
 int main(int argc, char **argv)
 {
   UNITY_BEGIN();
@@ -286,6 +330,7 @@ int main(int argc, char **argv)
   RUN_TEST(test_newly_centred_stick_is_stopped_for_a_short_command);
   RUN_TEST(test_jog_is_stopped_without_a_packet_in_the_lockout);
   RUN_TEST(test_wheel_travel_during_a_commanded_move_is_dropped);
+  RUN_TEST(test_focus_control_stays_off_a_commanded_z_move);
   RUN_TEST(test_jog_is_stopped_when_a_homing_starts);
   RUN_TEST(test_idle_axes_are_not_touched);
   RUN_TEST(test_commanded_axis_is_left_to_the_command);
