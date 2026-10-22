@@ -2938,6 +2938,14 @@ class HighContentScreeningGui(QMainWindow):
                 else:
                     raise
 
+        # Stop the AION slit oscillation, returning the slit to its centre. Best effort: a slit left
+        # off-centre must not block shutdown, and the next start-up homes the stage anyway.
+        if self.nl5 is not None:
+            try:
+                self.nl5.stop_slit_oscillation()
+            except Exception:
+                self.log.exception(f"Error stopping the slit oscillation during {context}")
+
         # Close Squid laser engine
         if self.microscope.addons.squid_laser_engine is not None:
             try:
