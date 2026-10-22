@@ -48,7 +48,12 @@ from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
-from squid.stage.utils import move_to_loading_position, move_to_scanning_position, move_z_axis_to_safety_position
+from squid.stage.utils import (
+    move_to_loading_position,
+    move_to_scanning_position,
+    move_z_axis_to_safety_position,
+    objective_is_retracted,
+)
 from squid.config import CameraPixelFormat
 
 # set QT_API environment variable
@@ -2982,7 +2987,7 @@ class StageUtils(QDialog):
         """Leaving the loading position: True to lower the objective back to its Z after the lift rises, False to
         leave it retracted, None if cancelled. Not asked when the objective was not retracted for loading."""
         z_mm = getattr(self.stage, "_scanning_position_z_mm", None)
-        if not isinstance(z_mm, (int, float)) or z_mm <= OBJECTIVE_RETRACTED_POS_MM:
+        if not isinstance(z_mm, (int, float)) or objective_is_retracted(z_mm):
             return True
         reply = _ask_objective_z_return(
             self,

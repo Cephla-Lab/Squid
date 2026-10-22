@@ -391,7 +391,7 @@ def test_leaving_loading_asks_where_the_objective_goes(qtbot):
     assert dialog.slide_position == "loading" and dialog.btn_load_slide.isEnabled()
 
     # Not asked when the objective was not retracted for loading
-    for saved in (None, control._def.OBJECTIVE_RETRACTED_POS_MM):
+    for saved in (None, control._def.OBJECTIVE_RETRACTED_POS_MM, control._def.OBJECTIVE_RETRACTED_POS_MM + 8e-7):
         dialog = _dialog_at_loading(qtbot, saved)
         with patch("control.widgets._ask_objective_z_return") as ask, patch(
             "control.widgets.move_to_scanning_position"
@@ -458,3 +458,33 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
     assert locked()
     stage_utils._callback_scanning_position_reached(True, None)
     assert fake.navigationWidget.isEnabled() and fake.liveControlWidget.isEnabled() and panel == [True, False]
+
+
+def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
+    # On the AION a filter wheel error at shutdown aborted the cleanup before Microscope.close() unlocked the panel,
+    # leaving the joystick dead without Squid.
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from control.gui_hcs import HighContentScreeningGui as Gui
+
+    class _Gui:
+        pass
+
+    calls = []
+    fake = _Gui()
+    fake._loading_position_locked = True
+    fake._set_control_panel_lock = lambda locked: calls.append(locked)
+    fake.log = MagicMock()
+    fake.stage = MagicMock()
+    fake.stage.get_pos.side_effect = RuntimeError("the first cleanup step fails")
+    with pytest.raises(RuntimeError):
+        Gui._cleanup_common(fake, for_restart=False)
+    assert calls == [False]
+
+    calls.clear()
+    fake._loading_position_locked = False  # not at the loading position: nothing sent
+    with pytest.raises(RuntimeError):
+        Gui._cleanup_common(fake, for_restart=False)
+    assert calls == []

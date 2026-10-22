@@ -137,11 +137,19 @@ def _restore_lift_after_loading(stage: AbstractStage):
     stage._scanning_position_lift_mm = None
 
 
+# A Z within this of the retracted position counts as retracted (a read-back carries float noise, e.g. 0.1000008).
+_RETRACTED_TOLERANCE_MM = 0.001
+
+
+def objective_is_retracted(z_mm: float) -> bool:
+    return z_mm <= _def.OBJECTIVE_RETRACTED_POS_MM + _RETRACTED_TOLERANCE_MM
+
+
 def _retract_objective_for_loading(stage: AbstractStage):
     # The objective goes up to its retracted position (never down: one already above it stays), remembering where
     # it was; the way back lowers it there last.
     stage._scanning_position_z_mm = stage.get_pos().z_mm
-    if stage._scanning_position_z_mm > _def.OBJECTIVE_RETRACTED_POS_MM:
+    if not objective_is_retracted(stage._scanning_position_z_mm):
         stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
         stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
 

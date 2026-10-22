@@ -348,9 +348,16 @@ def test_unloading_can_leave_the_objective_retracted():
     assert stage._scanning_position_z_mm is None
 
 
-def test_an_objective_above_the_retracted_position_is_not_lowered_for_loading():
+@pytest.mark.parametrize(
+    "z_mm",
+    [
+        _def.OBJECTIVE_RETRACTED_POS_MM / 2,
+        _def.OBJECTIVE_RETRACTED_POS_MM + 8e-7,  # read back as 0.1000008 on the AION: retracted, not a move
+    ],
+)
+def test_an_objective_at_or_above_the_retracted_position_is_not_moved_for_loading(z_mm):
     events = []
-    stage = _recording_stage(events, z_mm=_def.OBJECTIVE_RETRACTED_POS_MM / 2)
+    stage = _recording_stage(events, z_mm=z_mm)
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
     assert events == ["lift_lower", "y", "x"]
 

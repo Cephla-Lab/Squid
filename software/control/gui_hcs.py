@@ -3019,6 +3019,11 @@ class HighContentScreeningGui(QMainWindow):
         """
         context = "restart" if for_restart else "shutdown"
 
+        # A Z lift system closed at the loading position: unlock the control panel first, before any step below
+        # can fail and abort the rest (Microscope.close() unlocks it too), so the joystick works without Squid.
+        if self._loading_position_locked:
+            self._set_control_panel_lock(False)
+
         # Cache position and settings
         try:
             squid.stage.utils.cache_position(
