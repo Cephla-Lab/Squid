@@ -167,7 +167,7 @@ class _ScanSpeedMixin:
 
 class RCMInternalStage:
     BAUD = 9600
-    ANSWER_TIMEOUT_S = 0.5
+    ANSWER_TIMEOUT_S = 0.1  # a GP reply comes back ~31 ms after the query (measured)
     # A command takes ~16 ms to send at 9600 baud. Without a write timeout a stalled port blocks the write,
     # and with it the serial lock and every join of the oscillation thread (stop, home, shutdown), forever.
     WRITE_TIMEOUT_S = 1.0
@@ -177,13 +177,16 @@ class RCMInternalStage:
     DEFAULT_HOLD_MS = 10
     SLIT_CHANNEL = 0
     STOP_POLL_S = 0.05  # how quickly the oscillation thread notices a stop
-    # Sweep: a new setpoint every SWEEP_UPDATE_S (a move command takes ~16 ms to send; faster ones queue up),
-    # held long enough to cover a late update. At each end, read the position back until it is within
-    # ARRIVE_TOLERANCE_UM (a 100 µm move settles to 1 µm in ~134 ms), giving up after ARRIVE_TIMEOUT_S.
+    # Sweep: a new setpoint every SWEEP_UPDATE_S (a move command takes ~16 ms to send; faster ones queue up).
+    # At each end, read the position back every ARRIVE_POLL_S (leaving the line free in between) until it is
+    # within ARRIVE_TOLERANCE_UM (a 100 µm move settles to 1 µm in ~134 ms), giving up after ARRIVE_TIMEOUT_S.
+    # Each setpoint is held for SWEEP_HOLD_MS, well past the longest gap to the next one (the end wait, a
+    # missing reply, then up to 200 ms for the first 1 µm step at 5 µm/s); the next setpoint replaces the hold.
     SWEEP_UPDATE_S = 0.02
-    SWEEP_HOLD_MS = 1000
+    SWEEP_HOLD_MS = 5000
     ARRIVE_TOLERANCE_UM = 1.0
     ARRIVE_TIMEOUT_S = 0.5
+    ARRIVE_POLL_S = 0.01
     _POSITION_REPLY = re.compile(r"P(-?\d+(?:\.\d+)?)$")
 
     def __init__(self, serial_number):
@@ -280,18 +283,27 @@ class RCMInternalStage:
         """
         if self.current_slit_um is None:
             raise RuntimeError("Select a slit before starting the oscillation")
-        oscillation.validate()
-        self.oscillation = oscillation
         if self.is_oscillating():
-            self._log.info(f"Slit oscillation changed: {oscillation.describe()}")
+            self.update_oscillation(oscillation)
             return
-        self._join_oscillation_thread()  # one that ended on an error
+        oscillation.validate()
+        if self._oscillation_thread is not None:
+            # one that ended on an error left the slit somewhere along its swing: back to the centre first
+            self.stop_oscillation()
+        self.oscillation = oscillation
         self._osc_to_plus = True
         self._osc_offset_um = 0.0  # the slit is at its centre
         self._oscillation_stop.clear()
         self._oscillation_thread = threading.Thread(target=self._oscillate, name="SlitOscillation", daemon=True)
         self._oscillation_thread.start()
         self._log.info(f"Slit oscillation started: {oscillation.describe()}")
+
+    def update_oscillation(self, oscillation):
+        """Change the settings (also the mode) of a running oscillation from its next move; never starts one."""
+        oscillation.validate()
+        self.oscillation = oscillation
+        if self.is_oscillating():
+            self._log.info(f"Slit oscillation changed: {oscillation.describe()}")
 
     def is_oscillating(self):
         return self._oscillation_thread is not None and self._oscillation_thread.is_alive()
@@ -391,23 +403,30 @@ class RCMInternalStage:
             if offset_um == end_um:
                 self._wait_until_at(end_um)
                 self._osc_to_plus = not self._osc_to_plus
-                last = time.perf_counter()  # the wait at the end is not travel
-            else:
-                self._sleep_until(now + self.SWEEP_UPDATE_S, "sweep")
+                now = last = time.perf_counter()  # the wait at the end is not travel
+            # always pause between setpoints, also after turning round (with no swing, every pass turns round)
+            self._sleep_until(now + self.SWEEP_UPDATE_S, "sweep")
 
     def _wait_until_at(self, offset_um):
-        target = self._slit_centre() + int(round(offset_um))
+        centre = self._slit_centre()
         give_up = time.perf_counter() + self.ARRIVE_TIMEOUT_S
         position = None
         while self._running("sweep") and time.perf_counter() < give_up:
+            if self._slit_centre() != centre:
+                # the slit or the offset changed while waiting: go to the end around the new centre
+                centre = self._slit_centre()
+                self._move(offset_um, self.SWEEP_HOLD_MS)
+                give_up = time.perf_counter() + self.ARRIVE_TIMEOUT_S
             position = self.read_position_um()
-            if position is not None and abs(position - target) <= self.ARRIVE_TOLERANCE_UM:
+            if position is not None and abs(position - (centre + int(round(offset_um)))) <= self.ARRIVE_TOLERANCE_UM:
                 return
+            self._sleep_until(time.perf_counter() + self.ARRIVE_POLL_S, "sweep")
         if self._running("sweep"):
+            last_read = "no position reply" if position is None else f"last read {position} µm"
             self._warn_once(
                 "arrive",
-                f"Slit sweep turned round {self.ARRIVE_TIMEOUT_S * 1000:.0f} ms after reaching the end of its "
-                f"ramp at {position} µm, short of {target} µm",
+                f"Slit sweep turned round without reaching {centre + int(round(offset_um))} µm within "
+                f"{self.ARRIVE_TIMEOUT_S * 1000:.0f} ms ({last_read})",
             )
 
     def close(self):
@@ -531,8 +550,8 @@ class NL5(_ScanSpeedMixin):
         from its next move."""
         oscillation.validate()
         self.slit_oscillation = oscillation
-        if self.is_slit_oscillating():
-            self.internal_stage.start_oscillation(oscillation)
+        if self.internal_stage is not None:
+            self.internal_stage.update_oscillation(oscillation)  # never starts one
 
     def start_slit_oscillation(self):
         if self.internal_stage is not None:

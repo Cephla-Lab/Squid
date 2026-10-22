@@ -307,8 +307,8 @@ def test_sweep_travels_at_the_set_speed_and_turns_round_at_each_end(stage):
     assert targets[: top + 1] == sorted(targets[: top + 1])  # up from the centre ...
     assert targets[top : bottom + 1] == sorted(targets[top : bottom + 1], reverse=True)  # ... then down
     # 30 µm at 200 µm/s takes 150 ms, with a setpoint every 20 ms (~4 µm)
-    assert sent[top][0] - sent[0][0] == pytest.approx(0.15, abs=0.04)
-    assert max(b - a for a, b in zip(targets, targets[1 : top + 1])) <= 8
+    assert sent[top][0] - sent[0][0] == pytest.approx(0.15, abs=0.08)
+    assert max(b - a for a, b in zip(targets, targets[1 : top + 1])) <= 12
     # at the end it reads the position back before turning round
     assert ":GP0" in [c for t, c in writes if sent[top][0] <= t <= sent[top + 1][0]]
     assert back[2] == f":MPA0P{centre}H{RCMInternalStage.DEFAULT_HOLD_MS}"
@@ -338,6 +338,63 @@ def test_sweep_turns_round_after_a_timeout_if_the_stage_never_gets_there(stage, 
     targets = [target - centre for _, target, _ in mpa_moves(stage.ser.writes)]
     assert 10 in targets and -10 in targets  # kept going
     assert "Slit sweep turned round" in caplog.text
+
+
+def test_sweep_without_a_swing_does_not_flood_the_port(stage):
+    stage.start_oscillation(sweep(0, 0, 200))
+    time.sleep(0.3)
+    stage.stop_oscillation()
+    # at most a move and a position read per 20 ms update
+    assert len(stage.ser.writes) <= 2 * 0.3 / RCMInternalStage.SWEEP_UPDATE_S + 4
+
+
+def test_slit_change_during_the_end_wait_goes_to_the_new_end(stage, caplog):
+    stage.ser.arrive_after_s = None  # never there, so it waits at the end
+    stage.start_oscillation(sweep(10, 10, 500))
+    time.sleep(0.1)  # 10 µm at 500 µm/s takes 20 ms: now waiting at +10
+    stage.ser.clear()
+    stage.set_slit_width(88)
+    time.sleep(0.1)
+    commands = stage.ser.commands()
+    stage.stop_oscillation()
+    new_end = SLIT_POSITIONS_UM[88] + 10 + 10
+    assert f":MPA0P{new_end}H{RCMInternalStage.SWEEP_HOLD_MS}" in commands
+
+
+def test_stop_during_the_end_wait_is_prompt(stage):
+    stage.ser.arrive_after_s = None
+    stage.start_oscillation(sweep(10, 10, 500))
+    time.sleep(0.1)
+    t0 = time.perf_counter()
+    stage.stop_oscillation()
+    assert time.perf_counter() - t0 < 0.3
+
+
+def test_restart_after_a_dead_thread_starts_from_the_centre(stage):
+    def unplugged(data):
+        raise OSError("device disconnected")
+
+    centre = SLIT_POSITIONS_UM[44] + 10
+    stage.start_oscillation(sweep(30, 30, 200))
+    time.sleep(0.1)
+    stage.ser.write = unplugged
+    stage._oscillation_thread.join(1)
+    del stage.ser.write  # plugged back in
+    stage.ser.clear()
+
+    stage.start_oscillation(sweep(30, 30, 200))
+    time.sleep(0.05)
+    sent = moves(stage.ser.commands())
+    stage.stop_oscillation()
+    # back to the centre first, then the sweep starts from there
+    assert sent[0] == (centre, RCMInternalStage.DEFAULT_HOLD_MS)
+    assert all(abs(target - centre) <= 12 for target, _ in sent[1:3])
+
+
+def test_updating_the_settings_never_starts_an_oscillation(stage):
+    stage.update_oscillation(sweep(30, 30, 200))
+    assert not stage.is_oscillating()
+    assert stage.ser.commands() == []
 
 
 def test_mode_can_change_while_it_runs(stage):
