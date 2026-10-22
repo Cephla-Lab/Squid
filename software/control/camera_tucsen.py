@@ -359,19 +359,23 @@ class TucsenCamera(AbstractCamera):
         return self._is_streaming.is_set()
 
     def close(self):
-        # Quiesce delivery before teardown so no callback fires into a closed handle.
-        # Best-effort: a stop failure must not abort teardown, or the handle/SDK leaks.
-        try:
-            self.stop_streaming()
-        except CameraError as e:
-            self._log.error(f"stop_streaming failed during close, continuing teardown: {e}")
-        if self.temperature_reading_thread is not None:
-            self._terminate_temperature_event.set()
-            self.temperature_reading_thread.join()
-        if TUCAM_Dev_Close(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
-            raise CameraError("Failed to close camera")
-        TUCAM_Api_Uninit()
-        self._log.info("Close Tucsen camera success")
+        # Under the trigger lock: a trigger still in send_trigger() on another thread (e.g. a confocal
+        # scan being aborted, the camera re-armed and the scan retried) finishes before the SDK is torn down,
+        # rather than calling into a closed handle. That hold is bounded (see control/rcm_scan_trigger.py).
+        with self._trigger_lock:
+            # Quiesce delivery before teardown so no callback fires into a closed handle.
+            # Best-effort: a stop failure must not abort teardown, or the handle/SDK leaks.
+            try:
+                self.stop_streaming()
+            except CameraError as e:
+                self._log.error(f"stop_streaming failed during close, continuing teardown: {e}")
+            if self.temperature_reading_thread is not None:
+                self._terminate_temperature_event.set()
+                self.temperature_reading_thread.join()
+            if TUCAM_Dev_Close(self._camera) != TUCAMRET.TUCAMRET_SUCCESS:
+                raise CameraError("Failed to close camera")
+            TUCAM_Api_Uninit()
+            self._log.info("Close Tucsen camera success")
 
     def _on_frame_callback(self):
         # Runs on TUCam's thread. The callback gets no frame pointer, so we re-fetch
