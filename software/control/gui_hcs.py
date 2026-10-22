@@ -3096,8 +3096,11 @@ class HighContentScreeningGui(QMainWindow):
         # Close filter wheel
         if self.emission_filter_wheel:
             try:
-                if not for_restart:
-                    self.emission_filter_wheel.set_filter_wheel_position({1: 1})
+                # Back to position 1 on the first configured wheel, which is not always index 1 (an Optospin
+                # wheel may sit on rotor port 2): addressing a missing wheel raised and aborted the rest of shutdown.
+                wheels = self.emission_filter_wheel.available_filter_wheels
+                if not for_restart and wheels:
+                    self.emission_filter_wheel.set_filter_wheel_position({wheels[0]: 1})
                 self.emission_filter_wheel.close()
             except Exception:
                 if for_restart:
