@@ -10,17 +10,21 @@
 #include <FastLED.h>
 #include <PacketSerial.h>
 
-// No library may print on the protocol serial port (platformio.ini, FASTLED_LOG_VERBOSITY=0): FastLED
-// logs to that same USB port and the host loses packet sync. Check the log level FastLED itself
-// RESOLVED, not our flag: since 3.10.8 that is FL_LOG_LEVEL (a -DFL_LOG_LEVEL overrides
-// FASTLED_LOG_VERBOSITY, and with neither set errors still print); earlier 3.10.x resolve
-// FASTLED_LOG_VERBOSITY.
+// No library may print on the protocol serial port: FastLED 3.10.5 and later log to that same USB
+// port and the host loses packet sync. Check the log level FastLED itself RESOLVED, not our flag:
+// since 3.10.8 that is FL_LOG_LEVEL (a -DFL_LOG_LEVEL overrides FASTLED_LOG_VERBOSITY, and with
+// neither set errors still print); 3.10.5 resolves FASTLED_LOG_VERBOSITY. A FastLED that defines
+// neither predates that logging and passes: Teensyduino's bundled 3.4.0, and 3.10.3, whose debug
+// output CI checks in the linked image instead. The flag has to reach EVERY compile, FastLED's own
+// sources included - platformio.ini sets -D FASTLED_LOG_VERBOSITY=0; a #define here would not.
 #if defined(FL_LOG_LEVEL)
 #if FL_LOG_LEVEL != 0
-#error "FastLED logging is compiled in (FL_LOG_LEVEL != 0) - it would print on the protocol serial port"
+#error "FastLED logging is compiled in (FL_LOG_LEVEL != 0) - it would print on the protocol serial port; see firmware/README.md"
 #endif
-#elif !defined(FASTLED_LOG_VERBOSITY) || FASTLED_LOG_VERBOSITY != 0
-#error "FastLED logging is compiled in (FASTLED_LOG_VERBOSITY != 0) - it would print on the protocol serial port"
+#elif defined(FASTLED_LOG_VERBOSITY)
+#if FASTLED_LOG_VERBOSITY != 0
+#error "FastLED logging is compiled in (FASTLED_LOG_VERBOSITY != 0) - it would print on the protocol serial port; see firmware/README.md"
+#endif
 #endif
 
 void set_DAC8050x_gain(uint8_t div, uint8_t gains);

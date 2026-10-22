@@ -37,7 +37,8 @@ jobs:
         # refuses a FastLED log level above 0 (src/functions.h); this checks the linked image
         # itself: FastLED's print sink and log pipeline must not be in it. Symbols, not message
         # text - FastLED 3.10.8 dropped the debug message an earlier check grepped for while its
-        # error logging stayed linked. A missing image or nm fails too, never a silent pass.
+        # error logging stayed linked. Every way of not looking fails the step instead of passing:
+        # a missing image or nm, nm failing on the file, or a symbol table without our setup().
         run: |
           nm="$HOME/.platformio/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-nm"
           elf=.pio/build/teensy41/firmware.elf
@@ -47,7 +48,16 @@ jobs:
               exit 1
             fi
           done
-          if "$nm" -C "$elf" | grep -E 'fl::(platforms::)?print(ln)?\(|fl::detail::log_emit'; then
+          # nm runs on its own: piped straight into grep, an nm error reads as "no matching symbols".
+          if ! symbols=$("$nm" -C "$elf"); then
+            echo "::error::nm could not read $elf"
+            exit 1
+          fi
+          if ! grep -q ' T setup$' <<< "$symbols"; then
+            echo "::error::setup() is not among the symbols nm read from $elf - nothing was checked"
+            exit 1
+          fi
+          if grep -E 'fl::(platforms::)?print(ln)?\(|fl::detail::log_emit' <<< "$symbols"; then
             echo "::error::FastLED logging is linked into the firmware - it would print on the protocol serial port"
             exit 1
           fi
