@@ -2,6 +2,7 @@ import builtins
 import logging
 import pytest
 import tempfile
+import time
 import unittest.mock
 
 import squid.stage.cephla
@@ -602,3 +603,263 @@ def test_c414_initialize_without_reference_still_reads_reference_state():
     stage.gcs.FRF.assert_not_called()
     stage.move_to(1.0)
     stage.gcs.MOV.assert_called_once_with("1", 1.0)
+
+
+class _FakeC414Gcs:
+    """GCS stand-in: on target after `polls_until_on_target` ONT? queries; records errcheck per poll."""
+
+    def __init__(self, polls_until_on_target, error=0):
+        self.polls_until_on_target = polls_until_on_target
+        self.error = error
+        self.errcheck = True
+        self.ont_polls = 0
+        self.errcheck_during_polls = set()
+        self.error_checks = 0
+        self.movs = []  # (target, errcheck when sent)
+        self.pos_queries = 0
+
+    def MOV(self, axis, target):
+        self.movs.append((target, self.errcheck))
+
+    def SVO(self, axis, values):
+        pass
+
+    def qPOS(self, axis):
+        self.pos_queries += 1
+        return {axis: 1.0}
+
+    def qONT(self, axis):
+        self.ont_polls += 1
+        self.errcheck_during_polls.add(self.errcheck)
+        return {axis: self.ont_polls > self.polls_until_on_target}
+
+    def checkerror(self):
+        self.error_checks += 1
+        if self.error:
+            raise RuntimeError(f"GCS error {self.error}")
+
+    def qERR(self):
+        self.error_checks += 1
+        error, self.error = self.error, 0  # reading clears it, as on the controller
+        return error
+
+
+class _FakeGCSError(Exception):
+    def __init__(self, code):
+        super().__init__(f"GCS error {code}")
+        self.code = code
+
+
+def _c414_with(gcs):
+    stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
+    stage.axis = "1"
+    stage._is_referenced = True
+    stage._range_lo = stage._range_hi = None
+    stage._target_mm = None
+    stage.gcs = gcs
+    stage._pitools = unittest.mock.MagicMock()
+    stage._GCSError = _FakeGCSError
+    return stage
+
+
+def test_c414_wait_polls_on_target_without_a_poll_delay():
+    # pitools.waitontarget slept 100 ms whenever the first ONT? was false; the wait must instead
+    # poll ONT? back to back, without pipython's per-query ERR?, then check the error once.
+    gcs = _FakeC414Gcs(polls_until_on_target=5)
+    stage = _c414_with(gcs)
+
+    t0 = time.monotonic()
+    stage.move_relative(0.0015)
+    elapsed = time.monotonic() - t0
+
+    assert elapsed < 0.05
+    assert gcs.ont_polls == 6
+    assert gcs.errcheck_during_polls == {False}
+    assert gcs.errcheck is True  # restored
+    assert gcs.error_checks == 1
+    stage._pitools.waitontarget.assert_not_called()
+
+
+def test_c414_wait_raises_a_controller_error_after_settling():
+    gcs = _FakeC414Gcs(polls_until_on_target=0, error=5)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(RuntimeError, match="GCS error 5"):
+        stage.move_to(1.0)
+    assert gcs.errcheck is True
+
+
+def test_c414_wait_times_out_and_restores_error_checking():
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(TimeoutError):
+        stage.move_to(1.0, timeout=0.05)
+    assert gcs.errcheck is True
+
+
+def test_c414_on_target_tolerance_written_at_level_1_and_level_dropped_even_on_error():
+    stage = _c414_with(unittest.mock.MagicMock())
+    stage.set_on_target_tolerance(0.0001)
+    assert stage.gcs.mock_calls == [
+        unittest.mock.call.CCL(1, squid.stage.pi.CCL_PASSWORD),
+        unittest.mock.call.SPA("1", squid.stage.pi.PARAM_ON_TARGET_TOLERANCE, 0.0001),
+        unittest.mock.call.CCL(0),
+    ]
+
+    stage = _c414_with(unittest.mock.MagicMock())
+    stage.gcs.SPA.side_effect = RuntimeError("GCS error 60")
+    with pytest.raises(RuntimeError):
+        stage.set_on_target_tolerance(0.0001)
+    stage.gcs.CCL.assert_called_with(0)
+
+
+def _windowed_pi_stage(on_target_tolerance=(0.0001, 0.0005, 0.1)):
+    sim = _make_referenced_sim()
+    sim.set_on_target_tolerance = unittest.mock.Mock(wraps=sim.set_on_target_tolerance)
+    stage = squid.stage.pi.PIFocusStage(sim, home_mm=0.5, on_target_tolerance=on_target_tolerance)
+    return stage, sim
+
+
+def test_pi_focus_on_target_window_scales_with_the_move_and_is_clamped():
+    stage, sim = _windowed_pi_stage()
+    stage.move_z_to(1.0)  # 1 mm from 0: loosest window
+    assert sim._on_target_tol_mm == pytest.approx(0.0005)
+    for step_mm, tol_mm in (
+        (0.0005, 0.0001),
+        (0.001, 0.0001),
+        (0.0015, 0.00015),
+        (0.003, 0.0003),
+        (0.005, 0.0005),
+        (0.01, 0.0005),
+    ):
+        stage.move_z(step_mm)
+        assert sim._on_target_tol_mm == pytest.approx(tol_mm), step_mm
+    stage.move_z(-0.003)  # direction does not matter
+    assert sim._on_target_tol_mm == pytest.approx(0.0003)
+
+
+def test_pi_focus_on_target_window_written_only_when_it_changes():
+    stage, sim = _windowed_pi_stage()
+    for _ in range(10):  # a fixed-step Z-stack
+        stage.move_z(0.0015)
+    assert sim.set_on_target_tolerance.call_count == 1
+    stage.move_z(0.00151)  # rounds to the same 0.05 um grid point
+    assert sim.set_on_target_tolerance.call_count == 1
+
+
+def test_pi_focus_retract_uses_the_loosest_window():
+    stage, sim = _windowed_pi_stage()
+    stage.move_z(0.0005)
+    stage.home(False, False, True, False)
+    assert sim._on_target_tol_mm == pytest.approx(0.0005)
+
+
+def test_pi_focus_without_window_policy_leaves_the_controller_window():
+    stage, sim = _windowed_pi_stage(on_target_tolerance=None)
+    stage.move_z(0.0005)
+    stage.move_z_to(1.0)
+    sim.set_on_target_tolerance.assert_not_called()
+
+
+def test_connect_pi_focus_passes_the_window_policy():
+    stage = squid.stage.pi.connect_pi_focus_stage(simulated=True, on_target_tolerance=(0.0001, 0.0005, 0.1))
+    stage.move_z(0.003)
+    assert stage._c414._on_target_tol_mm == pytest.approx(0.0003)
+
+
+def test_c414_relative_moves_step_from_the_commanded_target_with_one_position_read():
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    stage = _c414_with(gcs)
+
+    for _ in range(3):
+        stage.move_relative(0.0015)
+
+    # POS? only for the first move (no target tracked yet); none after any move.
+    assert gcs.pos_queries == 1
+    assert [t for t, _ in gcs.movs] == pytest.approx([1.0015, 1.003, 1.0045])
+    # MOV goes out without pipython's per-command ERR?; one ERR? per move covers it.
+    assert {errcheck for _, errcheck in gcs.movs} == {False}
+    assert gcs.error_checks == 3
+    assert gcs.errcheck is True
+
+
+def test_c414_non_waiting_move_keeps_the_immediate_error_check():
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    stage = _c414_with(gcs)
+    stage.move_to(1.0, wait=False)
+    assert gcs.movs == [(1.0, True)]
+    assert gcs.ont_polls == 0
+
+
+@pytest.mark.parametrize(
+    "invalidate",
+    [lambda st: st.set_servo(True), lambda st: st.stop(), lambda st: st.initialize(reference=False)],
+    ids=["servo", "stop", "initialize"],
+)
+def test_c414_target_tracking_reset_when_the_controller_may_move_its_target(invalidate):
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    gcs.RON = gcs.StopAll = lambda *a, **k: None
+    gcs.qFRF = lambda axis: {axis: True}
+    stage = _c414_with(gcs)
+    stage._GCSError = RuntimeError
+    stage.move_to(2.0)
+    invalidate(stage)
+    stage.move_relative(0.001)
+    assert gcs.pos_queries == 1
+    assert gcs.movs[-1][0] == pytest.approx(1.001)  # from the read position (1.0), not 2.0
+
+
+def test_c414_failed_move_drops_the_tracked_target():
+    gcs = _FakeC414Gcs(polls_until_on_target=0)
+    stage = _c414_with(gcs)
+    stage.move_to(2.0)
+    gcs.error = 5
+    with pytest.raises(RuntimeError):
+        stage.move_to(3.0)
+    gcs.error = 0
+    stage.move_relative(0.001)
+    assert gcs.movs[-1][0] == pytest.approx(1.001)
+
+
+def test_c414_timeout_reports_and_clears_a_pending_controller_error():
+    # A rejected MOV with the axis off target (e.g. servo off): the wait must not end with a bare
+    # timeout that leaves the controller's error pending for some later, unrelated command.
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9, error=5)
+    stage = _c414_with(gcs)
+
+    with pytest.raises(_FakeGCSError) as exc:
+        stage.move_to(1.0, timeout=0.05)
+    assert exc.value.code == 5
+    assert isinstance(exc.value.__cause__, TimeoutError)
+    assert gcs.error == 0  # drained
+    assert gcs.errcheck is True
+
+
+def test_c414_timeout_without_controller_error_stays_a_timeout():
+    gcs = _FakeC414Gcs(polls_until_on_target=10**9)
+    stage = _c414_with(gcs)
+    with pytest.raises(TimeoutError):
+        stage.move_to(1.0, timeout=0.05)
+    assert gcs.error_checks == 1
+
+
+@pytest.mark.parametrize(
+    "policy_um, step_um, expected_um",
+    [
+        ((0.01, 0.5, 0.1), 0.05, 0.01),  # rounds to 0 on the grid: clamped up to min, never a zero window
+        ((0.12, 0.48, 0.1), 1.15, 0.12),  # 0.115 rounds to 0.10: clamped up to min
+        ((0.12, 0.48, 0.1), 4.9, 0.48),  # 0.49 rounds to 0.50: clamped down to max
+    ],
+)
+def test_pi_focus_on_target_window_stays_inside_the_configured_bounds(policy_um, step_um, expected_um):
+    lo, hi, frac = policy_um
+    stage, sim = _windowed_pi_stage(on_target_tolerance=(lo / 1000, hi / 1000, frac))
+    stage.move_z(step_um / 1000)
+    assert sim._on_target_tol_mm == pytest.approx(expected_um / 1000)
+
+
+@pytest.mark.parametrize("policy", [(0.0, 0.0005, 0.1), (-0.0001, 0.0005, 0.1), (0.0005, 0.0001, 0.1)])
+def test_pi_focus_rejects_an_unusable_window_policy(policy):
+    with pytest.raises(ValueError):
+        squid.stage.pi.PIFocusStage(_make_referenced_sim(), on_target_tolerance=policy)

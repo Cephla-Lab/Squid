@@ -29,11 +29,16 @@ CCL_PASSWORD = "advanced"
 WPA_PASSWORD = "100"
 PARAM_RANGE_LIMIT_MIN = 0x07000000
 PARAM_RANGE_LIMIT_MAX = 0x07000001
+PARAM_ON_TARGET_TOLERANCE = 0x07000900  # Position On Target Tolerance: half-width of the window, mm
 
 # The V-308 is a continuous closed-loop drive (no microstep); its only "finest step" is the
 # encoder resolution. This value is the grid the GUI's ustep-based Z step snapping uses, so that
 # um-scale Z-stack slices are effectively not snapped (10 nm is sub-slice for any real stack).
 _Z_RESOLUTION_MM = 1e-5  # 10 nm
+
+# On-target windows are rounded to this grid so slightly different step sizes reuse the window
+# already on the controller instead of rewriting it (each write is a few serial round trips).
+_ON_TARGET_TOL_GRID_MM = 5e-5  # 0.05 um
 
 _NOT_REFERENCED_MSG = "C-414 axis is not referenced; call reference()/home() before moving."
 _SERVO_OFF_MSG = "C-414 servo is off; re-engage it with set_servo(True) before moving."
@@ -74,6 +79,7 @@ class _SimulatedC414:
         self._closed = False
         self._ref_count = 0
         self._servo_on = True
+        self._on_target_tol_mm = None
 
     def connect_serial(self, *args, **kwargs):
         pass
@@ -101,6 +107,9 @@ class _SimulatedC414:
 
     def set_velocity(self, vel_mm_s: float):
         self._vel_mm_s = float(vel_mm_s)
+
+    def set_on_target_tolerance(self, tol_mm: float):
+        self._on_target_tol_mm = float(tol_mm)
 
     def set_servo(self, enabled: bool):
         self._servo_on = bool(enabled)
@@ -145,6 +154,12 @@ class PIFocusStage(AbstractStage):
     ``home_to_positive_limit=True`` home() retracts to the native positive travel limit (furthest
     from the sample) rather than to ``home_mm``.
 
+    ``on_target_tolerance`` = (min_mm, max_mm, step_fraction) sizes the controller's on-target
+    window per move: ``step_fraction`` x the move distance, clamped to [min_mm, max_mm]. Every move
+    waits for on-target, so small steps get a tight window (the controller's +/-1 um default would
+    call a 0.5 um step done before it moves) and long moves a looser one. None leaves the window
+    as configured on the controller.
+
     A lock serialises every backend call so a non-blocking home() cannot interleave GCS
     request/response framing with concurrent get_pos()/move_z().
     """
@@ -156,9 +171,16 @@ class PIFocusStage(AbstractStage):
         home_mm: float = 0.0,
         invert_z: bool = False,
         home_to_positive_limit: bool = False,
+        on_target_tolerance: Optional[Tuple[float, float, float]] = None,
     ):
         super().__init__(stage_config)
         self._c414 = c414
+        if on_target_tolerance is not None:
+            tol_min_mm, tol_max_mm, _ = on_target_tolerance
+            if not 0 < tol_min_mm <= tol_max_mm:
+                raise ValueError(f"on_target_tolerance needs 0 < min <= max (mm), got {on_target_tolerance}")
+        self._on_target_tolerance = on_target_tolerance
+        self._on_target_tol_mm: Optional[float] = None  # window last written to the controller
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
         self._closed = False
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
@@ -180,14 +202,32 @@ class PIFocusStage(AbstractStage):
     def _to_squid(self, native_mm: float) -> float:
         return (self._offset_mm - native_mm) if self._invert else native_mm
 
+    def _size_on_target_window(self, move_mm: float):
+        """Set the on-target window for a move of ``move_mm`` (no write if it is already set)."""
+        if self._on_target_tolerance is None:
+            return
+        tol_min_mm, tol_max_mm, step_fraction = self._on_target_tolerance
+        # Round to the grid first, then clamp, so the window always stays inside [min, max] (and > 0).
+        # (Capping at max before rounding keeps an infinite move -- the retract -- finite.)
+        tol_mm = min(step_fraction * abs(move_mm), tol_max_mm)
+        tol_mm = round(tol_mm / _ON_TARGET_TOL_GRID_MM) * _ON_TARGET_TOL_GRID_MM
+        tol_mm = min(max(tol_mm, tol_min_mm), tol_max_mm)
+        if self._on_target_tol_mm is None or abs(tol_mm - self._on_target_tol_mm) > 1e-12:
+            self._c414.set_on_target_tolerance(tol_mm)
+            self._on_target_tol_mm = tol_mm
+
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
+            self._size_on_target_window(rel_mm)
             # A relative move flips sign under inversion (squid+ = native-), no offset.
             self._c414.move_relative(-rel_mm if self._invert else rel_mm, wait=blocking)
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
-            self._c414.move_to(self._to_native(abs_mm), wait=blocking)
+            target_native = self._to_native(abs_mm)
+            if self._on_target_tolerance is not None:
+                self._size_on_target_window(target_native - self._c414.get_position_mm())
+            self._c414.move_to(target_native, wait=blocking)
 
     def get_pos(self) -> Pos:
         with self._lock:
@@ -236,7 +276,9 @@ class PIFocusStage(AbstractStage):
                 if not self._c414.is_referenced():
                     self._c414.reference()
                 # _home_native_mm is a NATIVE target (positive travel limit for an upright retract,
-                # or the pass-through home_mm otherwise), so move the backend directly.
+                # or the pass-through home_mm otherwise), so move the backend directly. A retract is
+                # a long move: use the loosest window.
+                self._size_on_target_window(float("inf"))
                 self._c414.move_to(self._home_native_mm, wait=True)
         finally:
             self._busy = False
@@ -429,6 +471,10 @@ class C414FocusStage:
         # qTMN/qTMX query each move; refreshed at connect and on set_travel_limits/reset_range_limit.
         self._range_lo: Optional[float] = None
         self._range_hi: Optional[float] = None
+        # Last commanded MOV target, so a relative move needs no POS? query. None whenever the
+        # controller may have changed its own target (servo switch, referencing, autozero, stop, or
+        # a move that failed); the next relative move then reads the position instead.
+        self._target_mm: Optional[float] = None
 
     # --- connection ----------------------------------------------------------
     def connect_serial(self, comport, baudrate: int = 115200) -> None:
@@ -495,6 +541,7 @@ class C414FocusStage:
     # --- bring-up ------------------------------------------------------------
     def initialize(self, reference: bool = True, ref_timeout: float = 60.0) -> None:
         """Enable closed loop and (optionally) reference the axis (referencing MOVES it)."""
+        self._target_mm = None
         self.gcs.RON(self.axis, [True])
         self.gcs.SVO(self.axis, [True])
         # Always query (it seeds the cached state move_to/move_relative check): with reference=False,
@@ -509,6 +556,7 @@ class C414FocusStage:
 
     def reference(self, timeout: float = 60.0) -> None:
         """Reference move to the optical reference switch (MOVES the stage)."""
+        self._target_mm = None
         self.gcs.FRF(self.axis)
         self._pitools.waitonreferencing(self.gcs, axes=self.axis, timeout=timeout)
         if not self.is_referenced():
@@ -518,6 +566,7 @@ class C414FocusStage:
         """Compensate residual weight force so servo-off is safe (vertical mount; MOVES)."""
         if not self.is_referenced():
             raise RuntimeError("Axis must be referenced before autozero.")
+        self._target_mm = None
         self.gcs.ATZ(self.axis, [float(low_mm)])
         self._pitools.waitonready(self.gcs, timeout=timeout)
         if not bool(self.gcs.qATZ(self.axis)[self.axis]):
@@ -566,8 +615,23 @@ class C414FocusStage:
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
 
+    def set_on_target_tolerance(self, tol_mm: float) -> None:
+        """Set the on-target window half-width (RAM only; requires command level 1).
+
+        The controller reports on target once the position stays inside +/-tol for its settling
+        (dwell) time, and every wait in this driver ends there. A window wider than the step size
+        makes a small step "on target" before the stage has moved, so keep it well below the
+        smallest step used. Not persisted: the controller's saved value is left unchanged.
+        """
+        self.gcs.CCL(1, CCL_PASSWORD)
+        try:
+            self.gcs.SPA(self.axis, PARAM_ON_TARGET_TOLERANCE, float(tol_mm))
+        finally:
+            self.gcs.CCL(0)
+
     def set_servo(self, enabled: bool) -> None:
         """Switch closed-loop servo (SVO). Off releases the voice coil, which is not self-locking."""
+        self._target_mm = None  # servo on sets the target to wherever Z now is
         self.gcs.SVO(self.axis, [bool(enabled)])
 
     def is_servo_on(self) -> bool:
@@ -587,28 +651,66 @@ class C414FocusStage:
         return bool(self.gcs.IsMoving(self.axis)[self.axis])
 
     def move_to(self, z_mm: float, wait: bool = True, timeout: float = 10.0, settle_s: float = 0.0) -> float:
-        """Absolute move (mm), clamped to the range limit. Returns the actual on-target position."""
+        """Absolute move (mm), clamped to the range limit. Returns the commanded (clamped) target;
+        with wait=True, Z is inside the on-target window around it on return."""
         if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
             raise RuntimeError(_NOT_REFERENCED_MSG)
-        self.gcs.MOV(self.axis, self._clamp_target(float(z_mm)))
-        if wait:
-            self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
-            if settle_s:
-                time.sleep(settle_s)
-        return self.get_position_mm()
+        target = self._clamp_target(float(z_mm))
+        self._move(target, wait, timeout)
+        if wait and settle_s:
+            time.sleep(settle_s)
+        return target
 
     def move_relative(self, dz_mm: float, wait: bool = True, timeout: float = 10.0) -> float:
+        """Relative move from the last commanded target (so repeated steps, e.g. a Z-stack, do not
+        accumulate settling error), or from the current position when no target is tracked."""
         if not self._is_referenced:  # cached (set by initialize/reference); avoids a qFRF per move
             raise RuntimeError(_NOT_REFERENCED_MSG)
+        base = self._target_mm if self._target_mm is not None else self.get_position_mm()
         # Resolve to an absolute target and clamp it (MOV) rather than MVR, so a jog past the range
         # limit stops at the limit with a warning instead of raising GCSError 'Position out of limits'.
-        target = self._clamp_target(self.get_position_mm() + float(dz_mm))
-        self.gcs.MOV(self.axis, target)
-        if wait:
-            self._pitools.waitontarget(self.gcs, axes=self.axis, timeout=timeout)
-        return self.get_position_mm()
+        target = self._clamp_target(base + float(dz_mm))
+        self._move(target, wait, timeout)
+        return target
+
+    def _move(self, target: float, wait: bool, timeout: float) -> None:
+        """MOV to ``target``; with ``wait``, poll ONT? until on target, then check the error once.
+
+        pitools.waitontarget sends #7/ERR?/SVO? before polling and sleeps its 100 ms polldelay
+        whenever the first ONT? is false, so every move not settled by the first poll took >100 ms.
+        This sends MOV and polls ONT? alone, back to back, with pipython's per-command ERR? suspended
+        (it doubles every round trip); the single ERR? at the end surfaces any error from either,
+        including a rejected MOV (the axis then stays on its old target, so polling ends at once). If
+        the axis never gets on target (e.g. a rejected MOV with the servo off), the timeout path reads
+        the error too, so the controller's reason is raised and does not linger for a later command.
+        """
+        self._target_mm = None  # unknown until the move is known to have been accepted
+        if not wait:
+            self.gcs.MOV(self.axis, target)  # pipython's per-command ERR? reports a rejected MOV now
+            self._target_mm = target
+            return
+        deadline = time.monotonic() + timeout
+        errcheck = self.gcs.errcheck
+        self.gcs.errcheck = False
+        try:
+            self.gcs.MOV(self.axis, target)
+            while not self.gcs.qONT(self.axis)[self.axis]:
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"C-414 axis {self.axis} not on target within {timeout:.1f} s")
+        except TimeoutError as timeout:
+            error = 0
+            with suppress(Exception):  # a failing ERR? must not mask the timeout
+                error = self.gcs.qERR()  # reading the error also clears it on the controller
+            if error:
+                raise self._GCSError(error) from timeout
+            raise
+        finally:
+            self.gcs.errcheck = errcheck
+        self.gcs.checkerror()
+        self._target_mm = target
 
     def stop(self) -> None:
+        self._target_mm = None
         if self.gcs is None:
             return
         with suppress(self._GCSError):
@@ -666,6 +768,7 @@ def connect_pi_focus_stage(
     invert_z: bool = False,
     home_to_positive_limit: bool = False,
     z_travel_mm: float = 0.0,
+    on_target_tolerance: Optional[Tuple[float, float, float]] = None,
     stage_config: Optional[StageConfig] = None,
 ) -> PIFocusStage:
     """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
@@ -675,7 +778,8 @@ def connect_pi_focus_stage(
     (unless home_to_positive_limit is set). invert_z / home_to_positive_limit configure an upright
     system (see PIFocusStage). z_travel_mm>0 restores the controller's Position Range Limit to the
     full physical travel [0, z_travel_mm] at connect, so the inversion offset / fencing don't drift
-    across restarts (qTMN/qTMX on the C-414 ARE the range-limit params).
+    across restarts (qTMN/qTMX on the C-414 ARE the range-limit params). on_target_tolerance
+    (min_mm, max_mm, step_fraction) sizes the on-target window per move (see PIFocusStage).
     """
     if simulated:
         backend = _SimulatedC414(axis=axis)
@@ -690,6 +794,7 @@ def connect_pi_focus_stage(
             home_mm=home_mm,
             invert_z=invert_z,
             home_to_positive_limit=home_to_positive_limit,
+            on_target_tolerance=on_target_tolerance,
         )
 
     # Resolve the port BEFORE allocating the GCSDevice, so a missing port/controller never
@@ -718,4 +823,5 @@ def connect_pi_focus_stage(
         home_mm=home_mm,
         invert_z=invert_z,
         home_to_positive_limit=home_to_positive_limit,
+        on_target_tolerance=on_target_tolerance,
     )

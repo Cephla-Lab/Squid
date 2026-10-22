@@ -372,6 +372,15 @@ class Microscope:
                 invert_z=control._def.PI_FOCUS_INVERT_Z,
                 home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                on_target_tolerance=(
+                    (
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MAX_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION,
+                    )
+                    if control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM
+                    else None
+                ),
                 stage_config=stage_config,
             )
             stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
