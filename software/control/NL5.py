@@ -23,12 +23,15 @@ SPEED_INPUT_MODES = ("line_speed", "fps")
 class _ScanSpeedMixin:
     """Conversion between the scanner line speed and the scan-limited frame rate.
 
-    One frame is one sweep of the line across the scanned field. The sweep angle is the
-    full-field scan amplitude (AMPLITUDE_X, mrad) scaled by the scanned fraction of the
-    camera width (FIELD_OF_VIEW_X / MAX_CAM_PIX_X), so
+    One frame is one sweep of the line across the scanned field. The scanner travels +/- the
+    scan amplitude (AMPLITUDE_X, mrad), so the sweep is twice the amplitude, scaled by the
+    scanned fraction of the camera width (FIELD_OF_VIEW_X / MAX_CAM_PIX_X), and
         fps = line_speed [mrad/s] / sweep [mrad].
-    The jump back and the exposure delay are not included, so this is the upper bound the
-    scanner allows, not the camera frame rate.
+    Measured on AION: the time to a frame grows by 2 x amplitude / line speed, so halving the
+    amplitude or FIELD_OF_VIEW_X saved 26 ms at 73 mrad and 3000 mrad/s.
+    The exposure delay, the jump back (~3 ms) and the camera's readout and transfer (~30 ms
+    for a full Aries frame) are not included, so this is the upper bound the scanner allows,
+    not the camera frame rate.
     """
 
     max_cam_pix_x = None
@@ -37,7 +40,7 @@ class _ScanSpeedMixin:
         fraction = 1.0
         if self.max_cam_pix_x and self.fov_x:
             fraction = min(1.0, self.fov_x / self.max_cam_pix_x)
-        return max(1e-6, self.scan_amplitude * fraction)
+        return max(1e-6, 2 * self.scan_amplitude * fraction)
 
     def line_speed_to_fps(self, line_speed):
         return line_speed / self.scan_sweep_mrad()

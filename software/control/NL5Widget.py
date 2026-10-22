@@ -116,8 +116,9 @@ class NL5Widget(QWidget):
         self.line_speed_input.setToolTip(
             "Press Enter to apply.\n"
             f"Line speed: {LINE_SPEED_MIN}-{LINE_SPEED_MAX} mrad/s.\n"
-            "Frame rate = line speed / scan sweep, where the sweep is the scan amplitude scaled by\n"
-            "FOV / camera width (scanner-limited; excludes the jump back and exposure delay)."
+            "Frame rate = line speed / scan sweep, where the sweep is 2 x the scan amplitude (the scanner\n"
+            "travels +/- amplitude) scaled by FOV / camera width. Scanner-limited: excludes the exposure\n"
+            "delay, the jump back and the camera's readout and transfer (~30 ms for a full frame)."
         )
         self.line_speed_input.lineEdit().returnPressed.connect(self.apply_speed_input)
         layout1.addWidget(self.line_speed_input)
