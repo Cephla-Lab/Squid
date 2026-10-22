@@ -1294,8 +1294,8 @@ Z_LIFT_MIN_MM = 0.0
 Z_LIFT_MAX_MM = 10.0
 # Where "lowered" is. Homing ends at 0 (the bottom sensor); a lowered position above it skips re-homing.
 Z_LIFT_LOWERED_MM = 0.0
-# Named lift heights, edited in the Lift window.
-Z_LIFT_PRESETS_PATH = "cache/z_lift_presets.json"
+# The lift's working height per sample format, edited in the Z Lift window (Utils).
+Z_LIFT_HEIGHTS_PATH = "cache/z_lift_heights.json"
 # Route the control panel's focus wheel to the V-308 (the lift is then moved only from the software).
 Z_LIFT_FOCUS_WHEEL_DRIVES_PI = True
 # V-308 travel per focus wheel tick, in um. 0 = the distance one tick moved the Z stepper, so the wheel feels the same.

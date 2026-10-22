@@ -550,10 +550,11 @@ class Microscope:
 
         # Z lift (USE_Z_LIFT_STAGE): the Cephla Z stepper under the XY stage, with the V-308 as the focus Z.
         self.z_lift: Optional[squid.stage.lift.LiftStage] = getattr(stage, "lift", None)
-        self.z_lift_presets: Optional[squid.stage.lift.LiftPresets] = None
         self.focus_wheel_router: Optional[squid.stage.lift.FocusWheelRouter] = None
         if self.z_lift is not None:
-            self.z_lift_presets = squid.stage.lift.LiftPresets(control._def.Z_LIFT_PRESETS_PATH)
+            self.z_lift.heights = squid.stage.lift.LiftHeights(control._def.Z_LIFT_HEIGHTS_PATH)
+            # The format the software starts with; the GUI repoints this at its sample format selector.
+            self.z_lift.current_format_fn = lambda: control._def.WELLPLATE_FORMAT
 
         # Centralized config management (assigning through the property below also
         # hands the same repository to the illumination controller).
@@ -668,7 +669,7 @@ class Microscope:
                     self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
                     self.z_lift.apply_limits()
                 self.home_xyz()
-                self._raise_z_lift_to_startup_preset()
+                self._raise_z_lift_to_sample_height()
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:
@@ -1052,16 +1053,18 @@ class Microscope:
             self._log.info("Homing the Y axis...")
             self.stage.home(x=False, y=True, z=False, theta=False)
 
-    def _raise_z_lift_to_startup_preset(self) -> None:
-        """After homing, raise the Z lift to the preset chosen in the Lift window; with none chosen it stays lowered."""
+    def _raise_z_lift_to_sample_height(self) -> None:
+        """After homing, raise the Z lift to the working height saved for the sample format; with none it stays
+        lowered."""
         if self.z_lift is None:
             return
-        preset = self.z_lift_presets.startup_preset()
-        if preset is None:
-            self._log.info("Z lift: no startup preset, leaving it lowered.")
+        sample_format = self.z_lift.current_format()
+        height = self.z_lift.sample_height_mm()
+        if height is None:
+            self._log.info(f"Z lift: no height saved for {sample_format}, leaving it lowered.")
             return
-        self._log.info(f"Z lift: raising to startup preset '{preset.name}' ({preset.height_mm:.3f} mm).")
-        self.z_lift.move_to(preset.height_mm)
+        self._log.info(f"Z lift: raising to the {sample_format} height, {height:.3f} mm.")
+        self.z_lift.move_to(height)
 
     def _start_focus_wheel_router(self) -> None:
         """Hand the control panel's focus wheel to the V-308 (it would otherwise move the lift)."""

@@ -13,8 +13,7 @@ from control.microcontroller import Microcontroller
 from squid.abc import Pos
 from squid.stage.lift import (
     FocusWheelRouter,
-    LiftPreset,
-    LiftPresets,
+    LiftHeights,
     LiftStage,
     default_focus_wheel_mm_per_tick,
 )
@@ -107,41 +106,43 @@ def test_apply_limits_programs_the_firmware_z_limits(z_axis):
     assert sent[expected_neg] == z_axis.convert_real_units_to_ustep(0.5)
 
 
-# --- presets ------------------------------------------------------------------------------------------------------
+# --- heights per sample format --------------------------------------------------------------------------------
 
 
-def test_presets_round_trip(tmp_path):
-    path = str(tmp_path / "sub" / "presets.json")
-    presets = LiftPresets(path)
-    assert presets.presets == [] and presets.startup_preset() is None
-    presets.presets = [LiftPreset("10x", 6.25), LiftPreset("40x", 5.5)]
-    presets.startup = "40x"
-    presets.save()
-
-    reloaded = LiftPresets(path)
-    assert reloaded.presets == presets.presets
-    assert reloaded.startup_preset() == LiftPreset("40x", 5.5)
+def test_heights_round_trip(tmp_path):
+    path = str(tmp_path / "sub" / "heights.json")
+    heights = LiftHeights(path)
+    assert heights.by_format == {} and heights.get("96 well plate") is None
+    heights.set("96 well plate", 6.25)
+    heights.set("glass slide", 5.5)
+    heights.set("glass slide", None)  # cleared
+    heights.save()
+    assert LiftHeights(path).by_format == {"96 well plate": 6.25}
 
 
 @pytest.mark.parametrize(
     "content",
     [
         "not json",
-        json.dumps({"presets": [{"name": "a"}]}),
-        json.dumps({"presets": [{"name": "a", "height_mm": "nan"}]}),
+        json.dumps({"heights_by_format": ["a"]}),
+        json.dumps({"heights_by_format": {"a": "nan"}}),
+        json.dumps({"heights_by_format": {"a": "x"}}),
     ],
 )
-def test_unreadable_presets_start_empty(tmp_path, content):
-    path = tmp_path / "presets.json"
+def test_unreadable_heights_start_empty(tmp_path, content):
+    path = tmp_path / "heights.json"
     path.write_text(content)
-    presets = LiftPresets(str(path))
-    assert presets.presets == [] and presets.startup is None
+    assert LiftHeights(str(path)).by_format == {}
 
 
-def test_startup_naming_a_missing_preset_is_dropped(tmp_path):
-    path = tmp_path / "presets.json"
-    path.write_text(json.dumps({"presets": [{"name": "a", "height_mm": 1.0}], "startup": "gone"}))
-    assert LiftPresets(str(path)).startup is None
+def test_sample_height_follows_the_current_format(lift, tmp_path):
+    lift.heights = LiftHeights(str(tmp_path / "h.json"))
+    lift.heights.set("96 well plate", 6.0)
+    fmt = ["96 well plate"]
+    lift.current_format_fn = lambda: fmt[0]
+    assert lift.sample_height_mm() == 6.0
+    fmt[0] = "glass slide"
+    assert lift.sample_height_mm() is None
 
 
 # --- focus wheel router -------------------------------------------------------------------------------------------
@@ -258,9 +259,17 @@ def test_default_wheel_step_matches_one_stepper_microstep(z_axis, monkeypatch):
 
 
 class _RecordingLift:
-    def __init__(self, events, height=4.0):
+    def __init__(self, events, height=4.0, sample_format="96 well plate", heights=None):
         self.events = events
         self.height = height
+        self.sample_format = sample_format
+        self.heights = heights or {}
+
+    def current_format(self):
+        return self.sample_format
+
+    def sample_height_mm(self):
+        return self.heights.get(self.sample_format)
 
     def lower(self):
         self.events.append("lift_lower")
@@ -272,25 +281,49 @@ class _RecordingLift:
         self.height = mm
 
 
-def _recording_stage(events):
+def _recording_stage(events, **lift_kwargs):
     stage = MagicMock()
-    stage.lift = _RecordingLift(events)
+    stage.lift = _RecordingLift(events, **lift_kwargs)
     stage._scanning_position_lift_mm = None
     stage.move_x_to.side_effect = lambda mm, *a, **k: events.append("x")
     stage.move_y_to.side_effect = lambda mm, *a, **k: events.append("y")
     return stage
 
 
-def test_loading_lowers_the_lift_first_and_scanning_raises_it_back_last():
-    events = []
-    stage = _recording_stage(events)
+def _load_then_unload(stage, events, change_format_to=None):
     squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
     assert events == ["lift_lower", "y", "x"]
+    events.clear()
+    if change_format_to is not None:
+        stage.lift.sample_format = change_format_to
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
+    assert stage._scanning_position_lift_mm is None
+
+
+def test_unloading_raises_the_lift_to_the_sample_format_height_last():
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    _load_then_unload(stage, events)
+    assert events == ["y", "x", "lift_to_6.25"]
+
+
+def test_unloading_uses_the_new_format_height_after_a_format_change():
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25, "glass slide": 5.5})
+    _load_then_unload(stage, events, change_format_to="glass slide")
+    assert events == ["y", "x", "lift_to_5.5"]
+
+
+def test_unloading_without_a_saved_height_goes_back_for_the_same_format_only():
+    events = []
+    stage = _recording_stage(events)
+    _load_then_unload(stage, events)
+    assert events == ["y", "x", "lift_to_4.0"]
 
     events.clear()
-    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
-    assert events == ["y", "x", "lift_to_4.0"]
-    assert stage._scanning_position_lift_mm is None
+    stage = _recording_stage(events)
+    _load_then_unload(stage, events, change_format_to="glass slide")
+    assert events == ["y", "x"]  # a different sample with no height of its own: stays lowered
 
 
 def test_loading_without_a_lift_is_unchanged():
@@ -300,10 +333,51 @@ def test_loading_without_a_lift_is_unchanged():
     assert stage.move_x_to.call_count == 2 and stage.move_y_to.call_count == 2
 
 
+# --- XY homing interlock ------------------------------------------------------------------------------------------
+
+
+def _combined_with_lift(lift):
+    import squid.stage.pi
+
+    xy = MagicMock()
+    xy.get_config.return_value = squid.config.get_stage_config()
+    z = MagicMock()
+    z.z_mm_to_usteps.return_value = 100000
+    return squid.stage.pi.CombinedStage(xy_stage=xy, z_stage=z, lift=lift), xy
+
+
+def test_xy_homing_lowers_the_lift_first(lift):
+    lift.move_to(5.0)
+    _wait_for_pos(lift, 5.0)
+    stage, xy = _combined_with_lift(lift)
+    stage.home(x=True, y=False, z=False, theta=False)
+    assert lift.is_lowered()
+    xy.home.assert_called_once()
+
+
+def test_xy_homing_is_refused_when_the_lift_does_not_get_down():
+    stuck = MagicMock()
+    stuck.is_lowered.return_value = False
+    stuck.get_position_mm.return_value = 5.0
+    stuck.lowered_mm = 0.0
+    stage, xy = _combined_with_lift(stuck)
+    with pytest.raises(RuntimeError, match="XY homing refused"):
+        stage.home(x=True, y=True, z=False, theta=False)
+    stuck.lower.assert_called_once()
+    xy.home.assert_not_called()
+
+
+def test_z_only_homing_does_not_touch_the_lift():
+    lift = MagicMock()
+    stage, _ = _combined_with_lift(lift)
+    stage.home(x=False, y=False, z=True, theta=False)
+    lift.lower.assert_not_called()
+
+
 # --- microscope -----------------------------------------------------------------------------------------------------
 
 
-def _lift_scope(monkeypatch, tmp_path, presets=None):
+def _lift_scope(monkeypatch, tmp_path, heights=None, sample_format="96 well plate"):
     import control.microscope
 
     monkeypatch.setattr(_def, "USE_PI_FOCUS_STAGE", True, raising=False)
@@ -315,10 +389,11 @@ def _lift_scope(monkeypatch, tmp_path, presets=None):
     monkeypatch.setattr(_def, "HOMING_ENABLED_Y", False, raising=False)
     monkeypatch.setattr(_def, "USE_OBJECTIVE_TURRET", False)
     monkeypatch.setattr(_def, "USE_XERYON", False)
-    path = tmp_path / "presets.json"
-    if presets is not None:
-        path.write_text(json.dumps(presets))
-    monkeypatch.setattr(_def, "Z_LIFT_PRESETS_PATH", str(path), raising=False)
+    monkeypatch.setattr(_def, "WELLPLATE_FORMAT", sample_format)
+    path = tmp_path / "heights.json"
+    if heights is not None:
+        path.write_text(json.dumps({"heights_by_format": heights}))
+    monkeypatch.setattr(_def, "Z_LIFT_HEIGHTS_PATH", str(path), raising=False)
     return control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
 
 
@@ -326,7 +401,8 @@ def test_microscope_builds_the_lift_on_the_cephla_z(monkeypatch, tmp_path):
     scope = _lift_scope(monkeypatch, tmp_path)
     try:
         assert scope.z_lift is scope.stage.lift
-        assert scope.z_lift_presets.presets == []
+        assert scope.z_lift.heights.by_format == {}
+        assert scope.z_lift.current_format() == "96 well plate"
         # Squid's Z is still the V-308; the lift moves the stepper without touching it.
         scope.stage.home(x=False, y=False, z=True, theta=False)
         scope.stage.move_z_to(0.3)
@@ -339,10 +415,8 @@ def test_microscope_builds_the_lift_on_the_cephla_z(monkeypatch, tmp_path):
         scope.close()
 
 
-def test_homing_lowers_the_lift_then_rises_to_the_startup_preset(monkeypatch, tmp_path):
-    scope = _lift_scope(
-        monkeypatch, tmp_path, presets={"presets": [{"name": "work", "height_mm": 3.5}], "startup": "work"}
-    )
+def test_homing_lowers_the_lift_then_rises_to_the_sample_format_height(monkeypatch, tmp_path):
+    scope = _lift_scope(monkeypatch, tmp_path, heights={"96 well plate": 3.5, "glass slide": 2.0})
     try:
         scope.z_lift.move_to(6.0)
         _wait_for_pos(scope.z_lift, 6.0)
@@ -352,8 +426,18 @@ def test_homing_lowers_the_lift_then_rises_to_the_startup_preset(monkeypatch, tm
         scope.home_xyz()
         assert calls == ["lift_home"]
         assert _wait_for_pos(scope.z_lift, 0.0) == pytest.approx(0.0, abs=1e-3)
-        scope._raise_z_lift_to_startup_preset()
+        scope._raise_z_lift_to_sample_height()
         assert _wait_for_pos(scope.z_lift, 3.5) == pytest.approx(3.5, abs=1e-3)
+    finally:
+        scope.close()
+
+
+def test_homing_leaves_the_lift_lowered_for_a_format_without_a_height(monkeypatch, tmp_path):
+    scope = _lift_scope(monkeypatch, tmp_path, heights={"glass slide": 2.0})
+    try:
+        scope.home_xyz()
+        scope._raise_z_lift_to_sample_height()
+        assert _wait_for_pos(scope.z_lift, 0.0) == pytest.approx(0.0, abs=1e-3)
     finally:
         scope.close()
 

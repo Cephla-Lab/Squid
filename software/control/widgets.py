@@ -3898,7 +3898,7 @@ class ObjectivesWidget(QWidget):
         # refused then, since it retracts Z and releases the servo under that work.
         self.z_in_use = z_in_use
         # A Z lift (squid.stage.lift.LiftStage): a switch to a higher magnification lowers it first, and leaves it
-        # lowered (the new objective's height is a preset to pick in the Lift window).
+        # lowered (raised again with Raise To Sample Height on the Stages tab).
         self.z_lift = z_lift
         self._swap_lowers_lift = False
         self._swap_lift_lowered = False
@@ -3991,7 +3991,7 @@ class ObjectivesWidget(QWidget):
             QMessageBox.information(
                 self,
                 "Z Lift Lowered",
-                "The Z lift was lowered for the objective change. Raise it from the Lift window.",
+                "The Z lift was lowered for the objective change. Raise it with Raise To Sample Height on the Stages tab.",
             )
         # Re-enable only after the modal warning, which spins a nested event loop.
         self.dropdown.setEnabled(True)
@@ -4055,7 +4055,7 @@ class ObjectivesWidget(QWidget):
         self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
 
         lift_note = (
-            "The Z lift is lowered and stays lowered: raise it from the Lift window once the objective is in.\n\n"
+            "The Z lift is lowered and stays lowered: raise it with Raise To Sample Height on the Stages tab once the objective is in.\n\n"
             if self._swap_lift_lowered
             else ""
         )

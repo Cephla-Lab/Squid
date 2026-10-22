@@ -3,7 +3,8 @@ The Z lift of an upright system whose focus Z is a PI V-308 (see squid.stage.pi)
 
 The Cephla Z stepper sits under the XY stage and lifts it, with the sample, toward the objective. The V-308 is the
 focus Z the rest of Squid uses (CombinedStage routes Z to it), so the lift is a separate device: ``LiftStage`` moves
-the stepper with its own travel limits, ``LiftPresets`` keeps the named heights edited in the Lift window, and
+the stepper with its own travel limits, ``LiftHeights`` keeps the working height for each sample format (edited in
+the Z Lift window), and
 ``FocusWheelRouter`` hands the control panel's focus wheel to the V-308 (firmware >= 1.8).
 
 Lift Z grows upward (toward the objective). Homing drives it down to the bottom sensor, which becomes 0.
@@ -16,8 +17,7 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import control._def as _def
 import control.microcontroller
@@ -50,6 +50,10 @@ class LiftStage:
         self._axis = z_axis_config.model_copy(update={"MIN_POSITION": min_mm, "MAX_POSITION": max_mm})
         self._lowered_mm = self.clamp(lowered_mm)
         self._lock = threading.RLock()
+        # The working height for the loaded sample: heights[current_format()]. The Microscope sets both; the GUI
+        # points current_format_fn at its sample format selector.
+        self.heights: Optional["LiftHeights"] = None
+        self.current_format_fn: Callable[[], Optional[str]] = lambda: None
 
     @property
     def min_mm(self) -> float:
@@ -128,6 +132,15 @@ class LiftStage:
                 self._timeout_s(self.max_mm - self.min_mm, self._axis.MAX_SPEED / 5.0)
             )
 
+    def current_format(self) -> Optional[str]:
+        return self.current_format_fn()
+
+    def sample_height_mm(self) -> Optional[float]:
+        """The working height saved for the current sample format, or None if it has none."""
+        if self.heights is None:
+            return None
+        return self.heights.get(self.current_format())
+
     def lower(self):
         """Move down to the lowered position. Blocking. Returns the height it left, for restoring later."""
         with self._lock:
@@ -138,23 +151,17 @@ class LiftStage:
             return before
 
 
-@dataclass
-class LiftPreset:
-    name: str
-    height_mm: float
+class LiftHeights:
+    """The lift's working height for each sample format (e.g. "96 well plate": 6.25 mm), in a JSON file.
 
-
-class LiftPresets:
-    """Named lift heights, kept in a JSON file and edited in the Lift window.
-
-    ``startup`` names the preset the lift rises to after homing; None (the default) leaves it lowered.
-    A missing or unreadable file gives an empty list: the presets are a convenience, never a reason not to start.
+    The lift rises to the current format's height after the startup homing and on leaving the loading position;
+    a format with no height leaves it lowered there. A missing or unreadable file gives no heights: they are a
+    convenience, never a reason not to start.
     """
 
     def __init__(self, path: str):
         self._path = path
-        self.presets: List[LiftPreset] = []
-        self.startup: Optional[str] = None
+        self.by_format: Dict[str, float] = {}
         self._load()
 
     def _load(self):
@@ -163,32 +170,30 @@ class LiftPresets:
         try:
             with open(self._path, "r") as f:
                 data = json.load(f)
-            presets = [LiftPreset(str(p["name"]), float(p["height_mm"])) for p in data.get("presets", [])]
-            if not all(math.isfinite(p.height_mm) for p in presets):
+            heights = {str(k): float(v) for k, v in data.get("heights_by_format", {}).items()}
+            if not all(math.isfinite(v) for v in heights.values()):
                 raise ValueError("non-finite height")
-            startup = data.get("startup")
-        except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
-            _log.warning(f"Z lift presets file '{self._path}' could not be read ({e}); starting with no presets.")
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            _log.warning(f"Z lift heights file '{self._path}' could not be read ({e}); starting with none.")
             return
-        self.presets = presets
-        self.startup = startup if any(p.name == startup for p in presets) else None
+        self.by_format = heights
 
     def save(self):
-        data = {
-            "presets": [{"name": p.name, "height_mm": p.height_mm} for p in self.presets],
-            "startup": self.startup,
-        }
         os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
         tmp_path = f"{self._path}.tmp"
         with open(tmp_path, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump({"heights_by_format": self.by_format}, f, indent=2)
         os.replace(tmp_path, self._path)
 
-    def get(self, name: str) -> Optional[LiftPreset]:
-        return next((p for p in self.presets if p.name == name), None)
+    def get(self, sample_format: Optional[str]) -> Optional[float]:
+        return self.by_format.get(sample_format) if sample_format else None
 
-    def startup_preset(self) -> Optional[LiftPreset]:
-        return self.get(self.startup) if self.startup else None
+    def set(self, sample_format: str, height_mm: Optional[float]):
+        """Set (or, with None, clear) a format's height. Not saved until save()."""
+        if height_mm is None:
+            self.by_format.pop(sample_format, None)
+        else:
+            self.by_format[sample_format] = float(height_mm)
 
 
 class FocusWheelRouter:

@@ -708,8 +708,8 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
         self.stageUtils: Optional[widgets.StageUtils] = None
-        self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget on a Z lift system
-        self.zLiftControls = None  # its control panel row (loading position, open the window)
+        self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget (Utils > Z Lift...) on a Z lift system
+        self.zLiftControls = None  # its Stages tab row (position, raise to sample height, loading position)
         self.dacControlWidget: Optional[widgets.DACControWidget] = None
         self.autofocusWidget: Optional[widgets.AutoFocusWidget] = None
         self.piezoWidget: Optional[widgets.PiezoWidget] = None
@@ -979,9 +979,12 @@ class HighContentScreeningGui(QMainWindow):
             from control.widgets_z_lift import ZLiftControls, ZLiftWidget
 
             self.zLiftWidget = ZLiftWidget(
-                self.microscope.z_lift, self.microscope.z_lift_presets, stage_utils=self.stageUtils, parent=self
+                self.microscope.z_lift,
+                lambda: list(control._def.WELLPLATE_FORMAT_SETTINGS),
+                stage_utils=self.stageUtils,
+                parent=self,
             )
-            self.zLiftControls = ZLiftControls(self.zLiftWidget, self.stageUtils)
+            self.zLiftControls = ZLiftControls(self.microscope.z_lift, self.zLiftWidget.motion_guard, self.stageUtils)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -1026,6 +1029,10 @@ class HighContentScreeningGui(QMainWindow):
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
         )
+        if self.microscope.z_lift is not None:
+            # The lift's working height follows the sample format selected here.
+            self.microscope.z_lift.current_format_fn = lambda: self.wellplateFormatWidget.wellplate_format
+            self.wellplateFormatWidget.signalWellplateSettings.connect(self.zLiftWidget.refresh_formats)
         if WELLPLATE_FORMAT != "1536 well plate":
             self.wellSelectionWidget = widgets.WellSelectionWidget(WELLPLATE_FORMAT, self.wellplateFormatWidget)
         else:

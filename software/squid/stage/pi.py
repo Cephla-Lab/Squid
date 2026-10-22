@@ -436,11 +436,23 @@ class CombinedStage(AbstractStage):
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         xy_requested = x or y or theta
+        if xy_requested and self.lift is not None:
+            # Homing sweeps XY end to end: the sample must be clear of the objective, whoever asks for it.
+            self._lower_lift_for_xy_homing()
         if z:
             # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
             self._z.home(False, False, True, False, blocking or xy_requested)
         if xy_requested:
             self._xy.home(x, y, False, theta, blocking)
+
+    def _lower_lift_for_xy_homing(self):
+        """Lower the Z lift and check it got there; raise (homing nothing) if it did not."""
+        self.lift.lower()
+        if not self.lift.is_lowered():
+            raise RuntimeError(
+                f"XY homing refused: the Z lift reads {self.lift.get_position_mm():.3f} mm, not lowered "
+                f"({self.lift.lowered_mm:.3f} mm)."
+            )
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x or y or theta:

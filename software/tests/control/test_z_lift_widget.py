@@ -1,22 +1,24 @@
-"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, editable presets."""
+"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, heights per sample format, the Stages tab row."""
 
 import threading
 from unittest.mock import patch
 
-from qtpy.QtCore import QObject, Qt, Signal
-from qtpy.QtWidgets import QInputDialog, QMessageBox
+from qtpy.QtCore import QObject, Signal
+from qtpy.QtWidgets import QMessageBox
 
 from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton, ZLiftControls, ZLiftWidget
-from squid.stage.lift import LiftPreset, LiftPresets
+from squid.stage.lift import LiftHeights
 
 
 class _FakeLift:
     min_mm, max_mm, lowered_mm = 0.0, 8.0, 0.0
 
-    def __init__(self):
+    def __init__(self, tmp_path):
         self.height = 2.0
         self.calls = []
         self.threads = []
+        self.heights = LiftHeights(str(tmp_path / "heights.json"))
+        self.sample_format = "96 well plate"
 
     def clamp(self, mm):
         return min(max(mm, self.min_mm), self.max_mm)
@@ -26,6 +28,12 @@ class _FakeLift:
 
     def limit_switches(self):
         return (self.height <= 0.0, False)
+
+    def current_format(self):
+        return self.sample_format
+
+    def sample_height_mm(self):
+        return self.heights.get(self.sample_format)
 
     def _record(self, name, mm=None):
         self.calls.append(name if mm is None else (name, round(mm, 6)))
@@ -49,17 +57,18 @@ class _FakeLift:
         self.height = 0.0
 
 
-def _widget(qtbot, tmp_path, presets=None):
-    lift = _FakeLift()
-    store = LiftPresets(str(tmp_path / "presets.json"))
-    store.presets = list(presets or [])
-    widget = ZLiftWidget(lift, store)
+_FORMATS = ["glass slide", "96 well plate", "384 well plate"]
+
+
+def _widget(qtbot, tmp_path, stage_utils=None):
+    lift = _FakeLift(tmp_path)
+    widget = ZLiftWidget(lift, lambda: _FORMATS, stage_utils=stage_utils)
     qtbot.addWidget(widget)
-    return widget, lift, store
+    return widget, lift
 
 
 def test_readout_shows_position_and_sensors(qtbot, tmp_path):
-    widget, lift, _ = _widget(qtbot, tmp_path)
+    widget, lift = _widget(qtbot, tmp_path)
     lift.height = 0.0
     widget._refresh_readout()
     assert widget.label_position.text().startswith("0.000 mm")
@@ -68,51 +77,72 @@ def test_readout_shows_position_and_sensors(qtbot, tmp_path):
 
 
 def test_jog_runs_off_the_gui_thread_and_reenables(qtbot, tmp_path):
-    widget, lift, _ = _widget(qtbot, tmp_path)
+    widget, lift = _widget(qtbot, tmp_path)
     widget.spin_step.setValue(0.25)
-    with qtbot.waitSignal(widget._signal_move_finished, timeout=3000):
+    with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
         widget.btn_up.click()
     qtbot.waitUntil(lambda: widget.btn_up.isEnabled(), timeout=3000)
     assert lift.calls == [("move_relative", 0.25)]
     assert lift.threads[0] is not threading.main_thread()
 
 
-def test_add_set_and_go_to_preset_are_saved(qtbot, tmp_path):
-    widget, lift, store = _widget(qtbot, tmp_path)
-    with patch.object(QInputDialog, "getText", return_value=("40x", True)):
-        widget.btn_preset_add.click()
-    assert [(p.name, p.height_mm) for p in LiftPresets(store._path).presets] == [("40x", 2.0)]
+def test_table_lists_every_format_and_marks_the_current_one(qtbot, tmp_path):
+    widget, lift = _widget(qtbot, tmp_path)
+    assert widget.table.rowCount() == 3
+    assert widget.table.item(1, 0).text() == "96 well plate  (current)"
+    assert widget.table.item(1, 0).font().bold()
+    lift.sample_format = "glass slide"
+    widget.refresh_formats()
+    assert widget.table.item(0, 0).text() == "glass slide  (current)"
 
+
+def test_set_go_to_and_clear_a_format_height_are_saved(qtbot, tmp_path):
+    widget, lift = _widget(qtbot, tmp_path)
     lift.height = 3.25
-    widget.table.selectRow(0)
+    widget.table.selectRow(2)  # 384 well plate
     with patch.object(QMessageBox, "question", return_value=QMessageBox.Ok):
-        widget.btn_preset_set.click()
-    assert LiftPresets(store._path).presets[0].height_mm == 3.25
+        widget.btn_height_set.click()
+    assert LiftHeights(str(tmp_path / "heights.json")).by_format == {"384 well plate": 3.25}
 
     lift.height = 0.0
-    widget.table.selectRow(0)
-    with qtbot.waitSignal(widget._signal_move_finished, timeout=3000):
-        widget.btn_preset_go.click()
+    widget.table.selectRow(2)
+    with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
+        widget.btn_height_go.click()
     assert lift.calls[-1] == ("move_to", 3.25)
 
+    widget.table.selectRow(2)
+    widget.btn_height_clear.click()
+    assert LiftHeights(str(tmp_path / "heights.json")).by_format == {}
 
-def test_editing_cells_validates_and_startup_is_unique(qtbot, tmp_path):
-    widget, _, store = _widget(qtbot, tmp_path, [LiftPreset("a", 1.0), LiftPreset("b", 2.0)])
-    widget._fill_presets_table()
 
+def test_editing_a_height_cell_validates(qtbot, tmp_path):
+    widget, lift = _widget(qtbot, tmp_path)
     with patch.object(QMessageBox, "warning") as warning:
         widget.table.item(0, 1).setText("99")  # outside the travel: refused and reverted
     warning.assert_called_once()
-    assert store.presets[0].height_mm == 1.0 and widget.table.item(0, 1).text() == "1.000"
+    assert lift.heights.get("glass slide") is None and widget.table.item(0, 1).text() == ""
+    widget.table.item(0, 1).setText("4.5")
+    assert lift.heights.get("glass slide") == 4.5
+    widget.table.item(0, 1).setText("")
+    assert lift.heights.get("glass slide") is None
 
-    widget.table.item(1, 0).setText("b2")
-    assert store.presets[1].name == "b2"
 
-    widget.table.item(0, 2).setCheckState(Qt.Checked)
-    widget.table.item(1, 2).setCheckState(Qt.Checked)
-    assert store.startup == "b2"
-    assert widget.table.item(0, 2).checkState() == Qt.Unchecked
-    assert LiftPresets(store._path).startup == "b2"
+def test_stages_row_shows_the_lift_and_raises_to_the_sample_height(qtbot, tmp_path):
+    utils = _FakeStageUtils()
+    widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
+    row = ZLiftControls(lift, widget.motion_guard, utils)
+    qtbot.addWidget(row)
+    lift.height = 1.5
+    row.refresh()
+    assert row.label_position.text() == "1.500 mm"
+    assert not row.btn_raise.isEnabled()  # no height for 96 well plate yet
+
+    lift.heights.set("96 well plate", 6.0)
+    row.refresh()
+    assert row.btn_raise.isEnabled()
+    with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
+        row.btn_raise.click()
+    assert lift.calls == [("move_to", 6.0)]
 
 
 class _FakeStageUtils(QObject):
@@ -148,39 +178,41 @@ def test_loading_buttons_share_one_toggle(qtbot):
 
 def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
     utils = _FakeStageUtils()
-    lift = _FakeLift()
-    widget = ZLiftWidget(lift, LiftPresets(str(tmp_path / "p.json")), stage_utils=utils)
-    controls = ZLiftControls(widget, utils)
-    qtbot.addWidget(widget)
-    qtbot.addWidget(controls)
+    widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
+    lift.heights.set("96 well plate", 6.0)
+    row = ZLiftControls(lift, widget.motion_guard, utils)
+    qtbot.addWidget(row)
 
-    controls.btn_loading.click()  # the Stages-tab button, not the window's
+    row.btn_loading.click()  # the Stages-tab button, not the window's
     assert utils.switches == 1
-    assert not widget.btn_up.isEnabled() and not widget.btn_preset_go.isEnabled()
-    assert not widget.btn_loading.isEnabled()
+    assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
+    assert not widget.btn_loading.isEnabled() and not row.btn_raise.isEnabled()
     widget._jog(+1)  # refused even if a click got through
+    row._raise_to_sample_height()
     assert lift.calls == []
 
     utils.signal_loading_position_reached.emit()
-    assert widget.btn_up.isEnabled() and controls.btn_loading.isEnabled()
+    assert widget.btn_up.isEnabled() and row.btn_loading.isEnabled() and row.btn_raise.isEnabled()
 
 
 def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
     utils = _FakeStageUtils()
-    lift = _FakeLift()
+    widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
     release = threading.Event()
     real_move = lift.move_relative
-    lift.move_relative = lambda delta_mm, blocking=True: (release.wait(5), real_move(delta_mm))
-    lift.move_relative.__name__ = "move_relative"
-    widget = ZLiftWidget(lift, LiftPresets(str(tmp_path / "p.json")), stage_utils=utils)
-    controls = ZLiftControls(widget, utils)
-    qtbot.addWidget(widget)
-    qtbot.addWidget(controls)
+
+    def slow_move_relative(delta_mm, blocking=True):
+        release.wait(5)
+        real_move(delta_mm)
+
+    lift.move_relative = slow_move_relative
+    row = ZLiftControls(lift, widget.motion_guard, utils)
+    qtbot.addWidget(row)
 
     widget.btn_up.click()
-    assert not controls.btn_loading.isEnabled() and not widget.btn_loading.isEnabled()
-    controls.btn_loading._toggle()
+    assert not row.btn_loading.isEnabled() and not widget.btn_loading.isEnabled()
+    row.btn_loading._toggle()
     assert utils.switches == 0
-    with qtbot.waitSignal(widget._signal_move_finished, timeout=3000):
+    with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
         release.set()
-    qtbot.waitUntil(lambda: controls.btn_loading.isEnabled(), timeout=3000)
+    qtbot.waitUntil(lambda: row.btn_loading.isEnabled(), timeout=3000)
