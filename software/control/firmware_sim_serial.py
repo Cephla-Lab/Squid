@@ -99,6 +99,7 @@ class FirmwareConstants:
             "SET_ILLUMINATION_INTENSITY_FACTOR",
             "SET_LIMIT_SWITCH_CONFIG",
             "SET_FOCUS_WHEEL_MODE",
+            "SET_PANEL_LOCK",
             "CONFIGURE_STEPPER_DRIVER",
             "SET_MAX_VELOCITY_ACCELERATION",
             "SET_LEAD_SCREW_PITCH",
@@ -190,6 +191,7 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
         self.focus_wheel_power_up_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)  # EEPROM 8-11
         self.focus_wheel_count = 0
+        self.panel_locked = False  # SET_PANEL_LOCK: the control panel moves nothing
 
         # Validation tracking
         # Note: validation_errors accumulates across commands for debugging.
@@ -437,8 +439,16 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.w = 0
             self.w2 = 0
             self._enter_focus_wheel_mode(self.focus_wheel_power_up_mode)
+            self.panel_locked = False
         elif cmd_code == self.fw.get("INITIALIZE"):
             self._enter_focus_wheel_mode(self.focus_wheel_power_up_mode)
+            self.panel_locked = False
+        elif cmd_code == self.fw.get("SET_PANEL_LOCK"):
+            if self.firmware_version >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE:  # older firmware: no handler, a no-op
+                if cmd[2] > 1:
+                    status = self.fw.get("CMD_EXECUTION_ERROR", 4)
+                else:
+                    self.panel_locked = bool(cmd[2])
         elif cmd_code == self.fw.get("SET_FOCUS_WHEEL_MODE"):
             if not self._set_focus_wheel_mode(cmd[2], cmd[3]):
                 status = self.fw.get("CMD_EXECUTION_ERROR", 4)
@@ -472,7 +482,10 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.focus_wheel_mode = mode
 
     def turn_focus_wheel(self, ticks: int) -> None:
-        """Simulate the control panel's focus wheel: moves Z in DRIVES_Z, counts in TO_HOST (wrapping int32)."""
+        """Simulate the control panel's focus wheel: moves Z in DRIVES_Z, counts in TO_HOST (wrapping int32);
+        nothing while the panel is locked."""
+        if self.panel_locked:
+            return
         if self.focus_wheel_mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1):
             self.focus_wheel_count = ((self.focus_wheel_count + ticks + 2**31) % 2**32) - 2**31
         else:

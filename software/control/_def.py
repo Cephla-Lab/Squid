@@ -213,6 +213,7 @@ class CMD_SET:
     RESET = 255
     SET_LIMIT_SWITCH_CONFIG = 64
     SET_FOCUS_WHEEL_MODE = 65  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE (see FOCUS_WHEEL_MODE)
+    SET_PANEL_LOCK = 66  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE: [2] 1 = the control panel moves nothing
 
 
 class CMD_SET2:

@@ -30,8 +30,8 @@ void test_command_ids_are_unique(void) {
         SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW,
         // Configurable limit switches
         SET_LIMIT_SWITCH_CONFIG,
-        // Focus wheel to host (firmware v1.8+)
-        SET_FOCUS_WHEEL_MODE
+        // Focus wheel to host, panel lock (firmware v1.8+)
+        SET_FOCUS_WHEEL_MODE, SET_PANEL_LOCK
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -66,8 +66,8 @@ void test_command_ids_fit_in_byte(void) {
         SET_ENCODER_REPORTING, SET_RAMP_PROFILE, SET_COMPLETION_WINDOW,
         // Configurable limit switches
         SET_LIMIT_SWITCH_CONFIG,
-        // Focus wheel to host (firmware v1.8+)
-        SET_FOCUS_WHEEL_MODE
+        // Focus wheel to host, panel lock (firmware v1.8+)
+        SET_FOCUS_WHEEL_MODE, SET_PANEL_LOCK
     };
 
     int num_commands = sizeof(commands) / sizeof(commands[0]);
@@ -130,6 +130,7 @@ void test_firmware_1_6_wheel_commands(void) {
 // clear of the ENC_FLAG_* bits, so a packet cannot be read as both an encoder and a wheel report.
 void test_firmware_1_8_focus_wheel_mode(void) {
     TEST_ASSERT_EQUAL(65, SET_FOCUS_WHEEL_MODE);
+    TEST_ASSERT_EQUAL(66, SET_PANEL_LOCK);
     TEST_ASSERT_EQUAL(0, FOCUS_WHEEL_DRIVES_Z);
     TEST_ASSERT_EQUAL(1, FOCUS_WHEEL_TO_HOST);
     TEST_ASSERT_EQUAL(7, FOCUS_WHEEL_FLAG_REPORTING);

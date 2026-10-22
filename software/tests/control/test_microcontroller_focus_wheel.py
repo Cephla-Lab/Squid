@@ -146,3 +146,54 @@ def test_older_firmware_gets_no_power_up_mode(monkeypatch):
         assert sim.focus_wheel_power_up_mode == FOCUS_WHEEL_MODE.DRIVES_Z  # nothing sent
     finally:
         mcu.close()
+
+
+def test_panel_lock_reaches_the_controller_and_stops_the_wheel():
+    mcu, sim = _mcu(FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE)
+    try:
+        assert mcu.supports_panel_lock() and not sim.panel_locked
+        mcu.set_panel_lock(True)
+        mcu.wait_till_operation_is_completed()
+        assert sim.panel_locked
+        z_before = sim.z
+        mcu.set_focus_wheel_mode(FOCUS_WHEEL_MODE.DRIVES_Z)
+        mcu.wait_till_operation_is_completed()
+        sim.turn_focus_wheel(500)
+        assert sim.z == z_before  # a locked panel moves nothing
+        mcu.set_panel_lock(False)
+        mcu.wait_till_operation_is_completed()
+        assert not sim.panel_locked
+    finally:
+        mcu.close()
+
+
+@pytest.mark.parametrize("command", ["reset", "initialize_drivers"])
+def test_reset_and_initialize_unlock_the_panel(command):
+    mcu, sim = _mcu(FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE)
+    try:
+        mcu.set_panel_lock(True)
+        mcu.wait_till_operation_is_completed()
+        getattr(mcu, command)()
+        if command != "reset":
+            mcu.wait_till_operation_is_completed()
+        assert not sim.panel_locked
+    finally:
+        mcu.close()
+
+
+def test_connect_unlocks_a_panel_left_locked():
+    sim = FirmwareSimSerial(strict=True, firmware_version=FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE)
+    sim.panel_locked = True  # e.g. Squid closed at the loading position, then restarted with --skip-init
+    mcu = Microcontroller(serial_device=sim, reset_and_initialize=False)
+    try:
+        assert not sim.panel_locked
+    finally:
+        mcu.close()
+
+
+def test_older_firmware_has_no_panel_lock():
+    mcu, sim = _mcu(LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+    try:
+        assert not mcu.supports_panel_lock()
+    finally:
+        mcu.close()

@@ -125,6 +125,7 @@ JoystickPanelLink joystick_panel = {false, 0, false, 0, false, 0};
 uint8_t focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;
 uint8_t focus_wheel_power_up_mode = FOCUS_WHEEL_DRIVES_Z;
 int32_t focus_wheel_host_count = 0;
+bool panel_locked_by_host = false;
 
 // btns
 uint8_t btns;

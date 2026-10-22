@@ -2355,16 +2355,33 @@ class HighContentScreeningGui(QMainWindow):
             if widget is not None:
                 self._loading_position_saved_enabled[name] = widget.isEnabled()
                 widget.setEnabled(False)
+        self._set_control_panel_lock(True)
 
     def _unlock_stage_after_loading_position(self):
         if not self._loading_position_locked:
             return
         self._loading_position_locked = False
+        self._set_control_panel_lock(False)
         for name, was_enabled in self._loading_position_saved_enabled.items():
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setEnabled(was_enabled)
         self._loading_position_saved_enabled = {}
+
+    def _set_control_panel_lock(self, locked: bool):
+        """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
+        (firmware >= 1.8; older firmware cannot, which is logged)."""
+        mcu = self.microcontroller
+        if mcu is None:
+            return
+        if not mcu.supports_panel_lock():
+            if locked:
+                self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
+            return
+        try:
+            mcu.set_panel_lock(locked)
+        except Exception:
+            self.log.exception("Could not change the control panel lock")
 
     def _stage_moves_blocked_by_objective_swap(self, what: str) -> bool:
         """True (and logged) while an objective swap runs, or on a Z lift system at the loading position."""

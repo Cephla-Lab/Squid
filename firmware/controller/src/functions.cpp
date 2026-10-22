@@ -1,5 +1,6 @@
 #include "functions.h"
 #include "utils/focus_wheel.h"
+#include "utils/panel_lock.h"
 
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
@@ -580,6 +581,9 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
       Serial.println("! joystick packet dropped !");
     return;
   }
+
+  // Locked by the host (SET_PANEL_LOCK): the joystick reads centred and the wheel moves nothing
+  pl_apply(panel_locked_by_host, &in);
 
   // The wheel delta the link accepted (reconnects re-based, noise dropped) goes to Z, or with FOCUS_WHEEL_TO_HOST to
   // the count the status packet reports (SET_FOCUS_WHEEL_MODE)

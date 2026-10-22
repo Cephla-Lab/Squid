@@ -638,6 +638,26 @@ void test_focus_wheel_mode_is_registered_and_gated(void)
     TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(store, "EEPROM.write("));
 }
 
+void test_panel_lock_is_registered_cleared_and_applied(void)
+{
+    const char *cmds = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(cmds);
+    TEST_ASSERT_NOT_NULL(strstr(cmds, "cmd_map[SET_PANEL_LOCK]"));
+    // set only by the command, cleared by RESET and INITIALIZE
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "panel_locked_by_host = lock;"));
+    TEST_ASSERT_EQUAL_UINT32(2, count_occurrences(cmds, "panel_locked_by_host = false;"));
+    // every accepted packet goes through the lock before any of it is used
+    const char *fn = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL(fn);
+    const char *lock = strstr(fn, "pl_apply(panel_locked_by_host, &in);");
+    const char *route = strstr(fn, "fw_route_delta(focus_wheel_mode, in.focus_delta");
+    const char *jx = strstr(fn, "joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;");
+    TEST_ASSERT_NOT_NULL(lock);
+    TEST_ASSERT_NOT_NULL(route);
+    TEST_ASSERT_NOT_NULL(jx);
+    TEST_ASSERT_TRUE_MESSAGE(lock < route && lock < jx, "the panel lock must be applied before the input is used");
+}
+
 void test_focus_wheel_delta_is_routed_by_mode(void)
 {
     const char *fn = load_source("src/functions.cpp");
@@ -710,6 +730,7 @@ int main(int argc, char **argv) {
 
     // Focus wheel to host (source scan)
     RUN_TEST(test_focus_wheel_mode_is_registered_and_gated);
+    RUN_TEST(test_panel_lock_is_registered_cleared_and_applied);
     RUN_TEST(test_focus_wheel_delta_is_routed_by_mode);
     RUN_TEST(test_status_packet_reports_the_focus_wheel_count);
 

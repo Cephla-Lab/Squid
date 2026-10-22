@@ -64,6 +64,7 @@ void init_callbacks()
     cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[SET_FOCUS_WHEEL_MODE] = &callback_set_focus_wheel_mode;
+    cmd_map[SET_PANEL_LOCK] = &callback_set_panel_lock;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -250,6 +251,27 @@ void callback_set_focus_wheel_mode()
         focus_wheel_power_up_save(mode);
     }
     focus_wheel_enter(mode);
+}
+
+// SET_PANEL_LOCK (66): [2] 1 locks the control panel, 0 unlocks it. Locked, an accepted panel packet
+// moves nothing (utils/panel_lock.h). Locking also releases the stick now, so a joystick move under way
+// stops at the next check_joystick() through its rest-position branch. Refused for any other value.
+// Not saved: RESET and INITIALIZE unlock.
+void callback_set_panel_lock()
+{
+    uint8_t lock = buffer_rx[2];
+    if (lock > 1)
+    {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
+    panel_locked_by_host = lock;
+    if (lock)
+    {
+        joystick_delta_x = 0;
+        joystick_delta_y = 0;
+        flag_read_joystick = true;
+    }
 }
 
 // SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
@@ -491,6 +513,9 @@ void callback_initialize()
     Y_use_encoder = false;
     Z_use_encoder = false;
 
+    // The control panel is unlocked (1.8; SET_PANEL_LOCK is not saved)
+    panel_locked_by_host = false;
+
     // The focus wheel goes back to its saved power-up mode (1.8). focusPosition was zeroed above, which
     // is what DRIVES_Z resumes from here: no resync from Z's target.
     if (focus_wheel_power_up_mode == FOCUS_WHEEL_TO_HOST && focus_wheel_mode != FOCUS_WHEEL_TO_HOST)
@@ -532,8 +557,10 @@ void callback_reset()
     X_use_encoder = false;
     Y_use_encoder = false;
     Z_use_encoder = false;
-    // Firmware 1.8: the focus wheel goes back to its saved power-up mode (encoder reporting is off by now)
+    // Firmware 1.8: the focus wheel goes back to its saved power-up mode (encoder reporting is off by now),
+    // and the control panel is unlocked (SET_PANEL_LOCK is not saved)
     focus_wheel_enter(focus_wheel_power_up_mode);
+    panel_locked_by_host = false;
     for (uint8_t i = 0; i < TOTAL_AXES; i++)
     {
         completion_window_units[i] = 0;

@@ -92,6 +92,9 @@ static const int SET_LIMIT_SWITCH_CONFIG = 64;  // [2]=axis, [3]=LIMIT_SWITCH_* 
 // Firmware 1.8. Power-up, RESET and INITIALIZE use the saved power-up mode (FOCUS_WHEEL_DRIVES_Z until one is
 // saved): a lift system saves FOCUS_WHEEL_TO_HOST so the wheel moves nothing while no host runs.
 static const int SET_FOCUS_WHEEL_MODE = 65;     // [2]=FOCUS_WHEEL_* mode, [3]=FOCUS_WHEEL_SAVE_* flags
+// Firmware 1.8. Locked, the control panel moves nothing: joystick X/Y reads centred and wheel turns are dropped
+// (the wheel baseline still follows, so nothing is released at unlock). Not saved; RESET and INITIALIZE unlock.
+static const int SET_PANEL_LOCK = 66;           // [2]=1 lock, 0 unlock
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_LIMIT_SWITCH_CONFIG nibble
