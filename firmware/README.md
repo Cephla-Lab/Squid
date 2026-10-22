@@ -113,6 +113,8 @@ If you prefer Arduino IDE:
 3. Select Board: "Teensy 4.1"
 4. Click Upload
 
+**FastLED version.** The controller's USB serial port carries the binary host protocol, and FastLED 3.10.5 and later print their log on it. The firmware refuses to build with such a FastLED (`#error "FastLED logging is compiled in ..."`) unless the logging is compiled out with `-D FASTLED_LOG_VERBOSITY=0` on every compile, FastLED's own sources included, so a `#define` in the sketch does not work. `platformio.ini` sets it; Teensyduino's compile recipes take no extra flags. In the Arduino IDE, use Teensyduino's bundled FastLED (3.4.0 in Teensyduino 1.59 and 1.60), which predates that logging. If the build stops with that error, the IDE picked up a newer FastLED, e.g. one installed with the Library Manager: remove it, or build with PlatformIO.
+
 ### Joystick (Teensy LC)
 
 1. Install [Teensyduino](https://www.pjrc.com/teensy/teensyduino.html)
