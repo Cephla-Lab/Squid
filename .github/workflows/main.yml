@@ -88,6 +88,6 @@ jobs:
         run: python3 -m pytest tests/control/test_objective_swap_gui.py
         working-directory: ./software
         env:
-          QT_API: pyqt5
-          PYTEST_QT_API: pyqt5
+          QT_API: pyqt6
+          PYTEST_QT_API: pyqt6
           SQUID_PYTEST_HARD_EXIT: "1"
