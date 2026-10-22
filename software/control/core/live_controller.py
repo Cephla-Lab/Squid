@@ -10,6 +10,7 @@ import squid.logging
 from control.microcontroller import Microcontroller
 from control.serial_peripherals import SerialDeviceError
 from squid.abc import CameraAcquisitionMode, AbstractCamera
+from control.rcm_scan_trigger import ConfocalScanFailedError
 
 from control._def import *
 from control.core.config.utils import apply_confocal_override
@@ -52,6 +53,7 @@ class LiveController(QObject):
         self.fps_trigger = 1
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count = 0
+        self._confocal_scan_failed = False  # log a confocal-unit trigger failure once, not on every frame
         self.timer_trigger: Optional[threading.Timer] = None
 
         self.trigger_ID = -1
@@ -400,6 +402,7 @@ class LiveController(QObject):
             self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 1)
 
     def stop_live(self):
+        self._confocal_scan_failed = False
         if self.is_live:
             self.is_live = False
             if self.trigger_mode == TriggerMode.SOFTWARE:
@@ -470,7 +473,11 @@ class LiveController(QObject):
             # CONTINUOUS free-runs, so there is no trigger to send.
             if self.trigger_mode in (TriggerMode.HARDWARE, TriggerMode.SOFTWARE):
                 self.trigger_ID = self.trigger_ID + 1
-                self.camera.send_trigger(self.camera.get_exposure_time())
+                try:
+                    self.camera.send_trigger(self.camera.get_exposure_time())
+                except ConfocalScanFailedError as e:
+                    self._log.error(f"Snap: {e}")
+                    return False
 
             got_frame = self.camera.read_frame() is not None
             if not got_frame:
@@ -539,7 +546,17 @@ class LiveController(QObject):
 
         self.trigger_ID = self.trigger_ID + 1
 
-        self.camera.send_trigger(self.camera.get_exposure_time())
+        try:
+            self.camera.send_trigger(self.camera.get_exposure_time())
+        except ConfocalScanFailedError as e:
+            # Keep live view going (the timer only reschedules when this returns) and say why it is blank.
+            if not self._confocal_scan_failed:
+                self._log.error(f"Live view: {e}")
+                self._confocal_scan_failed = True
+            return True
+        if self._confocal_scan_failed:
+            self._log.info("Live view: confocal triggering works again")
+            self._confocal_scan_failed = False
 
         if self.trigger_mode == TriggerMode.SOFTWARE:
             if self.control_illumination and self.illumination_on == False:
@@ -579,6 +596,7 @@ class LiveController(QObject):
 
     # trigger mode and settings
     def set_trigger_mode(self, mode):
+        self._confocal_scan_failed = False
         if mode == TriggerMode.SOFTWARE:
             if self.is_live and (
                 self.trigger_mode == TriggerMode.HARDWARE and self.use_internal_timer_for_hardware_trigger

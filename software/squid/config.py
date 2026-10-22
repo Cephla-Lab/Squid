@@ -342,6 +342,7 @@ class ToupcamCameraModel(enum.Enum):
     ITR3CMOS26000KMA = "ITR3CMOS26000KMA"
     ITR3CMOS09000KMA = "ITR3CMOS09000KMA"
     ITR3CMOS26000KPA = "ITR3CMOS26000KPA"
+    ITR10CMOS26000KMA = "ITR10CMOS26000KMA"
 
     @staticmethod
     def from_string(cam_string: str) -> Optional["ToupcamCameraModel"]:
@@ -442,6 +443,9 @@ class CameraPixelFormat(enum.Enum):
     MONO8 = "MONO8"
     MONO10 = "MONO10"
     MONO12 = "MONO12"
+    # 12-bit data packed 2 pixels per 3 bytes on the wire to save bandwidth.  Frames carry the same left-aligned
+    # uint16 array as MONO12.
+    MONO12PACKED = "MONO12PACKED"
     MONO14 = "MONO14"
     MONO16 = "MONO16"
     RGB24 = "RGB24"
@@ -484,6 +488,7 @@ _PIXEL_FORMAT_BIT_DEPTH = {
     CameraPixelFormat.MONO8: 8,
     CameraPixelFormat.MONO10: 10,
     CameraPixelFormat.MONO12: 12,
+    CameraPixelFormat.MONO12PACKED: 12,
     CameraPixelFormat.MONO14: 14,
     CameraPixelFormat.MONO16: 16,
     CameraPixelFormat.RGB24: 8,

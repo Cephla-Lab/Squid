@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import control._def
+import control.utils
 from control.acquisition_yaml_loader import AcquisitionYAMLData
 from control.utils import serialize_for_yaml
 
@@ -23,17 +24,15 @@ class AppliedSettings:
     nz: int
 
 
-def parse_wells(wells: str, wellplate_settings: dict) -> Dict[str, Tuple[float, float]]:
-    """'A1:B3' (range) or 'A1,A2,B1' (list) -> {well_id: (x_mm, y_mm)} from a1_x_mm/a1_y_mm/well_spacing_mm.
+def parse_wells(wells: str, wellplate_format: str) -> Dict[str, Tuple[float, float]]:
+    """'A1:B3' (range) or 'A1,A2,B1' (list) -> {well_id: (x_mm, y_mm)} for the named plate format.
 
-    Descriptors that do not look like a well are skipped (the TCP command's historical behaviour).
+    Resolves through plate_transform_for(wellplate_format), so WELLPLATE_OFFSET (and any measured
+    placement) is applied exactly as at every other well->stage site. An unknown format raises via
+    get_wellplate_settings instead of silently falling back to invented geometry. Descriptors that do
+    not look like a well are skipped (the TCP command's historical behaviour).
     """
-
-    def row_to_index(row: str) -> int:
-        index = 0
-        for char in row.upper():
-            index = index * 26 + (ord(char) - ord("A") + 1)
-        return index - 1
+    from control.core.plate_transform import plate_transform_for
 
     def index_to_row(index: int) -> str:
         index += 1
@@ -44,9 +43,7 @@ def parse_wells(wells: str, wellplate_settings: dict) -> Dict[str, Tuple[float, 
             index //= 26
         return row
 
-    a1_x = wellplate_settings.get("a1_x_mm", 0)
-    a1_y = wellplate_settings.get("a1_y_mm", 0)
-    spacing = wellplate_settings.get("well_spacing_mm", 9)
+    transform = plate_transform_for(wellplate_format)
 
     well_coords: Dict[str, Tuple[float, float]] = {}
     pattern = r"([A-Za-z]+)(\d+):?([A-Za-z]*)(\d*)"
@@ -57,21 +54,21 @@ def parse_wells(wells: str, wellplate_settings: dict) -> Dict[str, Tuple[float, 
             continue
 
         start_row, start_col, end_row, end_col = match.groups()
-        start_row_idx = row_to_index(start_row)
+        start_row_idx = control.utils.row_to_index(start_row)
         start_col_idx = int(start_col) - 1
 
         if end_row and end_col:
             # Range like A1:B3
-            end_row_idx = row_to_index(end_row)
+            end_row_idx = control.utils.row_to_index(end_row)
             end_col_idx = int(end_col) - 1
             for row_idx in range(start_row_idx, end_row_idx + 1):
                 for col_idx in range(start_col_idx, end_col_idx + 1):
                     well_id = index_to_row(row_idx) + str(col_idx + 1)
-                    well_coords[well_id] = (a1_x + col_idx * spacing, a1_y + row_idx * spacing)
+                    well_coords[well_id] = transform.well_center_mm(row_idx, col_idx)
         else:
             # Single well like A1
             well_id = start_row.upper() + start_col
-            well_coords[well_id] = (a1_x + start_col_idx * spacing, a1_y + start_row_idx * spacing)
+            well_coords[well_id] = transform.well_center_mm(start_row_idx, start_col_idx)
 
     return well_coords
 
@@ -97,8 +94,7 @@ def _configure_regions(scan_coordinates, microscope, data: AcquisitionYAMLData, 
     regions = data.wellplate_regions if data.widget_type == "wellplate" else data.flexible_positions
 
     if wells:
-        wellplate_settings = control._def.get_wellplate_settings(data.wellplate_format or "96 well plate")
-        well_coords = parse_wells(wells, wellplate_settings)
+        well_coords = parse_wells(wells, data.wellplate_format or "96 well plate")
         if not well_coords:
             raise ValueError(f"Could not parse wells: {wells}")
         for well_id, (well_x, well_y) in well_coords.items():

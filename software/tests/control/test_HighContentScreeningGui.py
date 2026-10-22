@@ -5,6 +5,7 @@ import pytest
 import control._def
 
 import control.gui_hcs
+import control.widgets
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -89,6 +90,33 @@ def test_acquisition_start_emits_selected_channels(qtbot, confirm_exit_yes):
         win.toggleAcquisitionStart(False)
 
 
+def test_acquisition_finished_flushes_napari_multichannel_viewer(qtbot, monkeypatch, confirm_exit_yes):
+    """The multichannel viewer coalesces refreshes and shows 2D while acquiring; the end of the
+    acquisition must reach it to draw the final plane and restore the user's 2D/3D mode."""
+    calls = []
+    monkeypatch.setattr(control.widgets.NapariMultiChannelWidget, "finishAcquisition", lambda self: calls.append(self))
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(win)
+
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget]
+
+    # Performance Mode disconnects the napari display feeds; enabled mid-acquisition it must
+    # not cut the viewer off from the end of the run (it would stay in 2D).
+    win.performanceModeToggle.setChecked(True)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 2
+
+    # Leaving Performance Mode reconnects the feeds without connecting this a second time.
+    win.performanceModeToggle.setChecked(False)
+    win.togglePerformanceMode()
+    win.multipointController.acquisition_finished.emit()
+    assert calls == [win.napariMultiChannelWidget] * 3
+
+
 def test_image_display_signals_connected_once(qtbot, monkeypatch, confirm_exit_yes):
     """Regression: make_connections and makeNapariConnections both used to wire the
     non-Napari image-display signals, causing slots to fire twice per click/scroll."""
@@ -143,6 +171,58 @@ def test_cleanup_closes_stage_before_microcontroller(qtbot, monkeypatch, confirm
     gui._cleanup_common(for_restart=True)
 
     assert calls == ["stage", "microcontroller"]
+
+
+def test_cleanup_continues_when_the_light_source_fails_to_close(qtbot, monkeypatch, confirm_exit_yes):
+    """A light source that errors on shut_down (e.g. its link dropped) is only logged, even on a full
+    shutdown, so the stage and microcontroller are still closed."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    class DroppedLightSource:
+        def shut_down(self):
+            raise ConnectionError("light source link dropped")
+
+    scope.illumination_controller.light_source = DroppedLightSource()
+    calls = []
+    gui.stage.close = lambda: calls.append("stage")
+    original_micro_close = gui.microcontroller.close
+
+    def recording_micro_close():
+        calls.append("microcontroller")
+        original_micro_close()
+
+    monkeypatch.setattr(gui.microcontroller, "close", recording_micro_close)
+    gui.closeEvent = lambda event: event.accept()  # keep teardown from re-running cleanup
+
+    gui._cleanup_common(for_restart=False)
+
+    assert calls == ["stage", "microcontroller"]
+
+
+def test_cleanup_stops_the_versalase_tab_before_shutting_the_lasers_down(qtbot, monkeypatch, confirm_exit_yes):
+    """No status read may use the lasers while they are shut down and their devices closed."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    order = []
+
+    class RecordingLightSource:
+        def shut_down(self):
+            order.append("lasers shut down")
+
+    class RecordingTab:
+        def stop(self):
+            order.append("tab stopped")
+
+    scope.illumination_controller.light_source = RecordingLightSource()
+    gui.versaLaseWidget = RecordingTab()
+    gui.closeEvent = lambda event: event.accept()  # keep teardown from re-running cleanup
+
+    gui._cleanup_common(for_restart=True)
+
+    assert order == ["tab stopped", "lasers shut down"]
 
 
 def test_create_simulated_hcs_with_dragonfly(qtbot, monkeypatch, confirm_exit_yes):
