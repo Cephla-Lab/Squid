@@ -344,7 +344,7 @@ void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
-    first_packet_from_joystick_panel = true;
+    jp_forget_wheel(&joystick_panel);
     // Re-initialise the TMC4361A and its power stage on each stage axis.
     //
     // This path does NOT call tmc4361A_init(), so driver_type still holds the

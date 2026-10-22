@@ -4,6 +4,7 @@
 #include "constants.h"
 
 #include <Arduino.h>
+#include "utils/joystick_panel.h"
 
 extern byte buffer_rx[512];
 extern byte buffer_tx[MSG_LENGTH];
@@ -126,9 +127,8 @@ extern int16_t joystick_delta_y;
 extern bool joystick_button_pressed;
 extern long joystick_button_pressed_timestamp;
 
-// focus
-extern int32_t focuswheel_pos;
-extern bool first_packet_from_joystick_panel;
+// focus wheel and link state
+extern JoystickPanelLink joystick_panel;
 
 // btns
 extern uint8_t btns;
