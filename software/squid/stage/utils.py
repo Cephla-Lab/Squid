@@ -120,7 +120,6 @@ def _restore_lift_after_loading(stage: AbstractStage):
     if lift is None or stage._scanning_position_lift_mm is None:
         return
     left_mm, left_format = stage._scanning_position_lift_mm
-    stage._scanning_position_lift_mm = None
     sample_format = lift.current_format()
     target = lift.sample_height_mm()
     if target is not None:
@@ -130,8 +129,12 @@ def _restore_lift_after_loading(stage: AbstractStage):
         _log.info(f"Raising the Z lift back to {target:.3f} mm (no height saved for {sample_format}).")
     else:
         _log.info(f"Z lift stays lowered: no height saved for {sample_format}.")
+        stage._scanning_position_lift_mm = None
         return
     lift.move_to(target)
+    # Forgotten only once the lift got there: a failed move keeps it, so retrying the return restores the lift
+    # instead of skipping it.
+    stage._scanning_position_lift_mm = None
 
 
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):

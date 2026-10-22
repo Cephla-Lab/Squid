@@ -600,3 +600,27 @@ def test_pi_focus_stage_counts_every_move_command():
     stage.move_z(0.1)
     stage.home(False, False, True, False, blocking=True)
     assert stage.move_command_count == 3
+
+
+def test_a_failed_lift_restore_is_retried_on_the_next_return():
+    # Codex review: the saved height was cleared before the lift move; a timeout then left nothing to restore,
+    # and the retry reported the scanning position reached with the lift still down.
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    real_move_to = stage.lift.move_to
+
+    def failing_once(mm, blocking=True):
+        stage.lift.move_to = real_move_to
+        raise TimeoutError("lift move timed out")
+
+    stage.lift.move_to = failing_once
+    events.clear()
+    with pytest.raises(TimeoutError):
+        squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
+    assert stage._scanning_position_lift_mm is not None  # kept for the retry
+
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)  # the retry
+    assert events == ["y", "x", "lift_to_6.25"]
+    assert stage._scanning_position_lift_mm is None
