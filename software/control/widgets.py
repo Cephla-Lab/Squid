@@ -3979,15 +3979,15 @@ class ObjectivesWidget(QWidget):
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
         self.objective_changer = objective_changer
-        # A Z stage with a set_servo(bool) (the V-308's PIFocusStage): with no objective changer, a
-        # switch is a manual swap done with Z retracted and its servo released.
+        # A Z stage with set_servo(bool) and freeze_profile() (the V-308's PIFocusStage): with no objective
+        # changer, a switch is a manual swap done with Z retracted and its servo released.
         self.focus_servo = focus_servo
         # Returns True while something else drives Z (autofocus, an acquisition); a manual swap is
         # refused then, since it retracts Z and releases the servo under that work.
         self.z_in_use = z_in_use
-        # A Z lift (squid.stage.lift.LiftStage): a switch to a higher magnification lowers it first. A manual swap
-        # raises it back to its height once the servo holds Z again, before Z returns; a changer switch (which
-        # restores Z itself) leaves it lowered, to be raised from Utils > Z Lift...
+        # A Z lift (squid.stage.lift.LiftStage): a manual swap lowers it by Z_LIFT_SWAP_LOWER_MM, whatever the
+        # magnification, and raises it back once the servo holds Z again, before Z returns. A changer switch (which
+        # restores Z itself) to a higher magnification lowers it fully and leaves it lowered (Utils > Z Lift...).
         self.z_lift = z_lift
         # The Z lift's LiftMotionGuard (control/widgets_z_lift.py): a swap that moves anything claims it for its whole
         # run, and is refused while a loading / scanning move or a lift move holds it, so neither can move the lift
@@ -4128,7 +4128,9 @@ class ObjectivesWidget(QWidget):
 
         The voice coil is not self-locking, so with the servo off Z drifts (on a vertical mount it
         can run to the end of travel within a minute); retracting first keeps that drift clear of
-        the sample, and restoring returns to the pre-swap focus height.
+        the sample, and restoring returns to the pre-swap focus height. The controller's motion profile
+        is frozen at that focus height first: re-engaging then moves nothing wherever Z drifted, and
+        the restore that lands back there switches it on again (see PIFocusStage.freeze_profile).
 
         The stage calls run off the GUI thread in two phases around the dialog. Until the whole swap
         ends, the dropdown stays disabled as the re-entry guard and signal_swap_active holds True so
@@ -4152,13 +4154,21 @@ class ObjectivesWidget(QWidget):
 
     def _retract_z_and_release_servo(self):
         self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
+        self.focus_servo.freeze_profile()
         # home(z) drives the V-308 to its configured objective-clear position.
         self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
         self._swap_retracted = True
         self._log.info(f"Z retracted from {self._swap_z_before_mm:.4f} mm for objective change")
-        if self._swap_lowers_lift:
-            self._swap_lift_height_mm = self.z_lift.lower()
-            self._swap_lift_lowered = True
+        if self.z_lift is not None:
+            # Whatever the magnification: the sample is clear of the objective while it is changed (and for the
+            # profile's return trip below, when Z stays retracted).
+            height = self.z_lift.get_position_mm()
+            lowered = self.z_lift.clamp(height - control._def.Z_LIFT_SWAP_LOWER_MM)
+            if lowered < height:
+                self.z_lift.move_to(lowered)
+                self._swap_lift_height_mm = height
+                self._swap_lift_lowered = True
+                self._log.info(f"Z lift lowered from {height:.3f} to {lowered:.3f} mm for objective change")
         self.focus_servo.set_servo(False)
 
     @Slot(bool, str)
@@ -4201,6 +4211,10 @@ class ObjectivesWidget(QWidget):
         self._swap_z_cleared = False
         utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
 
+    def _profile_frozen(self) -> bool:
+        is_frozen = getattr(self.focus_servo, "is_profile_frozen", None)
+        return bool(is_frozen()) if is_frozen is not None else False
+
     def _reengage_servo_and_restore_z(self):
         self.focus_servo.set_servo(True)
         self._swap_servo_on = True
@@ -4211,8 +4225,19 @@ class ObjectivesWidget(QWidget):
         # if it drifted past it (otherwise it goes straight down there after the lift, not up and back down). A
         # failed move stops here, with the lift still lowered.
         if not self._swap_return_z:
+            if self._swap_lift_lowered and self._profile_frozen():
+                # The V-308's motion profile, frozen at the focus height for the swap, can only come back on at that
+                # height (PIFocusStage.freeze_profile): go there while the lowered lift keeps the sample clear, then
+                # retract with it on. Otherwise every later move would be a slow software ramp.
+                self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
+                self._log.info(f"Z ramped to {self._swap_z_before_mm:.4f} mm to switch the motion profile back on")
             self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
             self._log.info("Z retracted again after re-engaging the focus servo")
+            if self._profile_frozen():
+                self._log.warning(
+                    "The V-308 motion profile stays frozen (no lowered lift to make the trip): Z moves ramp in software "
+                    f"until Z is back at {self._swap_z_before_mm:.4f} mm."
+                )
         elif self._swap_lift_lowered and self.focus_servo.get_pos().z_mm > self._swap_z_before_mm:
             self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
             self._log.info(f"Z drifted past {self._swap_z_before_mm:.4f} mm; moved back there before raising the lift")
