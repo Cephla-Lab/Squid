@@ -98,6 +98,23 @@ def parse_acquisition_yaml(file_path: str) -> AcquisitionYAMLData:
     return parsed
 
 
+def parse_z_stack_order(value) -> str:
+    """Normalize a saved z_stack.order value to one of control._def.Z_STACK_ORDERS.
+
+    Missing or null means "CHANNEL FIRST": files written before the setting existed were all acquired
+    channel first. Case and "_"/"-" separators are ignored; anything else raises ValueError, so every
+    loader (GUI drop, TCP, fluidics protocol) rejects a bad value up front instead of guessing.
+    """
+    import control._def
+
+    if value is None:
+        return "CHANNEL FIRST"
+    normalized = " ".join(str(value).replace("_", " ").replace("-", " ").upper().split())
+    if normalized not in control._def.Z_STACK_ORDERS:
+        raise ValueError(f"Invalid z_stack.order '{value}'. Must be one of: {list(control._def.Z_STACK_ORDERS)}")
+    return normalized
+
+
 def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAMLData:
     """Parse an already-loaded acquisition.yaml mapping (the file body, or a protocol header block)."""
     if not isinstance(data, dict):
@@ -156,7 +173,7 @@ def parse_acquisition_dict(data: dict, source: str = "<dict>") -> AcquisitionYAM
         nz=z_stack.get("nz", 1),
         delta_z_um=z_stack.get("delta_z_mm", 0.001) * 1000,
         z_stacking_config=z_stack.get("config", "FROM BOTTOM"),
-        z_stack_order=z_stack.get("order", "CHANNEL FIRST"),
+        z_stack_order=parse_z_stack_order(z_stack.get("order")),
         use_piezo=z_stack.get("use_piezo", False),
         # Time series
         nt=time_series.get("nt", 1),

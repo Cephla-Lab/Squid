@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 import control._def
 import control.utils
-from control.acquisition_yaml_loader import AcquisitionYAMLData
+from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_z_stack_order
 from control.utils import serialize_for_yaml
 
 
@@ -271,7 +271,7 @@ def acquisition_data_from_blocks(settings: dict, coordinates: dict) -> Acquisiti
         nz=int(z_stack.get("nz", 1)),
         delta_z_um=float(z_stack.get("delta_z_um", 1.0)),
         z_stacking_config=str(z_stack.get("config", "FROM CENTER")),
-        z_stack_order=str(z_stack.get("order", "CHANNEL FIRST")),
+        z_stack_order=parse_z_stack_order(z_stack.get("order")),
         use_piezo=bool(z_stack.get("use_piezo", False)),
         nt=1,
         delta_t_s=0.0,

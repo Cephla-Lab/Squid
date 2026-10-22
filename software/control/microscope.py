@@ -967,13 +967,17 @@ class Microscope:
         saved_paths = []
         try:
             if z_stack_order == "Z FIRST":
+                # Return to the stack start with an absolute move: a relative move back would not exactly
+                # undo the stack's steps (each move is rounded to microsteps), drifting channel by channel.
+                stack_start_mm = self.stage.get_pos().z_mm
                 for config_idx, config in enumerate(configs):
+                    if config_idx > 0 and NZ > 1:
+                        self.stage.move_z_to(stack_start_mm)
+                        time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
                     for z_level in range(NZ):
                         snap(config, z_level)
                         if z_level < NZ - 1:
                             step_z(deltaZ)
-                    if NZ > 1 and config_idx < len(configs) - 1:
-                        step_z(-deltaZ * (NZ - 1))
             else:
                 for z_level in range(NZ):
                     for config in configs:
