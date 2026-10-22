@@ -1,8 +1,10 @@
 import control.RCM_API as RCM_API
 import control._def
 import squid.logging
+import dataclasses
 import json
 import math
+import re
 import threading
 import time
 
@@ -23,6 +25,56 @@ SLIT_POSITIONS_UM = {88: 1500, 44: 900, 22: 300, 33: -300, 66: -900, 132: -1500}
 SLIT_OSCILLATION_MAX_UM = 250
 SLIT_OSCILLATION_MIN_HZ = 0.1
 SLIT_OSCILLATION_MAX_HZ = 3.0
+# Sweep speed limits. The stage moves ~1.5 µm/ms on its own and trails a ramp of setpoints by ~100 ms (measured);
+# with a setpoint every 20 ms, above ~500 µm/s the steps are too coarse to be a sweep.
+SLIT_SWEEP_MIN_UM_S = 5
+SLIT_SWEEP_MAX_UM_S = 500
+SLIT_OSCILLATION_MODES = ("jump", "sweep")
+
+
+@dataclasses.dataclass(frozen=True)
+class SlitOscillation:
+    """How the slit oscillates around its centre (the selected slit's position plus the slit offset).
+
+    mode "jump": move to centre + plus_um, then centre - minus_um, ..., holding each end, at frequency_hz.
+    mode "sweep": travel between the two ends at a constant speed_um_s, waiting at each end until the stage is
+    there; the frequency follows from the speed and the swing.
+    """
+
+    plus_um: float = 50
+    minus_um: float = 50
+    mode: str = "jump"
+    frequency_hz: float = 1.0
+    speed_um_s: float = 200
+
+    def validate(self):
+        if not (0 <= self.plus_um <= SLIT_OSCILLATION_MAX_UM and 0 <= self.minus_um <= SLIT_OSCILLATION_MAX_UM):
+            raise ValueError(
+                f"Oscillation positions must be 0-{SLIT_OSCILLATION_MAX_UM} µm, got +{self.plus_um} / -{self.minus_um}"
+            )
+        if self.mode not in SLIT_OSCILLATION_MODES:
+            raise ValueError(f"Unknown oscillation mode {self.mode!r}; expected one of {SLIT_OSCILLATION_MODES}")
+        if not SLIT_OSCILLATION_MIN_HZ <= self.frequency_hz <= SLIT_OSCILLATION_MAX_HZ:
+            raise ValueError(
+                f"Oscillation frequency {self.frequency_hz} Hz outside "
+                f"{SLIT_OSCILLATION_MIN_HZ}-{SLIT_OSCILLATION_MAX_HZ} Hz"
+            )
+        if not SLIT_SWEEP_MIN_UM_S <= self.speed_um_s <= SLIT_SWEEP_MAX_UM_S:
+            raise ValueError(
+                f"Sweep speed {self.speed_um_s} µm/s outside {SLIT_SWEEP_MIN_UM_S}-{SLIT_SWEEP_MAX_UM_S} µm/s"
+            )
+
+    def sweep_frequency_hz(self):
+        """Upper bound of the sweep's frequency: the travel time alone, without the waits at the ends."""
+        travel_um = 2 * (self.plus_um + self.minus_um)
+        return self.speed_um_s / travel_um if travel_um > 0 else 0.0
+
+    def describe(self):
+        swing = f"+{self.plus_um:g} / -{self.minus_um:g} µm"
+        if self.mode == "sweep":
+            return f"{swing}, sweep at {self.speed_um_s:g} µm/s"
+        return f"{swing}, jump at {self.frequency_hz:g} Hz"
+
 
 # Scanner line speed (LINE_FREQUENCY, mrad/s) limits accepted by the GUI.
 LINE_SPEED_MIN = 100
@@ -45,6 +97,8 @@ class _ScanSpeedMixin:
     """
 
     max_cam_pix_x = None
+    # Slit oscillation settings for this session (not saved); immutable, so the shared default is safe.
+    slit_oscillation = SlitOscillation()
 
     def scan_sweep_mrad(self):
         fraction = 1.0
@@ -123,6 +177,14 @@ class RCMInternalStage:
     DEFAULT_HOLD_MS = 10
     SLIT_CHANNEL = 0
     STOP_POLL_S = 0.05  # how quickly the oscillation thread notices a stop
+    # Sweep: a new setpoint every SWEEP_UPDATE_S (a move command takes ~16 ms to send; faster ones queue up),
+    # held long enough to cover a late update. At each end, read the position back until it is within
+    # ARRIVE_TOLERANCE_UM (a 100 µm move settles to 1 µm in ~134 ms), giving up after ARRIVE_TIMEOUT_S.
+    SWEEP_UPDATE_S = 0.02
+    SWEEP_HOLD_MS = 1000
+    ARRIVE_TOLERANCE_UM = 1.0
+    ARRIVE_TIMEOUT_S = 0.5
+    _POSITION_REPLY = re.compile(r"P(-?\d+(?:\.\d+)?)$")
 
     def __init__(self, serial_number):
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -148,7 +210,9 @@ class RCMInternalStage:
         self._serial_lock = threading.Lock()
         self._oscillation_thread = None
         self._oscillation_stop = threading.Event()
-        self.oscillation = None  # (plus_um, minus_um, frequency_hz) last started
+        self.oscillation = None  # SlitOscillation last started; the running thread reads it at every move
+        self._osc_to_plus = True  # the end the oscillation heads for next
+        self._osc_offset_um = 0.0  # where the oscillation last sent the slit, relative to its centre
         self._log.info(f"RCM internal stage (SmarAct SCU, USB SN '{serial_number}') connected on {port}; homing")
         self.home()
 
@@ -164,6 +228,15 @@ class RCMInternalStage:
             self.ser.reset_input_buffer()
             self.ser.write(f":{command}\n".encode("ascii"))
             time.sleep(self.COMMAND_GAP_S if gap_s is None else gap_s)
+
+    def read_position_um(self):
+        """The stage's position (GP, µm with 0.1 µm resolution), or None if it did not answer."""
+        with self._serial_lock:
+            self.ser.reset_input_buffer()
+            self.ser.write(f":GP{self.SLIT_CHANNEL}\n".encode("ascii"))
+            reply = self.ser.readline().decode("ascii", "replace").strip()
+        match = self._POSITION_REPLY.search(reply)
+        return float(match.group(1)) if match else None
 
     def _slit_centre(self):
         return SLIT_POSITIONS_UM[self.current_slit_um] + int(round(self.offset_um))
@@ -183,7 +256,7 @@ class RCMInternalStage:
         if self.current_slit_um is not None:
             self.set_slit_width(self.current_slit_um)
         if was_oscillating:
-            self.start_oscillation(*self.oscillation)
+            self.start_oscillation(self.oscillation)
 
     def set_slit_width(self, width_um):
         if width_um not in SLIT_POSITIONS_UM:
@@ -198,33 +271,27 @@ class RCMInternalStage:
         if self.current_slit_um is not None:
             self.set_slit_width(self.current_slit_um)
 
-    def start_oscillation(self, plus_um, minus_um, frequency_hz):
-        """Move the slit back and forth between centre + plus_um and centre - minus_um at frequency_hz.
+    def start_oscillation(self, oscillation):
+        """Oscillate the slit around its centre as described by a SlitOscillation.
 
         The centre is the selected slit's position plus the slit offset, so changing either moves the
         oscillation with it. Runs until stop_oscillation(); calling this again while it runs changes the
-        parameters from the next move, without restarting the cycle.
+        parameters (also the mode) from the next move, without restarting the cycle.
         """
         if self.current_slit_um is None:
             raise RuntimeError("Select a slit before starting the oscillation")
-        if not (0 <= plus_um <= SLIT_OSCILLATION_MAX_UM and 0 <= minus_um <= SLIT_OSCILLATION_MAX_UM):
-            raise ValueError(
-                f"Oscillation positions must be 0-{SLIT_OSCILLATION_MAX_UM} µm, got +{plus_um} / -{minus_um}"
-            )
-        if not SLIT_OSCILLATION_MIN_HZ <= frequency_hz <= SLIT_OSCILLATION_MAX_HZ:
-            raise ValueError(
-                f"Oscillation frequency {frequency_hz} Hz outside "
-                f"{SLIT_OSCILLATION_MIN_HZ}-{SLIT_OSCILLATION_MAX_HZ} Hz"
-            )
-        self.oscillation = (plus_um, minus_um, frequency_hz)  # read by the running thread at each move
+        oscillation.validate()
+        self.oscillation = oscillation
         if self.is_oscillating():
-            self._log.info(f"Slit oscillation changed: +{plus_um} / -{minus_um} µm at {frequency_hz} Hz")
+            self._log.info(f"Slit oscillation changed: {oscillation.describe()}")
             return
         self._join_oscillation_thread()  # one that ended on an error
+        self._osc_to_plus = True
+        self._osc_offset_um = 0.0  # the slit is at its centre
         self._oscillation_stop.clear()
         self._oscillation_thread = threading.Thread(target=self._oscillate, name="SlitOscillation", daemon=True)
         self._oscillation_thread.start()
-        self._log.info(f"Slit oscillation started: +{plus_um} / -{minus_um} µm at {frequency_hz} Hz")
+        self._log.info(f"Slit oscillation started: {oscillation.describe()}")
 
     def is_oscillating(self):
         return self._oscillation_thread is not None and self._oscillation_thread.is_alive()
@@ -252,34 +319,96 @@ class RCMInternalStage:
             self._log.exception("Slit oscillation stopped by an error")
 
     def _oscillate_loop(self):
-        to_plus = True
-        warned = False
-        deadline = time.perf_counter()
+        # Each mode runs until a stop or until the mode is changed, then hands over where it left off.
+        self._warned = set()
         while not self._oscillation_stop.is_set():
-            plus_um, minus_um, frequency_hz = self.oscillation
-            half_period_s = 0.5 / frequency_hz
-            target = self._slit_centre() + int(round(plus_um if to_plus else -minus_um))
+            if self.oscillation.mode == "sweep":
+                self._sweep()
+            else:
+                self._jump()
+
+    def _running(self, mode):
+        return not self._oscillation_stop.is_set() and self.oscillation.mode == mode
+
+    def _warn_once(self, key, message):
+        if key not in self._warned:
+            self._warned.add(key)
+            self._log.warning(message)
+
+    def _sleep_until(self, deadline, mode):
+        # time.sleep keeps sub-ms timing on Windows; Event.wait overshoots by 5-11 ms (measured).
+        while self._running(mode):
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, self.STOP_POLL_S))
+
+    def _move(self, offset_um, hold_ms):
+        self._send(f"MPA{self.SLIT_CHANNEL}P{self._slit_centre() + int(round(offset_um))}H{hold_ms}", gap_s=0)
+        self._osc_offset_um = offset_um
+
+    def _end(self, oscillation):
+        return oscillation.plus_um if self._osc_to_plus else -oscillation.minus_um
+
+    def _jump(self):
+        deadline = time.perf_counter()
+        while self._running("jump"):
+            oscillation = self.oscillation
+            half_period_s = 0.5 / oscillation.frequency_hz
             # Hold each end past the next move's due time, so a late move never finds the closed loop let go;
             # the next move replaces the hold anyway.
-            hold_ms = math.ceil(2 * half_period_s * 1000)
-            self._send(f"MPA{self.SLIT_CHANNEL}P{target}H{hold_ms}", gap_s=0)
-            to_plus = not to_plus
+            self._move(self._end(oscillation), math.ceil(2 * half_period_s * 1000))
+            self._osc_to_plus = not self._osc_to_plus
             deadline += half_period_s
             now = time.perf_counter()
             if now > deadline:
-                if not warned:
-                    self._log.warning(
-                        f"Slit oscillation fell {(now - deadline) * 1000:.0f} ms behind its "
-                        f"{half_period_s * 1000:.0f} ms half period at {frequency_hz} Hz"
-                    )
-                    warned = True
+                self._warn_once(
+                    "jump",
+                    f"Slit oscillation fell {(now - deadline) * 1000:.0f} ms behind its "
+                    f"{half_period_s * 1000:.0f} ms half period at {oscillation.frequency_hz} Hz",
+                )
                 deadline = now
-            # time.sleep keeps sub-ms timing on Windows; Event.wait overshoots by 5-11 ms (measured).
-            while not self._oscillation_stop.is_set():
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    break
-                time.sleep(min(remaining, self.STOP_POLL_S))
+            self._sleep_until(deadline, "jump")
+
+    def _sweep(self):
+        """Step the target towards the next end at the set speed, a setpoint every SWEEP_UPDATE_S; at the end,
+        wait until the stage is there before turning round."""
+        last = time.perf_counter()
+        while self._running("sweep"):
+            oscillation = self.oscillation
+            now = time.perf_counter()
+            step_um = oscillation.speed_um_s * (now - last)
+            last = now
+            end_um = self._end(oscillation)
+            if self._osc_to_plus:
+                offset_um = min(end_um, self._osc_offset_um + step_um)
+            else:
+                offset_um = max(end_um, self._osc_offset_um - step_um)
+            if round(offset_um) != round(self._osc_offset_um) or offset_um == end_um:
+                self._move(offset_um, self.SWEEP_HOLD_MS)
+            else:
+                self._osc_offset_um = offset_um  # below 1 µm since the last setpoint: nothing to send yet
+            if offset_um == end_um:
+                self._wait_until_at(end_um)
+                self._osc_to_plus = not self._osc_to_plus
+                last = time.perf_counter()  # the wait at the end is not travel
+            else:
+                self._sleep_until(now + self.SWEEP_UPDATE_S, "sweep")
+
+    def _wait_until_at(self, offset_um):
+        target = self._slit_centre() + int(round(offset_um))
+        give_up = time.perf_counter() + self.ARRIVE_TIMEOUT_S
+        position = None
+        while self._running("sweep") and time.perf_counter() < give_up:
+            position = self.read_position_um()
+            if position is not None and abs(position - target) <= self.ARRIVE_TOLERANCE_UM:
+                return
+        if self._running("sweep"):
+            self._warn_once(
+                "arrive",
+                f"Slit sweep turned round {self.ARRIVE_TIMEOUT_S * 1000:.0f} ms after reaching the end of its "
+                f"ramp at {position} µm, short of {target} µm",
+            )
 
     def close(self):
         try:
@@ -397,9 +526,17 @@ class NL5(_ScanSpeedMixin):
         if self.internal_stage is not None:
             self.internal_stage.home()
 
-    def start_slit_oscillation(self, plus_um, minus_um, frequency_hz):
+    def set_slit_oscillation(self, oscillation):
+        """Keep the oscillation settings (not saved to NL5_settings.json); a running oscillation takes them
+        from its next move."""
+        oscillation.validate()
+        self.slit_oscillation = oscillation
+        if self.is_slit_oscillating():
+            self.internal_stage.start_oscillation(oscillation)
+
+    def start_slit_oscillation(self):
         if self.internal_stage is not None:
-            self.internal_stage.start_oscillation(plus_um, minus_um, frequency_hz)
+            self.internal_stage.start_oscillation(self.slit_oscillation)
 
     def stop_slit_oscillation(self):
         if self.internal_stage is not None:
@@ -462,7 +599,11 @@ class NL5_Simulation(_ScanSpeedMixin):
         self.exposure_delay_ms = exposure_delay_ms
         pass
 
-    def start_slit_oscillation(self, plus_um, minus_um, frequency_hz):
+    def set_slit_oscillation(self, oscillation):
+        oscillation.validate()
+        self.slit_oscillation = oscillation
+
+    def start_slit_oscillation(self):
         pass
 
     def stop_slit_oscillation(self):
