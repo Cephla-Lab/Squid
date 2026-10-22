@@ -412,11 +412,16 @@ class TucsenCamera(AbstractCamera):
                 if not header.pImgData or header.uiImgSize == 0:
                     self._log.error("Invalid frame header (null pImgData / zero size) in callback")
                     return
-                np_image = self._convert_header_to_numpy(header)
+                # A single copy out of device memory: _process_raw_frame's rotate/flip returns a new array, so
+                # it reads straight from the driver's buffer rather than from a copy of it.
+                driver_view = self._header_to_numpy_view(header)
+                frame = self._process_raw_frame(driver_view)
+                if np.may_share_memory(frame, driver_view):
+                    frame = frame.copy()
                 camera_frame = CameraFrame(
                     frame_id=self._current_frame.frame_id + 1 if self._current_frame else 1,
                     timestamp=time.time(),
-                    frame=self._process_raw_frame(np_image),
+                    frame=frame,
                     frame_format=self.get_frame_format(),
                     frame_pixel_format=self.get_pixel_format(),
                 )
@@ -429,11 +434,18 @@ class TucsenCamera(AbstractCamera):
 
     @staticmethod
     def _convert_header_to_numpy(header: TUCAM_RAWIMG_HEADER) -> np.ndarray:
+        """A copy of the frame that stays valid after the driver reuses its buffer."""
+        return TucsenCamera._header_to_numpy_view(header).copy()
+
+    @staticmethod
+    def _header_to_numpy_view(header: TUCAM_RAWIMG_HEADER) -> np.ndarray:
+        """A view of the frame in device memory: only valid until the driver reuses the buffer, i.e. while
+        _frame_lock is held in the frame callback."""
         # TODO: In the latest version of 400BSI V3, the readout data will match the
         # actual bit depth. We can't tell firmware version from SN yet, so we keep a
         # 16-bit buffer for old demo units. (Carried over from _convert_frame_to_numpy.)
         #
-        # Flat reshape of a contiguous w*h*2 copy is only correct with no row/column
+        # A flat reshape of the w*h*2 buffer is only correct with no row/column
         # padding, so reject padded frames rather than interleaving padding into pixels.
         if header.usXPadding or header.usYPadding:
             raise CameraError(
@@ -445,10 +457,8 @@ class TucsenCamera(AbstractCamera):
             raise CameraError(
                 f"Frame size {header.uiImgSize} < expected {expected} " f"({header.usWidth}x{header.usHeight} MONO16)"
             )
-        buf = create_string_buffer(expected)
-        memmove(buf, c_void_p(header.pImgData), expected)
-        # np.frombuffer keeps `buf` alive via the returned array's .base, so no extra bytes() copy is needed.
-        return np.frombuffer(buf, dtype=np.uint16).reshape((header.usHeight, header.usWidth))
+        pixels = (c_uint16 * (header.usWidth * header.usHeight)).from_address(header.pImgData)
+        return np.frombuffer(pixels, dtype=np.uint16).reshape((header.usHeight, header.usWidth))
 
     def read_camera_frame(self) -> Optional[CameraFrame]:
         if not self.get_is_streaming():
