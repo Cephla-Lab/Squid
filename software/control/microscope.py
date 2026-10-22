@@ -684,9 +684,14 @@ class Microscope:
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays
-            # powered), so a re-home would just be wasted motion.
+            # powered), so a re-home would just be wasted motion - unless the drive is
+            # still in homing mode, which says the last homing was cut off and its counter
+            # is the drive's own, not the host's.
             if control._def.USE_XERYON or not skip_init:
                 self.addons.objective_changer.home()  # a turret homes with Z retracted and leaves it there
+            elif self.addons.objective_changer.homing_unfinished:
+                self._log.warning("The turret's last homing never finished: homing before trusting its counter")
+                self.addons.objective_changer.home()
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
             try:
