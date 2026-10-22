@@ -204,10 +204,15 @@ class FocusWheelRouter:
     a fast turn is not lost; after a pause the target restarts from the measured position. Ticks that arrive while
     ``enabled()`` is False (an acquisition, autofocus, an objective swap with the servo off) are dropped, not saved
     for later.
+
+    ``max_speed_mm_s`` (>0) caps how fast the wheel moves Z: each poll the target advances at most that speed times
+    the time since the previous poll, and the ticks beyond it are dropped rather than queued, so Z stops when the
+    wheel stops instead of running on toward the sample.
     """
 
     _POLL_S = 0.03
     _RESYNC_AFTER_S = 0.5
+    _MAX_POLL_GAP_S = 0.1  # a late poll (a stalled thread) must not turn into one large step
 
     def __init__(
         self,
@@ -215,10 +220,13 @@ class FocusWheelRouter:
         focus_stage,
         mm_per_tick: float,
         enabled: Optional[Callable[[], bool]] = None,
+        max_speed_mm_s: float = 0.0,
     ):
         self._microcontroller = microcontroller
         self._focus = focus_stage
         self._mm_per_tick = mm_per_tick
+        self._max_speed_mm_s = max_speed_mm_s
+        self._last_poll_time: Optional[float] = None
         self._enabled = enabled or (lambda: True)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -235,7 +243,8 @@ class FocusWheelRouter:
         self._microcontroller.wait_till_operation_is_completed()
         self._thread = threading.Thread(target=self._run, daemon=True, name="focus-wheel-router")
         self._thread.start()
-        _log.info(f"Focus wheel drives the V-308 ({self._mm_per_tick * 1000:.4f} um per tick).")
+        speed = f"at most {self._max_speed_mm_s * 1000:g} um/s" if self._max_speed_mm_s > 0 else "no speed cap"
+        _log.info(f"Focus wheel drives the V-308 ({self._mm_per_tick * 1000:.4f} um per tick, {speed}).")
 
     def stop(self, restore_wheel_to_z: bool = True):
         self._stop.set()
@@ -258,6 +267,9 @@ class FocusWheelRouter:
         return ((count - last + 2**31) % 2**32) - 2**31
 
     def poll(self):
+        now = time.monotonic()
+        poll_gap_s = min(now - self._last_poll_time, self._MAX_POLL_GAP_S) if self._last_poll_time else self._POLL_S
+        self._last_poll_time = now
         count = self._microcontroller.focus_wheel_count
         if count is None:
             return
@@ -271,14 +283,18 @@ class FocusWheelRouter:
         if not self._enabled():
             self._target_mm = None
             return
-        now = time.monotonic()
         if self._target_mm is None or now - self._last_tick_time > self._RESYNC_AFTER_S:
             self._target_mm = self._focus.get_pos().z_mm
             # Read with the position: the range can be fenced at runtime (set_limits).
             z_range = getattr(self._focus, "z_range_mm", None)
             self._range_mm = z_range() if z_range is not None else None
         self._last_tick_time = now
-        self._target_mm += ticks * self._mm_per_tick
+        step_mm = ticks * self._mm_per_tick
+        if self._max_speed_mm_s > 0:
+            max_step_mm = self._max_speed_mm_s * poll_gap_s
+            if abs(step_mm) > max_step_mm:
+                step_mm = math.copysign(max_step_mm, step_mm)  # the extra ticks are dropped, not queued
+        self._target_mm += step_mm
         if self._range_mm is not None:
             # Keep the target reachable: the stage clamps the move anyway, and an unclamped target would make
             # the wheel turned back do nothing until the extra ticks were unwound.

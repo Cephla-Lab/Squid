@@ -1301,6 +1301,9 @@ Z_LIFT_FOCUS_WHEEL_DRIVES_PI = True
 # V-308 travel per focus wheel tick, in um. 0 = the distance one tick moved the Z stepper, so the wheel feels the same.
 PI_FOCUS_WHEEL_UM_PER_TICK = 0.0
 PI_FOCUS_WHEEL_INVERT = False
+# Fastest the focus wheel moves the V-308, in um/s; turning faster drops the extra ticks (Z stops with the wheel).
+# 0 = no cap. Autofocus, z-stacks and other moves keep the V-308's own speed.
+PI_FOCUS_WHEEL_MAX_SPEED_UM_S = 100.0
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False

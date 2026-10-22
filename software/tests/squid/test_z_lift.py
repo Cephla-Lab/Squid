@@ -449,3 +449,60 @@ def test_lift_needs_the_pi_focus_stage(monkeypatch):
     monkeypatch.setattr(_def, "USE_Z_LIFT_STAGE", True, raising=False)
     with pytest.raises(ValueError, match="USE_PI_FOCUS_STAGE"):
         control.microscope.Microscope.build_from_global_config(simulated=True, skip_init=True)
+
+
+# --- focus wheel speed cap ----------------------------------------------------------------------------------------
+
+
+def _capped_router(monkeypatch, max_speed_mm_s=0.1):
+    import squid.stage.lift as lift_module
+
+    clock = [100.0]
+    monkeypatch.setattr(lift_module.time, "monotonic", lambda: clock[0])
+    mcu = MagicMock()
+    mcu.focus_wheel_count = 0
+    focus = _FakeFocus(z_mm=1.0)
+    router = FocusWheelRouter(mcu, focus, mm_per_tick=0.001, max_speed_mm_s=max_speed_mm_s)
+    router.poll()  # baseline
+    return router, mcu, focus, clock
+
+
+def test_wheel_speed_is_capped_and_extra_ticks_are_dropped(monkeypatch):
+    router, mcu, focus, clock = _capped_router(monkeypatch)  # 100 um/s
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 50  # 50 um in one 30 ms poll = 1.67 mm/s
+    router.poll()
+    assert focus.targets == [pytest.approx(1.003)]  # 100 um/s x 30 ms
+
+    clock[0] += 0.03  # the wheel has stopped: nothing queued keeps Z moving
+    router.poll()
+    assert len(focus.targets) == 1
+
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 49  # turned back: moves back at once, from the capped target
+    router.poll()
+    assert focus.targets[-1] == pytest.approx(1.002)
+
+
+def test_slow_turns_are_not_capped(monkeypatch):
+    router, mcu, focus, clock = _capped_router(monkeypatch)
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 2  # 2 um in 30 ms = 67 um/s, under the cap
+    router.poll()
+    assert focus.targets == [pytest.approx(1.002)]
+
+
+def test_a_late_poll_does_not_make_a_large_step(monkeypatch):
+    router, mcu, focus, clock = _capped_router(monkeypatch)
+    clock[0] += 2.0  # the polling thread stalled
+    mcu.focus_wheel_count = 500
+    router.poll()
+    assert focus.targets == [pytest.approx(1.010)]  # capped to 100 um/s x 0.1 s
+
+
+def test_no_cap_when_max_speed_is_zero(monkeypatch):
+    router, mcu, focus, clock = _capped_router(monkeypatch, max_speed_mm_s=0.0)
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 50
+    router.poll()
+    assert focus.targets == [pytest.approx(1.050)]

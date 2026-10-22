@@ -1078,7 +1078,12 @@ class Microscope:
             )
             return
         mm_per_tick = squid.stage.lift.default_focus_wheel_mm_per_tick(squid.config.get_stage_config().Z_AXIS)
-        self.focus_wheel_router = squid.stage.lift.FocusWheelRouter(mcu, self.stage.z_stage, mm_per_tick)
+        self.focus_wheel_router = squid.stage.lift.FocusWheelRouter(
+            mcu,
+            self.stage.z_stage,
+            mm_per_tick,
+            max_speed_mm_s=control._def.PI_FOCUS_WHEEL_MAX_SPEED_UM_S / 1000.0,
+        )
         self.focus_wheel_router.start()
 
     def move_x(self, distance: float, blocking: bool = True) -> None:
