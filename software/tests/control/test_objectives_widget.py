@@ -282,3 +282,60 @@ def test_refused_swap_never_reports_swap_active(qtbot):
         widget.dropdown.setCurrentText("10x")
 
     assert swap_active == []
+
+
+class _RecordingLift:
+    """A Z lift that records lower() into the shared event list."""
+
+    def __init__(self, events):
+        self.events = events
+
+    def lower(self):
+        self.events.append("lift_lower")
+        return 4.0
+
+
+def test_servo_swap_to_higher_mag_lowers_the_lift_and_leaves_it_lowered(qtbot):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    # Lowered with the objective already retracted, before the servo lets go; never raised again here.
+    assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert "Z lift is lowered" in question.call_args.args[2]
+
+
+def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("10x")
+
+    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert "Z lift" not in question.call_args.args[2]
+
+
+def test_changer_switch_to_higher_mag_lowers_the_lift_first(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "information") as information:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("60x")
+
+    assert events == ["lift_lower"]
+    assert changer.calls == ["60x"]
+    information.assert_called_once()

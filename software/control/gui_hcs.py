@@ -708,6 +708,8 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
         self.stageUtils: Optional[widgets.StageUtils] = None
+        self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget on a Z lift system
+        self.zLiftControls = None  # its control panel row (loading position, open the window)
         self.dacControlWidget: Optional[widgets.DACControWidget] = None
         self.autofocusWidget: Optional[widgets.AutoFocusWidget] = None
         self.piezoWidget: Optional[widgets.PiezoWidget] = None
@@ -841,6 +843,13 @@ class HighContentScreeningGui(QMainWindow):
 
         # Utils: per-instrument procedures that drive the hardware, not settings.
         utils_menu = menubar.addMenu("Utils")
+        if self.zLiftWidget is not None:
+            z_lift_action = QAction("Z Lift...", self)
+            z_lift_action.setMenuRole(QAction.NoRole)
+            z_lift_action.triggered.connect(
+                lambda: (self.zLiftWidget.show(), self.zLiftWidget.raise_(), self.zLiftWidget.activateWindow())
+            )
+            utils_menu.addAction(z_lift_action)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
             filter_wheel_tuning_action.setMenuRole(QAction.NoRole)
@@ -966,6 +975,13 @@ class HighContentScreeningGui(QMainWindow):
             self.stage, widget_configuration=f"{WELLPLATE_FORMAT} well plate"
         )
         self.stageUtils = widgets.StageUtils(self.stage, self.liveController, is_wellplate=True)
+        if self.microscope.z_lift is not None:
+            from control.widgets_z_lift import ZLiftControls, ZLiftWidget
+
+            self.zLiftWidget = ZLiftWidget(
+                self.microscope.z_lift, self.microscope.z_lift_presets, stage_utils=self.stageUtils, parent=self
+            )
+            self.zLiftControls = ZLiftControls(self.zLiftWidget, self.stageUtils)
         self.dacControlWidget = widgets.DACControWidget(self.microcontroller)
         self.autofocusWidget = widgets.AutoFocusWidget(self.autofocusController)
         if self.piezo:
@@ -977,7 +993,15 @@ class HighContentScreeningGui(QMainWindow):
             focus_servo=self.stage.z_stage if USE_PI_FOCUS_STAGE else None,
             z_in_use=lambda: self.autofocusController.autofocus_in_progress
             or self.multipointController.acquisition_in_progress(),
+            z_lift=self.microscope.z_lift,
         )
+        if self.microscope.focus_wheel_router is not None:
+            # The focus wheel moves the V-308 only when nothing else is driving it (or has its servo off).
+            self.microscope.focus_wheel_router.set_enabled_check(
+                lambda: not self._objective_swap_active
+                and not self.autofocusController.autofocus_in_progress
+                and not self.multipointController.acquisition_in_progress()
+            )
 
         if self.emission_filter_wheel:
             self.filterControllerWidget = widgets.FilterControllerWidget(
@@ -1320,7 +1344,15 @@ class HighContentScreeningGui(QMainWindow):
         self.imageDisplayWindow.invalidate_current_image()  # the frame on screen predates this move
 
     def setupCameraTabWidget(self):
-        self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
+        if self.zLiftControls is not None:
+            stages_tab = QWidget()
+            stages_layout = QVBoxLayout(stages_tab)
+            stages_layout.setContentsMargins(0, 0, 0, 0)
+            stages_layout.addWidget(self.navigationWidget)
+            stages_layout.addWidget(self.zLiftControls)
+            self.cameraTabWidget.addTab(stages_tab, "Stages")
+        else:
+            self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
@@ -2235,6 +2267,8 @@ class HighContentScreeningGui(QMainWindow):
     _OBJECTIVE_SWAP_BLOCKED_WIDGETS = (
         "navigationWidget",
         "stageUtils",
+        "zLiftWidget",
+        "zLiftControls",
         "autofocusWidget",
         "piezoWidget",
         "laserAutofocusControlWidget",
@@ -2576,6 +2610,11 @@ class HighContentScreeningGui(QMainWindow):
 
         # click to move off during acquisition
         self.navigationWidget.set_click_to_move(not acquisition_started)
+
+        # the Z lift holds still during an acquisition (it carries the sample being focused on)
+        for lift_widget in (self.zLiftWidget, self.zLiftControls):
+            if lift_widget is not None:
+                lift_widget.setEnabled(not acquisition_started)
 
         # disable other acqusiition tabs during acquisition
         current_index = self.recordTabWidget.currentIndex()

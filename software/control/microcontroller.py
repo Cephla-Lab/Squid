@@ -659,6 +659,8 @@ class Microcontroller:
         self.encoder_pos = 0  # ENC_POS of the reported axis, microsteps
         self.encoder_deviation = 0  # int16 ENC_POS - XACTUAL of that axis, microsteps, clipped
         self.encoder_flags = 0  # raw status byte 19 while reporting, else 0
+        # Focus wheel ticks since SET_FOCUS_WHEEL_MODE TO_HOST (wrapping int32); None while the packet carries none.
+        self.focus_wheel_count = None
         self.button_and_switch_state = 0
         self.joystick_button_pressed = 0
         # This is used to keep track of whether or not we should emit joystick events to the joystick listeners,
@@ -1119,6 +1121,24 @@ class Microcontroller:
         cmd[2] = int(axis)
         cmd[3] = int(mode)
         self.send_command(cmd)
+
+    def set_focus_wheel_mode(self, mode: int):
+        """Route the control panel's focus wheel (firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE; callers gate on it).
+
+        FOCUS_WHEEL_MODE.TO_HOST stops the wheel moving the Z stepper and reports its ticks in focus_wheel_count;
+        DRIVES_Z restores the firmware default. RESET and INITIALIZE restore DRIVES_Z too.
+        """
+        if mode not in (FOCUS_WHEEL_MODE.DRIVES_Z, FOCUS_WHEEL_MODE.TO_HOST):
+            raise ValueError("focus wheel mode must be FOCUS_WHEEL_MODE.DRIVES_Z or TO_HOST")
+        self.log.info(f"Set focus wheel mode: {mode}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_FOCUS_WHEEL_MODE
+        cmd[2] = int(mode)
+        self.send_command(cmd)
+
+    def supports_focus_wheel_to_host(self) -> bool:
+        """True if the firmware has SET_FOCUS_WHEEL_MODE."""
+        return tuple(self.firmware_version) >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE
 
     def get_encoder_state(self):
         """The last reported encoder reading: reporting / pid_enabled / axis (from byte 19),
@@ -1753,12 +1773,19 @@ class Microcontroller:
                 # not a theta position, so theta_pos keeps its last value (a stage position readback
                 # must not show a wheel encoder as an angle). With reporting off, and on older
                 # firmware, byte 19 bit 0 is clear and the field is theta as it always was.
+                # Firmware >= 1.8 with the focus wheel routed to the host: the field is the wheel's tick count,
+                # flagged by FOCUS_WHEEL_FLAG_REPORTING (the firmware refuses this and encoder reporting together).
                 if msg[19] & (1 << ENC_FLAG.REPORTING):
                     self.encoder_flags = msg[19]
                     self.encoder_pos = theta_field
                     self.encoder_deviation = self._payload_to_int(msg[20:22], 2)
+                    self.focus_wheel_count = None
+                elif msg[19] & (1 << FOCUS_WHEEL_FLAG_REPORTING):
+                    self.encoder_flags = 0
+                    self.focus_wheel_count = theta_field
                 else:
                     self.encoder_flags = 0
+                    self.focus_wheel_count = None
                     self.theta_pos = theta_field  # unit: microstep or encoder resolution
 
                 self.button_and_switch_state = msg[18]

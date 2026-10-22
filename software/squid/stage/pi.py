@@ -369,14 +369,24 @@ class PIFocusStage(AbstractStage):
 class CombinedStage(AbstractStage):
     """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
 
-    def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
+    def __init__(
+        self,
+        xy_stage: AbstractStage,
+        z_stage: AbstractStage,
+        stage_config: Optional[StageConfig] = None,
+        lift=None,
+    ):
         super().__init__(stage_config or xy_stage.get_config())
         self._xy = xy_stage
         self._z = z_stage
         self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
+        self._scanning_position_lift_mm = None  # likewise, for the Z lift
 
         # The GUI reaches the V-308 directly for servo control during a manual objective swap.
         self.z_stage = z_stage
+        # The Z lift (squid.stage.lift.LiftStage) when the XY stage's own Z stepper lifts the sample; None otherwise.
+        # Loading position, homing and objective swaps lower it.
+        self.lift = lift
 
         # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
         # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own

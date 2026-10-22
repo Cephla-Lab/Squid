@@ -3886,7 +3886,7 @@ class ObjectivesWidget(QWidget):
     # phases and the confirmation dialog: the GUI blocks every other stage / focus control meanwhile.
     signal_swap_active = Signal(bool)
 
-    def __init__(self, objective_store, objective_changer=None, focus_servo=None, z_in_use=None):
+    def __init__(self, objective_store, objective_changer=None, focus_servo=None, z_in_use=None, z_lift=None):
         super(ObjectivesWidget, self).__init__()
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.objectiveStore = objective_store
@@ -3897,6 +3897,11 @@ class ObjectivesWidget(QWidget):
         # Returns True while something else drives Z (autofocus, an acquisition); a manual swap is
         # refused then, since it retracts Z and releases the servo under that work.
         self.z_in_use = z_in_use
+        # A Z lift (squid.stage.lift.LiftStage): a switch to a higher magnification lowers it first, and leaves it
+        # lowered (the new objective's height is a preset to pick in the Lift window).
+        self.z_lift = z_lift
+        self._swap_lowers_lift = False
+        self._swap_lift_lowered = False
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
         # connected yet and the hardware already sits there.
@@ -3915,7 +3920,24 @@ class ObjectivesWidget(QWidget):
         layout.addWidget(self.dropdown)
         self.setLayout(layout)
 
+    def _lowers_lift(self, objective_name) -> bool:
+        if self.z_lift is None:
+            return False
+        objectives = self.objectiveStore.objectives_dict
+        current = objectives.get(self.objectiveStore.current_objective, {}).get("magnification")
+        new = objectives.get(objective_name, {}).get("magnification")
+        return current is not None and new is not None and float(new) > float(current)
+
+    def _lower_lift_then(self, move, **kwargs):
+        """For the changer path: lower the lift first when switching to a higher magnification."""
+        if self._swap_lowers_lift:
+            self.z_lift.lower()
+            self._swap_lift_lowered = True
+        return move(**kwargs)
+
     def on_objective_changed(self, objective_name):
+        self._swap_lowers_lift = self._lowers_lift(objective_name)
+        self._swap_lift_lowered = False
         if self.objective_changer is None and self.focus_servo is not None:
             self._swap_objective_with_servo_off(objective_name)
             return
@@ -3927,8 +3949,9 @@ class ObjectivesWidget(QWidget):
         # the GUI thread, with the dropdown disabled as the re-entry guard until it ends.
         self.dropdown.setEnabled(False)
         utils.threaded_operation_helper(
-            self.objective_changer.move_to_objective,
+            self._lower_lift_then,
             self._queued_slot("_on_objective_move_finished"),
+            move=self.objective_changer.move_to_objective,
             objective_name=objective_name,
         )
 
@@ -3958,6 +3981,12 @@ class ObjectivesWidget(QWidget):
             )
             # Revert the dropdown so it matches the store / actual changer state.
             self._revert_dropdown()
+        if self._swap_lift_lowered:
+            QMessageBox.information(
+                self,
+                "Z Lift Lowered",
+                "The Z lift was lowered for the objective change. Raise it from the Lift window.",
+            )
         # Re-enable only after the modal warning, which spins a nested event loop.
         self.dropdown.setEnabled(True)
 
@@ -3994,6 +4023,9 @@ class ObjectivesWidget(QWidget):
         self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
         self._swap_retracted = True
         self._log.info(f"Z retracted from {self._swap_z_before_mm:.4f} mm for objective change")
+        if self._swap_lowers_lift:
+            self.z_lift.lower()
+            self._swap_lift_lowered = True
         self.focus_servo.set_servo(False)
 
     @Slot(bool, str)
@@ -4013,10 +4045,16 @@ class ObjectivesWidget(QWidget):
             return
         self._log.info(f"Focus servo disengaged for objective change {previous_objective} -> {objective_name}")
 
+        lift_note = (
+            "The Z lift is lowered and stays lowered: raise it from the Lift window once the objective is in.\n\n"
+            if self._swap_lift_lowered
+            else ""
+        )
         reply = QMessageBox.question(
             self,
             "Change Objective",
             f"Z is retracted and the focus servo is disengaged.\n\n"
+            f"{lift_note}"
             f"Load the {objective_name} objective and make sure it is securely seated, then click OK "
             f"to re-engage the servo and return Z to {self._swap_z_before_mm:.4f} mm.\n\n"
             f"Click Cancel to keep {previous_objective} (put it back first if you removed it).",

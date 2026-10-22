@@ -18,7 +18,7 @@ from typing import Dict, Optional, Tuple
 
 from crc import CrcCalculator, Crc8
 
-from control._def import LIMIT_SWITCH_CONFIG_MIN_FIRMWARE, LIMIT_SWITCH_DEFAULT_CONFIG
+from control._def import FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE, LIMIT_SWITCH_CONFIG_MIN_FIRMWARE, LIMIT_SWITCH_DEFAULT_CONFIG
 from control.microcontroller import AbstractCephlaMicroSerial
 
 
@@ -98,6 +98,7 @@ class FirmwareConstants:
             "SET_DAC80508_REFDIV_GAIN",
             "SET_ILLUMINATION_INTENSITY_FACTOR",
             "SET_LIMIT_SWITCH_CONFIG",
+            "SET_FOCUS_WHEEL_MODE",
             "CONFIGURE_STEPPER_DRIVER",
             "SET_MAX_VELOCITY_ACCELERATION",
             "SET_LEAD_SCREW_PITCH",
@@ -185,6 +186,9 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         # Z limit switch inputs triggered (status byte 18 bits 2-3)
         self.z_limit_left = False
         self.z_limit_right = False
+        # SET_FOCUS_WHEEL_MODE: in TO_HOST the wheel's ticks (turn_focus_wheel) are reported instead of moving Z
+        self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
+        self.focus_wheel_count = 0
 
         # Validation tracking
         # Note: validation_errors accumulates across commands for debugging.
@@ -320,7 +324,13 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
 
         version_byte = (self.firmware_version[0] << 4) | (self.firmware_version[1] & 0x0F)
 
-        # Struct format ">BBiiiiB3xB" byte breakdown:
+        # Focus wheel to host: the theta field carries the wheel count, flagged in byte 19
+        theta_field, byte19 = self.theta, 0
+        if self.focus_wheel_mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1):
+            theta_field = self.focus_wheel_count
+            byte19 = 1 << self.fw.get("FOCUS_WHEEL_FLAG_REPORTING", 7)
+
+        # Struct format ">BBiiiiBB2xB" byte breakdown:
         #   B: cmd_id       (1 byte)
         #   B: status       (1 byte)
         #   i: x            (4 bytes)
@@ -328,25 +338,27 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         #   i: z            (4 bytes)
         #   i: theta        (4 bytes)
         #   B: button_state (1 byte)
-        #   3x: reserved    (3 bytes, zero)
+        #   B: byte 19      (1 byte, flags)
+        #   2x: reserved    (2 bytes, zero)
         #   B: version_byte (1 byte)
         #   Total: 1+1+4+4+4+4+1+3+1 = 23 bytes (+ 1 byte CRC = 24 = MSG_LENGTH)
         response = bytearray(
             struct.pack(
-                ">BBiiiiB3xB",
+                ">BBiiiiBB2xB",
                 cmd_id,
                 status,
                 self.x,
                 self.y,
                 self.z,
-                self.theta,
+                theta_field,
                 button_state,
+                byte19,
                 version_byte,
             )
         )
 
         # Verify response payload matches firmware MSG_LENGTH - 1 (leaving room for CRC).
-        # The struct format ">BBiiiiB3xB" produces 23 bytes, matching MSG_LENGTH-1 when
+        # The struct format ">BBiiiiBB2xB" produces 23 bytes, matching MSG_LENGTH-1 when
         # MSG_LENGTH == 24. If firmware changes MSG_LENGTH, this assertion will fail
         # and the struct format must be updated to match the new protocol.
         expected_payload_len = msg_length - 1
@@ -423,6 +435,12 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             self.theta = 0
             self.w = 0
             self.w2 = 0
+            self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
+        elif cmd_code == self.fw.get("INITIALIZE"):
+            self.focus_wheel_mode = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0)
+        elif cmd_code == self.fw.get("SET_FOCUS_WHEEL_MODE"):
+            if not self._set_focus_wheel_mode(cmd[2]):
+                status = self.fw.get("CMD_EXECUTION_ERROR", 4)
         elif cmd_code == self.fw.get("SET_LIMIT_SWITCH_CONFIG"):
             if not self._set_limit_switch_config(cmd[2], cmd[3]):
                 status = self.fw.get("CMD_EXECUTION_ERROR", 4)
@@ -431,6 +449,26 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         response = self._build_response(cmd_id, status)
         self.response_buffer.extend(response)
         self._update_internal_state()
+
+    def _set_focus_wheel_mode(self, mode: int) -> bool:
+        """SET_FOCUS_WHEEL_MODE. Older firmware has no handler (callback_default: success, nothing happens); newer
+        firmware refuses an unknown mode, and resets the count on entering TO_HOST."""
+        if self.firmware_version < FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE:
+            return True
+        drives_z, to_host = self.fw.get("FOCUS_WHEEL_DRIVES_Z", 0), self.fw.get("FOCUS_WHEEL_TO_HOST", 1)
+        if mode not in (drives_z, to_host):
+            return False
+        if mode == to_host and self.focus_wheel_mode != to_host:
+            self.focus_wheel_count = 0
+        self.focus_wheel_mode = mode
+        return True
+
+    def turn_focus_wheel(self, ticks: int) -> None:
+        """Simulate the control panel's focus wheel: moves Z in DRIVES_Z, counts in TO_HOST (wrapping int32)."""
+        if self.focus_wheel_mode == self.fw.get("FOCUS_WHEEL_TO_HOST", 1):
+            self.focus_wheel_count = ((self.focus_wheel_count + ticks + 2**31) % 2**32) - 2**31
+        else:
+            self.z += ticks
 
     def _set_limit_switch_config(self, axis: int, config: int) -> bool:
         """SET_LIMIT_SWITCH_CONFIG. Returns False for a command the firmware refuses (CMD_EXECUTION_ERROR).

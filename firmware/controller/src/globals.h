@@ -129,6 +129,8 @@ extern long joystick_button_pressed_timestamp;
 // focus
 extern int32_t focuswheel_pos;
 extern bool first_packet_from_joystick_panel;
+extern uint8_t focus_wheel_mode;          // FOCUS_WHEEL_* (firmware 1.8, SET_FOCUS_WHEEL_MODE)
+extern int32_t focus_wheel_host_count;    // wheel ticks since FOCUS_WHEEL_TO_HOST was enabled (wraps)
 
 // btns
 extern uint8_t btns;

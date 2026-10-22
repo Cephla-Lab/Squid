@@ -1,4 +1,5 @@
 #include "functions.h"
+#include "utils/focus_wheel.h"
 
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
@@ -586,8 +587,10 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
   }
   else
   {
-    focusPosition = focusPosition + (int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3])) - focuswheel_pos);
-    focuswheel_pos = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
+    int32_t wheel = int32_t(uint32_t(buffer[0]) << 24 | uint32_t(buffer[1]) << 16 | uint32_t(buffer[2]) << 8 | uint32_t(buffer[3]));
+    // FOCUS_WHEEL_TO_HOST: the wheel moves nothing here; the status packet reports the count (SET_FOCUS_WHEEL_MODE)
+    fw_route_delta(focus_wheel_mode, fw_wheel_delta(wheel, focuswheel_pos), &focusPosition, &focus_wheel_host_count);
+    focuswheel_pos = wheel;
   }
 
   joystick_delta_x = JOYSTICK_SIGN_X * int16_t( uint16_t(buffer[4]) * 256 + uint16_t(buffer[5]) );

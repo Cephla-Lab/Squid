@@ -31,6 +31,7 @@ import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
+import squid.stage.lift
 import squid.stage.pi
 import squid.stage.utils
 
@@ -384,7 +385,20 @@ class Microscope:
                 sub_window_settle_s=control._def.PI_FOCUS_SUB_WINDOW_SETTLE_MS / 1000.0,
                 stage_config=stage_config,
             )
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+            lift = None
+            if control._def.USE_Z_LIFT_STAGE:
+                if control._def.USE_PRIOR_STAGE:
+                    raise ValueError("USE_Z_LIFT_STAGE needs the Cephla stage: the lift is its Z stepper.")
+                lift = squid.stage.lift.LiftStage(
+                    low_level_devices.microcontroller,
+                    stage_config.Z_AXIS,
+                    min_mm=control._def.Z_LIFT_MIN_MM,
+                    max_mm=control._def.Z_LIFT_MAX_MM,
+                    lowered_mm=control._def.Z_LIFT_LOWERED_MM,
+                )
+            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config, lift=lift)
+        elif control._def.USE_Z_LIFT_STAGE:
+            raise ValueError("USE_Z_LIFT_STAGE needs USE_PI_FOCUS_STAGE: the V-308 is the focus Z on a lift system.")
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
@@ -534,6 +548,13 @@ class Microscope:
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self._laser_af_controller = None
 
+        # Z lift (USE_Z_LIFT_STAGE): the Cephla Z stepper under the XY stage, with the V-308 as the focus Z.
+        self.z_lift: Optional[squid.stage.lift.LiftStage] = getattr(stage, "lift", None)
+        self.z_lift_presets: Optional[squid.stage.lift.LiftPresets] = None
+        self.focus_wheel_router: Optional[squid.stage.lift.FocusWheelRouter] = None
+        if self.z_lift is not None:
+            self.z_lift_presets = squid.stage.lift.LiftPresets(control._def.Z_LIFT_PRESETS_PATH)
+
         # Centralized config management (assigning through the property below also
         # hands the same repository to the illumination controller).
         self.config_repo = ConfigRepository()
@@ -643,12 +664,19 @@ class Microscope:
                     z_pos_mm=z_config.MAX_POSITION,
                     z_neg_mm=z_config.MIN_POSITION,
                 )
+                if self.z_lift is not None:
+                    self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
+                    self.z_lift.apply_limits()
                 self.home_xyz()
+                self._raise_z_lift_to_startup_preset()
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:
                     self.low_level_drivers.microcontroller.reset()
                 raise
+
+        if self.z_lift is not None and control._def.Z_LIFT_FOCUS_WHEEL_DRIVES_PI:
+            self._start_focus_wheel_router()
 
         if self.addons.objective_changer:
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
@@ -993,6 +1021,10 @@ class Microscope:
         if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
             self.stage.home(x=False, y=False, z=True, theta=False)
 
+        # Z lift: down to its bottom sensor first, taking the sample away from the objective before anything moves.
+        if self.z_lift is not None:
+            self.z_lift.home()
+
         # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
         # is clear: home(z) references-if-needed and drives Z to the retracted position
         # (the positive travel limit when PI_FOCUS_HOME_TO_POSITIVE_LIMIT is set, e.g. an upright
@@ -1019,6 +1051,32 @@ class Microscope:
 
             self._log.info("Homing the Y axis...")
             self.stage.home(x=False, y=True, z=False, theta=False)
+
+    def _raise_z_lift_to_startup_preset(self) -> None:
+        """After homing, raise the Z lift to the preset chosen in the Lift window; with none chosen it stays lowered."""
+        if self.z_lift is None:
+            return
+        preset = self.z_lift_presets.startup_preset()
+        if preset is None:
+            self._log.info("Z lift: no startup preset, leaving it lowered.")
+            return
+        self._log.info(f"Z lift: raising to startup preset '{preset.name}' ({preset.height_mm:.3f} mm).")
+        self.z_lift.move_to(preset.height_mm)
+
+    def _start_focus_wheel_router(self) -> None:
+        """Hand the control panel's focus wheel to the V-308 (it would otherwise move the lift)."""
+        mcu = self.low_level_drivers.microcontroller
+        if not mcu.supports_focus_wheel_to_host():
+            version = ".".join(str(v) for v in mcu.firmware_version)
+            needed = ".".join(str(v) for v in control._def.FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE)
+            self._log.warning(
+                f"Firmware {version} cannot route the focus wheel to the V-308 (needs {needed}); "
+                "the focus wheel keeps moving the Z lift."
+            )
+            return
+        mm_per_tick = squid.stage.lift.default_focus_wheel_mm_per_tick(squid.config.get_stage_config().Z_AXIS)
+        self.focus_wheel_router = squid.stage.lift.FocusWheelRouter(mcu, self.stage.z_stage, mm_per_tick)
+        self.focus_wheel_router.start()
 
     def move_x(self, distance: float, blocking: bool = True) -> None:
         """Move the stage by a relative distance along the X axis.
@@ -1153,6 +1211,12 @@ class Microscope:
             self.illumination_controller.close()
         except Exception as e:
             self._log.warning(f"Error closing illumination: {e}")
+
+        if self.focus_wheel_router is not None:
+            try:
+                self.focus_wheel_router.stop()  # the wheel moves the lift again, as on a controller with no host
+            except Exception as e:
+                self._log.warning(f"Error stopping the focus wheel router: {e}")
 
         try:
             self.stage.close()  # stage-owned transports, e.g. the PI C-414 serial handle

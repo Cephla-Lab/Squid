@@ -105,7 +105,24 @@ def cache_position(pos: Pos, stage_config: StageConfig, cache_path=_DEFAULT_CACH
     os.replace(tmp_path, cache_path)
 
 
+def _lower_lift_for_loading(stage: AbstractStage):
+    # A Z lift (CombinedStage.lift) goes down before XY moves, taking the sample away from the objective, and
+    # comes back to the same height on leaving the loading position.
+    lift = getattr(stage, "lift", None)
+    if lift is not None:
+        stage._scanning_position_lift_mm = lift.lower()
+
+
+def _restore_lift_after_loading(stage: AbstractStage):
+    lift = getattr(stage, "lift", None)
+    if lift is not None and stage._scanning_position_lift_mm is not None:
+        _log.info(f"Raising the Z lift back to {stage._scanning_position_lift_mm:.3f} mm.")
+        lift.move_to(stage._scanning_position_lift_mm)
+        stage._scanning_position_lift_mm = None
+
+
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+    _lower_lift_for_loading(stage)
     # Set our limits to something large.  Then later reset them back to the safe values.
     if is_wellplate:
         a_large_limit_mm = 125
@@ -149,6 +166,7 @@ def _move_to_scanning_position_impl(stage: AbstractStage, is_wellplate: bool):
     else:
         stage.move_y_to(_def.SLIDE_POSITION.SCANNING_Y_MM)
         stage.move_x_to(_def.SLIDE_POSITION.SCANNING_X_MM)
+    _restore_lift_after_loading(stage)
 
 
 def move_to_loading_position(

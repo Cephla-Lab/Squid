@@ -89,6 +89,8 @@ static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 
 // (45, 46, 48 and 50 are reserved for the closed-loop commands of the Z encoder work.)
 // Configurable limit switches. 45-63 are claimed by open branches, hence 64.
 static const int SET_LIMIT_SWITCH_CONFIG = 64;  // [2]=axis, [3]=LIMIT_SWITCH_* nibble (enable + polarity per side); saved to EEPROM
+// Firmware 1.8. FOCUS_WHEEL_DRIVES_Z by default and after RESET / INITIALIZE; not saved.
+static const int SET_FOCUS_WHEEL_MODE = 65;     // [2]=FOCUS_WHEEL_* mode
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_LIMIT_SWITCH_CONFIG nibble
@@ -105,6 +107,12 @@ static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own
 static const int ENC_FLAG_REPORTING = 0;     // reporting active
 static const int ENC_FLAG_PID_ENABLED = 1;   // closed loop enabled on the reported axis
 static const int ENC_FLAG_AXIS_SHIFT = 4;    // bits 4-6: protocol axis id being reported
+// SET_FOCUS_WHEEL_MODE modes
+static const int FOCUS_WHEEL_DRIVES_Z = 0;   // the wheel moves Z (as before 1.8)
+static const int FOCUS_WHEEL_TO_HOST = 1;    // the wheel moves nothing; bytes 14-17 = int32 wheel count since enabled,
+                                             // byte 19 = 1 << FOCUS_WHEEL_FLAG_REPORTING, bytes 20-21 = 0.
+                                             // Refused while encoder reporting is on (same bytes), and vice versa.
+static const int FOCUS_WHEEL_FLAG_REPORTING = 7;  // byte 19 bit: bytes 14-17 carry the focus wheel count
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

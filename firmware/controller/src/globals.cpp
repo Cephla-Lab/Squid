@@ -123,6 +123,8 @@ long joystick_button_pressed_timestamp = 0;
 // focus
 int32_t focuswheel_pos = 0;
 bool first_packet_from_joystick_panel = true;
+uint8_t focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;
+int32_t focus_wheel_host_count = 0;
 
 // btns
 uint8_t btns;

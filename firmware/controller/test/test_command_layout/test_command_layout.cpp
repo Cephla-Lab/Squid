@@ -603,6 +603,48 @@ void test_limit_switch_record_is_written_only_on_change(void)
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(src, "EEPROM.write("), "EEPROM.write() rewrites unchanged bytes");
 }
 
+/***************************************************************************************************/
+/***************************** Focus wheel to host (source scans) *********************************/
+/***************************************************************************************************/
+
+/* The routing, refusal rules and packing are unit tested in test_focus_wheel; these pin that the
+   firmware actually goes through them. */
+void test_focus_wheel_mode_is_registered_and_gated(void)
+{
+    const char *cmds = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(cmds);
+    TEST_ASSERT_NOT_NULL(strstr(cmds, "cmd_map[SET_FOCUS_WHEEL_MODE]"));
+    assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_focus_wheel_mode()",
+                                 "fw_mode_allowed(", "focus_wheel_mode = mode");
+    assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_encoder_reporting()",
+                                 "fw_encoder_reporting_allowed(", "encoder_report_axis = on");
+    // RESET and INITIALIZE hand the wheel back to Z, and nothing else assigns the mode
+    TEST_ASSERT_EQUAL_UINT32(2, count_occurrences(cmds, "focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;"));
+    TEST_ASSERT_EQUAL_UINT32(3, count_occurrences(cmds, "focus_wheel_mode ="));
+}
+
+void test_focus_wheel_delta_is_routed_by_mode(void)
+{
+    const char *fn = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL(fn);
+    TEST_ASSERT_NOT_NULL(strstr(fn, "fw_route_delta(focus_wheel_mode,"));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(fn, "focusPosition = focusPosition +"),
+        "the wheel must reach focusPosition only through fw_route_delta, or TO_HOST would still move Z");
+}
+
+void test_status_packet_reports_the_focus_wheel_count(void)
+{
+    const char *ser = load_source("src/serial_communication.cpp");
+    TEST_ASSERT_NOT_NULL(ser);
+    TEST_ASSERT_NOT_NULL(strstr(ser, "fw_status_fields(focus_wheel_host_count, &buffer_tx[14])"));
+    // after the encoder branch, which owns the same bytes while reporting is on
+    const char *enc = strstr(ser, "if (encoder_report_axis != 0xFF)");
+    const char *wheel = strstr(ser, "else if (focus_wheel_mode == FOCUS_WHEEL_TO_HOST)");
+    TEST_ASSERT_NOT_NULL(enc);
+    TEST_ASSERT_NOT_NULL(wheel);
+    TEST_ASSERT_TRUE(enc < wheel);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -650,6 +692,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_homing_and_limit_stops_ignore_disabled_inputs);
     RUN_TEST(test_command_20_is_retired);
     RUN_TEST(test_limit_switch_record_is_written_only_on_change);
+
+    // Focus wheel to host (source scan)
+    RUN_TEST(test_focus_wheel_mode_is_registered_and_gated);
+    RUN_TEST(test_focus_wheel_delta_is_routed_by_mode);
+    RUN_TEST(test_status_packet_reports_the_focus_wheel_count);
 
     return UNITY_END();
 }
