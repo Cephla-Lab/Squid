@@ -213,6 +213,7 @@ class CMD_SET:
     RESET = 255
     SET_LIMIT_SWITCH_CONFIG = 64
     SET_FOCUS_WHEEL_MODE = 65  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE (see FOCUS_WHEEL_MODE)
+    SET_PANEL_LOCK = 66  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE: [2] 1 = the control panel moves nothing
 
 
 class CMD_SET2:
@@ -1298,12 +1299,16 @@ PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z = 0
 # V-308 with the 2026-10-20 gains, a 0.05 um step is ~14% done after 20 ms, ~70% after 100 ms and done after
 # 200 ms (slow integrator creep): raise this for sub-0.1 um stacks, or tune the creep.
 PI_FOCUS_SUB_WINDOW_SETTLE_MS = 20
+# The C-414's profile generator is switched off across a manual objective swap, holding its setpoint at the
+# pre-swap focus (squid.stage.pi.C414FocusStage.freeze_profile). The setpoint is kept here while it is off, so a
+# restart after Squid stopped mid-swap still knows where to switch it back on.
+PI_FOCUS_PROFILE_STATE_PATH = "cache/pi_focus_profile.json"
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
 
 # Z lift: on an upright system with a PI V-308 as the focus Z, the Cephla Z stepper lifts the XY stage and the sample.
-# It lowers (homes, to its bottom sensor) before XY homing, before the loading position and before a swap to a higher
-# magnification objective, and the control panel's focus wheel then drives the V-308 instead (firmware >= 1.8).
+# It lowers (homes, to its bottom sensor) before XY homing and before the loading position, by Z_LIFT_SWAP_LOWER_MM for
+# a manual objective swap (fully, for a changer switch to a higher magnification), and the control panel's focus wheel then drives the V-308 instead (firmware >= 1.8).
 # Needs USE_PI_FOCUS_STAGE. The stepper's pitch / microstepping / current / sign come from the Z axis settings; its
 # travel is Z_LIFT_MIN_MM..Z_LIFT_MAX_MM (Z_AXIS MIN/MAX_POSITION describe the V-308 on such a system).
 USE_Z_LIFT_STAGE = False
@@ -1311,6 +1316,9 @@ Z_LIFT_MIN_MM = 0.0
 Z_LIFT_MAX_MM = 10.0
 # Where "lowered" is. Homing ends at 0 (the bottom sensor); a lowered position above it skips re-homing.
 Z_LIFT_LOWERED_MM = 0.0
+# A manual objective swap (V-308 servo released) lowers the lift by this much, whatever the magnification (not below
+# Z_LIFT_MIN_MM), and raises it back to where it was once the servo holds Z again.
+Z_LIFT_SWAP_LOWER_MM = 5.0
 # The lift's working height per sample format, edited in the Z Lift window (Utils).
 Z_LIFT_HEIGHTS_PATH = "cache/z_lift_heights.json"
 # Route the control panel's focus wheel to the V-308 (the lift is then moved only from the software).

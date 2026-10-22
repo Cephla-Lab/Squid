@@ -62,6 +62,9 @@
 //               power-up and after RESET and INITIALIZE; unsaved, that is
 //               DRIVES_Z. A lift system saves TO_HOST: with no host running,
 //               the wheel moves nothing instead of the lift.
+//               SET_PANEL_LOCK (66) locks the control panel: joystick X/Y reads
+//               centred and wheel turns are dropped (a lift system at its
+//               loading position). Not saved; RESET and INITIALIZE unlock.
 #define FIRMWARE_VERSION_MAJOR 1
 #define FIRMWARE_VERSION_MINOR 8
 

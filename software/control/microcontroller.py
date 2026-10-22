@@ -725,6 +725,7 @@ class Microcontroller:
             # On both startup paths (--skip-init skips the block above).
             self.apply_limit_switch_config()
             self.apply_focus_wheel_power_up_mode()
+            self.unlock_panel()  # a lock left by an earlier session (closed at the loading position, a crash)
         except BaseException:
             # A failed constructor leaves no reader thread or open port behind: headless callers may catch this
             # and keep their process.
@@ -1139,6 +1140,26 @@ class Microcontroller:
         cmd[2] = int(mode)
         cmd[3] = FOCUS_WHEEL_SAVE_AS_POWER_UP if save_as_power_up else 0
         self.send_command(cmd)
+
+    def set_panel_lock(self, locked: bool):
+        """Lock (or unlock) the control panel: locked, its joystick reads centred and its wheel turns are dropped, so
+        nothing on the panel moves the stage (firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE; callers gate on
+        supports_panel_lock()). Locking also stops a joystick move under way. Not saved: RESET, INITIALIZE and a
+        controller power cycle unlock."""
+        self.log.info(f"Set control panel lock: {locked}")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.SET_PANEL_LOCK
+        cmd[2] = 1 if locked else 0
+        self.send_command(cmd)
+
+    def supports_panel_lock(self) -> bool:
+        return tuple(self.firmware_version) >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE
+
+    def unlock_panel(self) -> None:
+        """Unlock the control panel on connect (--skip-init too, which sends no RESET), if the firmware has the lock."""
+        if self.supports_panel_lock():
+            self.set_panel_lock(False)
+            self.wait_till_operation_is_completed()
 
     def apply_focus_wheel_power_up_mode(self) -> None:
         """Save the focus wheel's power-up mode for this configuration, if the firmware supports it.

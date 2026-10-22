@@ -282,49 +282,84 @@ class _RecordingLift:
         self.height = mm
 
 
-def _recording_stage(events, **lift_kwargs):
+def _recording_stage(events, z_mm=2.5, **lift_kwargs):
     stage = MagicMock()
     stage.lift = _RecordingLift(events, **lift_kwargs)
     stage._scanning_position_lift_mm = None
+    stage._scanning_position_z_mm = None
+    stage.get_pos.return_value = Pos(x_mm=20.0, y_mm=20.0, z_mm=z_mm, theta_rad=None)
     stage.move_x_to.side_effect = lambda mm, *a, **k: events.append("x")
     stage.move_y_to.side_effect = lambda mm, *a, **k: events.append("y")
+    stage.move_z_to.side_effect = lambda mm, *a, **k: events.append(f"z_to_{mm}")
     return stage
 
 
-def _load_then_unload(stage, events, change_format_to=None):
-    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
-    assert events == ["lift_lower", "y", "x"]
+def _load_then_unload(stage, events, change_format_to=None, is_wellplate=False):
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=is_wellplate)
+    # the objective retracts before the lift lowers, and both before XY travels
+    assert events[:2] == [f"z_to_{_def.OBJECTIVE_RETRACTED_POS_MM}", "lift_lower"]
     events.clear()
     if change_format_to is not None:
         stage.lift.sample_format = change_format_to
-    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
-    assert stage._scanning_position_lift_mm is None
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=is_wellplate)
+    assert stage._scanning_position_lift_mm is None and stage._scanning_position_z_mm is None
 
 
-def test_unloading_raises_the_lift_to_the_sample_format_height_last():
+def test_unloading_raises_the_lift_to_the_sample_format_height_then_lowers_the_objective():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25})
     _load_then_unload(stage, events)
-    assert events == ["y", "x", "lift_to_6.25"]
+    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+
+
+def test_a_well_plate_with_a_lift_also_raises_the_lift_before_lowering_the_objective():
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    _load_then_unload(stage, events, is_wellplate=True)
+    assert events[-2:] == ["lift_to_6.25", "z_to_2.5"]
 
 
 def test_unloading_uses_the_new_format_height_after_a_format_change():
     events = []
     stage = _recording_stage(events, heights={"96 well plate": 6.25, "glass slide": 5.5})
     _load_then_unload(stage, events, change_format_to="glass slide")
-    assert events == ["y", "x", "lift_to_5.5"]
+    assert events == ["y", "x", "lift_to_5.5", "z_to_2.5"]
 
 
 def test_unloading_without_a_saved_height_goes_back_for_the_same_format_only():
     events = []
     stage = _recording_stage(events)
     _load_then_unload(stage, events)
-    assert events == ["y", "x", "lift_to_4.0"]
+    assert events == ["y", "x", "lift_to_4.0", "z_to_2.5"]
 
     events.clear()
     stage = _recording_stage(events)
     _load_then_unload(stage, events, change_format_to="glass slide")
-    assert events == ["y", "x"]  # a different sample with no height of its own: stays lowered
+    assert events == ["y", "x", "z_to_2.5"]  # a different sample with no height of its own: stays lowered
+
+
+def test_unloading_can_leave_the_objective_retracted():
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False, restore_z=False)
+    assert events == ["y", "x", "lift_to_6.25"]  # the lift still rises; the objective stays up
+    assert stage._scanning_position_z_mm is None
+
+
+@pytest.mark.parametrize(
+    "z_mm",
+    [
+        _def.OBJECTIVE_RETRACTED_POS_MM / 2,
+        _def.OBJECTIVE_RETRACTED_POS_MM + 8e-7,  # read back as 0.1000008 on the AION: retracted, not a move
+    ],
+)
+def test_an_objective_at_or_above_the_retracted_position_is_not_moved_for_loading(z_mm):
+    events = []
+    stage = _recording_stage(events, z_mm=z_mm)
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    assert events == ["lift_lower", "y", "x"]
 
 
 def test_loading_without_a_lift_is_unchanged():
@@ -530,3 +565,99 @@ def test_a_reconnected_panel_does_not_move_z(monkeypatch):
     mcu.focus_wheel_count = 413376 + 16  # turning on from there works, from the measured position
     router.poll()
     assert focus.targets == [pytest.approx(1.0 + 0.016)]
+
+
+class _CountingFocus(_FakeFocus):
+    """A focus stage that counts move commands like PIFocusStage.move_command_count."""
+
+    def __init__(self, z_mm=1.0):
+        super().__init__(z_mm)
+        self.move_command_count = 0
+
+    def move_z_to(self, abs_mm, blocking=True):
+        self.move_command_count += 1
+        self.targets.append(round(abs_mm, 9))
+
+
+def _counting_router(monkeypatch, enabled):
+    import squid.stage.lift as lift_module
+
+    clock = [100.0]
+    monkeypatch.setattr(lift_module.time, "monotonic", lambda: clock[0])
+    mcu = MagicMock()
+    mcu.focus_wheel_count = 0
+    focus = _CountingFocus(z_mm=1.0)
+    router = FocusWheelRouter(mcu, focus, mm_per_tick=0.001, enabled=lambda: enabled[0])
+    router.poll()
+    return router, mcu, focus, clock
+
+
+def test_a_disabled_poll_without_ticks_forgets_the_target(monkeypatch):
+    # Codex review: autofocus moved Z to 1.5 mm during a short pause; the next tick commanded 1.002 mm.
+    enabled = [True]
+    router, mcu, focus, clock = _counting_router(monkeypatch, enabled)
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 1
+    router.poll()
+    assert focus.targets == [pytest.approx(1.001)]
+    enabled[0] = False  # autofocus starts: no ticks arrive while it runs
+    clock[0] += 0.03
+    router.poll()
+    focus.z_mm = 1.5  # autofocus moved Z (on a stage without a move counter)
+    enabled[0] = True
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 2
+    router.poll()
+    assert focus.targets[-1] == pytest.approx(1.501)  # from the measured position, not the old target
+
+
+def test_a_move_by_anything_else_resyncs_the_target(monkeypatch):
+    enabled = [True]
+    router, mcu, focus, clock = _counting_router(monkeypatch, enabled)
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 1
+    router.poll()
+    focus.move_z_to(2.0)  # the GUI moves Z between two wheel ticks, within the resync time
+    focus.z_mm = 2.0
+    clock[0] += 0.03
+    mcu.focus_wheel_count = 2
+    router.poll()
+    assert focus.targets[-1] == pytest.approx(2.001)
+
+
+def test_pi_focus_stage_counts_every_move_command():
+    import squid.stage.pi
+
+    sim = squid.stage.pi._SimulatedC414()
+    sim.initialize(reference=True)
+    stage = squid.stage.pi.PIFocusStage(sim)
+    stage.move_z_to(1.0)
+    stage.move_z(0.1)
+    stage.home(False, False, True, False, blocking=True)
+    assert stage.move_command_count == 3
+
+
+def test_a_failed_lift_restore_is_retried_on_the_next_return():
+    # Codex review: the saved height was cleared before the lift move; a timeout then left nothing to restore,
+    # and the retry reported the scanning position reached with the lift still down.
+    events = []
+    stage = _recording_stage(events, heights={"96 well plate": 6.25})
+    squid.stage.utils.move_to_loading_position(stage, blocking=True, is_wellplate=False)
+    real_move_to = stage.lift.move_to
+
+    def failing_once(mm, blocking=True):
+        stage.lift.move_to = real_move_to
+        raise TimeoutError("lift move timed out")
+
+    stage.lift.move_to = failing_once
+    events.clear()
+    with pytest.raises(TimeoutError):
+        squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)
+    assert stage._scanning_position_lift_mm is not None  # kept for the retry
+    assert events == ["y", "x"]  # and the objective stays retracted over a lift that did not get there
+    assert stage._scanning_position_z_mm == 2.5
+
+    events.clear()
+    squid.stage.utils.move_to_scanning_position(stage, blocking=True, is_wellplate=False)  # the retry
+    assert events == ["y", "x", "lift_to_6.25", "z_to_2.5"]
+    assert stage._scanning_position_lift_mm is None and stage._scanning_position_z_mm is None

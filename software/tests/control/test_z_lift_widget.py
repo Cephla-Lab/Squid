@@ -192,8 +192,23 @@ def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
     widget._jog(+1)  # refused even if a click got through
     assert lift.calls == []
 
+    # At the loading position the lift stays locked; only the toggle back to scanning is allowed.
+    utils.slide_position = "loading"
     utils.signal_loading_position_reached.emit()
+    assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
+    assert row_button.isEnabled() and widget.btn_loading.isEnabled()
+    widget._jog(+1)
+    assert lift.calls == []
+    assert not widget.motion_guard.claim()  # no objective swap either
+
+    row_button.click()  # back to scanning: the loading position is being left
+    assert utils.switches == 2
+    assert not widget.motion_guard.at_loading_position
+    utils.slide_position = "scanning"
+    utils.signal_scanning_position_reached.emit()
     assert widget.btn_up.isEnabled() and row_button.isEnabled()
+    widget._jog(+1)
+    qtbot.waitUntil(lambda: lift.calls == [("move_relative", 0.1)], timeout=3000)
 
 
 def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
@@ -243,3 +258,233 @@ def test_stage_utils_dialog_toggle_follows_the_lift_guard(qtbot):
         dialog.switch_position()
     move.assert_called_once()
     assert guard.busy  # its own toggle holds the guard until it reports back
+
+
+def test_a_failed_return_from_loading_stays_at_loading(qtbot):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    guard = LiftMotionGuard(dialog)
+    dialog.set_lift_motion_guard(guard)
+    dialog._was_live = False
+    dialog.slide_position = "loading"
+    dialog.signal_loading_position_reached.emit()
+    assert guard.at_loading_position
+
+    with patch("control.widgets.move_to_scanning_position"):
+        dialog.switch_position()  # the return starts...
+    assert not guard.at_loading_position
+    reached = []
+    dialog.signal_scanning_position_reached.connect(lambda: reached.append("scanning"))
+    dialog.signal_loading_position_reached.connect(lambda: reached.append("loading"))
+    with patch.object(QMessageBox, "warning") as warning:
+        dialog._callback_scanning_position_reached(False, "timeout")  # ...and fails
+    warning.assert_called_once()
+    assert reached == ["loading"]  # still at loading: everything stays locked
+    assert dialog.slide_position == "loading" and guard.at_loading_position
+    assert dialog.btn_load_slide.text() == "Move to Scanning Position"  # retry offered
+
+
+def _stage_utils_dialog(qtbot, is_live, keep_live_off_at_loading):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = is_live
+    live.stop_live.side_effect = lambda: setattr(live, "is_live", False)
+    live.start_live.side_effect = lambda: setattr(live, "is_live", True)
+    dialog = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    dialog.keep_live_off_at_loading = keep_live_off_at_loading
+    return dialog, live
+
+
+def _toggle(dialog, success=True):
+    with patch("control.widgets.move_to_loading_position"), patch("control.widgets.move_to_scanning_position"):
+        going_to_loading = dialog.slide_position != "loading"
+        dialog.switch_position()
+    if going_to_loading:
+        dialog._callback_loading_position_reached(True, None)
+    else:
+        with patch.object(QMessageBox, "warning"):
+            dialog._callback_scanning_position_reached(success, None if success else "timeout")
+
+
+def test_a_lift_system_keeps_live_off_at_loading_and_resumes_it_at_scanning(qtbot):
+    dialog, live = _stage_utils_dialog(qtbot, is_live=True, keep_live_off_at_loading=True)
+    _toggle(dialog)
+    assert dialog.slide_position == "loading" and not live.is_live  # its controls are locked there
+    _toggle(dialog, success=False)  # a failed return: still at loading, live still off
+    assert dialog.slide_position == "loading" and not live.is_live
+    _toggle(dialog)
+    assert dialog.slide_position == "scanning" and live.is_live
+
+
+def test_a_lift_system_does_not_start_live_that_was_off(qtbot):
+    dialog, live = _stage_utils_dialog(qtbot, is_live=False, keep_live_off_at_loading=True)
+    _toggle(dialog)
+    _toggle(dialog)
+    live.start_live.assert_not_called()
+
+
+def test_without_a_lift_live_comes_back_at_the_loading_position_as_before(qtbot):
+    dialog, live = _stage_utils_dialog(qtbot, is_live=True, keep_live_off_at_loading=False)
+    _toggle(dialog)
+    assert dialog.slide_position == "loading" and live.is_live
+
+
+def test_set_to_current_is_blocked_at_the_loading_position(qtbot, tmp_path):
+    utils = _FakeStageUtils()
+    widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
+    assert widget.btn_height_set.isEnabled()
+    widget.btn_loading.click()
+    utils.slide_position = "loading"
+    utils.signal_loading_position_reached.emit()
+    assert not widget.btn_height_set.isEnabled()
+    widget._select_format("96 well plate")
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.Ok) as question:
+        widget._set_selected_height_to_current()  # refused even if a click got through
+    question.assert_not_called()
+    assert lift.heights.get("96 well plate") is None
+
+
+def _dialog_at_loading(qtbot, saved_z_mm):
+    from unittest.mock import MagicMock
+
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    stage = MagicMock()
+    stage._scanning_position_z_mm = saved_z_mm
+    dialog = StageUtils(stage, live, is_wellplate=False)
+    qtbot.addWidget(dialog)
+    dialog.ask_objective_return = True
+    dialog.slide_position = "loading"
+    return dialog
+
+
+def test_leaving_loading_asks_where_the_objective_goes(qtbot):
+    import control._def
+
+    for reply, restore_z in ((QMessageBox.Ok, True), (QMessageBox.No, False)):
+        dialog = _dialog_at_loading(qtbot, 2.5)
+        with patch("control.widgets._ask_objective_z_return", return_value=reply) as ask, patch(
+            "control.widgets.move_to_scanning_position"
+        ) as move:
+            dialog.switch_position()
+        assert "2.5000 mm" in ask.call_args.args[2]
+        assert move.call_args.kwargs["restore_z"] is restore_z
+
+    dialog = _dialog_at_loading(qtbot, 2.5)
+    with patch("control.widgets._ask_objective_z_return", return_value=QMessageBox.Cancel), patch(
+        "control.widgets.move_to_scanning_position"
+    ) as move:
+        dialog.switch_position()
+    move.assert_not_called()  # cancelled: nothing moves, still at loading
+    assert dialog.slide_position == "loading" and dialog.btn_load_slide.isEnabled()
+
+    # Not asked when the objective was not retracted for loading
+    for saved in (None, control._def.OBJECTIVE_RETRACTED_POS_MM, control._def.OBJECTIVE_RETRACTED_POS_MM + 8e-7):
+        dialog = _dialog_at_loading(qtbot, saved)
+        with patch("control.widgets._ask_objective_z_return") as ask, patch(
+            "control.widgets.move_to_scanning_position"
+        ) as move:
+            dialog.switch_position()
+        ask.assert_not_called()
+        assert move.call_args.kwargs["restore_z"] is True
+
+
+def test_without_a_lift_leaving_loading_does_not_ask(qtbot):
+    dialog = _dialog_at_loading(qtbot, 2.5)
+    dialog.ask_objective_return = False
+    with patch("control.widgets._ask_objective_z_return") as ask, patch("control.widgets.move_to_scanning_position"):
+        dialog.switch_position()
+    ask.assert_not_called()
+
+
+def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until_scanning(qtbot):
+    from unittest.mock import MagicMock
+
+    from qtpy.QtWidgets import QPushButton
+
+    from control.gui_hcs import HighContentScreeningGui as Gui
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    stage_utils = StageUtils(MagicMock(), live, is_wellplate=False)
+    qtbot.addWidget(stage_utils)
+    panel = []
+
+    class _Gui:  # Qt connects bound methods through weak references: SimpleNamespace has none
+        pass
+
+    fake = _Gui()
+    fake.__dict__.update(
+        stageUtils=stage_utils,
+        log=MagicMock(),
+        _loading_position_locked=False,
+        _loading_position_saved_enabled={},
+        _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget", "liveControlWidget"),
+        navigationWidget=QPushButton(),
+        liveControlWidget=QPushButton(),
+        _set_control_panel_lock=panel.append,
+    )
+    for name in (
+        "_connect_loading_position_lock",
+        "_lock_stage_at_loading_position",
+        "_unlock_stage_after_loading_position",
+    ):
+        setattr(fake, name, getattr(Gui, name).__get__(fake))
+    fake._connect_loading_position_lock()
+
+    def locked():
+        return not fake.navigationWidget.isEnabled() and not fake.liveControlWidget.isEnabled() and panel[-1] is True
+
+    with patch("control.widgets.move_to_loading_position"):
+        stage_utils.switch_position()  # the move to the loading position starts
+    assert locked()  # before the stage gets there
+    stage_utils._callback_loading_position_reached(True, None)
+    assert locked()
+    with patch("control.widgets.move_to_scanning_position"):
+        stage_utils.switch_position()  # the move back starts
+    assert locked()
+    stage_utils._callback_scanning_position_reached(True, None)
+    assert fake.navigationWidget.isEnabled() and fake.liveControlWidget.isEnabled() and panel == [True, False]
+
+
+def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
+    # On the AION a filter wheel error at shutdown aborted the cleanup before Microscope.close() unlocked the panel,
+    # leaving the joystick dead without Squid.
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from control.gui_hcs import HighContentScreeningGui as Gui
+
+    class _Gui:
+        pass
+
+    calls = []
+    fake = _Gui()
+    fake._loading_position_locked = True
+    fake._set_control_panel_lock = lambda locked: calls.append(locked)
+    fake.log = MagicMock()
+    fake.stage = MagicMock()
+    fake.stage.get_pos.side_effect = RuntimeError("the first cleanup step fails")
+    with pytest.raises(RuntimeError):
+        Gui._cleanup_common(fake, for_restart=False)
+    assert calls == [False]
+
+    calls.clear()
+    fake._loading_position_locked = False  # not at the loading position: nothing sent
+    with pytest.raises(RuntimeError):
+        Gui._cleanup_common(fake, for_restart=False)
+    assert calls == []

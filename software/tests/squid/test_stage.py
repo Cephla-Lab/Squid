@@ -1,4 +1,5 @@
 import builtins
+import json
 import logging
 
 import numpy as np
@@ -593,10 +594,8 @@ def test_pi_focus_servo_toggle_reaches_backend_and_blocks_moves():
 def test_c414_initialize_without_reference_still_reads_reference_state():
     # A --skip-init restart connects with reference=False; an axis the controller reports as
     # referenced must still accept moves.
-    stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
-    stage.axis = "1"
+    stage = _bare_c414()
     stage._is_referenced = False
-    stage._range_lo = stage._range_hi = None
     stage.gcs = unittest.mock.MagicMock()
     stage.gcs.qFRF.return_value = {"1": True}
     stage.gcs.qPOS.return_value = {"1": 1.0}
@@ -654,12 +653,24 @@ class _FakeGCSError(Exception):
         self.code = code
 
 
-def _c414_with(gcs):
+def _bare_c414():
+    """A C414FocusStage built without pipython or a connection; tests set gcs and what else they need."""
     stage = squid.stage.pi.C414FocusStage.__new__(squid.stage.pi.C414FocusStage)
     stage.axis = "1"
     stage._is_referenced = True
     stage._range_lo = stage._range_hi = None
     stage._target_mm = None
+    stage._profile_state_path = None
+    stage._profile_frozen = False
+    stage._frozen_mm = None
+    stage._range_widened = False
+    stage._velocity_mm_s = 2.0
+    stage._servo_period_s = 50e-6
+    return stage
+
+
+def _c414_with(gcs):
+    stage = _bare_c414()
     stage.gcs = gcs
     stage._pitools = unittest.mock.MagicMock()
     stage._GCSError = _FakeGCSError
@@ -805,6 +816,7 @@ def test_c414_target_tracking_reset_when_the_controller_may_move_its_target(inva
     gcs = _FakeC414Gcs(polls_until_on_target=0)
     gcs.RON = gcs.StopAll = lambda *a, **k: None
     gcs.qFRF = lambda axis: {axis: True}
+    gcs.qSPA = lambda axis, param: {axis: {param: 1}}  # profile generator on
     stage = _c414_with(gcs)
     stage._GCSError = RuntimeError
     stage.move_to(2.0)
@@ -1013,3 +1025,215 @@ def test_c414_clamps_to_the_limits_the_controller_reports(caplog, fence):
     with caplog.at_level(logging.WARNING):
         assert stage._clamp_target(lo) == lo
     assert "outside the range limit" not in caplog.text
+
+
+class _ProfileFakeGcs:
+    """GCS stand-in for profile-generator / wave-ramp tests: moves are instant, a started wave puts Z at
+    its end, and every command is logged in order."""
+
+    PG = squid.stage.pi.PARAM_PROFILE_GENERATOR_ENABLE
+
+    def __init__(self, pos=2.0, profile_on=True, servo_on=True, range_mm=(0.05, 6.95)):
+        self.pos = pos
+        self.target = pos
+        self.profile_on = profile_on
+        self.servo_on = servo_on
+        self.range = list(range_mm)
+        self.log = []
+        self.errcheck = True
+        self._wave = None
+
+    def SVO(self, axis, values):
+        self.servo_on = bool(values[0])
+        self.target = self.pos
+        self.log.append(("SVO", self.servo_on))
+
+    def qSVO(self, axis):
+        return {axis: self.servo_on}
+
+    def RON(self, axis, values):
+        pass
+
+    def qFRF(self, axis):
+        return {axis: True}
+
+    def CCL(self, *args):
+        pass
+
+    def SPA(self, axis, param, value):
+        if param == self.PG:
+            self.profile_on = bool(value)
+        elif param == squid.stage.pi.PARAM_RANGE_LIMIT_MIN:
+            self.range[0] = value
+        elif param == squid.stage.pi.PARAM_RANGE_LIMIT_MAX:
+            self.range[1] = value
+        self.log.append(("SPA", param, value))
+
+    def qSPA(self, axis, param):
+        return {axis: {param: int(self.profile_on)}}
+
+    def qTMN(self, axis):
+        return {axis: self.range[0]}
+
+    def qTMX(self, axis):
+        return {axis: self.range[1]}
+
+    def qMOV(self, axis):
+        return {axis: self.target}
+
+    def qPOS(self, axis):
+        return {axis: self.pos}
+
+    def MOV(self, axis, target):
+        self.target = self.pos = target
+        self.log.append(("MOV", target, self.profile_on))
+
+    def qONT(self, axis):
+        return {axis: True}
+
+    def checkerror(self):
+        pass
+
+    def qERR(self):
+        return 0
+
+    def send(self, cmd):
+        self.log.append(("send", cmd))
+        words = cmd.split()
+        if words[0] == "WAV":
+            self._wave = float(words[5]) + float(words[6])  # offset + amplitude
+        elif cmd == "WGO 1 1":
+            self.target = self.pos = self._wave
+
+    def sent(self, prefix):
+        return [entry[1] for entry in self.log if entry[0] == "send" and entry[1].startswith(prefix)]
+
+
+def _profile_c414(gcs, tmp_path):
+    stage = _c414_with(gcs)
+    stage._range_lo, stage._range_hi = gcs.range
+    stage._profile_state_path = str(tmp_path / "cache" / "pi_focus_profile.json")
+    return stage
+
+
+def test_c414_swap_release_and_reengage_move_nothing_and_ramp_back(tmp_path, monkeypatch):
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    gcs = _ProfileFakeGcs(pos=3.9863)
+    stage = _profile_c414(gcs, tmp_path)
+    state = tmp_path / "cache" / "pi_focus_profile.json"
+
+    stage.freeze_profile()  # at focus
+    assert not gcs.profile_on and stage.is_profile_frozen()
+    assert json.loads(state.read_text()) == {"frozen_native_mm": 3.9863}
+
+    stage.move_to(6.95)  # the retract ramps on the wave generator, the generator stays off
+    assert gcs.sent("WAV") and gcs.pos == 6.95 and not gcs.profile_on
+    stage.set_servo(False)  # already frozen: still at focus
+    assert stage._frozen_mm == 3.9863
+
+    gcs.pos = 7.1956  # a light objective drifts past the range limit, to the hard stop
+    gcs.log.clear()
+    stage.set_servo(True)
+    widen = [e for e in gcs.log if e[0] == "SPA" and e[1] == squid.stage.pi.PARAM_RANGE_LIMIT_MAX]
+    assert widen and widen[0][2] >= 7.1956 + 0.05  # widened before the servo came on
+    assert gcs.log.index(widen[0]) < gcs.log.index(("SVO", True))
+    assert gcs.pos == 7.1956  # servo-on holds Z where it is
+
+    gcs.log.clear()
+    stage.move_to(3.9865)  # the restore, from a read position 0.2 um off the frozen target
+    assert gcs.sent("WAV")[0].split()[5:7] == [f"{3.9863 - 7.1956}", "7.1956"]  # amplitude, offset
+    movs = [e for e in gcs.log if e[0] == "MOV"]
+    assert movs[0] == ("MOV", 3.9863, False)  # the ramp ends on the frozen setpoint...
+    assert movs[-1] == ("MOV", 3.9865, True)  # ...then the generator, back on, steps the rest
+    assert not stage.is_profile_frozen() and gcs.profile_on
+    assert gcs.range == [0.05, 6.95]  # restored
+    assert not state.exists()
+
+
+def test_c414_servo_release_freezes_the_profile_when_not_already_frozen(tmp_path):
+    gcs = _ProfileFakeGcs(pos=6.95)
+    stage = _profile_c414(gcs, tmp_path)
+
+    stage.set_servo(False)
+
+    assert stage.is_profile_frozen() and stage._frozen_mm == 6.95
+    assert gcs.log.index(("SPA", gcs.PG, 0)) < gcs.log.index(("SVO", False))
+
+
+def test_c414_ramp_spreads_a_long_move_over_table_rate(tmp_path, monkeypatch):
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    gcs = _ProfileFakeGcs(pos=0.05)
+    stage = _profile_c414(gcs, tmp_path)
+    stage.freeze_profile()
+
+    stage.move_to(6.95)  # 6.9 mm at 2 mm/s = 69000 servo cycles: 3 per point
+
+    wav = gcs.sent("WAV")[0].split()
+    assert int(wav[4]) <= squid.stage.pi._WAVE_MAX_POINTS
+    assert gcs.sent("WTR") == ["WTR 1 3 0"]
+    assert gcs.sent("WGO") == ["WGO 1 1", "WGO 1 0"]
+    assert gcs.pos == 6.95
+
+
+def test_c414_initialize_picks_up_a_profile_left_frozen(tmp_path, monkeypatch):
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    gcs = _ProfileFakeGcs(pos=7.19, profile_on=False, servo_on=False)
+    stage = _profile_c414(gcs, tmp_path)
+    state = tmp_path / "cache" / "pi_focus_profile.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"frozen_native_mm": 3.5}))
+
+    stage.initialize(reference=False)
+
+    assert stage.is_profile_frozen() and stage._frozen_mm == 3.5
+    assert gcs.range[1] >= 7.19 and gcs.servo_on and gcs.pos == 7.19  # no jump on the servo-on
+    stage.reset_range_limit(7.0)  # connect_pi_focus_stage's next step: must not narrow the limit under Z
+    upright = squid.stage.pi.PIFocusStage(
+        stage, stage_config=squid.config.get_stage_config(), invert_z=True, home_to_positive_limit=True
+    )
+    assert upright._offset_mm == 7.0  # the configured travel, not the widened limit
+    assert upright.get_pos().z_mm == pytest.approx(7.0 - 7.19)
+    stage.set_travel_limits(0.05, 6.95)  # nor must the GUI's Z fence
+    assert gcs.range[1] >= 7.19 and stage.hardware_limits_mm() == (0.05, 6.95)  # widened only on the controller
+    stage.move_to(3.5)
+    assert not stage.is_profile_frozen() and gcs.profile_on and not state.exists()
+    assert gcs.range == [0.05, 6.95]  # the fence, once the ramp brought Z inside it
+
+
+def test_c414_initialize_with_the_generator_on_drops_a_stale_state_file(tmp_path):
+    gcs = _ProfileFakeGcs()
+    stage = _profile_c414(gcs, tmp_path)
+    state = tmp_path / "cache" / "pi_focus_profile.json"
+    state.parent.mkdir()
+    state.write_text(json.dumps({"frozen_native_mm": 3.5}))
+
+    stage.initialize(reference=False)
+
+    assert not stage.is_profile_frozen() and not state.exists()
+
+
+def test_c414_profile_left_frozen_without_a_saved_setpoint_keeps_ramping(tmp_path, monkeypatch):
+    monkeypatch.setattr(squid.stage.pi.time, "sleep", lambda s: None)
+    gcs = _ProfileFakeGcs(pos=3.0, profile_on=False)
+    stage = _profile_c414(gcs, tmp_path)
+
+    stage.initialize(reference=False)
+    stage.move_to(3.0)
+
+    assert stage.is_profile_frozen() and not gcs.profile_on
+    assert gcs.sent("WGO 1 1")  # still a ramp, never a bare step
+
+
+def test_pi_focus_swap_sequence_thaws_the_profile_on_restore():
+    sim = _make_referenced_sim()
+    stage = squid.stage.pi.PIFocusStage(sim, stage_config=squid.config.get_stage_config())
+    stage.move_z_to(3.0)
+
+    stage.freeze_profile()
+    stage.home(x=False, y=False, z=True, theta=False)
+    stage.set_servo(False)
+    stage.set_servo(True)
+    assert stage.is_profile_frozen()
+    stage.move_z_to(3.0)
+
+    assert not stage.is_profile_frozen()
