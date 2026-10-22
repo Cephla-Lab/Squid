@@ -13,6 +13,12 @@ from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton
 from squid.abc import Pos
 
 
+@pytest.fixture(autouse=True)
+def _start_on_20x(monkeypatch):
+    # DEFAULT_OBJECTIVE comes from the machine's cache (the objective last used there); these tests start on 20x.
+    monkeypatch.setattr(ts, "DEFAULT_OBJECTIVE", "20x")
+
+
 class _BlockingChanger:
     """Blocks in move_to_objective until the test sets `release`, so nothing races a sleep.
     (A real method, not a MagicMock: threaded_operation_helper reads operation.__name__.)"""
@@ -77,7 +83,8 @@ class _RecordingServo:
         return Pos(x_mm=0.0, y_mm=0.0, z_mm=self.z_mm, theta_rad=None)
 
     def home(self, x, y, z, theta, blocking=True):
-        if self.fail_on == "retract":
+        self.homes = getattr(self, "homes", 0) + 1
+        if self.fail_on == "retract" or (self.fail_on == "re_retract" and self.homes == 2):
             raise RuntimeError("GCS error")
         self.events.append("retract")
         self.retract_thread = threading.current_thread()
@@ -255,6 +262,7 @@ def _swap_active_log(widget):
         (False, QMessageBox.Ok),  # servo disengage fails
         (True, QMessageBox.Ok),  # servo re-engage fails
         ("restore", QMessageBox.Ok),
+        ("re_retract", QMessageBox.No),
     ],
 )
 def test_servo_swap_holds_swap_active_until_every_end(qtbot, fail_on, answer):
@@ -316,7 +324,7 @@ def test_servo_swap_to_higher_mag_lowers_the_lift_then_raises_it_before_z_return
             widget.dropdown.setCurrentText("40x")
 
     # Lowered with the objective already retracted, before the servo lets go; raised back once the servo holds Z
-    # again, before the objective comes back down.
+    # again, before the objective comes back down (straight down: no retract and back).
     assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on", "lift_to_4.0", "restore_2.5"]
     assert "goes back up to 4.000 mm" in question.call_args.args[2]
 
@@ -334,10 +342,11 @@ def test_servo_swap_can_leave_z_retracted(qtbot, with_lift):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("40x")
 
-    # The swap goes through (the new objective is current) and the lift still rises, but Z stays retracted.
+    # The swap goes through (the new objective is current) and the lift still rises, but Z stays retracted:
+    # retracted again after servo-on, since "retracted" must not mean wherever Z drifted to.
     lift = ["lift_lower"] if with_lift else []
     raised = ["lift_to_4.0"] if with_lift else []
-    assert events == ["retract", *lift, "servo_off", "dialog", "servo_on", *raised]
+    assert events == ["retract", *lift, "servo_off", "dialog", "servo_on", "retract", *raised]
     assert store.current_objective == "40x"
 
 
@@ -355,6 +364,74 @@ def test_a_lift_that_fails_to_rise_after_a_swap_leaves_z_retracted(qtbot):
 
     assert events == ["retract", "lift_lower", "servo_off", "dialog", "servo_on"]  # Z never came back down
     assert warning.call_args.args[1] == "Z Lift Not Raised"
+
+
+class _DriftingServo(_RecordingServo):
+    """Sinks toward the sample (to drift_to_mm) while its servo is off; servo-on holds it there
+    (PIFocusStage.set_servo)."""
+
+    def __init__(self, events, drift_to_mm, **kwargs):
+        super().__init__(events, **kwargs)
+        self.drift_to_mm = drift_to_mm
+
+    def set_servo(self, enabled):
+        super().set_servo(enabled)
+        if not enabled:
+            self.z_mm = self.drift_to_mm
+
+
+class _LiftCheckingZ(_RecordingLift):
+    """Records where Z was when the lift started to rise."""
+
+    def __init__(self, events, servo, **kwargs):
+        super().__init__(events, **kwargs)
+        self.servo = servo
+        self.z_when_raised = None
+
+    def move_to(self, mm, blocking=True):
+        self.z_when_raised = self.servo.z_mm
+        super().move_to(mm, blocking)
+
+
+def _swap_with_drift(qtbot, drift_to_mm, answer, fail_on=None):
+    store = ts.get_test_objective_store()  # starts on 20x, Z at 2.5 mm
+    events = []
+    servo = _DriftingServo(events, drift_to_mm, fail_on=fail_on)
+    lift = _LiftCheckingZ(events, servo)
+    widget = ObjectivesWidget(store, focus_servo=servo, z_lift=lift)
+    qtbot.addWidget(widget)
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, answer)), patch.object(
+        QMessageBox, "warning"
+    ) as warning:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+    return events, lift, warning
+
+
+def test_z_that_drifted_past_its_return_z_goes_back_there_before_the_lift_rises(qtbot):
+    events, lift, _ = _swap_with_drift(qtbot, drift_to_mm=3.0, answer=QMessageBox.Ok)
+    assert lift.z_when_raised == pytest.approx(2.5)  # not the 3.0 mm it drifted to
+    assert events[-4:] == ["servo_on", "restore_2.5", "lift_to_4.0", "restore_2.5"]
+
+
+def test_z_short_of_its_return_z_is_not_moved_up_and_back_down(qtbot):
+    events, lift, _ = _swap_with_drift(qtbot, drift_to_mm=1.4, answer=QMessageBox.Ok)
+    assert lift.z_when_raised == pytest.approx(1.4)  # farther from the sample than where Z ends up
+    assert events[-3:] == ["servo_on", "lift_to_4.0", "restore_2.5"]
+
+
+def test_z_kept_retracted_is_retracted_again_before_the_lift_rises(qtbot):
+    events, lift, _ = _swap_with_drift(qtbot, drift_to_mm=1.4, answer=QMessageBox.No)
+    assert lift.z_when_raised == pytest.approx(0.1)  # not the 1.4 mm it drifted to
+    assert events[-3:] == ["servo_on", "retract", "lift_to_4.0"]
+
+
+@pytest.mark.parametrize("answer, fail_on", [(QMessageBox.Ok, "restore"), (QMessageBox.No, "re_retract")])
+def test_a_failed_move_clear_after_servo_on_keeps_the_lift_lowered(qtbot, answer, fail_on):
+    events, lift, warning = _swap_with_drift(qtbot, drift_to_mm=3.0, answer=answer, fail_on=fail_on)
+    assert events[-1] == "servo_on" and lift.z_when_raised is None  # the lift never moved
+    assert warning.call_args.args[1] == "Z Not Moved Clear"
+    assert "Z lift stays lowered" in warning.call_args.args[2]
 
 
 def test_servo_swap_to_lower_mag_leaves_the_lift_alone(qtbot):

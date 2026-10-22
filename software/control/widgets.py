@@ -3994,6 +3994,7 @@ class ObjectivesWidget(QWidget):
         self._swap_lift_height_mm = None  # the lift height a manual swap lowered from, raised back to after it
         self._swap_lift_raised = False
         self._swap_return_z = True  # False: the user chose to leave Z retracted after the swap
+        self._swap_z_cleared = False  # after servo-on, Z moved clear of where it drifted (see below)
         self._changer_swap_guarded = False
         self.init_ui()
         # Show the store's current objective without driving the changer: nothing is
@@ -4192,15 +4193,28 @@ class ObjectivesWidget(QWidget):
         self._swap_return_z = reply != QMessageBox.No
         self._swap_servo_on = False
         self._swap_lift_raised = False
+        self._swap_z_cleared = False
         utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
 
     def _reengage_servo_and_restore_z(self):
         self.focus_servo.set_servo(True)
         self._swap_servo_on = True
         self._log.info("Focus servo re-engaged after objective change")
+        # With the servo off the V-308 drifted (a vertical mount sinks toward the sample, a millimetre or more), and
+        # servo-on holds it wherever it got to. Before the lift raises the sample, Z must be no closer to it than where
+        # Z ends up: retracted again when it stays retracted; when it returns to its Z, moved back to that Z first only
+        # if it drifted past it (otherwise it goes straight down there after the lift, not up and back down). A
+        # failed move stops here, with the lift still lowered.
+        if not self._swap_return_z:
+            self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
+            self._log.info("Z retracted again after re-engaging the focus servo")
+        elif self._swap_lift_lowered and self.focus_servo.get_pos().z_mm > self._swap_z_before_mm:
+            self.focus_servo.move_z_to(self._swap_z_before_mm, blocking=True)
+            self._log.info(f"Z drifted past {self._swap_z_before_mm:.4f} mm; moved back there before raising the lift")
+        self._swap_z_cleared = True
         if self._swap_lift_lowered:
-            # The lift goes back up while the objective is still retracted, and only then does the objective come
-            # back down: a lift that fails to get there leaves Z retracted.
+            # The lift goes back up while the objective is retracted, and only then does the objective come back
+            # down: a lift that fails to get there leaves Z retracted.
             self.z_lift.move_to(self._swap_lift_height_mm)
             self._swap_lift_raised = True
             self._log.info(f"Z lift raised back to {self._swap_lift_height_mm:.3f} mm after objective change")
@@ -4217,6 +4231,14 @@ class ObjectivesWidget(QWidget):
                 self,
                 "Focus Servo Not Engaged",
                 f"Could not re-engage the focus servo; Z is not being held:\n{error_msg}",
+            )
+        elif not success and not self._swap_z_cleared:
+            lift_note = ", so the Z lift stays lowered" if self._swap_lift_lowered else ""
+            QMessageBox.warning(
+                self,
+                "Z Not Moved Clear",
+                f"Could not move Z clear after re-engaging the focus servo (with the servo off it may have drifted "
+                f"toward the sample){lift_note}:\n{error_msg}\n\nRetract Z (Home Z) before moving anything else.",
             )
         elif not success and self._swap_lift_lowered and not self._swap_lift_raised:
             QMessageBox.warning(
