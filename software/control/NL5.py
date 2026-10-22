@@ -114,6 +114,9 @@ class _ScanSpeedMixin:
 class RCMInternalStage:
     BAUD = 9600
     ANSWER_TIMEOUT_S = 0.5
+    # A command takes ~16 ms to send at 9600 baud. Without a write timeout a stalled port blocks the write,
+    # and with it the serial lock and every join of the oscillation thread (stop, home, shutdown), forever.
+    WRITE_TIMEOUT_S = 1.0
     HOMING_WAIT_S = 15
     REFERENCE_MOVE_WAIT_S = 2
     COMMAND_GAP_S = 0.1
@@ -133,6 +136,7 @@ class RCMInternalStage:
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
             timeout=self.ANSWER_TIMEOUT_S,
+            write_timeout=self.WRITE_TIMEOUT_S,
             rtscts=False,
             dsrdtr=False,
             xonxoff=False,

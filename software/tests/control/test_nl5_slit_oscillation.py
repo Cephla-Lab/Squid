@@ -12,16 +12,22 @@ from control.NL5 import SLIT_POSITIONS_UM, RCMInternalStage
 class FakeSerial:
     """Records every command written, with the time it was written."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, write_timeout=None, **kwargs):
         self.is_open = True
         self.dtr = True
         self.writes = []
         self._lock = threading.Lock()
+        self.write_timeout = write_timeout
+        self.unstalled = threading.Event()
+        self.unstalled.set()
 
     def reset_input_buffer(self):
         pass
 
     def write(self, data):
+        # like pyserial: a stalled port blocks the write until write_timeout (forever without one), then raises
+        if not self.unstalled.wait(self.write_timeout):
+            raise NL5.serial.SerialTimeoutException("Write timeout")
         with self._lock:
             self.writes.append((time.perf_counter(), data.decode("ascii").strip()))
 
@@ -193,6 +199,33 @@ def test_serial_error_ends_the_oscillation_and_slit_moves_work_again(stage, capl
     assert moves(stage.ser.commands()) == [(SLIT_POSITIONS_UM[88] + 10, RCMInternalStage.DEFAULT_HOLD_MS)]
     stage.start_oscillation(30, 30, 2.5)  # and it can be started again
     assert stage.is_oscillating()
+
+
+def test_stop_returns_when_the_port_stalls(stage):
+    stage.ser.write_timeout = 0.2  # opened with RCMInternalStage.WRITE_TIMEOUT_S; shortened for the test
+    stage.start_oscillation(30, 30, 2.5)
+    stage.ser.unstalled.clear()  # the USB-serial adapter stops taking data
+
+    result = {}
+
+    def stop():
+        try:
+            stage.stop_oscillation()
+        except Exception as e:
+            result["error"] = e
+
+    stopper = threading.Thread(target=stop, daemon=True)
+    stopper.start()
+    stopper.join(5)
+    assert not stopper.is_alive(), "stop_oscillation hung on the stalled port"
+    # the oscillation thread ended on the timeout, then the move back to the centre timed out too
+    assert not stage.is_oscillating()
+    assert isinstance(result.get("error"), NL5.serial.SerialTimeoutException)
+    stage.ser.unstalled.set()
+
+
+def test_the_port_is_opened_with_a_write_timeout(stage):
+    assert stage.ser.write_timeout == RCMInternalStage.WRITE_TIMEOUT_S
 
 
 def test_close_closes_the_port_even_if_the_slit_cannot_be_centred(stage):
