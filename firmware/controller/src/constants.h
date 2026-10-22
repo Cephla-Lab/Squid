@@ -40,7 +40,9 @@
 //               margin program X/Y/Z from that record (blank or invalid: both inputs
 //               enabled, active-low, as before), so the settings hold from power-up,
 //               before a host connects. Status byte 18 bits 2-3 report Z's left and
-//               right limit inputs as triggered (always 0 before 1.7).
+//               right limit inputs as triggered (always 0 before 1.7). Homing and
+//               the move-completion check ignore a disabled input (it still reads
+//               active in STATUS), except the input being homed toward.
 //               SET_LIM_SWITCH_POLARITY (20) is retired: no handler, so it answers
 //               success and does nothing like any unknown command; never reuse 20.
 //               TMC2240: CURRENT_RANGE_XY/Z/W became per-axis floors, stepped up

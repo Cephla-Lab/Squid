@@ -73,6 +73,26 @@ void test_record_unpack_rejects_wrong_marker_and_version(void) {
     expect_rejected(rec);
 }
 
+void test_enabled_mask_keeps_only_the_enabled_inputs(void) {
+    // tmc4361A_readLimitSwitches / readSwitchEvent format: bit0 left, bit1 right
+    TEST_ASSERT_EQUAL_HEX8(0x03, lsc_enabled_mask(0x0F));
+    TEST_ASSERT_EQUAL_HEX8(0x03, lsc_enabled_mask(LSC_DEFAULT));
+    TEST_ASSERT_EQUAL_HEX8(0x02, lsc_enabled_mask(0x0A));   // left off and inverted: the Stowers step-7 config
+    TEST_ASSERT_EQUAL_HEX8(0x01, lsc_enabled_mask(0x0D));
+    TEST_ASSERT_EQUAL_HEX8(0x00, lsc_enabled_mask(0x0C));
+    // both inputs reading active, left disabled: homing must see exactly RGHT_SW (0b10)
+    TEST_ASSERT_EQUAL_HEX8(0x02, 0x03 & lsc_enabled_mask(0x0A));
+}
+
+void test_homing_mask_always_counts_the_input_homed_toward(void) {
+    // the other input counts only when enabled; the one homed toward always (as before masking)
+    TEST_ASSERT_EQUAL_HEX8(0x02, lsc_homing_mask(0x0A, 0x02));   // home RIGHT, LEFT disabled: LEFT masked out
+    TEST_ASSERT_EQUAL_HEX8(0x03, lsc_homing_mask(0x0F, 0x02));
+    TEST_ASSERT_EQUAL_HEX8(0x01, lsc_homing_mask(0x0C, 0x01));   // home LEFT, both disabled: LEFT still counts
+    TEST_ASSERT_EQUAL_HEX8(0x03, lsc_homing_mask(0x0A, 0x01));   // home LEFT with LEFT disabled: misconfigured, as before
+    TEST_ASSERT_EQUAL_HEX8(0x02, 0x03 & lsc_homing_mask(0x0A, 0x02));   // the step-7 hang case reads exactly RGHT_SW
+}
+
 void test_status_bits_land_in_byte_18_bits_2_and_3(void) {
     TEST_ASSERT_EQUAL_HEX8(0x00, lsc_status_bits(0x00));
     TEST_ASSERT_EQUAL_HEX8(0x04, lsc_status_bits(0x01));
@@ -89,5 +109,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_record_unpack_rejects_blank_and_corrupt);
     RUN_TEST(test_record_unpack_rejects_wrong_marker_and_version);
     RUN_TEST(test_status_bits_land_in_byte_18_bits_2_and_3);
+    RUN_TEST(test_enabled_mask_keeps_only_the_enabled_inputs);
+    RUN_TEST(test_homing_mask_always_counts_the_input_homed_toward);
     return UNITY_END();
 }

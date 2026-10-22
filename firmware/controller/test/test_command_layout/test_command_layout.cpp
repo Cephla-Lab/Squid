@@ -550,6 +550,33 @@ void test_status_byte_18_reports_the_z_limit_inputs(void)
     TEST_ASSERT_NOT_NULL(strstr(ser, "BIT_POS_Z_LIMIT_LEFT"));
 }
 
+void test_homing_and_limit_stops_ignore_disabled_inputs(void)
+{
+    // STATUS and EVENTS report a disabled input too, and homing compares the read with exactly LEFT_SW / RGHT_SW:
+    // unmasked, a disabled input reading active made a homing started on its switch hang (Stowers bench,
+    // 2026-10-21), and check_limits would end a move at a disabled input the motor drives through. Every X/Y/Z read
+    // on those paths is masked: limit_switches_homing_read() / _homing_event() (the input homed toward always
+    // counts) and, for check_limits, limit_switches_read_event() (enabled inputs only).
+    static const char *const raw[] = {
+        "tmc4361A_readLimitSwitches(&tmc4361[x])", "tmc4361A_readLimitSwitches(&tmc4361[y])",
+        "tmc4361A_readLimitSwitches(&tmc4361[z])", "tmc4361A_readSwitchEvent(&tmc4361[x])",
+        "tmc4361A_readSwitchEvent(&tmc4361[y])", "tmc4361A_readSwitchEvent(&tmc4361[z])",
+    };
+    const char *ops = load_source("src/operations.cpp");
+    TEST_ASSERT_NOT_NULL(ops);
+    for (unsigned i = 0; i < sizeof(raw) / sizeof(raw[0]); i++)
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(ops, raw[i]), raw[i]);
+    TEST_ASSERT_EQUAL_UINT32(12, count_occurrences(ops, "limit_switches_homing_read("));  // prepare + check homing
+    TEST_ASSERT_EQUAL_UINT32(6, count_occurrences(ops, "limit_switches_homing_event("));  // check homing
+    TEST_ASSERT_EQUAL_UINT32(3, count_occurrences(ops, "limit_switches_read_event("));    // check_limits
+
+    const char *stage = load_source("src/commands/stage_commands.cpp");
+    TEST_ASSERT_NOT_NULL(stage);
+    for (unsigned i = 0; i < sizeof(raw) / sizeof(raw[0]); i++)
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(stage, raw[i]), raw[i]);
+    TEST_ASSERT_EQUAL_UINT32(10, count_occurrences(stage, "limit_switches_homing_read("));  // HOME, HOME XY: on it?
+}
+
 void test_command_20_is_retired(void)
 {
     const char *cmds = load_source("src/commands/commands.cpp");
@@ -620,6 +647,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stored_config_is_loaded_before_the_inputs_are_programmed);
     RUN_TEST(test_set_limit_switch_config_is_registered);
     RUN_TEST(test_status_byte_18_reports_the_z_limit_inputs);
+    RUN_TEST(test_homing_and_limit_stops_ignore_disabled_inputs);
     RUN_TEST(test_command_20_is_retired);
     RUN_TEST(test_limit_switch_record_is_written_only_on_change);
 

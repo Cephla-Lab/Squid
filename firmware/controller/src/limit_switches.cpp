@@ -43,6 +43,21 @@ void limit_switches_program(uint8_t internal_axis, bool flipped)
     tmc4361A_writeInt(tdef, TMC4361A_REFERENCE_CONF, (int32_t)lsc_apply(reference_conf, config));
 }
 
+uint8_t limit_switches_homing_read(uint8_t internal_axis, uint8_t toward)
+{
+    return tmc4361A_readLimitSwitches(&tmc4361[internal_axis]) & lsc_homing_mask(limit_switch_config[internal_axis], toward);
+}
+
+uint8_t limit_switches_homing_event(uint8_t internal_axis, uint8_t toward)
+{
+    return tmc4361A_readSwitchEvent(&tmc4361[internal_axis]) & lsc_homing_mask(limit_switch_config[internal_axis], toward);
+}
+
+uint8_t limit_switches_read_event(uint8_t internal_axis)
+{
+    return tmc4361A_readSwitchEvent(&tmc4361[internal_axis]) & lsc_enabled_mask(limit_switch_config[internal_axis]);
+}
+
 uint8_t limit_switch_homing_polarity(uint8_t internal_axis)
 {
     return lsc_polarity(limit_switch_config[internal_axis], TMC4361_homing_sw[internal_axis]);

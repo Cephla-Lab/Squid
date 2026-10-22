@@ -24,6 +24,14 @@ void lsc_record_pack(const uint8_t config_xyz[3], uint8_t out[LSC_RECORD_LEN]);
 // False on wrong marker, version, checksum or any nibble > 0x0F; config_xyz is then filled with LSC_DEFAULT.
 bool lsc_record_unpack(const uint8_t in[LSC_RECORD_LEN], uint8_t config_xyz[3]);
 
+// The enabled inputs of config in tmc4361A_readLimitSwitches / readSwitchEvent format (bit0 left, bit1 right):
+// AND a read with it so a disabled input never counts as a stop.
+uint8_t lsc_enabled_mask(uint8_t config);
+
+// The mask for homing toward `toward` (LEFT_SW or RGHT_SW): the enabled inputs plus `toward` itself, which always
+// counts as it did before masking (homing toward a disabled input is a configuration error, not guarded).
+uint8_t lsc_homing_mask(uint8_t config, uint8_t toward);
+
 // z_lr in tmc4361A_readLimitSwitches format (bit0 left, bit1 right) -> status byte 18 bits 2-3.
 uint8_t lsc_status_bits(uint8_t z_lr);
 

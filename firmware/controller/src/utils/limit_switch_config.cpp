@@ -15,6 +15,14 @@ uint8_t lsc_polarity(uint8_t config, uint8_t which) {
     return (config & mask) ? 1 : 0;
 }
 
+uint8_t lsc_enabled_mask(uint8_t config) {
+    return config & (LIMIT_SWITCH_LEFT_ENABLED | LIMIT_SWITCH_RIGHT_ENABLED);
+}
+
+uint8_t lsc_homing_mask(uint8_t config, uint8_t toward) {
+    return lsc_enabled_mask(config) | toward;
+}
+
 void lsc_record_pack(const uint8_t config_xyz[3], uint8_t out[LSC_RECORD_LEN]) {
     out[0] = 'L';
     out[1] = 'S';
