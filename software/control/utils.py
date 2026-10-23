@@ -271,6 +271,7 @@ def serialize_for_yaml(obj):
 def find_spot_location(
     image: np.ndarray,
     mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
+    spot_index: int = 1,
     params: Optional[dict] = None,
     filter_sigma: Optional[int] = None,
     debug_plot: bool = False,
@@ -280,6 +281,7 @@ def find_spot_location(
     Args:
         image: Input grayscale image as numpy array
         mode: Which spot to detect when multiple spots are present
+        spot_index: For the NTH_FROM_* modes, which spot counted from that side (1 = outermost)
         params: Dictionary of parameters for spot detection. If None, default parameters will be used.
             Supported parameters:
             - y_window (int): Half-height of y-axis crop (default: 96)
@@ -364,19 +366,16 @@ def find_spot_location(
             if len(peak_locations) > 1:
                 raise ValueError(f"Found {len(peak_locations)} peaks but expected single peak")
             peak_x = peak_locations[0]
-        elif mode == SpotDetectionMode.DUAL_RIGHT:
-            peak_x = peak_locations[-1]
-        elif mode == SpotDetectionMode.DUAL_LEFT:
-            peak_x = peak_locations[0]
-        elif mode == SpotDetectionMode.MULTI_RIGHT:
-            peak_x = peak_locations[-1]
-        elif mode == SpotDetectionMode.MULTI_SECOND_RIGHT:
-            raise NotImplementedError("MULTI_SECOND_RIGHT is not supported")
-            # if len(peak_locations) < 2:
-            #     raise ValueError("Not enough peaks for MULTI_SECOND_RIGHT mode")
-            # peak_x = peak_locations[-2]
-            # (peak_x, _) = _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
-            # peak_x = peak_x - p["spot_spacing"]
+        elif mode in (SpotDetectionMode.NTH_FROM_LEFT, SpotDetectionMode.NTH_FROM_RIGHT):
+            # find_peaks returns the peaks in ascending x, so the leftmost is first
+            side = "left" if mode == SpotDetectionMode.NTH_FROM_LEFT else "right"
+            if spot_index < 1:
+                raise ValueError(f"spot_index counts from 1, got {spot_index}")
+            if len(peak_locations) < spot_index:
+                raise ValueError(
+                    f"Found {len(peak_locations)} peaks but spot {spot_index} from the {side} was requested"
+                )
+            peak_x = peak_locations[spot_index - 1] if side == "left" else peak_locations[-spot_index]
         else:
             raise ValueError(f"Unknown spot detection mode: {mode}")
 
@@ -419,7 +418,7 @@ def find_spot_location(
             ax3.axvline(x=peak_x, color="yellow", linestyle="--", alpha=0.5)
 
             ax3.legend()
-            ax3.set_title(f"X Intensity Profile (Mode: {mode.name})")
+            ax3.set_title(f"X Intensity Profile (Mode: {mode.name}, N={spot_index})")
 
             plt.tight_layout()
             plt.show()
@@ -427,8 +426,8 @@ def find_spot_location(
         # Calculate centroid in window around selected peak
         return _calculate_spot_centroid(cropped_image, peak_x, peak_y, p)
 
-    except (ValueError, NotImplementedError) as e:
-        raise e
+    except ValueError:
+        raise
     except Exception:
         # TODO: this should not be a blank Exception catch, we should jsut return None above if we have a valid "no spots"
         # case, and let exceptions raise otherwise.

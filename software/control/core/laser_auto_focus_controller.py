@@ -25,6 +25,7 @@ class LaserAutofocusController(QObject):
     signal_cross_correlation = Signal(float)
     signal_piezo_position_update = Signal()  # Signal to emit piezo position updates
     signal_reference_changed = Signal(bool)  # emitted with new has_reference state
+    signal_full_sensor_view_changed = Signal(bool)  # the focus camera now streams the whole sensor (True) / the strip
 
     def __init__(
         self,
@@ -46,6 +47,7 @@ class LaserAutofocusController(QObject):
         self.characterization_mode = control._def.LASER_AF_CHARACTERIZATION_MODE
 
         self.is_initialized = False
+        self._full_sensor_view = False
 
         self.laser_af_properties = LaserAFConfig()
         self.reference_crop = None
@@ -86,14 +88,9 @@ class LaserAutofocusController(QObject):
         if self.laser_af_properties.has_reference:
             self.reference_crop = self.laser_af_properties.reference_image_cropped
 
-        self.camera.set_region_of_interest(
-            self.laser_af_properties.x_offset,
-            self.laser_af_properties.y_offset,
-            self.laser_af_properties.width,
-            self.laser_af_properties.height,
-        )
-
+        self._use_detection_strip()
         self.is_initialized = True
+        self._announce_full_sensor_view(False)
 
         # Update cache if objective store and profile is available
         if self.objectiveStore and self._current_profile and self.objectiveStore.current_objective:
@@ -145,7 +142,7 @@ class LaserAutofocusController(QObject):
         Returns:
             bool: True if initialization successful, False if any step fails
         """
-        self.camera.set_region_of_interest(0, 0, 3088, 2064)
+        self._use_full_sensor()
 
         # The crop sizes have no control in the settings panel, so take them from the machine configuration.
         # A loaded profile still holds the sizes it was saved with.
@@ -213,6 +210,43 @@ class LaserAutofocusController(QObject):
             )
 
         return True
+
+    @property
+    def full_sensor_view(self) -> bool:
+        """True while the focus camera streams its whole sensor instead of the detection strip."""
+        return self._full_sensor_view
+
+    def set_full_sensor_view(self, enabled: bool) -> None:
+        """Stream the whole focus-camera sensor (to see where the reflections fall), or the strip again.
+
+        Measurements always run on the strip, because x_reference is relative to it: measure_displacement,
+        set_reference and initialization switch back on their own. Every change, including those, is
+        announced on signal_full_sensor_view_changed so the GUI stays in step.
+        """
+        if enabled == self._full_sensor_view:
+            return
+        if enabled:
+            self._use_full_sensor()
+        elif self.is_initialized:
+            self._use_detection_strip()
+        self._announce_full_sensor_view(enabled)
+
+    def _use_full_sensor(self) -> None:
+        width, height = self.camera.get_resolution()
+        self.camera.set_region_of_interest(0, 0, width, height)
+
+    def _use_detection_strip(self) -> None:
+        self.camera.set_region_of_interest(
+            self.laser_af_properties.x_offset,
+            self.laser_af_properties.y_offset,
+            self.laser_af_properties.width,
+            self.laser_af_properties.height,
+        )
+
+    def _announce_full_sensor_view(self, enabled: bool) -> None:
+        if enabled != self._full_sensor_view:
+            self._full_sensor_view = enabled
+            self.signal_full_sensor_view_changed.emit(enabled)
 
     def _calibrate_pixel_to_um(self) -> bool:
         """Calibrate pixel-to-um conversion.
@@ -321,6 +355,8 @@ class LaserAutofocusController(QObject):
             self.signal_displacement_um.emit(um)
             return um
 
+        self.set_full_sensor_view(False)
+
         try:
             # turn on the laser
             self.microcontroller.turn_on_AF_laser()
@@ -428,6 +464,8 @@ class LaserAutofocusController(QObject):
         if not self.is_initialized:
             self._log.error("Laser autofocus is not initialized, cannot set reference")
             return False
+
+        self.set_full_sensor_view(False)
 
         # turn on the laser
         try:
@@ -622,6 +660,7 @@ class LaserAutofocusController(QObject):
                 result = utils.find_spot_location(
                     image,
                     mode=self.laser_af_properties.get_spot_detection_mode(),
+                    spot_index=self.laser_af_properties.spot_index,
                     params=spot_detection_params,
                     filter_sigma=self.laser_af_properties.filter_sigma,
                 )

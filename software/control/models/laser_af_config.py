@@ -9,7 +9,7 @@ import base64
 from typing import List, Optional
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 import control._def as _def
 from control._def import SpotDetectionMode
@@ -49,8 +49,14 @@ class LaserAFConfig(BaseModel):
         default_factory=lambda: _def.LASER_AF_AVERAGING_N, description="Number of measurements to average"
     )
     spot_detection_mode: SpotDetectionMode = Field(
-        default_factory=lambda: SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE),
+        default_factory=lambda: SpotDetectionMode.parse(_def.LASER_AF_SPOT_DETECTION_MODE)[0],
         description="Spot detection mode",
+    )
+    spot_index: int = Field(
+        default_factory=lambda: SpotDetectionMode.parse(_def.LASER_AF_SPOT_DETECTION_MODE)[1]
+        or _def.LASER_AF_SPOT_INDEX,
+        ge=1,
+        description="For the nth_from_* modes, which spot counted from that side (1 = outermost)",
     )
     displacement_success_window_um: float = Field(
         default_factory=lambda: _def.DISPLACEMENT_SUCCESS_WINDOW_UM,
@@ -107,6 +113,17 @@ class LaserAFConfig(BaseModel):
     reference_image_dtype: Optional[str] = Field(None, description="Data type of reference image array")
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_spot_mode_names(cls, data):
+        """Files saved before spot_index existed name the spot by mode alone (dual_left, multi_second_right, ...)."""
+        if isinstance(data, dict) and isinstance(data.get("spot_detection_mode"), str):
+            mode, implied_index = SpotDetectionMode.parse(data["spot_detection_mode"])
+            data = {**data, "spot_detection_mode": mode}
+            if implied_index is not None and "spot_index" not in data:
+                data["spot_index"] = implied_index
+        return data
 
     def get_spot_detection_mode(self) -> SpotDetectionMode:
         """Get the SpotDetectionMode enum value."""

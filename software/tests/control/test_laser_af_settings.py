@@ -1,4 +1,5 @@
-"""Laser AF must use the saved Min Peak Width / Distance / Prominence, and the machine config's crop sizes."""
+"""Laser AF must use the saved detection settings (peak limits, which spot), the machine config's crop
+sizes, and the sensor size the camera reports; the full-sensor view must never leak into a measurement."""
 
 import numpy as np
 import pytest
@@ -68,6 +69,8 @@ def test_initialize_takes_the_crop_sizes_from_the_machine_config(laser_af, monke
     monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_HEIGHT", 1800)
     # keep the simulated calibration out of the checkout's user profile
     monkeypatch.setattr(laser_af._config_repo, "save_laser_af_config", lambda *args: None)
+    # the real focus camera's sensor; the simulated one is smaller than the .ini initialize crop
+    monkeypatch.setattr(laser_af.camera, "get_resolution", lambda: (3088, 2064))
     laser_af.laser_af_properties = LaserAFConfig(
         width=1536,
         height=256,
@@ -82,3 +85,99 @@ def test_initialize_takes_the_crop_sizes_from_the_machine_config(laser_af, monke
 
     assert laser_af.initialize_auto()
     assert laser_af.camera.get_region_of_interest() == (88, 288, 1024, 224)
+
+
+def test_measurement_uses_the_saved_spot_index(laser_af):
+    """Three reflections on the strip; the saved choice (2nd from the right) is the middle one."""
+    laser_af.laser_af_properties = LaserAFConfig(
+        x_reference=512.0,
+        pixel_to_um=0.2,
+        has_reference=True,
+        spot_detection_mode=SpotDetectionMode.NTH_FROM_RIGHT,
+        spot_index=2,
+        laser_af_averaging_n=1,
+    )
+    laser_af.get_new_frame = lambda: spots_image([(400.0, 1.0, 5.0), (SPOT_X_PX, 1.0, 5.0), (700.0, 1.0, 5.0)])
+
+    assert laser_af.measure_displacement() == pytest.approx(2.0, abs=0.05)
+
+
+def test_initialize_searches_the_sensor_the_camera_reports(laser_af, monkeypatch):
+    """The spot sits beyond the 3088 x 2064 that used to be hard-coded, on a camera reporting 4000 x 3000."""
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_WIDTH", 1024)
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_HEIGHT", 224)
+    monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_WIDTH", 4000)
+    monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_HEIGHT", 3000)
+    monkeypatch.setattr(laser_af._config_repo, "save_laser_af_config", lambda *args: None)
+    monkeypatch.setattr(laser_af.camera, "get_resolution", lambda: (4000, 3000))
+    laser_af.laser_af_properties = LaserAFConfig(spot_detection_mode=SpotDetectionMode.SINGLE, laser_af_averaging_n=1)
+    sensor = spots_image([(3500.0, 1.0, 5.0)], shape=(3000, 4000), y_px=1500)
+    laser_af.get_new_frame = lambda: roi_frame(laser_af.camera, sensor)
+
+    assert laser_af.initialize_auto()
+    assert laser_af.camera.get_region_of_interest() == (2984, 1388, 1024, 224)
+
+
+STRIP = dict(x_offset=800, y_offset=900, width=1536, height=256)
+
+
+@pytest.fixture
+def on_the_strip(laser_af, monkeypatch):
+    """The controller set up on a strip away from the sensor corner, reference 512 px into the strip."""
+    monkeypatch.setattr(laser_af._config_repo, "save_laser_af_config", lambda *args: None)
+    laser_af.initialize_manual(
+        LaserAFConfig(
+            **STRIP,
+            x_reference=800 + 512.0,
+            pixel_to_um=0.2,
+            has_reference=True,
+            spot_detection_mode=SpotDetectionMode.SINGLE,
+            laser_af_averaging_n=1,
+        )
+    )
+    laser_af.get_new_frame = lambda: spots_image([(SPOT_X_PX, 1.0, 5.0)])
+    seen = []
+    laser_af.signal_full_sensor_view_changed.connect(seen.append)
+    yield laser_af, seen
+    laser_af.signal_full_sensor_view_changed.disconnect(seen.append)
+
+
+def test_full_sensor_view_streams_the_whole_sensor_then_the_strip_again(on_the_strip):
+    laser_af, seen = on_the_strip
+
+    laser_af.set_full_sensor_view(True)
+    assert laser_af.camera.get_region_of_interest() == (0, 0, 1920, 1080)  # the simulated focus camera
+    assert laser_af.full_sensor_view is True
+
+    laser_af.set_full_sensor_view(False)
+    assert laser_af.camera.get_region_of_interest() == (800, 900, 1536, 256)
+    assert laser_af.full_sensor_view is False
+    assert seen == [True, False]
+
+
+def test_measuring_returns_to_the_strip_first(on_the_strip):
+    """x_reference is relative to the strip, so a measurement taken on the full sensor would be nonsense."""
+    laser_af, seen = on_the_strip
+    laser_af.set_full_sensor_view(True)
+
+    assert laser_af.measure_displacement() == pytest.approx(2.0, abs=0.05)
+    assert laser_af.camera.get_region_of_interest() == (800, 900, 1536, 256)
+    assert seen == [True, False]
+
+
+def test_setting_the_reference_returns_to_the_strip_first(on_the_strip):
+    laser_af, seen = on_the_strip
+    laser_af.set_full_sensor_view(True)
+
+    assert laser_af.set_reference()
+    assert laser_af.camera.get_region_of_interest() == (800, 900, 1536, 256)
+    assert seen == [True, False]
+
+
+def test_initializing_leaves_the_full_sensor_view(on_the_strip):
+    laser_af, seen = on_the_strip
+    laser_af.set_full_sensor_view(True)
+
+    laser_af.initialize_manual(LaserAFConfig(**STRIP))
+    assert laser_af.camera.get_region_of_interest() == (800, 900, 1536, 256)
+    assert seen == [True, False]

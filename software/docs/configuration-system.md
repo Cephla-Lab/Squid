@@ -455,7 +455,8 @@ pixel_to_um_calibration_distance: 6.0
 # Detection parameters
 laser_af_range: 100.0
 laser_af_averaging_n: 3
-spot_detection_mode: dual_right
+spot_detection_mode: nth_from_right   # single | nth_from_left | nth_from_right
+spot_index: 1                         # for the nth_from_* modes: which spot from that side (1 = outermost)
 displacement_success_window_um: 1.0
 
 # Spot detection

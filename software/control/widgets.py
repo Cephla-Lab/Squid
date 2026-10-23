@@ -3144,8 +3144,16 @@ class LaserAutofocusSettingWidget(QWidget):
         self.analog_gain_spinbox.setValue(self.laserAutofocusController.laser_af_properties.focus_camera_analog_gain)
         analog_gain_layout.addWidget(self.analog_gain_spinbox)
 
+        # Full-sensor view: see where every reflection falls, with the detection strip outlined
+        self.full_sensor_checkbox = QCheckBox("Show full sensor")
+        self.full_sensor_checkbox.setToolTip(
+            "Stream the whole focus camera sensor with the detection strip outlined.\n"
+            "Measurements and Initialize switch back to the strip on their own."
+        )
+
         # Add to live group
         live_layout.addWidget(self.btn_live)
+        live_layout.addWidget(self.full_sensor_checkbox)
         live_layout.addLayout(exposure_layout)
         live_layout.addLayout(analog_gain_layout)
         live_group.setLayout(live_layout)
@@ -3192,20 +3200,25 @@ class LaserAutofocusSettingWidget(QWidget):
         self._add_spinbox(spot_detection_layout, "Spot Spacing (pixels):", "spot_spacing", 1, 1000, 1)
         self._add_spinbox(spot_detection_layout, "Filter Sigma:", "filter_sigma", 0, 100, 1, allow_none=True)
 
-        # Spot detection mode combo box
+        # Which spot: single, or the N-th counted from the left or the right
+        properties = self.laserAutofocusController.laser_af_properties
         spot_mode_layout = QHBoxLayout()
         spot_mode_layout.addWidget(QLabel("Spot Detection Mode:"))
         self.spot_mode_combo = QComboBox()
-        _HIDDEN_SPOT_MODES = {SpotDetectionMode.MULTI_SECOND_RIGHT}
-        for mode in SpotDetectionMode:
-            if mode not in _HIDDEN_SPOT_MODES:
-                self.spot_mode_combo.addItem(mode.value, mode)
-        current_index = self.spot_mode_combo.findData(
-            self.laserAutofocusController.laser_af_properties.spot_detection_mode
-        )
-        self.spot_mode_combo.setCurrentIndex(current_index)
+        self.spot_mode_combo.addItem("Single spot", SpotDetectionMode.SINGLE)
+        self.spot_mode_combo.addItem("Nth from left", SpotDetectionMode.NTH_FROM_LEFT)
+        self.spot_mode_combo.addItem("Nth from right", SpotDetectionMode.NTH_FROM_RIGHT)
+        self.spot_mode_combo.setCurrentIndex(self.spot_mode_combo.findData(properties.spot_detection_mode))
         spot_mode_layout.addWidget(self.spot_mode_combo)
+        spot_mode_layout.addWidget(QLabel("N:"))
+        self.spot_index_spinbox = QSpinBox()
+        self.spot_index_spinbox.setRange(1, 20)
+        self.spot_index_spinbox.setValue(properties.spot_index)
+        self.spot_index_spinbox.setToolTip("Which spot, counted from that side (1 = outermost)")
+        spot_mode_layout.addWidget(self.spot_index_spinbox)
         spot_detection_layout.addLayout(spot_mode_layout)
+        self.spot_mode_combo.currentIndexChanged.connect(self._sync_spot_index_enabled)
+        self._sync_spot_index_enabled()
 
         # Add Run Spot Detection button
         self.run_spot_detection_button = QPushButton("Run Spot Detection")
@@ -3249,6 +3262,12 @@ class LaserAutofocusSettingWidget(QWidget):
         self.run_spot_detection_button.clicked.connect(self.run_spot_detection)
         self.initialize_button.clicked.connect(self.apply_and_initialize)
         self.characterization_checkbox.toggled.connect(self.toggle_characterization_mode)
+        self.full_sensor_checkbox.toggled.connect(self.laserAutofocusController.set_full_sensor_view)
+        # measurements and initialization put the strip back on their own; the box follows the controller
+        self.laserAutofocusController.signal_full_sensor_view_changed.connect(self.full_sensor_checkbox.setChecked)
+
+    def _sync_spot_index_enabled(self):
+        self.spot_index_spinbox.setEnabled(self.spot_mode_combo.currentData() != SpotDetectionMode.SINGLE)
 
     def _add_spinbox(
         self,
@@ -3295,6 +3314,9 @@ class LaserAutofocusSettingWidget(QWidget):
                 self.liveController.stop_live()
         finally:
             _sync_live_button(self, "Stop Live", "Start Live", self.run_spot_detection_button)
+            if not pressed:
+                # the full-sensor view is for looking at live frames; everything else runs on the strip
+                self.full_sensor_checkbox.setChecked(False)
 
     def stop_live(self):
         """Used for stopping live when switching to other tabs"""
@@ -3331,6 +3353,7 @@ class LaserAutofocusSettingWidget(QWidget):
         index = self.spot_mode_combo.findData(current_mode)
         if index >= 0:
             self.spot_mode_combo.setCurrentIndex(index)
+        self.spot_index_spinbox.setValue(self.laserAutofocusController.laser_af_properties.spot_index)
 
         self.update_threshold_button.setEnabled(self.laserAutofocusController.is_initialized)
         self.update_calibration_label()
@@ -3346,6 +3369,7 @@ class LaserAutofocusSettingWidget(QWidget):
             "pixel_to_um_calibration_distance": self.spinboxes["pixel_to_um_calibration_distance"].value(),
             "laser_af_range": self.spinboxes["laser_af_range"].value(),
             "spot_detection_mode": self.spot_mode_combo.currentData(),
+            "spot_index": self.spot_index_spinbox.value(),
             "y_window": int(self.spinboxes["y_window"].value()),
             "x_window": int(self.spinboxes["x_window"].value()),
             "min_peak_width": self.spinboxes["min_peak_width"].value(),
@@ -3421,12 +3445,15 @@ class LaserAutofocusSettingWidget(QWidget):
             "spot_spacing": self.spinboxes["spot_spacing"].value(),
         }
         mode = self.spot_mode_combo.currentData()
+        spot_index = self.spot_index_spinbox.value()
         sigma = self.spinboxes["filter_sigma"].value()
 
         frame = self.illuminate_and_get_frame()
         if frame is not None:
             try:
-                result = utils.find_spot_location(frame, mode=mode, params=params, filter_sigma=sigma, debug_plot=True)
+                result = utils.find_spot_location(
+                    frame, mode=mode, spot_index=spot_index, params=params, filter_sigma=sigma, debug_plot=True
+                )
                 if result is not None:
                     x, y = result
                     self.signal_laser_spot_location.emit(frame, x, y)
