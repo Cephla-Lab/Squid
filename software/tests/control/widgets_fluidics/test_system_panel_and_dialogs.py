@@ -75,8 +75,51 @@ def test_add_rounds_dialog_builds_expand_kwargs_and_previews(qtbot):
 
     dialog.accept()
     assert dialog.result_kwargs == dict(
-        template_round="R01", count=2, label_pattern="R{n:02d}", start=2, port_row_name="probe", ports=[2, 3]
+        template_round="R01",
+        count=2,
+        label_pattern="R{n:02d}",
+        start=2,
+        port_row_name="probe",
+        ports=[2, 3],
+        wells=None,
     )
+    assert dialog.wells_edit.isHidden()  # no row of this round draws from a well
+
+
+def _sipper_protocol():
+    from tests.control.fluidics_test_config import SIPPER_ROWS
+
+    return ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS])
+
+
+def test_add_rounds_dialog_proposes_the_next_wells_for_a_sipper_round(qtbot):
+    dialog = AddRoundsDialog(_sipper_protocol())
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    assert not dialog.wells_edit.isHidden()
+    dialog.count_spin.setValue(3)
+    assert dialog.wells_edit.text() == "A2-A4"  # after R01's A1, along the row
+    preview = dialog.preview.toPlainText().splitlines()
+    assert preview[0] == "R02 · A2, ssct/A2" and preview[2].startswith("R04 · A4, ssct/A4")
+
+    qtbot.keyClicks(dialog.wells_edit, ", B1")  # typed: the operator's list from here on
+    dialog.count_spin.setValue(4)
+    assert dialog.wells_edit.text() == "A2-A4, B1"
+    dialog.accept()
+    assert dialog.result_kwargs["wells"] == ["A2", "A3", "A4", "B1"]
+
+
+def test_add_rounds_dialog_refuses_a_well_list_shorter_than_the_rounds(qtbot):
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    dialog = AddRoundsDialog(_sipper_protocol())
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    dialog.count_spin.setValue(2)
+    dialog.wells_edit.clear()
+    qtbot.keyClicks(dialog.wells_edit, "A2")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "need 2 wells" in dialog.preview.toPlainText()
 
 
 def test_add_rounds_dialog_disables_ok_on_a_bad_port_list(qtbot):

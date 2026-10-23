@@ -348,6 +348,87 @@ def parse_port_list(spec: str) -> List[int]:
     return ports
 
 
+# A well on a plate, as a sequence row's `well` names it after any `plate/` prefix. Rows and columns
+# are the 96-well plate's, the only plate the fluidics library supports.
+_WELL_RE = re.compile(r"^([A-Z])([1-9][0-9]?)$")
+PLATE_ROWS = "ABCDEFGH"
+PLATE_COLUMNS = 12
+
+
+def _well_position(well: str) -> Tuple[int, int]:
+    m = _WELL_RE.match(well.strip().upper())
+    if not m or m.group(1) not in PLATE_ROWS or not 1 <= int(m.group(2)) <= PLATE_COLUMNS:
+        raise ValueError(f"'{well}' is not a well (A1-{PLATE_ROWS[-1]}{PLATE_COLUMNS})")
+    return PLATE_ROWS.index(m.group(1)), int(m.group(2))
+
+
+def parse_well_list(spec: str) -> List[str]:
+    """'A2-A4, B1' -> ['A2', 'A3', 'A4', 'B1']. A range runs along one row (A2-A12) or down one
+    column (A1-H1). Wells only: each row of a round keeps its own plate."""
+    wells: List[str] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "/" in part:
+            raise ValueError(f"'{part}': give wells only (A2), each row keeps its own plate")
+        lo, _, hi = part.partition("-")
+        (r0, c0), (r1, c1) = _well_position(lo), _well_position(hi or lo)
+        if r0 == r1 and c0 <= c1:
+            wells.extend(f"{PLATE_ROWS[r0]}{c}" for c in range(c0, c1 + 1))
+        elif c0 == c1 and r0 <= r1:
+            wells.extend(f"{PLATE_ROWS[r]}{c0}" for r in range(r0, r1 + 1))
+        else:
+            raise ValueError(f"Invalid well range: '{part}' (along one row, A2-A12, or down one column, A1-H1)")
+    return wells
+
+
+def next_wells(after: str, count: int) -> List[str]:
+    """The `count` wells after `after` along its row, wrapping to the next row (A12 -> B1): the
+    order the sample sipper protocols use (R01 on A1, R02 on A2). Stops at the plate's last well."""
+    row, column = _well_position(after)
+    wells: List[str] = []
+    while len(wells) < count:
+        column += 1
+        if column > PLATE_COLUMNS:
+            row, column = row + 1, 1
+        if row >= len(PLATE_ROWS):
+            break
+        wells.append(f"{PLATE_ROWS[row]}{column}")
+    return wells
+
+
+def format_well_list(wells: List[str]) -> str:
+    """The inverse of parse_well_list for a run along rows: ['A2', 'A3', 'A4', 'B1'] -> 'A2-A4, B1'."""
+    parts: List[str] = []
+    run: List[Tuple[int, int]] = []
+
+    def flush():
+        if run:
+            (r, c0), (_, c1) = run[0], run[-1]
+            parts.append(f"{PLATE_ROWS[r]}{c0}" + (f"-{PLATE_ROWS[r]}{c1}" if c1 != c0 else ""))
+            run.clear()
+
+    for well in wells:
+        position = _well_position(well)
+        if run and not (position[0] == run[-1][0] and position[1] == run[-1][1] + 1):
+            flush()
+        run.append(position)
+    flush()
+    return ", ".join(parts)
+
+
+def well_rows(rows: List[dict]) -> List[dict]:
+    """The rows that draw from a well (flow_reagent and push rows on a sipper rig)."""
+    return [row for row in rows if row.get("well")]
+
+
+def _move_to_well(ref: str, well: str) -> str:
+    """`ref` (A1 or ssct/A1) moved to `well` on the same plate."""
+    plate, slash, _ = ref.rpartition("/")
+    return f"{plate}{slash}{well}"
+
+
 def expand_rounds(
     protocol: ProtocolFile,
     template_round: str,
@@ -356,11 +437,13 @@ def expand_rounds(
     start: int = 2,
     port_row_name: Optional[str] = None,
     ports: Optional[List[int]] = None,
+    wells: Optional[List[str]] = None,
 ) -> ProtocolFile:
     """Insert `count` copies of the rows labelled `template_round` right after that round, relabelled
     `label_pattern.format(n=...)` from `start`; in each copy the row named `port_row_name` gets the next
-    entry of `ports`, and each round's imaging folder gets its round label. Rows after the template
-    round (a `final` clean-up group) stay last. Returns a new ProtocolFile."""
+    entry of `ports`, every row that draws from a well gets the next entry of `wells` on its own plate
+    (hyb A1 -> A2, push ssct/A1 -> ssct/A2), and each round's imaging folder gets its round label. Rows
+    after the template round (a `final` clean-up group) stay last. Returns a new ProtocolFile."""
     template = [row for row in protocol.sequences if row.get("round") == template_round]
     if not template:
         raise ValueError(f"No rows carry the round label '{template_round}'")
@@ -369,6 +452,13 @@ def expand_rounds(
         if ports is None or len(ports) < count:
             have = 0 if ports is None else len(ports)
             raise ValueError(f"{count} rounds need {count} ports for '{port_row_name}', got {have}")
+    if wells is not None:
+        if not well_rows(template):
+            raise ValueError(f"No row of round '{template_round}' draws from a well")
+        if len(wells) < count:
+            raise ValueError(f"{count} rounds need {count} wells, got {len(wells)}")
+        for well in wells:
+            _well_position(well)  # a typo is refused here, not at the first run
     new_rows: List[dict] = []
     for k in range(count):
         label = label_pattern.format(n=start + k)
@@ -377,6 +467,8 @@ def expand_rounds(
             copy["round"] = label
             if port_row_name is not None and copy.get("name") == port_row_name and "fluidic_port" in copy:
                 copy["fluidic_port"] = ports[k]
+            if wells is not None and copy.get("well"):
+                copy["well"] = _move_to_well(copy["well"], wells[k].strip().upper())
             # the folder_name stays the same base across rounds; imaging_folder derives the
             # per-round output folder ({round}_{folder_name}) at run time
             new_rows.append(copy)

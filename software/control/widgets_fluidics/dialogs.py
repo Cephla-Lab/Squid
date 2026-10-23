@@ -20,7 +20,17 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
-from control.models.fluidics_protocol import IMAGING_TYPE, ProtocolFile, expand_rounds, imaging_folder, parse_port_list
+from control.models.fluidics_protocol import (
+    IMAGING_TYPE,
+    ProtocolFile,
+    expand_rounds,
+    format_well_list,
+    imaging_folder,
+    next_wells,
+    parse_port_list,
+    parse_well_list,
+    well_rows,
+)
 
 _NO_PORT_ROW = "— none —"
 
@@ -31,7 +41,11 @@ def _next_round_number(labels: List[str]) -> int:
 
 
 class AddRoundsDialog(QDialog):
-    """Copy one round N times with new labels, ports and folders (see models.expand_rounds)."""
+    """Copy one round N times with new labels, ports, wells and folders (see models.expand_rounds).
+
+    Wells: shown when the round has rows that draw from a well (a plate-sipper protocol). Each new
+    round moves every such row to the next well of the list, on its own plate. Prefilled with the
+    wells after the round's own, along the row (A1 -> A2, A3, ...), until the operator types."""
 
     def __init__(self, protocol: ProtocolFile, parent=None):
         super().__init__(parent)
@@ -51,6 +65,12 @@ class AddRoundsDialog(QDialog):
         self.port_row_combo = QComboBox()
         self.ports_edit = QLineEdit()
         self.ports_edit.setPlaceholderText("2-12,14-25")
+        self.wells_label = QLabel("Wells")
+        self.wells_edit = QLineEdit()
+        self.wells_edit.setPlaceholderText("A2-A12 (blank: every round keeps the same wells)")
+        self.wells_edit.textEdited.connect(self._wells_typed)  # typed, not set: the prefill stops
+        self._wells_typed_by_operator = False
+        self._first_well: Optional[str] = None  # the template's first well row's well, without its plate
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
 
@@ -61,6 +81,7 @@ class AddRoundsDialog(QDialog):
         form.addRow("Starting n", self.start_spin)
         form.addRow("Port for row", self.port_row_combo)
         form.addRow("Ports", self.ports_edit)
+        form.addRow(self.wells_label, self.wells_edit)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.accepted.connect(self.accept)
@@ -79,24 +100,48 @@ class AddRoundsDialog(QDialog):
             self.pattern_edit.textChanged,
             self.start_spin.valueChanged,
             self.ports_edit.textChanged,
+            self.wells_edit.textChanged,
         ):
             signal.connect(self._update_preview)
+        self.count_spin.valueChanged.connect(self._prefill_wells)
         self.port_row_combo.currentTextChanged.connect(self._update_preview)
         self._template_changed()
 
     def _template_changed(self) -> None:
         template = self.template_combo.currentText()
-        rows = [r for r in self.protocol.sequences if r.get("round") == template and "fluidic_port" in r]
-        names = list(dict.fromkeys((r.get("name") or r["type"]) for r in rows))
+        rows = [r for r in self.protocol.sequences if r.get("round") == template]
+        names = list(dict.fromkeys((r.get("name") or r["type"]) for r in rows if "fluidic_port" in r))
         self.port_row_combo.blockSignals(True)
         self.port_row_combo.clear()
         self.port_row_combo.addItems([_NO_PORT_ROW] + names)
         self.port_row_combo.blockSignals(False)
+        drawing = well_rows(rows)
+        self._first_well = drawing[0]["well"].rpartition("/")[2] if drawing else None
+        self.wells_label.setVisible(bool(drawing))
+        self.wells_edit.setVisible(bool(drawing))
+        self._wells_typed_by_operator = False
+        self._prefill_wells()
         self._update_preview()
+
+    def _wells_typed(self, _text: str) -> None:
+        self._wells_typed_by_operator = True
+
+    def _prefill_wells(self) -> None:
+        """The wells after the round's own, one per new round, until the operator types a list."""
+        if self._wells_typed_by_operator:
+            return
+        text = ""
+        if self._first_well is not None:
+            try:
+                text = format_well_list(next_wells(self._first_well, int(self.count_spin.value())))
+            except ValueError:  # a well the plate lacks (the editor flags that row): nothing to propose
+                pass
+        self.wells_edit.setText(text)
 
     def _current_kwargs(self) -> dict:
         port_row = self.port_row_combo.currentText()
         use_ports = port_row not in ("", _NO_PORT_ROW)
+        wells_text = self.wells_edit.text().strip() if self._first_well is not None else ""
         return dict(
             template_round=self.template_combo.currentText(),
             count=int(self.count_spin.value()),
@@ -104,6 +149,7 @@ class AddRoundsDialog(QDialog):
             start=int(self.start_spin.value()),
             port_row_name=port_row if use_ports else None,
             ports=parse_port_list(self.ports_edit.text()) if use_ports else None,
+            wells=parse_well_list(wells_text) if wells_text else None,
         )
 
     def _update_preview(self) -> None:
@@ -119,9 +165,12 @@ class AddRoundsDialog(QDialog):
                     (r["fluidic_port"] for r in rows if (r.get("name") or r["type"]) == kwargs["port_row_name"]), None
                 )
                 folders = [imaging_folder(label, r.get("folder")) for r in rows if r.get("type") == IMAGING_TYPE]
+                wells = list(dict.fromkeys(r["well"] for r in well_rows(rows)))
                 parts = [str(label)]
                 if port is not None:
                     parts.append(f"port {port}")
+                if wells:
+                    parts.append(", ".join(wells))
                 if folders:
                     parts.append(", ".join(str(f) for f in folders))
                 lines.append(" · ".join(parts))
