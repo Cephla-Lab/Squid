@@ -109,6 +109,44 @@ def test_add_rounds_dialog_proposes_the_next_wells_for_a_sipper_round(qtbot):
     assert dialog.result_kwargs["wells"] == ["A2", "A3", "A4", "B1"]
 
 
+def test_add_rounds_refuses_rather_than_reuses_when_the_plate_has_no_next_well(qtbot):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    protocol = _sipper_protocol()
+    for row in protocol.sequences:
+        if row.get("round") == "R01" and row.get("well"):
+            row["well"] = row["well"].replace("A1", "H12")  # the plate's last well
+    dialog = AddRoundsDialog(protocol)
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    assert dialog.wells_edit.text() == ""  # nothing after H12 to propose
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    assert "no wells after H12 on its plate" in dialog.preview.toPlainText()
+
+    qtbot.keyClicks(dialog.wells_edit, "A1")
+    assert dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    for _ in range(2):  # cleared by the operator: every round reuses the same wells, on purpose
+        qtbot.keyClick(dialog.wells_edit, Qt.Key_Backspace)
+    dialog.accept()
+    assert dialog.result_kwargs["wells"] is None
+
+
+def test_add_rounds_names_a_template_well_that_is_not_one(qtbot):
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    protocol = _sipper_protocol()
+    for row in protocol.sequences:
+        if row.get("round") == "R01" and row.get("well"):
+            row["well"] = row["well"].replace("A1", "A13")  # a typo the editor flags too
+    dialog = AddRoundsDialog(protocol)
+    qtbot.addWidget(dialog)
+    dialog.template_combo.setCurrentText("R01")
+    assert not dialog.buttons.button(QDialogButtonBox.Ok).isEnabled()
+    preview = dialog.preview.toPlainText()
+    assert "'A13' is not a well" in preview and "fix the round's well row" in preview
+
+
 def test_the_dialogs_explain_themselves_without_an_empty_help_button(qtbot):
     from qtpy.QtCore import Qt
 
