@@ -2,7 +2,7 @@
 
 The lift's position is shown in the image display's status bar, next to the stage coordinates (core.ImageDisplayWindow),
 and a LoadingPositionButton sits in the Stages tab. ZLiftWidget is the Z Lift tab (Utils > Z Lift... opens it): the
-two limit sensors, jog up / down by a step, move to a height, lower, home, and the scanning height of the current
+top limit sensor (a warning only while it is triggered), jog up / down by a step, move to a height, lower, home, and the scanning height of the current
 sample format, with a button that saves the lift's current height as that height. ZLiftHeightsDialog (the tab's
 "All Formats..." button) is the table of every format's height, editable and saved to Z_LIFT_HEIGHTS_PATH. The lift
 rises to the current format's height after the startup homing and on leaving the loading position.
@@ -39,8 +39,7 @@ from squid.stage.lift import LiftStage
 log = squid.logging.get_logger(__name__)
 
 _COL_FORMAT, _COL_HEIGHT = range(2)
-_TRIGGERED_STYLE = "background-color: #FFB0B0; border: 1px solid #A00; padding: 2px 6px;"
-_CLEAR_STYLE = "background-color: #C2FFC2; border: 1px solid #080; padding: 2px 6px;"
+_TRIGGERED_STYLE = "background-color: #FFB0B0; border: 1px solid #A00; padding: 2px 6px; font-weight: bold;"
 
 
 class LiftMotionGuard(QObject):
@@ -161,11 +160,6 @@ class LoadingPositionButton(QPushButton):
             self.stage_utils.switch_position()
 
 
-def _set_sensor_label(label: QLabel, name: str, triggered: bool):
-    label.setText(f"{name}: {'TRIGGERED' if triggered else 'clear'}")
-    label.setStyleSheet(_TRIGGERED_STYLE if triggered else _CLEAR_STYLE)
-
-
 def _ask_and_save_current_height(parent, lift: LiftStage, sample_format: str) -> bool:
     """Save the lift's current height as sample_format's scanning height, after a confirmation. True if saved."""
     height = round(lift.get_position_mm(), 4)
@@ -222,13 +216,15 @@ class ZLiftWidget(QWidget):
         # Compact, for a tab in the controls panel: the readout, two rows of moves, the scanning height.
         self.label_position = QLabel()
         self.label_position.setStyleSheet("font-weight: bold;")
-        self.label_bottom = QLabel()
-        self.label_top = QLabel()
+        # Only the top sensor is shown, and only while triggered: the lift is at its upper limit. The bottom one is
+        # the home sensor; both are in the position's tooltip.
+        self.label_top_warning = QLabel("Top limit sensor triggered")
+        self.label_top_warning.setStyleSheet(_TRIGGERED_STYLE)
+        self.label_top_warning.hide()
         readout = QHBoxLayout()
         readout.addWidget(QLabel("Lift"))
         readout.addWidget(self.label_position)
-        readout.addWidget(self.label_bottom)
-        readout.addWidget(self.label_top)
+        readout.addWidget(self.label_top_warning)
         readout.addStretch(1)
         readout.addWidget(QLabel(f"travel {self.lift.min_mm:g} to {self.lift.max_mm:g} mm"))
 
@@ -317,8 +313,11 @@ class ZLiftWidget(QWidget):
             self.label_position.setText(f"Unavailable ({e})")
             return
         self.label_position.setText(f"{position:.3f} mm" + ("   (moving)" if self.motion_guard.busy else ""))
-        _set_sensor_label(self.label_bottom, "Bottom sensor", bottom)
-        _set_sensor_label(self.label_top, "Top sensor", top)
+        self.label_top_warning.setVisible(top)
+        self.label_position.setToolTip(
+            f"Bottom (home) sensor: {'triggered' if bottom else 'clear'}\n"
+            f"Top sensor: {'triggered' if top else 'clear'}"
+        )
 
     # --- moves ------------------------------------------------------------------------------------------------
     def _on_busy_changed(self, busy: bool):

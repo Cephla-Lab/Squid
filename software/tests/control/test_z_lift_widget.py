@@ -68,13 +68,22 @@ def _widget(qtbot, tmp_path, stage_utils=None):
     return widget, lift
 
 
-def test_readout_shows_position_and_sensors(qtbot, tmp_path):
+def test_readout_shows_position_and_warns_only_on_the_top_sensor(qtbot, tmp_path):
     widget, lift = _widget(qtbot, tmp_path)
-    lift.height = 0.0
+    lift.height = 0.0  # the fake's bottom sensor triggers at 0
     widget._refresh_readout()
     assert widget.label_position.text().startswith("0.000 mm")
-    assert "TRIGGERED" in widget.label_bottom.text()
-    assert "clear" in widget.label_top.text()
+    assert widget.label_top_warning.isHidden()  # the bottom (home) sensor alone shows nothing
+    assert "Bottom (home) sensor: triggered" in widget.label_position.toolTip()
+    assert "Top sensor: clear" in widget.label_position.toolTip()
+
+    lift.limit_switches = lambda: (False, True)
+    widget._refresh_readout()
+    assert not widget.label_top_warning.isHidden()
+    assert "Top sensor: triggered" in widget.label_position.toolTip()
+    lift.limit_switches = lambda: (False, False)
+    widget._refresh_readout()
+    assert widget.label_top_warning.isHidden()
 
 
 def test_jog_runs_off_the_gui_thread_and_reenables(qtbot, tmp_path):
