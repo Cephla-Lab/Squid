@@ -100,7 +100,10 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   library session with protocol runs, so the two mutually exclude.
 - **Sipper** (sipper rigs only): where the tip is (`in ssct/A1`, `retracted`, or not known to be retracted),
   **Go to well** (plate + well), **Retract**, **Home**, and **Stop** for a move started there; each is a
-  library manual job. Teaching (A1, dip depth, travel height, the dedicated wells) is done in the standalone
+  library manual job. **Do not lower tip** (on when Squid starts) makes Go to well stop retracted over the
+  well, to check a taught position without dipping. It applies to that button only: the library's switch is
+  set for the one move and put back, so runs and Prime/Clean always lower the tip. Teaching (A1, dip depth,
+  travel height, the dedicated wells) is done in the standalone
   fluidics GUI's Robot tab, which cannot hold the rig while Squid does. After a run the tip rests in its last
   well, and that plate cannot be reset until it is retracted.
 - A protocol start is refused while any job holds the fluidics session (Prime/Clean, a manual-control or
