@@ -3,7 +3,7 @@ attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolR
 
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
@@ -25,7 +25,6 @@ from qtpy.QtWidgets import (
 
 import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
-from control.core.fluidics_protocol.manifest import reagent_totals
 from control.core.fluidics_protocol.events import (
     Hold,
     HoldAction,
@@ -33,7 +32,6 @@ from control.core.fluidics_protocol.events import (
     RunnerState,
     SequenceProgress,
     StateChanged,
-    StepEnded,
     StepStarted,
 )
 from control.core.fluidics_protocol.resolve import ProtocolProblems, resolve_protocol
@@ -57,7 +55,7 @@ class FluidicsProtocolWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # True at run start, False at run end (the gui contract)
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
-    signal_reagent_rows = Signal(list)  # rows for the Reagents table
+    signal_run_held = Signal(bool)  # True while the run is HELD, waiting for the operator
 
     REFRESH_MS = 500
 
@@ -84,7 +82,6 @@ class FluidicsProtocolWidget(QFrame):
         self._current_step_kind: Optional[str] = None
         self._current_round = "—"
         self._current_sequence = "—"
-        self._since_init_ul: Dict[int, float] = {}
 
         self._build_ui()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -412,9 +409,8 @@ class FluidicsProtocolWidget(QFrame):
                     self._current_sequence = step.rows[event.position].get("name") or "—"
                     self.protocol_tab.highlight_row(step.row_indices[event.position])  # the row actually flowing
                     self._render_running()
-            elif isinstance(event, StepEnded):
-                self._update_reagents()
             elif isinstance(event, StateChanged):
+                self.signal_run_held.emit(event.state is RunnerState.HELD)
                 if event.state is RunnerState.HELD and event.hold is not None:
                     self._show_hold(event.hold)
                 elif event.state is not RunnerState.HELD:
@@ -488,34 +484,7 @@ class FluidicsProtocolWidget(QFrame):
             + (f" — {hold.message}" if hold.message else "")
         )
 
-    def _update_reagents(self) -> None:
-        if self.runner is None:
-            return
-        this_run, last_step = reagent_totals(self.runner.manifest)
-        rows = []
-        for port in sorted(set(this_run) | set(self._since_init_ul)):
-            rows.append(
-                (
-                    port,
-                    self._reagent_name(port),
-                    last_step.get(port, 0.0),
-                    this_run.get(port, 0.0),
-                    self._since_init_ul.get(port, 0.0) + this_run.get(port, 0.0),
-                )
-            )
-        self.signal_reagent_rows.emit(rows)
-
-    def _reagent_name(self, port: int) -> Optional[str]:
-        try:
-            return self.service.system.devices.selector_valves.port_to_reagent(port)
-        except Exception:
-            return None
-
     def _finish(self, outcome: str) -> None:
-        if self.runner is not None:
-            totals, _last = reagent_totals(self.runner.manifest)
-            for port, ul in totals.items():
-                self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
         self.protocol_tab.set_run_locked(False)
         self.protocol_tab.highlight_row(None)
         self.state_label.setText(f"Run {outcome}")

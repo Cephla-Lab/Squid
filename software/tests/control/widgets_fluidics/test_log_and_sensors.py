@@ -4,7 +4,7 @@ import squid.logging
 
 pytest.importorskip("fluidics")
 
-from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
+from control.widgets_fluidics.log_view import FluidicsLogView
 
 
 def test_log_view_receives_fluidics_records_and_autoscrolls(qtbot):
@@ -35,32 +35,6 @@ def test_log_view_save_writes_the_visible_text(qtbot, tmp_path, monkeypatch):
     monkeypatch.setattr(log_view_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
     view._save_log()
     assert target.read_text() == "hello log"
-
-
-def test_reagents_table_renders_rows(qtbot):
-    table = ReagentsTable()
-    qtbot.addWidget(table)
-    table.set_rows([(1, "probe 1", 500.0, 1500.0, 4500.0), (25, None, 0.0, 2000.0, 9000.0)])
-    assert table.table.rowCount() == 2
-    assert table.table.item(0, 1).text() == "probe 1"
-    assert table.table.item(1, 1).text() == "—"
-    assert table.table.item(1, 4).text() == "9000"
-
-
-def test_reagent_export_quotes_awkward_names(qtbot, tmp_path, monkeypatch):
-    import csv as csv_module
-
-    import control.widgets_fluidics.log_view as log_view_module
-    from control.widgets_fluidics.log_view import ReagentsTable
-
-    table = ReagentsTable()
-    qtbot.addWidget(table)
-    table.set_rows([(1, 'probe, "red"', 10.0, 20.0, 30.0)])
-    target = tmp_path / "reagents.csv"
-    monkeypatch.setattr(log_view_module.QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(target), "")))
-    table._export()
-    rows = list(csv_module.reader(target.open()))
-    assert rows[1][1] == 'probe, "red"' and rows[1][0] == "1"
 
 
 def test_log_view_catches_fluidics_loggers_only(qtbot):
@@ -107,59 +81,20 @@ def _config_text(application="Flow Cell", tec=False, flow_sensors=True, monitor=
     return yaml.safe_dump(config)
 
 
-@pytest.fixture
-def initialized_display_tab(qtbot, tmp_path, monkeypatch):
-    """Build a FluidicsDisplayTab over a simulated system initialized from the given config text."""
-    from control.fluidics_system import FluidicsService
-    from control.widgets_fluidics.display_tab import FluidicsDisplayTab
-    import control.widgets_fluidics.system_panel as system_panel_module
-    from control.widgets_fluidics.system_panel import SystemPanel
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(SystemPanel, "_INITIALIZE_KWARGS", {"instant": True})
-    # a failed Initialize raises a modal, which would hang the offscreen run; fail the test instead
-    monkeypatch.setattr(system_panel_module.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
-    built = []
-
-    def build(config_text, shown_at=None):
-        config = tmp_path / "fluidics_config.yaml"
-        config.write_text(config_text)
-        service = FluidicsService(default_config_path=str(config), simulated=True)
-        tab = FluidicsDisplayTab(service)
-        qtbot.addWidget(tab)
-        built.append((tab, service))
-        if shown_at is not None:  # the application's order: on screen first, Initialize later
-            tab.resize(*shown_at)
-            tab.show()
-            qtbot.waitExposed(tab)
-        outcome = []
-        tab.system_ready.connect(lambda: outcome.append(None))
-        tab.system_panel.initialize_failed.connect(outcome.append)
-        tab.system_panel.initialize_button.click()
-        qtbot.waitUntil(lambda: bool(outcome), timeout=15000)
-        assert outcome == [None], f"Initialize failed: {outcome[0]}"
-        return tab
-
-    yield build
-    for tab, service in built:
-        tab.shutdown()
-        assert service.close() == []
-
-
 def _tab_titles(tab):
     return [tab.tabs.tabText(i) for i in range(tab.tabs.count())]
 
 
-def test_flow_tab_sits_between_temperature_and_reagents(initialized_display_tab):
+def test_flow_tab_sits_between_temperature_and_reservoirs(initialized_display_tab):
     tab = initialized_display_tab(_config_text(tec=True))
-    assert _tab_titles(tab) == ["Log", "Temperature", "Flow", "Reagents"]
+    assert _tab_titles(tab) == ["Log", "Temperature", "Flow", "Reservoirs"]
     sensors = tab.service.system.devices.flow_sensors
     assert [w.sensor for w in tab.flow_tab.plot_widgets] == list(sensors)
 
 
 def test_flow_tab_without_a_temperature_controller(initialized_display_tab):
     tab = initialized_display_tab(_config_text(tec=False))
-    assert _tab_titles(tab) == ["Log", "Flow", "Reagents"]
+    assert _tab_titles(tab) == ["Log", "Flow", "Reservoirs"]
 
 
 def test_no_flow_tab_without_flow_sensors(initialized_display_tab):
