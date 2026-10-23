@@ -84,7 +84,8 @@ class _SimulatedC414:
     _LO_MM = 0.0
     _HI_MM = 7.0
 
-    def __init__(self, axis: str = "1"):
+    def __init__(self, axis: str = "1", profile_state_path: Optional[str] = None):
+        # Same arguments as C414FocusStage, so it can stand in for it; nothing is saved while simulated.
         self.axis = axis
         self._pos_mm = 0.0
         self._referenced = False
@@ -624,7 +625,9 @@ class C414FocusStage:
             self.axis = self.gcs.axes[0]
         self._range_lo, self._range_hi = self.hardware_limits_mm()  # seed the clamp cache
         self._velocity_mm_s = self.get_velocity()
-        self._servo_period_s = float(self.gcs.qSPA(self.axis, PARAM_SERVO_UPDATE_TIME)[self.axis][PARAM_SERVO_UPDATE_TIME])
+        self._servo_period_s = float(
+            self.gcs.qSPA(self.axis, PARAM_SERVO_UPDATE_TIME)[self.axis][PARAM_SERVO_UPDATE_TIME]
+        )
 
     def _clamp_target(self, z_mm: float) -> float:
         """Clamp an absolute Z target to the cached Position Range Limit, warning if it was outside.
