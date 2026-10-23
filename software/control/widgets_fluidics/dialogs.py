@@ -48,27 +48,6 @@ def _tip(text: str) -> str:
     return f"<p>{html.escape(text, quote=False)}</p>"
 
 
-_ADD_ROUNDS_HELP = (
-    "Copies a round right after itself. Each copy gets the next label and its own imaging folder, "
-    "and can get the next port and the next well. Hover over a field for details."
-)
-_ADD_ROUNDS_TIPS = {
-    "template_combo": "The round whose rows are copied. The copies go right after it; rows after it "
-    "(a final clean-up) stay last.",
-    "count_spin": "How many new rounds to add.",
-    "pattern_edit": "The label of each new round; {n} is its number. R{n:02d} gives R02, R03, …",
-    "start_spin": "The number of the first new round.",
-    "port_row_combo": "The row whose port changes each round, e.g. a probe row with one bottle per "
-    "round. — none — keeps every row's port. On a sipper rig, rows that draw from wells change "
-    "wells instead (below).",
-    "ports_edit": "One port per new round for the row picked above, as a list or ranges: 2-12, 14-25.",
-    "wells_edit": "One well per new round: along a row (A2-A12), down a column (A1-H1), or listed "
-    "(A2, A5, B1). In each new round, every row that draws from a well moves to that well on its "
-    "own plate: hyb A1 → A2, push ssct/A1 → ssct/A2. Filled in with the wells after the round's "
-    "own until you type here. Blank: every round reuses the same wells.",
-}
-
-
 def _next_round_number(labels: List[str]) -> int:
     numbers = [int(m.group(1)) for label in labels for m in [re.search(r"(\d+)$", label or "")] if m]
     return max(numbers) + 1 if numbers else 2
@@ -91,30 +70,52 @@ class AddRoundsDialog(QDialog):
         labels = protocol.round_labels()
         self.template_combo = QComboBox()
         self.template_combo.addItems(labels)
+        self.template_combo.setToolTip(
+            _tip(
+                "The round whose rows are copied. The copies go right after it; rows after it (a final clean-up) stay last."
+            )
+        )
         self.count_spin = QSpinBox()
         self.count_spin.setRange(1, 999)
+        self.count_spin.setToolTip(_tip("How many new rounds to add."))
         self.pattern_edit = QLineEdit("R{n:02d}")
+        self.pattern_edit.setToolTip(_tip("The label of each new round; {n} is its number. R{n:02d} gives R02, R03, …"))
         self.start_spin = QSpinBox()
         self.start_spin.setRange(1, 9999)
         self.start_spin.setValue(_next_round_number(labels))
+        self.start_spin.setToolTip(_tip("The number of the first new round."))
         self.port_row_combo = QComboBox()
+        self.port_row_combo.setToolTip(
+            _tip(
+                "The row whose port changes each round, e.g. a probe row with one bottle per round. — none — "
+                "keeps every row's port. On a sipper rig, rows that draw from wells change wells instead (below)."
+            )
+        )
         self.ports_edit = QLineEdit()
         self.ports_edit.setPlaceholderText("2-12,14-25")
+        self.ports_edit.setToolTip(
+            _tip("One port per new round for the row picked above, as a list or ranges: 2-12, 14-25.")
+        )
+        wells_tip = _tip(
+            "One well per new round: along a row (A2-A12), down a column (A1-H1), or listed (A2, A5, B1). "
+            "In each new round, every row that draws from a well moves to that well on its own plate: hyb "
+            "A1 → A2, push ssct/A1 → ssct/A2. Filled in with the wells after the round's own until you type "
+            "here. Blank: every round reuses the same wells."
+        )
         self.wells_label = QLabel("Wells")
-        self.wells_edit = QLineEdit()
+        self.wells_label.setToolTip(wells_tip)
+        self.wells_edit = QLineEdit()  # isModified(): the operator typed, so the prefill stops
         self.wells_edit.setPlaceholderText("A2-A12 (blank: every round keeps the same wells)")
-        self.wells_edit.textEdited.connect(self._wells_typed)  # typed, not set: the prefill stops
-        self._wells_typed_by_operator = False
+        self.wells_edit.setToolTip(wells_tip)
         self._first_well: Optional[str] = None  # the template's first well row's well, without its plate
-        self._no_proposal: Optional[str] = None  # why the automatic Wells proposal is blank
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
-        self.help_label = QLabel(_ADD_ROUNDS_HELP)
+        self.help_label = QLabel(
+            "Copies a round right after itself. Each copy gets the next label and its own imaging folder, "
+            "and can get the next port and the next well. Hover over a field for details."
+        )
         self.help_label.setWordWrap(True)
         self.help_label.setStyleSheet("color: gray;")
-        for name, text in _ADD_ROUNDS_TIPS.items():
-            getattr(self, name).setToolTip(_tip(text))
-        self.wells_label.setToolTip(_tip(_ADD_ROUNDS_TIPS["wells_edit"]))
 
         form = QFormLayout()
         form.addRow("Copy round", self.template_combo)
@@ -162,30 +163,20 @@ class AddRoundsDialog(QDialog):
         self._first_well = drawing[0]["well"].rpartition("/")[2] if drawing else None
         self.wells_label.setVisible(bool(drawing))
         self.wells_edit.setVisible(bool(drawing))
-        self._wells_typed_by_operator = False
+        self.wells_edit.setModified(False)  # a new round: its own wells are proposed again
         self._prefill_wells()
         self._update_preview()
 
-    def _wells_typed(self, _text: str) -> None:
-        self._wells_typed_by_operator = True
-
     def _prefill_wells(self) -> None:
         """The wells after the round's own, one per new round, until the operator types a list."""
-        if self._wells_typed_by_operator:
+        if self.wells_edit.isModified():
             return
         text = ""
-        self._no_proposal = None  # why the proposal is blank, if it is
         if self._first_well is not None:
             try:
-                proposed = next_wells(self._first_well, int(self.count_spin.value()))
-            except ValueError as e:  # the round's own well is not one (the editor flags that row too)
-                self._no_proposal = f"{e}: fix the round's well row, or type the wells for the new rounds"
-            else:
-                text = format_well_list(proposed)
-                if not proposed:
-                    self._no_proposal = (
-                        f"no wells after {self._first_well} on its plate: type the wells for the new rounds"
-                    )
+                text = format_well_list(next_wells(self._first_well, int(self.count_spin.value())))
+            except ValueError:  # the round's own well is not one: _wells says so
+                pass
         self.wells_edit.setText(text)
 
     def _current_kwargs(self) -> dict:
@@ -211,10 +202,13 @@ class AddRoundsDialog(QDialog):
         text = self.wells_edit.text().strip()
         if text:
             return parse_well_list(text)
-        if self._wells_typed_by_operator:
+        if self.wells_edit.isModified():
             return None
-        reason = self._no_proposal or f"no wells after {self._first_well}: type the wells for the new rounds"
-        raise ValueError(f"Wells: {reason}")
+        try:  # why the proposal came out blank
+            next_wells(self._first_well, 1)
+        except ValueError as e:
+            raise ValueError(f"Wells: {e}: fix the round's well row, or type the wells for the new rounds") from None
+        raise ValueError(f"Wells: no wells after {self._first_well} on its plate: type the wells for the new rounds")
 
     def _update_preview(self) -> None:
         try:

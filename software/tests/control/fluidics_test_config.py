@@ -243,3 +243,10 @@ SIPPER_ROWS = [
         "fill_tubing_with": 3,
     },
 ]
+
+
+def sipper_protocol():
+    """A protocol of SIPPER_ROWS, each row a fresh copy."""
+    from control.models.fluidics_protocol import ProtocolFile
+
+    return ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS])

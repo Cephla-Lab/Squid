@@ -257,10 +257,7 @@ class FluidicsDisplayTab(QWidget):
             try:
                 from control.widgets_fluidics.sipper_controls import SipperControls
 
-                self.sipper_controls = SipperControls(self.service.system)
-                # Device status shows the drive fault a failed move names until Reset fault or Home.
-                self.sipper_controls.robot_failed.connect(self.device_status.note_robot_error)
-                self.sipper_controls.robot_recovered.connect(self.device_status.note_robot_recovered)
+                self.sipper_controls = SipperControls(self.service.system, start_job=self.start_manual_job)
                 self._instrument_layout.insertWidget(
                     self._instrument_layout.indexOf(self.device_status), self.sipper_controls
                 )
@@ -306,8 +303,41 @@ class FluidicsDisplayTab(QWidget):
         if self.reservoirs_tab is not None:
             self.reservoirs_tab.set_edits_allowed(free)
 
-    def quick_op_active(self) -> bool:
-        return self._quick_running
+    def start_manual_job(
+        self,
+        verb: Callable[[], None],
+        what: str,
+        source: Optional[str] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+        clears_fault: bool = False,
+    ) -> Optional[str]:
+        """Start `verb` as a manual job on the fluidics session: every one Squid starts (Prime/Clean,
+        the Sipper group) goes through here. How it ends is logged as `what`, and a drive fault its
+        error names shows in Device status until a job with `clears_fault` (Reset fault, Home)
+        finishes. `on_error(message)` runs on the job's thread. Returns why it was not started (another
+        job holds the session), or None."""
+        log, status = self._log, self.device_status
+
+        def body():
+            log.info(f"{what} started")
+            verb()
+            log.info(f"{what} done")
+            if clears_fault:
+                status.note_robot_recovered()
+
+        def failed(message):
+            log.error(f"{what} failed: {message}")
+            status.note_robot_error(message)
+            if on_error is not None:
+                on_error(message)
+
+        try:
+            self.service.system.run_manual(
+                body, callbacks={"on_error": failed, "on_stopped": lambda: log.info(f"{what} stopped")}, source=source
+            )
+        except Exception as e:  # RuntimeError while another job holds the session
+            return str(e)
+        return None
 
     def manual_job_active(self) -> bool:
         """A manual job holds the fluidics rig, so a protocol started now would be refused: the
@@ -328,36 +358,23 @@ class FluidicsDisplayTab(QWidget):
         if not use_ports:
             self._log.error("Prime/Clean: name at least one port to prime (e.g. 1-4, 25)")
             return
-        verb_name = "prime" if op == "priming" else "clean"
+        clean_up = op == "clean_up"  # on a sipper rig its line draws from the clean-up well, not the priming well
         wash_port = int(self.wash_port_spin.value())
         flow_rate = int(self.flow_spin.value())
         volume = int(self.volume_spin.value())
-        repeat = int(self.repeat_spin.value()) if op == "clean_up" else 1
-        clean_up = op == "clean_up"  # on a sipper rig its line draws from the clean-up well, not the priming well
+        repeat = int(self.repeat_spin.value()) if clean_up else 1
         operations = self.service.system.operations
 
         def verb():
             for _ in range(repeat):
                 operations.priming_or_clean_up(wash_port, flow_rate, volume, use_ports=use_ports, clean_up=clean_up)
 
-        def on_error(message):  # the job's thread: a log line and a stored fault, nothing painted
-            self._log.error(f"Manual {verb_name} failed: {message}")
-            self.device_status.note_robot_error(message)  # priming moves the sipper to its well
-
-        try:
-            self.service.system.run_manual(
-                verb,
-                callbacks={
-                    "on_error": on_error,
-                    "on_stopped": lambda: self._log.info(f"Manual {verb_name} stopped"),
-                    "on_finished": lambda: self._log.info(f"Manual {verb_name} finished"),
-                },
-            )
-        except Exception as e:  # RuntimeError while another job holds the session
-            self._log.error(f"Prime/Clean could not start: {e}")
+        what = f"Manual {'clean' if clean_up else 'prime'} on {len(use_ports)} port(s)"
+        refusal = self.start_manual_job(verb, what)
+        if refusal is not None:
+            self._log.error(f"Prime/Clean could not start: {refusal}")
             return
         self._set_quick_running(True)
-        self._log.info(f"Manual {verb_name} started on {len(use_ports)} port(s)")
 
     def _stop_quick_op(self) -> None:
         if self._quick_running:
