@@ -125,6 +125,8 @@ class AndorCamera(AbstractCamera):
         self.set_exposure_time(self._exposure_time_ms)
         self.set_pixel_format(CameraPixelFormat.MONO16)
         self.set_binning(*self._config.default_binning)
+        # For active blanking
+        self._camera.AuxiliaryOutSource = "FireAll"
 
     def close(self):
         self._cleanup_read_thread()
