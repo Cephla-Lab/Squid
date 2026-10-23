@@ -231,11 +231,11 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
         tab.wash_port_spin.setValue(1)
         tab.volume_spin.setValue(50)
         tab._quick_op("priming")
-        assert tab.quick_op_active()
+        assert tab.manual_job_active()
         assert not tab.prime_button.isEnabled() and not tab.ports_edit.isEnabled()
         assert not tab.stop_quick_button.isHidden()
         tab._stop_quick_op()
-        qtbot.waitUntil(lambda: (tab._poll_quick_op() or not tab.quick_op_active()), timeout=30000)
+        qtbot.waitUntil(lambda: (tab._poll_quick_op() or not tab._quick_running), timeout=30000)
         assert tab.prime_button.isEnabled() and tab.stop_quick_button.isHidden()
     finally:
         tab.shutdown()

@@ -131,6 +131,18 @@ def drive_fault(message: Optional[str]) -> Optional[str]:
     return match.group(0) if match else None
 
 
+NOT_RETRACTED = "not known to be retracted"
+
+
+def tip_location(robot) -> str:
+    """Where the sipper's tip is, from the robot's cached state (no I/O): in a well, retracted,
+    or NOT_RETRACTED. The Sipper group and Device status both say it this way."""
+    key = robot.current_well_key()
+    if key is not None:
+        return f"in {key}"
+    return "retracted" if robot.is_retracted else NOT_RETRACTED
+
+
 class DeviceStatusGroup(QGroupBox):
     """Reads only cached device state (no serial I/O from the GUI): the pump's held volume and the
     robot's position arrive by subscription, the valves/TEC expose cached attributes, and the run line
@@ -147,23 +159,23 @@ class DeviceStatusGroup(QGroupBox):
         self._robot_fault: Optional[str] = None
         grid = QGridLayout()
         self.labels = {}
-        self._names = {}
+        self._robot_row_widgets = []  # shown on a rig with a sipper
         rows = ("System", "Syringe pump", "Valves", "Temperature") + self._ROBOT_ROWS + ("Run",)
         for row, name in enumerate(rows):
-            self._names[name] = QLabel(f"{name}:")
-            grid.addWidget(self._names[name], row, 0)
-            label = QLabel("—")
+            caption, label = QLabel(f"{name}:"), QLabel("—")
+            grid.addWidget(caption, row, 0)
             grid.addWidget(label, row, 1)
             self.labels[name] = label
+            if name in self._ROBOT_ROWS:
+                self._robot_row_widgets += [caption, label]
         self.labels["Robot fault"].setToolTip(_ROBOT_FAULT_TIP)
         self._show_robot_rows(False)  # until a rig with a sipper is attached
         grid.setColumnStretch(1, 1)
         self.setLayout(grid)
 
     def _show_robot_rows(self, shown: bool) -> None:
-        for name in self._ROBOT_ROWS:
-            self._names[name].setVisible(shown)
-            self.labels[name].setVisible(shown)
+        for widget in self._robot_row_widgets:
+            widget.setVisible(shown)
 
     def attach(self, service) -> None:
         self._service = service
@@ -172,7 +184,7 @@ class DeviceStatusGroup(QGroupBox):
         except Exception:
             pass
         self.labels["System"].setText(f"initialized · {service.config_path}")
-        self._robot = getattr(service.system.devices, "robot", None)
+        self._robot = service.system.devices.robot
         self._robot_fault = None
         self._show_robot_rows(self._robot is not None)
         if self._robot is not None:
@@ -204,9 +216,8 @@ class DeviceStatusGroup(QGroupBox):
 
     def _paint_robot(self) -> None:
         """While a job runs, the last position the stage published (its own is unknown mid-move).
-        Once the rig is idle, the stage's own cached position and state (no I/O), as the Sipper
-        group reads them: a Home or a fault reset that failed can drop the position without
-        publishing, and the last publish would then still say where the tip no longer is."""
+        Once the rig is idle, the stage's own cached position and state (no I/O): a Home or a fault
+        reset that failed can drop the position without publishing it."""
         robot = self._robot
         idle = not self._service.system.busy
         position = robot.position() if idle else self._robot_position
@@ -214,16 +225,8 @@ class DeviceStatusGroup(QGroupBox):
             where = "position unknown (Home the robot)"
         else:
             x, y, z = position
-            where = f"x {x:.2f}  y {y:.2f}  z {z:.2f} mm"
-            key = robot.current_well_key()
-            if key is not None:
-                where += f" · in {key}"
-            elif not idle:
-                where += " · moving or in use"
-            elif robot.is_retracted:
-                where += " · retracted"
-            else:
-                where += " · not known to be retracted"
+            moving = not idle and robot.current_well_key() is None
+            where = f"x {x:.2f}  y {y:.2f}  z {z:.2f} mm · " + ("moving or in use" if moving else tip_location(robot))
         self.labels["Robot"].setText(where)
         fault = self._robot_fault
         label = self.labels["Robot fault"]

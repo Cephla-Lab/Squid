@@ -399,23 +399,14 @@ def next_wells(after: str, count: int) -> List[str]:
 
 
 def format_well_list(wells: List[str]) -> str:
-    """The inverse of parse_well_list for a run along rows: ['A2', 'A3', 'A4', 'B1'] -> 'A2-A4, B1'."""
-    parts: List[str] = []
-    run: List[Tuple[int, int]] = []
-
-    def flush():
-        if run:
-            (r, c0), (_, c1) = run[0], run[-1]
-            parts.append(f"{PLATE_ROWS[r]}{c0}" + (f"-{PLATE_ROWS[r]}{c1}" if c1 != c0 else ""))
-            run.clear()
-
-    for well in wells:
-        position = _well_position(well)
-        if run and not (position[0] == run[-1][0] and position[1] == run[-1][1] + 1):
-            flush()
-        run.append(position)
-    flush()
-    return ", ".join(parts)
+    """The inverse of parse_well_list for runs along rows: ['A2', 'A3', 'A4', 'B1'] -> 'A2-A4, B1'."""
+    runs: List[List[int]] = []  # [row, first column, last column]
+    for r, c in map(_well_position, wells):
+        if runs and runs[-1][0] == r and runs[-1][2] == c - 1:
+            runs[-1][2] = c
+        else:
+            runs.append([r, c, c])
+    return ", ".join(f"{PLATE_ROWS[r]}{c0}" + (f"-{PLATE_ROWS[r]}{c1}" if c1 != c0 else "") for r, c0, c1 in runs)
 
 
 def well_rows(rows: List[dict]) -> List[dict]:
@@ -457,8 +448,8 @@ def expand_rounds(
             raise ValueError(f"No row of round '{template_round}' draws from a well")
         if len(wells) < count:
             raise ValueError(f"{count} rounds need {count} wells, got {len(wells)}")
-        for well in wells:
-            _well_position(well)  # a typo is refused here, not at the first run
+        # a typo is refused here, not at the first run; " b1" is written B1
+        wells = [f"{PLATE_ROWS[r]}{c}" for r, c in map(_well_position, wells)]
     new_rows: List[dict] = []
     for k in range(count):
         label = label_pattern.format(n=start + k)
@@ -468,7 +459,7 @@ def expand_rounds(
             if port_row_name is not None and copy.get("name") == port_row_name and "fluidic_port" in copy:
                 copy["fluidic_port"] = ports[k]
             if wells is not None and copy.get("well"):
-                copy["well"] = _move_to_well(copy["well"], wells[k].strip().upper())
+                copy["well"] = _move_to_well(copy["well"], wells[k])
             # the folder_name stays the same base across rounds; imaging_folder derives the
             # per-round output folder ({round}_{folder_name}) at run time
             new_rows.append(copy)
