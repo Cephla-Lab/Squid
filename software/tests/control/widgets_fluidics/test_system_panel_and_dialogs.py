@@ -109,6 +109,23 @@ def test_add_rounds_dialog_proposes_the_next_wells_for_a_sipper_round(qtbot):
     assert dialog.result_kwargs["wells"] == ["A2", "A3", "A4", "B1"]
 
 
+def test_the_dialogs_explain_themselves_without_an_empty_help_button(qtbot):
+    from qtpy.QtCore import Qt
+
+    dialog = AddRoundsDialog(_sipper_protocol())
+    qtbot.addWidget(dialog)
+    assert "Hover over a field" in dialog.help_label.text()
+    fields = (dialog.template_combo, dialog.count_spin, dialog.pattern_edit, dialog.start_spin)
+    fields += (dialog.port_row_combo, dialog.ports_edit, dialog.wells_label, dialog.wells_edit)
+    assert all(field.toolTip() for field in fields)
+    assert "ssct/A1 → ssct/A2" in dialog.wells_edit.toolTip()
+
+    preflight = PreflightDialog([], ["ok"])
+    qtbot.addWidget(preflight)
+    for shown in (dialog, preflight):
+        assert not shown.windowFlags() & Qt.WindowContextHelpButtonHint  # the "?" showed no help
+
+
 def test_add_rounds_dialog_refuses_a_well_list_shorter_than_the_rounds(qtbot):
     from qtpy.QtWidgets import QDialogButtonBox
 
