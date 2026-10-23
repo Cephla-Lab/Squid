@@ -14,8 +14,9 @@ from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QSizePolicy,
+    QAbstractSpinBox,
 )
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, Signal
 
 import control._def
 import squid.logging
@@ -198,11 +199,16 @@ class NL5SettingsDialog(QDialog):
 
 
 class NL5Widget(QWidget):
+    # The exposure delay, scan amplitude or FOV changed: the scan timing behind a line speed, and so the exposure the
+    # unit gives the camera, changed with it.
+    signal_scan_timing_changed = Signal()
+
     def __init__(self, nl5):
         super().__init__()
 
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.nl5 = nl5
+        self._line_speed_follows_exposure = False
 
         # Create layout
         layout1 = QHBoxLayout()
@@ -226,13 +232,7 @@ class NL5Widget(QWidget):
         layout1.addWidget(self.speed_mode_combo)
         self.line_speed_input = QDoubleSpinBox()
         self.line_speed_input.setKeyboardTracking(False)
-        self.line_speed_input.setToolTip(
-            "Press Enter to apply.\n"
-            f"Line speed: {LINE_SPEED_MIN}-{LINE_SPEED_MAX} mrad/s.\n"
-            "Frame rate = line speed / scan sweep, where the sweep is 2 x the scan amplitude (the scanner\n"
-            "travels +/- amplitude) scaled by FOV / camera width. Scanner-limited: excludes the exposure\n"
-            "delay, the jump back and the camera's readout and transfer (~30 ms for a full frame)."
-        )
+        self.line_speed_input.setToolTip(self._speed_tooltip())
         self.line_speed_input.lineEdit().returnPressed.connect(self.apply_speed_input)
         layout1.addWidget(self.line_speed_input)
         mode_index = self.speed_mode_combo.findData(getattr(self.nl5, "speed_input_mode", "line_speed"))
@@ -307,6 +307,7 @@ class NL5Widget(QWidget):
     def _after_settings_dialog(self, dialog):
         # the scan amplitude may have changed, which changes the frame rate for the same line speed
         self._refresh_speed_display()
+        self.signal_scan_timing_changed.emit()
         if self.slit_combo is not None:
             if getattr(dialog, "stopped_slit_oscillation", False):
                 self._slit_oscillating = False  # stopped on purpose, not ended on its own
@@ -319,9 +320,42 @@ class NL5Widget(QWidget):
 
     def update_exposure_delay(self, value):
         self.nl5.set_exposure_delay(value)
+        # Persist it: with the scan-speed box read-only (the exposure sets it), nothing else would save the delay.
+        self.nl5.save_settings()
+        self.signal_scan_timing_changed.emit()
+
+    def set_line_speed_follows_exposure(self, follows: bool):
+        """When the unit level-triggers the camera (hardware trigger, NL5_USE_DOUT), the camera's exposure is the
+        exposure delay plus the scan, so the line speed is set from the channel's exposure time and this box
+        only shows it (as a line speed or a frame rate, per the mode combo)."""
+        self._line_speed_follows_exposure = follows
+        box = self.line_speed_input
+        box.setReadOnly(follows)
+        box.setButtonSymbols(QAbstractSpinBox.NoButtons if follows else QAbstractSpinBox.UpDownArrows)
+        box.setToolTip(self._speed_tooltip())
+        self._refresh_speed_display()
+
+    def show_line_speed(self, _exposure_ms: float, _line_speed: int):
+        """Show the line speed the unit was set to (from a channel exposure) without sending it again."""
+        self._refresh_speed_display()
 
     def _speed_mode(self):
         return self.speed_mode_combo.currentData() or "line_speed"
+
+    def _speed_tooltip(self):
+        how = (
+            "Set by the channel's exposure time: line speed = scan sweep / (exposure - exposure delay). "
+            "Edit the exposure time to change it."
+            if self._line_speed_follows_exposure
+            else "Press Enter to apply."
+        )
+        return (
+            f"{how}\n"
+            f"Line speed: {LINE_SPEED_MIN}-{LINE_SPEED_MAX} mrad/s.\n"
+            "Frame rate = line speed / scan sweep, where the sweep is 2 x the scan amplitude (the scanner\n"
+            "travels +/- amplitude) scaled by FOV / the unit's camera width. Scanner-limited: excludes the\n"
+            "exposure delay, the jump back and the camera's readout and transfer (~42 ms for a full frame)."
+        )
 
     def _configure_speed_input(self):
         """Set range, decimals and suffix for the current mode and show the device's current speed."""
@@ -357,6 +391,9 @@ class NL5Widget(QWidget):
 
     def apply_speed_input(self):
         """Enter pressed: send the entered value to the device as a line speed."""
+        if self._line_speed_follows_exposure:
+            self._refresh_speed_display()  # read-only: the channel's exposure time sets it
+            return
         value = self.line_speed_input.value()
         if self._speed_mode() == "fps":
             line_speed = self.nl5.fps_to_line_speed(value)
@@ -369,6 +406,7 @@ class NL5Widget(QWidget):
     def update_fov_x(self, value):
         self.nl5.set_fov_x(value)
         self._refresh_speed_display()
+        self.signal_scan_timing_changed.emit()
 
     def update_slit_width(self, _index):
         width = self.slit_combo.currentData()

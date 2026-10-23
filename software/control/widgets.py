@@ -4999,7 +4999,7 @@ class LiveControlWidget(QFrame):
         # line 3: exposure time and analog gain associated with the current mode
         self.entry_exposureTime = QDoubleSpinBox()
         self.entry_exposureTime.setKeyboardTracking(False)
-        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
+        self.refresh_exposure_time_limits()
         self.entry_exposureTime.setSingleStep(1)
         self.entry_exposureTime.setSuffix(" ms")
         self.entry_exposureTime.setValue(0)
@@ -5196,15 +5196,26 @@ class LiveControlWidget(QFrame):
         self.signal_newExposureTime.emit(self.entry_exposureTime.value())
 
     def refresh_exposure_time_limits(self):
-        """Refresh the exposure spinbox's min/max from the camera.
+        """Refresh the exposure spinbox's min/max from the camera, or from the confocal unit when it sets the
+        exposure (AION / NL5 triggering the camera: delay + scan, bounded by the unit's line-speed limits).
 
-        Needed after something changes the camera's valid exposure range
-        without going through this widget - e.g. a sensor mode / readout
-        speed change made via CameraSettingsWidget. setMinimum/setMaximum
-        auto-clamp the current value and emit valueChanged, which is already
-        connected to the camera's exposure setter, so the clamp propagates.
+        Needed after something changes the valid exposure range without going
+        through this widget - e.g. a sensor mode / readout speed change made via
+        CameraSettingsWidget, a trigger mode change, or a change of the unit's
+        exposure delay, scan amplitude or FOV. setMinimum/setMaximum auto-clamp
+        the current value and emit valueChanged, which is already connected to
+        the exposure setter, so the clamp propagates.
         """
-        set_spinbox_range_from_exposure_limits(self.camera, self.entry_exposureTime)
+        exposure_min, exposure_max = self.liveController.exposure_limits_ms()
+        self.entry_exposureTime.setMinimum(exposure_min)
+        self.entry_exposureTime.setMaximum(exposure_max)
+
+    def on_scan_timing_changed(self):
+        """The confocal unit's exposure delay, scan amplitude or FOV changed: the exposure range, and the line
+        speed that gives the current exposure, change with them."""
+        self.refresh_exposure_time_limits()
+        if self.liveController.scan_unit_sets_exposure() and self.currentConfiguration is not None:
+            self.liveController.apply_exposure_time(self.currentConfiguration.exposure_time)
 
     def refresh_mode_list(self):
         # Update the mode selection dropdown (only show enabled channels)
@@ -5262,6 +5273,8 @@ class LiveControlWidget(QFrame):
 
     def update_trigger_mode(self):
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
+        # On an NL5/AION the exposure range depends on the trigger mode (unit's range vs the camera's).
+        self.refresh_exposure_time_limits()
 
     def update_config_exposure_time(self, new_value):
         if self.is_switching_mode == False:
@@ -5273,6 +5286,10 @@ class LiveControlWidget(QFrame):
                 new_value,
                 confocal_mode=self.liveController.is_confocal_mode(),
             )
+            if self.liveController.scan_unit_sets_exposure():
+                # The confocal unit's line speed follows the channel exposure; the camera (and the listeners of
+                # this signal) get the exposure the unit actually produces.
+                new_value = self.liveController.apply_exposure_time(new_value)
             self.signal_newExposureTime.emit(new_value)
 
     def update_config_analog_gain(self, new_value):
@@ -5613,6 +5630,7 @@ class LiveControlWidget(QFrame):
     def set_trigger_mode(self, trigger_mode):
         self.dropdown_triggerManu.setCurrentText(trigger_mode)
         self.liveController.set_trigger_mode(self.dropdown_triggerManu.currentText())
+        self.refresh_exposure_time_limits()
 
 
 class PiezoWidget(QFrame):

@@ -1042,7 +1042,8 @@ class HighContentScreeningGui(QMainWindow):
         self.recordingControlWidget = widgets.RecordingWidget(
             self.streamHandler,
             self.imageSaver,
-            channel_provider=lambda: self.liveController.currentConfiguration,
+            # On an NL5/AION the exposure recorded per frame is the one the unit gives the camera.
+            channel_provider=lambda: self.liveController.current_configuration_as_applied(),
         )
         self.wellplateFormatWidget = widgets.WellplateFormatWidget(
             self.stage, self.navigationViewer, self.streamHandler, self.liveController
@@ -1552,6 +1553,20 @@ class HighContentScreeningGui(QMainWindow):
             self.liveControlWidget.signal_start_live.connect(self.onStartLive)
             self.liveControlWidget.signal_show_live_view.connect(self.onShowLiveView)
         self.liveControlWidget.update_camera_settings()
+        if ENABLE_NL5:
+            # With the unit level-triggering the camera (hardware trigger, NL5_USE_DOUT) the channel exposure sets the
+            # unit's line speed: the NL5 tab shows it, and the unit's exposure delay, amplitude and FOV changes feed
+            # back into the exposure range and the line speed for the current exposure.
+            self.liveController.signal_scan_exposure_applied.connect(self.nl5Wdiget.show_line_speed)
+            self.nl5Wdiget.signal_scan_timing_changed.connect(self.liveControlWidget.on_scan_timing_changed)
+            self.liveControlWidget.dropdown_triggerManu.currentIndexChanged.connect(
+                lambda _index: self.nl5Wdiget.set_line_speed_follows_exposure(
+                    self.liveController.scan_unit_sets_exposure()
+                )
+            )
+            self.nl5Wdiget.set_line_speed_follows_exposure(self.liveController.scan_unit_sets_exposure())
+            if self.liveController.scan_unit_sets_exposure() and self.liveController.currentConfiguration is not None:
+                self.liveController.apply_exposure_time(self.liveController.currentConfiguration.exposure_time)
 
         self.connectSlidePositionController()
 

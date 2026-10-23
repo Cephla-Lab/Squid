@@ -58,6 +58,8 @@ def _save_acquisition_yaml(
     scan_size_mm: float = 0.0,
     overlap_percent: float = 10.0,
     protocol: Optional[dict] = None,
+    channels_as_applied: Optional[list] = None,
+    confocal_scan: Optional[dict] = None,
 ) -> None:
     """Save acquisition parameters to YAML file.
 
@@ -70,6 +72,8 @@ def _save_acquisition_yaml(
         wellplate_format: String like "384 well plate" or None
         scan_size_mm: Scan size in mm (for wellplate mode)
         overlap_percent: FOV overlap percentage
+        channels_as_applied: The channels with the settings the hardware actually used (default: as selected)
+        confocal_scan: The confocal unit's scan settings behind the exposures (AION / NL5), if it set them
     """
     # Build common sections
     yaml_dict = {
@@ -100,8 +104,13 @@ def _save_acquisition_yaml(
             "contrast_af": params.do_autofocus,
             "laser_af": params.do_reflection_autofocus,
         },
-        "channels": [_serialize_for_yaml(ch) for ch in params.selected_configurations],
+        "channels": [
+            _serialize_for_yaml(ch)
+            for ch in (channels_as_applied if channels_as_applied is not None else params.selected_configurations)
+        ],
     }
+    if confocal_scan:
+        yaml_dict["confocal_scan"] = confocal_scan
 
     # Add widget-specific scan section
     if widget_type == "wellplate":
@@ -491,7 +500,7 @@ class MultiPointController:
         self.liveController.microscope.config_repo.save_acquisition_output(
             output_dir=experiment_dir,
             objective=self.objectiveStore.current_objective,
-            channels=self.selected_configurations,
+            channels=self._channels_as_applied(),
             confocal_mode=self.liveController.is_confocal_mode(),
         )  # save the configuration for the experiment
         # Prepare acquisition parameters
@@ -529,9 +538,56 @@ class MultiPointController:
         acquisition_parameters["sensor_pixel_size_um"] = self.camera.get_pixel_size_binned_um()
         acquisition_parameters["tube_lens_mm"] = control._def.TUBE_LENS_MM
         acquisition_parameters["confocal_mode"] = self.liveController.is_confocal_mode()
+        confocal_scan = self._confocal_scan_metadata()
+        if confocal_scan:
+            acquisition_parameters["confocal_scan"] = confocal_scan
         f = open(os.path.join(self.base_path, self.experiment_ID) + "/acquisition parameters.json", "w")
         f.write(json.dumps(acquisition_parameters))
         f.close()
+
+    def _channels_as_applied(self):
+        """The selected channels with the exposure the camera actually sees.
+
+        On an NL5/AION that level-triggers the camera the exposure is the unit's exposure delay plus the scan,
+        reached through its line speed, so it can differ from the channel's setting by the line speed's rounding
+        and its limits. Elsewhere the channels are returned as they are.
+        """
+        if not self.liveController.scan_unit_sets_exposure():
+            return self.selected_configurations
+        channels = []
+        for channel in self.selected_configurations:
+            applied = channel.model_copy(deep=True)
+            applied.exposure_time = self.liveController.effective_exposure_time_ms(channel.exposure_time)
+            channels.append(applied)
+        return channels
+
+    def _confocal_scan_metadata(self) -> Optional[dict]:
+        """The confocal unit's settings (Squid's and the device's readback) and, per channel, the laser line and
+        the scan behind the exposure; None without an NL5/AION."""
+        nl5 = self.liveController.microscope.addons.nl5
+        if nl5 is None:
+            return None
+        exposure_from_scan = self.liveController.scan_unit_sets_exposure()
+        try:
+            illumination_config = self.liveController.microscope.config_repo.get_illumination_config()
+        except Exception:
+            illumination_config = None
+        per_channel = {}
+        for channel in self.selected_configurations:
+            wavelength = channel.get_illumination_wavelength(illumination_config) if illumination_config else None
+            entry = {
+                "exposure_setting_ms": channel.exposure_time,
+                "wavelength_nm": wavelength,
+                "laser_line": control._def.NL5_WAVENLENGTH_MAP.get(wavelength) if wavelength else None,
+            }
+            if exposure_from_scan:
+                entry.update(nl5.scan_timing_metadata(nl5.line_speed_for_exposure(channel.exposure_time)))
+            per_channel[channel.name] = entry
+        metadata = nl5.settings_metadata()
+        metadata["exposure_from_scan"] = exposure_from_scan
+        metadata["camera_readout_ms"] = self.camera.get_strobe_time()
+        metadata["channels"] = per_channel
+        return metadata
 
     def set_selected_configurations(self, selected_configurations_name):
         self.selected_configurations = []
@@ -933,6 +989,8 @@ class MultiPointController:
                 self.scan_size_mm,
                 self.overlap_percent,
                 protocol=run_protocol_info,
+                channels_as_applied=self._channels_as_applied(),
+                confocal_scan=self._confocal_scan_metadata(),
             )
 
             # Acquisition watchdog: drop the "running" breadcrumb (covers GUI + MCP-server runs).

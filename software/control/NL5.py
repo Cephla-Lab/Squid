@@ -95,9 +95,17 @@ class _ScanSpeedMixin:
     The NL5 keeps the cap at 1 (not measured beyond the full field).
     Measured on AION: the time to a frame grows by 2 x amplitude / line speed, so halving the
     amplitude or FIELD_OF_VIEW_X saved 26 ms at 73 mrad and 3000 mrad/s.
-    The exposure delay, the jump back (~3 ms) and the camera's readout and transfer (~30 ms
-    for a full Aries frame) are not included, so this is the upper bound the scanner allows,
-    not the camera frame rate.
+    The exposure delay, the jump back (~4 ms at the full width) and the camera's readout and
+    transfer (~42 ms for a full Aries frame) are not included, so this is the upper bound the
+    scanner allows, not the camera frame rate.
+
+    The camera is level-triggered by the unit (Tucsen "trigger width" mode): its exposure is however
+    long the unit holds the trigger high, which is the exposure delay (EXPOSURE_DELAY) followed by
+    the scan. The camera's own exposure setting is ignored. So on this unit
+        exposure = exposure delay + scan time,
+    and a wanted exposure is reached by setting the line speed (line_speed_for_exposure). Measured on
+    AION (camera + unit, 2026-10-22): the frame latency follows this exposure within ~1 ms from 25 to
+    200 ms.
     """
 
     max_cam_pix_x = None
@@ -121,6 +129,80 @@ class _ScanSpeedMixin:
     @staticmethod
     def clamp_line_speed(speed):
         return int(min(LINE_SPEED_MAX, max(LINE_SPEED_MIN, round(speed))))
+
+    def scan_time_ms(self, line_speed=None):
+        """Time of one sweep at `line_speed` (default: the current line speed)."""
+        speed = self.line_speed if line_speed is None else line_speed
+        return 1000.0 * self.scan_sweep_mrad() / speed
+
+    def exposure_time_ms(self, line_speed=None):
+        """The camera exposure the unit produces: exposure delay + scan time."""
+        return self.exposure_delay_ms + self.scan_time_ms(line_speed)
+
+    def line_speed_for_exposure(self, exposure_ms):
+        """The line speed (within the unit's limits) whose exposure is closest to `exposure_ms`."""
+        scan_ms = exposure_ms - self.exposure_delay_ms
+        if scan_ms <= 0:
+            return LINE_SPEED_MAX
+        return self.clamp_line_speed(1000.0 * self.scan_sweep_mrad() / scan_ms)
+
+    def exposure_limits_ms(self):
+        """(min, max) exposure the unit can produce with the current delay, amplitude and FOV."""
+        return self.exposure_time_ms(LINE_SPEED_MAX), self.exposure_time_ms(LINE_SPEED_MIN)
+
+    # The line speed last written to the unit by set_line_speed(), whoever called it. None until the first write:
+    # the unit's line speed at start-up is not known to match the saved one.
+    _line_speed_written = None
+
+    def set_line_speed(self, speed, save_setting=False):
+        """Clamp, send to the unit (_send_line_speed) and record what was written, so that apply_exposure_time()
+        knows the unit's real line speed after a manual change too."""
+        self.line_speed = self.clamp_line_speed(speed)
+        self._send_line_speed(self.line_speed)
+        self._line_speed_written = self.line_speed
+        if save_setting:
+            self.save_settings()
+
+    def _send_line_speed(self, line_speed):
+        raise NotImplementedError
+
+    def apply_exposure_time(self, exposure_ms):
+        """Set the line speed for this exposure; returns the exposure the unit will actually produce.
+
+        The line speed is sent to the unit only when it differs from the last one written, by this path or by a
+        manual set_line_speed() (at most one write per channel change). The first call always writes.
+        """
+        speed = self.line_speed_for_exposure(exposure_ms)
+        if speed != self._line_speed_written:
+            self.set_line_speed(speed)
+        return self.exposure_time_ms()
+
+    def scan_timing_metadata(self, line_speed=None):
+        """The scan timing behind an exposure at `line_speed` (default: the current one), for acquisition metadata."""
+        speed = self.line_speed if line_speed is None else line_speed
+        return {
+            "line_speed_mrad_s": speed,
+            "scan_time_ms": self.scan_time_ms(speed),
+            "exposure_ms": self.exposure_time_ms(speed),
+        }
+
+    def settings_metadata(self):
+        """Every setting of the unit Squid holds, for acquisition metadata (the real unit adds the device's readback)."""
+        metadata = {
+            "device": getattr(self, "device_name", "NL5"),
+            "exposure_delay_ms": self.exposure_delay_ms,
+            "scan_amplitude_mrad": self.scan_amplitude,
+            "offset_x_mrad": self.offset_x,
+            "bypass_offset_mrad": self.bypass_offset,
+            "fov_x_px": self.fov_x,
+            "max_cam_pix_x": self.max_cam_pix_x,
+            "sweep_mrad": self.scan_sweep_mrad(),
+            "line_speed_mrad_s": self.line_speed,
+        }
+        for key in ("slit_width_um", "slit_offset_um"):
+            if hasattr(self, key):
+                metadata[key] = getattr(self, key)
+        return metadata
 
     def set_speed_input_mode(self, mode):
         if mode not in SPEED_INPUT_MODES:
@@ -520,11 +602,8 @@ class NL5(_ScanSpeedMixin):
         self.bypass_offset = offset
         self.rcm.set_float_parameter(self.rcm.BYPASS_OFFSET, offset)
 
-    def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = self.clamp_line_speed(speed)
-        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, self.line_speed)  # speed in mrad/s
-        if save_setting:
-            self.save_settings()
+    def _send_line_speed(self, line_speed):
+        self.rcm.set_integer_parameter(self.rcm.LINE_FREQUENCY, line_speed)  # speed in mrad/s
 
     def set_fov_x(self, fov_x):
         self.fov_x = fov_x
@@ -534,6 +613,48 @@ class NL5(_ScanSpeedMixin):
     def set_exposure_delay(self, exposure_delay_ms):
         self.exposure_delay_ms = exposure_delay_ms
         self.rcm.set_integer_parameter(self.rcm.EXPOSURE_DELAY, exposure_delay_ms)
+
+    # RCM parameters read back from the device for acquisition metadata (name -> integer or float).
+    DEVICE_READBACK_PARAMETERS = (
+        ("FIELD_OF_VIEW_X", int),
+        ("FIELD_OF_VIEW_Y", int),
+        ("MAX_CAM_PIX_X", int),
+        ("MAX_CAM_PIX_Y", int),
+        ("EXPOSURE_DELAY", int),
+        ("LINE_FREQUENCY", int),
+        ("AMPLITUDE_X", float),
+        ("AMPLITUDE_Y", float),
+        ("OFFSET_SCAN_X", float),
+        ("OFFSET_SCAN_Y", float),
+        ("BYPASS_OFFSET", float),
+        ("LASER_1_SELECTED", int),
+        ("LASER_2_SELECTED", int),
+        ("LASER_3_SELECTED", int),
+        ("LASER_4_SELECTED", int),
+        ("LASER_1_POWER", int),
+        ("LASER_2_POWER", int),
+        ("LASER_3_POWER", int),
+        ("LASER_4_POWER", int),
+    )
+
+    def settings_metadata(self):
+        metadata = super().settings_metadata()
+        metadata["device_type"] = self.device_type
+        readback = {}
+        for name, kind in self.DEVICE_READBACK_PARAMETERS:
+            param = getattr(self.rcm, name, None)
+            if param is None:
+                continue
+            try:
+                if kind is float:
+                    readback[name] = self.rcm.get_float_parameter(param)
+                else:
+                    readback[name] = self.rcm.get_integer_parameter(param)
+            except Exception as e:
+                self._log.warning(f"Could not read RCM parameter {name}: {e}")
+                readback[name] = None
+        metadata["device_readback"] = readback
+        return metadata
 
     def set_slit_width(self, width_um):
         self.slit_width_um = width_um
@@ -611,10 +732,8 @@ class NL5_Simulation(_ScanSpeedMixin):
         self.bypass_offset = offset
         pass
 
-    def set_line_speed(self, speed, save_setting=False):
-        self.line_speed = self.clamp_line_speed(speed)
-        if save_setting:
-            self.save_settings()
+    def _send_line_speed(self, line_speed):
+        pass
 
     def set_fov_x(self, fov_x):
         self.fov_x = fov_x
