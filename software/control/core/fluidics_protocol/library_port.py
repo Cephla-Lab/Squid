@@ -15,8 +15,9 @@ _log = squid.logging.get_logger(__name__)
 
 
 class LibraryTicket:
-    """One library run. RunEnded is copied on the library's job thread (fields + usage rows) and an Event
-    is set; wait() runs on the runner thread and also waits for the session to be free again."""
+    """One library run. RunEnded is copied on the library's job thread (fields + the volume tracker's
+    per-run draws) and an Event is set; wait() runs on the runner thread and also waits for the
+    session to be free again."""
 
     def __init__(self, system):
         self._system = system
@@ -32,7 +33,10 @@ class LibraryTicket:
             self.position = event.position
         elif isinstance(event, RunEnded) and (self.run_id is None or event.run_id == self.run_id):
             try:
-                usage = {int(port): float(ul) for port, _name, ul in self._system.usage.rows()}
+                # Per port since this run started; every well's draws count under the sipper's port.
+                # The volume tracker zeroes it at RunStarted and subscribed before this port did.
+                tracker = self._system.devices.reservoirs
+                usage = {int(port): float(ul) for port, _name, ul in tracker.used_rows()}
             except Exception as e:  # never let bookkeeping hide the outcome
                 _log.warning(f"Could not read reagent usage: {e}")
                 usage = {}
