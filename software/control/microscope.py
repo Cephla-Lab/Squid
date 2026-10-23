@@ -946,6 +946,7 @@ class Microscope:
         NZ: int = 1,
         deltaZ_mm: float = 0.0,
         z_stacking_config: str = "FROM BOTTOM",
+        z_stack_order: str = "CHANNEL FIRST",
     ) -> List[str]:
         """Acquire a C+Z stack at the current position.
 
@@ -959,6 +960,8 @@ class Microscope:
             NZ: Number of z-planes.
             deltaZ_mm: Z step size in mm (positive = upward).
             z_stacking_config: "FROM BOTTOM", "FROM CENTER", or "FROM TOP".
+            z_stack_order: "CHANNEL FIRST" (every channel at each z-plane) or
+                "Z FIRST" (the full z-stack in one channel before the next).
 
         Returns:
             List of saved file paths.
@@ -971,6 +974,8 @@ class Microscope:
             raise ValueError(
                 f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}"
             )
+        if z_stack_order not in control._def.Z_STACK_ORDERS:
+            raise ValueError(f"Invalid z_stack_order '{z_stack_order}'. Must be one of: {control._def.Z_STACK_ORDERS}")
 
         Path(save_path).mkdir(parents=True, exist_ok=True)
 
@@ -985,23 +990,40 @@ class Microscope:
             self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
             time.sleep(squid.stage.utils.z_stabilization_time_s())
 
+        def snap(config, z_level):
+            self.live_controller.set_microscope_mode(config)
+            self._wait_for_microcontroller()
+
+            image = self.acquire_image()
+
+            channel_name_safe = config.name.replace(" ", "_")
+            file_id = f"0_0_{z_level}_{channel_name_safe}"
+            saved_paths.append(self.save_image(image, str(Path(save_path) / file_id)))
+
+        def step_z(dz):
+            self.stage.move_z(dz)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
+
         saved_paths = []
         try:
-            for z_level in range(NZ):
-                for config in configs:
-                    self.live_controller.set_microscope_mode(config)
-                    self._wait_for_microcontroller()
-
-                    image = self.acquire_image()
-
-                    channel_name_safe = config.name.replace(" ", "_")
-                    file_id = f"0_0_{z_level}_{channel_name_safe}"
-                    saved = self.save_image(image, str(Path(save_path) / file_id))
-                    saved_paths.append(saved)
-
-                if z_level < NZ - 1:
-                    self.stage.move_z(deltaZ)
-                    time.sleep(squid.stage.utils.z_stabilization_time_s())
+            if z_stack_order == "Z FIRST":
+                # Return to the stack start with an absolute move: a relative move back would not exactly
+                # undo the stack's steps (each move is rounded to microsteps), drifting channel by channel.
+                stack_start_mm = self.stage.get_pos().z_mm
+                for config_idx, config in enumerate(configs):
+                    if config_idx > 0 and NZ > 1:
+                        self.stage.move_z_to(stack_start_mm)
+                        time.sleep(squid.stage.utils.z_stabilization_time_s())
+                    for z_level in range(NZ):
+                        snap(config, z_level)
+                        if z_level < NZ - 1:
+                            step_z(deltaZ)
+            else:
+                for z_level in range(NZ):
+                    for config in configs:
+                        snap(config, z_level)
+                    if z_level < NZ - 1:
+                        step_z(deltaZ)
         finally:
             # Always return Z to starting position
             try:

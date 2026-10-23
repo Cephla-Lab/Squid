@@ -88,6 +88,7 @@ def _save_acquisition_yaml(
             "nz": params.NZ,
             "delta_z_mm": params.deltaZ,
             "config": params.z_stacking_config,
+            "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
             "use_piezo": params.use_piezo,
         },
@@ -258,6 +259,7 @@ class MultiPointController:
         self.old_images_per_page = 1
         self.z_range: Tuple[float, float] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
+        self.z_stack_order = control._def.Z_STACK_ORDER
 
         self._start_position: Optional[squid.abc.Pos] = None
 
@@ -391,6 +393,12 @@ class MultiPointController:
         if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
             self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
         self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
+
+    def set_z_stack_order(self, z_stack_order: str):
+        if z_stack_order not in control._def.Z_STACK_ORDERS:
+            raise ValueError(f"Unknown z_stack_order '{z_stack_order}'; expected one of {control._def.Z_STACK_ORDERS}")
+        self.z_stack_order = z_stack_order
+        self._log.info(f"z-stack order set to {self.z_stack_order}")
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
@@ -1054,6 +1062,7 @@ class MultiPointController:
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
+            z_stack_order=self.z_stack_order,
             z_range=self.z_range,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,

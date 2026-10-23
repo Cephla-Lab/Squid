@@ -3038,6 +3038,14 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
+def _z_stack_order_to_start(combobox) -> str:
+    """The z-stack order an acquisition started from the GUI uses: the dropdown's, when the choice is enabled
+    (ENABLE_Z_STACK_ORDER_SELECTION, opt-in), otherwise Channel First."""
+    if control._def.ENABLE_Z_STACK_ORDER_SELECTION:
+        return combobox.currentData()
+    return "CHANNEL FIRST"
+
+
 def _ask_objective_z_return(parent, title: str, text: str, z_mm: float):
     """Where the objective goes once the sample is back under it (a Z lift system leaving the loading position, or a
     manual objective swap): back to z_mm, or staying retracted. Returns QMessageBox.Ok (back to z_mm),
@@ -6879,6 +6887,16 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.combobox_z_stack = QComboBox()
         self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
 
+        self.combobox_z_order = QComboBox()
+        for order in Z_STACK_ORDERS:
+            self.combobox_z_order.addItem(order.title(), order)
+        self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(Z_STACK_ORDER))
+        self.combobox_z_order.setToolTip(
+            "Channel First: acquire every channel at each z level, then step z.\n"
+            "Z First: acquire the whole z stack in one channel, then switch channel."
+        )
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
+
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
         self.btn_startAcquisition.setCheckable(True)
@@ -6969,6 +6987,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addStretch(1)
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
+        dz_half.addWidget(self.combobox_z_order)
         dz_half.addSpacerItem(edge_spacer)
 
         dt_half = QHBoxLayout()
@@ -7405,6 +7424,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
@@ -7931,6 +7951,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.entry_NY.setEnabled(enabled)
         self.entry_deltaZ.setEnabled(enabled)
         self.entry_NZ.setEnabled(enabled)
+        self.combobox_z_order.setEnabled(enabled)
         self.entry_dt.setEnabled(enabled)
         self.entry_Nt.setEnabled(enabled)
         if not self.use_overlap:
@@ -8033,6 +8054,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             # Z-stack settings
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+            self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
             # Piezo setting
             self.checkbox_usePiezo.setChecked(yaml_data.use_piezo)
@@ -8334,6 +8356,16 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.combobox_z_stack.addItems(["From Bottom (Z-min)", "From Center", "From Top (Z-max)"])
         self.combobox_z_stack.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
+        self.combobox_z_order = QComboBox()
+        for order in Z_STACK_ORDERS:
+            self.combobox_z_order.addItem(order.title(), order)
+        self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(Z_STACK_ORDER))
+        self.combobox_z_order.setToolTip(
+            "Channel First: acquire every channel at each z level, then step z.\n"
+            "Z First: acquire the whole z stack in one channel, then switch channel."
+        )
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
+
         self.list_configurations = QListWidget()
         self.channel_sequence = enable_channel_sequence(
             self.list_configurations,
@@ -8518,6 +8550,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.dz_layout.addWidget(self.entry_deltaZ)
         self.dz_layout.addWidget(QLabel("Nz"))
         self.dz_layout.addWidget(self.entry_NZ)
+        self.dz_layout.addWidget(self.combobox_z_order)
 
         self.z_controls_dz_frame.setLayout(self.dz_layout)
         grid.addWidget(self.z_controls_dz_frame, 0, 0)
@@ -8720,6 +8753,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         self.entry_Nt.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
         self.entry_deltaZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
         self.entry_NZ.valueChanged.connect(self.save_multipoint_widget_config_to_cache)
+        self.combobox_z_order.currentIndexChanged.connect(self.save_multipoint_widget_config_to_cache)
         # Channel selection/order is persisted by self.channel_sequence (its own
         # cache), so it is intentionally NOT wired to this settings cache.
         self.checkbox_withAutofocus.toggled.connect(self.save_multipoint_widget_config_to_cache)
@@ -8769,6 +8803,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
                 "nt": self.entry_Nt.value(),
                 "dz": self.entry_deltaZ.value(),
                 "nz": self.entry_NZ.value(),
+                "z_order": self.combobox_z_order.currentData(),
                 "contrast_af": self.checkbox_withAutofocus.isChecked(),
                 "laser_af": self.checkbox_withReflectionAutofocus.isChecked(),
             }
@@ -8800,6 +8835,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(True)
             self.entry_deltaZ.blockSignals(True)
             self.entry_NZ.blockSignals(True)
+            self.combobox_z_order.blockSignals(True)
             self.list_configurations.blockSignals(True)
             self.checkbox_withAutofocus.blockSignals(True)
             self.checkbox_withReflectionAutofocus.blockSignals(True)
@@ -8836,6 +8872,9 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.setValue(settings.get("nt", 1))
             self.entry_deltaZ.setValue(settings.get("dz", 1.0))
             self.entry_NZ.setValue(settings.get("nz", 1))
+            z_order_index = self.combobox_z_order.findData(settings.get("z_order", Z_STACK_ORDER))
+            if z_order_index >= 0:
+                self.combobox_z_order.setCurrentIndex(z_order_index)
 
             # Restore autofocus settings
             self.checkbox_withAutofocus.setChecked(settings.get("contrast_af", False))
@@ -8852,6 +8891,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.entry_Nt.blockSignals(False)
             self.entry_deltaZ.blockSignals(False)
             self.entry_NZ.blockSignals(False)
+            self.combobox_z_order.blockSignals(False)
             self.list_configurations.blockSignals(False)
             self.checkbox_withAutofocus.blockSignals(False)
             self.checkbox_withReflectionAutofocus.blockSignals(False)
@@ -9814,6 +9854,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
+        self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
@@ -10207,6 +10248,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             self.checkbox_z.setChecked(yaml_data.nz > 1)
             self.entry_NZ.setValue(yaml_data.nz)
             self.entry_deltaZ.setValue(yaml_data.delta_z_um)
+            self.combobox_z_order.setCurrentIndex(self.combobox_z_order.findData(yaml_data.z_stack_order))
 
             # Z mode - map YAML config to combobox text
             z_mode_map = {
