@@ -37,6 +37,9 @@ class FluidicsPort(Protocol):
 
     def plan(self, rows: List[dict]) -> tuple: ...  # entries expose .duration_seconds
 
+    # Every step's plan end to end -> (key, dispatched_ul, remaining_ul) per tracked reservoir; raises ValueError
+    def check_reservoirs(self, plan: tuple) -> List[tuple]: ...
+
     def start(self, rows: List[dict], plan: Optional[tuple] = None) -> FluidicsTicket: ...
 
     def make_safe(self) -> List[Exception]: ...
