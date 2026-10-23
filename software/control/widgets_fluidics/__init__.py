@@ -11,6 +11,8 @@ def wire_fluidics(display_tab, protocol_widget) -> None:
 
     # A held run hands the sipper and the reservoir resets back to the operator.
     protocol_widget.signal_run_held.connect(display_tab.set_run_held)
+    # ...and goes on only once the operator's sipper move or reservoir reset has finished.
+    protocol_widget.manual_job_active = display_tab.manual_job_active
     display_tab.system_ready.connect(lambda: protocol_widget.set_fluidics_port(display_tab.fluidics_port))
     # Initialize changes the application and port range the row verdicts are reached under.
     display_tab.system_ready.connect(display_tab.protocol_tab.refresh_validation)

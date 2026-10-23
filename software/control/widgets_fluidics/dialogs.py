@@ -106,6 +106,7 @@ class AddRoundsDialog(QDialog):
         self.wells_edit.textEdited.connect(self._wells_typed)  # typed, not set: the prefill stops
         self._wells_typed_by_operator = False
         self._first_well: Optional[str] = None  # the template's first well row's well, without its plate
+        self._no_proposal: Optional[str] = None  # why the automatic Wells proposal is blank
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
         self.help_label = QLabel(_ADD_ROUNDS_HELP)
@@ -173,17 +174,23 @@ class AddRoundsDialog(QDialog):
         if self._wells_typed_by_operator:
             return
         text = ""
+        self._no_proposal = None  # why the proposal is blank, if it is
         if self._first_well is not None:
             try:
-                text = format_well_list(next_wells(self._first_well, int(self.count_spin.value())))
-            except ValueError:  # a well the plate lacks (the editor flags that row): nothing to propose
-                pass
+                proposed = next_wells(self._first_well, int(self.count_spin.value()))
+            except ValueError as e:  # the round's own well is not one (the editor flags that row too)
+                self._no_proposal = f"{e}: fix the round's well row, or type the wells for the new rounds"
+            else:
+                text = format_well_list(proposed)
+                if not proposed:
+                    self._no_proposal = (
+                        f"no wells after {self._first_well} on its plate: type the wells for the new rounds"
+                    )
         self.wells_edit.setText(text)
 
     def _current_kwargs(self) -> dict:
         port_row = self.port_row_combo.currentText()
         use_ports = port_row not in ("", _NO_PORT_ROW)
-        wells_text = self.wells_edit.text().strip() if self._first_well is not None else ""
         return dict(
             template_round=self.template_combo.currentText(),
             count=int(self.count_spin.value()),
@@ -191,8 +198,23 @@ class AddRoundsDialog(QDialog):
             start=int(self.start_spin.value()),
             port_row_name=port_row if use_ports else None,
             ports=parse_port_list(self.ports_edit.text()) if use_ports else None,
-            wells=parse_well_list(wells_text) if wells_text else None,
+            wells=self._wells(),
         )
+
+    def _wells(self) -> Optional[List[str]]:
+        """The Wells box as expand_rounds takes it. A blank box means every round keeps its wells
+        only when the operator cleared it: the blank an automatic proposal leaves (the plate has no
+        well after the round's own, H12; or the round's well is not one) is refused, never read as
+        reuse."""
+        if self._first_well is None:
+            return None
+        text = self.wells_edit.text().strip()
+        if text:
+            return parse_well_list(text)
+        if self._wells_typed_by_operator:
+            return None
+        reason = self._no_proposal or f"no wells after {self._first_well}: type the wells for the new rounds"
+        raise ValueError(f"Wells: {reason}")
 
     def _update_preview(self) -> None:
         try:

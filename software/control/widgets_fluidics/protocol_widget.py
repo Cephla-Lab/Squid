@@ -80,6 +80,9 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab = protocol_tab
         self.imaging_port = imaging_port
         self.busy_check = busy_check
+        # Whether a manual fluidics job (a sipper move, a reservoir reset) holds the rig; set by
+        # wire_fluidics. A held run waits for it before going on.
+        self.manual_job_active: Callable[[], bool] = lambda: False
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
@@ -430,6 +433,28 @@ class FluidicsProtocolWidget(QFrame):
         except Exception:
             self._log.exception("Error handling a runner event")
 
+    def hold_act(self, action: HoldAction, restore_tec: bool = False) -> bool:
+        """A held-panel button. While a manual fluidics job (a sipper move, a reservoir reset) still
+        runs, every way on but End run is refused: Restart would find the rig busy, and Skip would
+        go on to imaging with the robot still moving. The sipper and the reservoir edits are taken
+        back before the run wakes, so no move can start in between. True when the runner took it."""
+        if action is not HoldAction.END and self.manual_job_active():
+            QMessageBox.information(
+                self,
+                "Run held",
+                "A manual fluidics job (a sipper move or a reservoir reset) is still running. "
+                "Continue the run once it has finished.",
+            )
+            return False
+        self.signal_run_held.emit(False)
+        try:
+            self.runner.hold_action(action, restore_tec=restore_tec)
+        except RuntimeError as e:
+            self._log.warning(f"Hold action refused: {e}")
+            self.signal_run_held.emit(self.runner.state is RunnerState.HELD)  # still held: hand them back
+            return False
+        return True
+
     def _show_hold(self, hold: Hold) -> None:
         while self.held_layout.count():
             item = self.held_layout.takeAt(0)
@@ -452,11 +477,7 @@ class FluidicsProtocolWidget(QFrame):
             self.held_layout.addWidget(tec_checkbox)
 
         def act(action: HoldAction):
-            restore = tec_checkbox.isChecked() if tec_checkbox is not None else False
-            try:
-                self.runner.hold_action(action, restore_tec=restore)
-            except RuntimeError as e:
-                self._log.warning(f"Hold action refused: {e}")
+            self.hold_act(action, restore_tec=tec_checkbox.isChecked() if tec_checkbox is not None else False)
 
         buttons = QHBoxLayout()
         if hold.can_resume and hold.resume_position is not None:
