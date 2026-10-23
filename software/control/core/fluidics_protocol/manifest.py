@@ -16,6 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Union
 
+import psutil
+
 from control.models.fluidics_run import RunManifest
 
 MANIFEST_NAME = "run_manifest.json"
@@ -92,15 +94,9 @@ def sha256_of_file(path: PathLike) -> str:
 
 
 def pid_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    # Not os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT, so it sends a Ctrl+C to that
+    # process group (or raises WinError 87 for a pid that is not one) instead of probing.
+    return pid > 0 and psutil.pid_exists(pid)
 
 
 def find_unfinished_runs(base_dir: PathLike) -> List[RunManifest]:
