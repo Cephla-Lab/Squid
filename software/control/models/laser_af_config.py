@@ -58,6 +58,12 @@ class LaserAFConfig(BaseModel):
         ge=1,
         description="For the nth_from_* modes, which spot counted from that side (1 = outermost)",
     )
+    strip_spot_index: Optional[int] = Field(
+        None,
+        ge=1,
+        description="Rank of the chosen reflection among the peaks inside the detection strip, counted from the "
+        "same side; set by Initialize because the strip can crop neighbours away (None = spot_index)",
+    )
     displacement_success_window_um: float = Field(
         default_factory=lambda: _def.DISPLACEMENT_SUCCESS_WINDOW_UM,
         description="Acceptable displacement window in um",
@@ -124,6 +130,10 @@ class LaserAFConfig(BaseModel):
             if implied_index is not None and "spot_index" not in data:
                 data["spot_index"] = implied_index
         return data
+
+    def spot_index_within_strip(self) -> int:
+        """The rank strip measurements use: set by Initialize once the strip is placed, else the user's N."""
+        return self.spot_index if self.strip_spot_index is None else self.strip_spot_index
 
     def get_spot_detection_mode(self) -> SpotDetectionMode:
         """Get the SpotDetectionMode enum value."""

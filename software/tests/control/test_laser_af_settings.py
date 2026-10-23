@@ -118,6 +118,31 @@ def test_initialize_searches_the_sensor_the_camera_reports(laser_af, monkeypatch
     assert laser_af.camera.get_region_of_interest() == (2984, 1388, 1024, 224)
 
 
+def test_initialize_keeps_the_chosen_reflection_when_the_strip_drops_a_neighbour(laser_af, monkeypatch):
+    """2nd from the left among 1000 / 1600 / 1800 on the sensor is 1600. The 1024 px strip around it starts
+    at 1088 and drops the 1000 spot, so inside the strip that same reflection is the 1st from the left."""
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_WIDTH", 1024)
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_HEIGHT", 224)
+    monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_WIDTH", 2800)
+    monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_HEIGHT", 1800)
+    monkeypatch.setattr(laser_af._config_repo, "save_laser_af_config", lambda *args: None)
+    monkeypatch.setattr(laser_af.camera, "get_resolution", lambda: (3088, 2064))
+    laser_af.laser_af_properties = LaserAFConfig(
+        spot_detection_mode=SpotDetectionMode.NTH_FROM_LEFT, spot_index=2, laser_af_averaging_n=1
+    )
+    sensor = spots_image([(1000.0, 1.0, 5.0), (1600.0, 1.0, 5.0), (1800.0, 1.0, 5.0)], shape=(2064, 3088), y_px=1032)
+    laser_af.get_new_frame = lambda: roi_frame(laser_af.camera, sensor)
+
+    assert laser_af.initialize_auto()
+    assert laser_af.camera.get_region_of_interest() == (1088, 920, 1024, 224)
+    assert laser_af.set_reference()
+
+    properties = laser_af.laser_af_properties
+    assert properties.x_reference + properties.x_offset == pytest.approx(1600.0, abs=1.0)  # sensor coordinates
+    assert properties.spot_index == 2  # the user's choice is untouched
+    assert properties.spot_index_within_strip() == 1
+
+
 STRIP = dict(x_offset=800, y_offset=900, width=1536, height=256)
 
 

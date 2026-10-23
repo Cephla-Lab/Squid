@@ -789,6 +789,10 @@ class TestLaserAFConfig:
         assert saved["spot_index"] == 2
         assert LaserAFConfig(**saved).spot_index == 2
 
+    def test_laser_af_config_strip_rank_defaults_to_the_chosen_n(self):
+        assert LaserAFConfig(spot_index=2).spot_index_within_strip() == 2
+        assert LaserAFConfig(spot_index=2, strip_spot_index=1).spot_index_within_strip() == 1
+
     def test_laser_af_config_rejects_spot_index_below_one(self):
         with pytest.raises(ValidationError):
             LaserAFConfig(spot_index=0)

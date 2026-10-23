@@ -1,5 +1,6 @@
 """LaserAutofocusSettingWidget: the spot chooser (mode + N) and the full-sensor live view."""
 
+import matplotlib
 import pytest
 
 import control.microscope
@@ -10,7 +11,6 @@ from control.core.live_controller import LiveController
 from control.models import LaserAFConfig
 from control.widgets import LaserAutofocusSettingWidget
 from tests.control.test_laser_af_settings import spots_image
-from tests.tools import NonInteractiveMatplotlib
 
 STRIP = LaserAFConfig(x_offset=800, y_offset=900, width=1536, height=256)
 
@@ -87,8 +87,10 @@ def test_run_spot_detection_marks_the_chosen_spot(rig, monkeypatch):
     marked = []
     widget.signal_laser_spot_location.connect(lambda image, x, y: marked.append(x))
 
-    with NonInteractiveMatplotlib():
-        widget.run_spot_detection()
+    # Run Spot Detection opens a debug figure; Agg keeps it headless. Not restored afterwards:
+    # matplotlib refuses to switch back to an interactive backend while Qt's event loop is running.
+    matplotlib.use("Agg")
+    widget.run_spot_detection()
 
     assert marked == [pytest.approx(522.0, abs=0.5)]
 

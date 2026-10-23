@@ -17,7 +17,7 @@ from scipy.ndimage import label, gaussian_filter
 from scipy import signal
 from skimage.registration import phase_cross_correlation
 import os
-from typing import Optional, Tuple, List, Callable
+from typing import NamedTuple, Optional, Tuple, List, Callable
 
 from control._def import (
     LASER_AF_Y_WINDOW,
@@ -268,6 +268,90 @@ def serialize_for_yaml(obj):
     return obj
 
 
+class _ProfilePeaks(NamedTuple):
+    """One pass of the spot search: the row band that holds the spots and every peak along it."""
+
+    image: np.ndarray  # after the optional Gaussian filter
+    peak_y: int
+    y_intensity_profile: np.ndarray
+    band: np.ndarray  # the rows around peak_y that the x profile is summed over
+    x_intensity_profile: np.ndarray  # normalised to 0-1
+    locations: np.ndarray  # peak x positions, ascending
+    properties: dict
+
+
+def _spot_detection_params(params: Optional[dict]) -> dict:
+    """The detection parameters with defaults filled in; a misspelled key would otherwise be ignored."""
+    p = {
+        "y_window": LASER_AF_Y_WINDOW,  # Half-height of y-axis crop
+        "x_window": LASER_AF_X_WINDOW,  # Half-width of centroid window
+        "min_peak_width": LASER_AF_MIN_PEAK_WIDTH,  # Minimum width of peaks
+        "min_peak_distance": LASER_AF_MIN_PEAK_DISTANCE,  # Minimum distance between peaks
+        "min_peak_prominence": LASER_AF_MIN_PEAK_PROMINENCE,  # Minimum peak prominence
+        "intensity_threshold": 0.1,  # Threshold for intensity filtering
+        "spot_spacing": LASER_AF_SPOT_SPACING,  # Expected spacing between spots
+    }
+    if params is not None:
+        unknown_keys = set(params) - set(p)
+        if unknown_keys:
+            raise ValueError(f"Unknown spot detection parameters: {sorted(unknown_keys)}")
+        p.update(params)
+    return p
+
+
+def _find_profile_peaks(image: np.ndarray, p: dict, filter_sigma: Optional[int]) -> _ProfilePeaks:
+    """Locate the row band holding the spots and every peak along it (raises ValueError when there is none)."""
+    if image is None or not isinstance(image, np.ndarray):
+        raise ValueError("Invalid input image")
+
+    # Apply Gaussian filter if requested
+    if filter_sigma is not None and filter_sigma > 0:
+        filtered = gaussian_filter(image.astype(float), sigma=filter_sigma)
+        image = np.clip(filtered, 0, 255).astype(np.uint8)
+
+    # Get the y position of the spots
+    y_intensity_profile = np.sum(image, axis=1)
+    if np.all(y_intensity_profile == 0):
+        raise ValueError("No spots detected in image")
+
+    peak_y = np.argmax(y_intensity_profile)
+
+    # Validate peak_y location
+    if peak_y < p["y_window"] or peak_y > image.shape[0] - p["y_window"]:
+        raise ValueError("Spot too close to image edge")
+
+    # Crop along the y axis
+    band = image[peak_y - p["y_window"] : peak_y + p["y_window"], :]
+
+    # Get signal along x
+    x_intensity_profile = np.sum(band, axis=0)
+
+    # Normalize intensity profile
+    x_intensity_profile = x_intensity_profile - np.min(x_intensity_profile)
+    x_intensity_profile = x_intensity_profile / np.max(x_intensity_profile)
+
+    # Find all peaks
+    locations, properties = signal.find_peaks(
+        x_intensity_profile,
+        width=p["min_peak_width"],
+        distance=p["min_peak_distance"],
+        prominence=p["min_peak_prominence"],
+    )
+    if len(locations) == 0:
+        raise ValueError("No peaks detected")
+
+    return _ProfilePeaks(image, peak_y, y_intensity_profile, band, x_intensity_profile, locations, properties)
+
+
+def find_spot_peaks(image: np.ndarray, params: Optional[dict] = None, filter_sigma: Optional[int] = None) -> np.ndarray:
+    """The x position (pixels, ascending) of every spot find_spot_location would rank, with the same parameters.
+
+    Raises:
+        ValueError: If image is invalid, params has an unsupported key, or no spot is found
+    """
+    return _find_profile_peaks(image, _spot_detection_params(params), filter_sigma).locations
+
+
 def find_spot_location(
     image: np.ndarray,
     mode: SpotDetectionMode = SpotDetectionMode.SINGLE,
@@ -298,68 +382,13 @@ def find_spot_location(
     Raises:
         ValueError: If image is invalid, params has an unsupported key, or mode is incompatible with detected spots
     """
-    # Input validation
-    if image is None or not isinstance(image, np.ndarray):
-        raise ValueError("Invalid input image")
-
-    # Default parameters
-    default_params = {
-        "y_window": LASER_AF_Y_WINDOW,  # Half-height of y-axis crop
-        "x_window": LASER_AF_X_WINDOW,  # Half-width of centroid window
-        "min_peak_width": LASER_AF_MIN_PEAK_WIDTH,  # Minimum width of peaks
-        "min_peak_distance": LASER_AF_MIN_PEAK_DISTANCE,  # Minimum distance between peaks
-        "min_peak_prominence": LASER_AF_MIN_PEAK_PROMINENCE,  # Minimum peak prominence
-        "intensity_threshold": 0.1,  # Threshold for intensity filtering
-        "spot_spacing": LASER_AF_SPOT_SPACING,  # Expected spacing between spots
-    }
-
-    if params is not None:
-        # A misspelled key would otherwise be ignored and its default used instead.
-        unknown_keys = set(params) - set(default_params)
-        if unknown_keys:
-            raise ValueError(f"Unknown spot detection parameters: {sorted(unknown_keys)}")
-        default_params.update(params)
-    p = default_params
+    p = _spot_detection_params(params)
 
     try:
-        # Apply Gaussian filter if requested
-        if filter_sigma is not None and filter_sigma > 0:
-            filtered = gaussian_filter(image.astype(float), sigma=filter_sigma)
-            image = np.clip(filtered, 0, 255).astype(np.uint8)
-
-        # Get the y position of the spots
-        y_intensity_profile = np.sum(image, axis=1)
-        if np.all(y_intensity_profile == 0):
-            raise ValueError("No spots detected in image")
-
-        peak_y = np.argmax(y_intensity_profile)
-
-        # Validate peak_y location
-        if peak_y < p["y_window"] or peak_y > image.shape[0] - p["y_window"]:
-            raise ValueError("Spot too close to image edge")
-
-        # Crop along the y axis
-        cropped_image = image[peak_y - p["y_window"] : peak_y + p["y_window"], :]
-
-        # Get signal along x
-        x_intensity_profile = np.sum(cropped_image, axis=0)
-
-        # Normalize intensity profile
-        x_intensity_profile = x_intensity_profile - np.min(x_intensity_profile)
-        x_intensity_profile = x_intensity_profile / np.max(x_intensity_profile)
-
-        # Find all peaks
-        peaks = signal.find_peaks(
-            x_intensity_profile,
-            width=p["min_peak_width"],
-            distance=p["min_peak_distance"],
-            prominence=p["min_peak_prominence"],
-        )
-        peak_locations = peaks[0]
-        peak_properties = peaks[1]
-
-        if len(peak_locations) == 0:
-            raise ValueError("No peaks detected")
+        found = _find_profile_peaks(image, p, filter_sigma)
+        image, peak_y, y_intensity_profile = found.image, found.peak_y, found.y_intensity_profile
+        cropped_image, x_intensity_profile = found.band, found.x_intensity_profile
+        peak_locations, peak_properties = found.locations, found.properties
 
         # Handle different spot detection modes
         if mode == SpotDetectionMode.SINGLE:

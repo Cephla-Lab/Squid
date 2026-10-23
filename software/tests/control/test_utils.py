@@ -15,7 +15,13 @@ import cv2
 import numpy as np
 import pytest
 from control._def import FocusMeasureOperator
-from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space, threaded_operation_helper
+from control.utils import (
+    find_spot_location,
+    find_spot_peaks,
+    SpotDetectionMode,
+    get_available_disk_space,
+    threaded_operation_helper,
+)
 
 
 def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
@@ -91,6 +97,13 @@ def test_spot_index_counts_from_one(mode):
 
     with pytest.raises(ValueError):
         find_spot_location(image, mode=mode, spot_index=0)
+
+
+def test_find_spot_peaks_lists_every_spot_left_to_right():
+    peaks = find_spot_peaks(create_test_image(THREE_SPOTS))
+
+    assert len(peaks) == 3
+    assert [abs(p - x) < 5 for p, x in zip(peaks, (200, 280, 360))] == [True, True, True]
 
 
 def test_single_mode_rejects_multiple_spots():

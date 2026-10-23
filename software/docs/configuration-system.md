@@ -457,6 +457,7 @@ laser_af_range: 100.0
 laser_af_averaging_n: 3
 spot_detection_mode: nth_from_right   # single | nth_from_left | nth_from_right
 spot_index: 1                         # for the nth_from_* modes: which spot from that side (1 = outermost)
+strip_spot_index: 1                   # set by Initialize: that spot's rank inside the detection strip
 displacement_success_window_um: 1.0
 
 # Spot detection
