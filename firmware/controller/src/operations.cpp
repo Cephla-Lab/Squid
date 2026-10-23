@@ -1,6 +1,7 @@
 #include "operations.h"
 
 #include "tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
+#include "limit_switches.h"                 // limit_switches_read*: homing and limit stops ignore disabled inputs
 
 /*
   THE OPERATOR-DRIVEN MOTION PATHS ARE PART OF THE FAIL-SAFE.
@@ -41,7 +42,7 @@ void prepare_homing_x()
   {
     if (homing_direction_X == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[x]) != LEFT_SW)
+      if (limit_switches_homing_read(x, LEFT_SW) != LEFT_SW)
       {
         is_preparing_for_homing_X = false;
         is_homing_X = true;
@@ -51,7 +52,7 @@ void prepare_homing_x()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[x]) != RGHT_SW)
+      if (limit_switches_homing_read(x, RGHT_SW) != RGHT_SW)
       {
         is_preparing_for_homing_X = false;
         is_homing_X = true;
@@ -68,7 +69,7 @@ void prepare_homing_y()
   {
     if (homing_direction_Y == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[y]) != LEFT_SW)
+      if (limit_switches_homing_read(y, LEFT_SW) != LEFT_SW)
       {
         is_preparing_for_homing_Y = false;
         is_homing_Y = true;
@@ -78,7 +79,7 @@ void prepare_homing_y()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[y]) != RGHT_SW)
+      if (limit_switches_homing_read(y, RGHT_SW) != RGHT_SW)
       {
         is_preparing_for_homing_Y = false;
         is_homing_Y = true;
@@ -95,7 +96,7 @@ void prepare_homing_z()
   {
     if (homing_direction_Z == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[z]) != LEFT_SW)
+      if (limit_switches_homing_read(z, LEFT_SW) != LEFT_SW)
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
@@ -105,7 +106,7 @@ void prepare_homing_z()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readLimitSwitches(&tmc4361[z]) != RGHT_SW)
+      if (limit_switches_homing_read(z, RGHT_SW) != RGHT_SW)
       {
         is_preparing_for_homing_Z = false;
         is_homing_Z = true;
@@ -176,7 +177,7 @@ void check_homing_x()
   {
     if (homing_direction_X == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[x]) == LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[x]) == LEFT_SW)
+      if (limit_switches_homing_event(x, LEFT_SW) == LEFT_SW || limit_switches_homing_read(x, LEFT_SW) == LEFT_SW)
       {
         home_X_found = true;
         us_since_x_home_found = 0;
@@ -190,7 +191,7 @@ void check_homing_x()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[x]) == RGHT_SW || tmc4361A_readLimitSwitches(&tmc4361[x]) == RGHT_SW)
+      if (limit_switches_homing_event(x, RGHT_SW) == RGHT_SW || limit_switches_homing_read(x, RGHT_SW) == RGHT_SW)
       {
         home_X_found = true;
         us_since_x_home_found = 0;
@@ -211,7 +212,7 @@ void check_homing_y()
   {
     if (homing_direction_Y == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[y]) == LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[y]) == LEFT_SW)
+      if (limit_switches_homing_event(y, LEFT_SW) == LEFT_SW || limit_switches_homing_read(y, LEFT_SW) == LEFT_SW)
       {
         home_Y_found = true;
         us_since_y_home_found = 0;
@@ -225,7 +226,7 @@ void check_homing_y()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[y]) == RGHT_SW || tmc4361A_readLimitSwitches(&tmc4361[y]) == RGHT_SW)
+      if (limit_switches_homing_event(y, RGHT_SW) == RGHT_SW || limit_switches_homing_read(y, RGHT_SW) == RGHT_SW)
       {
         home_Y_found = true;
         us_since_y_home_found = 0;
@@ -246,7 +247,7 @@ void check_homing_z()
   {
     if (homing_direction_Z == HOME_NEGATIVE) // use the left limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[z]) == LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[z]) == LEFT_SW)
+      if (limit_switches_homing_event(z, LEFT_SW) == LEFT_SW || limit_switches_homing_read(z, LEFT_SW) == LEFT_SW)
       {
         home_Z_found = true;
         us_since_z_home_found = 0;
@@ -260,7 +261,7 @@ void check_homing_z()
     }
     else // use the right limit switch for homing
     {
-      if (tmc4361A_readSwitchEvent(&tmc4361[z]) == RGHT_SW || tmc4361A_readLimitSwitches(&tmc4361[z]) == RGHT_SW)
+      if (limit_switches_homing_event(z, RGHT_SW) == RGHT_SW || limit_switches_homing_read(z, RGHT_SW) == RGHT_SW)
       {
         home_Z_found = true;
         us_since_z_home_found = 0;
@@ -482,48 +483,101 @@ void do_camera_trigger()
   }
 }
 
+// Whether the last joystick_*_apply() left the axis jogging at the joystick's speed: the state of the
+// axis, not of the stick, which the lock-out below needs (a stick centred as a command starts still
+// leaves the jog running until something stops it).
+static bool joystick_jogging_x = false;
+static bool joystick_jogging_y = false;
+
+// Apply the joystick's current deltas to an axis it may drive: the jog speed, or at rest the offset
+// velocity if that is enabled, else a stop. Called by check_joystick() on its tick, and once with the
+// deltas zeroed when the panel lock-out begins.
+void joystick_x_apply()
+{
+  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
+  // an axis that is never commanded to move has nothing for the else-branch
+  // stop to halt, and a stop is itself a write to an unconfigured driver.
+  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
+  {
+    // joystick at motion position
+    joystick_jogging_x = abs(joystick_delta_x) > 0;
+    if (joystick_jogging_x)
+  	  tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x + (joystick_delta_x / 32768.0)*MAX_VELOCITY_X_mm ) );
+    // joystick at rest position
+    else
+    {
+  	  if (enable_offset_velocity)
+  	    tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x ) );
+  	  else
+	    tmc4361A_stop(&tmc4361[x]); // tmc4361A_setSpeed( &tmc4361[x], 0 ) causes problems for zeroing
+    }
+  }
+}
+
+void joystick_y_apply()
+{
+  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
+  {
+    // joystick at motion position
+    joystick_jogging_y = abs(joystick_delta_y) > 0;
+    if (joystick_jogging_y)
+  	  tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y + (joystick_delta_y / 32768.0)*MAX_VELOCITY_Y_mm ) );
+    // joystick at rest position
+    else
+    {
+  	  if (enable_offset_velocity)
+  	    tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y ) );
+  	  else
+  	    tmc4361A_stop(&tmc4361[y]); // tmc4361A_setSpeed( &tmc4361[y], 0 ) causes problems for zeroing
+    }
+  }
+}
+
 void check_joystick()
 {
+  // Panel gone (cable pulled, panel hung or rebooting): release the stick, so a move it was driving stops
+  // here through the rest-position branch below. The last update was at least JP_TIMEOUT_MS ago, so the
+  // interval gate is already open.
+  if (jp_check_timeout(&joystick_panel, millis()))
+  {
+    joystick_delta_x = 0;
+    joystick_delta_y = 0;
+    flag_read_joystick = true;
+  }
+
+  // Panel lock-out (panel_locked_out(), functions.cpp): an axis the joystick is jogging is brought to
+  // rest in the loop pass the lock-out begins in, not at the next tick below, which a command shorter
+  // than interval_send_joystick_update can end before (with the jog still running and the next live
+  // packet keeping it). Decided by the axis's own jog, not by the packets, which may already show the
+  // stick centred. The axis of the commanded move itself is left to the command by joystick_*_apply()'s
+  // own gate.
+  // The deltas are zeroed on EVERY locked pass, not only the first: back-to-back commands can hand over
+  // between two passes of this function (A ends in check_position() after it, B starts in
+  // process_serial_message() before it), so this function sees no unlocked pass, and a deflected packet
+  // taken in between would otherwise reach the tick below during B.
+  static bool locked_out_seen = false;
+  if (panel_locked_out())
+  {
+    joystick_delta_x = 0; joystick_delta_y = 0;
+    if (!locked_out_seen)
+    {
+      locked_out_seen = true;
+      if (joystick_jogging_x)
+        joystick_x_apply();
+      if (joystick_jogging_y)
+        joystick_y_apply();
+    }
+  }
+  else
+    locked_out_seen = false;
+
   if (flag_read_joystick)
   {
 	if (us_since_last_joystick_update > interval_send_joystick_update)
 	{
 	  us_since_last_joystick_update = 0;
-
-	  // read x joystick
-	  // tmc_driver_ready gates the whole block, not just the two setSpeed calls:
-	  // an axis that is never commanded to move has nothing for the else-branch
-	  // stop to halt, and a stop is itself a write to an unconfigured driver.
-	  if (tmc_driver_ready(&tmc4361[x]) && !X_commanded_movement_in_progress && !is_homing_X && !is_preparing_for_homing_X) //if(stepper_X.distanceToGo()==0) // only read joystick when computer commanded travel has finished - doens't work
-	  {
-	    // joystick at motion position
-	    if (abs(joystick_delta_x) > 0)
-	  	  tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x + (joystick_delta_x / 32768.0)*MAX_VELOCITY_X_mm ) );
-	    // joystick at rest position
-	    else
-	    {
-	  	  if (enable_offset_velocity)
-	  	    tmc4361A_setSpeed( &tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], offset_velocity_x ) );
-	  	  else
-		    tmc4361A_stop(&tmc4361[x]); // tmc4361A_setSpeed( &tmc4361[x], 0 ) causes problems for zeroing
-	      }
-	  }
-
-	  // read y joystick
-	  if (tmc_driver_ready(&tmc4361[y]) && !Y_commanded_movement_in_progress && !is_homing_Y && !is_preparing_for_homing_Y)
-	  {
-	    // joystick at motion position
-	    if (abs(joystick_delta_y) > 0)
-	  	  tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y + (joystick_delta_y / 32768.0)*MAX_VELOCITY_Y_mm ) );
-	    // joystick at rest position
-	    else
-	    {
-	  	  if (enable_offset_velocity)
-	  	    tmc4361A_setSpeed( &tmc4361[y], tmc4361A_vmmToMicrosteps( &tmc4361[y], offset_velocity_y ) );
-	  	  else
-	  	    tmc4361A_stop(&tmc4361[y]); // tmc4361A_setSpeed( &tmc4361[y], 0 ) causes problems for zeroing
-	    }
-	  }
+	  joystick_x_apply();   // read x joystick
+	  joystick_y_apply();   // read y joystick
 	}
 
     // set the read joystick flag to false
@@ -541,8 +595,41 @@ void do_focus_control()
   // the focus wheel (functions.cpp, onJoystickPacketReceived) whether or not Z
   // can be driven, and letting it drift outside the limits would hand Z a wild
   // target the moment the axis is recovered. Only the move is gated.
-  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false)
+  //
+  // Not while a commanded Z move is in progress either. This runs every loop, so a wheel ramp
+  // issued before the command's acknowledgement rewrites the ramp target: the counter ends beside
+  // the command's target, check_position() never sees it there and the command stays IN_PROGRESS
+  // for ever (bench 2026-09-20, reproduced on open loop and on the chip PID). The command owns the
+  // axis until check_position() says so: the panel's input is dropped meanwhile (panel_locked_out(),
+  // functions.cpp), and this clause keeps the every-loop re-issue itself off the ramp for the
+  // command's duration, whatever focusPosition holds.
+  if (tmc_driver_ready(&tmc4361[z]) && is_homing_Z == false && is_preparing_for_homing_Z == false
+      && !Z_commanded_movement_in_progress)
     tmc4361A_moveTo(&tmc4361[z], focusPosition);
+}
+
+// SET_COMPLETION_WINDOW: a commanded move counts as complete once XACTUAL is within the
+// axis's window of the target, while the ramp is still finishing. Off (0) for every axis
+// unless the host sets it; the filter wheels use it so an exposure can start while the
+// last degrees are travelled. An axis whose closed loop is enabled ignores the window:
+// its completion has to wait for the encoder, which this rule knows nothing about.
+static inline bool within_completion_window(uint8_t axis, int32_t position, int32_t target)
+{
+  if (completion_window_units[axis] == 0 || stage_PID_enabled[axis]) return false;
+  // Converted with the axis's microstepping and pitch as they are NOW (see callback_set_completion_window).
+  int32_t win = tmc4361A_xmmToMicrosteps(&tmc4361[axis], float(completion_window_units[axis]) / 10000.0f);
+  if (win < 0) win = -win;
+  if (win == 0) return false;
+  int32_t d = position - target;
+  return (d < 0 ? -d : d) <= win;
+}
+
+// Done: stopped exactly at the target, or inside the axis's completion window.
+static inline bool commanded_move_done(uint8_t axis, int32_t target)
+{
+  int32_t position = tmc4361A_currentPosition(&tmc4361[axis]);
+  if (position == target && !tmc4361A_isRunning(&tmc4361[axis], stage_PID_enabled[axis])) return true;
+  return within_completion_window(axis, position, target);
 }
 
 void check_position()
@@ -550,30 +637,30 @@ void check_position()
   if(us_since_last_check_position > interval_check_position) {
     us_since_last_check_position = 0;
     // check if commanded position has been reached
-    if (X_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[x]) == X_commanded_target_position && !is_homing_X && !tmc4361A_isRunning(&tmc4361[x], stage_PID_enabled[x])) // homing is handled separately
+    if (X_commanded_movement_in_progress && !is_homing_X && commanded_move_done(x, X_commanded_target_position)) // homing is handled separately
     {
       X_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
-    if (Y_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[y]) == Y_commanded_target_position && !is_homing_Y && !tmc4361A_isRunning(&tmc4361[y], stage_PID_enabled[y]))
+    if (Y_commanded_movement_in_progress && !is_homing_Y && commanded_move_done(y, Y_commanded_target_position))
     {
       Y_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
-    if (Z_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[z]) == Z_commanded_target_position && !is_homing_Z && !tmc4361A_isRunning(&tmc4361[z], stage_PID_enabled[z]))
+    if (Z_commanded_movement_in_progress && !is_homing_Z && commanded_move_done(z, Z_commanded_target_position))
     {
       Z_commanded_movement_in_progress = false;
       mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || W_commanded_movement_in_progress || W2_commanded_movement_in_progress;
     }
     if (enable_filterwheel == true) {
-      if (W_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w]) == W_commanded_target_position && !is_homing_W && !tmc4361A_isRunning(&tmc4361[w], stage_PID_enabled[w]))
+      if (W_commanded_movement_in_progress && !is_homing_W && commanded_move_done(w, W_commanded_target_position))
       {
         W_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W2_commanded_movement_in_progress;
       }
     }
     if (enable_filterwheel_w2 == true) {
-      if (W2_commanded_movement_in_progress && tmc4361A_currentPosition(&tmc4361[w2]) == W2_commanded_target_position && !is_homing_W2 && !tmc4361A_isRunning(&tmc4361[w2], stage_PID_enabled[w2]))
+      if (W2_commanded_movement_in_progress && !is_homing_W2 && commanded_move_done(w2, W2_commanded_target_position))
       {
         W2_commanded_movement_in_progress = false;
         mcu_cmd_execution_in_progress = false || X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress || W_commanded_movement_in_progress;
@@ -590,8 +677,7 @@ void check_limits()
   	// at limit
     if (X_commanded_movement_in_progress && !is_homing_X) // homing is handled separately
     {
-      uint8_t event = tmc4361A_readSwitchEvent(&tmc4361[x]);
-      // if( tmc4361A_readLimitSwitches(&tmc4361[x])==LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[x])==RGHT_SW )
+      uint8_t event = limit_switches_read_event(x);
       if ( ( X_direction == LEFT_DIR && event == LEFT_SW ) || ( X_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         X_commanded_movement_in_progress = false;
@@ -600,8 +686,7 @@ void check_limits()
     }
     if (Y_commanded_movement_in_progress && !is_homing_Y) // homing is handled separately
     {
-      uint8_t event = tmc4361A_readSwitchEvent(&tmc4361[y]);
-      //if( tmc4361A_readLimitSwitches(&tmc4361[y])==LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[y])==RGHT_SW )
+      uint8_t event = limit_switches_read_event(y);
       if ( ( Y_direction == LEFT_DIR && event == LEFT_SW ) || ( Y_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         Y_commanded_movement_in_progress = false;
@@ -610,8 +695,7 @@ void check_limits()
     }
     if (Z_commanded_movement_in_progress && !is_homing_Z) // homing is handled separately
     {
-      uint8_t event = tmc4361A_readSwitchEvent(&tmc4361[z]);
-      // if( tmc4361A_readLimitSwitches(&tmc4361[z])==LEFT_SW || tmc4361A_readLimitSwitches(&tmc4361[z])==RGHT_SW )
+      uint8_t event = limit_switches_read_event(z);
       if ( ( Z_direction == LEFT_DIR && event == LEFT_SW ) || ( Z_direction == RGHT_DIR && event == RGHT_SW ) )
       {
         Z_commanded_movement_in_progress = false;

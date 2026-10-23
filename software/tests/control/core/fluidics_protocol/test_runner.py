@@ -78,16 +78,14 @@ def _runner(tmp_path, fluidics=None, imaging=None, rounds=1, events=None):
     return runner, fluidics, imaging, run_dir
 
 
-def _held(runner):
-    return wait_until(lambda: runner.state == RunnerState.HELD)
+def _held(runner, attempt=None):
+    def held():
+        # Read the hold once, and before the state: after a hold is acted on the runner clears it while the
+        # state is still HELD, until the manifest is written.
+        hold = runner.hold
+        return runner.state == RunnerState.HELD and hold is not None and attempt in (None, hold.attempt)
 
-
-def _held_at_attempt(runner, attempt):
-    """A poller's view of a hold. The runner clears the hold, saves the manifest, and only then leaves
-    HELD, so `state` and `hold` read separately can straddle that: read the hold once, and require
-    HELD after it -- hold_action() refuses anything else."""
-    hold = runner.hold
-    return hold is not None and hold.attempt == attempt and runner.state == RunnerState.HELD
+    return wait_until(held)
 
 
 def test_happy_path_runs_every_step_and_leaves_the_documented_run_folder(tmp_path):
@@ -170,7 +168,7 @@ def test_fluidics_failure_offers_restart_skip_and_end(tmp_path):
     assert runner.hold.reason == "failed" and "Flow fault" in runner.hold.message
 
     runner.hold_action(HoldAction.RESTART)
-    assert wait_until(lambda: _held_at_attempt(runner, 2))
+    assert _held(runner, attempt=2)
     assert len(fluidics.starts[1]["plan"]) == 1  # full plan again
 
     runner.hold_action(HoldAction.SKIP)

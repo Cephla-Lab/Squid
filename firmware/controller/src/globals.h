@@ -4,6 +4,7 @@
 #include "constants.h"
 
 #include <Arduino.h>
+#include "utils/joystick_panel.h"
 
 extern byte buffer_rx[512];
 extern byte buffer_tx[MSG_LENGTH];
@@ -101,6 +102,13 @@ extern bool closed_loop_position_control;
 /***************************************************************************************************/
 extern volatile int counter_send_pos_update;
 extern volatile bool flag_send_pos_update;
+
+// Firmware 1.6 (see constants_protocol.h)
+extern uint8_t encoder_report_axis;                    // INTERNAL axis index being reported, 0xFF = off
+extern uint8_t encoder_report_mode;                    // ENCODER_REPORT_*
+extern uint16_t completion_window_units[TOTAL_AXES];   // SET_COMPLETION_WINDOW, as received: 0.1 um of travel (wheels: 1e-4 rev); 0 = off.
+                                                        // Kept in PHYSICAL units and converted when it is checked: a later change of
+                                                        // microstepping or screw pitch must not change how wide the window is.
 extern elapsedMicros us_since_last_pos_update;
 extern elapsedMicros us_since_last_check_position;
 extern elapsedMicros us_since_last_joystick_update;
@@ -119,9 +127,12 @@ extern int16_t joystick_delta_y;
 extern bool joystick_button_pressed;
 extern long joystick_button_pressed_timestamp;
 
-// focus
-extern int32_t focuswheel_pos;
-extern bool first_packet_from_joystick_panel;
+// focus wheel and link state
+extern JoystickPanelLink joystick_panel;
+extern uint8_t focus_wheel_mode;          // FOCUS_WHEEL_* (firmware 1.8, SET_FOCUS_WHEEL_MODE)
+extern uint8_t focus_wheel_power_up_mode; // the mode at power-up / RESET / INITIALIZE, saved in EEPROM 8-11
+extern int32_t focus_wheel_host_count;    // wheel ticks since FOCUS_WHEEL_TO_HOST was enabled (wraps)
+extern bool panel_locked_by_host;         // SET_PANEL_LOCK (firmware 1.8): the control panel moves nothing
 
 // btns
 extern uint8_t btns;

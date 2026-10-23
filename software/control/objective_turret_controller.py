@@ -324,8 +324,20 @@ class ObjectiveTurret4PosControllerSimulation:
 
     def home(self, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
         self._require_open()
+        self._retract_z_if_possible()  # a turret only homes with Z retracted; Z stays there (see the real twin)
         self._current_objective = None
         logger.info("Simulated turret homed")
+
+    def reset(self, objective_name: Optional[str] = None, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
+        """Mirror of the real twin's reset: clear, enable, home, rotate back, restore Z last."""
+        self._require_open()
+        captured_z = self._retract_z_if_possible()
+        self.clear_alarm()
+        self.enable()
+        self.home(timeout_s)
+        if objective_name is not None:
+            self.move_to_objective(objective_name, restore_z=False)
+            self._restore_z_if_captured(captured_z)
 
     def enable(self) -> None:
         """Mirror of the real controller's disable -> startup -> enable state-machine cycle."""
@@ -381,18 +393,38 @@ class ObjectiveTurret4PosControllerSimulation:
 
     def _retract_z_if_possible(self) -> Optional[float]:
         """If stage + Z homing are usable, capture Z and move to safe retract. Return captured z, else None."""
-        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
-
-        if self._stage is None or not HOMING_ENABLED_Z:
-            return None
-        z_mm = self._stage.get_pos().z_mm
-        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        return z_mm
+        return _retract_z_if_possible(self._stage)
 
     def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
-        if captured_z is None or self._stage is None:
-            return
-        self._stage.move_z_to(captured_z)
+        _restore_z_if_captured(self._stage, captured_z)
+
+
+# Z is "already retracted" within this band: no move is sent then. Besides being pointless, a
+# move from just above OBJECTIVE_RETRACTED_POS_MM back onto it is a move toward the Z home
+# switch (the stage's backlash pre-move goes 5 um below the target), and right after a Z
+# homing the Squid+ home sensor is still asserted there, so the controller would refuse it.
+_Z_RETRACTED_TOLERANCE_MM = 0.002
+
+
+def _retract_z_if_possible(stage) -> Optional[float]:
+    """If stage + Z homing are usable, capture Z and move to the safe retract. Return the
+    captured Z (also when no move was needed), else None."""
+    from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
+
+    if stage is None or not HOMING_ENABLED_Z:
+        return None
+    z_mm = stage.get_pos().z_mm
+    if z_mm > OBJECTIVE_RETRACTED_POS_MM + _Z_RETRACTED_TOLERANCE_MM:
+        stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
+    return z_mm
+
+
+def _restore_z_if_captured(stage, captured_z: Optional[float]) -> None:
+    if captured_z is None or stage is None:
+        return
+    if abs(stage.get_pos().z_mm - captured_z) <= _Z_RETRACTED_TOLERANCE_MM:
+        return  # never moved away (already retracted): nothing to restore
+    stage.move_z_to(captured_z)
 
 
 class ObjectiveTurret4PosController:
@@ -511,8 +543,18 @@ class ObjectiveTurret4PosController:
         and clamp at home with holding torque. The driver's built-in homing modes
         are not used. Repeatability is +/-HOMING_FINE_STEP pulses (hardware-measured
         0-pulse deviation between runs).
+
+        A turret only homes with Z retracted: the sweep can be most of a revolution,
+        which carries every objective past the sample, so Z goes to
+        OBJECTIVE_RETRACTED_POS_MM first (as for a slot move) and STAYS there. Homing
+        ends at the sensor reference, where no slot is in position and a longer
+        objective can stand under the axis, so restoring another objective's focus
+        height here could drive it into the sample; the caller restores Z once the
+        selected objective is back in position (see reset()). After a failed homing the
+        turret's position is unknown and nothing should approach the sample either.
         """
         self._require_open()
+        self._retract_z_if_possible()
         deadline = time.monotonic() + timeout_s
         # Parameter writes require the disabled state.
         self._write_control(CW_DISABLE)
@@ -568,6 +610,21 @@ class ObjectiveTurret4PosController:
         self._hold_position_clamp()
         self._current_objective = None
         logger.info("Homed at sensor edge (repeatability +/-%d pulses)", HOMING_FINE_STEP)
+
+    def reset(self, objective_name: Optional[str] = None, timeout_s: float = DEFAULT_HOME_TIMEOUT_S) -> None:
+        """The operator's reset (GUI Utils -> Reset Objective Turret): clear a fault, re-enable,
+        re-home so the position tracker matches the physical slot, rotate back to
+        `objective_name`, and only then bring Z back to where it was - one Z round trip, and
+        the focus height is restored under the objective it belongs to. Without an objective
+        (none selected yet) Z stays retracted."""
+        self._require_open()
+        captured_z = self._retract_z_if_possible()
+        self.clear_alarm()
+        self.enable()
+        self.home(timeout_s)
+        if objective_name is not None:
+            self.move_to_objective(objective_name, restore_z=False)
+            self._restore_z_if_captured(captured_z)
 
     def enable(self) -> None:
         """Run the disable -> startup -> enable state-machine cycle."""
@@ -803,18 +860,10 @@ class ObjectiveTurret4PosController:
         self._write_control(CW_RUN_ABSOLUTE)
 
     def _retract_z_if_possible(self) -> Optional[float]:
-        from control._def import HOMING_ENABLED_Z, OBJECTIVE_RETRACTED_POS_MM
-
-        if self._stage is None or not HOMING_ENABLED_Z:
-            return None
-        z_mm = self._stage.get_pos().z_mm
-        self._stage.move_z_to(OBJECTIVE_RETRACTED_POS_MM)
-        return z_mm
+        return _retract_z_if_possible(self._stage)
 
     def _restore_z_if_captured(self, captured_z: Optional[float]) -> None:
-        if captured_z is None or self._stage is None:
-            return
-        self._stage.move_z_to(captured_z)
+        _restore_z_if_captured(self._stage, captured_z)
 
     def _calibrate_one(self, addr: int, expected: int, label: str, **kwargs) -> bool:
         return calibrate_register(self._modbus, self._slave_id, addr, expected, label, **kwargs)[2]

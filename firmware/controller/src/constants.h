@@ -21,8 +21,52 @@
 //               An axis whose driver could not be identified is left
 //               unconfigured and rejects moves. No protocol change: command
 //               codes, packet layout and the host contract are untouched
+// Version 1.6 = filter-wheel speed and diagnostics. SET_RAMP_PROFILE (47) selects a
+//               trapezoidal or S-shaped ramp per axis (default S-shape, as before).
+//               SET_COMPLETION_WINDOW (49) lets an axis report a move complete once
+//               within a set distance of the target while the ramp finishes (filter
+//               wheels: start exposing while the last degrees travel; default 0 = off).
+//               SET_ENCODER_REPORTING (44) puts one axis's encoder into the status
+//               packet's unused theta field (the wheels have no position field, so
+//               this is the only way to see where a wheel is; default off: packet
+//               byte-identical to 1.5). For every axis: a status packet is sent the
+//               moment a command completes, and completion is checked every 1 ms
+//               (was 10 ms), so the host learns of completion up to ~20 ms sooner.
+// Version 1.7 = configurable limit switches. SET_LIMIT_SWITCH_CONFIG (64) sets one
+//               axis's (X/Y/Z) limit inputs - enable and polarity per side, the
+//               LIMIT_SWITCH_* nibble - applies it at once and saves it in EEPROM
+//               bytes 0-6 ('L', 'S', record version 1, X, Y, Z nibbles, CRC-8;
+//               written only when it changes). Boot, INITIALIZE and the home safety
+//               margin program X/Y/Z from that record (blank or invalid: both inputs
+//               enabled, active-low, as before), so the settings hold from power-up,
+//               before a host connects. Status byte 18 bits 2-3 report Z's left and
+//               right limit inputs as triggered (always 0 before 1.7). Homing and
+//               the move-completion check ignore a disabled input (it still reads
+//               active in STATUS), except the input being homed toward.
+//               SET_LIM_SWITCH_POLARITY (20) is retired: no handler, so it answers
+//               success and does nothing like any unknown command; never reuse 20.
+//               TMC2240: CURRENT_RANGE_XY/Z/W became per-axis floors, stepped up
+//               only when a current needs it, so a current 1.6 refused (e.g. Z
+//               1000 mA) is now accepted; every current 1.6 accepted keeps its range.
+//               The number may move to the next free minor at merge: the hardware
+//               sequencer (#655/#656) also claims 1.7.
+// Version 1.8 = focus wheel to host. SET_FOCUS_WHEEL_MODE (65) FOCUS_WHEEL_TO_HOST
+//               stops the control panel's focus wheel from moving Z and counts
+//               its ticks instead: status bytes 14-17 carry the count (int32,
+//               wrapping, 0 when enabled) and byte 19 bit 7 marks it, so the host
+//               can drive another focus axis (a PI V-308 while Z is a lift).
+//               Refused while encoder reporting is on (same bytes) and the other
+//               way round. FOCUS_WHEEL_DRIVES_Z is the 1.7 behaviour, packet
+//               unchanged. With FOCUS_WHEEL_SAVE_AS_POWER_UP ([3]) the mode is
+//               also saved (EEPROM 8-11, written only on change) and used at
+//               power-up and after RESET and INITIALIZE; unsaved, that is
+//               DRIVES_Z. A lift system saves TO_HOST: with no host running,
+//               the wheel moves nothing instead of the lift.
+//               SET_PANEL_LOCK (66) locks the control panel: joystick X/Y reads
+//               centred and wheel turns are dropped (a lift system at its
+//               loading position). Not saved; RESET and INITIALIZE unlock.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 5
+#define FIRMWARE_VERSION_MINOR 8
 
 #include "def/def_v1.h"
 
@@ -120,14 +164,14 @@ const uint8_t DAC8050x_CONFIG_ADDR = 0x03;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 static const int TIMER_PERIOD = 500; // in us
 static const int interval_send_pos_update = 10000; // in us
-static const int interval_check_position = 10000; // in us
+static const int interval_check_position = 1000;  // in us (was 10000: completion was detected up to 10 ms late)
 static const int interval_send_joystick_update = 30000; // in us
 static const int interval_check_limit = 20000; // in us
 
 /***************************************************************************************************/
 /******************************************* joystick **********************************************/
 /***************************************************************************************************/
-static const int JOYSTICK_MSG_LENGTH = 10;
+// packet layout and length: JP_MSG_LENGTH in utils/joystick_panel.h
 
 /***************************************************************************************************/
 /***************************************** illumination ********************************************/
@@ -181,6 +225,22 @@ inline uint8_t protocol_axis_to_internal(int protocol_axis)
         case AXIS_W:  return w;
         case AXIS_W2: return w2;
         default:      return 0xFF;  // Invalid axis
+    }
+}
+
+// Inverse of protocol_axis_to_internal(): internal array index -> protocol axis id.
+// Used by the status packet's encoder-reporting flags. Returns 0xFF for an
+// index that is not a controlled axis.
+inline uint8_t internal_axis_to_protocol(uint8_t internal_axis)
+{
+    switch (internal_axis)
+    {
+        case x:  return AXIS_X;
+        case y:  return AXIS_Y;
+        case z:  return AXIS_Z;
+        case w:  return AXIS_W;
+        case w2: return AXIS_W2;
+        default: return 0xFF;
     }
 }
 
