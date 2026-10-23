@@ -5,7 +5,7 @@ of the protocol so the run folder's protocol.yaml is self-contained. Every probl
 reported at once (ProtocolProblems) - the pre-flight dialog shows the list."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from control.acquisition_yaml_loader import AcquisitionYAMLData, parse_acquisition_yaml, read_coordinates_csv
@@ -49,6 +49,9 @@ class ResolvedProtocol:
     steps: List[Step]
     imaging: Dict[int, ResolvedImaging]  # by row index
     fluidics_estimate_s: Optional[float]
+    # (key, dispatched_ul, remaining_ul) per tracked reservoir the whole protocol draws from, as the
+    # library's volume gate projects it to the run's end; empty when unchecked or nothing is tracked
+    reservoirs: List[tuple] = field(default_factory=list)
 
     @property
     def imaging_estimate_s(self) -> float:
@@ -119,11 +122,15 @@ def _load_coordinates_source(ref: str, base_dir: str) -> CoordinatesBlock:
     return coordinates_block_from_acquisition(parse_acquisition_yaml(path), path)
 
 
-def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[FluidicsPort] = None) -> ResolvedProtocol:
-    """Bind every included imaging row; validate the fluidics rows through `fluidics` when given.
+def resolve_protocol(
+    protocol: ProtocolFile, base_dir, fluidics: Optional[FluidicsPort] = None, check_reservoirs: bool = True
+) -> ResolvedProtocol:
+    """Bind every included imaging row; validate the fluidics rows through `fluidics` when given, and
+    (check_reservoirs) gate the whole protocol's draws on what the reservoirs hold now. A recovered
+    run passes False: its finished steps already drew, and each remaining step is gated as it starts.
 
     Raises ProtocolProblems listing every problem found (folders, missing blocks, unreadable files,
-    zero FOVs, library validation)."""
+    zero FOVs, library validation, a reservoir that cannot supply its draws)."""
     base_dir = str(base_dir)
     problems: List[str] = list(folder_problems(protocol))
     work = protocol.model_copy(deep=True)
@@ -170,8 +177,11 @@ def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[Fluidi
 
     steps = split_into_steps(work)
     estimate: Optional[float] = None
+    reservoirs: List[tuple] = []
     if fluidics is not None:
         estimate = 0.0
+        whole_plan: list = []
+        valid = True
         for step in steps:
             if step.kind != "fluidics":
                 continue
@@ -180,9 +190,22 @@ def resolve_protocol(protocol: ProtocolFile, base_dir, fluidics: Optional[Fluidi
                 fluidics.validate(rows)
             except ValueError as e:
                 problems.append(f"{step.label}: {e}")
+                valid = False
                 continue
-            estimate += plan_seconds(fluidics.plan(rows))
+            plan = fluidics.plan(rows)
+            estimate += plan_seconds(plan)
+            whole_plan.extend(plan)
+        # Each step is its own library run, and the library gates a run on the volumes only when it
+        # starts, so a protocol that empties a well in round 15 would start and hold there. Gated
+        # here once over every step instead: the replay starts from what the reservoirs hold now.
+        if valid and check_reservoirs and whole_plan:
+            try:
+                reservoirs = fluidics.check_reservoirs(tuple(whole_plan))
+            except ValueError as e:
+                problems.append(f"reservoirs: {e}")
 
     if problems:
         raise ProtocolProblems(problems)
-    return ResolvedProtocol(protocol=work, steps=steps, imaging=imaging, fluidics_estimate_s=estimate)
+    return ResolvedProtocol(
+        protocol=work, steps=steps, imaging=imaging, fluidics_estimate_s=estimate, reservoirs=reservoirs
+    )

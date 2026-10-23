@@ -44,6 +44,13 @@ from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
 
 
+def _reservoirs_line(rows) -> str:
+    """The pre-flight's volume line: the tracked reservoirs that will have least left at the end."""
+    lowest = sorted(rows, key=lambda row: row[2])[:3]
+    left = ", ".join(f"{key} {remaining:.0f} µL" for key, _dispatched, remaining in lowest)
+    return f"reservoirs: {len(rows)} tracked drawn from; least left at the end: {left}"
+
+
 def _hms(seconds: Optional[float]) -> str:
     if seconds is None:
         return "—"
@@ -263,6 +270,8 @@ class FluidicsProtocolWidget(QFrame):
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
+        if resolved.reservoirs:
+            summary.append(_reservoirs_line(resolved.reservoirs))
         if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
             return
         try:
@@ -316,7 +325,8 @@ class FluidicsProtocolWidget(QFrame):
         run_dir = manifest.run_dir
         try:
             protocol = load_protocol(os.path.join(run_dir, manifest_io.PROTOCOL_COPY_NAME))
-            resolved = resolve_protocol(protocol, run_dir, fluidics=self.fluidics_port)
+            # Its finished steps already drew; the library still gates each remaining step as it starts.
+            resolved = resolve_protocol(protocol, run_dir, fluidics=self.fluidics_port, check_reservoirs=False)
             fresh = manifest_io.read_manifest(run_dir)
             runner = ProtocolRunner(
                 resolved,
