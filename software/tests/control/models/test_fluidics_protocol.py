@@ -7,9 +7,12 @@ from control.models.fluidics_protocol import (
     SettingsBlock,
     expand_rounds,
     folder_problems,
+    format_well_list,
     imaging_folder,
     load_protocol,
+    next_wells,
     parse_port_list,
+    parse_well_list,
     round_blocks,
     save_protocol,
     split_into_steps,
@@ -193,6 +196,47 @@ def test_parse_port_list():
     assert parse_port_list("2-4,7,9-10") == [2, 3, 4, 7, 9, 10]
     with pytest.raises(ValueError):
         parse_port_list("a-b")
+
+
+def _sipper_protocol():
+    from tests.control.fluidics_test_config import SIPPER_ROWS
+
+    return ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS])
+
+
+def test_expand_rounds_moves_every_well_row_to_the_next_well_on_its_own_plate():
+    p = _sipper_protocol()  # R01: hyb A1, push ssct/A1, ssct ssct/A1, then dapi from a bottle
+    out = expand_rounds(p, "R01", count=2, wells=["A2", "A3"])
+
+    def by_name(label):
+        return {r.get("name"): r for r in out.sequences if r.get("round") == label}
+
+    r02, r03 = by_name("R02"), by_name("R03")
+    assert (r02["hyb"]["well"], r02["push"]["well"], r02["ssct"]["well"]) == ("A2", "ssct/A2", "ssct/A2")
+    assert (r03["hyb"]["well"], r03["push"]["well"], r03["ssct"]["well"]) == ("A3", "ssct/A3", "ssct/A3")
+    assert "well" not in r02["dapi"] and r02["dapi"]["fluidic_port"] == 4  # a bottle row is copied as it is
+    assert r02["hyb"]["fluidic_port"] == 1 and r02["ssct"]["dip_cycles"] == 3  # the rest of each row is kept
+    assert p.sequences[1]["well"] == "A1"  # the input is untouched
+    with pytest.raises(ValueError, match="need 3 wells"):
+        expand_rounds(p, "R01", count=3, wells=["A2", "A3"])
+    with pytest.raises(ValueError, match="draws from a well"):
+        expand_rounds(_protocol(), "R01", count=1, wells=["A2"])
+
+
+def test_well_lists_parse_along_a_row_or_down_a_column():
+    assert parse_well_list("A2-A4, b1") == ["A2", "A3", "A4", "B1"]
+    assert parse_well_list("A1-C1") == ["A1", "B1", "C1"]
+    for bad in ("A2-B3", "A13", "I1", "ssct/A2", "A4-A2"):
+        with pytest.raises(ValueError):
+            parse_well_list(bad)
+
+
+def test_next_wells_follow_the_row_and_wrap_to_the_next_one():
+    assert next_wells("A1", 3) == ["A2", "A3", "A4"]
+    assert next_wells("A11", 3) == ["A12", "B1", "B2"]
+    assert next_wells("H11", 5) == ["H12"]  # the plate ends there
+    assert format_well_list(["A2", "A3", "A4", "B1", "B3"]) == "A2-A4, B1, B3"
+    assert parse_well_list(format_well_list(next_wells("A1", 20))) == next_wells("A1", 20)
 
 
 def test_expand_rounds_keeps_the_folder_base_and_derives_per_round():
