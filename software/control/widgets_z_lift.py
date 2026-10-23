@@ -2,11 +2,12 @@
 
 The lift's position is shown in the image display's status bar, next to the stage coordinates (core.ImageDisplayWindow),
 and a LoadingPositionButton sits in the Stages tab. ZLiftWidget is the Z Lift tab (Utils > Z Lift... opens it): the
-two limit sensors, jog up / down by a step, move to a height, lower, home, and the working height for each sample
-format, editable in a table and saved to Z_LIFT_HEIGHTS_PATH. The lift rises to the current format's height after the startup homing and on leaving
-the loading position.
+two limit sensors, jog up / down by a step, move to a height, lower, home, and the scanning height of the current
+sample format, with a button that saves the lift's current height as that height. ZLiftHeightsDialog (the tab's
+"All Formats..." button) is the table of every format's height, editable and saved to Z_LIFT_HEIGHTS_PATH. The lift
+rises to the current format's height after the startup homing and on leaving the loading position.
 
-Every move runs in a worker thread, one at a time. A LiftMotionGuard, shared by the window and every
+Every move runs in a worker thread, one at a time. A LiftMotionGuard, shared by the tab, the heights window and every
 loading-position button, keeps lift moves and the loading / scanning toggle (which lowers and raises the lift around
 its XY travel) from overlapping: while either runs, every control that would start the other is disabled and refused.
 """
@@ -17,15 +18,14 @@ from qtpy.QtCore import QObject, Qt, QTimer, Signal
 from qtpy.QtGui import QFont
 from qtpy.QtWidgets import (
     QAbstractItemView,
+    QDialog,
     QDoubleSpinBox,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -166,21 +166,47 @@ def _set_sensor_label(label: QLabel, name: str, triggered: bool):
     label.setStyleSheet(_TRIGGERED_STYLE if triggered else _CLEAR_STYLE)
 
 
+def _ask_and_save_current_height(parent, lift: LiftStage, sample_format: str) -> bool:
+    """Save the lift's current height as sample_format's scanning height, after a confirmation. True if saved."""
+    height = round(lift.get_position_mm(), 4)
+    old = lift.heights.get(sample_format)
+    old_text = "none" if old is None else f"{old:.3f} mm"
+    reply = QMessageBox.question(
+        parent,
+        "Set Scanning Height",
+        f"Set the {sample_format} scanning height from {old_text} to the current {height:.3f} mm?",
+        QMessageBox.Ok | QMessageBox.Cancel,
+    )
+    if reply != QMessageBox.Ok:
+        return False
+    return _save_height(parent, lift, sample_format, height)
+
+
+def _save_height(parent, lift: LiftStage, sample_format: str, height_mm: Optional[float]) -> bool:
+    lift.heights.set(sample_format, height_mm)
+    try:
+        lift.heights.save()
+    except OSError as e:
+        QMessageBox.warning(parent, "Z Lift", f"Could not save the lift heights:\n{e}")
+        return False
+    return True
+
+
 class ZLiftWidget(QWidget):
-    """The Z Lift tab: move the lift, and edit the working height for each sample format."""
+    """The Z Lift tab: move the lift, and set the current sample format's scanning height."""
 
     def __init__(self, lift: LiftStage, sample_formats_fn: Callable[[], List[str]], stage_utils=None, parent=None):
         super().__init__(parent)
         self.lift = lift
-        # Read on every refresh: "calibrate format..." can add formats while the software runs.
-        self.sample_formats_fn = sample_formats_fn
-        self.sample_formats: List[str] = []
-        # StageUtils owns the loading / scanning toggle (and the GUI's reactions to it); None hides the button.
-        self.stage_utils = stage_utils
-        # Shared with every loading button (the Stages tab's takes it from here).
+        # StageUtils owns the loading / scanning toggle; the guard follows it (the toggle's button is in the
+        # Stages tab).
         self.motion_guard = LiftMotionGuard(stage_utils, parent=self)
         self.motion_guard.signal_busy_changed.connect(self._on_busy_changed)
         self.motion_guard.signal_move_finished.connect(self._on_move_finished)
+        # Every format's height: a window of its own, opened from the tab
+        self.heights_dialog = ZLiftHeightsDialog(
+            lift, sample_formats_fn, self.motion_guard, on_saved=self.refresh_formats, parent=self
+        )
 
         self.setWindowTitle("Z Lift")
         self._build_ui()
@@ -193,7 +219,7 @@ class ZLiftWidget(QWidget):
 
     # --- layout -----------------------------------------------------------------------------------------------
     def _build_ui(self):
-        # Compact, for a tab in the controls panel: one line of readout, two of moves, a short table.
+        # Compact, for a tab in the controls panel: the readout, two rows of moves, the scanning height.
         self.label_position = QLabel()
         self.label_position.setStyleSheet("font-weight: bold;")
         self.label_bottom = QLabel()
@@ -242,63 +268,44 @@ class ZLiftWidget(QWidget):
         jog.addWidget(self.btn_go, 1, 2, 1, 2)
         jog.addWidget(self.btn_home, 1, 4)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Sample format", "Height (mm)"])
-        self.table.horizontalHeader().setSectionResizeMode(_COL_FORMAT, QHeaderView.Stretch)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.verticalHeader().setVisible(False)
-        self.table.itemChanged.connect(self._on_height_item_changed)
-        self.btn_height_go = QPushButton("Go To")
-        self.btn_height_set = QPushButton("Set To Current")
-        self.btn_height_clear = QPushButton("Clear")
-        self.btn_height_go.clicked.connect(self._go_to_selected_height)
-        self.btn_height_set.clicked.connect(self._set_selected_height_to_current)
-        self.btn_height_clear.clicked.connect(self._clear_selected_height)
-        height_buttons = QHBoxLayout()
-        for b in (self.btn_height_go, self.btn_height_set, self.btn_height_clear):
-            height_buttons.addWidget(b)
-        self.table.setMinimumHeight(100)  # a short tab scrolls rather than squash the table to its header
-        self.table.setMaximumHeight(130)  # about four rows; it scrolls
-        heights_label = QLabel("Working height per sample format")
-        heights_label.setToolTip(
-            "The lift rises to the current format's height after homing and on leaving the loading position."
+        self.label_scanning_height = QLabel()
+        self.label_scanning_height.setToolTip(
+            "The lift rises to this height after homing and on leaving the loading position."
         )
+        self.btn_set_scanning_height = QPushButton("Set To Current Height")
+        self.btn_set_scanning_height.clicked.connect(self._set_current_format_height)
+        self.btn_all_formats = QPushButton("All Formats...")
+        self.btn_all_formats.setToolTip("The scanning height of every sample format")
+        self.btn_all_formats.clicked.connect(self.show_heights_dialog)
+        scanning_height = QHBoxLayout()
+        scanning_height.addWidget(self.label_scanning_height, 1)
+        scanning_height.addWidget(self.btn_set_scanning_height)
+        scanning_height.addWidget(self.btn_all_formats)
 
         content = QWidget()
         layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         layout.addLayout(readout)
         layout.addLayout(jog)
-        layout.addWidget(heights_label)
-        layout.addWidget(self.table)
-        layout.addLayout(height_buttons)
-
-        self.btn_loading = None
-        if self.stage_utils is not None:
-            self.btn_loading = LoadingPositionButton(self.stage_utils, self.motion_guard)
-            layout.addWidget(self.btn_loading)
+        layout.addLayout(scanning_height)
         layout.addStretch(1)
 
-        # In a short tab nothing collapses: it scrolls instead
-        scroll = QScrollArea()
-        scroll.setWidget(content)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        # The tab asks for its whole height, so the controls panel never squeezes a row out of it
+        content.setMinimumHeight(content.sizeHint().height())
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
+        outer.addWidget(content)
 
-        # Disabled while lift moves are blocked (moving, or at the loading position). Set To Current too: the
-        # lift is lowered at the loading position and moving otherwise, so neither is a working height.
+        # Disabled while lift moves are blocked (moving, or at the loading position). Setting the scanning height
+        # too: the lift is lowered at the loading position and moving otherwise, so neither is a scanning height.
         self._move_controls = [
             self.btn_up,
             self.btn_down,
             self.btn_go,
             self.btn_lower,
             self.btn_home,
-            self.btn_height_go,
-            self.btn_height_set,
+            self.btn_set_scanning_height,
         ]
 
     # --- readout ----------------------------------------------------------------------------------------------
@@ -338,10 +345,111 @@ class ZLiftWidget(QWidget):
         if reply == QMessageBox.Ok:
             self.motion_guard.run(self.lift.home)
 
-    # --- heights per sample format ----------------------------------------------------------------------------
+    # --- scanning height of the current sample format ---------------------------------------------------------
     def refresh_formats(self, *_):
-        """Refill the table; the current sample format's row is bold. Connected to the format selector."""
+        """Show the current format's scanning height; refresh the heights window. Connected to the format
+        selector."""
+        sample_format = self.lift.current_format()
+        height = self.lift.heights.get(sample_format) if sample_format else None
+        if not sample_format:
+            text = "Scanning height: no sample format"
+        elif height is None:
+            text = f"Scanning height (<b>{sample_format}</b>): none saved"
+        else:
+            text = f"Scanning height (<b>{sample_format}</b>): {height:.3f} mm"
+        self.label_scanning_height.setText(text)
+        self.btn_set_scanning_height.setToolTip(
+            f"Save the lift's current height as the {sample_format} scanning height: the lift rises to it on "
+            "leaving the loading position"
+            if sample_format
+            else ""
+        )
+        self.heights_dialog.refresh_formats()
+
+    def _set_current_format_height(self):
+        sample_format = self.lift.current_format()
+        if not sample_format or self.motion_guard.moves_blocked:
+            return
+        if _ask_and_save_current_height(self, self.lift, sample_format):
+            self.refresh_formats()
+
+    def show_heights_dialog(self):
+        self.heights_dialog.refresh_formats()
+        self.heights_dialog.show()
+        self.heights_dialog.raise_()
+        self.heights_dialog.activateWindow()
+
+    def hideEvent(self, event):
+        # A hidden tab keeps no timer running; showing it again restarts the readout.
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def showEvent(self, event):
+        self._timer.start(200)
+        self.refresh_formats()
+        super().showEvent(event)
+
+
+class ZLiftHeightsDialog(QDialog):
+    """The Z Lift tab's "All Formats...": the scanning height of every sample format, to edit, set, go to or
+    clear."""
+
+    def __init__(
+        self,
+        lift: LiftStage,
+        sample_formats_fn: Callable[[], List[str]],
+        motion_guard: LiftMotionGuard,
+        on_saved: Optional[Callable[[], None]] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.lift = lift
+        # Read on every refresh: "calibrate format..." can add formats while the software runs.
+        self.sample_formats_fn = sample_formats_fn
+        self.sample_formats: List[str] = []
+        self.motion_guard = motion_guard
+        self._on_saved = on_saved
+        motion_guard.signal_busy_changed.connect(self._on_busy_changed)
+
+        self.setWindowTitle("Z Lift Scanning Heights")
+        self.setModal(False)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Sample format", "Height (mm)"])
+        self.table.horizontalHeader().setSectionResizeMode(_COL_FORMAT, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.itemChanged.connect(self._on_height_item_changed)
+        self.btn_height_go = QPushButton("Go To")
+        self.btn_height_set = QPushButton("Set To Current")
+        self.btn_height_clear = QPushButton("Clear")
+        self.btn_height_go.clicked.connect(self._go_to_selected_height)
+        self.btn_height_set.clicked.connect(self._set_selected_height_to_current)
+        self.btn_height_clear.clicked.connect(self._clear_selected_height)
+        buttons = QHBoxLayout()
+        for b in (self.btn_height_go, self.btn_height_set, self.btn_height_clear):
+            buttons.addWidget(b)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(
+            QLabel("The lift rises to the current format's height after homing and on leaving the loading position.")
+        )
+        layout.addWidget(self.table)
+        layout.addLayout(buttons)
+        self.resize(460, 420)
+        self.refresh_formats()
+        self._on_busy_changed()
+
+    def _on_busy_changed(self, *_):
+        # Go To and Set To Current follow the lift guard: not while moving or at the loading position
+        blocked = self.motion_guard.moves_blocked
+        self.btn_height_go.setEnabled(not blocked)
+        self.btn_height_set.setEnabled(not blocked)
+
+    def refresh_formats(self, *_):
+        """Refill the table; the current sample format's row is bold."""
         current = self.lift.current_format()
+        selected = self._selected_format()
         self.sample_formats = list(self.sample_formats_fn())
         self.table.blockSignals(True)
         self.table.setRowCount(0)
@@ -361,6 +469,8 @@ class ZLiftWidget(QWidget):
             self.table.setItem(row, _COL_FORMAT, name)
             self.table.setItem(row, _COL_HEIGHT, height_item)
         self.table.blockSignals(False)
+        if selected is not None:
+            self._select_format(selected)
 
     def _selected_format(self) -> Optional[str]:
         rows = self.table.selectionModel().selectedRows()
@@ -370,20 +480,18 @@ class ZLiftWidget(QWidget):
         if sample_format in self.sample_formats:
             self.table.selectRow(self.sample_formats.index(sample_format))
 
-    def _save_height(self, sample_format: str, height_mm: Optional[float]):
-        self.lift.heights.set(sample_format, height_mm)
-        try:
-            self.lift.heights.save()
-        except OSError as e:
-            QMessageBox.warning(self, "Z Lift", f"Could not save the lift heights:\n{e}")
+    def _saved(self, sample_format: str):
         self.refresh_formats()
         self._select_format(sample_format)
+        if self._on_saved is not None:
+            self._on_saved()
 
     def _on_height_item_changed(self, item: QTableWidgetItem):
         sample_format = self.table.item(item.row(), _COL_FORMAT).data(Qt.UserRole)
         text = item.text().strip()
         if not text:
-            self._save_height(sample_format, None)
+            _save_height(self, self.lift, sample_format, None)
+            self._saved(sample_format)
             return
         try:
             height = float(text)
@@ -397,28 +505,21 @@ class ZLiftWidget(QWidget):
             )
             self.refresh_formats()  # revert the refused edit
             return
-        self._save_height(sample_format, height)
+        _save_height(self, self.lift, sample_format, height)
+        self._saved(sample_format)
 
     def _set_selected_height_to_current(self):
         sample_format = self._selected_format()
         if sample_format is None or self.motion_guard.moves_blocked:
             return
-        height = round(self.lift.get_position_mm(), 4)
-        old = self.lift.heights.get(sample_format)
-        old_text = "none" if old is None else f"{old:.3f} mm"
-        reply = QMessageBox.question(
-            self,
-            "Set Lift Height",
-            f"Set the {sample_format} height from {old_text} to the current {height:.3f} mm?",
-            QMessageBox.Ok | QMessageBox.Cancel,
-        )
-        if reply == QMessageBox.Ok:
-            self._save_height(sample_format, height)
+        if _ask_and_save_current_height(self, self.lift, sample_format):
+            self._saved(sample_format)
 
     def _clear_selected_height(self):
         sample_format = self._selected_format()
         if sample_format is not None:
-            self._save_height(sample_format, None)
+            _save_height(self, self.lift, sample_format, None)
+            self._saved(sample_format)
 
     def _go_to_selected_height(self):
         sample_format = self._selected_format()
@@ -426,14 +527,6 @@ class ZLiftWidget(QWidget):
         if height is not None:
             self.motion_guard.run(self.lift.move_to, mm=height)
 
-    def hideEvent(self, event):
-        # A hidden window keeps no timer running; showing it again restarts the readout.
-        self._timer.stop()
-        super().hideEvent(event)
-
     def showEvent(self, event):
-        self._timer.start(200)
         self.refresh_formats()
-        if self.btn_loading is not None:
-            self.btn_loading.refresh()
         super().showEvent(event)
