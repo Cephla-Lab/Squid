@@ -99,13 +99,20 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   filled from the config's priming well (Prime) or clean-up well (Clean). **Stop** aborts it. It shares the
   library session with protocol runs, so the two mutually exclude.
 - **Sipper** (sipper rigs only): where the tip is (`in ssct/A1`, `retracted`, or not known to be retracted),
-  **Go to well** (plate + well), **Retract**, **Home**, and **Stop** for a move started there; each is a
+  **Go to well** (plate + well), **Retract**, **Home**, **Reset fault** (clears a drive fault and enables the
+  drives; Home afterwards if the fault stopped a homing), and **Stop** for a move started there; each is a
   library manual job. **Do not lower tip** (on when Squid starts) makes Go to well stop retracted over the
   well, to check a taught position without dipping. It applies to that button only: the library's switch is
-  set for the one move and put back, so runs and Prime/Clean always lower the tip. Teaching (A1, dip depth,
-  travel height, the dedicated wells) is done in the standalone
-  fluidics GUI's Robot tab, which cannot hold the rig while Squid does. After a run the tip rests in its last
-  well, and that plate cannot be reset until it is retracted.
+  set for the one move and put back, so runs and Prime/Clean always lower the tip. **Set as priming well /
+  Set as clean-up well** make the picked well the one Prime / Clean (and priming / clean-up rows that name
+  none) fill the sipper's line from, after a confirmation; the library refuses a well holding less than the
+  line takes, and the change is saved to the fluidics config file at once. Teaching (A1, dip depth, travel
+  height) is done in the standalone fluidics GUI's Robot tab, which cannot hold the rig while Squid does.
+  After a run the tip rests in its last well, and that plate cannot be reset until it is retracted.
+- **Device status** on a sipper rig adds **Robot** (the stage's last published position, and the well the
+  tip is in or `retracted`) and **Robot fault**: the last drive fault a robot move stopped on (a Sipper
+  move, Prime/Clean or a run), cleared by Reset fault or a Home that finishes. It is not a live reading: the
+  drives share one serial line with the moves, so the GUI never polls them.
 - A protocol start is refused while any job holds the fluidics session (Prime/Clean, a manual-control or
   sipper move, a reservoir reset).
 - **Initialize** builds the `FluidicsSystem` from `machine_configs/fluidics_config.yaml` (path editable,
@@ -120,7 +127,8 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   fields. A tracked reservoir whose record is missing or whose loaded volume changed comes up undeclared,
   and runs are refused until it is reset. These edits, and the Sipper moves, are live when no protocol
   runs and while one is HELD: a step refused for an empty well goes on by Retract, reloading the plate,
-  Reset, then **Restart step**.
+  Reset, then **Restart step**. The HELD panel's ways on (all but End run) wait for such a move or reset to
+  finish, and take the sipper and the edits back before the run wakes.
 - **Flow** has one panel per sensor: reading, plot (invalid samples are gaps), and the **Draw protection**
   combo (`off` / `warn` / `stop`), live during a run — a change applies from the next draw. `stop` halts the
   draw and fails the sequence, so the run goes HELD with the flow fault as its message (and Slack hears it);
@@ -131,7 +139,9 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   rig against its plates; the Port column shows a row's well), a field editor with "apply to all rows with
   this name", **Add rounds…** (template round × N with a port list for one row, and, when the round draws
   from wells, a well list: round k moves every well row to the k-th well on its own plate, prefilled with
-  the wells after the round's own along the row, A1 → A2, A3, …),
+  the wells after the round's own along the row, A1 → A2, A3, …; when the plate has none left after the
+  round's own, it asks for a list rather than reusing the wells; cleared by the operator, every round keeps
+  the same wells),
   **+ Imaging** (folder auto-named, e.g. `R01_image`, editable per row), and per-imaging-row settings/coordinates
   sources: **Apply current** captures the Wellplate Multipoint panel into a header block; **From file…**
   points at a saved acquisition folder / `acquisition.yaml` / `coordinates.csv`.

@@ -258,6 +258,9 @@ class FluidicsDisplayTab(QWidget):
                 from control.widgets_fluidics.sipper_controls import SipperControls
 
                 self.sipper_controls = SipperControls(self.service.system)
+                # Device status shows the drive fault a failed move names until Reset fault or Home.
+                self.sipper_controls.robot_failed.connect(self.device_status.note_robot_error)
+                self.sipper_controls.robot_recovered.connect(self.device_status.note_robot_recovered)
                 self._instrument_layout.insertWidget(
                     self._instrument_layout.indexOf(self.device_status), self.sipper_controls
                 )
@@ -337,11 +340,15 @@ class FluidicsDisplayTab(QWidget):
             for _ in range(repeat):
                 operations.priming_or_clean_up(wash_port, flow_rate, volume, use_ports=use_ports, clean_up=clean_up)
 
+        def on_error(message):  # the job's thread: a log line and a stored fault, nothing painted
+            self._log.error(f"Manual {verb_name} failed: {message}")
+            self.device_status.note_robot_error(message)  # priming moves the sipper to its well
+
         try:
             self.service.system.run_manual(
                 verb,
                 callbacks={
-                    "on_error": lambda message: self._log.error(f"Manual {verb_name} failed: {message}"),
+                    "on_error": on_error,
                     "on_stopped": lambda: self._log.info(f"Manual {verb_name} stopped"),
                     "on_finished": lambda: self._log.info(f"Manual {verb_name} finished"),
                 },
