@@ -1010,6 +1010,16 @@ FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
 Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
+# Order of the z and channel loops at each FOV:
+# 'CHANNEL FIRST' - at each z level, acquire every channel, then step z
+# 'Z FIRST' - acquire the whole z stack in one channel, then switch channel
+Z_STACK_ORDER = "CHANNEL FIRST"
+Z_STACK_ORDERS = ("CHANNEL FIRST", "Z FIRST")
+# Opt-in: show the Channel First / Z First choice next to Nz in the acquisition tabs. Off, the GUI always acquires
+# Channel First (whatever a loaded acquisition YAML says); the TCP server, fluidics protocols and
+# Microscope.acquire_single_fov still use an order they are given explicitly.
+ENABLE_Z_STACK_ORDER_SELECTION = False
+
 DEFAULT_Z_POS_MM = 2
 
 WELLPLATE_OFFSET_X_mm = 0  # x offset adjustment for using different plates

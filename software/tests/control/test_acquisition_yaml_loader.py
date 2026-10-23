@@ -578,3 +578,44 @@ class TestExtendedLoader:
         regions = {r["name"]: r for r in data.wellplate_regions}
         assert regions["A1"]["fovs"] == [[9.0, 9.0]]  # kept
         assert regions["B2"]["fovs"] == [[4.0, 5.0]]  # completed from the CSV
+
+
+class TestZStackOrder:
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            (None, "CHANNEL FIRST"),
+            ("CHANNEL FIRST", "CHANNEL FIRST"),
+            ("Z FIRST", "Z FIRST"),
+            ("z first", "Z FIRST"),
+            ("Z_FIRST", "Z FIRST"),
+            ("channel-first", "CHANNEL FIRST"),
+        ],
+    )
+    def test_parse_z_stack_order_normalizes(self, value, expected):
+        from control.acquisition_yaml_loader import parse_z_stack_order
+
+        assert parse_z_stack_order(value) == expected
+
+    @pytest.mark.parametrize("value", ["", "None", "zfirst", "TIME FIRST", 3])
+    def test_parse_z_stack_order_rejects_unknown_values(self, value):
+        from control.acquisition_yaml_loader import parse_z_stack_order
+
+        with pytest.raises(ValueError, match="z_stack.order"):
+            parse_z_stack_order(value)
+
+    def test_yaml_without_order_loads_as_channel_first(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        assert parse_acquisition_dict({"z_stack": {"nz": 3}}).z_stack_order == "CHANNEL FIRST"
+
+    def test_yaml_order_is_read(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        assert parse_acquisition_dict({"z_stack": {"nz": 3, "order": "Z FIRST"}}).z_stack_order == "Z FIRST"
+
+    def test_yaml_with_unknown_order_is_rejected(self):
+        from control.acquisition_yaml_loader import parse_acquisition_dict
+
+        with pytest.raises(ValueError, match="z_stack.order"):
+            parse_acquisition_dict({"z_stack": {"nz": 3, "order": "TIME FIRST"}})
