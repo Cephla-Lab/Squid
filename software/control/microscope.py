@@ -34,6 +34,7 @@ import squid.stage.cephla
 import squid.stage.lift
 import squid.stage.pi
 import squid.stage.utils
+import squid.stage.utils
 
 _log = squid.logging.get_logger(__name__)
 
@@ -1078,8 +1079,11 @@ class Microscope:
 
     def _raise_z_lift_to_sample_height(self) -> None:
         """After homing, raise the Z lift to the working height saved for the sample format; with none it stays
-        lowered."""
+        lowered. Not when Squid was closed at the loading position: the GUI starts there again, lift lowered."""
         if self.z_lift is None:
+            return
+        if squid.stage.utils.load_loading_state() is not None:
+            self._log.info("Squid was closed at the loading position: the Z lift stays lowered.")
             return
         sample_format = self.z_lift.current_format()
         height = self.z_lift.sample_height_mm()

@@ -1,4 +1,5 @@
-"""The Z Lift window (control/widgets_z_lift.py): readout, moves off the GUI thread, heights per sample format, and the status-bar readout."""
+"""The Z Lift tab and its heights window (control/widgets_z_lift.py): readout, moves off the GUI thread, the
+scanning height per sample format, and the status-bar readout."""
 
 import threading
 from unittest.mock import patch
@@ -67,13 +68,22 @@ def _widget(qtbot, tmp_path, stage_utils=None):
     return widget, lift
 
 
-def test_readout_shows_position_and_sensors(qtbot, tmp_path):
+def test_readout_shows_position_and_warns_only_on_the_top_sensor(qtbot, tmp_path):
     widget, lift = _widget(qtbot, tmp_path)
-    lift.height = 0.0
+    lift.height = 0.0  # the fake's bottom sensor triggers at 0
     widget._refresh_readout()
     assert widget.label_position.text().startswith("0.000 mm")
-    assert "TRIGGERED" in widget.label_bottom.text()
-    assert "clear" in widget.label_top.text()
+    assert widget.label_top_warning.isHidden()  # the bottom (home) sensor alone shows nothing
+    assert "Bottom (home) sensor: triggered" in widget.label_position.toolTip()
+    assert "Top sensor: clear" in widget.label_position.toolTip()
+
+    lift.limit_switches = lambda: (False, True)
+    widget._refresh_readout()
+    assert not widget.label_top_warning.isHidden()
+    assert "Top sensor: triggered" in widget.label_position.toolTip()
+    lift.limit_switches = lambda: (False, False)
+    widget._refresh_readout()
+    assert widget.label_top_warning.isHidden()
 
 
 def test_jog_runs_off_the_gui_thread_and_reenables(qtbot, tmp_path):
@@ -86,44 +96,90 @@ def test_jog_runs_off_the_gui_thread_and_reenables(qtbot, tmp_path):
     assert lift.threads[0] is not threading.main_thread()
 
 
+def test_the_tab_has_no_table_and_no_loading_button(qtbot, tmp_path):
+    from qtpy.QtWidgets import QTableWidget
+
+    widget, _ = _widget(qtbot, tmp_path, stage_utils=_FakeStageUtils())
+    in_tab = lambda cls: [w for w in widget.findChildren(cls) if w.window() is widget]
+    assert in_tab(QTableWidget) == [] and in_tab(LoadingPositionButton) == []
+    assert widget.heights_dialog.table.window() is widget.heights_dialog  # the table is in its own window
+
+
+def test_the_tab_shows_the_current_formats_scanning_height(qtbot, tmp_path):
+    widget, lift = _widget(qtbot, tmp_path)
+    assert "96 well plate" in widget.label_scanning_height.text()
+    assert "none saved" in widget.label_scanning_height.text()
+    lift.heights.set("glass slide", 4.5)
+    lift.sample_format = "glass slide"
+    widget.refresh_formats()  # the format selector changed
+    assert "glass slide" in widget.label_scanning_height.text() and "4.500 mm" in widget.label_scanning_height.text()
+
+
+def test_set_current_height_as_scanning_height_saves_the_current_format(qtbot, tmp_path):
+    widget, lift = _widget(qtbot, tmp_path)
+    lift.height = 3.25
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.Cancel):
+        widget.btn_set_scanning_height.click()
+    assert lift.heights.get("96 well plate") is None  # cancelled: nothing saved
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.Ok) as question:
+        widget.btn_set_scanning_height.click()
+    assert "96 well plate" in question.call_args.args[2] and "3.250 mm" in question.call_args.args[2]
+    assert LiftHeights(str(tmp_path / "heights.json")).by_format == {"96 well plate": 3.25}
+    assert "3.250 mm" in widget.label_scanning_height.text()
+    assert widget.heights_dialog.table.item(1, 1).text() == "3.250"  # the window follows
+
+
+def test_all_formats_opens_the_heights_window(qtbot, tmp_path):
+    widget, _ = _widget(qtbot, tmp_path)
+    assert not widget.heights_dialog.isVisible()
+    widget.btn_all_formats.click()
+    assert widget.heights_dialog.isVisible()
+    widget.heights_dialog.close()
+
+
 def test_table_lists_every_format_and_marks_the_current_one(qtbot, tmp_path):
     widget, lift = _widget(qtbot, tmp_path)
-    assert widget.table.rowCount() == 3
-    assert widget.table.item(1, 0).text() == "96 well plate  (current)"
-    assert widget.table.item(1, 0).font().bold()
+    table = widget.heights_dialog.table
+    assert table.rowCount() == 3
+    assert table.item(1, 0).text() == "96 well plate  (current)"
+    assert table.item(1, 0).font().bold()
     lift.sample_format = "glass slide"
     widget.refresh_formats()
-    assert widget.table.item(0, 0).text() == "glass slide  (current)"
+    assert table.item(0, 0).text() == "glass slide  (current)"
 
 
 def test_set_go_to_and_clear_a_format_height_are_saved(qtbot, tmp_path):
     widget, lift = _widget(qtbot, tmp_path)
+    dialog = widget.heights_dialog
     lift.height = 3.25
-    widget.table.selectRow(2)  # 384 well plate
+    dialog.table.selectRow(2)  # 384 well plate
     with patch.object(QMessageBox, "question", return_value=QMessageBox.Ok):
-        widget.btn_height_set.click()
+        dialog.btn_height_set.click()
     assert LiftHeights(str(tmp_path / "heights.json")).by_format == {"384 well plate": 3.25}
 
     lift.height = 0.0
-    widget.table.selectRow(2)
+    dialog.table.selectRow(2)
     with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
-        widget.btn_height_go.click()
+        dialog.btn_height_go.click()
     assert lift.calls[-1] == ("move_to", 3.25)
 
-    widget.table.selectRow(2)
-    widget.btn_height_clear.click()
+    dialog.table.selectRow(2)
+    dialog.btn_height_clear.click()
     assert LiftHeights(str(tmp_path / "heights.json")).by_format == {}
 
 
 def test_editing_a_height_cell_validates(qtbot, tmp_path):
     widget, lift = _widget(qtbot, tmp_path)
+    table = widget.heights_dialog.table
     with patch.object(QMessageBox, "warning") as warning:
-        widget.table.item(0, 1).setText("99")  # outside the travel: refused and reverted
+        table.item(0, 1).setText("99")  # outside the travel: refused and reverted
     warning.assert_called_once()
-    assert lift.heights.get("glass slide") is None and widget.table.item(0, 1).text() == ""
-    widget.table.item(0, 1).setText("4.5")
+    assert lift.heights.get("glass slide") is None and table.item(0, 1).text() == ""
+    table.item(0, 1).setText("4.5")
     assert lift.heights.get("glass slide") == 4.5
-    widget.table.item(0, 1).setText("")
+    table.item(1, 1).setText("2.5")  # the current format: the tab's line follows
+    assert "2.500 mm" in widget.label_scanning_height.text()
+    table.item(0, 1).setText("")
     assert lift.heights.get("glass slide") is None
 
 
@@ -187,16 +243,15 @@ def test_loading_toggle_blocks_every_lift_move(qtbot, tmp_path):
 
     row_button.click()
     assert utils.switches == 1
-    assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
-    assert not widget.btn_loading.isEnabled()
+    assert not widget.btn_up.isEnabled() and not widget.heights_dialog.btn_height_go.isEnabled()
     widget._jog(+1)  # refused even if a click got through
     assert lift.calls == []
 
     # At the loading position the lift stays locked; only the toggle back to scanning is allowed.
     utils.slide_position = "loading"
     utils.signal_loading_position_reached.emit()
-    assert not widget.btn_up.isEnabled() and not widget.btn_height_go.isEnabled()
-    assert row_button.isEnabled() and widget.btn_loading.isEnabled()
+    assert not widget.btn_up.isEnabled() and not widget.heights_dialog.btn_height_go.isEnabled()
+    assert row_button.isEnabled()
     widget._jog(+1)
     assert lift.calls == []
     assert not widget.motion_guard.claim()  # no objective swap either
@@ -226,7 +281,7 @@ def test_lift_move_blocks_the_loading_toggle(qtbot, tmp_path):
     qtbot.addWidget(row_button)
 
     widget.btn_up.click()
-    assert not row_button.isEnabled() and not widget.btn_loading.isEnabled()
+    assert not row_button.isEnabled()
     row_button._toggle()
     assert utils.switches == 0
     with qtbot.waitSignal(widget.motion_guard.signal_move_finished, timeout=3000):
@@ -342,14 +397,18 @@ def test_without_a_lift_live_comes_back_at_the_loading_position_as_before(qtbot)
 def test_set_to_current_is_blocked_at_the_loading_position(qtbot, tmp_path):
     utils = _FakeStageUtils()
     widget, lift = _widget(qtbot, tmp_path, stage_utils=utils)
-    assert widget.btn_height_set.isEnabled()
-    widget.btn_loading.click()
+    dialog = widget.heights_dialog
+    assert widget.btn_set_scanning_height.isEnabled() and dialog.btn_height_set.isEnabled()
+    row_button = LoadingPositionButton(utils, widget.motion_guard)  # the Stages tab's button
+    qtbot.addWidget(row_button)
+    row_button.click()
     utils.slide_position = "loading"
     utils.signal_loading_position_reached.emit()
-    assert not widget.btn_height_set.isEnabled()
-    widget._select_format("96 well plate")
+    assert not widget.btn_set_scanning_height.isEnabled() and not dialog.btn_height_set.isEnabled()
+    dialog._select_format("96 well plate")
     with patch.object(QMessageBox, "question", return_value=QMessageBox.Ok) as question:
-        widget._set_selected_height_to_current()  # refused even if a click got through
+        widget._set_current_format_height()  # refused even if a click got through
+        dialog._set_selected_height_to_current()
     question.assert_not_called()
     assert lift.heights.get("96 well plate") is None
 
@@ -488,3 +547,68 @@ def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
     assert calls == []
+
+
+def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
+    from unittest.mock import MagicMock
+
+    from qtpy.QtWidgets import QPushButton
+
+    from control.gui_hcs import HighContentScreeningGui as Gui
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    stage = MagicMock()
+    stage.lift.min_mm, stage.lift.max_mm = 0.0, 32.0
+    stage.get_config.return_value.Z_AXIS.MIN_POSITION = 0.0
+    stage.get_config.return_value.Z_AXIS.MAX_POSITION = 6.0
+    stage_utils = StageUtils(stage, live, is_wellplate=False)
+    qtbot.addWidget(stage_utils)
+    guard = LiftMotionGuard(stage_utils)
+    stage_utils.set_lift_motion_guard(guard)
+
+    class _Gui:
+        pass
+
+    panel = []
+    fake = _Gui()
+    fake.__dict__.update(
+        stage=stage,
+        stageUtils=stage_utils,
+        log=MagicMock(),
+        _loading_position_locked=False,
+        _loading_position_saved_enabled={},
+        _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget",),
+        navigationWidget=QPushButton(),
+        _set_control_panel_lock=panel.append,
+        _restored_loading_state={"scanning_z_mm": 2.5, "lift_mm": 4.0, "lift_format": "glass slide"},
+    )
+    for name in (
+        "_connect_loading_position_lock",
+        "_lock_stage_at_loading_position",
+        "_unlock_stage_after_loading_position",
+        "_enter_restored_loading_position",
+    ):
+        setattr(fake, name, getattr(Gui, name).__get__(fake))
+    fake._connect_loading_position_lock()
+
+    fake._enter_restored_loading_position()
+
+    assert stage_utils.slide_position == "loading" and guard.at_loading_position
+    assert not fake.navigationWidget.isEnabled() and panel == [True]  # locked, panel too
+    assert stage_utils.btn_load_slide.text() == "Move to Scanning Position"
+    assert stage._scanning_position_z_mm == 2.5 and stage._scanning_position_lift_mm == (4.0, "glass slide")
+
+
+def test_z_lift_widget_is_a_tab_page(qtbot, tmp_path):
+    from qtpy.QtWidgets import QDialog, QTabWidget
+
+    widget, _ = _widget(qtbot, tmp_path)
+    assert not isinstance(widget, QDialog)
+    tabs = QTabWidget()
+    qtbot.addWidget(tabs)
+    tabs.addTab(widget, "Z Lift")
+    assert tabs.widget(0) is widget
+    tabs.removeTab(0)  # qtbot closes the page itself: the tab widget must not delete it first
+    widget.setParent(None)

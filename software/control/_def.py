@@ -1317,6 +1317,9 @@ Z_LIFT_LOWERED_MM = 0.0
 Z_LIFT_SWAP_LOWER_MM = 5.0
 # The lift's working height per sample format, edited in the Z Lift window (Utils).
 Z_LIFT_HEIGHTS_PATH = "cache/z_lift_heights.json"
+# Written while the stage is at the loading position (Z lift systems), with the Z and lift height to return to:
+# Squid closed there starts again at the loading position, locked, instead of raising the lift.
+Z_LIFT_LOADING_STATE_PATH = "cache/z_lift_loading_state.json"
 # Route the control panel's focus wheel to the V-308 (the lift is then moved only from the software).
 Z_LIFT_FOCUS_WHEEL_DRIVES_PI = True
 # V-308 travel per focus wheel count, in um. The control panel sends 2^(Z sensitivity knob, 0-8) / 4 counts per encoder

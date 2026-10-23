@@ -709,7 +709,7 @@ class HighContentScreeningGui(QMainWindow):
         self.liveControlWidget: Optional[widgets.LiveControlWidget] = None
         self.navigationWidget: Optional[widgets.NavigationWidget] = None
         self.stageUtils: Optional[widgets.StageUtils] = None
-        self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget (Utils > Z Lift...) on a Z lift system
+        self.zLiftWidget = None  # control.widgets_z_lift.ZLiftWidget (the Z Lift tab) on a Z lift system
         self.zLiftLoadingButton = (
             None  # the loading-position toggle in the Stages tab (shares the window's motion guard)
         )
@@ -762,6 +762,15 @@ class HighContentScreeningGui(QMainWindow):
         # Initialize Slack notifier
         self._setup_slack_notifier()
 
+        # A Z lift system closed at the loading position starts there again: lift lowered (the Microscope did not
+        # raise it), Z retracted, XY back at the loading position, everything locked (_enter_restored_loading_position).
+        self._restored_loading_state = (
+            squid.stage.utils.load_loading_state() if self.microscope.z_lift is not None else None
+        )
+        if self._restored_loading_state is not None and self.zLiftWidget is not None:
+            # Once the window is up (make_connections has run: every connection to the loading signal exists)
+            QTimer.singleShot(0, self._enter_restored_loading_position)
+
         # Skip cached position restoration on restart (hardware position hasn't changed),
         # except Z when using Xeryon (Z was retracted during cleanup).
         if self._skip_init:
@@ -773,6 +782,9 @@ class HighContentScreeningGui(QMainWindow):
                     self.stage.move_z_to(target_z_mm)
             else:
                 self.log.info("Skipping cached position restoration (--skip-init flag set)")
+        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
+            self.log.info("Squid was closed at the loading position: moving back there (lift lowered, Z retracted).")
+            squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             cached_pos = squid.stage.utils.get_cached_position()
@@ -860,9 +872,7 @@ class HighContentScreeningGui(QMainWindow):
         if self.zLiftWidget is not None:
             z_lift_action = QAction("Z Lift...", self)
             z_lift_action.setMenuRole(QAction.NoRole)
-            z_lift_action.triggered.connect(
-                lambda: (self.zLiftWidget.show(), self.zLiftWidget.raise_(), self.zLiftWidget.activateWindow())
-            )
+            z_lift_action.triggered.connect(lambda: self.cameraTabWidget.setCurrentWidget(self.zLiftWidget))
             utils_menu.addAction(z_lift_action)
         if USE_EMISSION_FILTER_WHEEL:
             filter_wheel_tuning_action = QAction("Filter Wheel Tuning...", self)
@@ -1378,6 +1388,8 @@ class HighContentScreeningGui(QMainWindow):
             self.cameraTabWidget.addTab(stages_tab, "Stages")
         else:
             self.cameraTabWidget.addTab(self.navigationWidget, "Stages")
+        if self.zLiftWidget is not None:
+            self.cameraTabWidget.addTab(self.zLiftWidget, "Z Lift")
         if self.piezoWidget:
             self.cameraTabWidget.addTab(self.piezoWidget, "Piezo")
         if ENABLE_NL5:
@@ -2341,6 +2353,13 @@ class HighContentScreeningGui(QMainWindow):
         "wellSelectionWidget",
         "recordTabWidget",
     )
+
+    def _enter_restored_loading_position(self):
+        """Squid was closed at the loading position: start in that state (StageUtils, the lift guard, the loading
+        buttons and every lock follow its signal), with the Z and lift height to return to as they were."""
+        squid.stage.utils.restore_loading_state(self.stage, self._restored_loading_state or {})
+        self.stageUtils._was_live = False
+        self.stageUtils._callback_loading_position_reached(True, None)
 
     def _connect_loading_position_lock(self):
         """Z lift system: nothing moves from the moment the loading toggle starts (the move to the loading position,
