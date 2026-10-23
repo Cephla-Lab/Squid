@@ -38,9 +38,11 @@ def _protocol(**imaging_row):
 
 
 class RecordingPort:
-    def __init__(self, fail=None):
+    def __init__(self, fail=None, reservoirs_refusal=None):
         self.validated = []
         self.fail = fail
+        self.reservoir_checks = []
+        self.reservoirs_refusal = reservoirs_refusal
 
     def validate(self, rows):
         self.validated.append(rows)
@@ -52,6 +54,41 @@ class RecordingPort:
             duration_seconds = 60.0
 
         return tuple(E() for _ in rows)
+
+    def check_reservoirs(self, plan):
+        self.reservoir_checks.append(plan)
+        if self.reservoirs_refusal:
+            raise ValueError(self.reservoirs_refusal)
+        return [("probes/A1", 100.0, 250.0)]
+
+
+def _two_rounds():
+    flow = {"type": "flow_reagent", "fluidic_port": 1, "flow_rate": 500, "volume": 500}
+    return ProtocolFile(sequences=[{**flow, "round": "R01"}, {**flow, "round": "R02"}, {**flow, "round": "R02"}])
+
+
+def test_the_volumes_are_checked_once_over_every_fluidics_step(tmp_path):
+    port = RecordingPort()
+    resolved = resolve_protocol(_two_rounds(), tmp_path, fluidics=port)
+    assert len(port.validated) == 2  # two steps, two library runs
+    assert [len(plan) for plan in port.reservoir_checks] == [3]  # one check, every step's plan end to end
+    assert resolved.reservoirs == [("probes/A1", 100.0, 250.0)]
+
+    refusing = RecordingPort(reservoirs_refusal="R02: probes/A1 cannot supply 500 uL")
+    with pytest.raises(ProtocolProblems) as refused:
+        resolve_protocol(_two_rounds(), tmp_path, fluidics=refusing)
+    assert refused.value.problems == ["reservoirs: R02: probes/A1 cannot supply 500 uL"]
+
+    unchecked = RecordingPort(reservoirs_refusal="never asked")
+    assert resolve_protocol(_two_rounds(), tmp_path, fluidics=unchecked, check_reservoirs=False).reservoirs == []
+    assert unchecked.reservoir_checks == []
+
+
+def test_no_volume_check_while_a_step_is_invalid(tmp_path):
+    port = RecordingPort(fail="port 99 is not on this rig")
+    with pytest.raises(ProtocolProblems):
+        resolve_protocol(_two_rounds(), tmp_path, fluidics=port)
+    assert port.reservoir_checks == []  # the rows' own problems first; a replay of invalid rows says nothing
 
 
 def test_header_keys_resolve_and_fluidics_rows_are_validated(tmp_path):
