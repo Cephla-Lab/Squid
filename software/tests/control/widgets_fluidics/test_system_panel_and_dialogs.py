@@ -5,6 +5,7 @@ import pytest
 from control.models.fluidics_protocol import ProtocolFile
 from control.models.fluidics_run import RunCursor, RunManifest, StepRecord
 from control.widgets_fluidics.dialogs import AddRoundsDialog, PreflightDialog, RecoveryDialog
+from tests.control.fluidics_test_config import sipper_protocol
 
 
 SETTINGS = {"channels": ["A"], "z_stack": {"nz": 1}}
@@ -86,14 +87,8 @@ def test_add_rounds_dialog_builds_expand_kwargs_and_previews(qtbot):
     assert dialog.wells_edit.isHidden()  # no row of this round draws from a well
 
 
-def _sipper_protocol():
-    from tests.control.fluidics_test_config import SIPPER_ROWS
-
-    return ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS])
-
-
 def test_add_rounds_dialog_proposes_the_next_wells_for_a_sipper_round(qtbot):
-    dialog = AddRoundsDialog(_sipper_protocol())
+    dialog = AddRoundsDialog(sipper_protocol())
     qtbot.addWidget(dialog)
     dialog.template_combo.setCurrentText("R01")
     assert not dialog.wells_edit.isHidden()
@@ -113,7 +108,7 @@ def test_add_rounds_refuses_rather_than_reuses_when_the_plate_has_no_next_well(q
     from qtpy.QtCore import Qt
     from qtpy.QtWidgets import QDialogButtonBox
 
-    protocol = _sipper_protocol()
+    protocol = sipper_protocol()
     for row in protocol.sequences:
         if row.get("round") == "R01" and row.get("well"):
             row["well"] = row["well"].replace("A1", "H12")  # the plate's last well
@@ -135,7 +130,7 @@ def test_add_rounds_refuses_rather_than_reuses_when_the_plate_has_no_next_well(q
 def test_add_rounds_names_a_template_well_that_is_not_one(qtbot):
     from qtpy.QtWidgets import QDialogButtonBox
 
-    protocol = _sipper_protocol()
+    protocol = sipper_protocol()
     for row in protocol.sequences:
         if row.get("round") == "R01" and row.get("well"):
             row["well"] = row["well"].replace("A1", "A13")  # a typo the editor flags too
@@ -150,7 +145,7 @@ def test_add_rounds_names_a_template_well_that_is_not_one(qtbot):
 def test_the_dialogs_explain_themselves_without_an_empty_help_button(qtbot):
     from qtpy.QtCore import Qt
 
-    dialog = AddRoundsDialog(_sipper_protocol())
+    dialog = AddRoundsDialog(sipper_protocol())
     qtbot.addWidget(dialog)
     assert "Hover over a field" in dialog.help_label.text()
     fields = (dialog.template_combo, dialog.count_spin, dialog.pattern_edit, dialog.start_spin)
@@ -167,7 +162,7 @@ def test_the_dialogs_explain_themselves_without_an_empty_help_button(qtbot):
 def test_add_rounds_dialog_refuses_a_well_list_shorter_than_the_rounds(qtbot):
     from qtpy.QtWidgets import QDialogButtonBox
 
-    dialog = AddRoundsDialog(_sipper_protocol())
+    dialog = AddRoundsDialog(sipper_protocol())
     qtbot.addWidget(dialog)
     dialog.template_combo.setCurrentText("R01")
     dialog.count_spin.setValue(2)
@@ -233,7 +228,7 @@ def test_quick_op_calls_priming_or_clean_up_with_use_ports(qtbot, fluidics_confi
     system = SimpleNamespace(
         operations=operations,
         busy=False,
-        run_manual=lambda verb, callbacks=None: verb(),  # synchronous for the test
+        run_manual=lambda verb, callbacks=None, source=None: verb(),  # synchronous for the test
         abort=lambda: None,
     )
     from fluidics.control.config import load_config

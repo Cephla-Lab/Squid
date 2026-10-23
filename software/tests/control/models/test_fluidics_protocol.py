@@ -18,6 +18,7 @@ from control.models.fluidics_protocol import (
     split_into_steps,
     strip_for_library,
 )
+from tests.control.fluidics_test_config import sipper_protocol
 
 SETTINGS = {"channels": ["A", "B"], "z_stack": {"nz": 3, "delta_z_um": 0.5}, "autofocus": {"laser_af": True}}
 COORDS = {"regions": [{"name": "A1", "fovs": [[1.0, 2.0, 3.0], [1.5, 2.0, 3.0]]}]}
@@ -198,14 +199,8 @@ def test_parse_port_list():
         parse_port_list("a-b")
 
 
-def _sipper_protocol():
-    from tests.control.fluidics_test_config import SIPPER_ROWS
-
-    return ProtocolFile(name="sipper", sequences=[dict(row) for row in SIPPER_ROWS])
-
-
 def test_expand_rounds_moves_every_well_row_to_the_next_well_on_its_own_plate():
-    p = _sipper_protocol()  # R01: hyb A1, push ssct/A1, ssct ssct/A1, then dapi from a bottle
+    p = sipper_protocol()  # R01: hyb A1, push ssct/A1, ssct ssct/A1, then dapi from a bottle
     out = expand_rounds(p, "R01", count=2, wells=["A2", "A3"])
 
     def by_name(label):
