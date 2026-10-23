@@ -128,8 +128,8 @@ def test_quick_op_calls_priming_or_clean_up_with_use_ports(qtbot, fluidics_confi
 
     calls = []
     operations = SimpleNamespace(
-        priming_or_clean_up=lambda port, flow, volume, use_ports=None: calls.append(
-            (port, flow, volume, tuple(use_ports))
+        priming_or_clean_up=lambda port, flow, volume, use_ports=None, clean_up=False: calls.append(
+            (port, flow, volume, tuple(use_ports), clean_up)
         )
     )
     system = SimpleNamespace(
@@ -155,11 +155,12 @@ def test_quick_op_calls_priming_or_clean_up_with_use_ports(qtbot, fluidics_confi
     tab.flow_spin.setValue(200)
 
     tab._quick_op("priming")
-    assert calls == [(1, 200, 50, (2, 5, 7))]  # wash port 1, one final draw over use_ports 2,5,7
+    assert calls == [(1, 200, 50, (2, 5, 7), False)]  # wash port 1, one final draw over use_ports 2,5,7
 
     calls.clear()
     tab._quick_running = False
     tab.repeat_spin.setValue(3)
     tab._quick_op("clean_up")
-    assert calls == [(1, 200, 50, (2, 5, 7))] * 3  # Clean repeats
+    # Clean repeats, and says it is a clean-up (a sipper's line then draws from the clean-up well)
+    assert calls == [(1, 200, 50, (2, 5, 7), True)] * 3
     tab.log_view.disconnect_logging()

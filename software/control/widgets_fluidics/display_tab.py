@@ -280,11 +280,12 @@ class FluidicsDisplayTab(QWidget):
         flow_rate = int(self.flow_spin.value())
         volume = int(self.volume_spin.value())
         repeat = int(self.repeat_spin.value()) if op == "clean_up" else 1
+        clean_up = op == "clean_up"  # on a sipper rig its line draws from the clean-up well, not the priming well
         operations = self.service.system.operations
 
         def verb():
             for _ in range(repeat):
-                operations.priming_or_clean_up(wash_port, flow_rate, volume, use_ports=use_ports)
+                operations.priming_or_clean_up(wash_port, flow_rate, volume, use_ports=use_ports, clean_up=clean_up)
 
         try:
             self.service.system.run_manual(

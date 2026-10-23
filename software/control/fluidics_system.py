@@ -35,6 +35,7 @@ LIBRARY_LOGGER_NAMES = ("fluidics", "XCaliburD")
 _REQUIRED_SYSTEM_API = (
     "build",
     "plan",
+    "check_reservoirs",
     "run",
     "run_manual",
     "wait",
