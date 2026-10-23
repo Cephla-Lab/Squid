@@ -36,6 +36,7 @@ class ScanTiming(_ScanSpeedMixin):
         self.exposure_delay_ms = delay_ms
         self.line_speed = line_speed
         self.line_speed_writes = []
+        self.is_aion = True
 
     def _send_line_speed(self, line_speed):
         self.line_speed_writes.append(line_speed)
@@ -68,10 +69,13 @@ def test_the_scanned_width_relative_to_the_unit_camera_width_scales_the_sweep():
     unit = ScanTiming(fov_x=1600)
     assert unit.scan_sweep_mrad() == SWEEP_MRAD / 2
     assert unit.exposure_time_ms() == pytest.approx(10 + SCAN_MS_AT_3000 / 2)
-    # Not capped: on AION the unit reports MAX_CAM_PIX_X 2048 for a 3200 px camera, and FIELD_OF_VIEW_X 3200
-    # scans 1.5625 x further (measured: 76 ms, not 48.7 ms, at 73 mrad and 3000 mrad/s).
+    # Not capped on the AION (#740): the unit reports MAX_CAM_PIX_X 2048 for a 3200 px camera, and FIELD_OF_VIEW_X
+    # 3200 scans 1.5625 x further (measured: 76 ms, not 48.7 ms, at 73 mrad and 3000 mrad/s).
     assert ScanTiming(max_cam_pix_x=2048).scan_sweep_mrad() == pytest.approx(SWEEP_MRAD * 3200 / 2048)
     assert ScanTiming(max_cam_pix_x=2048).scan_time_ms() == pytest.approx(76.04, abs=0.01)
+    nl5 = ScanTiming(max_cam_pix_x=2048)
+    nl5.is_aion = False
+    assert nl5.scan_sweep_mrad() == SWEEP_MRAD  # an NL5 keeps the cap
     assert ScanTiming(max_cam_pix_x=None).scan_sweep_mrad() == SWEEP_MRAD  # width unknown: full sweep
 
 

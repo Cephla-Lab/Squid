@@ -9,7 +9,7 @@ import yaml
 from datetime import datetime
 from enum import Enum
 from threading import Thread
-from typing import Optional, Tuple, Any
+from typing import Any, Callable, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -92,6 +92,7 @@ def _save_acquisition_yaml(
             "nz": params.NZ,
             "delta_z_mm": params.deltaZ,
             "config": params.z_stacking_config,
+            "order": params.z_stack_order,
             "z_range_mm": _serialize_for_yaml(params.z_range) if params.z_range else None,
             "use_piezo": params.use_piezo,
         },
@@ -257,6 +258,9 @@ class MultiPointController:
         self.focus_map = None
         self.region_laser_af_offsets = {}
         self.gen_focus_map = False
+        # Optional check run before every start (GUI widgets, workflow runner, TCP server): returns why the acquisition
+        # must not start now, or None. A Z lift system uses it to refuse a start while the lift is moving.
+        self.start_blocker: Optional[Callable[[], Optional[str]]] = None
         self.focus_map_storage = []
         self.already_using_fmap = False
         self.selected_configurations = []
@@ -264,6 +268,7 @@ class MultiPointController:
         self.old_images_per_page = 1
         self.z_range: Tuple[float, float] = None
         self.z_stacking_config = control._def.Z_STACKING_CONFIG
+        self.z_stack_order = control._def.Z_STACK_ORDER
 
         self._start_position: Optional[squid.abc.Pos] = None
 
@@ -397,6 +402,12 @@ class MultiPointController:
         if z_stacking_config_index in control._def.Z_STACKING_CONFIG_MAP:
             self.z_stacking_config = control._def.Z_STACKING_CONFIG_MAP[z_stacking_config_index]
         self._log.info(f"z-stacking configuration set to {self.z_stacking_config}")
+
+    def set_z_stack_order(self, z_stack_order: str):
+        if z_stack_order not in control._def.Z_STACK_ORDERS:
+            raise ValueError(f"Unknown z_stack_order '{z_stack_order}'; expected one of {control._def.Z_STACK_ORDERS}")
+        self.z_stack_order = z_stack_order
+        self._log.info(f"z-stack order set to {self.z_stack_order}")
 
     def set_z_range(self, minZ, maxZ):
         self.z_range = [minZ, maxZ]
@@ -755,6 +766,12 @@ class MultiPointController:
             self.last_end_reason = "failed_to_start"
             self.callbacks.signal_acquisition_finished()
             return False
+        refusal = self.start_blocker() if self.start_blocker is not None else None
+        if refusal:
+            self._log.error(f"Acquisition not started: {refusal}")
+            self.last_end_reason = "failed_to_start"
+            self.callbacks.signal_acquisition_finished()
+            return False
         self._start_per_acquisition_log()
 
         # Start memory monitoring for the acquisition (if enabled)
@@ -1103,6 +1120,7 @@ class MultiPointController:
             use_piezo=self.use_piezo,
             display_resolution_scaling=self.display_resolution_scaling,
             z_stacking_config=self.z_stacking_config,
+            z_stack_order=self.z_stack_order,
             z_range=self.z_range,
             skip_saving=self.skip_saving,
             plate_num_rows=plate_num_rows,

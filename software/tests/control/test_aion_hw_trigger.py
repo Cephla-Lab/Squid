@@ -58,6 +58,7 @@ class FakeConfocalUnit(_ScanSpeedMixin):
         self.line_speed_writes = []
         self.internal_stage = None
         self.device_name = "AION"
+        self.is_aion = True
 
     def _send_line_speed(self, line_speed):
         self.line_speed_writes.append(line_speed)

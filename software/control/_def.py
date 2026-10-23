@@ -212,6 +212,8 @@ class CMD_SET:
     INITIALIZE = 254
     RESET = 255
     SET_LIMIT_SWITCH_CONFIG = 64
+    SET_FOCUS_WHEEL_MODE = 65  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE (see FOCUS_WHEEL_MODE)
+    SET_PANEL_LOCK = 66  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE: [2] 1 = the control panel moves nothing
 
 
 class CMD_SET2:
@@ -248,6 +250,26 @@ class ENC_FLAG:
     REPORTING = 0
     PID_ENABLED = 1
     AXIS_SHIFT = 4  # bits 4-6: protocol axis id being reported
+
+
+class FOCUS_WHEEL_MODE:
+    """Modes for CMD_SET.SET_FOCUS_WHEEL_MODE (firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE).
+
+    DRIVES_Z: the control panel's focus wheel moves the Z stepper (the firmware default, and after RESET and
+    INITIALIZE). TO_HOST: the wheel moves nothing; the status packet's theta field (bytes 14-17) carries the wheel's
+    tick count since the mode was set, flagged by FOCUS_WHEEL_FLAG_REPORTING in byte 19, so the host can drive another
+    focus axis with it. Refused while encoder reporting is on (they share those bytes), and vice versa.
+    """
+
+    DRIVES_Z = 0
+    TO_HOST = 1
+
+
+FOCUS_WHEEL_FLAG_REPORTING = 7  # status byte 19 bit: bytes 14-17 carry the focus wheel count
+# SET_FOCUS_WHEEL_MODE [3] flag: also store the mode as the controller's power-up mode (EEPROM; RESET and INITIALIZE
+# use it too). Squid saves TO_HOST on a lift system, so the wheel moves nothing while Squid is not running.
+FOCUS_WHEEL_SAVE_AS_POWER_UP = 1
+FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE = (1, 8)
 
 
 class RAMP_PROFILE:
@@ -988,6 +1010,16 @@ FOV_PATTERN = "Unidirectional"  # 'S-Pattern', 'Unidirectional'
 Z_STACKING_CONFIG = "FROM BOTTOM"  # 'FROM BOTTOM', 'FROM TOP'
 Z_STACKING_CONFIG_MAP = {0: "FROM BOTTOM", 1: "FROM CENTER", 2: "FROM TOP"}
 
+# Order of the z and channel loops at each FOV:
+# 'CHANNEL FIRST' - at each z level, acquire every channel, then step z
+# 'Z FIRST' - acquire the whole z stack in one channel, then switch channel
+Z_STACK_ORDER = "CHANNEL FIRST"
+Z_STACK_ORDERS = ("CHANNEL FIRST", "Z FIRST")
+# Opt-in: show the Channel First / Z First choice next to Nz in the acquisition tabs. Off, the GUI always acquires
+# Channel First (whatever a loaded acquisition YAML says); the TCP server, fluidics protocols and
+# Microscope.acquire_single_fov still use an order they are given explicitly.
+ENABLE_Z_STACK_ORDER_SELECTION = False
+
 DEFAULT_Z_POS_MM = 2
 
 WELLPLATE_OFFSET_X_mm = 0  # x offset adjustment for using different plates
@@ -1108,6 +1140,10 @@ NL5_USE_DOUT = True
 # signal. A scan that has not finished after this long (plus 3 frame times) is aborted and the
 # trigger dropped, instead of holding the camera's trigger lock forever.
 NL5_TRIGGER_TIMEOUT_S = 2.0
+# Tucsen Aries (GenICam): expose all rows from the trigger (SensorShutterMode GlobalReset) instead of row by row.
+# The camera only accepts it in hardware trigger mode and drops back to Rolling whenever it leaves that mode, so
+# it is applied each time hardware trigger mode is set.
+TUCSEN_GLOBAL_RESET = False
 NL5_TRIGGER_PIN = 2
 NL5_WAVENLENGTH_MAP = {405: 1, 470: 2, 488: 2, 545: 3, 555: 3, 561: 3, 637: 4, 638: 4, 640: 4}
 # AION only: USB serial number of the SmarAct SCU controller driving the internal slit stage
@@ -1273,8 +1309,39 @@ PI_FOCUS_SCAN_STABILIZATION_TIME_MS_Z = 0
 # V-308 with the 2026-10-20 gains, a 0.05 um step is ~14% done after 20 ms, ~70% after 100 ms and done after
 # 200 ms (slow integrator creep): raise this for sub-0.1 um stacks, or tune the creep.
 PI_FOCUS_SUB_WINDOW_SETTLE_MS = 20
+# The C-414's profile generator is switched off across a manual objective swap, holding its setpoint at the
+# pre-swap focus (squid.stage.pi.C414FocusStage.freeze_profile). The setpoint is kept here while it is off, so a
+# restart after Squid stopped mid-swap still knows where to switch it back on.
+PI_FOCUS_PROFILE_STATE_PATH = "cache/pi_focus_profile.json"
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
+
+# Z lift: on an upright system with a PI V-308 as the focus Z, the Cephla Z stepper lifts the XY stage and the sample.
+# It lowers (homes, to its bottom sensor) before XY homing and before the loading position, by Z_LIFT_SWAP_LOWER_MM for
+# a manual objective swap (fully, for a changer switch to a higher magnification), and the control panel's focus wheel then drives the V-308 instead (firmware >= 1.8).
+# Needs USE_PI_FOCUS_STAGE. The stepper's pitch / microstepping / current / sign come from the Z axis settings; its
+# travel is Z_LIFT_MIN_MM..Z_LIFT_MAX_MM (Z_AXIS MIN/MAX_POSITION describe the V-308 on such a system).
+USE_Z_LIFT_STAGE = False
+Z_LIFT_MIN_MM = 0.0
+Z_LIFT_MAX_MM = 10.0
+# Where "lowered" is. Homing ends at 0 (the bottom sensor); a lowered position above it skips re-homing.
+Z_LIFT_LOWERED_MM = 0.0
+# A manual objective swap (V-308 servo released) lowers the lift by this much, whatever the magnification (not below
+# Z_LIFT_MIN_MM), and raises it back to where it was once the servo holds Z again.
+Z_LIFT_SWAP_LOWER_MM = 5.0
+# The lift's working height per sample format, edited in the Z Lift window (Utils).
+Z_LIFT_HEIGHTS_PATH = "cache/z_lift_heights.json"
+# Route the control panel's focus wheel to the V-308 (the lift is then moved only from the software).
+Z_LIFT_FOCUS_WHEEL_DRIVES_PI = True
+# V-308 travel per focus wheel count, in um. The control panel sends 2^(Z sensitivity knob, 0-8) / 4 counts per encoder
+# click, in multiples of 16 (made for the 16-microstep Z stepper), so 0.00625 makes its smallest step 0.1 um: about
+# 0.4 um per click at knob 8, 0.1 um per 4 clicks at knob 4. 0 = one Z stepper microstep per count (far too coarse
+# for the V-308: 20 um per click at knob 8 on the 1 mm-pitch lift).
+PI_FOCUS_WHEEL_UM_PER_TICK = 0.00625
+PI_FOCUS_WHEEL_INVERT = False
+# Fastest the focus wheel moves the V-308, in um/s; turning faster drops the extra ticks (Z stops with the wheel).
+# 0 = no cap. Autofocus, z-stacks and other moves keep the V-308's own speed.
+PI_FOCUS_WHEEL_MAX_SPEED_UM_S = 2000.0
 
 # camera blacklevel settings
 DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False

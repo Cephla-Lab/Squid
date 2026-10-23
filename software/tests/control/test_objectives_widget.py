@@ -4,11 +4,19 @@ import threading
 from unittest.mock import patch
 
 import pytest
+from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox
 
 import tests.control.test_stubs as ts
 from control.widgets import ObjectivesWidget
+from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton
 from squid.abc import Pos
+
+
+@pytest.fixture(autouse=True)
+def _start_on_20x(monkeypatch):
+    # DEFAULT_OBJECTIVE comes from the machine's cache (the objective last used there); these tests start on 20x.
+    monkeypatch.setattr(ts, "DEFAULT_OBJECTIVE", "20x")
 
 
 class _BlockingChanger:
@@ -74,8 +82,12 @@ class _RecordingServo:
     def get_pos(self):
         return Pos(x_mm=0.0, y_mm=0.0, z_mm=self.z_mm, theta_rad=None)
 
+    def freeze_profile(self):
+        self.events.append("freeze")
+
     def home(self, x, y, z, theta, blocking=True):
-        if self.fail_on == "retract":
+        self.homes = getattr(self, "homes", 0) + 1
+        if self.fail_on == "retract" or (self.fail_on == "re_retract" and self.homes == 2):
             raise RuntimeError("GCS error")
         self.events.append("retract")
         self.retract_thread = threading.current_thread()
@@ -107,11 +119,11 @@ def test_servo_swap_disengages_confirms_then_reengages(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)):
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
 
@@ -124,11 +136,11 @@ def test_servo_swap_cancel_reengages_and_keeps_previous(qtbot):
     emitted = []
     widget.signal_objective_changed.connect(lambda: emitted.append(True))
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Cancel)):
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Cancel)):
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
     assert store.current_objective == store.default_objective
     assert widget.dropdown.currentText() == store.default_objective
     assert not emitted
@@ -141,7 +153,7 @@ def test_servo_swap_aborts_without_dialog_when_disengage_fails(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on=False))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question") as question, patch.object(QMessageBox, "warning") as warning:
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
@@ -158,13 +170,13 @@ def test_servo_swap_reports_failed_reengage_but_keeps_confirmed_objective(qtbot)
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on=True))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)), patch.object(
-        QMessageBox, "critical"
-    ) as critical:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ), patch.object(QMessageBox, "critical") as critical:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog"]  # no restore without the servo
+    assert events == ["freeze", "retract", "servo_off", "dialog"]  # no restore without the servo
     critical.assert_called_once()
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
@@ -176,11 +188,11 @@ def test_servo_swap_aborts_with_servo_on_when_retract_fails(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on="retract"))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question") as question, patch.object(QMessageBox, "warning") as warning:
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == []  # the servo was never released
+    assert events == ["freeze"]  # the servo was never released
     question.assert_not_called()
     warning.assert_called_once()
     assert store.current_objective == store.default_objective
@@ -193,13 +205,13 @@ def test_servo_swap_warns_when_restore_fails_but_keeps_confirmed_objective(qtbot
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on="restore"))
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)), patch.object(
-        QMessageBox, "warning"
-    ) as warning:
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ), patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
         qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
 
-    assert events == ["retract", "servo_off", "dialog", "servo_on"]
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on"]
     warning.assert_called_once()
     assert store.current_objective == "10x"
     assert widget.dropdown.isEnabled()
@@ -212,7 +224,7 @@ def test_servo_swap_runs_stage_calls_off_the_gui_thread(qtbot):
     widget = ObjectivesWidget(store, focus_servo=servo)
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, QMessageBox.Ok)):
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)):
         with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
             widget.dropdown.setCurrentText("10x")
             assert not widget.dropdown.isEnabled()
@@ -227,7 +239,7 @@ def test_servo_swap_refused_while_z_is_in_use(qtbot):
     widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_in_use=lambda: True)
     qtbot.addWidget(widget)
 
-    with patch.object(QMessageBox, "question") as question, patch.object(QMessageBox, "warning") as warning:
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
         widget.dropdown.setCurrentText("10x")
 
     assert events == []  # Z never retracted, servo never released
@@ -253,6 +265,7 @@ def _swap_active_log(widget):
         (False, QMessageBox.Ok),  # servo disengage fails
         (True, QMessageBox.Ok),  # servo re-engage fails
         ("restore", QMessageBox.Ok),
+        ("re_retract", QMessageBox.No),
     ],
 )
 def test_servo_swap_holds_swap_active_until_every_end(qtbot, fail_on, answer):
@@ -262,7 +275,7 @@ def test_servo_swap_holds_swap_active_until_every_end(qtbot, fail_on, answer):
     qtbot.addWidget(widget)
     swap_active = _swap_active_log(widget)
 
-    with patch.object(QMessageBox, "question", side_effect=_dialog_answering(events, answer)), patch.object(
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, answer)), patch.object(
         QMessageBox, "warning"
     ), patch.object(QMessageBox, "critical"):
         widget.dropdown.setCurrentText("10x")
@@ -282,3 +295,414 @@ def test_refused_swap_never_reports_swap_active(qtbot):
         widget.dropdown.setCurrentText("10x")
 
     assert swap_active == []
+
+
+class _RecordingLift:
+    """A Z lift (0..10 mm, at ``height``) that records its moves into the shared event list: a move down as
+    "lift_lower" (a changer switch's lower(), or a manual swap's lowering by Z_LIFT_SWAP_LOWER_MM), a move up as
+    "lift_to_<mm>". ``fail_move`` makes the moves up fail."""
+
+    def __init__(self, events, fail_move=False, height=4.0):
+        self.events = events
+        self.fail_move = fail_move
+        self.height = height
+
+    def get_position_mm(self):
+        return self.height
+
+    def clamp(self, mm):
+        return min(max(mm, 0.0), 10.0)
+
+    def lower(self):
+        before, self.height = self.height, 0.0
+        self.events.append("lift_lower")
+        return before
+
+    def move_to(self, mm, blocking=True):
+        if mm < self.height:
+            self.events.append("lift_lower")
+        elif self.fail_move:
+            raise TimeoutError("lift stalled")
+        else:
+            self.events.append(f"lift_to_{mm}")
+        self.height = mm
+
+
+def test_servo_swap_to_higher_mag_lowers_the_lift_then_raises_it_before_z_returns(qtbot):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    # Lowered with the objective already retracted, before the servo lets go; raised back once the servo holds Z
+    # again, before the objective comes back down (straight down: no retract and back).
+    assert events == [
+        "freeze",
+        "retract",
+        "lift_lower",
+        "servo_off",
+        "dialog",
+        "servo_on",
+        "lift_to_4.0",
+        "restore_2.5",
+    ]
+    assert "goes back up to 4.000 mm" in question.call_args.args[2]
+
+
+@pytest.mark.parametrize("with_lift", [True, False])
+def test_servo_swap_can_leave_z_retracted(qtbot, with_lift):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(
+        store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events) if with_lift else None
+    )
+    qtbot.addWidget(widget)
+
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.No)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    # The swap goes through (the new objective is current) and the lift still rises, but Z stays retracted:
+    # retracted again after servo-on, since "retracted" must not mean wherever Z drifted to.
+    lift = ["lift_lower"] if with_lift else []
+    raised = ["lift_to_4.0"] if with_lift else []
+    assert events == ["freeze", "retract", *lift, "servo_off", "dialog", "servo_on", "retract", *raised]
+    assert store.current_objective == "40x"
+
+
+def test_a_lift_that_fails_to_rise_after_a_swap_leaves_z_retracted(qtbot):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events, fail_move=True))
+    qtbot.addWidget(widget)
+
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ), patch.object(QMessageBox, "warning") as warning:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    assert events == ["freeze", "retract", "lift_lower", "servo_off", "dialog", "servo_on"]  # Z never came back down
+    assert warning.call_args.args[1] == "Z Lift Not Raised"
+
+
+class _DriftingServo(_RecordingServo):
+    """Sinks toward the sample (to drift_to_mm) while its servo is off; servo-on holds it there
+    (PIFocusStage.set_servo)."""
+
+    def __init__(self, events, drift_to_mm, **kwargs):
+        super().__init__(events, **kwargs)
+        self.drift_to_mm = drift_to_mm
+
+    def set_servo(self, enabled):
+        super().set_servo(enabled)
+        if not enabled:
+            self.z_mm = self.drift_to_mm
+
+
+class _LiftCheckingZ(_RecordingLift):
+    """Records where Z was when the lift started to rise."""
+
+    def __init__(self, events, servo, **kwargs):
+        super().__init__(events, **kwargs)
+        self.servo = servo
+        self.z_when_raised = None
+
+    def move_to(self, mm, blocking=True):
+        if mm > self.height:
+            self.z_when_raised = self.servo.z_mm
+        super().move_to(mm, blocking)
+
+
+def _swap_with_drift(qtbot, drift_to_mm, answer, fail_on=None):
+    store = ts.get_test_objective_store()  # starts on 20x, Z at 2.5 mm
+    events = []
+    servo = _DriftingServo(events, drift_to_mm, fail_on=fail_on)
+    lift = _LiftCheckingZ(events, servo)
+    widget = ObjectivesWidget(store, focus_servo=servo, z_lift=lift)
+    qtbot.addWidget(widget)
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, answer)), patch.object(
+        QMessageBox, "warning"
+    ) as warning:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+    return events, lift, warning
+
+
+def test_z_that_drifted_past_its_return_z_goes_back_there_before_the_lift_rises(qtbot):
+    events, lift, _ = _swap_with_drift(qtbot, drift_to_mm=3.0, answer=QMessageBox.Ok)
+    assert lift.z_when_raised == pytest.approx(2.5)  # not the 3.0 mm it drifted to
+    assert events[-4:] == ["servo_on", "restore_2.5", "lift_to_4.0", "restore_2.5"]
+
+
+def test_z_short_of_its_return_z_is_not_moved_up_and_back_down(qtbot):
+    events, lift, _ = _swap_with_drift(qtbot, drift_to_mm=1.4, answer=QMessageBox.Ok)
+    assert lift.z_when_raised == pytest.approx(1.4)  # farther from the sample than where Z ends up
+    assert events[-3:] == ["servo_on", "lift_to_4.0", "restore_2.5"]
+
+
+def test_z_kept_retracted_is_retracted_again_before_the_lift_rises(qtbot):
+    events, lift, _ = _swap_with_drift(qtbot, drift_to_mm=1.4, answer=QMessageBox.No)
+    assert lift.z_when_raised == pytest.approx(0.1)  # not the 1.4 mm it drifted to
+    assert events[-3:] == ["servo_on", "retract", "lift_to_4.0"]
+
+
+@pytest.mark.parametrize("answer, fail_on", [(QMessageBox.Ok, "restore"), (QMessageBox.No, "re_retract")])
+def test_a_failed_move_clear_after_servo_on_keeps_the_lift_lowered(qtbot, answer, fail_on):
+    events, lift, warning = _swap_with_drift(qtbot, drift_to_mm=3.0, answer=answer, fail_on=fail_on)
+    assert events[-1] == "servo_on" and lift.z_when_raised is None  # the lift never moved
+    assert warning.call_args.args[1] == "Z Not Moved Clear"
+    assert "Z lift stays lowered" in warning.call_args.args[2]
+
+
+def test_servo_swap_to_lower_mag_lowers_the_lift_too(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("10x")
+
+    assert events == [
+        "freeze",
+        "retract",
+        "lift_lower",
+        "servo_off",
+        "dialog",
+        "servo_on",
+        "lift_to_4.0",
+        "restore_2.5",
+    ]
+    assert "goes back up to 4.000 mm" in question.call_args.args[2]
+
+
+@pytest.mark.parametrize("height, lowered_to", [(8.0, 3.0), (4.0, 0.0)])
+def test_servo_swap_lowers_the_lift_by_the_swap_distance_not_below_its_minimum(qtbot, height, lowered_to):
+    store = ts.get_test_objective_store()
+    events = []
+    lift = _RecordingLift(events, height=height)
+    heights = []
+    real_move_to = lift.move_to
+    lift.move_to = lambda mm, blocking=True: (heights.append(mm), real_move_to(mm, blocking))
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=lift)
+    qtbot.addWidget(widget)
+
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    assert heights == [lowered_to, height]  # Z_LIFT_SWAP_LOWER_MM (5) down, then back to where it was
+
+
+def test_servo_swap_with_the_lift_at_its_bottom_does_not_move_it(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events, height=0.0))
+    qtbot.addWidget(widget)
+
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    assert events == ["freeze", "retract", "servo_off", "dialog", "servo_on", "restore_2.5"]
+    assert "Z lift" not in question.call_args.args[2]
+
+
+class _FreezingServo(_RecordingServo):
+    """Models PIFocusStage's profile freeze: frozen at the Z where freeze_profile() was called, back on when a move
+    lands there."""
+
+    def __init__(self, events, **kwargs):
+        super().__init__(events, **kwargs)
+        self.frozen_at = None
+
+    def freeze_profile(self):
+        super().freeze_profile()
+        self.frozen_at = self.z_mm
+
+    def is_profile_frozen(self):
+        return self.frozen_at is not None
+
+    def move_z_to(self, abs_mm, blocking=True):
+        super().move_z_to(abs_mm, blocking)
+        if self.frozen_at is not None and abs(abs_mm - self.frozen_at) < 1e-6:
+            self.frozen_at = None
+
+
+def _frozen_swap(qtbot, answer, with_lift):
+    store = ts.get_test_objective_store()  # starts on 20x, Z at 2.5 mm
+    events = []
+    servo = _FreezingServo(events)
+    widget = ObjectivesWidget(store, focus_servo=servo, z_lift=_RecordingLift(events) if with_lift else None)
+    qtbot.addWidget(widget)
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, answer)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+    return events, servo
+
+
+def test_return_z_after_a_quiet_swap_switches_the_profile_back_on(qtbot):
+    events, servo = _frozen_swap(qtbot, QMessageBox.Ok, with_lift=True)
+    assert events[-3:] == ["servo_on", "lift_to_4.0", "restore_2.5"]
+    assert not servo.is_profile_frozen()
+
+
+def test_keep_z_retracted_after_a_quiet_swap_goes_to_the_focus_height_first_with_the_lift_down(qtbot):
+    events, servo = _frozen_swap(qtbot, QMessageBox.No, with_lift=True)
+    # servo on -> down to the frozen focus height while the lift is still lowered (the profile comes back on) ->
+    # retracted with it on -> lift back up
+    assert events[-4:] == ["servo_on", "restore_2.5", "retract", "lift_to_4.0"]
+    assert not servo.is_profile_frozen()
+
+
+def test_keep_z_retracted_without_a_lift_leaves_the_profile_frozen(qtbot, caplog):
+    events, servo = _frozen_swap(qtbot, QMessageBox.No, with_lift=False)
+    assert events[-2:] == ["servo_on", "retract"]  # no trip toward a sample at its working height
+    assert servo.is_profile_frozen()
+    assert any("stays frozen" in record.getMessage() for record in caplog.records)
+
+
+def test_changer_switch_to_higher_mag_lowers_the_lift_first(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+
+    with patch.object(QMessageBox, "information") as information:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("60x")
+
+    assert events == ["lift_lower"]
+    assert changer.calls == ["60x"]
+    information.assert_called_once()
+
+
+def test_changer_switch_with_a_lift_holds_swap_active_until_it_ends(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    changer = _BlockingChanger(fail_with=RuntimeError("stalled"))
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events))
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+
+    with patch.object(QMessageBox, "warning"), patch.object(QMessageBox, "information"):
+        widget.dropdown.setCurrentText("60x")
+        assert active == [True]  # held while the lift is lowered and the changer moves
+        changer.release.set()
+        qtbot.waitUntil(lambda: widget.dropdown.isEnabled(), timeout=3000)
+
+    assert active == [True, False]  # released after the failure too
+
+
+def test_changer_switch_without_a_lift_does_not_hold_swap_active(qtbot):
+    store = ts.get_test_objective_store()
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer)
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+    with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+        widget.dropdown.setCurrentText("60x")
+    assert active == []
+
+
+class _FakeStageUtils(QObject):
+    signal_threaded_stage_move_started = Signal()
+    signal_loading_position_reached = Signal()
+    signal_scanning_position_reached = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.slide_position = "loading"
+        self.switches = 0
+
+    def switch_position(self):
+        self.switches += 1
+        self.signal_threaded_stage_move_started.emit()
+
+
+def test_changer_swap_is_refused_while_the_scanning_return_is_moving_the_lift(qtbot):
+    # The order from review: the scanning return is under way (it will raise the lift once XY is back), then a
+    # higher-magnification switch is asked for. It must not start: nothing lowered, the changer not moved.
+    store = ts.get_test_objective_store()
+    events = []
+    utils = _FakeStageUtils()
+    guard = LiftMotionGuard(utils)
+    changer = _BlockingChanger()
+    changer.release.set()
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift(events), lift_motion_guard=guard)
+    qtbot.addWidget(widget)
+
+    utils.switch_position()  # scanning return started, worker still running
+    with patch.object(QMessageBox, "warning") as warning:
+        widget.dropdown.setCurrentText("60x")
+
+    warning.assert_called_once()
+    assert events == [] and changer.calls == []
+    assert store.current_objective == "20x" and widget.dropdown.currentText() == "20x"
+    assert widget.dropdown.isEnabled()
+
+    utils.signal_scanning_position_reached.emit()  # once it is done, the switch goes through
+    with patch.object(QMessageBox, "information"):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("60x")
+    assert events == ["lift_lower"] and changer.calls == ["60x"]
+    assert not guard.busy
+
+
+def test_servo_swap_is_refused_while_the_loading_toggle_runs(qtbot):
+    store = ts.get_test_objective_store()
+    events = []
+    utils = _FakeStageUtils()
+    guard = LiftMotionGuard(utils)
+    widget = ObjectivesWidget(
+        store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events), lift_motion_guard=guard
+    )
+    qtbot.addWidget(widget)
+    active = []
+    widget.signal_swap_active.connect(active.append)
+
+    utils.switch_position()
+    with patch.object(QMessageBox, "warning") as warning:
+        widget.dropdown.setCurrentText("40x")
+    warning.assert_called_once()
+    assert events == [] and active == []  # never retracted, never reported active
+    assert store.current_objective == "20x"
+
+
+@pytest.mark.parametrize("fail_with", [None, RuntimeError("stalled")])
+def test_a_running_swap_holds_the_lift_against_loading_until_it_ends(qtbot, fail_with):
+    store = ts.get_test_objective_store()
+    utils = _FakeStageUtils()
+    guard = LiftMotionGuard(utils)
+    changer = _BlockingChanger(fail_with=fail_with)
+    widget = ObjectivesWidget(store, objective_changer=changer, z_lift=_RecordingLift([]), lift_motion_guard=guard)
+    qtbot.addWidget(widget)
+    button = LoadingPositionButton(utils, guard)
+    qtbot.addWidget(button)
+
+    with patch.object(QMessageBox, "warning"), patch.object(QMessageBox, "information"):
+        widget.dropdown.setCurrentText("60x")
+        assert guard.busy and not button.isEnabled()
+        button._toggle()  # refused even if a click got through
+        assert utils.switches == 0
+        changer.release.set()
+        qtbot.waitUntil(lambda: widget.dropdown.isEnabled(), timeout=3000)
+
+    assert not guard.busy and button.isEnabled()  # released after success and after failure

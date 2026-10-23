@@ -853,6 +853,12 @@ class ImageDisplayWindow(QMainWindow):
     image_click_coordinates = Signal(int, int, int, int)
     signal_z_um_delta = Signal(float)
 
+    # Line colors, in the order lines are added; the first matches the original single-line profiler
+    LINE_PROFILE_COLORS = ("y", "c", "m", "g", (255, 128, 0), (100, 150, 255))
+    DEFAULT_LINE_WIDTH_PX = 5  # every new line, however wide the selected one is
+    LINE_SELECT_TOLERANCE_PX = 8
+    MAX_BAND_SAMPLES = 256
+
     def __init__(
         self,
         liveController=None,
@@ -881,7 +887,10 @@ class ImageDisplayWindow(QMainWindow):
         self.has_valid_position = False
 
         # Line profiler state
-        self.line_roi = None
+        self.line_rois: list[pg.LineROI] = []
+        self.selected_line_roi: Optional[pg.LineROI] = None
+        self._line_roi_labels = {}  # roi -> (color, name), fixed for the line's lifetime
+        self._line_count = 0
         self.is_drawing_line = False
         self.line_start_pos = None
         self.line_end_pos = None
@@ -921,6 +930,12 @@ class ImageDisplayWindow(QMainWindow):
         self.stage_position_label.setMinimumWidth(200)
         self.piezo_position_label = QLabel()
         self.piezo_position_label.setMinimumWidth(150)
+        # The Z lift (squid/stage/lift.py), shown only on a system that has one
+        self.lift_position_label = QLabel()
+        self.lift_position_label.setMinimumWidth(120)
+        self.lift_position_label.setVisible(False)
+        self.lift_separator = QLabel(" | ")
+        self.lift_separator.setVisible(False)
 
         # Add line profiler toggle button
         self.btn_line_profiler = QPushButton("Line Profiler")
@@ -928,6 +943,40 @@ class ImageDisplayWindow(QMainWindow):
         self.btn_line_profiler.setChecked(False)
         self.btn_line_profiler.setEnabled(False)
         self.btn_line_profiler.clicked.connect(self.toggle_line_profiler)
+
+        # Line profiler shortcuts, shown while the profiler is on
+        self.btn_line_draw = QPushButton("Draw")
+        self.btn_line_draw.setToolTip("Draw another line: click its start, then its end")
+        self.btn_line_draw.clicked.connect(self.start_drawing_line)
+        self.btn_line_horizontal = QPushButton("H")
+        self.btn_line_horizontal.setToolTip("Add a horizontal line across the full field of view")
+        self.btn_line_horizontal.clicked.connect(self.add_horizontal_line)
+        self.btn_line_vertical = QPushButton("V")
+        self.btn_line_vertical.setToolTip("Add a vertical line across the full field of view")
+        self.btn_line_vertical.clicked.connect(self.add_vertical_line)
+        self.btn_line_full = QPushButton("Full")
+        self.btn_line_full.setToolTip("Extend the selected line to the edges of the field of view")
+        self.btn_line_full.clicked.connect(self.extend_line_to_fov)
+        self.btn_line_fill = QPushButton("Fill FOV")
+        self.btn_line_fill.setToolTip(
+            "Widen the selected line's band to cover the whole field of view: "
+            "the profile becomes the average across the image"
+        )
+        self.btn_line_fill.clicked.connect(self.fill_fov_with_line)
+        self.btn_line_clear = QPushButton("Clear")
+        self.btn_line_clear.setToolTip("Remove all lines (right-click a line to remove just that one)")
+        self.btn_line_clear.clicked.connect(self.clear_line_rois)
+        self.line_shortcut_buttons = (
+            self.btn_line_draw,
+            self.btn_line_horizontal,
+            self.btn_line_vertical,
+            self.btn_line_full,
+            self.btn_line_fill,
+            self.btn_line_clear,
+        )
+        for button in self.line_shortcut_buttons:
+            button.setMaximumWidth(button.fontMetrics().horizontalAdvance(button.text()) + 20)
+            button.hide()
 
         self.btn_overexposure = QPushButton("Over-exposed Pixels")
         self.btn_overexposure.setCheckable(True)
@@ -944,6 +993,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.pixel_value_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.stage_position_label)
+        status_layout.addWidget(self.lift_separator)
+        status_layout.addWidget(self.lift_position_label)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.piezo_position_label)
         status_layout.addStretch()  # Push labels to the left
@@ -952,6 +1003,8 @@ class ImageDisplayWindow(QMainWindow):
         status_layout.addWidget(self.btn_overexposure)
         status_layout.addWidget(QLabel(" | "))  # Add separator
         status_layout.addWidget(self.btn_line_profiler)  # Add line profiler button
+        for button in self.line_shortcut_buttons:
+            status_layout.addWidget(button)
 
         status_widget.setLayout(status_layout)
 
@@ -1037,7 +1090,8 @@ class ImageDisplayWindow(QMainWindow):
         self.line_profiler_widget = pg.GraphicsLayoutWidget()
         self.line_profiler_plot = self.line_profiler_widget.addPlot()
         self.line_profiler_plot.setLabel("left", "Intensity")
-        self.line_profiler_plot.setLabel("bottom", "Position")
+        self.line_profiler_plot.setLabel("bottom", "Distance (pixels)")
+        self.line_profiler_plot.addLegend()
         self.line_profiler_widget.hide()  # Initially hidden
         self.line_profiler_manual_range = False  # Flag to track if y-range is manually set
         self.line_profiler_plot.sigRangeChanged.connect(self._on_range_changed)
@@ -1092,6 +1146,12 @@ class ImageDisplayWindow(QMainWindow):
                     )
                 else:
                     self.stage_position_label.setText("Stage: N/A")
+
+                lift = getattr(self.liveController.microscope, "z_lift", None)
+                if lift is not None:
+                    self.lift_position_label.setText(f"Lift: {lift.get_position_mm():.3f} mm")
+                self.lift_position_label.setVisible(lift is not None)
+                self.lift_separator.setVisible(lift is not None)
 
                 piezo = self.liveController.microscope.addons.piezo_stage
                 if piezo:
@@ -1196,31 +1256,35 @@ class ImageDisplayWindow(QMainWindow):
 
     def toggle_line_profiler(self):
         """Toggle the visibility of the line profiler widget."""
+        for button in self.line_shortcut_buttons:
+            button.setVisible(self.btn_line_profiler.isChecked())
         if self.btn_line_profiler.isChecked():
             self.line_profiler_widget.show()
-            if self.line_roi is None:
-                # Start in drawing mode
-                self.is_drawing_line = True
-                self.line_start_pos = None
-                self.line_end_pos = None
-                # Set cross cursor
-                if self.show_LUT:
-                    self.graphics_widget.view.getView().setCursor(self.drawing_cursor)
-                else:
-                    self.graphics_widget.view.setCursor(self.drawing_cursor)
-                self._log.info("Line profiler opened - ready to draw line")
+            if not self.line_rois:
+                self.start_drawing_line()
             else:
-                self.line_roi.show()
+                for roi in self.line_rois:
+                    roi.show()
                 self.update_line_profile()
         else:
             self.line_profiler_widget.hide()
-            if self.line_roi is not None:
-                self.line_roi.hide()
-            self._remove_line_preview_items()
-            self.is_drawing_line = False
-            self.line_start_pos = None
-            self.line_end_pos = None
-            self._active_view().setCursor(self.normal_cursor)
+            for roi in self.line_rois:
+                roi.hide()
+            self._cancel_line_drawing()
+
+    def start_drawing_line(self):
+        """Enter drawing mode: the next two clicks on the image set a new line's start and end."""
+        self._cancel_line_drawing()
+        self.is_drawing_line = True
+        self._active_view().setCursor(self.drawing_cursor)
+        self._log.info("Line profiler ready to draw line")
+
+    def _cancel_line_drawing(self):
+        self._remove_line_preview_items()
+        self.is_drawing_line = False
+        self.line_start_pos = None
+        self.line_end_pos = None
+        self._active_view().setCursor(self.normal_cursor)
 
     def _on_range_changed(self, view_range):
         """Handle manual range changes in the line profiler plot."""
@@ -1239,95 +1303,261 @@ class ImageDisplayWindow(QMainWindow):
             self.start_point_marker = None
 
     def create_line_roi(self):
-        """Create a line ROI for intensity profiling."""
-        if self.line_roi is None and self.line_start_pos is not None and self.line_end_pos is not None:
-            try:
-                # Convert coordinates to Point objects
-                start_point = pg.Point(self.line_start_pos[0], self.line_start_pos[1])
-                end_point = pg.Point(self.line_end_pos[0], self.line_end_pos[1])
+        """Add a line ROI from line_start_pos to line_end_pos (view coordinates) for intensity profiling."""
+        if self.line_start_pos is None or self.line_end_pos is None:
+            return None
+        try:
+            color = self.LINE_PROFILE_COLORS[self._line_count % len(self.LINE_PROFILE_COLORS)]
+            self._line_count += 1
+            roi = pg.LineROI(
+                pos1=pg.Point(*self.line_start_pos),
+                pos2=pg.Point(*self.line_end_pos),
+                width=self.DEFAULT_LINE_WIDTH_PX,
+                pen=pg.mkPen(color, width=2),
+                hoverPen=pg.mkPen(color, width=3),
+                handlePen=pg.mkPen(color, width=2),
+                handleHoverPen=pg.mkPen(color, width=2),
+                movable=True,
+                rotatable=True,
+                resizable=True,
+                removable=True,  # right-click menu offers "Remove ROI"
+            )
+            self._line_roi_labels[roi] = (color, f"Line {self._line_count}")
+            self.line_rois.append(roi)
+            self._active_view().addItem(roi)
 
-                # Create the line ROI with width parameter
-                self.line_roi = pg.LineROI(
-                    pos1=start_point,
-                    pos2=end_point,
-                    width=5,  # Default width in pixels
-                    pen=pg.mkPen("y", width=2),
-                    hoverPen=pg.mkPen("y", width=2),
-                    handlePen=pg.mkPen("y", width=2),
-                    handleHoverPen=pg.mkPen("y", width=2),
-                    movable=True,
-                    rotatable=True,
-                    resizable=True,
-                )
+            roi.sigRegionChanged.connect(self.update_line_profile)
+            roi.sigRegionChangeStarted.connect(self.select_line_roi)
+            roi.sigRemoveRequested.connect(self.remove_line_roi)
+            self.line_profiler_manual_range = False  # fit the plot to the new line
+            self.select_line_roi(roi)
+            self._log.info("Line ROI created successfully")
+            return roi
+        except Exception as e:
+            self._log.error(f"Error creating line ROI: {str(e)}")
+            return None
+        finally:
+            self.line_start_pos = None
+            self.line_end_pos = None
 
-                # Add the ROI to the view
-                if self.show_LUT:
-                    self.graphics_widget.view.getView().addItem(self.line_roi)
-                else:
-                    self.graphics_widget.view.addItem(self.line_roi)
+    def select_line_roi(self, roi):
+        """Make roi the line that shortcuts act on, drawn thicker on the image and in the plot."""
+        self.selected_line_roi = roi
+        for line in self.line_rois:
+            color, _ = self._line_roi_labels[line]
+            line.setPen(pg.mkPen(color, width=4 if line is roi else 2))
+        self.update_line_profile()
 
-                # Connect signal
-                self.line_roi.sigRegionChanged.connect(self.update_line_profile)
-                self.update_line_profile()
-                self._log.info("Line ROI created successfully")
-            except Exception as e:
-                self._log.error(f"Error creating line ROI: {str(e)}")
-                self.line_roi = None
-                self.line_start_pos = None
-                self.line_end_pos = None
+    def _select_line_near(self, scene_pos):
+        """Select the line nearest a click, if within LINE_SELECT_TOLERANCE_PX screen pixels.
+
+        A 5 px line on a zoomed-out camera frame is 1-2 screen pixels thick, too thin to click exactly."""
+        if not self.btn_line_profiler.isChecked():
+            return
+        view = self._active_view()
+        click = np.array([scene_pos.x(), scene_pos.y()])
+        nearest, nearest_distance = None, self.LINE_SELECT_TOLERANCE_PX
+        for roi in self.line_rois:
+            # Scene coordinates are screen pixels
+            a, b = (np.array([q.x(), q.y()]) for q in map(view.mapViewToScene, self._line_roi_endpoints(roi)))
+            ab = b - a
+            t = np.clip(np.dot(click - a, ab) / max(np.dot(ab, ab), 1e-12), 0, 1)
+            distance = np.linalg.norm(click - (a + t * ab))
+            if distance <= nearest_distance:
+                nearest, nearest_distance = roi, distance
+        if nearest is not None and nearest is not self.selected_line_roi:
+            self.select_line_roi(nearest)
+
+    def remove_line_roi(self, roi):
+        """Remove one line ROI; the most recently added remaining line becomes selected."""
+        if roi not in self.line_rois:
+            return
+        self.line_rois.remove(roi)
+        del self._line_roi_labels[roi]
+        self._active_view().removeItem(roi)
+        if self.selected_line_roi is roi:
+            self.selected_line_roi = None
+            if self.line_rois:
+                self.select_line_roi(self.line_rois[-1])
+        self.update_line_profile()
+
+    def clear_line_rois(self):
+        """Remove every line ROI."""
+        for roi in list(self.line_rois):
+            self.remove_line_roi(roi)
 
     def update_line_profile(self):
-        """Update the line profile plot based on the line ROI."""
-        if not self.btn_line_profiler.isChecked() or self.line_roi is None:
+        """Plot one intensity profile per line ROI, in the line's color."""
+        if not self.btn_line_profiler.isChecked():
             return
 
         try:
-            if hasattr(self.graphics_widget.img, "image"):
-                image = self.graphics_widget.img.image
-                if image is not None:
-                    # Get the line ROI state
-                    state = self.line_roi.getState()
-                    pos = state["pos"]
-                    size = state["size"]
-                    angle = state["angle"]
-                    print(angle)
-                    angle = np.radians(angle)
+            self.line_profiler_plot.clear()
+            image = self.graphics_widget.img.image
+            if image is None or not self.line_rois:
+                return
+            for roi in self.line_rois:
+                length, width = roi.size()
+                start, end = self._line_roi_endpoints(roi)
 
-                    # Calculate start and end points
-                    start = (pos[0], pos[1])
-                    end = (pos[0] + size[0] * np.cos(angle), pos[1] + size[0] * np.sin(angle))
+                # Convert ROI coordinates to image coordinates
+                start_img = self.graphics_widget.img.mapFromView(start)
+                end_img = self.graphics_widget.img.mapFromView(end)
+                profile = self.get_line_profile(image, start_img, end_img, width)
 
-                    # Convert ROI coordinates to image coordinates
-                    start_img = self.graphics_widget.img.mapFromView(pg.Point(start[0], start[1]))
-                    end_img = self.graphics_widget.img.mapFromView(pg.Point(end[0], end[1]))
+                pixel_distance = np.linspace(0, length, len(profile))
+                color, name = self._line_roi_labels[roi]
+                pen = pg.mkPen(color, width=2 if roi is self.selected_line_roi else 1)
+                self.line_profiler_plot.plot(pixel_distance, profile, pen=pen, name=name, connect="finite")
 
-                    # Get the profile along the line
-                    profile = self.get_line_profile(image, start_img, end_img, size[1])  # size[1] is the width
-
-                    # Clear previous plots
-                    self.line_profiler_plot.clear()
-
-                    # Calculate pixel distance for x-axis
-                    pixel_distance = np.linspace(0, size[0], len(profile))
-
-                    # Plot the profile
-                    self.line_profiler_plot.plot(pixel_distance, profile, pen="w", name="Intensity Profile")
-
-                    # Set labels
-                    self.line_profiler_plot.setLabel("left", "Intensity")
-                    self.line_profiler_plot.setLabel("bottom", "Distance (pixels)")
-
-                    # Add legend
-                    self.line_profiler_plot.addLegend()
-
-                    # Only auto-range if not manually set
-                    if not self.line_profiler_manual_range:
-                        self.line_profiler_plot.autoRange()
+            # Only auto-range if not manually set
+            if not self.line_profiler_manual_range:
+                self.line_profiler_plot.autoRange()
         except Exception as e:
             self._log.error(f"Error updating line profile: {str(e)}")
 
+    @staticmethod
+    def _line_roi_endpoints(roi):
+        """The line ROI's centerline endpoints in view coordinates.
+
+        The ROI's position is its corner, half a width off the line, so map the centerline instead."""
+        length, width = roi.size()
+        start = roi.mapToParent(pg.Point(0, width / 2))
+        end = roi.mapToParent(pg.Point(length, width / 2))
+        return start, end
+
+    def _add_line_across_image(self, start, end):
+        """Add a line ROI from start to end, given in image coordinates; cancels a line being drawn by hand."""
+        self._cancel_line_drawing()
+        start_view = self.graphics_widget.img.mapToView(pg.Point(*start))
+        end_view = self.graphics_widget.img.mapToView(pg.Point(*end))
+        self.line_start_pos = (start_view.x(), start_view.y())
+        self.line_end_pos = (end_view.x(), end_view.y())
+        self.create_line_roi()
+
+    def _image_size(self):
+        """(width, height) of the displayed image, or None before the first frame."""
+        if self.graphics_widget.img.image is None:
+            return None
+        return self.graphics_widget.img.width(), self.graphics_widget.img.height()
+
+    def add_horizontal_line(self):
+        """Add a horizontal line through the image center, across the full field of view."""
+        size = self._image_size()
+        if size is None:
+            return
+        width, height = size
+        y = (height - 1) / 2
+        self._add_line_across_image((0, y), (width - 1, y))
+
+    def add_vertical_line(self):
+        """Add a vertical line through the image center, across the full field of view."""
+        size = self._image_size()
+        if size is None:
+            return
+        width, height = size
+        x = (width - 1) / 2
+        self._add_line_across_image((x, 0), (x, height - 1))
+
+    def extend_line_to_fov(self):
+        """Extend the selected line along its direction until it meets the edges of the field of view."""
+        size = self._image_size()
+        roi = self.selected_line_roi
+        if size is None or roi is None:
+            return
+        start, end = (self.graphics_widget.img.mapFromView(p) for p in self._line_roi_endpoints(roi))
+        origin = np.array([start.x(), start.y()])
+        direction = np.array([end.x(), end.y()]) - origin
+        if np.linalg.norm(direction) == 0:
+            return
+
+        # Clip the infinite line origin + t * direction to the pixel centers [0, W-1] x [0, H-1]
+        t_min, t_max = -np.inf, np.inf
+        for o, d, upper in zip(origin, direction, (size[0] - 1, size[1] - 1)):
+            if abs(d) < 1e-9:
+                if not 0 <= o <= upper:
+                    return  # parallel to and outside this pair of edges
+                continue
+            t0, t1 = sorted(((0 - o) / d, (upper - o) / d))
+            t_min, t_max = max(t_min, t0), min(t_max, t1)
+        if t_max <= t_min:
+            return  # the line misses the image
+
+        new_start = self.graphics_widget.img.mapToView(pg.Point(*(origin + t_min * direction)))
+        new_end = self.graphics_widget.img.mapToView(pg.Point(*(origin + t_max * direction)))
+        self.line_profiler_manual_range = False  # fit the plot to the longer line
+        self._set_line_roi_endpoints(roi, new_start, new_end)
+
+    def fill_fov_with_line(self):
+        """Center the selected line on the image and widen its band to cover the whole field of view.
+
+        The line keeps its angle; its profile becomes the mean across the image perpendicular to it, e.g. the
+        mean of all rows for a horizontal line."""
+        size = self._image_size()
+        roi = self.selected_line_roi
+        if size is None or roi is None:
+            return
+        start, end = (self.graphics_widget.img.mapFromView(p) for p in self._line_roi_endpoints(roi))
+        direction = np.array([end.x() - start.x(), end.y() - start.y()])
+        if np.linalg.norm(direction) == 0:
+            return
+        along = direction / np.linalg.norm(direction)
+        across = np.array([-along[1], along[0]])
+
+        # Project the corner pixel centers onto the line and its normal
+        width, height = size
+        corners = np.array([(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)], dtype=float)
+        center = corners.mean(axis=0)
+        t = (corners - center) @ along
+        band = (corners - center) @ across
+        new_start = self.graphics_widget.img.mapToView(pg.Point(*(center + t.min() * along)))
+        new_end = self.graphics_widget.img.mapToView(pg.Point(*(center + t.max() * along)))
+        self.line_profiler_manual_range = False  # fit the plot to the new profile
+        # +1: the band covers whole pixels, half a pixel beyond the outermost pixel centers on each side
+        self._set_line_roi_endpoints(roi, new_start, new_end, band.max() - band.min() + 1)
+
+    @staticmethod
+    def _set_line_roi_endpoints(roi, start, end, width=None):
+        """Move a line ROI so its centerline runs from start to end (view coordinates); width defaults to its own."""
+        if width is None:
+            width = roi.size()[1]
+        start, end = pg.Point(start), pg.Point(end)
+        delta = end - start
+        angle = np.arctan2(delta.y(), delta.x())
+        # Same placement as pg.LineROI: the position is the corner half a width off the start point
+        corner = start + pg.Point(width / 2 * np.sin(angle), -width / 2 * np.cos(angle))
+        roi.setState({"pos": corner, "size": pg.Point(delta.length(), width), "angle": np.degrees(angle)})
+
+    @staticmethod
+    def _axis_aligned_line_profile(image, start, end, width):
+        """Exact profile of a horizontal or vertical line: the mean of the whole pixels its band covers.
+
+        Returns None for a tilted line. Columns (rows) off the image read NaN."""
+        if abs(end.y() - start.y()) < 1e-6:
+            pixels, along, across, lo_hi = image, (start.x(), end.x()), start.y(), image.shape[0]
+        elif abs(end.x() - start.x()) < 1e-6:
+            pixels, along, across, lo_hi = image.T, (start.y(), end.y()), start.x(), image.shape[1]
+        else:
+            return None
+        # Pixel i spans [i - 0.5, i + 0.5]: take every pixel whose center lies in the band, at least the nearest one
+        first = max(int(np.ceil(across - width / 2)), 0)
+        last = min(int(np.floor(across + width / 2)), lo_hi - 1)
+        if last < first:
+            first = last = int(round(across))
+        positions = np.arange(int(round(along[0])), int(round(along[1])) + 1)
+        if along[1] < along[0]:
+            positions = np.arange(int(round(along[0])), int(round(along[1])) - 1, -1)
+        profile = np.full(len(positions), np.nan)
+        on_image = (positions >= 0) & (positions < pixels.shape[1])
+        if 0 <= first < lo_hi:
+            profile[on_image] = pixels[first : last + 1, positions[on_image]].mean(axis=0)
+        return profile
+
     def get_line_profile(self, image, start, end, width=1):
         """Get intensity profile along a line with specified width."""
+        exact = self._axis_aligned_line_profile(image, start, end, width)
+        if exact is not None:
+            return exact
         try:
             # Calculate the line vector
             line_vec = np.array([end.x() - start.x(), end.y() - start.y()])
@@ -1346,11 +1576,16 @@ class ImageDisplayWindow(QMainWindow):
             perp_vec = np.array([-line_vec[1], line_vec[0]]) / line_length
 
             # Create meshgrid for width sampling
-            width_points = max(1, int(width))  # Ensure at least 1 point
+            # One sample per pixel across the band, capped so a band as wide as the image (Fill FOV on a tilted
+            # line) stays cheap enough to recompute on every live frame
+            width_points = min(max(1, int(width)), self.MAX_BAND_SAMPLES)
             width_offsets = np.linspace(-width / 2, width / 2, width_points)
 
-            # Initialize profile array
+            # Sum and count only samples on the image: a band wider than the image (Fill FOV on a tilted line)
+            # must not average in made-up values
+            height, width_px = image.shape[:2]
             profile = np.zeros(num_points)
+            counts = np.zeros(num_points)
 
             # Sample points along the width
             for w in width_offsets:
@@ -1358,11 +1593,19 @@ class ImageDisplayWindow(QMainWindow):
                 y_offset = y + perp_vec[1] * w
 
                 # Get values at these points
-                values = scipy.ndimage.map_coordinates(image, [y_offset, x_offset], order=1)
-                profile += values
+                # "nearest" so a sample on the outer half of an edge pixel reads that pixel, not 0
+                values = scipy.ndimage.map_coordinates(
+                    image, [y_offset, x_offset], order=1, output=np.float64, mode="nearest"
+                )
+                on_image = (
+                    (x_offset >= -0.5) & (x_offset <= width_px - 0.5) & (y_offset >= -0.5) & (y_offset <= height - 0.5)
+                )
+                profile += np.where(on_image, values, 0)
+                counts += on_image
 
-            # Average the values
-            profile /= width_points
+            # Average the values; NaN (a gap in the plot) where the line is off the image
+            with np.errstate(invalid="ignore", divide="ignore"):
+                profile /= counts
 
             return profile
 
@@ -1457,6 +1700,8 @@ class ImageDisplayWindow(QMainWindow):
 
         # Handle double clicks for other purposes
         if not evt.double():
+            if evt.button() == Qt.LeftButton:
+                self._select_line_near(evt.scenePos())
             return
 
         try:
@@ -1550,7 +1795,7 @@ class ImageDisplayWindow(QMainWindow):
                 self.cursor_position_label.setText(f"Position: ({self.last_valid_x}, {self.last_valid_y})")
                 self.pixel_value_label.setText(f"Value: {self.last_valid_value}")
 
-        if self.line_roi is not None and self.btn_line_profiler.isChecked():
+        if self.line_rois and self.btn_line_profiler.isChecked():
             self.update_line_profile()
 
     def mark_spot(self, image: np.ndarray, x: float, y: float):
