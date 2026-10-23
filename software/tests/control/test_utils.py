@@ -272,3 +272,32 @@ def test_rotate_and_flip_image_matches_opencv_and_never_aliases_the_input(rotate
     assert result.flags.c_contiguous
     assert not np.may_share_memory(result, image)  # callers pass views of driver memory
     np.testing.assert_array_equal(image, original)
+
+
+@pytest.mark.parametrize("rotate", [None, 90, 180])
+@pytest.mark.parametrize("flip", [None, *control.utils.FlipVariant])
+@pytest.mark.parametrize(
+    "shape, crop",
+    [
+        ((10, 8), (6, 4)),
+        ((9, 7), (4, 5)),  # odd margins: the same rounding as crop_image
+        ((8, 8), (20, 20)),  # larger than the frame: no crop
+        ((8, 6), (None, 4)),
+        ((10, 8, 3), (6, 4)),
+    ],
+)
+def test_rotate_and_flip_image_crops_in_the_same_single_copy(rotate, flip, shape, crop):
+    image = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape)
+    original = image.copy()
+    expected = control.utils.crop_image(
+        control.utils.rotate_and_flip_image(image, rotate_image_angle=rotate, flip_image=flip), *crop
+    )
+
+    result = control.utils.rotate_and_flip_image(
+        image, rotate_image_angle=rotate, flip_image=flip, crop_width=crop[0], crop_height=crop[1]
+    )
+
+    np.testing.assert_array_equal(result, expected)  # identical to cropping afterwards
+    assert result.flags.c_contiguous  # no second copy needed to save or send it
+    assert not np.may_share_memory(result, image)
+    np.testing.assert_array_equal(image, original)

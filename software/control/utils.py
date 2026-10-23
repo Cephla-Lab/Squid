@@ -110,11 +110,21 @@ class FlipVariant(enum.Enum):
     BOTH = "Both"
 
 
-def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional[FlipVariant]):
+def rotate_and_flip_image(
+    image,
+    rotate_image_angle: float,
+    flip_image: Optional[FlipVariant],
+    crop_width: Optional[int] = None,
+    crop_height: Optional[int] = None,
+):
     """Returns a new C-contiguous array, never a view of `image` (callers may pass a view of driver memory).
 
     Flips are taken as views and materialized by a single copy at the end, so a flip costs one pass over the
     frame instead of a copy plus a flip (about 5 ms instead of 14 ms for a 3200x3200 16-bit frame).
+
+    With crop_width / crop_height, the result is also centre-cropped (crop_image) before that copy, so only the
+    cropped region is copied and the result stays contiguous. Cropping the copied frame instead left a strided
+    view that saving had to copy again (3.6 ms for 2700x2700 out of a 2704x2700 frame).
     """
     ret_image = image
     if rotate_image_angle and rotate_image_angle != 0:
@@ -138,6 +148,9 @@ def rotate_and_flip_image(image, rotate_image_angle: float, flip_image: Optional
             ret_image = ret_image[:, ::-1]
         elif flip_image == FlipVariant.BOTH:
             ret_image = ret_image[::-1, ::-1]
+
+    if crop_width is not None or crop_height is not None:
+        ret_image = crop_image(ret_image, crop_width, crop_height)
 
     if np.may_share_memory(ret_image, image) or not ret_image.flags.c_contiguous:
         ret_image = ret_image.copy(order="C")
