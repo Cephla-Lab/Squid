@@ -37,6 +37,7 @@ class _BuildParamsStub:
         self.use_piezo = False
         self.display_resolution_scaling = 1.0
         self.z_stacking_config = "FROM CENTER"
+        self.z_stack_order = "CHANNEL FIRST"
         self.z_range = (0.0, 0.0)
         self.skip_saving = False
         self.xy_mode = "Current Position"
