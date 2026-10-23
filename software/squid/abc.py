@@ -707,17 +707,17 @@ class AbstractCamera(metaclass=abc.ABCMeta):
 
         Your camera's image callback should use this.
         """
-        # Apply rotation and flip
-        image = control.utils.rotate_and_flip_image(
-            raw_frame, rotate_image_angle=self._config.rotate_image_angle, flip_image=self._config.flip
-        )
-
-        # Apply software crop
-        # Crop size should be scaled wrt the binning factor as the crop_width and crop_height are defined wrt the unbinned image size.
+        # Rotation, flip and the software crop in one pass: the crop is taken as a view before the single copy, so
+        # the frame comes out contiguous. Crop size should be scaled wrt the binning factor as the crop_width and
+        # crop_height are defined wrt the unbinned image size.
         crop_width, crop_height = self.get_crop_size()
-        image = control.utils.crop_image(image, crop_width, crop_height)
-
-        return image
+        return control.utils.rotate_and_flip_image(
+            raw_frame,
+            rotate_image_angle=self._config.rotate_image_angle,
+            flip_image=self._config.flip,
+            crop_width=crop_width,
+            crop_height=crop_height,
+        )
 
     def get_crop_size(self) -> Tuple[int, int]:
         """
