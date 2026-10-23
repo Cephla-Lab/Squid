@@ -1,10 +1,9 @@
 """The Z lift of an upright V-308 system in the GUI (squid/stage/lift.py).
 
 The lift's position is shown in the image display's status bar, next to the stage coordinates (core.ImageDisplayWindow),
-and a LoadingPositionButton sits in the Stages tab. ZLiftWidget (Utils > Z Lift...) is the full window: the two limit
-sensors, jog up /
-down by a step, move to a height, lower, home, and the working height for each sample format, editable in a table and
-saved to Z_LIFT_HEIGHTS_PATH. The lift rises to the current format's height after the startup homing and on leaving
+and a LoadingPositionButton sits in the Stages tab. ZLiftWidget is the Z Lift tab (Utils > Z Lift... opens it): the
+two limit sensors, jog up / down by a step, move to a height, lower, home, and the working height for each sample
+format, editable in a table and saved to Z_LIFT_HEIGHTS_PATH. The lift rises to the current format's height after the startup homing and on leaving
 the loading position.
 
 Every move runs in a worker thread, one at a time. A LiftMotionGuard, shared by the window and every
@@ -18,15 +17,15 @@ from qtpy.QtCore import QObject, Qt, QTimer, Signal
 from qtpy.QtGui import QFont
 from qtpy.QtWidgets import (
     QAbstractItemView,
-    QDialog,
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -167,8 +166,8 @@ def _set_sensor_label(label: QLabel, name: str, triggered: bool):
     label.setStyleSheet(_TRIGGERED_STYLE if triggered else _CLEAR_STYLE)
 
 
-class ZLiftWidget(QDialog):
-    """Utils > Z Lift...: move the lift, and edit the working height for each sample format."""
+class ZLiftWidget(QWidget):
+    """The Z Lift tab: move the lift, and edit the working height for each sample format."""
 
     def __init__(self, lift: LiftStage, sample_formats_fn: Callable[[], List[str]], stage_utils=None, parent=None):
         super().__init__(parent)
@@ -184,7 +183,6 @@ class ZLiftWidget(QDialog):
         self.motion_guard.signal_move_finished.connect(self._on_move_finished)
 
         self.setWindowTitle("Z Lift")
-        self.setModal(False)
         self._build_ui()
         self.refresh_formats()
 
@@ -195,16 +193,18 @@ class ZLiftWidget(QDialog):
 
     # --- layout -----------------------------------------------------------------------------------------------
     def _build_ui(self):
+        # Compact, for a tab in the controls panel: one line of readout, two of moves, a short table.
         self.label_position = QLabel()
-        self.label_position.setStyleSheet("font-size: 18pt; font-weight: bold;")
+        self.label_position.setStyleSheet("font-weight: bold;")
         self.label_bottom = QLabel()
         self.label_top = QLabel()
-        readout = QGroupBox("Position")
-        readout_layout = QGridLayout(readout)
-        readout_layout.addWidget(self.label_position, 0, 0, 1, 2)
-        readout_layout.addWidget(self.label_bottom, 1, 0)
-        readout_layout.addWidget(self.label_top, 1, 1)
-        readout_layout.addWidget(QLabel(f"Travel {self.lift.min_mm:g} to {self.lift.max_mm:g} mm"), 2, 0, 1, 2)
+        readout = QHBoxLayout()
+        readout.addWidget(QLabel("Lift"))
+        readout.addWidget(self.label_position)
+        readout.addWidget(self.label_bottom)
+        readout.addWidget(self.label_top)
+        readout.addStretch(1)
+        readout.addWidget(QLabel(f"travel {self.lift.min_mm:g} to {self.lift.max_mm:g} mm"))
 
         self.spin_step = QDoubleSpinBox()
         self.spin_step.setDecimals(3)
@@ -231,17 +231,16 @@ class ZLiftWidget(QDialog):
         self.btn_home.setToolTip("Drive down to the bottom sensor and make it 0 mm")
         self.btn_home.clicked.connect(self._home)
 
-        jog = QGroupBox("Move")
-        jog_layout = QGridLayout(jog)
-        jog_layout.addWidget(QLabel("Step"), 0, 0)
-        jog_layout.addWidget(self.spin_step, 0, 1)
-        jog_layout.addWidget(self.btn_up, 0, 2)
-        jog_layout.addWidget(self.btn_down, 0, 3)
-        jog_layout.addWidget(QLabel("Height"), 1, 0)
-        jog_layout.addWidget(self.spin_target, 1, 1)
-        jog_layout.addWidget(self.btn_go, 1, 2, 1, 2)
-        jog_layout.addWidget(self.btn_lower, 2, 0, 1, 2)
-        jog_layout.addWidget(self.btn_home, 2, 2, 1, 2)
+        jog = QGridLayout()
+        jog.addWidget(QLabel("Step"), 0, 0)
+        jog.addWidget(self.spin_step, 0, 1)
+        jog.addWidget(self.btn_up, 0, 2)
+        jog.addWidget(self.btn_down, 0, 3)
+        jog.addWidget(self.btn_lower, 0, 4)
+        jog.addWidget(QLabel("Height"), 1, 0)
+        jog.addWidget(self.spin_target, 1, 1)
+        jog.addWidget(self.btn_go, 1, 2, 1, 2)
+        jog.addWidget(self.btn_home, 1, 4)
 
         self.table = QTableWidget(0, 2)
         self.table.setHorizontalHeaderLabels(["Sample format", "Height (mm)"])
@@ -259,23 +258,36 @@ class ZLiftWidget(QDialog):
         height_buttons = QHBoxLayout()
         for b in (self.btn_height_go, self.btn_height_set, self.btn_height_clear):
             height_buttons.addWidget(b)
-        heights_box = QGroupBox("Working height per sample format")
-        heights_layout = QVBoxLayout(heights_box)
-        heights_layout.addWidget(
-            QLabel("The lift rises to the current format's height after homing and on leaving the loading position.")
+        self.table.setMinimumHeight(100)  # a short tab scrolls rather than squash the table to its header
+        self.table.setMaximumHeight(130)  # about four rows; it scrolls
+        heights_label = QLabel("Working height per sample format")
+        heights_label.setToolTip(
+            "The lift rises to the current format's height after homing and on leaving the loading position."
         )
-        heights_layout.addWidget(self.table)
-        heights_layout.addLayout(height_buttons)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(readout)
-        layout.addWidget(jog)
-        layout.addWidget(heights_box)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addLayout(readout)
+        layout.addLayout(jog)
+        layout.addWidget(heights_label)
+        layout.addWidget(self.table)
+        layout.addLayout(height_buttons)
 
         self.btn_loading = None
         if self.stage_utils is not None:
             self.btn_loading = LoadingPositionButton(self.stage_utils, self.motion_guard)
             layout.addWidget(self.btn_loading)
+        layout.addStretch(1)
+
+        # In a short tab nothing collapses: it scrolls instead
+        scroll = QScrollArea()
+        scroll.setWidget(content)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
         # Disabled while lift moves are blocked (moving, or at the loading position). Set To Current too: the
         # lift is lowered at the loading position and moving otherwise, so neither is a working height.

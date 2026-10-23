@@ -488,3 +488,66 @@ def test_shutdown_unlocks_the_control_panel_before_anything_can_fail():
     with pytest.raises(RuntimeError):
         Gui._cleanup_common(fake, for_restart=False)
     assert calls == []
+
+
+def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
+    from unittest.mock import MagicMock
+
+    from qtpy.QtWidgets import QPushButton
+
+    from control.gui_hcs import HighContentScreeningGui as Gui
+    from control.widgets import StageUtils
+
+    live = MagicMock()
+    live.is_live = False
+    stage = MagicMock()
+    stage.lift.min_mm, stage.lift.max_mm = 0.0, 32.0
+    stage.get_config.return_value.Z_AXIS.MIN_POSITION = 0.0
+    stage.get_config.return_value.Z_AXIS.MAX_POSITION = 6.0
+    stage_utils = StageUtils(stage, live, is_wellplate=False)
+    qtbot.addWidget(stage_utils)
+    guard = LiftMotionGuard(stage_utils)
+    stage_utils.set_lift_motion_guard(guard)
+
+    class _Gui:
+        pass
+
+    panel = []
+    fake = _Gui()
+    fake.__dict__.update(
+        stage=stage,
+        stageUtils=stage_utils,
+        log=MagicMock(),
+        _loading_position_locked=False,
+        _loading_position_saved_enabled={},
+        _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget",),
+        navigationWidget=QPushButton(),
+        _set_control_panel_lock=panel.append,
+        _restored_loading_state={"scanning_z_mm": 2.5, "lift_mm": 4.0, "lift_format": "glass slide"},
+    )
+    for name in (
+        "_connect_loading_position_lock",
+        "_lock_stage_at_loading_position",
+        "_unlock_stage_after_loading_position",
+        "_enter_restored_loading_position",
+    ):
+        setattr(fake, name, getattr(Gui, name).__get__(fake))
+    fake._connect_loading_position_lock()
+
+    fake._enter_restored_loading_position()
+
+    assert stage_utils.slide_position == "loading" and guard.at_loading_position
+    assert not fake.navigationWidget.isEnabled() and panel == [True]  # locked, panel too
+    assert stage_utils.btn_load_slide.text() == "Move to Scanning Position"
+    assert stage._scanning_position_z_mm == 2.5 and stage._scanning_position_lift_mm == (4.0, "glass slide")
+
+
+def test_z_lift_widget_is_a_tab_page(qtbot, tmp_path):
+    from qtpy.QtWidgets import QDialog, QTabWidget
+
+    widget, _ = _widget(qtbot, tmp_path)
+    assert not isinstance(widget, QDialog)
+    tabs = QTabWidget()
+    qtbot.addWidget(tabs)
+    tabs.addTab(widget, "Z Lift")
+    assert tabs.widget(0) is widget
