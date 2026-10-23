@@ -6,10 +6,24 @@ fluidics GUI's Robot tab. Each move is a manual job on the fluidics session, thr
 ManualOperations, so it waits for an idle rig like every other job and Stop aborts only a move
 started here. Retract matters most: after a run the tip rests wet in its last well, and the
 Reservoirs page refuses to reset that plate until the tip is out of it.
+
+"Do not lower tip" (on when the group is built) makes Go to well stop retracted over the well, so a
+taught position can be checked without dipping. It is the library's switch, but here it shapes only
+this group's Go to well: the library refuses every run and sipper draw while the switch is on, so it is
+set for the one move and put back after. Runs and Prime/Clean always lower the tip.
 """
 
 from qtpy.QtCore import Signal
-from qtpy.QtWidgets import QComboBox, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
 
 import squid.logging
 from fluidics.qt.support import WellCombo
@@ -47,10 +61,17 @@ class SipperControls(QGroupBox):
         self.home_button.clicked.connect(lambda: self._run(self.system.manual.home_robot, "Home"))
         self.stop_button = QPushButton("Stop")
         self.stop_button.clicked.connect(self.stop)
+        self.lower_tip_box = QCheckBox("Do not lower tip")
+        self.lower_tip_box.setChecked(True)
+        self.lower_tip_box.setToolTip(
+            "Go to well travels over the well and stops retracted: check a taught position without "
+            "dipping. Applies to this Go to well only; runs and Prime/Clean always lower the tip."
+        )
 
         where_row = QHBoxLayout()
         where_row.addWidget(QLabel("Tip:"))
         where_row.addWidget(self.where_label, 1)
+        where_row.addWidget(self.lower_tip_box)
         move_row = QHBoxLayout()
         move_row.addWidget(self.reservoir_combo)
         move_row.addWidget(self.well_combo, 1)
@@ -103,7 +124,20 @@ class SipperControls(QGroupBox):
         except ValueError as e:
             QMessageBox.warning(self, "Go to well", str(e))
             return
-        self._run(lambda: self.system.manual.go_to_well(reference), f"Go to {reference}")
+        lower = not self.lower_tip_box.isChecked()
+        what = f"Go to {reference}" + ("" if lower else " (tip not lowered)")
+        self._run(lambda: self._go_to_well(reference, lower), what)
+
+    def _go_to_well(self, reference: str, lower: bool) -> None:
+        """The move, on the job thread. The robot's switch is read by every run and draw, so it is
+        set for this move only and put back after, even when the move fails or is stopped."""
+        manual = self.system.manual
+        was = self.robot.lower_tip
+        manual.set_lower_tip(lower)
+        try:
+            manual.go_to_well(reference)
+        finally:
+            manual.set_lower_tip(was)
 
     def stop(self) -> None:
         if self._owns_job():

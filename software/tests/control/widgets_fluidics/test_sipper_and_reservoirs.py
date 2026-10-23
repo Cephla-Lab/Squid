@@ -36,8 +36,9 @@ def _settle(qtbot, tab):
     tab.sipper_controls.refresh()
 
 
-def _go_to(qtbot, tab, plate, well):
+def _go_to(qtbot, tab, plate, well, lower=True):
     controls = tab.sipper_controls
+    controls.lower_tip_box.setChecked(not lower)
     controls.reservoir_combo.setCurrentIndex(controls.reservoir_combo.findData(plate))
     controls.well_combo.setEditText(well)
     controls.go_button.click()
@@ -76,6 +77,40 @@ def test_go_to_well_and_retract_move_the_sipper(sipper_tab, qtbot):
     sipper_tab.sipper_controls.retract_button.click()
     _settle(qtbot, sipper_tab)
     assert sipper_tab.sipper_controls.where_label.text() == "retracted"
+
+
+def test_do_not_lower_tip_starts_on_and_shapes_only_this_go_to_well(sipper_tab, qtbot, dialogs):
+    controls, system = sipper_tab.sipper_controls, sipper_tab.service.system
+    robot = system.devices.robot
+    assert controls.lower_tip_box.isChecked()  # a first Go to well never dips
+
+    controls.reservoir_combo.setCurrentIndex(controls.reservoir_combo.findData("ssct"))
+    controls.well_combo.setEditText("B3")
+    controls.go_button.click()
+    _settle(qtbot, sipper_tab)
+    x, y, _z = robot.position()
+    assert (x, y) == pytest.approx(robot.placements["ssct"].xy_mm("B3"))  # over the well...
+    assert robot.current_well_key() is None and controls.where_label.text() == "retracted"  # ...not in it
+    assert robot.lower_tip is True  # put back: runs and Prime/Clean still dip
+    assert dialogs == []
+
+    _go_to(qtbot, sipper_tab, "ssct", "B3", lower=True)
+    assert robot.current_well_key() == "ssct/B3" and robot.lower_tip is True
+
+
+def test_the_switch_is_put_back_when_the_move_fails(sipper_tab, qtbot, dialogs, monkeypatch):
+    robot = sipper_tab.service.system.devices.robot
+
+    def jammed(ref):
+        assert robot.lower_tip is False  # the move ran with the switch on
+        raise RuntimeError("Y axis fault")
+
+    monkeypatch.setattr(robot, "go_to_well", jammed)
+    sipper_tab.sipper_controls.go_button.click()
+    _settle(qtbot, sipper_tab)
+    qtbot.waitUntil(lambda: bool(dialogs), timeout=5000)
+    assert "Y axis fault" in dialogs[-1]
+    assert robot.lower_tip is True
 
 
 def test_a_well_the_rig_lacks_is_refused_before_any_move(sipper_tab, dialogs):
