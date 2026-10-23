@@ -1,5 +1,6 @@
-"""The wide Fluidics display tab: instrument on the left (Initialize, manual control, device status,
-Log | Temperature | Flow | Reagents), the Protocol editor on the right."""
+"""The wide Fluidics display tab: instrument on the left (Initialize, manual control, the sipper on a
+plate-sipper rig, device status, Log | Temperature | Flow | Reservoirs), the Protocol editor on the
+right."""
 
 from typing import Callable, Optional, Tuple
 
@@ -20,7 +21,7 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
-from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
+from control.widgets_fluidics.log_view import FluidicsLogView
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
 
@@ -97,6 +98,10 @@ class FluidicsDisplayTab(QWidget):
         self.fluidics_port = None
         self.temperature_tab = None
         self.flow_tab = None
+        self.reservoirs_tab = None  # ReservoirsView, once Initialize has built volume tracking
+        self.sipper_controls = None  # SipperControls, on a plate-sipper rig
+        self._run_active = False
+        self._run_held = False
         self.run_line_provider: Callable[[], str] = lambda: "—"
 
         self.system_panel = SystemPanel(service)
@@ -166,10 +171,8 @@ class FluidicsDisplayTab(QWidget):
 
         self.log_view = FluidicsLogView()
         self.log_view.connect_logging()
-        self.reagents_table = ReagentsTable()
         self.tabs = QTabWidget()
         self.tabs.addTab(self.log_view, "Log")
-        self.tabs.addTab(self.reagents_table, "Reagents")
 
         instrument = QWidget()
         instrument_layout = QVBoxLayout()
@@ -177,6 +180,7 @@ class FluidicsDisplayTab(QWidget):
         instrument_layout.addWidget(self.manual_group)
         instrument_layout.addWidget(self.device_status)
         instrument.setLayout(instrument_layout)
+        self._instrument_layout = instrument_layout
         self.instrument_column = InstrumentColumn(instrument, self.tabs)
 
         self.protocol_tab = ProtocolTab(service, current_source=current_source)
@@ -223,7 +227,7 @@ class FluidicsDisplayTab(QWidget):
                 from fluidics.qt.sensor_plots import TemperatureControlWidget
 
                 self.temperature_tab = TemperatureControlWidget(tc)
-                self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.temperature_tab, "Temperature")
+                self.tabs.addTab(self.temperature_tab, "Temperature")
             except Exception:
                 self._log.exception("Could not build the Temperature tab")
 
@@ -237,9 +241,29 @@ class FluidicsDisplayTab(QWidget):
                 self.flow_tab = FlowSensorControlWidget(
                     sensors, draw_protection=draw_protection_available(self.service.config)
                 )
-                self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.flow_tab, "Flow")
+                self.tabs.addTab(self.flow_tab, "Flow")
             except Exception:
                 self._log.exception("Could not build the Flow tab")
+
+        try:
+            from control.widgets_fluidics.reservoirs_view import ReservoirsView
+
+            self.reservoirs_tab = ReservoirsView(self.service.config, self.service.system)
+            self.tabs.addTab(self.reservoirs_tab, "Reservoirs")
+        except Exception:
+            self._log.exception("Could not build the Reservoirs tab")
+
+        if self.service.system.devices.robot is not None:
+            try:
+                from control.widgets_fluidics.sipper_controls import SipperControls
+
+                self.sipper_controls = SipperControls(self.service.system)
+                self._instrument_layout.insertWidget(
+                    self._instrument_layout.indexOf(self.device_status), self.sipper_controls
+                )
+            except Exception:
+                self._log.exception("Could not build the sipper controls")
+        self._paint_instrument_access()
         for widget in self._quick_widgets:
             widget.setEnabled(True)
         self.system_ready.emit()
@@ -256,12 +280,38 @@ class FluidicsDisplayTab(QWidget):
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the instrument: manual control and TEC setpoints go
         dead (the plots and their recording stay live)."""
+        self._run_active = bool(active)
+        if not active:
+            self._run_held = False
         self.manual_group.setEnabled(not active)
         if self.temperature_tab is not None:
             self.temperature_tab.setControlsEnabled(not active)
+        self._paint_instrument_access()
+
+    def set_run_held(self, held: bool) -> None:
+        """The protocol run is HELD (waiting for the operator) or no longer is."""
+        self._run_held = bool(held)
+        self._paint_instrument_access()
+
+    def _paint_instrument_access(self) -> None:
+        """The sipper moves and the reservoir edits are the operator's when no protocol runs, and
+        while one is held: a round refused for an empty well goes on by Retract, reloading the
+        plate, Reset and Restart step. The library greys them itself while any job runs."""
+        free = not self._run_active or self._run_held
+        if self.sipper_controls is not None:
+            self.sipper_controls.set_allowed(free)
+        if self.reservoirs_tab is not None:
+            self.reservoirs_tab.set_edits_allowed(free)
 
     def quick_op_active(self) -> bool:
         return self._quick_running
+
+    def manual_job_active(self) -> bool:
+        """A manual job holds the fluidics rig, so a protocol started now would be refused: the
+        inline Prime/Clean, a manual-control move, a sipper move or a reservoir reset."""
+        if self._quick_running:
+            return True
+        return bool(getattr(self.service, "initialized", False) and self.service.system.busy)
 
     def _quick_op(self, op: str) -> None:
         # The old widget's behavior: prime the tubing for use_ports (config per-port amounts),
@@ -323,6 +373,8 @@ class FluidicsDisplayTab(QWidget):
     def _refresh_status(self) -> None:
         try:
             self._poll_quick_op()
+            if self.sipper_controls is not None:
+                self.sipper_controls.refresh()
             self.device_status.refresh(self.run_line_provider())
         except Exception as e:  # Qt swallows timer-slot exceptions: log explicitly
             self._log.error(f"Device status refresh failed: {e}")
