@@ -52,7 +52,12 @@ from control.models.fluidics_protocol import (
     save_protocol,
 )
 from control.widgets_fluidics import state
-from control.widgets_fluidics.dialogs import AddRoundsDialog, pick_coordinates_source, pick_settings_source
+from control.widgets_fluidics.dialogs import (
+    AddRoundsDialog,
+    drop_help_button,
+    pick_coordinates_source,
+    pick_settings_source,
+)
 
 try:  # the editor degrades gracefully when the fluidics library is not installed
     from fluidics.control.config import available_ports, gantry, load_config
@@ -552,6 +557,7 @@ class ProtocolTab(QWidget):
         # With the rig's sipper the dialog offers push rows and each row's well and dips; without
         # one it offers none of them.
         dialog = AddSequenceDialog(self, config.application, port_names, sipper=sipper_vocabulary(config))
+        drop_help_button(dialog)
         if dialog.exec_() == QDialog.Accepted and dialog.result_dict:
             row = dict(dialog.result_dict)
             if row.get("type") == IMAGING_TYPE:

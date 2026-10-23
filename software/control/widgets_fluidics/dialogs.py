@@ -1,5 +1,6 @@
 """Dialogs for the fluidics protocol: Add rounds, imaging-source pickers, pre-flight, crash recovery."""
 
+import html
 import os
 import re
 import time
@@ -35,6 +36,39 @@ from control.models.fluidics_protocol import (
 _NO_PORT_ROW = "— none —"
 
 
+def drop_help_button(dialog: QDialog) -> None:
+    """Remove the "?" Windows puts in a dialog's title bar. It opens Qt's What's This mode, which
+    shows nothing unless a widget has What's This text; these dialogs explain themselves in their
+    own text and tooltips instead."""
+    dialog.setWindowFlags(dialog.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+
+def _tip(text: str) -> str:
+    """A tooltip that wraps: Qt wraps rich text, not plain text."""
+    return f"<p>{html.escape(text, quote=False)}</p>"
+
+
+_ADD_ROUNDS_HELP = (
+    "Copies a round right after itself. Each copy gets the next label and its own imaging folder, "
+    "and can get the next port and the next well. Hover over a field for details."
+)
+_ADD_ROUNDS_TIPS = {
+    "template_combo": "The round whose rows are copied. The copies go right after it; rows after it "
+    "(a final clean-up) stay last.",
+    "count_spin": "How many new rounds to add.",
+    "pattern_edit": "The label of each new round; {n} is its number. R{n:02d} gives R02, R03, …",
+    "start_spin": "The number of the first new round.",
+    "port_row_combo": "The row whose port changes each round, e.g. a probe row with one bottle per "
+    "round. — none — keeps every row's port. On a sipper rig, rows that draw from wells change "
+    "wells instead (below).",
+    "ports_edit": "One port per new round for the row picked above, as a list or ranges: 2-12, 14-25.",
+    "wells_edit": "One well per new round: along a row (A2-A12), down a column (A1-H1), or listed "
+    "(A2, A5, B1). In each new round, every row that draws from a well moves to that well on its "
+    "own plate: hyb A1 → A2, push ssct/A1 → ssct/A2. Filled in with the wells after the round's "
+    "own until you type here. Blank: every round reuses the same wells.",
+}
+
+
 def _next_round_number(labels: List[str]) -> int:
     numbers = [int(m.group(1)) for label in labels for m in [re.search(r"(\d+)$", label or "")] if m]
     return max(numbers) + 1 if numbers else 2
@@ -50,6 +84,7 @@ class AddRoundsDialog(QDialog):
     def __init__(self, protocol: ProtocolFile, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add rounds")
+        drop_help_button(self)
         self.protocol = protocol
         self.result_kwargs: Optional[dict] = None
 
@@ -73,6 +108,12 @@ class AddRoundsDialog(QDialog):
         self._first_well: Optional[str] = None  # the template's first well row's well, without its plate
         self.preview = QPlainTextEdit()
         self.preview.setReadOnly(True)
+        self.help_label = QLabel(_ADD_ROUNDS_HELP)
+        self.help_label.setWordWrap(True)
+        self.help_label.setStyleSheet("color: gray;")
+        for name, text in _ADD_ROUNDS_TIPS.items():
+            getattr(self, name).setToolTip(_tip(text))
+        self.wells_label.setToolTip(_tip(_ADD_ROUNDS_TIPS["wells_edit"]))
 
         form = QFormLayout()
         form.addRow("Copy round", self.template_combo)
@@ -88,6 +129,7 @@ class AddRoundsDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout()
+        layout.addWidget(self.help_label)
         layout.addLayout(form)
         layout.addWidget(QLabel("Preview:"))
         layout.addWidget(self.preview)
@@ -213,6 +255,7 @@ class PreflightDialog(QDialog):
     def __init__(self, problems: List[str], summary_lines: List[str], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Start run")
+        drop_help_button(self)
         layout = QVBoxLayout()
         if problems:
             headline = QLabel(f"{len(problems)} problem(s) must be fixed before this protocol can run:")
@@ -243,6 +286,7 @@ class RecoveryDialog(QDialog):
     def __init__(self, manifest, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Unfinished fluidics run")
+        drop_help_button(self)
         cursor = manifest.cursor
         step_line = "—"
         if cursor.step is not None and 0 <= cursor.step < len(manifest.steps):
