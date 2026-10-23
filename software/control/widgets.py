@@ -2973,6 +2973,14 @@ class StageUtils(QDialog):
         self.signal_scanning_position_reached.emit()
 
 
+def _z_stack_order_to_start(combobox) -> str:
+    """The z-stack order an acquisition started from the GUI uses: the dropdown's, when the choice is enabled
+    (ENABLE_Z_STACK_ORDER_SELECTION, opt-in), otherwise Channel First."""
+    if control._def.ENABLE_Z_STACK_ORDER_SELECTION:
+        return combobox.currentData()
+    return "CHANNEL FIRST"
+
+
 def _sync_live_button(widget, live_text, idle_text, companion):
     """Derive the live button (and the companion that only makes sense while idle) from
     liveController.is_live, not from the click: stop_live() can raise after live is already
@@ -6645,6 +6653,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             "Channel First: acquire every channel at each z level, then step z.\n"
             "Z First: acquire the whole z stack in one channel, then switch channel."
         )
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.btn_startAcquisition = QPushButton("Start\n Acquisition ")
         self.btn_startAcquisition.setStyleSheet("background-color: #C2C2FF")
@@ -7173,7 +7182,7 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         # Set acquisition parameters
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
-        self.multipointController.set_z_stack_order(self.combobox_z_order.currentData())
+        self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())
@@ -8113,6 +8122,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
             "Channel First: acquire every channel at each z level, then step z.\n"
             "Z First: acquire the whole z stack in one channel, then switch channel."
         )
+        self.combobox_z_order.setVisible(control._def.ENABLE_Z_STACK_ORDER_SELECTION)  # opt-in
 
         self.list_configurations = QListWidget()
         self.channel_sequence = enable_channel_sequence(
@@ -9602,7 +9612,7 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
 
         self.multipointController.set_deltaZ(self.entry_deltaZ.value())
         self.multipointController.set_NZ(self.entry_NZ.value())
-        self.multipointController.set_z_stack_order(self.combobox_z_order.currentData())
+        self.multipointController.set_z_stack_order(_z_stack_order_to_start(self.combobox_z_order))
         self.multipointController.set_deltat(self.entry_dt.value())
         self.multipointController.set_Nt(self.entry_Nt.value())
         self.multipointController.set_use_piezo(self.checkbox_usePiezo.isChecked())

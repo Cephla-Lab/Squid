@@ -2979,7 +2979,8 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
     )
 
 
-def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting():
+def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting(monkeypatch):
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
     fake = _wellplate_ui_fake()
 
     assert control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake) is None
@@ -3039,3 +3040,17 @@ def test_flexible_set_acquisition_running_state_dispatches_like_the_wellplate_sl
 
     control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, False)
     fake.acquisition_is_finished.assert_called_once()
+
+
+def test_z_stack_order_choice_is_opt_in(monkeypatch):
+    # Off, the GUI acquires Channel First even if the hidden dropdown says Z First (e.g. after loading an
+    # acquisition YAML).
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+    fake = _wellplate_ui_fake()
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stack_order.assert_called_once_with("CHANNEL FIRST")
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    fake = _wellplate_ui_fake()
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stack_order.assert_called_once_with("Z FIRST")
