@@ -32,6 +32,9 @@ class _GatedFocusServo:
         self.retract_entered.set()
         assert self.retract_gate.wait(timeout=10)
 
+    def freeze_profile(self):
+        pass
+
     def set_servo(self, enabled):
         pass
 
@@ -48,6 +51,7 @@ def test_objective_swap_blocks_stage_focus_and_acquisition_controls(qtbot, monke
         return QMessageBox.Ok if title == "Change Objective" else QMessageBox.Yes
 
     monkeypatch.setattr(QMessageBox, "question", question)
+    monkeypatch.setattr(control.widgets, "_ask_objective_z_return", lambda *args, **kwargs: QMessageBox.Ok)
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)

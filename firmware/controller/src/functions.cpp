@@ -1,4 +1,6 @@
 #include "functions.h"
+#include "utils/focus_wheel.h"
+#include "utils/panel_lock.h"
 
 void set_DAC8050x_gain(uint8_t div, uint8_t gains) 
 {
@@ -570,6 +572,22 @@ void ISR_strobeTimer()
 PacketSerial joystick_packetSerial;
 
 // Reconnect safety (wheel baseline, timeout, joystick arming, packet checks) is in utils/joystick_panel.h.
+// The panel is the operator's tool for BETWEEN commands (operator's rule, 2026-09-20: "the joystick panel
+// should be disabled during commanded moves"). While the host has a move or a homing in progress on any
+// axis, what the panel sends is DROPPED, not queued: a wheel count that rewrote the ramp target of a
+// commanded Z move left the counter beside the target and the command IN_PROGRESS for ever (bench
+// 2026-09-20), a count released after the acknowledgement would move the stage during the exposure, and
+// a joystick deflection would drive X or Y under a stack. The wheel position is still tracked, so
+// nothing is released when the lock-out ends.
+bool panel_locked_out()
+{
+  return X_commanded_movement_in_progress || Y_commanded_movement_in_progress || Z_commanded_movement_in_progress
+      || W_commanded_movement_in_progress || W2_commanded_movement_in_progress
+      || is_homing_X || is_homing_Y || is_homing_Z || is_homing_XY || is_homing_W || is_homing_W2
+      || is_preparing_for_homing_X || is_preparing_for_homing_Y || is_preparing_for_homing_Z
+      || is_preparing_for_homing_W || is_preparing_for_homing_W2;
+}
+
 void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
 {
   JoystickPanelInput in;
@@ -580,7 +598,23 @@ void onJoystickPacketReceived(const uint8_t* buffer, size_t size)
     return;
   }
 
-  focusPosition = focusPosition + in.focus_delta;
+  // Locked out (a commanded move or homing in progress, panel_locked_out()): the wheel's travel and the
+  // joystick are dropped. The link has already taken this packet's wheel position as its baseline, so
+  // nothing is released when the lock-out ends. An axis the joystick was already driving is brought to
+  // rest by check_joystick() when the lock-out begins.
+  if (panel_locked_out())
+  {
+    in.focus_delta = 0;
+    in.delta_x = 0;
+    in.delta_y = 0;
+  }
+
+  // Locked by the host (SET_PANEL_LOCK): the joystick reads centred and the wheel moves nothing
+  pl_apply(panel_locked_by_host, &in);
+
+  // The wheel delta the link accepted (reconnects re-based, noise dropped, and neither lock dropping it) goes
+  // to Z, or with FOCUS_WHEEL_TO_HOST to the count the status packet reports (SET_FOCUS_WHEEL_MODE)
+  fw_route_delta(focus_wheel_mode, in.focus_delta, &focusPosition, &focus_wheel_host_count);
   joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;
   joystick_delta_y = JOYSTICK_SIGN_Y * in.delta_y;
   btns = in.buttons;

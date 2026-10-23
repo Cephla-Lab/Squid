@@ -327,6 +327,13 @@ static const char *load_source(const char *relative_path)
 
         g_source[n] = '\0';
 
+        /* A checkout with core.autocrlf reads "\r\n": the function-body scan wants "\n}\n", so drop every '\r'. */
+        size_t w = 0;
+        for (size_t r = 0; r < n; r++)
+            if (g_source[r] != '\r')
+                g_source[w++] = g_source[r];
+        g_source[w] = '\0';
+
         /* A truncated read would silently undercount the guards. */
         TEST_ASSERT_FALSE_MESSAGE(truncated, "g_source is too small for the file being scanned");
         return g_source;
@@ -372,6 +379,37 @@ static void assert_guard_precedes_motion(const char *source, const char *file_la
                               "written, or the motor commanded, before the check",
              file_label, signature, guard, motion_call);
     TEST_ASSERT_TRUE_MESSAGE(g < m, msg);
+}
+
+/* Body of the function that starts at `sig` in `src`, or NULL. Bounded by the first "\n}\n". */
+static const char *function_body(const char *src, const char *sig, const char **end_out)
+{
+    const char *fn = strstr(src, sig);
+    if (fn == NULL) return NULL;
+    const char *end = strstr(fn, "\n}\n");
+    if (end == NULL) return NULL;
+    *end_out = end;
+    return fn;
+}
+
+/* `guard` must appear inside the body starting at `sig` and before `motion` inside the same body. */
+static void assert_in_body_before(const char *src, const char *file, const char *sig, const char *guard, const char *motion)
+{
+    const char *end = NULL;
+    const char *fn = function_body(src, sig, &end);
+    char msg[256];
+    snprintf(msg, sizeof msg, "%s: %s not found or unbounded", file, sig);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fn, msg);
+    const char *g = strstr(fn, guard);
+    const char *m = strstr(fn, motion);
+    snprintf(msg, sizeof msg, "%s: %s must contain %s before %s", file, sig, guard, motion);
+    TEST_ASSERT_TRUE_MESSAGE(g != NULL && g < end && m != NULL && m < end && g < m, msg);
+    /* A commented-out guard must not satisfy the pin: nothing on the guard's own line before it
+       may be a line comment. */
+    const char *line = g;
+    while (line > fn && line[-1] != '\n') line--;
+    snprintf(msg, sizeof msg, "%s: %s: the guard %s is commented out", file, sig, guard);
+    TEST_ASSERT_TRUE_MESSAGE(strstr(line, "//") == NULL || strstr(line, "//") > g, msg);
 }
 
 void test_stage_commands_guards_every_move_entry_point(void)
@@ -443,10 +481,38 @@ void test_operations_guards_the_operator_driven_motion_paths(void)
         "(The needle carries the ` =` so the prose above the gates, which names "
         "the variable, does not trip this.)");
 
-    assert_guard_precedes_motion(src, "operations.cpp", "void check_joystick()",
+    /* The per-axis joystick blocks live in joystick_x_apply() / joystick_y_apply(), which check_joystick()
+       calls on its tick and when the panel lock-out begins. */
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_x_apply()",
+                                 "tmc_driver_ready(", "tmc4361A_setSpeed(");
+    assert_guard_precedes_motion(src, "operations.cpp", "void joystick_y_apply()",
                                  "tmc_driver_ready(", "tmc4361A_setSpeed(");
     assert_guard_precedes_motion(src, "operations.cpp", "void do_focus_control()",
                                  "tmc_driver_ready(", "tmc4361A_moveTo(");
+}
+
+/*
+  The joystick panel is locked out while a commanded move or a homing is in
+  progress on any axis (panel_locked_out(), functions.cpp): inside
+  onJoystickPacketReceived() the wheel's travel is dropped before it can reach
+  focusPosition, and the joystick is read as undeflected before the packet is
+  flagged for check_joystick(). A wheel count that got through rewrote the ramp
+  target of a commanded Z move and left the command IN_PROGRESS for ever.
+*/
+void test_functions_locks_the_panel_out_during_commanded_moves(void)
+{
+    const char *fsrc = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL_MESSAGE(fsrc, "could not open src/functions.cpp from any candidate "
+                                       "working directory");
+
+    // On the link's accepted input (#734): the lock-out zeroes it before the wheel delta is routed to Z or to the
+    // host's count (fw_route_delta, firmware 1.8) and before the joystick deltas are taken from it.
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "if (panel_locked_out())", "fw_route_delta(focus_wheel_mode, in.focus_delta");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "in.focus_delta = 0;", "fw_route_delta(focus_wheel_mode, in.focus_delta");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "in.delta_x = 0;", "joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;");
+    assert_in_body_before(fsrc, "functions.cpp", "void onJoystickPacketReceived(const uint8_t* buffer, size_t size)", "in.delta_y = 0;", "flag_read_joystick = true;");
+    /* That an axis the joystick is jogging is brought to rest when the lock-out begins is behaviour, not
+       layout: test_panel_lockout runs check_joystick() and onJoystickPacketReceived() themselves. */
 }
 
 /*
@@ -603,6 +669,83 @@ void test_limit_switch_record_is_written_only_on_change(void)
     TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(src, "EEPROM.write("), "EEPROM.write() rewrites unchanged bytes");
 }
 
+/***************************************************************************************************/
+/***************************** Focus wheel to host (source scans) *********************************/
+/***************************************************************************************************/
+
+/* The routing, refusal rules and packing are unit tested in test_focus_wheel; these pin that the
+   firmware actually goes through them. */
+void test_focus_wheel_mode_is_registered_and_gated(void)
+{
+    const char *cmds = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(cmds);
+    TEST_ASSERT_NOT_NULL(strstr(cmds, "cmd_map[SET_FOCUS_WHEEL_MODE]"));
+    assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_focus_wheel_mode()",
+                                 "fw_mode_allowed(", "focus_wheel_enter(mode);");
+    assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_focus_wheel_mode()",
+                                 "fw_mode_allowed(", "focus_wheel_power_up_save(mode);");
+    assert_guard_precedes_motion(cmds, "commands.cpp", "void callback_set_encoder_reporting()",
+                                 "fw_encoder_reporting_allowed(", "encoder_report_axis = on");
+    // The mode is assigned in exactly two places: the switch helper (the command and RESET) and
+    // INITIALIZE, which restores the saved power-up mode without the helper's resync
+    TEST_ASSERT_EQUAL_UINT32(2, count_occurrences(cmds, "focus_wheel_mode ="));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_enter(focus_wheel_power_up_mode);"));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_mode = focus_wheel_power_up_mode;"));
+    // The power-up mode changes only on request, and is saved then; boot loads it
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_power_up_mode = mode;"));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "focus_wheel_power_up_save(mode);"));
+    const char *init = load_source("src/init.cpp");
+    TEST_ASSERT_NOT_NULL(init);
+    TEST_ASSERT_NOT_NULL(strstr(init, "focus_wheel_power_up_mode = focus_wheel_power_up_load();"));
+    // The record is written through EEPROM.update only (no wear for an unchanged mode)
+    const char *store = load_source("src/focus_wheel_power_up.cpp");
+    TEST_ASSERT_NOT_NULL(store);
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(store, "EEPROM.update("));
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(store, "EEPROM.write("));
+}
+
+void test_panel_lock_is_registered_cleared_and_applied(void)
+{
+    const char *cmds = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(cmds);
+    TEST_ASSERT_NOT_NULL(strstr(cmds, "cmd_map[SET_PANEL_LOCK]"));
+    // set only by the command, cleared by RESET and INITIALIZE
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "panel_locked_by_host = lock;"));
+    TEST_ASSERT_EQUAL_UINT32(2, count_occurrences(cmds, "panel_locked_by_host = false;"));
+    // every accepted packet goes through the lock before any of it is used
+    const char *fn = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL(fn);
+    const char *lock = strstr(fn, "pl_apply(panel_locked_by_host, &in);");
+    const char *route = strstr(fn, "fw_route_delta(focus_wheel_mode, in.focus_delta");
+    const char *jx = strstr(fn, "joystick_delta_x = JOYSTICK_SIGN_X * in.delta_x;");
+    TEST_ASSERT_NOT_NULL(lock);
+    TEST_ASSERT_NOT_NULL(route);
+    TEST_ASSERT_NOT_NULL(jx);
+    TEST_ASSERT_TRUE_MESSAGE(lock < route && lock < jx, "the panel lock must be applied before the input is used");
+}
+
+void test_focus_wheel_delta_is_routed_by_mode(void)
+{
+    const char *fn = load_source("src/functions.cpp");
+    TEST_ASSERT_NOT_NULL(fn);
+    TEST_ASSERT_NOT_NULL(strstr(fn, "fw_route_delta(focus_wheel_mode,"));
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_occurrences(fn, "focusPosition = focusPosition +"),
+        "the wheel must reach focusPosition only through fw_route_delta, or TO_HOST would still move Z");
+}
+
+void test_status_packet_reports_the_focus_wheel_count(void)
+{
+    const char *ser = load_source("src/serial_communication.cpp");
+    TEST_ASSERT_NOT_NULL(ser);
+    TEST_ASSERT_NOT_NULL(strstr(ser, "fw_status_fields(focus_wheel_host_count, &buffer_tx[14])"));
+    // after the encoder branch, which owns the same bytes while reporting is on
+    const char *enc = strstr(ser, "if (encoder_report_axis != 0xFF)");
+    const char *wheel = strstr(ser, "else if (focus_wheel_mode == FOCUS_WHEEL_TO_HOST)");
+    TEST_ASSERT_NOT_NULL(enc);
+    TEST_ASSERT_NOT_NULL(wheel);
+    TEST_ASSERT_TRUE(enc < wheel);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -640,6 +783,7 @@ int main(int argc, char **argv) {
     // Driver fail-safe guards (source scan)
     RUN_TEST(test_stage_commands_guards_every_move_entry_point);
     RUN_TEST(test_operations_guards_the_operator_driven_motion_paths);
+    RUN_TEST(test_functions_locks_the_panel_out_during_commanded_moves);
     RUN_TEST(test_commands_guards_the_pid_actuator_path);
 
     // Configurable limit switches (source scan)
@@ -650,6 +794,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_homing_and_limit_stops_ignore_disabled_inputs);
     RUN_TEST(test_command_20_is_retired);
     RUN_TEST(test_limit_switch_record_is_written_only_on_change);
+
+    // Focus wheel to host (source scan)
+    RUN_TEST(test_focus_wheel_mode_is_registered_and_gated);
+    RUN_TEST(test_panel_lock_is_registered_cleared_and_applied);
+    RUN_TEST(test_focus_wheel_delta_is_routed_by_mode);
+    RUN_TEST(test_status_packet_reports_the_focus_wheel_count);
 
     return UNITY_END();
 }

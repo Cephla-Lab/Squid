@@ -13,11 +13,14 @@ flip or offset and no use of ``Z_AXIS.MOVEMENT_SIGN`` (that is a Cephla-stepper 
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
 from contextlib import suppress
 from typing import Optional, Tuple
 
+import squid.ftdi
 import squid.logging
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
@@ -30,6 +33,18 @@ WPA_PASSWORD = "100"
 PARAM_RANGE_LIMIT_MIN = 0x07000000
 PARAM_RANGE_LIMIT_MAX = 0x07000001
 PARAM_ON_TARGET_TOLERANCE = 0x07000900  # Position On Target Tolerance: half-width of the window, mm
+PARAM_PROFILE_GENERATOR_ENABLE = 0x06010300  # 1 = MOV ramps the servo setpoint at VEL; 0 = MOV steps it
+PARAM_SERVO_UPDATE_TIME = 0x0E000200  # s
+
+# A ramp while the profile generator is frozen runs on this wave table / generator. A table holds
+# 32768 points; longer ramps output each point for several servo cycles (WTR table rate).
+_WAVE_ID = 1
+_WAVE_MAX_POINTS = 30000
+# Room left past Z when the range limit is widened to take in a position outside it.
+_RANGE_WIDEN_MARGIN_MM = 0.1
+# A move to within this of the frozen setpoint thaws the generator (Squid restores Z from a read
+# position, which sits inside the on-target window around the target the generator holds).
+_THAW_TOLERANCE_MM = 0.002
 
 # The V-308 is a continuous closed-loop drive (no microstep); its only "finest step" is the
 # encoder resolution. This value is the grid the GUI's ustep-based Z step snapping uses, so that
@@ -80,6 +95,7 @@ class _SimulatedC414:
         self._ref_count = 0
         self._servo_on = True
         self._on_target_tol_mm = None
+        self._frozen_mm = None  # profile generator setpoint while frozen; None when it is on
 
     def connect_serial(self, *args, **kwargs):
         pass
@@ -112,10 +128,19 @@ class _SimulatedC414:
         self._on_target_tol_mm = float(tol_mm)
 
     def set_servo(self, enabled: bool):
+        if not enabled:
+            self.freeze_profile()
         self._servo_on = bool(enabled)
 
     def is_servo_on(self) -> bool:
         return self._servo_on
+
+    def freeze_profile(self):
+        if self._frozen_mm is None:
+            self._frozen_mm = self._pos_mm
+
+    def is_profile_frozen(self) -> bool:
+        return self._frozen_mm is not None
 
     def get_position_mm(self) -> float:
         return self._pos_mm
@@ -132,6 +157,8 @@ class _SimulatedC414:
         if not self._servo_on:  # the C-414 rejects MOV with the servo off
             raise RuntimeError(_SERVO_OFF_MSG)
         self._pos_mm = min(max(float(z_mm), self._lo_mm), self._hi_mm)
+        if self._frozen_mm is not None and abs(self._pos_mm - self._frozen_mm) <= _THAW_TOLERANCE_MM:
+            self._frozen_mm = None
         return self._pos_mm
 
     def move_relative(self, dz_mm: float, wait: bool = True, **kwargs) -> float:
@@ -186,6 +213,9 @@ class PIFocusStage(AbstractStage):
         self._lock = threading.RLock()  # the GCS backend is not thread-safe
         self._closed = False
         self._busy = False  # set while an async home holds the lock, so get_state needn't block
+        # Every Z move command (any caller) bumps this; the focus wheel router compares it with its own last
+        # move to notice that something else moved Z in between.
+        self.move_command_count = 0
 
         self._invert = invert_z
         native_lo, native_hi = c414.hardware_limits_mm()
@@ -232,6 +262,7 @@ class PIFocusStage(AbstractStage):
 
     def move_z(self, rel_mm: float, blocking: bool = True):
         with self._lock:
+            self.move_command_count += 1
             self._size_on_target_window(rel_mm)
             # Decided under the lock, against this move's own window (another thread's move could
             # change the window once the lock is released).
@@ -243,6 +274,7 @@ class PIFocusStage(AbstractStage):
 
     def move_z_to(self, abs_mm: float, blocking: bool = True):
         with self._lock:
+            self.move_command_count += 1
             target_native = self._to_native(abs_mm)
             move_mm = None
             if self._on_target_tolerance is not None:
@@ -268,6 +300,12 @@ class PIFocusStage(AbstractStage):
         with self._lock:
             return self._c414.is_referenced()
 
+    def z_range_mm(self) -> Tuple[float, float]:
+        """The reachable Z range (min, max) in Squid mm: the controller's current, possibly fenced, range limit."""
+        with self._lock:
+            ends = [self._to_squid(native) for native in self._c414.hardware_limits_mm()]
+        return min(ends), max(ends)
+
     def set_servo(self, enabled: bool):
         """Engage / disengage the closed-loop servo, e.g. to release Z while an objective is swapped.
 
@@ -280,6 +318,20 @@ class PIFocusStage(AbstractStage):
     def is_servo_on(self) -> bool:
         with self._lock:
             return self._c414.is_servo_on()
+
+    def freeze_profile(self):
+        """Hold the controller's motion profile at the current Z until a move comes back here.
+
+        Call it before releasing the servo, at the Z to return to: the release and re-engage then
+        move nothing, and the moves in between (the retract, the restore) ramp as quietly as usual.
+        See C414FocusStage.freeze_profile.
+        """
+        with self._lock:
+            self._c414.freeze_profile()
+
+    def is_profile_frozen(self) -> bool:
+        with self._lock:
+            return self._c414.is_profile_frozen()
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         # Home = reference if needed (FRF skipped when already referenced, so no redundant
@@ -297,6 +349,7 @@ class PIFocusStage(AbstractStage):
             with self._lock:
                 if self._closed:  # close() won the race; do not touch the torn-down handle
                     return
+                self.move_command_count += 1
                 if not self._c414.is_referenced():
                     self._c414.reference()
                 # _home_native_mm is a NATIVE target (positive travel limit for an upright retract,
@@ -369,14 +422,24 @@ class PIFocusStage(AbstractStage):
 class CombinedStage(AbstractStage):
     """AbstractStage routing X / Y / theta to xy_stage and Z to z_stage (the V-308)."""
 
-    def __init__(self, xy_stage: AbstractStage, z_stage: AbstractStage, stage_config: Optional[StageConfig] = None):
+    def __init__(
+        self,
+        xy_stage: AbstractStage,
+        z_stage: AbstractStage,
+        stage_config: Optional[StageConfig] = None,
+        lift=None,
+    ):
         super().__init__(stage_config or xy_stage.get_config())
         self._xy = xy_stage
         self._z = z_stage
         self._scanning_position_z_mm = None  # set/read by squid.stage.utils loading/scanning flow
+        self._scanning_position_lift_mm = None  # likewise, for the Z lift
 
         # The GUI reaches the V-308 directly for servo control during a manual objective swap.
         self.z_stage = z_stage
+        # The Z lift (squid.stage.lift.LiftStage) when the XY stage's own Z stepper lifts the sample; None otherwise.
+        # Loading position, homing and objective swaps lower it.
+        self.lift = lift
 
         # The GUI snaps Z step sizes through get_config().Z_AXIS (AutoFocus / multipoint) and via
         # z_mm_to_usteps (navigation). Present a Z axis whose resolution is the Z stage's own
@@ -420,11 +483,23 @@ class CombinedStage(AbstractStage):
 
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         xy_requested = x or y or theta
+        if xy_requested and self.lift is not None:
+            # Homing sweeps XY end to end: the sample must be clear of the objective, whoever asks for it.
+            self._lower_lift_for_xy_homing()
         if z:
             # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
             self._z.home(False, False, True, False, blocking or xy_requested)
         if xy_requested:
             self._xy.home(x, y, False, theta, blocking)
+
+    def _lower_lift_for_xy_homing(self):
+        """Lower the Z lift and check it got there; raise (homing nothing) if it did not."""
+        self.lift.lower()
+        if not self.lift.is_lowered():
+            raise RuntimeError(
+                f"XY homing refused: the Z lift reads {self.lift.get_position_mm():.3f} mm, not lowered "
+                f"({self.lift.lowered_mm:.3f} mm)."
+            )
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         if x or y or theta:
@@ -477,7 +552,7 @@ class C414FocusStage:
     stage -- run them with the objective clear of the sample.
     """
 
-    def __init__(self, axis: str = "1"):
+    def __init__(self, axis: str = "1", profile_state_path: Optional[str] = None):
         GCSDevice, GCSError, pitools = _import_pipython()
         self._GCSDevice = GCSDevice
         self._GCSError = GCSError
@@ -499,6 +574,14 @@ class C414FocusStage:
         # controller may have changed its own target (servo switch, referencing, autozero, stop, or
         # a move that failed); the next relative move then reads the position instead.
         self._target_mm: Optional[float] = None
+        # Profile generator state (see freeze_profile). The frozen setpoint is also written to
+        # profile_state_path, so a restart after Squid stopped mid-swap knows where it is.
+        self._profile_state_path = profile_state_path
+        self._profile_frozen = False
+        self._frozen_mm: Optional[float] = None  # None while frozen: setpoint unknown, never thaws
+        self._range_widened = False  # the controller's range limit is wider than the cached one
+        self._velocity_mm_s: Optional[float] = None  # ramp speed while frozen; read at connect
+        self._servo_period_s = 50e-6
 
     # --- connection ----------------------------------------------------------
     def connect_serial(self, comport, baudrate: int = 115200) -> None:
@@ -540,6 +623,8 @@ class C414FocusStage:
         if self.axis not in self.gcs.axes:
             self.axis = self.gcs.axes[0]
         self._range_lo, self._range_hi = self.hardware_limits_mm()  # seed the clamp cache
+        self._velocity_mm_s = self.get_velocity()
+        self._servo_period_s = float(self.gcs.qSPA(self.axis, PARAM_SERVO_UPDATE_TIME)[self.axis][PARAM_SERVO_UPDATE_TIME])
 
     def _clamp_target(self, z_mm: float) -> float:
         """Clamp an absolute Z target to the cached Position Range Limit, warning if it was outside.
@@ -564,9 +649,15 @@ class C414FocusStage:
 
     # --- bring-up ------------------------------------------------------------
     def initialize(self, reference: bool = True, ref_timeout: float = 60.0) -> None:
-        """Enable closed loop and (optionally) reference the axis (referencing MOVES it)."""
+        """Enable closed loop and (optionally) reference the axis (referencing MOVES it).
+
+        A profile generator left off (Squid stopped mid objective swap) is picked up as frozen, so
+        the servo-on does not jump and moves keep ramping until Z is back on the saved setpoint."""
         self._target_mm = None
         self.gcs.RON(self.axis, [True])
+        self._pick_up_frozen_profile()
+        if self._profile_frozen and not self.is_servo_on():
+            self._widen_range_to(self.get_position_mm())
         self.gcs.SVO(self.axis, [True])
         # Always query (it seeds the cached state move_to/move_relative check): with reference=False,
         # e.g. a --skip-init restart, an already-referenced axis must still be movable.
@@ -598,6 +689,10 @@ class C414FocusStage:
 
     # --- limits / config -----------------------------------------------------
     def hardware_limits_mm(self) -> Tuple[float, float]:
+        # While the controller's range is widened to take in a drifted Z (see _widen_range_to), report
+        # the configured one: callers map coordinates (the inversion offset) and fence moves with it.
+        if self._range_widened:
+            return self._range_lo, self._range_hi
         return self.gcs.qTMN(self.axis)[self.axis], self.gcs.qTMX(self.axis)[self.axis]
 
     def set_travel_limits(self, min_mm: float, max_mm: float, persist: bool = False) -> None:
@@ -609,15 +704,7 @@ class C414FocusStage:
         """
         lo, hi = self.hardware_limits_mm()
         min_mm, max_mm = max(float(min_mm), lo), min(float(max_mm), hi)
-        self.gcs.CCL(1, CCL_PASSWORD)
-        try:
-            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, min_mm)
-            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, max_mm)
-            if persist:
-                self.gcs.WPA(WPA_PASSWORD)
-        finally:
-            self.gcs.CCL(0)
-        self._range_lo, self._range_hi = min_mm, max_mm  # refresh the clamp cache
+        self._apply_range_limit(min_mm, max_mm, persist)
 
     def reset_range_limit(self, max_mm: float, min_mm: float = 0.0) -> None:
         """Restore the Position Range Limit to the full physical travel [min_mm, max_mm].
@@ -628,16 +715,56 @@ class C414FocusStage:
         time. This writes the SPA directly WITHOUT clamping to the (possibly-shrunk) current range,
         so call it once at connect with the stage's true travel before reading hardware_limits_mm().
         """
+        self._apply_range_limit(float(min_mm), float(max_mm))
+
+    def _apply_range_limit(self, min_mm: float, max_mm: float, persist: bool = False) -> None:
+        """Write the range limit and cache it. While the profile generator is frozen with Z outside
+        it, the controller gets it widened to take Z in instead (see _widen_range_to): narrowing the
+        limit under Z would pull Z inside at full current."""
+        self._range_lo, self._range_hi, self._range_widened = min_mm, max_mm, False
+        if self._profile_frozen and not min_mm <= self.get_position_mm() <= max_mm:
+            self._widen_range_to(self.get_position_mm())
+            return
+        self._write_range_limit(min_mm, max_mm, persist)
+        self._refresh_range_cache()
+
+    def _write_range_limit(self, min_mm: float, max_mm: float, persist: bool = False) -> None:
         self.gcs.CCL(1, CCL_PASSWORD)
         try:
-            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, float(min_mm))
-            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, float(max_mm))
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MIN, min_mm)
+            self.gcs.SPA(self.axis, PARAM_RANGE_LIMIT_MAX, max_mm)
+            if persist:
+                self.gcs.WPA(WPA_PASSWORD)
         finally:
             self.gcs.CCL(0)
-        self._range_lo, self._range_hi = float(min_mm), float(max_mm)  # refresh the clamp cache
+
+    def _widen_range_to(self, pos_mm: float) -> None:
+        """Widen the controller's range limit (not the cached one moves clamp to) to take in pos_mm.
+
+        With the servo off Z can drift past the range limit, up to the hard stop. Servo-on then
+        clamps the target back inside the limit and the servo drives Z there at full current, and
+        a ramp started out there would step to the limit. _restore_range() undoes this."""
+        lo, hi = self._range_lo, self._range_hi
+        if lo is None or hi is None or lo <= pos_mm <= hi:
+            return
+        self._write_range_limit(min(lo, pos_mm - _RANGE_WIDEN_MARGIN_MM), max(hi, pos_mm + _RANGE_WIDEN_MARGIN_MM))
+        self._range_widened = True
+
+    def _restore_range(self) -> None:
+        if self._range_widened:
+            self._write_range_limit(self._range_lo, self._range_hi)
+            self._range_widened = False
+            self._refresh_range_cache()
+
+    def _refresh_range_cache(self) -> None:
+        # From the controller's read-back, not the values written: it stores the limits at its own precision
+        # (0.05 reads back as 0.049999996), and moves must be clamped to the range it enforces and reports
+        # (hardware_limits_mm), or a target clamped to the reported range is "outside" the written one by a few nm.
+        self._range_lo, self._range_hi = self.hardware_limits_mm()
 
     def set_velocity(self, vel_mm_s: float) -> None:
         self.gcs.VEL(self.axis, [vel_mm_s])
+        self._velocity_mm_s = float(vel_mm_s)
 
     def set_on_target_tolerance(self, tol_mm: float) -> None:
         """Set the on-target window half-width (RAM only; requires command level 1).
@@ -654,9 +781,98 @@ class C414FocusStage:
             self.gcs.CCL(0)
 
     def set_servo(self, enabled: bool) -> None:
-        """Switch closed-loop servo (SVO). Off releases the voice coil, which is not self-locking."""
+        """Switch closed-loop servo (SVO). Off releases the voice coil, which is not self-locking.
+
+        Off freezes the profile generator first (unless it already is, see freeze_profile), so the
+        servo-on that follows holds Z where it then sits instead of slamming it back."""
         self._target_mm = None  # servo on sets the target to wherever Z now is
+        if not enabled:
+            self.freeze_profile()
+        elif self._profile_frozen:
+            self._widen_range_to(self.get_position_mm())
         self.gcs.SVO(self.axis, [bool(enabled)])
+
+    # --- profile generator ---------------------------------------------------
+    def freeze_profile(self) -> None:
+        """Switch the profile generator off, holding its setpoint at the current target.
+
+        The generator keeps its setpoint across a servo release: on servo-on it starts from where
+        the servo was released, whatever Z did meanwhile, so the servo drives Z there at full
+        current (1.4-1.7 mm in ~20 ms on the V-308, loud) and then back. No command resets that
+        setpoint (HLT, STP, toggling the generator, VEL or acceleration writes were all tried); only
+        Z arriving back on it does. So while frozen, moves run as wave-generator ramps (setpoint
+        updated every servo cycle at VEL: as quiet as a generator move), and the first move that
+        lands on the frozen setpoint switches the generator back on. Freezing at the focus height
+        before an objective swap makes the swap's own restore that move.
+        """
+        if self._profile_frozen:
+            return
+        frozen = self.gcs.qMOV(self.axis)[self.axis]
+        self._set_profile_generator(False)
+        self._profile_frozen, self._frozen_mm = True, frozen
+        self._save_frozen_setpoint(frozen)
+        _log.info("C-414 profile generator frozen at %.5f mm (native).", frozen)
+
+    def is_profile_frozen(self) -> bool:
+        return self._profile_frozen
+
+    def _set_profile_generator(self, on: bool) -> None:
+        self.gcs.CCL(1, CCL_PASSWORD)
+        try:
+            self.gcs.SPA(self.axis, PARAM_PROFILE_GENERATOR_ENABLE, 1 if on else 0)
+        finally:
+            self.gcs.CCL(0)
+
+    def _thaw_profile(self) -> None:
+        self._set_profile_generator(True)
+        self._profile_frozen, self._frozen_mm = False, None
+        self._save_frozen_setpoint(None)
+        _log.info("C-414 profile generator back on.")
+
+    def _pick_up_frozen_profile(self) -> None:
+        """At bring-up: treat a generator found off as frozen, at the setpoint saved when it was frozen."""
+        if self.gcs.qSPA(self.axis, PARAM_PROFILE_GENERATOR_ENABLE)[self.axis][PARAM_PROFILE_GENERATOR_ENABLE]:
+            self._save_frozen_setpoint(None)
+            return
+        self._profile_frozen, self._frozen_mm = True, self._load_frozen_setpoint()
+        if self._frozen_mm is None:
+            _log.error(
+                "C-414 profile generator is off and its setpoint was not saved: Z moves will ramp in "
+                "software until the controller is power-cycled."
+            )
+        else:
+            _log.warning(
+                "C-414 profile generator is off (Squid stopped mid objective swap?); Z moves ramp until Z is "
+                "back at %.5f mm (native).",
+                self._frozen_mm,
+            )
+
+    def _save_frozen_setpoint(self, native_mm: Optional[float]) -> None:
+        """Write (or, with None, remove) the frozen setpoint at profile_state_path; failures only warn."""
+        path = self._profile_state_path
+        if not path:
+            return
+        try:
+            if native_mm is None:
+                if os.path.exists(path):
+                    os.remove(path)
+                return
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"frozen_native_mm": native_mm}, f)
+        except OSError as e:
+            _log.warning("Could not update the C-414 profile state file %s: %s", path, e)
+
+    def _load_frozen_setpoint(self) -> Optional[float]:
+        path = self._profile_state_path
+        if not path or not os.path.exists(path):
+            return None
+        try:
+            with open(path) as f:
+                return float(json.load(f)["frozen_native_mm"])
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            _log.warning("Could not read the C-414 profile state file %s: %s", path, e)
+            return None
 
     def is_servo_on(self) -> bool:
         return bool(self.gcs.qSVO(self.axis)[self.axis])
@@ -698,6 +914,52 @@ class C414FocusStage:
         return target
 
     def _move(self, target: float, wait: bool, timeout: float) -> None:
+        if self._profile_frozen:
+            self._ramp_move(target, timeout)
+        else:
+            self._mov(target, wait, timeout)
+
+    def _ramp_move(self, target: float, timeout: float) -> None:
+        """A move while the profile generator is frozen: a ramp, waited for even when the caller
+        would not wait. One ending on the frozen setpoint ends there exactly and thaws the generator,
+        then steps the last few um to ``target`` with it."""
+        frozen = self._frozen_mm
+        thaw = frozen is not None and abs(target - frozen) <= _THAW_TOLERANCE_MM
+        self._ramp_to(frozen if thaw else target, timeout)
+        if thaw:
+            self._thaw_profile()
+            self._mov(target, True, timeout)
+
+    def _ramp_to(self, end_mm: float, timeout: float) -> None:
+        """Ramp the setpoint from Z's position to end_mm at VEL on the wave generator, then MOV there.
+
+        With the profile generator off a MOV steps the setpoint, and a train of small MOVs from the
+        host (one per serial round trip, ~3 ms) is audible. The wave generator updates the setpoint
+        every servo cycle: measured coil-current ripple equals a generator move's."""
+        self._target_mm = None
+        start = self.get_position_mm()
+        self._widen_range_to(start)
+        velocity = self._velocity_mm_s or self.get_velocity()
+        cycles = max(2, round(abs(end_mm - start) / velocity / self._servo_period_s))
+        rate = -(-cycles // _WAVE_MAX_POINTS)  # servo cycles per wave point
+        points = max(2, cycles // rate)
+        # WAV <table> X(new) LIN <segment length> <amplitude> <offset> <wave length> <start point> <speed-up/down points>
+        self.gcs.send(f"WAV {_WAVE_ID} X LIN {points} {end_mm - start} {start} {points} 0 {min(points // 10, 400)}")
+        self.gcs.send(f"WSL {_WAVE_ID} {_WAVE_ID}")
+        self.gcs.send(f"WGC {_WAVE_ID} 1")
+        self.gcs.send(f"WTR {_WAVE_ID} {rate} 0")
+        self.gcs.send(f"WGO {_WAVE_ID} 1")
+        try:
+            time.sleep(points * rate * self._servo_period_s + 0.05)  # one cycle (WGC): it holds the end point
+        finally:
+            self.gcs.send(f"WGO {_WAVE_ID} 0")
+        self._mov(end_mm, True, timeout)  # pins the target at the ramp's end (Z is there already)
+        # The limit bounds the target, not the measured Z: with the servo on and the target inside,
+        # Z settling a fraction of a um past the limit is harmless (every retract to the limit does).
+        if self._range_lo is not None and self._range_lo <= end_mm <= self._range_hi:
+            self._restore_range()
+
+    def _mov(self, target: float, wait: bool, timeout: float) -> None:
         """MOV to ``target``; with ``wait``, poll ONT? until on target, then check the error once.
 
         pitools.waitontarget sends #7/ERR?/SVO? before polling and sleeps its 100 ms polldelay
@@ -795,6 +1057,7 @@ def connect_pi_focus_stage(
     on_target_tolerance: Optional[Tuple[float, float, float]] = None,
     sub_window_settle_s: float = 0.0,
     stage_config: Optional[StageConfig] = None,
+    profile_state_path: Optional[str] = None,
 ) -> PIFocusStage:
     """Open the C-414 over serial (or a simulated backend) and wrap it as a PIFocusStage.
 
@@ -806,6 +1069,8 @@ def connect_pi_focus_stage(
     across restarts (qTMN/qTMX on the C-414 ARE the range-limit params). on_target_tolerance
     (min_mm, max_mm, step_fraction) sizes the on-target window per move (see PIFocusStage), and
     sub_window_settle_s is the pause after a waited move no larger than that window.
+    profile_state_path is where a frozen profile-generator setpoint is kept (see
+    C414FocusStage.freeze_profile) so a restart after Squid stopped mid objective swap can thaw it.
     """
     if simulated:
         backend = _SimulatedC414(axis=axis)
@@ -833,7 +1098,7 @@ def connect_pi_focus_stage(
     else:
         raise RuntimeError("Set PI_FOCUS_STAGE_SN or PI_FOCUS_SERIAL_PORT to locate the C-414.")
 
-    backend = C414FocusStage(axis=axis)
+    backend = C414FocusStage(axis=axis, profile_state_path=profile_state_path)
     try:
         backend.connect_serial(port, baudrate=baudrate)
         backend.initialize(reference=reference)
@@ -844,6 +1109,8 @@ def connect_pi_focus_stage(
     except Exception:
         backend.close()  # release the GCS handle on any connect/init failure
         raise
+    # On Windows the FTDI latency timer (16 ms by default) dominates every GCS query's round trip.
+    squid.ftdi.warn_if_latency_timer_high(port, "PI C-414 (V-308 focus)", _log)
     return PIFocusStage(
         backend,
         stage_config=stage_config,
