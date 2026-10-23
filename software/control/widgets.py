@@ -3445,29 +3445,57 @@ class LaserAutofocusSettingWidget(QWidget):
             "spot_spacing": self.spinboxes["spot_spacing"].value(),
         }
         mode = self.spot_mode_combo.currentData()
-        spot_index = self.spot_index_spinbox.value()
         sigma = self.spinboxes["filter_sigma"].value()
 
         frame = self.illuminate_and_get_frame()
-        if frame is not None:
-            try:
-                result = utils.find_spot_location(
-                    frame, mode=mode, spot_index=spot_index, params=params, filter_sigma=sigma, debug_plot=True
-                )
-                if result is not None:
-                    x, y = result
-                    self.signal_laser_spot_location.emit(frame, x, y)
-                else:
-                    raise Exception("No spot detection result returned")
-            except Exception:
-                # Show error message
-                # Clear previous error label if it exists
-                if hasattr(self, "spot_detection_error_label"):
-                    self.spot_detection_error_label.deleteLater()
+        if frame is None:
+            return
+        spot_index = self._spot_index_for(frame)
+        if spot_index is None:
+            self._show_spot_detection_error(
+                "N or the mode changed since Initialize: turn on Show full sensor to preview it, or Initialize"
+            )
+            return
+        try:
+            result = utils.find_spot_location(
+                frame, mode=mode, spot_index=spot_index, params=params, filter_sigma=sigma, debug_plot=True
+            )
+            if result is not None:
+                x, y = result
+                self.signal_laser_spot_location.emit(frame, x, y)
+            else:
+                raise Exception("No spot detection result returned")
+        except Exception:
+            self._show_spot_detection_error("Spot detection failed!")
 
-                # Create and add new error label
-                self.spot_detection_error_label = QLabel("Spot detection failed!")
-                self.layout().addWidget(self.spot_detection_error_label)
+    def _spot_index_for(self, frame: np.ndarray) -> Optional[int]:
+        """The rank the preview uses on the frame it grabbed.
+
+        On a whole-sensor frame it is the spinbox N, which counts reflections from the sensor edge. On the
+        detection strip it is the rank tracking uses there (the one Initialize found for the saved mode and N,
+        since the strip can crop outer neighbours away). A strip cannot be ranked by a sensor N Initialize has
+        not placed it for, so None when the spinbox no longer matches the saved mode and N.
+        """
+        mode = self.spot_mode_combo.currentData()
+        if mode == SpotDetectionMode.SINGLE:
+            return 1
+        n = self.spot_index_spinbox.value()
+        sensor_width, _ = self.laserAutofocusController.camera.get_resolution()
+        if frame.shape[1] >= sensor_width:
+            return n
+        saved = self.laserAutofocusController.laser_af_properties
+        if saved.spot_detection_mode == mode and saved.spot_index == n:
+            return saved.spot_index_within_strip()
+        return None
+
+    def _show_spot_detection_error(self, text: str) -> None:
+        # Clear previous error label if it exists
+        if hasattr(self, "spot_detection_error_label"):
+            self.spot_detection_error_label.deleteLater()
+
+        # Create and add new error label
+        self.spot_detection_error_label = QLabel(text)
+        self.layout().addWidget(self.spot_detection_error_label)
 
     def show_cross_correlation_result(self, value):
         """Show cross-correlation value from validating laser af images"""
