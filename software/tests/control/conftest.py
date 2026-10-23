@@ -58,3 +58,13 @@ def fluidics_config_path(tmp_path_factory) -> str:
     path = tmp_path_factory.mktemp("fluidics_config") / "fluidics_config.yaml"
     path.write_text(CONFIG_YAML, encoding="utf-8")
     return str(path)
+
+
+@pytest.fixture
+def sipper_config_path(tmp_path) -> str:
+    """A simulated plate-sipper FluidicsConfig, one per test: setting a loaded volume writes the file."""
+    from tests.control.fluidics_test_config import SIPPER_CONFIG_YAML
+
+    path = tmp_path / "plate_sipper_config.yaml"
+    path.write_text(SIPPER_CONFIG_YAML, encoding="utf-8")
+    return str(path)
