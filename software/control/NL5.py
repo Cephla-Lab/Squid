@@ -86,9 +86,13 @@ class _ScanSpeedMixin:
     """Conversion between the scanner line speed and the scan-limited frame rate.
 
     One frame is one sweep of the line across the scanned field. The scanner travels +/- the
-    scan amplitude (AMPLITUDE_X, mrad), so the sweep is twice the amplitude, scaled by the
-    scanned fraction of the camera width (FIELD_OF_VIEW_X / MAX_CAM_PIX_X), and
+    scan amplitude (AMPLITUDE_X, mrad), so the sweep is twice the amplitude, scaled by
+    FIELD_OF_VIEW_X / MAX_CAM_PIX_X, and
         fps = line_speed [mrad/s] / sweep [mrad].
+    On the AION that ratio is not capped at 1: the unit reports MAX_CAM_PIX_X = 2048 for the
+    3200 px Aries, and FIELD_OF_VIEW_X = 2700 at 69 mrad scans about 2736 camera rows, i.e. a
+    sweep of 2 x 69 x 2700 / 2048 = 182 mrad (36.4 ms at 5000 mrad/s, measured 2026-10-22).
+    The NL5 keeps the cap at 1 (not measured beyond the full field).
     Measured on AION: the time to a frame grows by 2 x amplitude / line speed, so halving the
     amplitude or FIELD_OF_VIEW_X saved 26 ms at 73 mrad and 3000 mrad/s.
     The exposure delay, the jump back (~3 ms) and the camera's readout and transfer (~30 ms
@@ -103,7 +107,9 @@ class _ScanSpeedMixin:
     def scan_sweep_mrad(self):
         fraction = 1.0
         if self.max_cam_pix_x and self.fov_x:
-            fraction = min(1.0, self.fov_x / self.max_cam_pix_x)
+            fraction = self.fov_x / self.max_cam_pix_x
+            if not getattr(self, "is_aion", False):
+                fraction = min(1.0, fraction)
         return max(1e-6, 2 * self.scan_amplitude * fraction)
 
     def line_speed_to_fps(self, line_speed):
