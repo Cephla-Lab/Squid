@@ -12,6 +12,10 @@ import control.microscope
 import squid.abc
 import squid.stage.utils
 
+# Builds the full application GUI, which leaves Qt/thread state behind that crashes later Qt tests in
+# the same process; skipped unless this module runs alone (see tests/conftest.py).
+pytestmark = pytest.mark.own_process
+
 
 @pytest.fixture
 def confirm_exit_yes(monkeypatch):

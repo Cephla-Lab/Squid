@@ -15,6 +15,8 @@ import control.gui_hcs
 import control.microscope
 import squid.abc
 
+pytestmark = pytest.mark.own_process  # Skipped unless this module runs alone (see tests/conftest.py)
+
 
 class _GatedFocusServo:
     """A V-308 stand-in whose retract and restore block until the test opens their gates."""

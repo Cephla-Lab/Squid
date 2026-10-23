@@ -503,7 +503,7 @@ class TestJobRunnerBackpressureTracking:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
             job = make_slow_job(duration_s=1.0, size_bytes=20000)
             runner.dispatch(job)
 
@@ -519,7 +519,7 @@ class TestJobRunnerBackpressureTracking:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
             job = make_slow_job(duration_s=0.1, size_bytes=10000)
             runner.dispatch(job)
 
@@ -552,7 +552,7 @@ class TestJobRunnerBackpressureTracking:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
             runner.dispatch(make_slow_job(duration_s=0.1))
             result = runner.output_queue().get(timeout=5.0)
             assert result.result == "done"
@@ -566,7 +566,7 @@ class TestJobRunnerBackpressureTracking:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
             job = SlowJob(
                 capture_info=make_test_capture_info(),
                 capture_image=None,
@@ -602,7 +602,7 @@ class TestJobExceptionHandling:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
 
             # Dispatch a job that will raise an exception
             job = make_failing_job(duration_s=0.1, size_bytes=50000)
@@ -633,7 +633,7 @@ class TestJobExceptionHandling:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
 
             # Dispatch multiple failing jobs
             for _ in range(3):
@@ -663,7 +663,7 @@ class TestBackpressureSharedValues:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
             runner.dispatch(make_slow_job(duration_s=0.1, size_bytes=10000))
 
             assert controller.get_pending_jobs() == 1
@@ -682,7 +682,7 @@ class TestBackpressureSharedValues:
         runner.start()
 
         try:
-            time.sleep(0.5)
+            assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
             controller.capacity_event.clear()
             assert not controller.capacity_event.is_set()
 
@@ -694,6 +694,58 @@ class TestBackpressureSharedValues:
             assert controller.capacity_event.is_set()
         finally:
             runner.shutdown(timeout_s=1.0)
+
+
+class TestJobRunnerShutdownWithUndeliveredJobs:
+    """shutdown() must return when the worker stops with jobs it never read.
+
+    A multiprocessing.Queue feeder thread blocks forever writing a job larger than the pipe
+    buffer (8 KiB on Windows, 64 KiB on Linux) once nothing reads the queue, and a plain
+    join_thread() then hangs shutdown(). Each test runs shutdown() on a thread so a regression
+    fails here instead of hanging the whole suite.
+    """
+
+    BIG_JOB_BYTES = 1_000_000  # Larger than the pipe buffer on every platform
+
+    @staticmethod
+    def _assert_shutdown_returns(runner: JobRunner, timeout_s: float, limit_s: float = 30.0):
+        thread = threading.Thread(target=runner.shutdown, kwargs={"timeout_s": timeout_s}, daemon=True)
+        start = time.monotonic()
+        thread.start()
+        thread.join(limit_s)
+        assert not thread.is_alive(), f"JobRunner.shutdown() still blocked after {limit_s}s"
+        return time.monotonic() - start
+
+    def test_shutdown_returns_when_busy_worker_is_terminated(self):
+        """Worker stuck in a long job is terminated with a large job still queued behind it."""
+        runner = JobRunner()
+        runner.start()
+        assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
+        runner.dispatch(make_slow_job(duration_s=60.0))
+        runner.dispatch(make_slow_job(size_bytes=self.BIG_JOB_BYTES))
+
+        self._assert_shutdown_returns(runner, timeout_s=0.5)
+
+    def test_shutdown_returns_when_worker_exits_with_jobs_queued(self):
+        """Worker exits cleanly on the shutdown event without reading the jobs queued behind its current one."""
+        runner = JobRunner()
+        runner.start()
+        assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
+        runner.dispatch(make_slow_job(duration_s=1.0))
+        runner.dispatch(make_slow_job(size_bytes=self.BIG_JOB_BYTES))
+
+        self._assert_shutdown_returns(runner, timeout_s=10.0)
+
+    def test_shutdown_returns_when_worker_died_before_dispatch(self):
+        """Worker is already dead (and may have died holding the queue's read lock) when a job is dispatched."""
+        runner = JobRunner()
+        runner.start()
+        assert runner.wait_ready(timeout_s=30.0), "JobRunner subprocess did not start"
+        runner.terminate()
+        runner.join(timeout=10.0)
+        runner.dispatch(make_slow_job(size_bytes=self.BIG_JOB_BYTES))
+
+        self._assert_shutdown_returns(runner, timeout_s=0.5)
 
 
 class TestMultiPointControllerCloseMethod:
