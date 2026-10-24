@@ -127,6 +127,32 @@ def test_a_failed_fluidics_step_shows_the_held_panel_and_restart_recovers(qtbot,
     qtbot.waitUntil(lambda: w.held_box.isHidden(), timeout=5000)
 
 
+def test_a_held_run_goes_on_only_once_the_manual_job_has_finished(qtbot, widget):
+    w, _fluidics, _imaging, _save_to = widget
+    fluidics = FakeFluidicsPort(script=[("failed", 0, "ssct/A1 is empty"), ("finished",), ("finished",)])
+    w.set_fluidics_port(fluidics)
+    sipper_moving = [True]
+    w.manual_job_active = lambda: sipper_moving[0]
+    handed = []
+    w.signal_run_held.connect(handed.append)
+
+    w.start_run()
+    qtbot.waitUntil(lambda: w.runner.state == RunnerState.HELD or w.runner.outcome is not None, timeout=15000)
+    assert w.runner.state == RunnerState.HELD
+    qtbot.waitUntil(lambda: handed[-1:] == [True], timeout=5000)  # the operator has the sipper
+
+    HoldAction = protocol_widget_module.HoldAction
+    for action in (HoldAction.RESTART, HoldAction.SKIP):
+        assert not w.hold_act(action)  # a Retract is still running
+    assert w.runner.state == RunnerState.HELD and len(fluidics.starts) == 1
+
+    sipper_moving[0] = False
+    handed.clear()
+    assert w.hold_act(HoldAction.RESTART)
+    assert handed[0] is False  # taken back before the runner woke
+    assert wait_until(lambda: w.runner.outcome == "finished", timeout=15)
+
+
 def test_abort_run_button_stops_the_run(qtbot, widget):
     w, _fluidics, imaging, save_to = widget
     fluidics = FakeFluidicsPort(script=[("hold",)])
@@ -201,15 +227,17 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
         # one-off prime from the inline fields (no pop-ups), through the same library path
         # as any sequence; priming is minutes long even simulated, so the operator's Stop
         # button is what ends it.
+        assert tab.wash_port_combo.currentText() == "Port 25: buffer 1"  # the old widget's pick, by its name
+        assert tab.wash_port_combo.count() == 28  # every port the rig offers
         tab.ports_edit.setText("1-2")
-        tab.wash_port_spin.setValue(1)
+        tab.wash_port_combo.setCurrentIndex(tab.wash_port_combo.findData(1))
         tab.volume_spin.setValue(50)
         tab._quick_op("priming")
-        assert tab.quick_op_active()
+        assert tab.manual_job_active()
         assert not tab.prime_button.isEnabled() and not tab.ports_edit.isEnabled()
         assert not tab.stop_quick_button.isHidden()
         tab._stop_quick_op()
-        qtbot.waitUntil(lambda: (tab._poll_quick_op() or not tab.quick_op_active()), timeout=30000)
+        qtbot.waitUntil(lambda: (tab._poll_quick_op() or not tab._quick_running), timeout=30000)
         assert tab.prime_button.isEnabled() and tab.stop_quick_button.isHidden()
     finally:
         tab.shutdown()

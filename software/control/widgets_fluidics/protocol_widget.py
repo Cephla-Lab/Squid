@@ -3,7 +3,7 @@ attention panel and crash recovery — a thin Qt face over the Qt-free ProtocolR
 
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 from qtpy.QtCore import QEventLoop, QTimer, QUrl, Signal
 from qtpy.QtGui import QDesktopServices
@@ -25,7 +25,6 @@ from qtpy.QtWidgets import (
 
 import squid.logging
 from control.core.fluidics_protocol import manifest as manifest_io
-from control.core.fluidics_protocol.manifest import reagent_totals
 from control.core.fluidics_protocol.events import (
     Hold,
     HoldAction,
@@ -33,7 +32,6 @@ from control.core.fluidics_protocol.events import (
     RunnerState,
     SequenceProgress,
     StateChanged,
-    StepEnded,
     StepStarted,
 )
 from control.core.fluidics_protocol.resolve import ProtocolProblems, resolve_protocol
@@ -44,6 +42,13 @@ from control.widgets_fluidics.dialogs import PreflightDialog, RecoveryDialog
 from control.widgets_fluidics.runner_bridge import RunnerEventBridge
 
 _ACTIVE_STATES = (RunnerState.RUNNING, RunnerState.PAUSE_REQUESTED, RunnerState.PAUSED, RunnerState.HELD)
+
+
+def _reservoirs_line(rows) -> str:
+    """The pre-flight's volume line: the tracked reservoirs that will have least left at the end."""
+    lowest = sorted(rows, key=lambda row: row[2])[:3]
+    left = ", ".join(f"{key} {remaining:.0f} µL" for key, _dispatched, remaining in lowest)
+    return f"reservoirs: {len(rows)} tracked drawn from; least left at the end: {left}"
 
 
 def _hms(seconds: Optional[float]) -> str:
@@ -57,7 +62,7 @@ class FluidicsProtocolWidget(QFrame):
     signal_acquisition_started = Signal(bool)  # True at run start, False at run end (the gui contract)
     signal_show_fluidics_tab = Signal()
     signal_run_notification = Signal(str)  # Slack-worthy: held / finished
-    signal_reagent_rows = Signal(list)  # rows for the Reagents table
+    signal_run_held = Signal(bool)  # True while the run is HELD, waiting for the operator
 
     REFRESH_MS = 500
 
@@ -75,6 +80,9 @@ class FluidicsProtocolWidget(QFrame):
         self.protocol_tab = protocol_tab
         self.imaging_port = imaging_port
         self.busy_check = busy_check
+        # Whether a manual fluidics job (a sipper move, a reservoir reset) holds the rig; set by
+        # wire_fluidics. A held run waits for it before going on.
+        self.manual_job_active: Callable[[], bool] = lambda: False
         self._recovery_checked_dir: Optional[str] = None
         self.fluidics_port = None
         self.runner: Optional[ProtocolRunner] = None
@@ -84,7 +92,6 @@ class FluidicsProtocolWidget(QFrame):
         self._current_step_kind: Optional[str] = None
         self._current_round = "—"
         self._current_sequence = "—"
-        self._since_init_ul: Dict[int, float] = {}
 
         self._build_ui()
         self.setFrameStyle(QFrame.Panel | QFrame.Raised)
@@ -266,6 +273,8 @@ class FluidicsProtocolWidget(QFrame):
             f"est. {_hms(resolved.total_estimate_s)} (imaging priced at a rough 1 s/FOV)",
             f"run folder: {os.path.join(save_to, run_name)}_<start time>",
         ]
+        if resolved.reservoirs:
+            summary.append(_reservoirs_line(resolved.reservoirs))
         if PreflightDialog([], summary, self).exec_() != QDialog.Accepted:
             return
         try:
@@ -319,7 +328,8 @@ class FluidicsProtocolWidget(QFrame):
         run_dir = manifest.run_dir
         try:
             protocol = load_protocol(os.path.join(run_dir, manifest_io.PROTOCOL_COPY_NAME))
-            resolved = resolve_protocol(protocol, run_dir, fluidics=self.fluidics_port)
+            # Its finished steps already drew; the library still gates each remaining step as it starts.
+            resolved = resolve_protocol(protocol, run_dir, fluidics=self.fluidics_port, check_reservoirs=False)
             fresh = manifest_io.read_manifest(run_dir)
             runner = ProtocolRunner(
                 resolved,
@@ -412,9 +422,8 @@ class FluidicsProtocolWidget(QFrame):
                     self._current_sequence = step.rows[event.position].get("name") or "—"
                     self.protocol_tab.highlight_row(step.row_indices[event.position])  # the row actually flowing
                     self._render_running()
-            elif isinstance(event, StepEnded):
-                self._update_reagents()
             elif isinstance(event, StateChanged):
+                self.signal_run_held.emit(event.state is RunnerState.HELD)
                 if event.state is RunnerState.HELD and event.hold is not None:
                     self._show_hold(event.hold)
                 elif event.state is not RunnerState.HELD:
@@ -423,6 +432,28 @@ class FluidicsProtocolWidget(QFrame):
                 self._finish(event.outcome)
         except Exception:
             self._log.exception("Error handling a runner event")
+
+    def hold_act(self, action: HoldAction, restore_tec: bool = False) -> bool:
+        """A held-panel button. While a manual fluidics job (a sipper move, a reservoir reset) still
+        runs, every way on but End run is refused: Restart would find the rig busy, and Skip would
+        go on to imaging with the robot still moving. The sipper and the reservoir edits are taken
+        back before the run wakes, so no move can start in between. True when the runner took it."""
+        if action is not HoldAction.END and self.manual_job_active():
+            QMessageBox.information(
+                self,
+                "Run held",
+                "A manual fluidics job (a sipper move or a reservoir reset) is still running. "
+                "Continue the run once it has finished.",
+            )
+            return False
+        self.signal_run_held.emit(False)
+        try:
+            self.runner.hold_action(action, restore_tec=restore_tec)
+        except RuntimeError as e:
+            self._log.warning(f"Hold action refused: {e}")
+            self.signal_run_held.emit(self.runner.state is RunnerState.HELD)  # still held: hand them back
+            return False
+        return True
 
     def _show_hold(self, hold: Hold) -> None:
         while self.held_layout.count():
@@ -446,11 +477,7 @@ class FluidicsProtocolWidget(QFrame):
             self.held_layout.addWidget(tec_checkbox)
 
         def act(action: HoldAction):
-            restore = tec_checkbox.isChecked() if tec_checkbox is not None else False
-            try:
-                self.runner.hold_action(action, restore_tec=restore)
-            except RuntimeError as e:
-                self._log.warning(f"Hold action refused: {e}")
+            self.hold_act(action, restore_tec=tec_checkbox.isChecked() if tec_checkbox is not None else False)
 
         buttons = QHBoxLayout()
         if hold.can_resume and hold.resume_position is not None:
@@ -488,34 +515,7 @@ class FluidicsProtocolWidget(QFrame):
             + (f" — {hold.message}" if hold.message else "")
         )
 
-    def _update_reagents(self) -> None:
-        if self.runner is None:
-            return
-        this_run, last_step = reagent_totals(self.runner.manifest)
-        rows = []
-        for port in sorted(set(this_run) | set(self._since_init_ul)):
-            rows.append(
-                (
-                    port,
-                    self._reagent_name(port),
-                    last_step.get(port, 0.0),
-                    this_run.get(port, 0.0),
-                    self._since_init_ul.get(port, 0.0) + this_run.get(port, 0.0),
-                )
-            )
-        self.signal_reagent_rows.emit(rows)
-
-    def _reagent_name(self, port: int) -> Optional[str]:
-        try:
-            return self.service.system.devices.selector_valves.port_to_reagent(port)
-        except Exception:
-            return None
-
     def _finish(self, outcome: str) -> None:
-        if self.runner is not None:
-            totals, _last = reagent_totals(self.runner.manifest)
-            for port, ul in totals.items():
-                self._since_init_ul[port] = self._since_init_ul.get(port, 0.0) + ul
         self.protocol_tab.set_run_locked(False)
         self.protocol_tab.highlight_row(None)
         self.state_label.setText(f"Run {outcome}")

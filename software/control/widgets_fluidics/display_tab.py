@@ -1,15 +1,19 @@
-"""The wide Fluidics display tab: instrument on the left (Initialize, manual control, device status,
-Log | Temperature | Reagents), the Protocol editor on the right."""
+"""The wide Fluidics display tab: instrument on the left (Initialize, manual control, the sipper on a
+plate-sipper rig, device status, Log | Temperature | Flow | Reservoirs), the Protocol editor on the
+right."""
 
 from typing import Callable, Optional, Tuple
 
-from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -18,9 +22,66 @@ from qtpy.QtWidgets import (
 )
 
 import squid.logging
-from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
+from control.widgets_fluidics.log_view import FluidicsLogView
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
+
+
+class InstrumentColumn(QSplitter):
+    """The display tab's left column: the instrument block over the Log / sensor tabs.
+
+    The block gets the height it asks for and scrolls when the window is short; the splitter holds
+    the tabs at their minimum, which the plots' canvases set from the height their labels need. A
+    hidden page's layouts are not activated, so on a short screen the divider moves up the first
+    time a plot tab is opened, then stays. Once the operator drags it the split is theirs (a window
+    resize then scales both panes, as any splitter does)."""
+
+    def __init__(self, instrument: QWidget, tabs: QWidget, parent=None):
+        super().__init__(Qt.Vertical, parent)
+        self._instrument = instrument
+        self.instrument_scroll = QScrollArea()
+        self.instrument_scroll.setWidgetResizable(True)
+        self.instrument_scroll.setFrameShape(QFrame.NoFrame)
+        self.instrument_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.instrument_scroll.setWidget(instrument)
+        self.addWidget(self.instrument_scroll)
+        self.addWidget(tabs)
+        self.setChildrenCollapsible(False)
+        self._dragged = False
+        self.splitterMoved.connect(self._on_dragged)
+        for pane in (instrument, tabs):
+            pane.installEventFilter(self)
+        self._content_changed()
+
+    def eventFilter(self, watched, event) -> bool:
+        # Installed on the two panes only. A pane's size hints are fresh once its own LayoutRequest
+        # arrives (Qt propagates them up one posted event at a time), so that is when to look, not
+        # when a widget is added.
+        if event.type() == QEvent.LayoutRequest:
+            self._content_changed()
+        return super().eventFilter(watched, event)
+
+    def _content_changed(self) -> None:
+        """A pane gained or lost widgets (Initialize mounts manual control and the sensor tabs):
+        never clip the block sideways, scroll bar included, and share the height again."""
+        scroll_bar_width = self.instrument_scroll.verticalScrollBar().sizeHint().width()
+        self.instrument_scroll.setMinimumWidth(self._instrument.minimumSizeHint().width() + scroll_bar_width)
+        self._balance()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._balance()
+
+    def _on_dragged(self, _pos: int, _index: int) -> None:
+        self._dragged = True
+
+    def _balance(self) -> None:
+        height = sum(self.sizes())
+        if self._dragged or height == 0:  # 0: not laid out yet
+            return
+        # setSizes clamps: a negative or too-small size becomes that pane's minimum.
+        wanted = self._instrument.sizeHint().height()
+        self.setSizes([wanted, height - wanted])
 
 
 class FluidicsDisplayTab(QWidget):
@@ -37,6 +98,11 @@ class FluidicsDisplayTab(QWidget):
         self.service = service
         self.fluidics_port = None
         self.temperature_tab = None
+        self.flow_tab = None
+        self.reservoirs_tab = None  # ReservoirsView, once Initialize has built volume tracking
+        self.sipper_controls = None  # SipperControls, on a plate-sipper rig
+        self._run_active = False
+        self._run_held = False
         self.run_line_provider: Callable[[], str] = lambda: "—"
 
         self.system_panel = SystemPanel(service)
@@ -50,13 +116,22 @@ class FluidicsDisplayTab(QWidget):
 
         # One-off priming/cleaning as an inline row (no pop-ups), the old widget's fields:
         # which ports to prime (their tubing filled with the config's per-port amounts), the
-        # wash port the final volume is drawn from, that volume, the flow rate, and a repeat.
+        # port the final volume is drawn from (the old widget's "Fill tubing with"), that volume, the flow
+        # rate, and a repeat. The port list is the rig's, filled at Initialize.
         self.ports_edit = QLineEdit()
-        self.ports_edit.setPlaceholderText("ports to prime, e.g. 1-4, 25")
-        self.wash_port_spin = QSpinBox()
-        self.wash_port_spin.setRange(1, 100000)
-        self.wash_port_spin.setValue(1)
-        self.wash_port_spin.setPrefix("wash ")
+        self.ports_edit.setPlaceholderText("ports, e.g. 1-4, 25")
+        self.ports_edit.setToolTip("The ports whose tubing is filled first, e.g. 1-4, 25")
+        # never narrower than its hint: the row is wide, and this is the field the stretch would squeeze
+        hint_width = self.ports_edit.fontMetrics().horizontalAdvance(self.ports_edit.placeholderText())
+        self.ports_edit.setMinimumWidth(hint_width + 16)
+        self.wash_port_combo = QComboBox()
+        self.wash_port_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.wash_port_combo.setMinimumContentsLength(14)  # long reagent names do not widen the column
+        self.wash_port_combo.setToolTip(
+            "<p>After the listed ports are primed, the volume is drawn from this port to fill the shared "
+            "line to the flow cell, usually with a wash buffer. The sipper's port draws from the priming "
+            "well on Prime and the clean-up well on Clean (set in the Sipper group).</p>"
+        )
         self.volume_spin = QSpinBox()
         self.volume_spin.setRange(1, 100000)
         self.volume_spin.setValue(200)
@@ -78,7 +153,7 @@ class FluidicsDisplayTab(QWidget):
         self.stop_quick_button.hide()
         self._quick_widgets = [
             self.ports_edit,
-            self.wash_port_spin,
+            self.wash_port_combo,
             self.volume_spin,
             self.flow_spin,
             self.repeat_spin,
@@ -91,7 +166,8 @@ class FluidicsDisplayTab(QWidget):
         quick_row = QHBoxLayout()
         quick_row.addWidget(QLabel("Prime / Clean:"))
         quick_row.addWidget(self.ports_edit, 1)
-        quick_row.addWidget(self.wash_port_spin)
+        quick_row.addWidget(QLabel("Fill with"))
+        quick_row.addWidget(self.wash_port_combo)
         quick_row.addWidget(self.volume_spin)
         quick_row.addWidget(self.flow_spin)
         quick_row.addWidget(self.repeat_spin)
@@ -106,23 +182,22 @@ class FluidicsDisplayTab(QWidget):
 
         self.log_view = FluidicsLogView()
         self.log_view.connect_logging()
-        self.reagents_table = ReagentsTable()
         self.tabs = QTabWidget()
         self.tabs.addTab(self.log_view, "Log")
-        self.tabs.addTab(self.reagents_table, "Reagents")
 
-        left = QWidget()
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(self.system_panel)
-        left_layout.addWidget(self.manual_group)
-        left_layout.addWidget(self.device_status)
-        left_layout.addWidget(self.tabs, 1)
-        left.setLayout(left_layout)
+        instrument = QWidget()
+        instrument_layout = QVBoxLayout()
+        instrument_layout.addWidget(self.system_panel)
+        instrument_layout.addWidget(self.manual_group)
+        instrument_layout.addWidget(self.device_status)
+        instrument.setLayout(instrument_layout)
+        self._instrument_layout = instrument_layout
+        self.instrument_column = InstrumentColumn(instrument, self.tabs)
 
         self.protocol_tab = ProtocolTab(service, current_source=current_source)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(self.instrument_column)
         splitter.addWidget(self.protocol_tab)
         # Content-driven so the instrument column (the temperature plots need real width)
         # is never clipped; the divider is draggable and both panes share resize space.
@@ -163,9 +238,47 @@ class FluidicsDisplayTab(QWidget):
                 from fluidics.qt.sensor_plots import TemperatureControlWidget
 
                 self.temperature_tab = TemperatureControlWidget(tc)
-                self.tabs.insertTab(1, self.temperature_tab, "Temperature")
+                self.tabs.addTab(self.temperature_tab, "Temperature")
             except Exception:
                 self._log.exception("Could not build the Temperature tab")
+
+        sensors = self.service.system.devices.flow_sensors
+        if sensors:
+            try:
+                from fluidics.devices import draw_protection_available
+                from fluidics.qt.sensor_plots import FlowSensorControlWidget
+
+                # a mode nothing acts on was already switched off and reported at bring-up (service.issues)
+                self.flow_tab = FlowSensorControlWidget(
+                    sensors, draw_protection=draw_protection_available(self.service.config)
+                )
+                self.tabs.addTab(self.flow_tab, "Flow")
+            except Exception:
+                self._log.exception("Could not build the Flow tab")
+
+        try:
+            from control.widgets_fluidics.reservoirs_view import ReservoirsView
+
+            self.reservoirs_tab = ReservoirsView(self.service.config, self.service.system)
+            self.tabs.addTab(self.reservoirs_tab, "Reservoirs")
+        except Exception:
+            self._log.exception("Could not build the Reservoirs tab")
+
+        if self.service.system.devices.robot is not None:
+            try:
+                from control.widgets_fluidics.sipper_controls import SipperControls
+
+                self.sipper_controls = SipperControls(self.service.system, start_job=self.start_manual_job)
+                self._instrument_layout.insertWidget(
+                    self._instrument_layout.indexOf(self.device_status), self.sipper_controls
+                )
+            except Exception:
+                self._log.exception("Could not build the sipper controls")
+        try:
+            self._fill_wash_ports()
+        except Exception:
+            self._log.exception("Could not list the ports for Prime / Clean")
+        self._paint_instrument_access()
         for widget in self._quick_widgets:
             widget.setEnabled(True)
         self.system_ready.emit()
@@ -175,18 +288,78 @@ class FluidicsDisplayTab(QWidget):
         recordings (an embedded tab gets no closeEvent, so the host must ask; see
         SensorTabWidget.close_recordings)."""
         self.log_view.disconnect_logging()
-        if self.temperature_tab is not None:
-            self.temperature_tab.close_recordings()
+        for sensor_tab in (self.temperature_tab, self.flow_tab):
+            if sensor_tab is not None:
+                sensor_tab.close_recordings()
 
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the instrument: manual control and TEC setpoints go
         dead (the plots and their recording stay live)."""
+        self._run_active = bool(active)
+        if not active:
+            self._run_held = False
         self.manual_group.setEnabled(not active)
         if self.temperature_tab is not None:
             self.temperature_tab.setControlsEnabled(not active)
+        self._paint_instrument_access()
 
-    def quick_op_active(self) -> bool:
-        return self._quick_running
+    def set_run_held(self, held: bool) -> None:
+        """The protocol run is HELD (waiting for the operator) or no longer is."""
+        self._run_held = bool(held)
+        self._paint_instrument_access()
+
+    def _paint_instrument_access(self) -> None:
+        """The sipper moves and the reservoir edits are the operator's when no protocol runs, and
+        while one is held: a round refused for an empty well goes on by Retract, reloading the
+        plate, Reset and Restart step. The library greys them itself while any job runs."""
+        free = not self._run_active or self._run_held
+        if self.sipper_controls is not None:
+            self.sipper_controls.set_allowed(free)
+        if self.reservoirs_tab is not None:
+            self.reservoirs_tab.set_edits_allowed(free)
+
+    def start_manual_job(
+        self,
+        verb: Callable[[], None],
+        what: str,
+        source: Optional[str] = None,
+        on_error: Optional[Callable[[str], None]] = None,
+        clears_fault: bool = False,
+    ) -> Optional[str]:
+        """Start `verb` as a manual job on the fluidics session: every one Squid starts (Prime/Clean,
+        the Sipper group) goes through here. How it ends is logged as `what`, and a drive fault its
+        error names shows in Device status until a job with `clears_fault` (Reset fault, Home)
+        finishes. `on_error(message)` runs on the job's thread. Returns why it was not started (another
+        job holds the session), or None."""
+        log, status = self._log, self.device_status
+
+        def body():
+            log.info(f"{what} started")
+            verb()
+            log.info(f"{what} done")
+            if clears_fault:
+                status.note_robot_recovered()
+
+        def failed(message):
+            log.error(f"{what} failed: {message}")
+            status.note_robot_error(message)
+            if on_error is not None:
+                on_error(message)
+
+        try:
+            self.service.system.run_manual(
+                body, callbacks={"on_error": failed, "on_stopped": lambda: log.info(f"{what} stopped")}, source=source
+            )
+        except Exception as e:  # RuntimeError while another job holds the session
+            return str(e)
+        return None
+
+    def manual_job_active(self) -> bool:
+        """A manual job holds the fluidics rig, so a protocol started now would be refused: the
+        inline Prime/Clean, a manual-control move, a sipper move or a reservoir reset."""
+        if self._quick_running:
+            return True
+        return bool(getattr(self.service, "initialized", False) and self.service.system.busy)
 
     def _quick_op(self, op: str) -> None:
         # The old widget's behavior: prime the tubing for use_ports (config per-port amounts),
@@ -200,31 +373,65 @@ class FluidicsDisplayTab(QWidget):
         if not use_ports:
             self._log.error("Prime/Clean: name at least one port to prime (e.g. 1-4, 25)")
             return
-        verb_name = "prime" if op == "priming" else "clean"
-        wash_port = int(self.wash_port_spin.value())
+        clean_up = op == "clean_up"  # on a sipper rig its line draws from the clean-up well, not the priming well
+        wash_port = self.wash_port_combo.currentData()
+        if wash_port is None:
+            self._log.error("Prime/Clean: pick the port to fill the tubing with")
+            return
+        well = self._sipper_fill_well(wash_port, clean_up)
         flow_rate = int(self.flow_spin.value())
         volume = int(self.volume_spin.value())
-        repeat = int(self.repeat_spin.value()) if op == "clean_up" else 1
+        repeat = int(self.repeat_spin.value()) if clean_up else 1
         operations = self.service.system.operations
+
+        # `well` only when there is one: an Open Chamber rig's operation takes no such argument
+        sipper_draw = {"well": well} if well is not None else {}
 
         def verb():
             for _ in range(repeat):
-                operations.priming_or_clean_up(wash_port, flow_rate, volume, use_ports=use_ports)
+                operations.priming_or_clean_up(
+                    wash_port, flow_rate, volume, use_ports=use_ports, clean_up=clean_up, **sipper_draw
+                )
 
-        try:
-            self.service.system.run_manual(
-                verb,
-                callbacks={
-                    "on_error": lambda message: self._log.error(f"Manual {verb_name} failed: {message}"),
-                    "on_stopped": lambda: self._log.info(f"Manual {verb_name} stopped"),
-                    "on_finished": lambda: self._log.info(f"Manual {verb_name} finished"),
-                },
-            )
-        except Exception as e:  # RuntimeError while another job holds the session
-            self._log.error(f"Prime/Clean could not start: {e}")
+        what = f"Manual {'clean' if clean_up else 'prime'} on {len(use_ports)} port(s), filling with port {wash_port}"
+        what += f" from {well}" if well else ""
+        refusal = self.start_manual_job(verb, what)
+        if refusal is not None:
+            self._log.error(f"Prime/Clean could not start: {refusal}")
             return
         self._set_quick_running(True)
-        self._log.info(f"Manual {verb_name} started on {len(use_ports)} port(s)")
+
+    def _sipper_fill_well(self, port: int, clean_up: bool) -> Optional[str]:
+        """The well a final draw through the sipper's port comes from: the clean-up well on Clean, the
+        priming well on Prime. Named, not left to wherever the tip is: the library refuses a sipper row
+        without a well for the same reason. None for any other port, and on a rig without a sipper."""
+        from fluidics.vocabulary import sipper_vocabulary
+
+        config = self.service.system.devices.config
+        vocabulary = sipper_vocabulary(config)
+        if vocabulary is None or port != vocabulary.sipper_port:
+            return None
+        from control.widgets_fluidics.sipper_controls import dedicated_well_key
+
+        return dedicated_well_key(config, "clean-up" if clean_up else "priming")
+
+    def _fill_wash_ports(self) -> None:
+        """The rig's ports, the sipper's among them, labelled as the library labels them ("Port 2: wash
+        buffer 1"). The first named as a wash or buffer is picked, as the old widget picked port 25."""
+        port_names = self.service.system.devices.selector_valves.get_port_names()
+        self.wash_port_combo.clear()
+        for port, label in port_names:
+            self.wash_port_combo.addItem(label, port)
+        buffers = [
+            i for i, (_port, label) in enumerate(port_names) if "wash" in label.lower() or "buffer" in label.lower()
+        ]
+        self.wash_port_combo.setCurrentIndex(buffers[0] if buffers else 0)
+
+    def _relabel_wash_ports(self) -> None:
+        """Manual control renames ports in place (the same ports, new names): keep the labels current."""
+        for index, (port, label) in enumerate(self.service.system.devices.selector_valves.get_port_names()):
+            if self.wash_port_combo.itemData(index) == port and self.wash_port_combo.itemText(index) != label:
+                self.wash_port_combo.setItemText(index, label)
 
     def _stop_quick_op(self) -> None:
         if self._quick_running:
@@ -247,6 +454,10 @@ class FluidicsDisplayTab(QWidget):
     def _refresh_status(self) -> None:
         try:
             self._poll_quick_op()
+            if self.wash_port_combo.count() and getattr(self.service, "initialized", False):
+                self._relabel_wash_ports()
+            if self.sipper_controls is not None:
+                self.sipper_controls.refresh()
             self.device_status.refresh(self.run_line_provider())
         except Exception as e:  # Qt swallows timer-slot exceptions: log explicitly
             self._log.error(f"Device status refresh failed: {e}")

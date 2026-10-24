@@ -2,6 +2,7 @@
 group. Initialize blocks 3–30 s on hardware, so it runs on a daemon thread and reports back through
 queued Qt signals."""
 
+import re
 import threading
 from typing import Optional
 
@@ -108,23 +109,73 @@ class SystemPanel(QGroupBox):
         QMessageBox.warning(self, "Initialize failed", message)
 
 
+# How a drive fault is worded in an error. The stage's own checks: "axis Y2: drive fault, error code
+# 0x7306", "axis X1: drive fault during homing", "axis Z3: drive is not enabled". The servo driver's,
+# when Home or Reset fault meets a fault that will not clear, wrapped by the stage's adapter: "axis Z3:
+# homing failed: Motor fault: error code 0x7306" (also "fault reset failed", "enable failed").
+_DRIVE_FAULT = re.compile(
+    r"axis (\S+): (?:drive (?:fault(?:, error code 0x[0-9A-Fa-f]+| during homing)?|is not enabled)"
+    r"|[\w ]+ failed: Motor fault: error code 0x[0-9A-Fa-f]+)"
+)
+
+_ROBOT_FAULT_TIP = (
+    "The last drive fault a robot move stopped on (a Sipper move, Prime/Clean or a run), not a live "
+    "reading: the drives are read only by the moves themselves, on their one serial line. Reset fault "
+    "in the Sipper group, or a Home that finishes, clears it."
+)
+
+
+def drive_fault(message: Optional[str]) -> Optional[str]:
+    """The drive fault an error names ('axis Y2: drive fault, error code 0x7306'), or None."""
+    match = _DRIVE_FAULT.search(message or "")
+    return match.group(0) if match else None
+
+
+NOT_RETRACTED = "not known to be retracted"
+
+
+def tip_location(robot) -> str:
+    """Where the sipper's tip is, from the robot's cached state (no I/O): in a well, retracted,
+    or NOT_RETRACTED. The Sipper group and Device status both say it this way."""
+    key = robot.current_well_key()
+    if key is not None:
+        return f"in {key}"
+    return "retracted" if robot.is_retracted else NOT_RETRACTED
+
+
 class DeviceStatusGroup(QGroupBox):
-    """Reads only cached device state (no serial I/O from the GUI): the pump's held volume arrives by
-    subscription, the valves/TEC expose cached attributes, and the run line comes from the runner."""
+    """Reads only cached device state (no serial I/O from the GUI): the pump's held volume and the
+    robot's position arrive by subscription, the valves/TEC expose cached attributes, and the run line
+    comes from the runner. The robot's fault is the last one an error named (see drive_fault)."""
+
+    _ROBOT_ROWS = ("Robot", "Robot fault")
 
     def __init__(self, parent=None):
         super().__init__("Device status", parent)
         self._service = None
         self._held_ul: Optional[float] = None
+        self._robot = None
+        self._robot_position = None
+        self._robot_fault: Optional[str] = None
         grid = QGridLayout()
         self.labels = {}
-        for row, name in enumerate(("System", "Syringe pump", "Valves", "Temperature", "Run")):
-            grid.addWidget(QLabel(f"{name}:"), row, 0)
-            label = QLabel("—")
+        self._robot_row_widgets = []  # shown on a rig with a sipper
+        rows = ("System", "Syringe pump", "Valves", "Temperature") + self._ROBOT_ROWS + ("Run",)
+        for row, name in enumerate(rows):
+            caption, label = QLabel(f"{name}:"), QLabel("—")
+            grid.addWidget(caption, row, 0)
             grid.addWidget(label, row, 1)
             self.labels[name] = label
+            if name in self._ROBOT_ROWS:
+                self._robot_row_widgets += [caption, label]
+        self.labels["Robot fault"].setToolTip(_ROBOT_FAULT_TIP)
+        self._show_robot_rows(False)  # until a rig with a sipper is attached
         grid.setColumnStretch(1, 1)
         self.setLayout(grid)
+
+    def _show_robot_rows(self, shown: bool) -> None:
+        for widget in self._robot_row_widgets:
+            widget.setVisible(shown)
 
     def attach(self, service) -> None:
         self._service = service
@@ -133,9 +184,54 @@ class DeviceStatusGroup(QGroupBox):
         except Exception:
             pass
         self.labels["System"].setText(f"initialized · {service.config_path}")
+        self._robot = service.system.devices.robot
+        self._robot_fault = None
+        self._show_robot_rows(self._robot is not None)
+        if self._robot is not None:
+            self._robot_position = self._robot.position()
+            self._robot.moves.subscribe(self._on_robot_move)
+            service.system.session.events.subscribe(self._on_run_event)
 
     def _on_held_volume(self, volume_ul) -> None:  # producer thread: store only
         self._held_ul = float(volume_ul)
+
+    def _on_robot_move(self, position) -> None:  # the job's thread: store only
+        self._robot_position = position
+
+    def _on_run_event(self, event) -> None:  # the job's thread: store only
+        from fluidics.events import RunEnded
+
+        if isinstance(event, RunEnded) and event.outcome == "failed":
+            self.note_robot_error(event.message)
+
+    def note_robot_error(self, message: Optional[str]) -> None:
+        """A job failed with `message`; a drive fault in it shows until it is cleared. Any thread."""
+        fault = drive_fault(message)
+        if fault is not None:
+            self._robot_fault = fault
+
+    def note_robot_recovered(self) -> None:
+        """Reset fault or Home finished: the drives answered, the fault is cleared."""
+        self._robot_fault = None
+
+    def _paint_robot(self) -> None:
+        """While a job runs, the last position the stage published (its own is unknown mid-move).
+        Once the rig is idle, the stage's own cached position and state (no I/O): a Home or a fault
+        reset that failed can drop the position without publishing it."""
+        robot = self._robot
+        idle = not self._service.system.busy
+        position = robot.position() if idle else self._robot_position
+        if position is None:
+            where = "position unknown (Home the robot)"
+        else:
+            x, y, z = position
+            moving = not idle and robot.current_well_key() is None
+            where = f"x {x:.2f}  y {y:.2f}  z {z:.2f} mm · " + ("moving or in use" if moving else tip_location(robot))
+        self.labels["Robot"].setText(where)
+        fault = self._robot_fault
+        label = self.labels["Robot fault"]
+        label.setText(f"{fault} (Reset fault in the Sipper group)" if fault else "none")
+        label.setStyleSheet("color: #b00020; font-weight: bold;" if fault else "")
 
     def refresh(self, run_line: str = "—") -> None:
         self.labels["Run"].setText(run_line)
@@ -161,3 +257,5 @@ class DeviceStatusGroup(QGroupBox):
                 for i in range(tc.channels)
             ]
             self.labels["Temperature"].setText(" · ".join(parts))
+        if self._robot is not None:
+            self._paint_robot()

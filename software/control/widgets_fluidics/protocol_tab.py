@@ -1,8 +1,10 @@
 """The Protocol editor: a round-grouped tree over a ProtocolFile, with imaging-source assignment
 (Apply current settings / Capture current coordinates / From file…), folder rules, Add rounds and
 live validation. Built on the fluidics library's own logic helpers (get_fields_for_type,
-SEQUENCE_TYPE_LABELS, sequence_problem) — the widget skin is Squid's, the
-sequence semantics are the library's."""
+SEQUENCE_TYPE_LABELS, sequence_problem, sipper_vocabulary) — the widget skin is Squid's, the
+sequence semantics are the library's. On a plate-sipper rig that includes the wells: a row's
+`well`/`sipper_well`, `dip_cycles` and push rows are judged by the library against the rig's
+plates; on a rig without a sipper none of them is offered."""
 
 import datetime
 import os
@@ -15,6 +17,7 @@ from qtpy.QtWidgets import (
     QDialog,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -49,24 +52,44 @@ from control.models.fluidics_protocol import (
     save_protocol,
 )
 from control.widgets_fluidics import state
-from control.widgets_fluidics.dialogs import AddRoundsDialog, pick_coordinates_source, pick_settings_source
+from control.widgets_fluidics.dialogs import (
+    AddRoundsDialog,
+    drop_help_button,
+    pick_coordinates_source,
+    pick_settings_source,
+)
 
 try:  # the editor degrades gracefully when the fluidics library is not installed
-    from fluidics.control.config import available_ports, load_config
+    from fluidics.control.config import available_ports, gantry, load_config
     from fluidics.sequences import (
         SEQUENCE_TYPE_LABELS,
+        SIPPER_FIELDS,
+        WELL_FIELDS,
+        field_default,
         get_fields_for_type,
         sequence_problem,
     )
+    from fluidics.vocabulary import sipper_vocabulary
 except ImportError:
-    SEQUENCE_TYPE_LABELS = get_fields_for_type = sequence_problem = None
-    available_ports = load_config = None
+    SEQUENCE_TYPE_LABELS = get_fields_for_type = sequence_problem = field_default = None
+    available_ports = gantry = load_config = sipper_vocabulary = None
+    SIPPER_FIELDS, WELL_FIELDS = (), {}
 
 _SCOPE_ALL = "all imaging rows"
 _SCOPE_SELECTED = "selected rows"
 _STRING_FIELDS = ("name", "round", "folder", "settings", "coordinates")
 _HIGHLIGHT = QColor(255, 244, 180)
 _INVALID = QColor(255, 205, 205)
+
+
+def _port_cell(row: dict) -> str:
+    """The tree's Port column: the port, and the well a sipper row draws from (a push row has
+    no port of its own, only its well)."""
+    port, well = row.get("fluidic_port"), row.get("well")
+    text = "" if port in (None, "") else str(port)
+    if well:
+        text = f"{text} · {well}" if text else str(well)
+    return text
 
 
 class FluidicsConfigError(RuntimeError):
@@ -128,6 +151,10 @@ class ProtocolTab(QWidget):
         self._highlight_row: Optional[int] = None
         self._run_locked = False
         self._dirty = False
+        # From the config each validation reads: the rig's SipperVocabulary (None without a
+        # sipper) and the volume a push row draws, which lives in the config, not on the row.
+        self._sipper = None
+        self._push_volume_ul: Optional[int] = None
 
         self._build_ui()
         self._render()
@@ -527,7 +554,10 @@ class ProtocolTab(QWidget):
                 pass
         if port_names is None:
             port_names = [(port, f"Port {port}") for port in available_ports(config)]
-        dialog = AddSequenceDialog(self, config.application, port_names)
+        # With the rig's sipper the dialog offers push rows and each row's well and dips; without
+        # one it offers none of them.
+        dialog = AddSequenceDialog(self, config.application, port_names, sipper=sipper_vocabulary(config))
+        drop_help_button(dialog)
         if dialog.exec_() == QDialog.Accepted and dialog.result_dict:
             row = dict(dialog.result_dict)
             if row.get("type") == IMAGING_TYPE:
@@ -625,6 +655,7 @@ class ProtocolTab(QWidget):
         problems: Dict[int, str] = {}
         folder_by_row = folder_problems_by_row(self._protocol)
         application, ports, config_error = "Flow Cell", None, None
+        self._sipper, self._push_volume_ul = None, None
         try:
             config = _current_config(self.service)
         except FluidicsConfigError as e:
@@ -633,6 +664,11 @@ class ProtocolTab(QWidget):
             if config is not None:
                 application = config.application
                 ports = available_ports(config)  # the ports actually plumbed, gaps and all
+                # A well, a push row or dips are judged against this rig's sipper: its plates and
+                # wells, and its port (a well row draws through it, a port row must not name it).
+                self._sipper = sipper_vocabulary(config)
+                if self._sipper is not None:
+                    self._push_volume_ul = gantry(config).push_volume_ul
         base = self._protocol_dir()
         for i, row in enumerate(self._protocol.sequences):
             if row.get("type") == IMAGING_TYPE:
@@ -667,7 +703,7 @@ class ProtocolTab(QWidget):
             try:
                 # The library owns the verdict order and phrasing (sequence_problem), so
                 # Squid's rows read exactly as the standalone editor's would.
-                problem = sequence_problem(row, application, ports)
+                problem = sequence_problem(row, application, ports, sipper=self._sipper)
                 if problem:
                     problems[i] = problem
             except Exception as e:
@@ -755,8 +791,10 @@ class ProtocolTab(QWidget):
             name = f"{name} → {row.get('folder') or '?'}"
             port = vol = rate = inc = ""
         else:
-            port = str(row.get("fluidic_port", "") or "")
+            port = _port_cell(row)
             vol = str(row.get("volume", "") or "")
+            if seq_type == "push" and self._push_volume_ul is not None:
+                vol = str(self._push_volume_ul)  # the config's push volume: a push row carries none
             rate = str(row.get("flow_rate", "") or "")
             inc = str(row.get("incubation_time", "") or "")
         status = "✗" if i in self._problems else ""
@@ -860,6 +898,26 @@ class ProtocolTab(QWidget):
         edit.editingFinished.connect(lambda e=edit, f=field: self._field_edited(index, f, e))
         return edit
 
+    def _well_edit(self, index: int, field: str, value) -> QLineEdit:
+        """A well reference as text (A1 on the default plate, or plate/A1), checked live by the
+        library's own well rules; it completes from every well of the rig's plates."""
+        edit = self._line_edit(index, field, value)
+        sipper = self._sipper
+        if field == "sipper_well":
+            edit.setPlaceholderText("blank: the config's priming or clean-up well")
+        elif sipper is not None:
+            edit.setPlaceholderText(f"A1 on {sipper.default_reservoir}, or plate/A1")
+        if sipper is not None:
+            refs = [
+                well if plate == sipper.default_reservoir else f"{plate}/{well}"
+                for plate in sorted(sipper.reservoirs)
+                for well, _label in sipper.well_names(plate)
+            ]
+            completer = QCompleter(refs, edit)
+            completer.setCaseSensitivity(Qt.CaseInsensitive)
+            edit.setCompleter(completer)
+        return edit
+
     def _build_fluidics_editor(self, index: int, row: dict) -> None:
         self.field_group.setTitle(f"Selected row — {row.get('name') or row.get('type')}")
         try:
@@ -869,8 +927,13 @@ class ProtocolTab(QWidget):
         for fname, finfo in fields.items():
             if fname == "include":
                 continue
-            value = row.get(fname, getattr(finfo, "default", None))
-            if fname in _STRING_FIELDS:
+            if fname in SIPPER_FIELDS and self._sipper is None and fname not in row:
+                continue  # no sipper on this rig: nothing to offer (a row that has one shows it, flagged)
+            # field_default: a required field's default is pydantic's sentinel, not None
+            value = row.get(fname, field_default(finfo))
+            if fname in WELL_FIELDS:
+                widget = self._well_edit(index, fname, value)
+            elif fname in _STRING_FIELDS:
                 widget = self._line_edit(index, fname, value)
             else:
                 is_float = fname in ("temperature", "incubation_time")
@@ -937,10 +1000,17 @@ class ProtocolTab(QWidget):
             and field not in ("name", "round")
         )
         key = (row.get("name"), row.get("type"))
-        row[field] = value
+
+        def assign(target: dict) -> None:
+            if value is None and field in WELL_FIELDS:
+                target.pop(field, None)  # a cleared well is unset, not `well: null` in the file
+            else:
+                target[field] = value
+
+        assign(row)
         if apply_all:
             for other in self._protocol.sequences:
                 if other is not row and (other.get("name"), other.get("type")) == key:
-                    other[field] = value
+                    assign(other)
         # Re-render on the next event-loop turn: destroying the editor inside its own signal is unsafe.
         QTimer.singleShot(0, self._mark_changed)

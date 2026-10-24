@@ -1974,7 +1974,7 @@ class HighContentScreeningGui(QMainWindow):
                 return "an acquisition is already in progress"
             if self.workflowRunner is not None and self.workflowRunner.is_running():
                 return "a workflow is running"
-            if self.fluidicsDisplayTab is not None and self.fluidicsDisplayTab.quick_op_active():
+            if self.fluidicsDisplayTab is not None and self.fluidicsDisplayTab.manual_job_active():
                 return "a manual fluidics operation is running"
             return None
 
