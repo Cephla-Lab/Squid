@@ -227,8 +227,10 @@ def test_display_tab_initializes_and_builds_the_port(qtbot, tmp_path, monkeypatc
         # one-off prime from the inline fields (no pop-ups), through the same library path
         # as any sequence; priming is minutes long even simulated, so the operator's Stop
         # button is what ends it.
+        assert tab.wash_port_combo.currentText() == "Port 25: buffer 1"  # the old widget's pick, by its name
+        assert tab.wash_port_combo.count() == 28  # every port the rig offers
         tab.ports_edit.setText("1-2")
-        tab.wash_port_spin.setValue(1)
+        tab.wash_port_combo.setCurrentIndex(tab.wash_port_combo.findData(1))
         tab.volume_spin.setValue(50)
         tab._quick_op("priming")
         assert tab.manual_job_active()

@@ -124,6 +124,25 @@ def test_inert_draw_protection_is_switched_off_and_said_so(initialized_display_t
     assert "bring-up issue" in tab.system_panel.status_label.text()
 
 
+def test_prime_runs_on_an_open_chamber_rig(initialized_display_tab, qtbot, monkeypatch):
+    # The Open Chamber operation takes no `well` (only a sipper rig's does): Prime must not pass one.
+    tab = initialized_display_tab(_config_text(application="Open Chamber"))
+    operations = tab.service.system.operations
+    real, finished = operations.priming_or_clean_up, []
+
+    def spy(*args, **kwargs):
+        real(*args, **kwargs)
+        finished.append(kwargs)
+
+    monkeypatch.setattr(operations, "priming_or_clean_up", spy)
+    assert tab.wash_port_combo.currentText() == "Port 25: buffer 1"
+    tab.ports_edit.setText("1")
+    tab.volume_spin.setValue(50)
+    tab._quick_op("priming")
+    qtbot.waitUntil(lambda: not tab.manual_job_active(), timeout=30000)
+    assert finished == [{"use_ports": [1], "clean_up": False}]
+
+
 def test_shutdown_closes_an_open_flow_recording(initialized_display_tab, tmp_path, monkeypatch):
     import fluidics.qt.sensor_plots as sensor_plots
 
