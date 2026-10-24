@@ -293,3 +293,41 @@ def test_any_job_on_the_fluidics_session_blocks_a_protocol_start(sipper_tab, qtb
     finally:
         release.set()
     qtbot.waitUntil(lambda: not sipper_tab.manual_job_active(), timeout=5000)
+
+
+def test_prime_and_clean_fill_the_tubing_from_any_port_the_sipper_among_them(sipper_tab, qtbot, monkeypatch):
+    tab = sipper_tab
+    combo = tab.wash_port_combo
+    assert [combo.itemData(i) for i in range(combo.count())] == [1, 2, 3, 4, 5, 6]  # the sipper's port too
+    assert combo.itemText(0) == "Port 1: sipper"
+    assert combo.currentText() == "Port 2: wash buffer 1"  # the first port named as a wash buffer
+
+    operations = tab.service.system.operations
+    real, wells = operations.priming_or_clean_up, []
+
+    def spy(*args, **kwargs):
+        real(*args, **kwargs)  # a refusal raises: the well is recorded only for a draw that ran
+        wells.append(kwargs.get("well"))
+
+    monkeypatch.setattr(operations, "priming_or_clean_up", spy)
+    robot = tab.service.system.devices.robot
+    tab.ports_edit.setText("1")
+    tab.volume_spin.setValue(50)
+    for op, well in (("priming", "ssct/H11"), ("clean_up", "ssct/H12")):
+        combo.setCurrentIndex(combo.findData(1))  # the sipper: from the priming or the clean-up well
+        tab._quick_op(op)
+        qtbot.waitUntil(lambda: not tab.manual_job_active(), timeout=30000)
+        assert wells[-1:] == [well] and robot.current_well_key() == well
+
+    combo.setCurrentIndex(combo.findData(2))  # a bottle: no well
+    tab._quick_op("priming")
+    qtbot.waitUntil(lambda: not tab.manual_job_active(), timeout=30000)
+    assert len(wells) == 3 and wells[-1] is None
+
+
+def test_the_fill_port_names_follow_a_rename(sipper_tab):
+    tab = sipper_tab
+    names = tab.service.system.devices.config.reagent_selection.selector_valves.name_mapping
+    names["port_2"] = "PBS"
+    tab._refresh_status()
+    assert tab.wash_port_combo.itemText(1) == "Port 2: PBS" and tab.wash_port_combo.currentData() == 2

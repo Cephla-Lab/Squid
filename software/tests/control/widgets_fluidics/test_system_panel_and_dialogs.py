@@ -221,34 +221,40 @@ def test_quick_op_calls_priming_or_clean_up_with_use_ports(qtbot, fluidics_confi
 
     calls = []
     operations = SimpleNamespace(
+        # no `well` parameter, as on an Open Chamber rig: a rig without a sipper is never passed one
         priming_or_clean_up=lambda port, flow, volume, use_ports=None, clean_up=False: calls.append(
             (port, flow, volume, tuple(use_ports), clean_up)
         )
     )
+    from fluidics.control.config import load_config
+
+    config = load_config(fluidics_config_path)
+    valves = SimpleNamespace(get_port_names=lambda: [(1, "Port 1: reagent x"), (25, "Port 25: buffer 1")])
     system = SimpleNamespace(
         operations=operations,
         busy=False,
         run_manual=lambda verb, callbacks=None, source=None: verb(),  # synchronous for the test
         abort=lambda: None,
+        devices=SimpleNamespace(config=config, selector_valves=valves),
     )
-    from fluidics.control.config import load_config
-
     service = SimpleNamespace(
         initialized=True,
         system=system,
-        config=load_config(fluidics_config_path),
+        config=config,
         default_config_path=fluidics_config_path,
     )
     tab = FluidicsDisplayTab(service)
     qtbot.addWidget(tab)
     tab.fluidics_port = object()  # marks the system ready
+    tab._fill_wash_ports()
+    assert tab.wash_port_combo.currentData() == 25  # named as a buffer, as the old widget's port 25
     tab.ports_edit.setText("2, 5, 7")
-    tab.wash_port_spin.setValue(1)
+    tab.wash_port_combo.setCurrentIndex(tab.wash_port_combo.findData(1))
     tab.volume_spin.setValue(50)
     tab.flow_spin.setValue(200)
 
     tab._quick_op("priming")
-    assert calls == [(1, 200, 50, (2, 5, 7), False)]  # wash port 1, one final draw over use_ports 2,5,7
+    assert calls == [(1, 200, 50, (2, 5, 7), False)]  # port 1 fills the tubing, one final draw over use_ports 2,5,7
 
     calls.clear()
     tab._quick_running = False
