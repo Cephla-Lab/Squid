@@ -723,3 +723,17 @@ def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
         mpc.thread.join(10)
 
     assert tt.image_count == mpc.get_acquisition_image_count()
+
+
+def test_start_blocker_refuses_an_acquisition_before_anything_moves():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        mpc = ts.get_test_multi_point_controller(microscope=scope)
+        mpc.validate_acquisition_settings = lambda: True
+        mpc.start_blocker = lambda: "the Z lift is moving"
+        start = scope.stage.get_pos()
+        assert mpc.run_acquisition() is False
+        assert mpc.last_end_reason == "failed_to_start"
+        assert scope.stage.get_pos() == start
+    finally:
+        scope.close()

@@ -26,6 +26,8 @@ void finalize_homing_xy();
 
 void do_camera_trigger();
 void check_joystick();
+void joystick_x_apply();     // apply the joystick's deltas to the axis if it may drive it (at rest: offset velocity or a stop)
+void joystick_y_apply();
 void do_focus_control();
 
 void check_position();

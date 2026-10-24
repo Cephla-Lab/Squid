@@ -250,3 +250,25 @@ def test_focus_measure_lape_independent_of_dtype_for_identical_values():
     assert control.utils.calculate_focus_measure(as_uint8, FocusMeasureOperator.LAPE) == pytest.approx(
         control.utils.calculate_focus_measure(as_uint16, FocusMeasureOperator.LAPE), rel=1e-9
     )
+
+
+@pytest.mark.parametrize("rotate", [None, 0, 90, -90, 180])
+@pytest.mark.parametrize("flip", [None, *control.utils.FlipVariant])
+@pytest.mark.parametrize("shape", [(6, 4), (6, 4, 3)])
+def test_rotate_and_flip_image_matches_opencv_and_never_aliases_the_input(rotate, flip, shape):
+    image = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape)
+    original = image.copy()
+    expected = image.copy()
+    if rotate:
+        expected = cv2.rotate(
+            expected, {90: cv2.ROTATE_90_CLOCKWISE, -90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180}[rotate]
+        )
+    if flip is not None:
+        expected = cv2.flip(expected, {"Vertical": 0, "Horizontal": 1, "Both": -1}[flip.value])
+
+    result = control.utils.rotate_and_flip_image(image, rotate_image_angle=rotate, flip_image=flip)
+
+    np.testing.assert_array_equal(result, expected)
+    assert result.flags.c_contiguous
+    assert not np.may_share_memory(result, image)  # callers pass views of driver memory
+    np.testing.assert_array_equal(image, original)
