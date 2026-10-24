@@ -161,6 +161,13 @@ class CephlaStage(AbstractStage):
     def get_state(self) -> StageStage:
         return StageStage(busy=self._microcontroller.is_busy())
 
+    def reports_stopped(self) -> bool:
+        # Not get_state().busy: that is the host's flag, which abort_current_command() clears without stopping anything.
+        try:
+            return self._microcontroller.reported_idle_since_last_command()
+        except Exception:
+            return False
+
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         if x or y:
             require_objective_lowered(objective_lowered, "Home XY")

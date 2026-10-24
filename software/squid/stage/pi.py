@@ -298,6 +298,17 @@ class PIFocusStage(AbstractStage):
         with self._lock:
             return StageStage(busy=self._c414.is_moving())
 
+    def reports_stopped(self) -> bool:
+        if self._busy:  # an async home is running
+            return False
+        try:
+            with self._lock:
+                if self._closed:
+                    return False
+                return not self._c414.is_moving()
+        except Exception:
+            return False
+
     def is_referenced(self) -> bool:
         with self._lock:
             return self._c414.is_referenced()
@@ -479,6 +490,10 @@ class CombinedStage(AbstractStage):
 
     def get_state(self) -> StageStage:
         return StageStage(busy=self._xy.get_state().busy or self._z.get_state().busy)
+
+    def reports_stopped(self) -> bool:
+        # A Z lift is the XY controller's own Z stepper, so the XY stage's report covers it.
+        return self._xy.reports_stopped() and self._z.reports_stopped()
 
     def is_referenced(self) -> bool:
         return self._z.is_referenced()

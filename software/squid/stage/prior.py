@@ -248,6 +248,13 @@ class PriorStage(AbstractStage):
     def get_state(self) -> StageStage:
         return StageStage(busy=self.is_busy)
 
+    def reports_stopped(self) -> bool:
+        # A fresh "$,S" query (0: no axis moving), not is_busy, which only wait_for_stop() keeps.
+        try:
+            return int(self._send_command("$,S")) == 0
+        except Exception:
+            return False
+
     def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         # SIS homes XY whatever the flags say, so every call needs the confirmation.
         require_objective_lowered(objective_lowered, "Home")

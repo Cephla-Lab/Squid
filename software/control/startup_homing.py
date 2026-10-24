@@ -22,3 +22,7 @@ def require_objective_lowered(objective_lowered: bool, operation: str) -> None:
             f"{operation} refused: on a piezo-only system the software cannot move the objective clear. "
             "Lower it with the focus knob, then confirm (objective_lowered=true)."
         )
+
+
+class StageHomingInProgressError(RuntimeError):
+    """A stage motion was requested while a homing operation holds the stage."""
