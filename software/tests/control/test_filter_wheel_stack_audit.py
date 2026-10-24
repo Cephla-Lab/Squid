@@ -251,10 +251,3 @@ def test_a_home_on_a_restored_wheel_sends_the_configuration_once(rig):
     mc.reset_mock()
     wheel.home(1)
     assert "init_filter_wheel" not in [c[0] for c in mc.method_calls]
-
-
-def test_wrap_setting_accepts_the_integers_an_ini_yields():
-    parse = cephla.SquidFilterWheel._parse_wrap
-    assert parse(1) is True and parse(0) is False and parse("Auto") == "auto"
-    with pytest.raises(ValueError):
-        parse(2)

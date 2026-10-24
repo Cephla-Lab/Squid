@@ -222,9 +222,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
         # Read through the module rather than the `from control._def import *` binding above:
         # that binding is taken at import time and would not see an ini override.
-        self.wrap = (
-            control._def.SQUID_FILTERWHEEL_WRAP
-        )  # parsed by the setter: a typo fails here, not at the first move
+        wrap = control._def.SQUID_FILTERWHEEL_WRAP
+        # True / False, or the 1 / 0 the ini reader yields for `= 1` / `= 0`. Anything else is refused: a typo
+        # must not silently become "on" (bool("off") is True).
+        if not isinstance(wrap, int) or wrap not in (0, 1):
+            raise ValueError(f"squid_filterwheel_wrap must be True or False, not {wrap!r}")
+        self.wrap: bool = bool(wrap)
 
         # Fail loudly on a host/firmware version mismatch before any moves
         # are issued — runs unconditionally (including the skip_init restart
@@ -241,10 +244,10 @@ class SquidFilterWheel(AbstractFilterWheelController):
                 f"command also does not exist on older firmware. Re-flash "
                 f"firmware from firmware/controller."
             )
-        if self._wrap is True and tuple(fw) < self._WRAP_MIN_FIRMWARE:
-            _log.warning(
-                f"squid_filterwheel_wrap = True needs firmware >= {self._WRAP_MIN_FIRMWARE[0]}.{self._WRAP_MIN_FIRMWARE[1]} "
-                f"(this controller runs {fw[0]}.{fw[1]}); slot changes take the long way round"
+        if self.wrap and not self._wrap_enabled():
+            _log.info(
+                f"Shortest-path slot changes need firmware >= {self._WRAP_MIN_FIRMWARE} "
+                f"(this controller runs {tuple(fw)}); slot changes take the flag-free arc"
             )
 
         # Convert single config to dict format for uniform handling
@@ -347,20 +350,9 @@ class SquidFilterWheel(AbstractFilterWheelController):
 
     # Shortest-path slot changes. The wheel is rotary with no end stop, so a slot change can take the
     # shorter way round, crossing the index flag: 8 -> 1 is one slot, not seven. The driver coordinate
-    # stays continuous across the flag via a per-wheel turn counter; homing re-anchors it.
+    # stays continuous across the flag via a per-wheel turn counter; homing re-anchors it. On unless the
+    # squid_filterwheel_wrap ini key is False, and only from _WRAP_MIN_FIRMWARE.
     #
-    # Three states, from the squid_filterwheel_wrap ini key (control._def.SQUID_FILTERWHEEL_WRAP):
-    #   "auto" (default)  on when the controller runs firmware >= 1.6, off below
-    #   True              on from firmware 1.4 (the first that accepts the negative targets a backward wrap
-    #                     lands on) - for a machine where a 1 -> 8 move has been seen to complete
-    #   False             always the flag-free arc, as before
-    # Why 1.6 for "auto": crossing the flag was verified on the bench with firmware 1.6 (2026-09-07, Squid+
-    # 8-slot wheel, encoder streamed: 54 slot changes incl. nine 8 <-> 1 wraps, drift 1 ustep). The reason the
-    # flag does not stop the wheel - enableHomingLimit() makes STOPL the home reference, whose stop needs home
-    # tracking that the firmware never starts - is the same code on 1.4 and 1.5, but no wheel has been watched
-    # crossing its flag there. The host cannot see which driver chip a controller carries, and does not need
-    # to: the flag is the TMC4361A's business, not the driver's, and firmware 1.6 ships on the TMC2240
-    # controllers only.
     # Ceiling on the net turn count before the wheel is re-homed. Shortest-path slot changes
     # that net to a full turn (1 -> 4 -> 7 -> 1 on an 8-slot wheel) add one turn per cycle, and
     # _plan_move's absolute target grows with it, so the driver coordinate would drift for as
@@ -504,13 +496,12 @@ class SquidFilterWheel(AbstractFilterWheelController):
         self._config_verified[wheel_id] = True
         self._apply_completion_window(wheel_id)
 
-        # Common PID setup for both wheels (they share identical encoder settings)
+        # Encoder scale and direction only: the encoder is read (reporting, the tuner), never closed into a loop.
+        # Closed loop on the wheel is not supported; see software/docs/filter-wheel.md.
         # Use protocol axis (AXIS.W / AXIS.W2), not motor_slot index (3 / 4),
         # because the firmware's protocol_axis_to_internal() handles mapping.
         if HAS_ENCODER_W:
-            self.microcontroller.set_pid_arguments(axis, PID_P_W, PID_I_W, PID_D_W)
             self.microcontroller.configure_stage_pid(axis, config.transitions_per_revolution, ENCODER_FLIP_DIR_W)
-            self.microcontroller.turn_on_stage_pid(axis, ENABLE_PID_W)
 
     @staticmethod
     def _delta_to_usteps(delta_mm: float) -> int:
@@ -527,39 +518,14 @@ class SquidFilterWheel(AbstractFilterWheelController):
         pitch, fullsteps = control._def.SCREW_PITCH_W_MM, control._def.FULLSTEPS_PER_REV_W
         return int(control._def.STAGE_MOVEMENT_SIGN_W * delta_mm / (pitch / (microstepping * fullsteps)))
 
-    # "auto" turns wrapping on from the firmware it was verified on; an explicit True needs only the
-    # firmware that accepts a backward wrap's negative targets (before 1.4 xmin stays at the latch).
-    _WRAP_AUTO_MIN_FIRMWARE = (1, 6)
-    _WRAP_MIN_FIRMWARE = (1, 4)
-
-    @staticmethod
-    def _parse_wrap(value):
-        """The ini value as one of "auto", True, False. Anything else is a configuration error: a typo
-        must not silently become 'on' (bool("off") is True)."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int) and value in (0, 1):  # `squid_filterwheel_wrap = 1` reads as an int
-            return bool(value)
-        if isinstance(value, str) and value.strip().lower() == "auto":
-            return "auto"
-        raise ValueError(f"squid_filterwheel_wrap must be auto, True or False, not {value!r}")
-
-    @property
-    def wrap(self):
-        """The shortest-path setting as parsed: "auto", True or False. Assigning re-parses, so a bench script can
-        switch it at run time and an invalid value is refused at the assignment."""
-        return self._wrap
-
-    @wrap.setter
-    def wrap(self, value):
-        self._wrap = self._parse_wrap(value)
+    # Crossing the flag was verified on firmware 1.6 (2026-09-07, Squid+ 8-slot wheel, encoder streamed: 54 slot
+    # changes incl. nine 8 <-> 1 wraps, drift 1 ustep). The firmware code that lets the wheel pass the flag is
+    # the same from 1.4 (the first that accepts the negative targets a backward wrap lands on), but no wheel
+    # has been watched crossing it there: lower this once one has.
+    _WRAP_MIN_FIRMWARE = (1, 6)
 
     def _wrap_enabled(self) -> bool:
-        wrap = self._wrap
-        if wrap is False:
-            return False
-        minimum = self._WRAP_AUTO_MIN_FIRMWARE if wrap == "auto" else self._WRAP_MIN_FIRMWARE
-        return tuple(self.microcontroller.firmware_version) >= minimum
+        return self.wrap and tuple(self.microcontroller.firmware_version) >= self._WRAP_MIN_FIRMWARE
 
     @staticmethod
     def _usteps_per_turn() -> int:

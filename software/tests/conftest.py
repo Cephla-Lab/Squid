@@ -83,6 +83,15 @@ def _close_quietly(obj, label):
 
 
 @pytest.fixture(autouse=True)
+def _loading_state_in_tmp(tmp_path, monkeypatch):
+    """Every move to the loading position on a Z lift system writes Z_LIFT_LOADING_STATE_PATH: keep tests from
+    writing it into the real cache/ (a startup there would then begin at the loading position)."""
+    import control._def
+
+    monkeypatch.setattr(control._def, "Z_LIFT_LOADING_STATE_PATH", str(tmp_path / "z_lift_loading_state.json"))
+
+
+@pytest.fixture(autouse=True)
 def cleanup_leaked_hardware(monkeypatch):
     """
     Automatically close hardware-simulation objects created during each test.
