@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import control.core.config.repository as repository
 from control.core.config.repository import ConfigRepository
 import control.atomic_file as atomic_file
 import control.objectives_config as oc
@@ -158,3 +159,49 @@ def test_copy_whose_directory_sync_fails_is_published_and_counted(tmp_path, monk
     assert (a / "20x water.yaml").read_text() == "A10"
     assert (b / "20x water.yaml").read_text() == "B10"
     assert "I/O error" in caplog.text
+
+
+def _fail_for_profile(profile, real_write):
+    def _write(path, data):
+        if path.parent.parent.name == profile:
+            raise OSError(f"disk full in {profile}")
+        real_write(path, data)
+
+    return _write
+
+
+def test_copy_that_fails_in_a_later_profile_removes_the_earlier_copies(tmp_path, monkeypatch):
+    # All or nothing: a profile left holding the copy would be kept by a retry ("never overwrite"),
+    # so a retry from another source would leave the profiles on different sources.
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    b = _profile(tmp_path, "b", {"10x.yaml": "B10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr(repository, "write_atomically", _fail_for_profile("b", repository.write_atomically))
+    with pytest.raises(OSError, match="disk full in b"):
+        repo.copy_objective_channel_configs("10x", "20x water")
+    assert not (a / "20x water.yaml").exists()
+    assert not (b / "20x water.yaml").exists()
+
+
+def test_failed_removal_of_earlier_copies_is_logged_and_does_not_mask_the_original_error(tmp_path, monkeypatch, caplog):
+    _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    _profile(tmp_path, "b", {"10x.yaml": "B10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr(repository, "write_atomically", _fail_for_profile("b", repository.write_atomically))
+
+    def _raise(*a, **k):
+        raise OSError("cannot remove")
+
+    monkeypatch.setattr(repo, "remove_objective_channel_configs", _raise)
+    with pytest.raises(OSError, match="disk full in b"):
+        repo.copy_objective_channel_configs("10x", "20x water")
+    assert "cannot remove" in caplog.text and "disk full in b" in caplog.text
+
+
+def test_remove_objective_channel_configs_removes_only_the_named_profiles(tmp_path):
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10", "20x water.yaml": "A"})
+    b = _profile(tmp_path, "b", {"10x.yaml": "B10", "20x water.yaml": "B"})
+    repo = ConfigRepository(base_path=tmp_path)
+    repo.remove_objective_channel_configs("20x water", ["a"])
+    assert sorted(p.name for p in a.iterdir()) == ["10x.yaml"]
+    assert sorted(p.name for p in b.iterdir()) == ["10x.yaml", "20x water.yaml"]

@@ -501,24 +501,53 @@ class ConfigRepository:
 
     def copy_objective_channel_configs(self, source: str, target: str) -> List[str]:
         """Copy channel_configs/<source>.yaml to <target>.yaml in every profile that has the
-        source and not the target. Never overwrites, moves or deletes. Returns the profiles written.
+        source and not the target. Never overwrites, moves or deletes the source. Returns the
+        profiles written.
+
+        All or nothing: when a profile fails, the copies this call already made are removed before
+        the error is raised. A profile left holding one would be kept by a retry ("never
+        overwrite"), so a retry from another source would leave the profiles on different sources.
 
         Publishes through write_atomically: a copy that dies partway through (or loses power)
-        never leaves a partial or empty file under the final name, so "never overwrite an
-        existing target" stays safe on retry. A copy whose directory sync fails is already in
-        place, so it counts as written."""
+        never leaves a partial or empty file under the final name. A copy whose directory sync
+        fails is already in place, so it counts as written."""
         written = []
-        for profile in self.get_available_profiles():
-            src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
-            dst = src.with_name(f"{target}.yaml")
-            if src.exists() and not dst.exists():
-                try:
-                    write_atomically(dst, src.read_bytes())
-                except NotDurableError as e:
-                    logger.warning(f"copied channel settings, but could not confirm the copy on disk: {e}")
-                written.append(profile)
-        self._profile_cache.pop(f"objective:{target}", None)
+        try:
+            for profile in self.get_available_profiles():
+                src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
+                dst = src.with_name(f"{target}.yaml")
+                if src.exists() and not dst.exists():
+                    try:
+                        write_atomically(dst, src.read_bytes())
+                    except NotDurableError as e:
+                        logger.warning(f"copied channel settings, but could not confirm the copy on disk: {e}")
+                    written.append(profile)
+        except Exception as original_exc:
+            try:
+                self.remove_objective_channel_configs(target, written)
+            except OSError as rollback_exc:
+                logger.error(
+                    f"Could not remove the partial copy of '{target}' channel settings in profiles {written}: "
+                    f"{rollback_exc}. Original: {original_exc}"
+                )
+            raise original_exc
+        finally:
+            self._profile_cache.pop(f"objective:{target}", None)
         return written
+
+    def remove_objective_channel_configs(self, target: str, profiles: List[str]) -> None:
+        """Remove channel_configs/<target>.yaml from `profiles`. Only for undoing copies that a
+        save attempt has just made and that did not exist before it; removing an objective from
+        the list deletes no file. Tries every profile, then raises the first error."""
+        first_error = None
+        for profile in profiles:
+            try:
+                (self.user_profiles_path / profile / "channel_configs" / f"{target}.yaml").unlink(missing_ok=True)
+            except OSError as e:
+                first_error = first_error or e
+        self._profile_cache.pop(f"objective:{target}", None)
+        if first_error is not None:
+            raise first_error
 
     def get_camera_names(self) -> List[str]:
         """Get list of available camera names from registry."""

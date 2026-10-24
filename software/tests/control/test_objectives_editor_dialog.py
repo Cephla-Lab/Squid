@@ -12,6 +12,7 @@ import control._def
 import control.atomic_file as atomic_file
 import control.objectives_config as oc
 import control.widgets_objectives as widgets_objectives
+import control.core.config.repository as repository
 from control.core.config.repository import ConfigRepository
 from control.objectives_config import EditorRow, ObjectivesConfigError
 from control.widgets_objectives import ObjectivesEditorDialog
@@ -125,6 +126,141 @@ def test_second_save_is_idempotent(qtbot, repo, no_dialogs, tmp_path):
     assert sorted(p.name for p in (tmp_path / "user_profiles" / "a" / "channel_configs").iterdir()) == [
         "20x water.yaml",
         "20x.yaml",
+    ]
+
+
+def _channel_config(tmp_path, profile, name):
+    return tmp_path / "user_profiles" / profile / "channel_configs" / f"{name}.yaml"
+
+
+def _add_10x_settings(tmp_path):
+    for profile in ("a", "b"):
+        _channel_config(tmp_path, profile, "10x").write_text(f"{profile}-10x")
+
+
+def _new_row_combo(dialog):
+    return dialog._table.cellWidget(dialog._table.rowCount() - 1, widgets_objectives._COL_COPY)
+
+
+def _raise_disk_full(*a, **k):
+    raise OSError("disk full")
+
+
+def test_retry_after_a_failed_list_save_copies_from_the_current_selection(
+    qtbot, repo, no_dialogs, tmp_path, monkeypatch
+):
+    # The failed attempt's copies (from 20x) must not survive to be kept by the retry from 10x.
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)  # frees slot 1
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    real_save = repo.save_objectives_config
+    monkeypatch.setattr(repo, "save_objectives_config", _raise_disk_full)
+    assert not dialog.save()
+    monkeypatch.setattr(repo, "save_objectives_config", real_save)  # the fault is fixed
+    for profile in ("a", "b"):
+        assert not _channel_config(tmp_path, profile, "20x water").exists()
+
+    _new_row_combo(dialog).setCurrentIndex(_new_row_combo(dialog).findText("10x"))
+    assert dialog.save()
+    for profile in ("a", "b"):
+        assert _channel_config(tmp_path, profile, "20x water").read_text() == f"{profile}-10x"
+
+
+def test_a_copy_failing_in_one_profile_leaves_no_profile_on_another_source(
+    qtbot, repo, no_dialogs, tmp_path, monkeypatch
+):
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    real_write = repository.write_atomically
+
+    def _fail_in_b(path, data):
+        if path.parent.parent.name == "b":
+            raise OSError("disk full")
+        real_write(path, data)
+
+    monkeypatch.setattr(repository, "write_atomically", _fail_in_b)
+    assert not dialog.save()
+    monkeypatch.setattr(repository, "write_atomically", real_write)  # the fault is fixed
+
+    _new_row_combo(dialog).setCurrentIndex(_new_row_combo(dialog).findText("10x"))
+    assert dialog.save()
+    for profile in ("a", "b"):
+        assert _channel_config(tmp_path, profile, "20x water").read_text() == f"{profile}-10x"
+
+
+def test_a_failed_save_removes_the_copies_of_every_row_it_made(qtbot, repo, no_dialogs, tmp_path, monkeypatch):
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)  # frees slot 1
+    dialog.remove_row(0)  # frees slot 2
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    dialog.add_row(EditorRow("10x oil", 10.0, 0.4, 180.0, 2, copy_from="10x"), new=True)
+    real_copy = repo.copy_objective_channel_configs
+
+    def _copy(source, target):
+        if target == "10x oil":
+            raise OSError("disk full")
+        return real_copy(source, target)
+
+    monkeypatch.setattr(repo, "copy_objective_channel_configs", _copy)
+    assert not dialog.save()
+    for profile in ("a", "b"):
+        assert not _channel_config(tmp_path, profile, "20x water").exists()
+
+
+def test_a_copy_that_cannot_be_removed_after_a_failed_save_is_named(qtbot, repo, no_dialogs, tmp_path, monkeypatch):
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+
+    def _raise_permission_denied(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(repo, "save_objectives_config", _raise_disk_full)
+    monkeypatch.setattr(repo, "remove_objective_channel_configs", _raise_permission_denied, raising=False)
+    assert not dialog.save()
+    message = no_dialogs["critical"][0]
+    assert "disk full" in message and "permission denied" in message
+    assert "20x water" in message and "delete" in message
+
+
+def test_copy_source_is_locked_once_the_list_is_saved(qtbot, repo, no_dialogs, tmp_path):
+    # After a successful save the copy is in place and "never overwrite" keeps it: a source chosen
+    # afterwards would be silently ignored, so it can no longer be chosen.
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    assert _new_row_combo(dialog).isEnabled()
+    assert dialog.save()
+    assert not _new_row_combo(dialog).isEnabled()
+    assert "20x" in _new_row_combo(dialog).toolTip()
+    # Nor does a magnification edit retarget it.
+    dialog._table.item(dialog._table.rowCount() - 1, widgets_objectives._COL_MAG).setText("4")
+    assert _new_row_combo(dialog).currentText() == "20x"
+
+
+def test_optics_round_trip_without_rounding(qtbot, repo, no_dialogs):
+    path = repo.machine_configs_path / "objectives.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "version": 1,
+        "changer": {"kind": "nimotion_turret"},
+        "objectives": [
+            {"name": "12x", "magnification": 12.3456789, "na": 0.123456789, "tube_lens_f_mm": 180.123456789, "slot": 1},
+            {"name": "20x", "magnification": 20, "na": 0.8, "tube_lens_f_mm": 180, "slot": 2},
+        ],
+    }
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    dialog = _turret_dialog(qtbot, repo)
+    assert dialog._table.item(1, widgets_objectives._COL_MAG).text() == "20"  # whole numbers stay plain
+    assert dialog.save()
+    saved = oc.load_objectives_config(path)
+    assert [(o.magnification, o.na, o.tube_lens_f_mm) for o in saved.objectives] == [
+        (12.3456789, 0.123456789, 180.123456789),
+        (20.0, 0.8, 180.0),
     ]
 
 

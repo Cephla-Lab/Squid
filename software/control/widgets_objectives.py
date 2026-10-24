@@ -28,6 +28,15 @@ _COL_NAME, _COL_MAG, _COL_NA, _COL_TUBE, _COL_SLOT, _COL_MODEL, _COL_SERIAL, _CO
 _CONFLICT = QColor(255, 210, 210)
 
 
+def _number_text(value: Optional[float]) -> str:
+    """The shortest text that reads back as exactly `value` (repr, not ":g", which keeps six
+    significant digits and would change declared optics on a plain open and Save)."""
+    if value is None:
+        return ""
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
+
+
 def _float_or_none(text: str) -> Optional[float]:
     try:
         return float(text)
@@ -60,7 +69,7 @@ class ObjectivesEditorDialog(QDialog):
         self._kind = oc.changer_kind_for_flags(use_xeryon, use_turret)
         self._catalog = catalog
         self._on_restart = on_restart
-        self._copied = set()  # (source, target) pairs already copied by an earlier Save
+        self._copied = set()  # (source, target) pairs copied by an earlier, successful Save
         # The objectives mounted when this dialog opened (from the existing config or the seed):
         # spec A §5's "mounted objective" choices for a newly added row's copy-source combo.
         # Populated by add_row() for such rows and fixed for the life of the dialog -- removing
@@ -202,7 +211,7 @@ class ObjectivesEditorDialog(QDialog):
         if item.column() != _COL_MAG:
             return
         combo = self._table.cellWidget(item.row(), _COL_COPY)
-        if combo is None or getattr(combo, "_user_picked", False):
+        if combo is None or not combo.isEnabled() or getattr(combo, "_user_picked", False):
             return
         nearest = oc.nearest_by_magnification(_float_or_none(item.text()), list(self._mounted_rows.values()))
         if nearest is not None:
@@ -215,9 +224,9 @@ class ObjectivesEditorDialog(QDialog):
         self._table.insertRow(r)
         texts = {
             _COL_NAME: row.name,
-            _COL_MAG: "" if row.magnification is None else f"{row.magnification:g}",
-            _COL_NA: "" if row.na is None else f"{row.na:g}",
-            _COL_TUBE: "" if row.tube_lens_f_mm is None else f"{row.tube_lens_f_mm:g}",
+            _COL_MAG: _number_text(row.magnification),
+            _COL_NA: _number_text(row.na),
+            _COL_TUBE: _number_text(row.tube_lens_f_mm),
             _COL_MODEL: row.model,
             _COL_SERIAL: row.serial,
         }
@@ -312,6 +321,32 @@ class ObjectivesEditorDialog(QDialog):
         for index in sorted({i.row() for i in self._table.selectedIndexes()}, reverse=True):
             self.remove_row(index)
 
+    def _undo_copies(self, made) -> str:
+        """Remove the copies a failed save attempt made. Returns a sentence for the error message
+        naming those that could not be removed ("" when all were)."""
+        stuck = []
+        for row, profiles in made:
+            try:
+                self._repo.remove_objective_channel_configs(row.name, profiles)
+            except OSError as e:
+                self._log.error(f"could not remove the channel settings copied to '{row.name}' in {profiles}: {e}")
+                stuck.append(f"'{row.name}' ({e})")
+        if not stuck:
+            return ""
+        return (
+            f" The channel settings this save copied for {', '.join(stuck)} could not be removed: delete them by "
+            "hand before saving again, or they will be kept as they are."
+        )
+
+    def _lock_copy_source(self, name: str, source: str) -> None:
+        """Once the list is saved, the copy is in place and "never overwrite" keeps it: a source
+        chosen afterwards would be silently ignored, so it can no longer be chosen."""
+        for r in range(self._table.rowCount()):
+            combo = self._table.cellWidget(r, _COL_COPY)
+            if combo is not None and self._table.item(r, _COL_NAME).text() == name:
+                combo.setEnabled(False)
+                combo.setToolTip(f"Channel settings were copied from {source} when the list was saved")
+
     def save(self) -> bool:
         rows = self.rows()
         try:
@@ -322,6 +357,10 @@ class ObjectivesEditorDialog(QDialog):
             return False
         # Channel-config copies happen before the YAML write, so a copy failure never leaves an
         # objectives.yaml pointing at an objective whose channel settings did not make it to disk.
+        # The attempt is all or nothing: when a copy or the YAML write fails, the copies it made are
+        # removed again. One left behind would be kept by a retry ("never overwrite"), whatever
+        # source is selected by then.
+        made = []  # (row, profiles) copied by this attempt
         for row in rows:
             if row.copy_from and (row.copy_from, row.name) not in self._copied:
                 try:
@@ -331,11 +370,10 @@ class ObjectivesEditorDialog(QDialog):
                         self,
                         "Objectives",
                         f"Could not copy channel settings from '{row.copy_from}' to '{row.name}': {e}. "
-                        "The objective list was NOT saved.",
+                        "The objective list was NOT saved." + self._undo_copies(made),
                     )
                     return False
-                self._copied.add((row.copy_from, row.name))
-                self._log.info(f"copied channel settings {row.copy_from} -> {row.name} in profiles {profiles}")
+                made.append((row, profiles))
         objectives_yaml_path = self._repo.machine_configs_path / "objectives.yaml"
         caveat = ""
         try:
@@ -351,9 +389,14 @@ class ObjectivesEditorDialog(QDialog):
             QMessageBox.critical(
                 self,
                 "Objectives",
-                f"Could not write {objectives_yaml_path}: {e}. The objective list was not written.",
+                f"Could not write {objectives_yaml_path}: {e}. The objective list was not written."
+                + self._undo_copies(made),
             )
             return False
+        for row, profiles in made:
+            self._copied.add((row.copy_from, row.name))
+            self._log.info(f"copied channel settings {row.copy_from} -> {row.name} in profiles {profiles}")
+            self._lock_copy_source(row.name, row.copy_from)
         answer = QMessageBox.question(
             self,
             "Restart to apply",
