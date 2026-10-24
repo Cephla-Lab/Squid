@@ -427,3 +427,57 @@ class TestHelperMethods:
         mpc.set_selected_configurations.assert_called_with(["Channel1"])
         mock_server.scan_coordinates.clear_regions.assert_called_once()
         assert mock_server.scan_coordinates.add_region.called
+
+
+def test_cmd_home_passes_the_confirmation():
+    server = create_mock_server()
+    server.microscope.home_xyz = MagicMock()
+    server._cmd_home(objective_lowered=True)
+    server.microscope.home_xyz.assert_called_once_with(objective_lowered=True)
+
+
+def test_cmd_home_fieldinfo_is_not_a_confirmation():
+    server = create_mock_server()
+    server.microscope.home_xyz = MagicMock()
+    server._cmd_home()
+    server.microscope.home_xyz.assert_called_once_with(objective_lowered=False)
+
+
+def test_unconfirmed_tcp_home_sends_no_motion(monkeypatch):
+    import control._def
+    import control.microscope
+    from tests.control.test_startup_homing import _spy_commands
+
+    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", True)
+    scope = control.microscope.Microscope.build_from_global_config(True, skip_init=True)
+    server = create_mock_server()
+    server.microscope = scope
+    server._commands = {"home": server._cmd_home}
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    response = server._execute("home", {})
+    assert response["success"] is False and "objective_lowered=true" in response["error"]
+    assert sent == []
+    scope.close()
+
+
+def test_server_refuses_all_but_reads_while_homing():
+    server = create_mock_server()
+    server.microscope.stage_homing_in_progress = True
+    server._commands = {
+        name: MagicMock(return_value={})
+        for name in ("move_relative", "autofocus", "start_live", "turn_on_illumination", "home", "get_position", "ping")
+    }
+    for name in ("move_relative", "autofocus", "start_live", "turn_on_illumination", "home"):
+        assert server._execute(name, {"dz_mm": 0.1} if name == "move_relative" else {}) == {
+            "success": False,
+            "error": "the stage is homing",
+        }
+        server._commands[name].assert_not_called()
+    assert server._execute("get_position", {})["success"] and server._execute("ping", {})["success"]
+
+
+def test_relative_z_goes_through_the_microscope():
+    server = create_mock_server()
+    server._cmd_move_relative(dx_mm=0, dy_mm=0, dz_mm=0.1, blocking=True)
+    server.microscope.move_z.assert_called_once_with(0.1, blocking=True)
+    server.microscope.stage.move_z.assert_not_called()
