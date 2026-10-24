@@ -333,3 +333,13 @@ def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_
     assert len(menus) == 1
     items = [action.text() for action in menus[0].menu().actions()]
     assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]
+
+
+def test_objective_prompt_defaults_to_cancel(qtbot):
+    import control.widgets
+    from control.startup_homing import OBJECTIVE_LOWERED_PROMPT
+
+    box, home_btn = control.widgets._objective_lowered_box(None)
+    assert box.text() == OBJECTIVE_LOWERED_PROMPT
+    assert home_btn.text() == "Objective lowered – Home"
+    assert box.defaultButton() is not home_btn and box.defaultButton().text() == "Cancel – don't home"

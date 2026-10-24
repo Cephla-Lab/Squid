@@ -26,6 +26,7 @@ import control._def
 import control.utils
 import control.microcontroller
 import control.microscope
+import control.widgets
 from control.single_instance import acquire_single_instance_lock
 
 # Import auto-migration function
@@ -119,7 +120,11 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     try:
-        microscope = control.microscope.Microscope.build_from_global_config(args.simulation, skip_init=args.skip_init)
+        microscope = control.microscope.Microscope.build_from_global_config(
+            args.simulation,
+            skip_init=args.skip_init,
+            confirm_objective_lowered=lambda: control.widgets.ask_objective_lowered(None),
+        )
     except control.microcontroller.LimitSwitchConfigError as e:
         # Invalid [LIMIT_SWITCHES], or firmware too old to apply it: do not start with the limit switches read
         # wrong. The message says which.

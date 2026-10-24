@@ -1,5 +1,7 @@
 """Rules for homing the stage on systems where the software cannot lower the objective."""
 
+import enum
+
 import control._def
 
 OBJECTIVE_LOWERED_PROMPT = (
@@ -26,3 +28,16 @@ def require_objective_lowered(objective_lowered: bool, operation: str) -> None:
 
 class StageHomingInProgressError(RuntimeError):
     """A stage motion was requested while a homing operation holds the stage."""
+
+
+class StartupHoming(enum.Enum):
+    """What startup did about homing the stage."""
+
+    NOT_RUN = "not_run"  # skip_init: startup did not touch the stage
+    HOMED = "homed"  # startup homed the stage
+    DECLINED = "declined"  # a person cancelled the piezo-only prompt; the stage is not referenced
+
+
+def startup_needs_objective_prompt() -> bool:
+    """True when startup would send the stage to its X and Y limit switches with no software-lowered objective."""
+    return bool(control._def.IS_PIEZO_ONLY and control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y)

@@ -18,7 +18,13 @@ from control.lighting import LightSourceType, IntensityControlMode, ShutterContr
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
-from control.startup_homing import StageHomingInProgressError, require_objective_lowered
+from control.startup_homing import (
+    StageHomingInProgressError,
+    StartupHoming,
+    require_objective_lowered,
+    startup_needs_objective_prompt,
+    ObjectiveNotLoweredError,
+)
 from squid.abc import CameraAcquisitionMode, AbstractCamera, AbstractStage, AbstractFilterWheelController
 from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
@@ -395,7 +401,11 @@ class LowLevelDrivers:
 
 class Microscope:
     @staticmethod
-    def build_from_global_config(simulated: bool = False, skip_init: bool = False) -> "Microscope":
+    def build_from_global_config(
+        simulated: bool = False,
+        skip_init: bool = False,
+        confirm_objective_lowered: Optional[Callable[[], bool]] = None,
+    ) -> "Microscope":
         low_level_devices = LowLevelDrivers.build_from_global_config(simulated, skip_init=skip_init)
 
         # Per-component simulation for camera
@@ -574,6 +584,7 @@ class Microscope:
             low_level_drivers=low_level_devices,
             simulated=simulated,
             skip_init=skip_init,
+            confirm_objective_lowered=confirm_objective_lowered,
         )
 
     def __init__(
@@ -587,8 +598,12 @@ class Microscope:
         simulated: bool = False,
         skip_prepare_for_use: bool = False,
         skip_init: bool = False,
+        confirm_objective_lowered: Optional[Callable[[], bool]] = None,
     ):
         self._log = squid.logging.get_logger(self.__class__.__name__)
+        # Asked once at startup on a piezo-only system (no Qt here: the caller supplies the prompt).
+        self._confirm_objective_lowered = confirm_objective_lowered
+        self.startup_homing: StartupHoming = StartupHoming.NOT_RUN
         self._closed = False
         self._closed_event = threading.Event()  # set by close(): ends a homing claim's wait for the stage to stop
 
@@ -729,8 +744,23 @@ class Microscope:
                 if self.z_lift is not None:
                     self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
                     self.z_lift.apply_limits()
-                self.home_xyz()
-                self._raise_z_lift_to_sample_height()
+                confirmed = False
+                declined = False
+                if startup_needs_objective_prompt():
+                    if self._confirm_objective_lowered is None:
+                        raise ObjectiveNotLoweredError(
+                            "Startup homing refused: piezo-only system and no one to confirm the objective is "
+                            "lowered; pass confirm_objective_lowered"
+                        )
+                    confirmed = bool(self._confirm_objective_lowered())
+                    declined = not confirmed
+                if declined:
+                    self._log.info("Piezo-only: user cancelled homing; stage not referenced")
+                    self.startup_homing = StartupHoming.DECLINED
+                else:
+                    self.home_xyz(objective_lowered=confirmed)
+                    self._raise_z_lift_to_sample_height()
+                    self.startup_homing = StartupHoming.HOMED
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:

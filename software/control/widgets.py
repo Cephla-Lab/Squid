@@ -2807,6 +2807,28 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+def _objective_lowered_box(parent) -> Tuple[QMessageBox, QPushButton]:
+    """The piezo-only 'objective lowered' prompt and its Home button. Enter is Cancel."""
+    from control.startup_homing import OBJECTIVE_LOWERED_PROMPT
+
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("Lower the objective")
+    box.setText(OBJECTIVE_LOWERED_PROMPT)
+    home_btn = box.addButton("Objective lowered \u2013 Home", QMessageBox.AcceptRole)
+    cancel_btn = box.addButton("Cancel \u2013 don't home", QMessageBox.RejectRole)
+    box.setDefaultButton(cancel_btn)
+    box.setEscapeButton(cancel_btn)
+    return box, home_btn
+
+
+def ask_objective_lowered(parent) -> bool:
+    """Ask a person to confirm the objective is lowered. True only if they click Home."""
+    box, home_btn = _objective_lowered_box(parent)
+    box.exec_()
+    return box.clickedButton() is home_btn
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 

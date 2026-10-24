@@ -10,7 +10,7 @@ import squid.config
 import squid.stage.cephla
 import squid.stage.prior
 import tests.squid.test_stage
-from control.startup_homing import ObjectiveNotLoweredError, StageHomingInProgressError
+from control.startup_homing import ObjectiveNotLoweredError, StageHomingInProgressError, StartupHoming
 from tests.control.test_microcontroller import get_test_micro
 
 
@@ -307,3 +307,38 @@ def test_prior_and_pi_report_stopped_only_on_a_fresh_query():
     pi = tests.squid.test_stage._sim_pi_stage()
     pi._c414.is_moving = MagicMock(side_effect=OSError("link lost"))
     assert not pi.reports_stopped()
+
+
+def test_startup_homes_and_reports_homed():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.HOMED
+    scope.close()
+
+
+def test_skip_init_reports_not_run():
+    scope = _scope()
+    assert scope.startup_homing is StartupHoming.NOT_RUN
+    scope.close()
+
+
+def test_piezo_only_startup_with_no_one_to_ask_refuses(piezo_only):
+    with pytest.raises(ObjectiveNotLoweredError, match="confirm_objective_lowered"):
+        control.microscope.Microscope.build_from_global_config(True)
+
+
+def test_piezo_only_cancel_declines_and_homes_nothing(piezo_only, monkeypatch):
+    home = MagicMock()
+    monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
+    scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
+    assert scope.startup_homing is StartupHoming.DECLINED
+    home.assert_not_called()
+    scope.close()
+
+
+def test_piezo_only_confirm_asks_once_and_homes(piezo_only):
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda: asked.append(1) or True
+    )
+    assert asked == [1] and scope.startup_homing is StartupHoming.HOMED
+    scope.close()
