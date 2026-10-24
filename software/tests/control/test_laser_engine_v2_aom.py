@@ -39,7 +39,7 @@ def test_intensity_is_linear_in_aom_volts_and_never_touches_the_laser_power():
     calls, power = list(source.calls), source.power_mw
     mark = len(fake.sent)
     for pct in (50.0, 100.0, 0.0):
-        engine.light_source.set_intensity(560, pct)  # Squid's channel intensity
+        engine.light_source.set_intensity(engine.light_source.channel_mappings[560], pct)  # Squid's channel intensity
         engine.source_step()
     assert _aom_sets(fake.sent, mark) == ["LINE3:SET 2.500", "LINE3:SET 5.000", "LINE3:SET 0.000"]
     assert source.calls == calls and source.power_mw == power  # no "power" request: the operator's setting stays

@@ -17,7 +17,8 @@ import math
 import queue
 import threading
 import time
-from dataclasses import dataclass, replace
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Protocol, Tuple
 
@@ -385,17 +386,22 @@ class LaserEngineV2(QObject):
         provider = self.ttl_map_provider
         return provider() if provider is not None else _DEFAULT_CHANNEL_MAPPINGS_TTL
 
+    def lines_by_wavelength(self) -> Dict[int, int]:
+        """Every wavelength on an engine port -> its line, from one read of the port map. Squid port Dn is cabled to engine
+        TTLn, so the line is the port the wavelength's TTL uses (D3/D4 codes are swapped)."""
+        lines = {}
+        for wavelength, code in self._ttl_map().items():
+            index = source_code_to_port_index(code)
+            if 0 <= index < 5:
+                lines[wavelength] = index + 1
+        return lines
+
     def line_for_wavelength(self, wavelength) -> Optional[int]:
-        """Squid port Dn is cabled to engine TTLn, so the line is the port the wavelength's TTL uses (D3/D4 codes are swapped)."""
-        code = self._ttl_map().get(wavelength)
-        if code is None:
-            return None
-        index = source_code_to_port_index(code)
-        return index + 1 if 0 <= index < 5 else None
+        return self.lines_by_wavelength().get(wavelength)
 
     def wavelengths_for_line(self, line: int) -> List[int]:
         """The wavelengths whose TTL port is this line (the inverse of line_for_wavelength, same map), ascending."""
-        return sorted(w for w in self._ttl_map() if self.line_for_wavelength(w) == line)
+        return sorted(w for w, n in self.lines_by_wavelength().items() if n == line)
 
     def channel_keys_for_wavelengths(self, wavelengths: Iterable[int]) -> List[str]:
         keys: List[str] = []
@@ -1079,12 +1085,42 @@ class LaserEngineV2(QObject):
         return self._light_source
 
 
-class _SameKey(dict):
-    """IlluminationController's channel map for this source: every wavelength maps to itself. The engine resolves the
-    line at call time from the TTL port map, so intensity and exposure always use the same port."""
+@dataclass(frozen=True)
+class EngineLine:
+    """The channel map's value for a wavelength on an engine port. Equal (and hashed) by line only: the wavelengths on one
+    port drive one engine line, so IlluminationController's shared-line cache treats them as one line, as it does
+    CELESTA's 470 and 488 on its line 2. The wavelength rides along for the engine's per-wavelength intensity."""
 
-    def __missing__(self, key):
-        return key
+    line: int
+    wavelength: int = field(compare=False)
+
+
+class _EngineLineMap(Mapping):
+    """IlluminationController's channel map for this source: wavelength -> EngineLine, read live from the TTL port map, so
+    port-map edits apply at once. A wavelength on no engine port maps to None: the controller still selects its TTL port,
+    and no intensity goes to the engine."""
+
+    def __init__(self, engine: LaserEngineV2):
+        self._engine = engine
+
+    def _lines(self) -> Dict[int, EngineLine]:
+        return {w: EngineLine(n, w) for w, n in self._engine.lines_by_wavelength().items()}
+
+    def __getitem__(self, wavelength) -> Optional[EngineLine]:
+        line = self._engine.line_for_wavelength(wavelength)
+        return None if line is None else EngineLine(line, wavelength)
+
+    def __contains__(self, wavelength) -> bool:
+        return self._engine.line_for_wavelength(wavelength) is not None
+
+    def __iter__(self):
+        return iter(self._lines())
+
+    def __len__(self) -> int:
+        return len(self._lines())
+
+    def items(self):
+        return self._lines().items()  # one read of the port map, not one per wavelength
 
 
 class LaserEngineV2LightSource(LightSource):
@@ -1092,8 +1128,8 @@ class LaserEngineV2LightSource(LightSource):
 
     def __init__(self, engine: LaserEngineV2):
         self._engine = engine
-        self.channel_mappings = _SameKey()  # empty: constructing the controller reads nothing from the engine
-        self._unmapped_warned: set = set()
+        self.channel_mappings = _EngineLineMap(engine)
+        self._unmapped_warned = False
         self._log = squid.logging.get_logger(self.__class__.__name__)
 
     def initialize(self):
@@ -1120,24 +1156,21 @@ class LaserEngineV2LightSource(LightSource):
     def get_shutter_state(self, channel):
         return False  # no software gate; exposure is the TTL line
 
-    def set_intensity(self, channel, intensity):  # channel = wavelength (nm)
-        """Wake the line on use (re-arm + enable), then send the set-point. Can block the caller for up to three STAT?
-        round-trips (the wake) plus the firmware ramp wait (SETTLE_TIMEOUT_S, <= ~1 s)."""
-        line = self._engine.line_for_wavelength(channel)
-        if line is None:  # not an engine port: the controller still selects its TTL port right after this call
-            if channel not in self._unmapped_warned:
-                self._unmapped_warned.add(channel)
-                self._log.warning(
-                    f"{channel} nm is not on an engine port (D1-D5): intensity not sent to the laser engine"
-                )
+    def set_intensity(self, channel: Optional[EngineLine], intensity):
+        """`channel` = the channel map's value. Wake the line on use (re-arm + enable), then send the set-point. Can block the
+        caller for up to three STAT? round-trips (the wake) plus the firmware ramp wait (SETTLE_TIMEOUT_S, <= ~1 s)."""
+        if channel is None:  # on no engine port: the controller still selects its TTL port right after this call
+            if not self._unmapped_warned:
+                self._unmapped_warned = True
+                self._log.warning("a channel on no engine port (D1-D5): its intensity is not sent to the laser engine")
             return
-        self._engine.wake_up(f"L{line}")  # re-arm + enable on use first; never raises
+        self._engine.wake_up(f"L{channel.line}")  # re-arm + enable on use first; never raises
         self._engine.set_wavelength_intensity(
-            channel, intensity
+            channel.wavelength, intensity
         )  # then the set-point: waits out the ramp when the line is on
 
-    def get_intensity(self, channel) -> float:
-        return self._engine.get_wavelength_intensity(channel)
+    def get_intensity(self, channel: Optional[EngineLine]) -> float:
+        return 0.0 if channel is None else self._engine.get_wavelength_intensity(channel.wavelength)
 
     def shut_down(self):
         self._engine.close()

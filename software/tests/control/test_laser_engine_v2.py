@@ -187,6 +187,26 @@ def test_wavelengths_for_line_is_the_inverse_of_the_ttl_map():
     assert all(engine.line_for_wavelength(w) == n for n in range(1, 6) for w in engine.wavelengths_for_line(n))
 
 
+def test_the_channel_map_gives_each_wavelength_its_engine_line_live():
+    """IlluminationController's shared-line cache compares channel-map values: 470 and 488 on D2 compare equal (one line),
+    the value still says which wavelength asked, and a port-map edit shows at once."""
+    engine, _ = _opened()
+    ports = {
+        470: ILLUMINATION_CODE.ILLUMINATION_D2,
+        488: ILLUMINATION_CODE.ILLUMINATION_D2,
+        638: ILLUMINATION_CODE.ILLUMINATION_D4,
+        700: 20,  # not a D1-D5 port
+    }
+    engine.ttl_map_provider = lambda: dict(ports)
+    lines = engine.light_source.channel_mappings
+    assert lines[470] == lines[488] != lines[638]
+    assert lines[700] is None and lines[405] is None and 700 not in lines
+    assert {w: (v.line, v.wavelength) for w, v in lines.items()} == {470: (2, 470), 488: (2, 488), 638: (4, 638)}
+    assert sorted(lines) == [470, 488, 638]  # only the wavelengths on an engine port
+    ports[488] = ILLUMINATION_CODE.ILLUMINATION_D4  # the operator remaps 488 nm to D4
+    assert lines[488] == lines[638] != lines[470]
+
+
 def test_on_startup_arms_and_brings_every_line_up():
     engine, fake = _opened()
     engine.on_startup()
@@ -417,10 +437,11 @@ def test_intensity_follows_the_live_ttl_map():
     engine, fake = _opened()
     ports = {488: ILLUMINATION_CODE.ILLUMINATION_D2}
     engine.ttl_map_provider = lambda: dict(ports)
-    engine.light_source.set_intensity(488, 50.0)
+    source = engine.light_source
+    source.set_intensity(source.channel_mappings[488], 50.0)
     assert "LINE2:SET %.4f" % (0.5 * 2.045) in fake.sent
     ports[488] = ILLUMINATION_CODE.ILLUMINATION_D4  # remapped in Squid's port map: the set-point moves with the TTL
-    engine.light_source.set_intensity(488, 50.0)
+    source.set_intensity(source.channel_mappings[488], 50.0)
     assert "LINE4:SET %.4f" % (0.5 * 1.196) in fake.sent
 
 
@@ -428,8 +449,9 @@ def test_wavelength_not_on_an_engine_port_is_left_to_the_controller():
     engine, fake = _opened()
     engine.ttl_map_provider = lambda: {730: 20}  # a port beyond D5
     n = len(fake.sent)
-    engine.light_source.set_intensity(730, 50.0)  # no engine command; IlluminationController still selects the port
-    assert len(fake.sent) == n
+    source = engine.light_source
+    source.set_intensity(source.channel_mappings[730], 50.0)  # no engine command; the controller still selects the port
+    assert len(fake.sent) == n and source.get_intensity(source.channel_mappings[730]) == 0.0
 
 
 def test_light_source_rejects_software_shutter():

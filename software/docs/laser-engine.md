@@ -54,6 +54,9 @@ idle-off are operator settings kept in the cache (section 4).
   intensity and exposure always reach the same line. Squid's default map puts 405 on D1, 470/488 on D2, 545-561 on
   D3, 638/640 on D4 and 730-750 on D5; a port-map edit moves both together. A wavelength on a port beyond D5 is left
   to the controller and gets no engine set-point (logged once).
+- The port map is the machine's record of which wavelength is on which engine line: the engine reports its variant
+  (its drive electronics), not the wavelengths fitted, so an engine with other wavelengths needs only a port-map edit.
+  Wavelengths on one port share that line and its set-point, as on other multi-line light sources.
 - Intensity is linear in the line's drive: % of its current ceiling (on DF line 3, of the AOM's 0-5 V input).
   Old calibration files (`machine_configs/intensity_calibrations/<wavelength>.csv`, `560_aom.csv`) are not used:
   they record nothing about the engine they were measured on.

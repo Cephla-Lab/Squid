@@ -505,7 +505,7 @@ def test_shutter_opens_when_l3_is_ready_and_is_never_sent_per_exposure():
     assert fake.sent.count("SHUT:OPEN 1") == 1 and fake.shut_open
     opened_at = len(fake.sent)
     for pct in (30.0, 60.0, 0.0, 100.0):  # live view / acquisition: intensity per channel switch
-        engine.light_source.set_intensity(560, pct)
+        engine.light_source.set_intensity(engine.light_source.channel_mappings[560], pct)
         engine.note_use(["L3"])
         engine.poll_once()
         engine.source_step()
