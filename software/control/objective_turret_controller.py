@@ -11,6 +11,7 @@ from typing import Optional, Tuple
 
 from serial.tools import list_ports
 from control.modbus_rtu import ModbusRTUClient
+from control.objective_changer_constants import NIMOTION_TURRET_SLOTS
 
 import squid.abc
 import squid.logging
@@ -20,7 +21,7 @@ logger = squid.logging.get_logger(__name__)
 # Turret mechanics
 GEAR_RATIO = 132 / 48
 MOTOR_STEPS_PER_REV = 200
-POSITIONS_PER_REV = 4  # 90 degrees per objective
+POSITIONS_PER_REV = NIMOTION_TURRET_SLOTS  # 90 degrees per objective
 MICROSTEP_REG_VALUE = 4  # 2^4 = 16 microsteps; register takes effect after power cycle
 # 90 degrees of turret travel in motor pulses (2200); drives with a different microstep are rejected in __init__.
 PULSES_PER_SLOT = int(MOTOR_STEPS_PER_REV * 2**MICROSTEP_REG_VALUE * GEAR_RATIO / POSITIONS_PER_REV)
