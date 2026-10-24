@@ -59,7 +59,7 @@ def test_poll_once_publishes_status():
     seen = []
     engine.status_updated.connect(seen.append)
     status = engine.poll_once()
-    assert status is engine.get_latest_status() and seen == [status]
+    assert status == engine.get_latest_status() and seen == [status]
     assert status.channels["L1"].state == LineState.NOT_ARMED
 
 
@@ -275,6 +275,28 @@ def test_key_cycle_right_after_the_startup_arm_is_not_undone():
     for _ in range(3):
         engine.poll_once()
     assert fake.sent.count("ARM") == 1 and engine.bringup_state.startswith("cancelled")
+
+
+def test_sleep_all_during_the_startup_bring_up_is_not_undone():
+    engine, fake = _opened()
+    engine.on_startup()  # the first step arms; the lines would come up at the next polls
+    assert engine.bringup_state == "running"
+    engine.sleep_all()
+    mark = len(fake.sent)
+    for _ in range(3):
+        engine.poll_once()
+    assert not [c for c in fake.sent[mark:] if c.endswith(":EN 1")]
+    assert engine.bringup_state == "cancelled: put to sleep by the operator - lines come up on use"
+
+
+def test_a_line_put_to_sleep_during_the_bring_up_stays_off_and_the_others_come_up():
+    engine, fake = _opened()
+    engine.on_startup()
+    engine.put_to_sleep("L1")
+    for _ in range(3):
+        engine.poll_once()
+    assert "LINE1:EN 1" not in fake.sent and all(f"LINE{n}:EN 1" in fake.sent for n in (2, 4, 5))
+    assert engine.bringup_state == "done except L1"
 
 
 def test_wait_until_ready_arms_enables_and_waits_for_tok_on_use():

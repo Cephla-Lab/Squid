@@ -136,8 +136,8 @@ class LaserEngineV2(QObject):
         self.notices: List[str] = []
         self._link: Optional[EngineLink] = None
         self.variant = ""
-        self._latest: Optional[EngineV2Status] = None
         self._latest_raw: Optional[dict] = None
+        self._latest_raw_t = 0.0  # time.time() of _latest_raw: a status parsed from it later keeps this time
         self._last_event = ""
         self._status_lock = threading.Lock()
         self._lost = False
@@ -147,7 +147,7 @@ class LaserEngineV2(QObject):
         self._percent: Dict[int, float] = {}  # last commanded drive per line, % of its ceiling
         self._light_source = None  # LaserEngineV2LightSource, created on first use
         self._source = None  # the engine's own 560 nm source (DF), when its driver is present
-        self._source_status: Optional[SourceStatus] = None
+        self._source_reading: Optional[SourceStatus] = None  # the source's own last reading; _source_status judges it
         self._log = squid.logging.get_logger(self.__class__.__name__)
         # wavelength -> TTL port code: Microscope sets it to IlluminationController.channel_mappings_TTL
         self.ttl_map_provider: Optional[Callable[[], Dict[int, int]]] = None
@@ -315,9 +315,14 @@ class LaserEngineV2(QObject):
         except EngineLinkError as e:
             self._signal_lost(str(e))
             raise LaserEngineV2Error("engine", f"connection lost: {e}") from e
-        with self._status_lock:
-            self._latest_raw = raw
+        self._keep_raw(raw)
         return raw
+
+    def _keep_raw(self, raw: dict) -> float:
+        t = time.time()
+        with self._status_lock:
+            self._latest_raw, self._latest_raw_t = raw, t
+        return t
 
     # ---- polling / heartbeat -------------------------------------------------------------------------------------------
     def _poll_loop(self) -> None:
@@ -347,17 +352,21 @@ class LaserEngineV2(QObject):
         if event and event != self._last_event:
             self._log.warning(f"laser engine event: {event}")  # e.g. HOST_LOST / ARM_DROPPED, which are not faults
         self._last_event = event
-        status = parse_status(raw, source=self._source_status, has_source=self._source is not None)
-        with self._status_lock:
-            self._latest, self._latest_raw = status, raw
+        t = self._keep_raw(raw)
+        status = parse_status(raw, source=self._source_status, has_source=self._source is not None, timestamp_s=t)
         self._after_poll(status, gen)  # the 560 source decisions (and the held-open shutter)
         self._bringup_step(status)  # the startup bring-up, one non-blocking step per poll
         self.status_updated.emit(status)
         return status
 
     def get_latest_status(self) -> Optional[EngineV2Status]:
+        """The last STAT? with the 560 source as judged now, so a change asked since that poll (a new laser power, a
+        switch-off) shows at once: a caller deciding from it never takes the line for READY on a stale reading."""
         with self._status_lock:
-            return self._latest
+            raw, t = self._latest_raw, self._latest_raw_t
+        if raw is None:
+            return None
+        return parse_status(raw, source=self._source_status, has_source=self._source is not None, timestamp_s=t)
 
     def is_connection_lost(self) -> bool:
         return self._lost
@@ -594,14 +603,31 @@ class LaserEngineV2(QObject):
                 self.wake_up(key)
 
     def put_to_sleep(self, channel_key: str) -> None:
+        self._leave_bringup([channel_key])
         n = self._line_of(channel_key)
         if is_560_line(self._latest_raw or {}, n):
             self._disable_source()
         self._cmd(f"LINE{n}:EN 0")
 
     def sleep_all(self) -> None:
-        for n in range(1, 6):
-            self.put_to_sleep(f"L{n}")
+        keys = [f"L{n}" for n in range(1, 6)]
+        self._leave_bringup(keys)  # all at once: the bring-up ends as cancelled, not as done
+        for key in keys:
+            self.put_to_sleep(key)
+
+    def _leave_bringup(self, keys: List[str]) -> None:
+        """The operator put these lines to sleep: a running startup bring-up must not switch them on again. Waits out a
+        bring-up step in flight, so the step cannot enable a line after this returns."""
+        with self._bringup_lock:
+            if self._bringup_state != "running":
+                return
+            asleep = [k for k in self._bringup_keys if k in keys]
+            for key in asleep:
+                self._bringup_keys.remove(key)
+            if not self._bringup_keys:
+                self._end_bringup("cancelled: put to sleep by the operator - lines come up on use")
+            else:
+                self._bringup_dropped.extend(asleep)
 
     def wait_until_ready(
         self, channel_keys: List[str], timeout_s: float = 300.0, cancel_fn: Callable[[], bool] = lambda: False
@@ -640,10 +666,11 @@ class LaserEngineV2(QObject):
     def _wake_source(self) -> None:
         """Set the AOM to the current 560 intensity (0 V = dark until one is asked), then queue one source enable at the
         source's minimum (the operator's power follows once it is ready).
-        The shutter is closed first, so the source never starts behind an open one. The enable_pending check-then-set and
+        The shutter is closed first, so the source never starts behind an open one: a refused close raises and nothing
+        is queued (the poll keeps closing it; the next use tries again). The enable_pending check-then-set and
         the queue/state update run under _source_lock; the shutter close and the LINE3:SET round-trips run outside it,
-        so a concurrent _disable_source() cannot interleave with the update. A connection lost on the way (the shutter
-        close swallows it) aborts the enable there: _on_lost has already switched the source off. `src` is
+        so a concurrent _disable_source() cannot interleave with the update. A connection lost on the way aborts the
+        enable there: _on_lost has already switched the source off. `src` is
         captured once, so a concurrent _close_source() cannot leave _source_enable_pending set. The AOM read + send +
         cache runs under _aom_lock (not _source_lock), so it cannot interleave with _set_aom_volts on another thread.
         """
@@ -659,10 +686,12 @@ class LaserEngineV2(QObject):
                 self._shutter_gen += 1
             try:
                 # always sent: the cached STAT? may be older than an open, and closing twice is harmless
-                self._set_held_shutter(False, self._latest_raw or {}, force=True)
-            except Exception:
+                self._cmd("SHUT:OPEN 0")
+            except Exception as e:
                 with self._source_lock:
                     self._source_enable_pending = False
+                if isinstance(e, EngineCommandError):
+                    raise LaserEngineV2Error("L3", f"shutter did not close: {e.reason} - 560 not started") from e
                 raise
         try:
             with self._aom_lock:
@@ -684,15 +713,20 @@ class LaserEngineV2(QObject):
                 raise LaserEngineV2Error("L3", e.reason) from e
             raise
 
-    def _disable_source(self, gen: Optional[int] = None) -> bool:
+    def _disable_source(self, gen: Optional[int] = None, idle_since: Optional[float] = None) -> bool:
         """Queue the source switch-off. With `gen` (the generation of the poll that decided it), only while no restart or
-        switch-off has happened since that poll: returns False when it was obsolete and nothing was done."""
+        switch-off has happened since that poll; with `idle_since` (the last use the idle-off measured from), only while
+        there has been no use since. Returns False when it was obsolete and nothing was done."""
         if self._source is None:
             return True
         # Not under _shutter_lock: a switch-off must not wait for a shutter round trip in flight. An open racing it is
         # harmless (the source is going off; the next poll closes the shutter).
         with self._source_lock:
             if gen is not None and gen != self._shutter_gen:
+                return False
+            # Checked under the lock that _source_status is judged under: a use noted before a status read either
+            # stops this switch-off, or comes after it and the read already shows the source off (the use then wakes it)
+            if idle_since is not None and self._source_last_use != idle_since:
                 return False
             if not self._source_want_on:
                 return True
@@ -727,7 +761,7 @@ class LaserEngineV2(QObject):
                 self._log.error(f"560 nm source: switching off at connect: {e}")
             self._notice("560 nm source was on at connect (the last session did not switch it off): switched off")
             first = self._source.poll()
-        self._source_status = self._judge_source(first, self._source)
+        self._source_reading = first
         saved = self.options.source_power_mw
         if saved is not None:
             mw = self._source_power_for(saved, self._source)
@@ -755,7 +789,7 @@ class LaserEngineV2(QObject):
                 Exception
             ) as e:  # a driver bug must not kill the thread silently: report the source as not responding
                 self._log.exception("560 nm source thread")
-                self._source_status = SourceStatus(link_ok=False, detail=f"source thread error: {e}")
+                self._source_reading = SourceStatus(link_ok=False, detail=f"source thread error: {e}")
             time.sleep(self.query_interval_s)
 
     def source_step(self) -> None:
@@ -766,10 +800,13 @@ class LaserEngineV2(QObject):
         It lives here, not in _after_poll, so a failed disable is retried even after the engine link is lost (the poll
         thread stops then; this thread keeps stepping). It acts on the source's own reading, not on the judged
         status. A source that still reads on right after a disable gets a second, redundant disable at the next step;
-        that is harmless."""
+        that is harmless. The step whose reading makes the source READY runs an engine poll at once: the shutter is
+        not part of L3's readiness, so it opens now rather than at the next poll, which a caller seeing READY in
+        between would image behind."""
         src = self._source
         if src is None:
             return
+        was_ready = _source_state(self._source_status)[0] == LineState.READY
         ran_enable = False
         ran_disable = False
         while True:
@@ -809,7 +846,7 @@ class LaserEngineV2(QObject):
                     src.set_power_mw(pending)
                 except Exception as e:
                     self._log.error(f"560 nm source power: {e}")
-            self._source_status = self._judge_source(status, src)
+            self._source_reading = status
         finally:
             if ran_enable:
                 self._source_enable_pending = False
@@ -826,12 +863,31 @@ class LaserEngineV2(QObject):
                     # not wanted but still reads emitting/starting (e.g. a failed disable): queue one disable
                     self._source_disable_pending = True
                     self._source_queue.put(("disable", None))
+        if not was_ready and _source_state(self._source_status)[0] == LineState.READY:
+            self.poll_once()  # its _after_poll opens the shutter (line 3 READY), with the usual checks
+
+    @property
+    def _source_status(self) -> Optional[SourceStatus]:
+        """The source's last reading judged against what the engine asks of it now, so a change asked since the reading
+        (a new power, a switch-off) is never READY. Judged under _source_lock, like the switch-off decision."""
+        with self._source_lock:
+            return self._judged_source_locked()
+
+    def _judged_source_locked(self) -> Optional[SourceStatus]:
+        src, reading = self._source, self._source_reading  # local: close() can clear self._source on another thread
+        return None if src is None or reading is None else self._judge_source(reading, src)
 
     def _judge_source(self, status: SourceStatus, src) -> SourceStatus:
-        """Add what only the engine knows: repeated enable failures are a fault; READY needs the power at the request.
+        """Add what only the engine knows: repeated enable failures are a fault; a source switched off (idle-off, sleep,
+        disarm) that still reads on is off, so the next use restarts it; a reading from before a queued restart is not
+        ready; READY needs the power at the request.
         `src` is the source that reported `status` (close() may clear self._source meanwhile)."""
         if self._source_error is not None:
             return replace(status, fault=True, detail=self._source_error)
+        if not self._source_want_on and (status.ready or status.starting):
+            return replace(status, ready=False, starting=False, off=True, detail="switching off")
+        if self._source_enable_pending and status.ready:
+            return replace(status, ready=False, starting=True, detail="(restart queued)")
         if status.ready:
             target = self._source_requested_mw if self._source_requested_mw is not None else src.min_power_mw
             tol = max(self.SOURCE_SETTLE_TOL_MW, self.SOURCE_SETTLE_TOL_FRAC * target)
@@ -868,18 +924,19 @@ class LaserEngineV2(QObject):
         l3 = status.channels.get("L3")
         st = self._source_status
         source_starting = st is not None and st.starting and not st.ready
-        idle = time.monotonic() - self._source_last_use > self.source_idle_off_s
+        last_use = self._source_last_use
+        idle = time.monotonic() - last_use > self.source_idle_off_s
         current = gen is None or gen == self._shutter_gen  # no restart / switch-off since this snapshot
         not_armed = not status.armed and not self._source_enable_pending  # not a STAT? from before this thread's ARM
         error = l3 is not None and l3.state in ERROR_STATES
         if idle or ((not_armed or error) and current):
-            if idle:
-                self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
             # A fault / not-armed snapshot switches off only while still current, checked again where the disable is
             # queued: a fault reset + restart on another thread since this poll must not be cancelled by it. Idle-off is
-            # measured now, not from the snapshot.
-            if not self._disable_source(None if idle else gen):
+            # measured now, not from the snapshot, and checked again there too: a use since then keeps the source on.
+            if not (self._disable_source(idle_since=last_use) if idle else self._disable_source(gen)):
                 return
+            if idle:
+                self._log.info(f"560 nm source idle for {self.source_idle_off_s / 60:.0f} min: switching it off")
             self._set_held_shutter(False, raw)
         elif not_armed or error:
             return  # an obsolete fault / not-armed snapshot: the next poll decides on a fresh one
@@ -921,12 +978,12 @@ class LaserEngineV2(QObject):
         self._in_use_provider_failed = False
         self.channel_keys_for_wavelengths(wavelengths)  # notes their use
 
-    def _set_held_shutter(self, want_open: bool, raw: dict, force: bool = False) -> None:
+    def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
         """DF: the shutter is a safety device only - open while the 560 is in use (line 3 READY), closed in every other
         state, so the beam is blocked whenever the source is not known to be ready. Never per exposure: the AOM does
-        exposure on/off (D3 TTL). `raw` = the latest STAT?.
+        exposure on/off (D3 TTL). `raw` = the latest STAT?. A refusal is logged; the next poll tries again.
         """
-        if self.variant != "DF" or (not force and bool((raw.get("shutter") or {}).get("open")) == want_open):
+        if self.variant != "DF" or bool((raw.get("shutter") or {}).get("open")) == want_open:
             return
         try:
             self._cmd(f"SHUT:OPEN {int(want_open)}")
@@ -1032,8 +1089,8 @@ class LaserEngineV2(QObject):
         mw = self._source_power_for(asked, src)
         when = ""
         with self._source_lock:
-            self._source_requested_mw = mw
-            st = self._source_status  # the source's own "starting" reading: its enable has run, it is not ready yet
+            self._source_requested_mw = mw  # judged against from now on: READY again once the source reads it
+            st = self._source_reading  # the source's own "starting" reading: its enable has run, it is not ready yet
             starting = self._source_want_on and st is not None and st.starting
             if self._source_enable_pending or self._source_pending_mw is not None or starting:
                 self._source_pending_mw = mw  # still starting at the minimum: go to it once the source is ready

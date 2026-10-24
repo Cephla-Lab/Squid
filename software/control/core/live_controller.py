@@ -684,6 +684,9 @@ class LiveController(QObject):
         # restart live
         if self.is_live is True:
             if self.control_illumination:
+                # as at Live start: an unchanged intensity reaches no light source, so a laser engine line that went
+                # off meanwhile (the 560 idle-off, Sleep all) is woken here
+                self._check_laser_engine_warn_only()
                 self.turn_on_illumination()
             self._start_new_timer()
         self._log.info("Done setting microscope mode.")

@@ -63,8 +63,10 @@ idle-off are operator settings kept in the cache (section 4).
 
 At start, Squid connects (one fault reset when anything is latched, since the engine latches at every power-up;
 the tab says what it cleared), switches the TECs on, arms and brings every fitted line up, one step per status poll, so the GUI never
-waits for the TECs. A line that was switched off, or an engine that disarmed (key cycle, host timeout), comes back
-on the next use: live view and set-intensity wake the line, and an acquisition waits for its lines to read READY
+waits for the TECs. **Sleep all** or **Disarm** while it runs stops it, and a line put to sleep is not switched on
+again by it. A line that was switched off, or an engine that disarmed (key cycle, host timeout), comes back
+on the next use: starting live view, switching live to its channel, a snap or a new intensity wakes the line, and an
+acquisition waits for its lines to read READY
 (up to 5 minutes; a lost link aborts the acquisition). Squid polls the engine once a second; that poll is also the
 heartbeat the engine needs to stay armed, so the engine disarms itself about 5 s after Squid stops.
 
@@ -88,17 +90,21 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
 
 - **Laser power** (mW) is set by the operator in the tab: type it and press **Set**. It is clamped to the laser's
   own limits, shown next to it. Unset, the laser runs at its minimum. On every start the laser comes up at its
-  minimum and goes to the set power once it reads ready. Squid's intensity never changes the laser power.
+  minimum and goes to the set power once it reads ready. After a power change line 3 reads STARTING until the laser
+  reads the new power, so an acquisition does not start at the old one. Squid's intensity never changes the laser
+  power.
 - **Intensity** in Squid (the 560 channel's intensity) is the AOM amplitude: line 3's set-point, 0-5 V, full scale =
   full transmission. The AOM's on/off input is the controller's D3 TTL, so exposure timing works as for the other
   lines. The intensity is linear in AOM volts (50 % = 2.5 V).
-- **Shutter**: safety only, never per exposure. It opens when line 3 is READY and stays open while line 3 ramps to
+- **Shutter**: safety only, never per exposure, and not part of line 3's readiness. It opens as soon as line 3 is
+  READY (when the laser reads ready, not at the next status poll) and stays open while line 3 ramps to
   a new AOM set-point (every 560 intensity change) as long as the source reads ready. It is closed in every other
   state (key not cycled, source off or starting, line 3 off or paused, a fault, disarm) and before any source
-  restart; a restart is abandoned if the engine link is lost on the way.
+  restart; a restart is abandoned if the engine refuses the close or the engine link is lost on the way.
 - **Idle-off**: the 560 laser switches off after this many minutes without use (an acquisition using the 560 counts
-  as use at every position), so it is never left on indefinitely. 0 means 24 h; there is no "never". The next use
-  starts it again behind the closed shutter.
+  as use at every position, live view on the 560 counts while it runs), so it is never left on indefinitely. 0 means
+  24 h; there is no "never". Line 3 reads SOURCE OFF from the moment it is switched off, and the next use starts it
+  again behind the closed shutter.
 
 The power and the idle-off are kept across sessions in `cache/laser_engine_v2.yaml` (the power when **Set** is
 pressed, the idle-off whenever it is changed):
