@@ -1,3 +1,4 @@
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -169,6 +170,57 @@ def test_a_failed_live_pause_gives_the_claim_back(monkeypatch):
         scope.claim_stage_homing("test")
     assert not scope.stage_homing_in_progress
     monkeypatch.undo()
+    scope.close()
+
+
+def test_a_claim_taken_the_instant_a_release_ends_sees_live_resumed(monkeypatch):
+    scope = _scope()
+    monkeypatch.setattr(scope.stage, "reports_stopped", lambda: True)  # ordering under test, not stop detection
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    scope.start_live()
+    claim_a = scope.claim_stage_homing("A")
+    real_clear = scope._clear_stage_homing_claim
+    taken = []
+
+    def clear_then_claim(claim):
+        real_clear(claim)
+        if claim is claim_a:  # another client wins the race the moment A's claim is cleared
+            taken.append(scope.claim_stage_homing("B"))
+
+    monkeypatch.setattr(scope, "_clear_stage_homing_claim", clear_then_claim)
+    claim_a.release_when_stopped()
+    (claim_b,) = taken
+    assert events == [True, False, True]  # False(A) before True(B)
+    assert claim_b.was_live  # A resumed live before B could claim, so B paused it and will resume it
+    assert scope.stage_homing_in_progress and not scope.live_controller.is_live  # no live during B's homing
+    claim_b.release_when_stopped()
+    assert events == [True, False, True, False] and scope.live_controller.is_live
+    scope.close()
+
+
+def test_a_claim_from_a_listener_during_the_release_is_refused_without_deadlock(monkeypatch):
+    scope = _scope()
+    monkeypatch.setattr(scope.stage, "reports_stopped", lambda: True)
+    scope.start_live()
+    claim_a = scope.claim_stage_homing("A")
+    outcomes = []
+
+    def claim_on_release(active):
+        if not active:
+            try:
+                scope.claim_stage_homing("B")
+                outcomes.append("claimed")
+            except StageHomingInProgressError:
+                outcomes.append("refused")
+
+    scope.add_stage_homing_listener(claim_on_release)
+    release = threading.Thread(target=claim_a.release_when_stopped, daemon=True)
+    release.start()
+    release.join(5)
+    assert not release.is_alive()  # no lock is held while listeners run
+    assert outcomes == ["refused"]  # A's claim is held until its listeners and the live resume are done
+    assert not scope.stage_homing_in_progress and scope.live_controller.is_live
     scope.close()
 
 

@@ -84,9 +84,9 @@ STAGE_STOP_POLL_S = 0.2
 class StageHomingClaim:
     """One homing operation's hold on the stage (Microscope.claim_stage_homing).
 
-    While it is held the Microscope refuses other motion and live stays paused. It is released only once the stage
-    reports that it stopped (AbstractStage.reports_stopped): a timeout, an exception, a host-side abort, a stale
-    status or a lost link keep it held.
+    While it is held the Microscope refuses other motion and live stays paused until the release resumes it. It is
+    released only once the stage reports that it stopped (AbstractStage.reports_stopped): a timeout, an exception, a
+    host-side abort, a stale status or a lost link keep it held.
     """
 
     def __init__(self, microscope: "Microscope", operation: str):
@@ -1101,7 +1101,9 @@ class Microscope:
 
     def add_stage_homing_listener(self, listener: Callable[[bool], None]) -> None:
         """Call listener(True) when a homing claim is taken and listener(False) when it is released, from whichever
-        thread takes or releases it."""
+        thread takes or releases it. A claim's False always comes before the next claim's True. listener(False) runs
+        just before the claim clears: stage_homing_in_progress is still True then, and a claim taken from the
+        listener is refused."""
         self._stage_homing_listeners.append(listener)
 
     def claim_stage_homing(self, operation: str) -> StageHomingClaim:
@@ -1130,16 +1132,23 @@ class Microscope:
                 self._stage_homing_claim = None
 
     def _end_stage_homing(self, claim: StageHomingClaim) -> None:
-        """StageHomingClaim's release, once the stage reported it stopped: clear the claim, tell the listeners, and
-        resume live if it was running before."""
-        self._clear_stage_homing_claim(claim)
-        self._log.info(f"{claim.operation}: the stage reports stopped; stage homing released")
-        self._notify_stage_homing_listeners(False)
-        if claim.was_live and not self._closed:
-            try:
-                self.start_live()
-            except Exception as e:
-                self._log.error(f"Could not resume live after {claim.operation}: {e}")
+        """StageHomingClaim's release, once the stage reported it stopped: resume live if it was running before, tell
+        the listeners, and only then clear the claim.
+
+        The claim stays held until the end, so a new claim (which is refused until the clear) always finds live as
+        this one left it and is announced after this one's False. No lock is held while start_live() or the listeners
+        run: a claim attempted from them is refused, it cannot deadlock.
+        """
+        try:
+            if claim.was_live and not self._closed:
+                try:
+                    self.start_live()
+                except Exception as e:
+                    self._log.error(f"Could not resume live after {claim.operation}: {e}")
+            self._log.info(f"{claim.operation}: the stage reports stopped; stage homing released")
+            self._notify_stage_homing_listeners(False)
+        finally:
+            self._clear_stage_homing_claim(claim)
 
     def _notify_stage_homing_listeners(self, active: bool) -> None:
         for listener in list(self._stage_homing_listeners):
