@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 from control._def import FocusMeasureOperator
 from control.utils import (
+    center_crop_origin,
     find_spot_location,
     find_spot_peaks,
     SpotDetectionMode,
@@ -99,7 +100,23 @@ def test_spot_index_counts_from_one(mode):
         find_spot_location(image, mode=mode, spot_index=0)
 
 
-def test_find_spot_peaks_lists_every_spot_left_to_right():
+@pytest.mark.parametrize(
+    "image_size, crop_size, origin",
+    [
+        ((1920, 1080), (1200, 800), (360, 140)),
+        ((1921, 1081), (1200, 800), (360, 140)),  # odd sizes round the way crop_image does
+        ((1920, 1080), (2800, 1800), (0, 0)),  # a crop larger than the image starts at its corner
+    ],
+)
+def test_center_crop_origin_matches_the_crop_actually_taken(image_size, crop_size, origin):
+    width, height = image_size
+    image = np.arange(width * height, dtype=np.int32).reshape(height, width)
+
+    left, top = center_crop_origin(width, height, *crop_size)
+    cropped = control.utils.crop_image(image, *crop_size)
+
+    assert (left, top) == origin
+    assert cropped[0, 0] == image[top, left]
     peaks = find_spot_peaks(create_test_image(THREE_SPOTS))
 
     assert len(peaks) == 3

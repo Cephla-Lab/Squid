@@ -209,6 +209,7 @@ class LaserAutofocusController(QObject):
             strip_spot_index = self._rank_within_strip(x, from_left=from_left)
             if strip_spot_index is None:
                 self._log.error("The chosen reflection was not found on the detection strip")
+                self.is_initialized = False
                 return False
             self.laser_af_properties = self.laser_af_properties.model_copy(
                 update={"strip_spot_index": strip_spot_index}
@@ -221,6 +222,7 @@ class LaserAutofocusController(QObject):
         # Calibrate pixel-to-um conversion
         if not self._calibrate_pixel_to_um():
             self._log.error("Failed to calibrate pixel-to-um conversion")
+            self.is_initialized = False
             return False
 
         # Save configuration
@@ -732,10 +734,9 @@ class LaserAutofocusController(QObject):
                     continue
 
                 if use_center_crop is not None:
-                    x, y = (
-                        result[0] + (full_width - use_center_crop[0]) // 2,
-                        result[1] + (full_height - use_center_crop[1]) // 2,
-                    )
+                    # back to full-frame coordinates; the crop is clamped to the frame when it is larger
+                    crop_left, crop_top = utils.center_crop_origin(full_width, full_height, *use_center_crop)
+                    x, y = result[0] + crop_left, result[1] + crop_top
                 else:
                     x, y = result
 

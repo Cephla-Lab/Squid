@@ -143,6 +143,35 @@ def test_initialize_keeps_the_chosen_reflection_when_the_strip_drops_a_neighbour
     assert properties.spot_index_within_strip() == 1
 
 
+def test_initialize_that_fails_after_placing_the_strip_is_not_initialized(laser_af, monkeypatch):
+    """Calibration (or the strip ranking) can still fail after the strip is on the camera."""
+    monkeypatch.setattr(laser_af._config_repo, "save_laser_af_config", lambda *args: None)
+    monkeypatch.setattr(laser_af.camera, "get_resolution", lambda: (3088, 2064))
+    monkeypatch.setattr(laser_af, "_calibrate_pixel_to_um", lambda: False)
+    laser_af.laser_af_properties = LaserAFConfig(spot_detection_mode=SpotDetectionMode.SINGLE, laser_af_averaging_n=1)
+    sensor = spots_image([(1600.0, 1.0, 5.0)], shape=(2064, 3088), y_px=1032)
+    laser_af.get_new_frame = lambda: roi_frame(laser_af.camera, sensor)
+
+    assert not laser_af.initialize_auto()
+    assert not laser_af.is_initialized
+
+
+def test_initialize_finds_the_spot_when_the_initialize_crop_exceeds_the_sensor(laser_af, monkeypatch):
+    """The 2800 x 1800 search crop is clamped to the 1920 x 1080 simulated sensor; the spot must map back
+    to its true sensor position, not be shifted by half the missing crop."""
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_WIDTH", 1024)
+    monkeypatch.setattr(control._def, "LASER_AF_CROP_HEIGHT", 224)
+    monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_WIDTH", 2800)
+    monkeypatch.setattr(control._def, "LASER_AF_INITIALIZE_CROP_HEIGHT", 1800)
+    monkeypatch.setattr(laser_af._config_repo, "save_laser_af_config", lambda *args: None)
+    laser_af.laser_af_properties = LaserAFConfig(spot_detection_mode=SpotDetectionMode.SINGLE, laser_af_averaging_n=1)
+    sensor = spots_image([(604.0, 1.0, 5.0)], shape=(1080, 1920), y_px=401)
+    laser_af.get_new_frame = lambda: roi_frame(laser_af.camera, sensor)
+
+    assert laser_af.initialize_auto()
+    assert laser_af.camera.get_region_of_interest() == (88, 288, 1024, 224)
+
+
 STRIP = dict(x_offset=800, y_offset=900, width=1536, height=256)
 
 

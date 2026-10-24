@@ -3083,7 +3083,7 @@ class LaserAutofocusSettingWidget(QWidget):
     signal_newExposureTime = Signal(float)
     signal_newAnalogGain = Signal(float)
     signal_apply_settings = Signal()
-    signal_laser_spot_location = Signal(np.ndarray, float, float)
+    signal_laser_spot_location = Signal(np.ndarray, float, float, object)  # frame, chosen x, y, other peaks' x
 
     def __init__(self, streamHandler, liveController: LiveController, laserAutofocusController, stretch=True):
         super().__init__()
@@ -3384,7 +3384,7 @@ class LaserAutofocusSettingWidget(QWidget):
         self.laserAutofocusController.set_laser_af_properties(updates)
         self.laserAutofocusController.initialize_auto()
         self.signal_apply_settings.emit()
-        self.update_threshold_button.setEnabled(True)
+        self.update_threshold_button.setEnabled(self.laserAutofocusController.is_initialized)
         self.update_calibration_label()
 
     def update_threshold_settings(self):
@@ -3460,11 +3460,13 @@ class LaserAutofocusSettingWidget(QWidget):
             result = utils.find_spot_location(
                 frame, mode=mode, spot_index=spot_index, params=params, filter_sigma=sigma, debug_plot=True
             )
-            if result is not None:
-                x, y = result
-                self.signal_laser_spot_location.emit(frame, x, y)
-            else:
+            if result is None:
                 raise Exception("No spot detection result returned")
+            x, y = result
+            # every other reflection the detector saw, so the choice can be checked against its neighbours
+            peaks = utils.find_spot_peaks(frame, params=params, filter_sigma=sigma)
+            other_x = [float(px) for px in peaks if abs(px - x) > params["x_window"]]
+            self.signal_laser_spot_location.emit(frame, x, y, other_x)
         except Exception:
             self._show_spot_detection_error("Spot detection failed!")
 

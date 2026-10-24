@@ -745,3 +745,22 @@ def test_same_size_frames_keep_the_zoom(shown_window):
 
     (x0, x1), (y0, y1) = view.viewRange()
     assert (x0, x1) == pytest.approx((100, 200), abs=1)
+
+
+# ─── Laser AF spot marks ─────────────────────────────────────────────────────
+
+GREEN_BGR = (0, 255, 0)
+GREY_BGR = (128, 128, 128)
+
+
+def test_mark_spot_draws_the_chosen_spot_green_and_the_other_reflections_grey(image_display_window):
+    win = image_display_window
+    frame = np.zeros((40, 120), dtype=np.uint8)
+
+    win.mark_spot(frame, 50, 20, other_x=[10, 90])
+
+    shown = win._current_image
+    assert tuple(shown[20, 50]) == GREEN_BGR
+    assert tuple(shown[20, 10]) == GREY_BGR
+    assert tuple(shown[20, 90]) == GREY_BGR
+    assert tuple(shown[5, 5]) == (0, 0, 0)

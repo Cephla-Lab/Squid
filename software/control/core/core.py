@@ -1815,32 +1815,30 @@ class ImageDisplayWindow(QMainWindow):
         if self.line_rois and self.btn_line_profiler.isChecked():
             self.update_line_profile()
 
-    def mark_spot(self, image: np.ndarray, x: float, y: float):
-        """Mark the detected laserspot location on the image.
+    def mark_spot(self, image: np.ndarray, x: float, y: float, other_x=()):
+        """Show the image with the chosen laser spot marked green and every other detected reflection grey.
 
         Args:
-            image: Image to mark
-            x: x-coordinate of the spot
-            y: y-coordinate of the spot
-
-        Returns:
-            Image with marked spot
+            image: Grayscale frame to mark
+            x: x-coordinate of the chosen spot
+            y: y-coordinate of the chosen spot
+            other_x: x-coordinates of the other reflections the detector saw, on the same row
         """
-        # Draw a green crosshair at the specified x,y coordinates
         crosshair_size = 10  # Size of crosshair lines in pixels
-        crosshair_color = (0, 255, 0)  # Green in BGR format
         crosshair_thickness = 1
-        x = int(round(x))
         y = int(round(y))
 
         # Convert grayscale to BGR
         marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
-        # Draw horizontal line
-        cv2.line(marked_image, (x - crosshair_size, y), (x + crosshair_size, y), crosshair_color, crosshair_thickness)
+        def crosshair(cx: float, color):
+            cx = int(round(cx))
+            cv2.line(marked_image, (cx - crosshair_size, y), (cx + crosshair_size, y), color, crosshair_thickness)
+            cv2.line(marked_image, (cx, y - crosshair_size), (cx, y + crosshair_size), color, crosshair_thickness)
 
-        # Draw vertical line
-        cv2.line(marked_image, (x, y - crosshair_size), (x, y + crosshair_size), crosshair_color, crosshair_thickness)
+        for ox in other_x:
+            crosshair(ox, (128, 128, 128))  # grey, BGR
+        crosshair(x, (0, 255, 0))  # green, drawn last so it stays on top
 
         self.display_image(marked_image)
 

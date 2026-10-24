@@ -68,6 +68,17 @@ def test_initialize_hands_the_chosen_spot_to_the_controller(rig, monkeypatch):
     assert controller.laser_af_properties.spot_index == 2
 
 
+def test_failed_initialize_leaves_the_apply_button_disabled(rig, monkeypatch):
+    """Apply-without-re-initialization only makes sense once Initialize has succeeded."""
+    widget, controller = rig
+    monkeypatch.setattr(controller, "initialize_auto", lambda: False)
+
+    widget.initialize_button.click()
+
+    assert not controller.is_initialized
+    assert not widget.update_threshold_button.isEnabled()
+
+
 def test_update_values_shows_the_saved_choice(rig):
     widget, controller = rig
     controller.laser_af_properties = LaserAFConfig(spot_detection_mode=SpotDetectionMode.NTH_FROM_LEFT, spot_index=3)
@@ -86,14 +97,17 @@ def test_run_spot_detection_marks_the_chosen_spot(rig, monkeypatch):
     select_mode(widget, SpotDetectionMode.NTH_FROM_RIGHT)
     widget.spot_index_spinbox.setValue(2)
     marked = []
-    widget.signal_laser_spot_location.connect(lambda image, x, y: marked.append(x))
+    widget.signal_laser_spot_location.connect(lambda image, x, y, other_x: marked.append((x, list(other_x))))
 
     # Run Spot Detection opens a debug figure; Agg keeps it headless. Not restored afterwards:
     # matplotlib refuses to switch back to an interactive backend while Qt's event loop is running.
     matplotlib.use("Agg")
     widget.run_spot_detection()
 
-    assert marked == [pytest.approx(522.0, abs=0.5)]
+    assert len(marked) == 1
+    x, other_x = marked[0]
+    assert x == pytest.approx(522.0, abs=0.5)
+    assert other_x == [pytest.approx(400.0, abs=2.0), pytest.approx(700.0, abs=2.0)]  # every other reflection
 
 
 def test_full_sensor_checkbox_drives_the_camera(rig):
@@ -148,7 +162,7 @@ def initialized_on_three_reflections(rig, monkeypatch):
     assert controller.camera.get_region_of_interest() == (1088, 920, 1024, 224)
     assert controller.laser_af_properties.strip_spot_index == 1
     marked = []
-    widget.signal_laser_spot_location.connect(lambda image, x, y: marked.append(x))
+    widget.signal_laser_spot_location.connect(lambda image, x, y, other_x: marked.append(x))
     matplotlib.use("Agg")  # Run Spot Detection opens a debug figure
     return widget, controller, marked
 

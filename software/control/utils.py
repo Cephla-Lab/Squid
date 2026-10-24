@@ -63,6 +63,14 @@ def image_delta_to_stage_delta_mm(delta_x_px: float, delta_y_px: float, pixel_si
     return (pixel_size_um * delta_x_px / 1000.0, pixel_sign_y * pixel_size_um * delta_y_px / 1000.0)
 
 
+def center_crop_origin(image_width: int, image_height: int, crop_width: int, crop_height: int) -> Tuple[int, int]:
+    """Top-left corner (left, top) of the centred crop that crop_image takes; a crop larger than the image
+    starts at the image's corner, so positions found in the crop map back by adding this origin."""
+    left = int(max(image_width / 2 - crop_width / 2, 0))
+    top = int(max(image_height / 2 - crop_height / 2, 0))
+    return left, top
+
+
 def crop_image(image, crop_width, crop_height):
     image_height = image.shape[0]
     image_width = image.shape[1]
@@ -70,9 +78,8 @@ def crop_image(image, crop_width, crop_height):
         crop_width = image_width
     if crop_height is None:
         crop_height = image_height
-    roi_left = int(max(image_width / 2 - crop_width / 2, 0))
+    roi_left, roi_top = center_crop_origin(image_width, image_height, crop_width, crop_height)
     roi_right = int(min(image_width / 2 + crop_width / 2, image_width))
-    roi_top = int(max(image_height / 2 - crop_height / 2, 0))
     roi_bottom = int(min(image_height / 2 + crop_height / 2, image_height))
     image_cropped = image[roi_top:roi_bottom, roi_left:roi_right]
     return image_cropped
