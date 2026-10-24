@@ -14,6 +14,7 @@ from serial.serialutil import SerialException
 
 import squid.logging
 import control._def
+from control.startup_homing import require_objective_lowered
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -1308,14 +1309,20 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def home_x(self, homing_direction: HomingDirection = _default_x_homing_direction):
+    def home_x(
+        self, homing_direction: HomingDirection = _default_x_homing_direction, *, objective_lowered: bool = False
+    ):
+        require_objective_lowered(objective_lowered, "Home X")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.X
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
-    def home_y(self, homing_direction: HomingDirection = _default_y_homing_direction):
+    def home_y(
+        self, homing_direction: HomingDirection = _default_y_homing_direction, *, objective_lowered: bool = False
+    ):
+        require_objective_lowered(objective_lowered, "Home Y")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Y
@@ -1340,7 +1347,10 @@ class Microcontroller:
         self,
         homing_direction_x: HomingDirection = _default_x_homing_direction,
         homing_direction_y: HomingDirection = _default_y_homing_direction,
+        *,
+        objective_lowered: bool = False,
     ):
+        require_objective_lowered(objective_lowered, "Home XY")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.XY

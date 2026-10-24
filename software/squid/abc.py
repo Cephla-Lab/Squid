@@ -312,7 +312,7 @@ class AbstractStage(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         pass
 
     @abc.abstractmethod

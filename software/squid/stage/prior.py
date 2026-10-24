@@ -4,6 +4,7 @@ import threading
 import time
 import re
 
+from control.startup_homing import require_objective_lowered
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
@@ -247,7 +248,9 @@ class PriorStage(AbstractStage):
     def get_state(self) -> StageStage:
         return StageStage(busy=self.is_busy)
 
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
+        # SIS homes XY whatever the flags say, so every call needs the confirmation.
+        require_objective_lowered(objective_lowered, "Home")
         self._send_command("SIS")
         if blocking:
             self.wait_for_stop()

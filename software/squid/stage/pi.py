@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 
 import squid.ftdi
 import squid.logging
+from control.startup_homing import require_objective_lowered
 from squid.abc import AbstractStage, Pos, StageStage
 from squid.config import StageConfig
 
@@ -334,7 +335,7 @@ class PIFocusStage(AbstractStage):
         with self._lock:
             return self._c414.is_profile_frozen()
 
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         # Home = reference if needed (FRF skipped when already referenced, so no redundant
         # sweep) then move Z to the objective-clear home position.
         if not z:
@@ -482,8 +483,10 @@ class CombinedStage(AbstractStage):
     def is_referenced(self) -> bool:
         return self._z.is_referenced()
 
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         xy_requested = x or y or theta
+        if xy_requested:
+            require_objective_lowered(objective_lowered, "Home XY")
         if xy_requested and self.lift is not None:
             # Homing sweeps XY end to end: the sample must be clear of the objective, whoever asks for it.
             self._lower_lift_for_xy_homing()
@@ -491,7 +494,7 @@ class CombinedStage(AbstractStage):
             # Z must finish retracting before any XY sweep (the voice coil is not self-locking).
             self._z.home(False, False, True, False, blocking or xy_requested)
         if xy_requested:
-            self._xy.home(x, y, False, theta, blocking)
+            self._xy.home(x, y, False, theta, blocking, objective_lowered=objective_lowered)
 
     def _lower_lift_for_xy_homing(self):
         """Lower the Z lift and check it got there; raise (homing nothing) if it did not."""
