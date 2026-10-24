@@ -48,6 +48,11 @@ _DEDICATED_USE = {
 }
 
 
+def dedicated_well_key(config, role: str) -> str:
+    """The priming or clean-up well as the library reads `config` (reservoir/well)."""
+    return well_key(dedicated_wells(config)[role])
+
+
 class SipperControls(QGroupBox):
     _failed = Signal(str)  # a job's error, from the job thread to this one, for the dialog
 
@@ -134,7 +139,7 @@ class SipperControls(QGroupBox):
 
     def dedicated_well(self, role: str) -> str:
         """The priming or clean-up well as the library reads the config (reservoir/well)."""
-        return well_key(dedicated_wells(self.system.devices.config)[role])
+        return dedicated_well_key(self.system.devices.config, role)
 
     def refresh(self) -> None:
         """Paint where the tip is and the dedicated wells (cached state, no I/O), and which moves

@@ -6,6 +6,7 @@ from typing import Callable, Optional, Tuple
 
 from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QComboBox,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -115,13 +116,22 @@ class FluidicsDisplayTab(QWidget):
 
         # One-off priming/cleaning as an inline row (no pop-ups), the old widget's fields:
         # which ports to prime (their tubing filled with the config's per-port amounts), the
-        # wash port the final volume is drawn from, that volume, the flow rate, and a repeat.
+        # port the final volume is drawn from (the old widget's "Fill tubing with"), that volume, the flow
+        # rate, and a repeat. The port list is the rig's, filled at Initialize.
         self.ports_edit = QLineEdit()
-        self.ports_edit.setPlaceholderText("ports to prime, e.g. 1-4, 25")
-        self.wash_port_spin = QSpinBox()
-        self.wash_port_spin.setRange(1, 100000)
-        self.wash_port_spin.setValue(1)
-        self.wash_port_spin.setPrefix("wash ")
+        self.ports_edit.setPlaceholderText("ports, e.g. 1-4, 25")
+        self.ports_edit.setToolTip("The ports whose tubing is filled first, e.g. 1-4, 25")
+        # never narrower than its hint: the row is wide, and this is the field the stretch would squeeze
+        hint_width = self.ports_edit.fontMetrics().horizontalAdvance(self.ports_edit.placeholderText())
+        self.ports_edit.setMinimumWidth(hint_width + 16)
+        self.wash_port_combo = QComboBox()
+        self.wash_port_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.wash_port_combo.setMinimumContentsLength(14)  # long reagent names do not widen the column
+        self.wash_port_combo.setToolTip(
+            "<p>After the listed ports are primed, the volume is drawn from this port to fill the shared "
+            "line to the flow cell, usually with a wash buffer. The sipper's port draws from the priming "
+            "well on Prime and the clean-up well on Clean (set in the Sipper group).</p>"
+        )
         self.volume_spin = QSpinBox()
         self.volume_spin.setRange(1, 100000)
         self.volume_spin.setValue(200)
@@ -143,7 +153,7 @@ class FluidicsDisplayTab(QWidget):
         self.stop_quick_button.hide()
         self._quick_widgets = [
             self.ports_edit,
-            self.wash_port_spin,
+            self.wash_port_combo,
             self.volume_spin,
             self.flow_spin,
             self.repeat_spin,
@@ -156,7 +166,8 @@ class FluidicsDisplayTab(QWidget):
         quick_row = QHBoxLayout()
         quick_row.addWidget(QLabel("Prime / Clean:"))
         quick_row.addWidget(self.ports_edit, 1)
-        quick_row.addWidget(self.wash_port_spin)
+        quick_row.addWidget(QLabel("Fill with"))
+        quick_row.addWidget(self.wash_port_combo)
         quick_row.addWidget(self.volume_spin)
         quick_row.addWidget(self.flow_spin)
         quick_row.addWidget(self.repeat_spin)
@@ -263,6 +274,10 @@ class FluidicsDisplayTab(QWidget):
                 )
             except Exception:
                 self._log.exception("Could not build the sipper controls")
+        try:
+            self._fill_wash_ports()
+        except Exception:
+            self._log.exception("Could not list the ports for Prime / Clean")
         self._paint_instrument_access()
         for widget in self._quick_widgets:
             widget.setEnabled(True)
@@ -359,22 +374,64 @@ class FluidicsDisplayTab(QWidget):
             self._log.error("Prime/Clean: name at least one port to prime (e.g. 1-4, 25)")
             return
         clean_up = op == "clean_up"  # on a sipper rig its line draws from the clean-up well, not the priming well
-        wash_port = int(self.wash_port_spin.value())
+        wash_port = self.wash_port_combo.currentData()
+        if wash_port is None:
+            self._log.error("Prime/Clean: pick the port to fill the tubing with")
+            return
+        well = self._sipper_fill_well(wash_port, clean_up)
         flow_rate = int(self.flow_spin.value())
         volume = int(self.volume_spin.value())
         repeat = int(self.repeat_spin.value()) if clean_up else 1
         operations = self.service.system.operations
 
+        # `well` only when there is one: an Open Chamber rig's operation takes no such argument
+        sipper_draw = {"well": well} if well is not None else {}
+
         def verb():
             for _ in range(repeat):
-                operations.priming_or_clean_up(wash_port, flow_rate, volume, use_ports=use_ports, clean_up=clean_up)
+                operations.priming_or_clean_up(
+                    wash_port, flow_rate, volume, use_ports=use_ports, clean_up=clean_up, **sipper_draw
+                )
 
-        what = f"Manual {'clean' if clean_up else 'prime'} on {len(use_ports)} port(s)"
+        what = f"Manual {'clean' if clean_up else 'prime'} on {len(use_ports)} port(s), filling with port {wash_port}"
+        what += f" from {well}" if well else ""
         refusal = self.start_manual_job(verb, what)
         if refusal is not None:
             self._log.error(f"Prime/Clean could not start: {refusal}")
             return
         self._set_quick_running(True)
+
+    def _sipper_fill_well(self, port: int, clean_up: bool) -> Optional[str]:
+        """The well a final draw through the sipper's port comes from: the clean-up well on Clean, the
+        priming well on Prime. Named, not left to wherever the tip is: the library refuses a sipper row
+        without a well for the same reason. None for any other port, and on a rig without a sipper."""
+        from fluidics.vocabulary import sipper_vocabulary
+
+        config = self.service.system.devices.config
+        vocabulary = sipper_vocabulary(config)
+        if vocabulary is None or port != vocabulary.sipper_port:
+            return None
+        from control.widgets_fluidics.sipper_controls import dedicated_well_key
+
+        return dedicated_well_key(config, "clean-up" if clean_up else "priming")
+
+    def _fill_wash_ports(self) -> None:
+        """The rig's ports, the sipper's among them, labelled as the library labels them ("Port 2: wash
+        buffer 1"). The first named as a wash or buffer is picked, as the old widget picked port 25."""
+        port_names = self.service.system.devices.selector_valves.get_port_names()
+        self.wash_port_combo.clear()
+        for port, label in port_names:
+            self.wash_port_combo.addItem(label, port)
+        buffers = [
+            i for i, (_port, label) in enumerate(port_names) if "wash" in label.lower() or "buffer" in label.lower()
+        ]
+        self.wash_port_combo.setCurrentIndex(buffers[0] if buffers else 0)
+
+    def _relabel_wash_ports(self) -> None:
+        """Manual control renames ports in place (the same ports, new names): keep the labels current."""
+        for index, (port, label) in enumerate(self.service.system.devices.selector_valves.get_port_names()):
+            if self.wash_port_combo.itemData(index) == port and self.wash_port_combo.itemText(index) != label:
+                self.wash_port_combo.setItemText(index, label)
 
     def _stop_quick_op(self) -> None:
         if self._quick_running:
@@ -397,6 +454,8 @@ class FluidicsDisplayTab(QWidget):
     def _refresh_status(self) -> None:
         try:
             self._poll_quick_op()
+            if self.wash_port_combo.count() and getattr(self.service, "initialized", False):
+                self._relabel_wash_ports()
             if self.sipper_controls is not None:
                 self.sipper_controls.refresh()
             self.device_status.refresh(self.run_line_provider())

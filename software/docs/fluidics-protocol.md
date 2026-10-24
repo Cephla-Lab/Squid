@@ -91,13 +91,17 @@ Both tabs exist only when `RUN_FLUIDICS = True` (`control/widgets_fluidics/`).
   dragged the split is the operator's.
 
 - **Manual control** also has an inline **Prime / Clean** row (no pop-ups), the old widget's fields:
-  the ports to prime (`1-4, 25`), the wash port the final volume is drawn from, that volume, a flow
-  rate, and a repeat (Clean). It calls the library operation directly (`system.run_manual` →
-  `operations.priming_or_clean_up(wash_port, flow, volume, use_ports=..., clean_up=...)`): each named port's
-  tubing is filled with its **config** `tubing_fluid_amount_ul`, then `volume` is drawn from the wash port.
-  On a sipper rig the list must include the sipper's port (the library refuses to skip it), whose line is
-  filled from the config's priming well (Prime) or clean-up well (Clean). **Stop** aborts it. It shares the
-  library session with protocol runs, so the two mutually exclude.
+  the ports to prime (`1-4, 25`), **Fill with** (the old widget's "Fill tubing with": the port the final
+  volume is drawn from, picked by name from every port the rig offers; the first one named as a wash or
+  buffer is preselected), that volume, a flow rate, and a repeat (Clean). It calls the library operation
+  directly (`system.run_manual` → `operations.priming_or_clean_up(port, flow, volume, use_ports=...,
+  clean_up=...)`): each named port's tubing is filled with its **config** `tubing_fluid_amount_ul`, then
+  `volume` is drawn from the fill port, which leaves the shared line to the flow cell full of it. On a
+  sipper rig the list must include the sipper's port (the library refuses to skip it), whose line is filled
+  from the config's priming well (Prime) or clean-up well (Clean). The sipper's port can be the fill port
+  too: its draw then comes from that same well, passed as `well=` rather than left to wherever the tip is
+  (only then: an Open Chamber rig's operation takes no `well`). **Stop** aborts it. It shares the library
+  session with protocol runs, so the two mutually exclude.
 - **Sipper** (sipper rigs only): where the tip is (`in ssct/A1`, `retracted`, or not known to be retracted),
   **Go to well** (plate + well), **Retract**, **Home**, **Reset fault** (clears a drive fault and enables the
   drives; Home afterwards if the fault stopped a homing), and **Stop** for a move started there; each is a
