@@ -1,4 +1,5 @@
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -136,3 +137,24 @@ def test_copy_is_forced_to_disk_before_it_is_published(tmp_path, monkeypatch):
     repo.copy_objective_channel_configs("10x", "20x water")
     assert calls[:2] == ["fsync", "replace"]
     assert (a / "20x water.yaml").read_text() == "A10"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="only POSIX fsyncs the directory")
+def test_copy_whose_directory_sync_fails_is_published_and_counted(tmp_path, monkeypatch, caplog):
+    # The copy is already under its final name when the directory sync fails: it counts as written,
+    # and the remaining profiles are still copied.
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    b = _profile(tmp_path, "b", {"10x.yaml": "B10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    real_fsync = os.fsync
+
+    def _fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("I/O error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(atomic_file.os, "fsync", _fsync)
+    assert sorted(repo.copy_objective_channel_configs("10x", "20x water")) == ["a", "b"]
+    assert (a / "20x water.yaml").read_text() == "A10"
+    assert (b / "20x water.yaml").read_text() == "B10"
+    assert "I/O error" in caplog.text

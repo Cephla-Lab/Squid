@@ -1,9 +1,11 @@
 import ast
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
+import control.atomic_file as atomic_file
 import control.objectives_config as oc
 from control.objectives_config import ChangerKind, ObjectivesConfigError
 
@@ -373,6 +375,30 @@ class TestSaveKeepsALastGoodCopy:
         assert backup.read_bytes() == first_bytes
         assert oc.load_objectives_config(path) == second
         assert sorted(p.name for p in tmp_path.iterdir()) == ["objectives.yaml", "objectives.yaml.bak"]
+
+    @pytest.mark.skipif(os.name != "posix", reason="only POSIX fsyncs the directory")
+    def test_directory_sync_failure_is_raised_only_after_the_new_list_is_published(self, tmp_path, monkeypatch):
+        # NotDurableError from save_objectives_config always means objectives.yaml itself holds the
+        # new list; the backup's own directory sync failing must not stop that write.
+        path = tmp_path / "objectives.yaml"
+        first = _valid(_data())
+        second = _valid(
+            _data(objectives=[{"name": "99x", "magnification": 99, "na": 1.0, "tube_lens_f_mm": 180, "slot": 1}])
+        )
+        oc.save_objectives_config(first, path)
+        first_bytes = path.read_bytes()
+        real_fsync = os.fsync
+
+        def _fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("I/O error")
+            real_fsync(fd)
+
+        monkeypatch.setattr(atomic_file.os, "fsync", _fsync)
+        with pytest.raises(atomic_file.NotDurableError):
+            oc.save_objectives_config(second, path)
+        assert oc.load_objectives_config(path) == second
+        assert oc.backup_path(path).read_bytes() == first_bytes
 
     def test_hand_edited_valid_file_is_backed_up_byte_for_byte(self, tmp_path):
         # A valid file edited by hand (comments and all) is the last good copy as it stands.

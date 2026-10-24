@@ -11,6 +11,12 @@ from pathlib import Path
 _log = logging.getLogger(__name__)  # the stdlib logger: this leaf module cannot import squid.logging
 
 
+class NotDurableError(OSError):
+    """The new content is already published under the path, but syncing its directory failed: after a
+    power cut the previous complete file may come back. Any other error from write_atomically means
+    the path still holds its previous content."""
+
+
 def write_atomically(path: Path, data: bytes) -> None:
     """Write `data` to a temp file in the same directory, fsync it, then os.replace() it onto `path`.
 
@@ -21,8 +27,8 @@ def write_atomically(path: Path, data: bytes) -> None:
     directory to fsync it).
 
     A failure before the rename leaves the previous file untouched and no temp file behind, and
-    raises the original error. A failure to fsync the directory raises after `path` already holds
-    the new content.
+    raises the original error. A failure to fsync the directory raises NotDurableError: `path`
+    already holds the new content then.
     """
     tmp = path.with_name(f".{path.name}.tmp")
     try:
@@ -40,8 +46,11 @@ def write_atomically(path: Path, data: bytes) -> None:
             )
         raise original_exc
     if os.name == "posix":
-        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError as e:
+            raise NotDurableError(f"{path} holds the new content, but syncing its directory failed: {e}") from e

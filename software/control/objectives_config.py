@@ -6,6 +6,7 @@ still initializing, and control/models/__init__.py (like most of control.*) impo
 """
 
 import ast
+import logging
 import math
 from dataclasses import dataclass
 from enum import Enum
@@ -15,8 +16,10 @@ from typing import Dict, List, Optional, Set, Tuple
 import yaml
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from control.atomic_file import write_atomically
+from control.atomic_file import NotDurableError, write_atomically
 from control.objective_changer_constants import NIMOTION_TURRET_SLOTS, XERYON_SLOTS
+
+_log = logging.getLogger(__name__)  # the stdlib logger: this leaf module cannot import squid.logging
 
 # Read at call time, so tests can point it elsewhere before control._def is imported.
 OBJECTIVES_YAML_PATH = Path(__file__).resolve().parent.parent / "machine_configs" / "objectives.yaml"
@@ -208,6 +211,9 @@ def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
     reader never sees a partial file, a power cut leaves the old or the new file (never an empty
     one), and a failed write leaves the previous file untouched.
 
+    Raises NotDurableError when objectives.yaml already holds the new list but its directory sync
+    failed; any other error means objectives.yaml was not changed.
+
     Before replacing a previous file that is itself valid, keeps it as objectives.yaml.bak, which
     startup names when it refuses a damaged file. A damaged previous file is not kept, so it never
     overwrites the last good copy."""
@@ -215,7 +221,12 @@ def save_objectives_config(config: ObjectivesConfig, path=None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     previous = _last_good_bytes(path)
     if previous is not None:
-        write_atomically(backup_path(path), previous)
+        try:
+            write_atomically(backup_path(path), previous)
+        except NotDurableError as e:
+            # The backup is in place; only its survival of a power cut is unconfirmed. Go on, so a
+            # NotDurableError from this function always concerns objectives.yaml itself.
+            _log.warning(f"kept the last good objective list, but could not confirm it on disk: {e}")
     text = _HEADER + yaml.safe_dump(config.model_dump(mode="json"), sort_keys=False)
     write_atomically(path, text.encode("utf-8"))
 

@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 
 import control._def
 import control.objectives_config as oc
+from control.atomic_file import NotDurableError
 import squid.logging
 
 _COLUMNS = ["Name", "Magnification", "NA", "Tube lens (mm)", "Slot", "Model", "Serial", "Copy settings from"]
@@ -75,6 +76,15 @@ class ObjectivesEditorDialog(QDialog):
         self._build_ui()
         try:
             existing = config_repo.get_objectives_config()
+            if existing is not None:
+                # The same checks as startup: a file that only parses (slot 99, a missing slot, the
+                # wrong changer kind) would otherwise be coerced by the table and saved that way.
+                oc.validate_objectives_config(
+                    existing,
+                    use_xeryon=use_xeryon,
+                    use_turret=use_turret,
+                    path=config_repo.machine_configs_path / "objectives.yaml",
+                )
         except oc.ObjectivesConfigError as e:
             QMessageBox.warning(
                 self,
@@ -327,8 +337,16 @@ class ObjectivesEditorDialog(QDialog):
                 self._copied.add((row.copy_from, row.name))
                 self._log.info(f"copied channel settings {row.copy_from} -> {row.name} in profiles {profiles}")
         objectives_yaml_path = self._repo.machine_configs_path / "objectives.yaml"
+        caveat = ""
         try:
             self._repo.save_objectives_config(config)
+        except NotDurableError as e:
+            # The new file is already in place and applies at the next startup.
+            self._log.warning(f"objective list saved, but not confirmed on disk: {e}")
+            caveat = (
+                f" The system could not confirm the save reached the disk ({e}): if the power fails "
+                "before it does, the previous list may come back."
+            )
         except OSError as e:
             QMessageBox.critical(
                 self,
@@ -339,7 +357,7 @@ class ObjectivesEditorDialog(QDialog):
         answer = QMessageBox.question(
             self,
             "Restart to apply",
-            "Saved. The new objective list takes effect after a restart. Restart now?",
+            f"Saved. The new objective list takes effect after a restart.{caveat} Restart now?",
             QMessageBox.Yes | QMessageBox.No,
         )
         if answer == QMessageBox.Yes and self._on_restart is not None:

@@ -1,9 +1,15 @@
+import copy
+import os
+import stat
+
 import pytest
+import yaml
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import QAbstractItemView, QMessageBox
 
 import tests.control.gui_test_stubs  # noqa: F401  (same Qt setup as the other dialog tests)
 import control._def
+import control.atomic_file as atomic_file
 import control.objectives_config as oc
 import control.widgets_objectives as widgets_objectives
 from control.core.config.repository import ConfigRepository
@@ -35,7 +41,7 @@ def no_dialogs(monkeypatch):
     return shown
 
 
-def _turret_dialog(qtbot, repo, on_restart=None):
+def _turret_dialog(qtbot, repo, on_restart=None, running_config=None):
     dialog = ObjectivesEditorDialog(
         repo,
         use_xeryon=False,
@@ -44,6 +50,7 @@ def _turret_dialog(qtbot, repo, on_restart=None):
         turret_positions={"4x": 1, "10x": 2, "20x": 3},
         xeryon_pos_1=[],
         xeryon_pos_2=[],
+        running_config=running_config,
         on_restart=on_restart,
     )
     qtbot.addWidget(dialog)
@@ -289,6 +296,73 @@ def test_a_file_damaged_after_startup_reopens_the_running_list_not_the_catalog(q
     assert dialog.save()
     saved = oc.load_objectives_config(repo.machine_configs_path / "objectives.yaml")
     assert [o.name for o in saved.objectives] == ["25x custom"]
+
+
+_RUNNING_TURRET = {
+    "version": 1,
+    "changer": {"kind": "nimotion_turret"},
+    "objectives": [
+        {"name": "10x", "magnification": 10, "na": 0.3, "tube_lens_f_mm": 180, "slot": 2},
+        {"name": "20x", "magnification": 20, "na": 0.8, "tube_lens_f_mm": 180, "slot": 3},
+    ],
+}
+
+
+def _slot(slot):
+    def edit(data):
+        data["objectives"][1]["slot"] = slot
+
+    return edit
+
+
+def _xeryon(data):
+    data["changer"]["kind"] = "xeryon"
+
+
+@pytest.mark.parametrize(
+    "edit, reason",
+    [
+        pytest.param(_slot(99), "must be 1..4", id="slot-out-of-range"),
+        pytest.param(_slot(None), "is required", id="slot-missing"),
+        pytest.param(_xeryon, "the machine .ini selects nimotion_turret", id="changer-kind"),
+    ],
+)
+def test_a_file_startup_would_refuse_reopens_the_running_list(qtbot, repo, no_dialogs, edit, reason):
+    # Hand-edited after startup into a file that still parses: the table must not coerce it (slot 99
+    # showed as slot 1, and Save published slot 1). Startup's own validation decides, as on startup.
+    running = oc.parse_objectives_config(_RUNNING_TURRET)
+    edited = copy.deepcopy(_RUNNING_TURRET)
+    edit(edited)
+    path = repo.machine_configs_path / "objectives.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(edited), encoding="utf-8")
+
+    dialog = _turret_dialog(qtbot, repo, running_config=running)
+    assert [(r.name, r.slot) for r in dialog.rows()] == [("10x", 2), ("20x", 3)]
+    assert no_dialogs["warning"] and reason in no_dialogs["warning"][0]
+
+    assert dialog.save()
+    assert [(o.name, o.slot) for o in oc.load_objectives_config(path).objectives] == [("10x", 2), ("20x", 3)]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="only POSIX fsyncs the directory")
+def test_save_whose_directory_sync_fails_reports_the_list_as_saved(qtbot, repo, no_dialogs, monkeypatch):
+    # The new objectives.yaml is already in place when the directory sync fails, and it applies at
+    # the next startup: "not written" would be false. Report it saved, with the durability caveat.
+    real_fsync = os.fsync
+
+    def _fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("I/O error")
+        real_fsync(fd)
+
+    monkeypatch.setattr(atomic_file.os, "fsync", _fsync)
+    dialog = _turret_dialog(qtbot, repo)
+    assert dialog.save()
+    assert [(o.name, o.slot) for o in repo.get_objectives_config().objectives] == [("4x", 1), ("10x", 2), ("20x", 3)]
+    assert no_dialogs["critical"] == []
+    assert len(no_dialogs["question"]) == 1
+    assert "could not confirm" in no_dialogs["question"][0] and "I/O error" in no_dialogs["question"][0]
 
 
 # --- R4: a mounted row's name cannot be edited; a newly added row's can ---

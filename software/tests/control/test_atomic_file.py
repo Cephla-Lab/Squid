@@ -124,3 +124,25 @@ def test_cleanup_failure_is_logged_and_does_not_mask_the_original_error(tmp_path
         with pytest.raises(OSError, match="disk full"):
             af.write_atomically(path, b"new")
     assert "cannot unlink temp file" in caplog.text and "disk full" in caplog.text
+
+
+@pytest.mark.skipif(os.name != "posix", reason="only POSIX fsyncs the directory")
+def test_directory_sync_failure_says_the_new_content_is_already_published(tmp_path, monkeypatch):
+    """The rename has happened by then: callers must not report the old content as still in place."""
+    path = tmp_path / "a.yaml"
+    path.write_bytes(b"old")
+    error = OSError("I/O error")
+    real_fsync = os.fsync
+
+    def _fsync(fd):
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise error
+        real_fsync(fd)
+
+    monkeypatch.setattr(af.os, "fsync", _fsync)
+    with pytest.raises(af.NotDurableError) as raised:
+        af.write_atomically(path, b"new")
+    assert isinstance(raised.value, OSError)
+    assert raised.value.__cause__ is error
+    assert path.read_bytes() == b"new"
+    assert [p.name for p in tmp_path.iterdir()] == ["a.yaml"]

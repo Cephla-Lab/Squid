@@ -23,7 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 import squid.logging
 import control.objectives_config as objectives_config
-from control.atomic_file import write_atomically
+from control.atomic_file import NotDurableError, write_atomically
 
 from control.models import (
     AcquisitionChannel,
@@ -505,13 +505,17 @@ class ConfigRepository:
 
         Publishes through write_atomically: a copy that dies partway through (or loses power)
         never leaves a partial or empty file under the final name, so "never overwrite an
-        existing target" stays safe on retry."""
+        existing target" stays safe on retry. A copy whose directory sync fails is already in
+        place, so it counts as written."""
         written = []
         for profile in self.get_available_profiles():
             src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
             dst = src.with_name(f"{target}.yaml")
             if src.exists() and not dst.exists():
-                write_atomically(dst, src.read_bytes())
+                try:
+                    write_atomically(dst, src.read_bytes())
+                except NotDurableError as e:
+                    logger.warning(f"copied channel settings, but could not confirm the copy on disk: {e}")
                 written.append(profile)
         self._profile_cache.pop(f"objective:{target}", None)
         return written
