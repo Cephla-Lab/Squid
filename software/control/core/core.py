@@ -835,7 +835,7 @@ GREEN_TINT_PIXEL = np.array([[[0, 255, 0]]], dtype=np.uint8)
 # Mask overlay: 0 = see-through, 1 = red
 OVEREXPOSURE_LUT = np.array([[0, 0, 0, 0], [255, 0, 0, 255]], dtype=np.uint8)
 # Stacking order above the live image (z = 0): tint multiplies, reference adds, the red mask covers both
-Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE, Z_FRAME = 1, 2, 3, 4
+Z_LIVE_TINT, Z_ALIGNMENT_REFERENCE, Z_OVEREXPOSURE, Z_FRAME, Z_REGION_OUTLINE = 1, 2, 3, 4, 5
 
 
 def _overexposure_mask(image: np.ndarray, saturation: float) -> np.ndarray:
@@ -901,6 +901,7 @@ class ImageDisplayWindow(QMainWindow):
 
         # Last frame as received (before any on-screen marking), for registration
         self._current_image: Optional[np.ndarray] = None
+        self._displayed_shape = None  # (rows, cols) of the frame on screen; a new size refits the view
 
         # Overlays on the live view: reference image during alignment, overexposure mask when toggled on
         self.alignment_reference_item: Optional[pg.ImageItem] = None
@@ -1049,6 +1050,16 @@ class ImageDisplayWindow(QMainWindow):
         self.frame_item.setPen(pg.mkPen("w"))
         self.frame_item.setZValue(Z_FRAME)
         self._active_view().addItem(self.frame_item)
+
+        # Outline of a sensor region in image pixels (the laser AF detection strip while the focus
+        # camera shows its whole sensor); hidden until show_region_outline
+        self.region_outline_item = QGraphicsRectItem()
+        outline_pen = pg.mkPen((255, 200, 0), width=2)
+        outline_pen.setCosmetic(True)  # 2 screen pixels at any zoom
+        self.region_outline_item.setPen(outline_pen)
+        self.region_outline_item.setZValue(Z_REGION_OUTLINE)
+        self.region_outline_item.hide()
+        self._active_view().addItem(self.region_outline_item)
 
         ## Create ROI
         self.roi_pos = (500, 500)
@@ -1782,6 +1793,12 @@ class ImageDisplayWindow(QMainWindow):
         self.graphics_widget.img.updateImage()
         self._update_overlays()
 
+        if image.shape[:2] != self._displayed_shape:
+            # A different frame size (the focus camera switching between its strip and the whole
+            # sensor, a binning change) is shown whole, whatever zoom was set on the previous size.
+            self._displayed_shape = image.shape[:2]
+            self._active_view().autoRange()
+
         # Update pixel value based on last valid position
         if self.has_valid_position:
             try:
@@ -1798,34 +1815,40 @@ class ImageDisplayWindow(QMainWindow):
         if self.line_rois and self.btn_line_profiler.isChecked():
             self.update_line_profile()
 
-    def mark_spot(self, image: np.ndarray, x: float, y: float):
-        """Mark the detected laserspot location on the image.
+    def mark_spot(self, image: np.ndarray, x: float, y: float, other_x=()):
+        """Show the image with the chosen laser spot marked green and every other detected reflection grey.
 
         Args:
-            image: Image to mark
-            x: x-coordinate of the spot
-            y: y-coordinate of the spot
-
-        Returns:
-            Image with marked spot
+            image: Grayscale frame to mark
+            x: x-coordinate of the chosen spot
+            y: y-coordinate of the chosen spot
+            other_x: x-coordinates of the other reflections the detector saw, on the same row
         """
-        # Draw a green crosshair at the specified x,y coordinates
         crosshair_size = 10  # Size of crosshair lines in pixels
-        crosshair_color = (0, 255, 0)  # Green in BGR format
         crosshair_thickness = 1
-        x = int(round(x))
         y = int(round(y))
 
         # Convert grayscale to BGR
         marked_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
 
-        # Draw horizontal line
-        cv2.line(marked_image, (x - crosshair_size, y), (x + crosshair_size, y), crosshair_color, crosshair_thickness)
+        def crosshair(cx: float, color):
+            cx = int(round(cx))
+            cv2.line(marked_image, (cx - crosshair_size, y), (cx + crosshair_size, y), color, crosshair_thickness)
+            cv2.line(marked_image, (cx, y - crosshair_size), (cx, y + crosshair_size), color, crosshair_thickness)
 
-        # Draw vertical line
-        cv2.line(marked_image, (x, y - crosshair_size), (x, y + crosshair_size), crosshair_color, crosshair_thickness)
+        for ox in other_x:
+            crosshair(ox, (128, 128, 128))  # grey, BGR
+        crosshair(x, (0, 255, 0))  # green, drawn last so it stays on top
 
         self.display_image(marked_image)
+
+    def show_region_outline(self, x: int, y: int, width: int, height: int) -> None:
+        """Outline a region of the sensor, in image pixels, on top of the live image."""
+        self.region_outline_item.setRect(QRectF(x, y, width, height))
+        self.region_outline_item.show()
+
+    def hide_region_outline(self) -> None:
+        self.region_outline_item.hide()
 
     def update_contrast_limits(self):
         if self.show_LUT and self.contrastManager and self.contrastManager.acquisition_dtype:

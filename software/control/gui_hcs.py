@@ -1686,6 +1686,18 @@ class HighContentScreeningGui(QMainWindow):
                 self.laserAutofocusSettingWidget.show_cross_correlation_result
             )
 
+            def slot_full_sensor_view(enabled: bool):
+                # while the focus camera streams its whole sensor, outline where the detection strip sits
+                strip = self.laserAutofocusController.laser_af_properties
+                if enabled and self.laserAutofocusController.is_initialized:
+                    self.imageDisplayWindow_focus.show_region_outline(
+                        strip.x_offset, strip.y_offset, strip.width, strip.height
+                    )
+                else:
+                    self.imageDisplayWindow_focus.hide_region_outline()
+
+            self.laserAutofocusController.signal_full_sensor_view_changed.connect(slot_full_sensor_view)
+
             self.streamHandler_focus_camera.signal_new_frame_received.connect(
                 self.liveController_focus_camera.on_new_frame
             )

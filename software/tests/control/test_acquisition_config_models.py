@@ -35,6 +35,7 @@ from control.models.illumination_config import (
     DEFAULT_WAVELENGTH_COLORS,
     IlluminationType,
 )
+import control._def as _def
 from control._def import SpotDetectionMode
 
 
@@ -708,7 +709,8 @@ class TestLaserAFConfig:
         assert config.pixel_to_um == 1.0
         assert config.has_reference is False
         assert config.laser_af_range == float(_def.LASER_AF_RANGE)
-        assert config.spot_detection_mode == SpotDetectionMode(_def.LASER_AF_SPOT_DETECTION_MODE)
+        # the machine .ini may still carry a legacy name; the literal cases are in the tests below
+        assert config.spot_detection_mode == SpotDetectionMode.parse(_def.LASER_AF_SPOT_DETECTION_MODE)[0]
         assert config.laser_af_averaging_n == _def.LASER_AF_AVERAGING_N
         assert config.correlation_threshold == _def.CORRELATION_THRESHOLD
         assert config.min_peak_prominence == _def.LASER_AF_MIN_PEAK_PROMINENCE
@@ -757,13 +759,65 @@ class TestLaserAFConfig:
         assert config.reference_image_shape == [256, 1536]
         assert config.reference_image_dtype == "float32"
 
-    def test_laser_af_config_spot_detection_mode(self):
-        """Test spot detection mode getter."""
-        from control._def import SpotDetectionMode
+    @pytest.mark.parametrize(
+        "legacy_name, mode, spot_index",
+        [
+            ("dual_left", SpotDetectionMode.NTH_FROM_LEFT, 1),
+            ("dual_right", SpotDetectionMode.NTH_FROM_RIGHT, 1),
+            ("multi_right", SpotDetectionMode.NTH_FROM_RIGHT, 1),
+            ("multi_second_right", SpotDetectionMode.NTH_FROM_RIGHT, 2),
+        ],
+    )
+    def test_laser_af_config_reads_legacy_spot_mode_names(self, legacy_name, mode, spot_index):
+        """Per-objective YAML files written before N was a setting keep selecting the same spot."""
+        config = LaserAFConfig(spot_detection_mode=legacy_name)
 
-        config = LaserAFConfig(spot_detection_mode="dual_left")
-        mode = config.get_spot_detection_mode()
-        assert mode == SpotDetectionMode.DUAL_LEFT
+        assert config.spot_detection_mode == mode
+        assert config.spot_index == spot_index
+
+    def test_laser_af_config_explicit_spot_index_wins_over_legacy_name(self):
+        config = LaserAFConfig(spot_detection_mode="dual_left", spot_index=3)
+
+        assert config.spot_detection_mode == SpotDetectionMode.NTH_FROM_LEFT
+        assert config.spot_index == 3
+
+    def test_laser_af_config_spot_selection_round_trips_through_yaml_form(self):
+        config = LaserAFConfig(spot_detection_mode="nth_from_right", spot_index=2)
+
+        saved = config.model_dump(mode="json")
+        assert saved["spot_detection_mode"] == "nth_from_right"
+        assert saved["spot_index"] == 2
+        assert LaserAFConfig(**saved).spot_index == 2
+
+    def test_laser_af_config_strip_rank_defaults_to_the_chosen_n(self):
+        assert LaserAFConfig(spot_index=2).spot_index_within_strip() == 2
+        assert LaserAFConfig(spot_index=2, strip_spot_index=1).spot_index_within_strip() == 1
+
+    def test_laser_af_config_rejects_spot_index_below_one(self):
+        with pytest.raises(ValidationError):
+            LaserAFConfig(spot_index=0)
+
+    def test_laser_af_config_rejects_unknown_spot_mode(self):
+        with pytest.raises(ValidationError):
+            LaserAFConfig(spot_detection_mode="third_from_the_middle")
+
+    def test_laser_af_config_default_comes_from_a_legacy_ini_name(self, monkeypatch):
+        """Existing machine .ini files still say dual_left/multi_second_right; a fresh config must honour them."""
+        monkeypatch.setattr(_def, "LASER_AF_SPOT_DETECTION_MODE", "multi_second_right")
+
+        config = LaserAFConfig()
+
+        assert config.spot_detection_mode == SpotDetectionMode.NTH_FROM_RIGHT
+        assert config.spot_index == 2
+
+    def test_laser_af_config_default_spot_index_comes_from_ini(self, monkeypatch):
+        monkeypatch.setattr(_def, "LASER_AF_SPOT_DETECTION_MODE", "nth_from_left")
+        monkeypatch.setattr(_def, "LASER_AF_SPOT_INDEX", 2)
+
+        config = LaserAFConfig()
+
+        assert config.spot_detection_mode == SpotDetectionMode.NTH_FROM_LEFT
+        assert config.spot_index == 2
 
 
 class TestMergeChannelConfigs:
