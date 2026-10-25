@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional, Tuple
 
+import imageio
 import numpy as np
 import tifffile
 import yaml
@@ -105,6 +106,19 @@ def blit_tiles_to_canvas(
         src_y_end = src_y_start + (dst_y_end - dst_y_start)
         src_x_end = src_x_start + (dst_x_end - dst_x_start)
         canvas[dst_y_start:dst_y_end, dst_x_start:dst_x_end] = tile[src_y_start:src_y_end, src_x_start:src_x_end]
+
+
+def _rgb_to_uint8(data: np.ndarray) -> np.ndarray:
+    """Convert an (H, W, 3) RGB canvas to uint8 for PNG saving. RGB layers keep
+    the source dtype (uint8 from 8-bit cameras, uint16 from RGB48), so a
+    higher-depth canvas is scaled by its dtype's full range; floats are assumed
+    display-normalized in [0, 1]."""
+    if data.dtype == np.uint8:
+        return data
+    if np.issubdtype(data.dtype, np.integer):
+        max_val = np.iinfo(data.dtype).max
+        return (data.astype(np.float32) * (255.0 / max_val)).astype(np.uint8)
+    return (np.clip(data, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
 class UnifiedMosaicWidget(QWidget):
@@ -862,19 +876,25 @@ class UnifiedMosaicWidget(QWidget):
             self._log.warning("Save skipped: viewer_pixel_size_mm is unset.")
             return None
         channels = []
+        rgb_channels = []
         for layer in self._image_layers():
             if layer.data.ndim == 3 and layer.data.shape[2] == 3:
-                # Defer RGB save support — see plan R7.
-                self._log.warning(f"Skipping RGB layer '{layer.name}' from save (not supported yet).")
+                # RGB overview save restored (plan R7 done for the overview path):
+                # saved as a colored PNG + rgb_channel_names/rgb_view_files sidecar
+                # keys, matching what older Squid wrote. Downstream consumers
+                # (e.g. SquidXplorer's stain-color reconstruction) read these to
+                # recover BF color when frames were saved grayscale.
+                rgb_channels.append((layer.name, np.array(layer.data, copy=True)))
                 continue
             channels.append((layer.name, np.array(layer.data, copy=True)))
-        if not channels:
-            self._log.warning("Save skipped: no monochrome image layers present.")
+        if not channels and not rgb_channels:
+            self._log.warning("Save skipped: no image layers present.")
             return None
         snapshot = {
             "mode": self.mode.value,
             "resolution_um": resolution_um,
             "channels": channels,
+            "rgb_channels": rgb_channels,
             "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             # Capture the flag values now so toggling them between snapshot and
             # write doesn't leave the sidecar describing one thing and the
@@ -908,14 +928,15 @@ class UnifiedMosaicWidget(QWidget):
             resolution_um = snapshot["resolution_um"]
             res_tag = f"{int(round(resolution_um))}um"
             channels = snapshot["channels"]
+            rgb_channels = snapshot.get("rgb_channels") or []
             channel_names = [name for name, _ in channels]
-            sidecar = {k: v for k, v in snapshot.items() if k != "channels"}
+            sidecar = {k: v for k, v in snapshot.items() if k not in ("channels", "rgb_channels")}
             sidecar["channel_names"] = channel_names
 
             save_overview = snapshot["save_overview"]
             save_per_well = snapshot["save_per_well"] and mode == DisplayMode.PLATE.value
 
-            if save_overview:
+            if save_overview and channels:
                 stack = np.stack([data for _, data in channels], axis=0)  # (C, H, W)
                 whole_path = os.path.join(target_dir, f"mosaic_{mode}_{res_tag}.ome.tiff")
                 tifffile.imwrite(
@@ -935,7 +956,23 @@ class UnifiedMosaicWidget(QWidget):
                 sidecar["whole_view_file"] = os.path.basename(whole_path)
                 self._log.info(f"Saved whole view: {whole_path} ({stack.shape}, {stack.nbytes/1e6:.1f} MB)")
 
-            if save_per_well:
+            if save_overview and rgb_channels:
+                # Colored overview PNGs + sidecar keys, spelled exactly as older
+                # Squid wrote them (rgb_channel_names / rgb_view_files) so
+                # existing consumers read them unchanged.
+                rgb_names = []
+                rgb_files = []
+                for name, data in rgb_channels:
+                    safe_name = name.replace(" ", "_")
+                    png_path = os.path.join(target_dir, f"mosaic_{mode}_{res_tag}_{safe_name}.png")
+                    imageio.imwrite(png_path, _rgb_to_uint8(data))
+                    rgb_names.append(name)
+                    rgb_files.append(os.path.basename(png_path))
+                    self._log.info(f"Saved RGB view: {png_path} ({data.shape})")
+                sidecar["rgb_channel_names"] = rgb_names
+                sidecar["rgb_view_files"] = rgb_files
+
+            if save_per_well and channels:
                 self._write_per_well_tiffs(target_dir, snapshot, res_tag)
                 sidecar["per_well_dir"] = "wells"
 
