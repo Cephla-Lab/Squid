@@ -6,6 +6,7 @@ import control._def
 
 import control.gui_hcs
 import control.widgets
+from qtpy.QtCore import QCoreApplication, QEvent
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -37,6 +38,23 @@ def test_create_simulated_hcs_with_or_without_piezo(qtbot, confirm_exit_yes):
     scope_without = control.microscope.Microscope.build_from_global_config(True)
     without_piezo = control.gui_hcs.HighContentScreeningGui(microscope=scope_without, is_simulation=True)
     qtbot.add_widget(without_piezo)
+
+
+def test_destroying_the_gui_neither_crashes_nor_leaves_timers_firing_at_deleted_widgets(qtbot, confirm_exit_yes):
+    """Regression: FlexibleMultiPointWidget added one QSpacerItem to several layouts, so the
+    layouts freed it once each (a segfault when Qt ran the window's DeferredDelete), and
+    ImageDisplayWindow's unparented update timer kept firing at the deleted QLabels."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    win = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+
+    win.close()
+    win.deleteLater()
+    # Run the pending delete now, rather than whenever a later event loop happens to service it.
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    # The update timer fires every 100 ms; a RuntimeError ("wrapped C/C++ object ... has been
+    # deleted") in its slot is reported by pytest-qt as a failure of this test.
+    qtbot.wait(500)
 
 
 def test_tab_change_to_simple_recording_does_not_raise(qtbot, monkeypatch, confirm_exit_yes):
