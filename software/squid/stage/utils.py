@@ -149,13 +149,19 @@ def objective_is_retracted(z_mm: float) -> bool:
     return z_mm <= _def.OBJECTIVE_RETRACTED_POS_MM + _RETRACTED_TOLERANCE_MM
 
 
-def _retract_objective_for_loading(stage: AbstractStage):
-    # The objective goes up to its retracted position (never down: one already above it stays), remembering where
-    # it was; the way back lowers it there last.
-    stage._scanning_position_z_mm = stage.get_pos().z_mm
-    if not objective_is_retracted(stage._scanning_position_z_mm):
+def retract_objective(stage: AbstractStage):
+    """Z to OBJECTIVE_RETRACTED_POS_MM, then wait for the stage to stop, unless the objective is already retracted
+    (objective_is_retracted): a Z at or below the retracted position stays, so this never moves the objective toward
+    the sample."""
+    if not objective_is_retracted(stage.get_pos().z_mm):
         stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
         stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+
+
+def _retract_objective_for_loading(stage: AbstractStage):
+    # The objective retracts, remembering where it was; the way back lowers it there last.
+    stage._scanning_position_z_mm = stage.get_pos().z_mm
+    retract_objective(stage)
 
 
 def _restore_objective_after_loading(stage: AbstractStage):

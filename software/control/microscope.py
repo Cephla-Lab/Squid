@@ -810,6 +810,15 @@ class Microscope:
             self._start_focus_wheel_router()
 
         if self.addons.objective_changer:
+            if (
+                control._def.USE_XERYON
+                and self.startup_homing is StartupHoming.ALREADY_HOMED
+                and squid.stage.utils.z_is_referenced()
+            ):
+                # A normal startup has homed Z by now; a warm one homed nothing, so Z is where the last session left
+                # it (after a crash, possibly at focus height). It retracts before the Xeryon moves, as for the
+                # loading position. (A turret's home() retracts Z itself.)
+                squid.stage.utils.retract_objective(self.stage)
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays

@@ -14,6 +14,7 @@ import control.microscope
 import squid.config
 import squid.stage.cephla
 import squid.stage.prior
+import squid.stage.utils
 import tests.squid.test_stage
 from control._def import AXIS, CMD_SET, STARTUP_STATE_MIN_FIRMWARE, STARTUP_VERDICT_STATUS_BASE, StartupVerdict
 from control.firmware_sim_serial import FirmwareSimSerial
@@ -1011,3 +1012,116 @@ def test_a_microscope_relaunch_is_warm(monkeypatch):
     first.close()
     sim.reconnect(1)
     assert control.microscope.Microscope.build_from_global_config(True).startup_homing is StartupHoming.ALREADY_HOMED
+
+
+# --- A warm start retracts Z before the Xeryon moves, as a normal startup's Z home does ---
+
+
+def _z_usteps(z_mm):
+    return squid.config.get_stage_config().Z_AXIS.convert_real_units_to_ustep(z_mm)
+
+
+def _left_at_z(z_mm):
+    """before_close for _homed: the last session left Z at z_mm (a crash at focus height, or a clean close)."""
+    return lambda m: (m.move_z_to_usteps(_z_usteps(z_mm)), m.wait_till_operation_is_completed())
+
+
+def _record_changer(monkeypatch, kind):
+    """The objective changer of `kind` ("xeryon" or "turret"), simulated, recording in order each stage Z move
+    (move_z_to's target) and each changer call with the Z the stage stood at when it came."""
+    events = []
+
+    def at_z(stage, call):
+        events.append((call, stage.get_pos().z_mm))
+
+    if kind == "xeryon":
+        from control.objective_changer_2_pos_controller import ObjectiveChanger2PosController_Simulation
+
+        class Changer(ObjectiveChanger2PosController_Simulation):
+            def home(self):
+                at_z(self.stage, "home")
+
+            def move_to_objective(self, objective_name):
+                at_z(self.stage, "move_to_objective")
+                super().move_to_objective(objective_name)
+
+        monkeypatch.setattr(control.microscope, "ObjectiveChanger2PosController_Simulation", Changer, raising=False)
+        # One the changer knows, whatever objective the cache (cache/objective_and_sample_format.txt) last held
+        monkeypatch.setattr(control._def, "DEFAULT_OBJECTIVE", control._def.XERYON_OBJECTIVE_SWITCHER_POS_1[0])
+    else:
+
+        class Changer:  # a turret's own home() retracts Z; this one records only
+            def __init__(self, stage=None, **kwargs):
+                self.stage = stage
+
+            def home(self):
+                at_z(self.stage, "home")
+
+            def move_to_objective(self, objective_name, restore_z=True):
+                at_z(self.stage, "move_to_objective")
+
+        monkeypatch.setattr(control.microscope, "ObjectiveTurret4PosControllerSimulation", Changer, raising=False)
+    monkeypatch.setattr(control._def, "USE_XERYON", kind == "xeryon")
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", kind == "turret")
+
+    real_move_z_to = squid.stage.cephla.CephlaStage.move_z_to
+
+    def move_z_to(stage, abs_mm, blocking=True):
+        events.append(("move_z_to", abs_mm))
+        return real_move_z_to(stage, abs_mm, blocking)
+
+    monkeypatch.setattr(squid.stage.cephla.CephlaStage, "move_z_to", move_z_to)
+    return events
+
+
+def _warm_scope(monkeypatch, sim):
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    return scope
+
+
+def test_a_warm_start_retracts_z_before_the_xeryon_moves(monkeypatch):
+    """Nothing homed Z, which a normal startup homes before the Xeryon's sweep: a Z left at focus height (a crash)
+    moves to the retracted position, the loading move's retract, before the changer's first call."""
+    assert squid.stage.utils.z_is_referenced()
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    retracted = control._def.OBJECTIVE_RETRACTED_POS_MM
+    assert events == [
+        ("move_z_to", retracted),
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()
+
+
+def test_a_warm_start_leaves_a_retracted_z_for_the_xeryon(monkeypatch):
+    """Already retracted (a clean close retracts it): no Z move."""
+    events = _record_changer(monkeypatch, "xeryon")
+    retracted = control._def.OBJECTIVE_RETRACTED_POS_MM
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(retracted)))
+    assert events == [
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()
+
+
+def test_a_warm_start_moves_no_unreferenced_z_for_the_xeryon(monkeypatch):
+    """Z not referenced (a raw step count): no Z move, as a normal startup moves none before the Xeryon either."""
+    for name in ("HOMING_ENABLED_Z", "USE_PI_FOCUS_STAGE", "USE_Z_LIFT_STAGE"):
+        monkeypatch.setattr(control._def, name, False)
+    assert not squid.stage.utils.z_is_referenced()
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
+
+
+def test_a_warm_start_leaves_the_turret_to_retract_z_itself(monkeypatch):
+    """The turret path is unchanged: its home() retracts Z on its own, so startup moves no Z before it."""
+    events = _record_changer(monkeypatch, "turret")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
