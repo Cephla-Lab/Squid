@@ -723,9 +723,9 @@ def _gui_on(qtbot, scope):
 def test_already_homed_at_the_loading_position_moves_xy_only_if_not_there(
     qtbot, confirm_exit_yes, monkeypatch, tmp_path, left_at_loading_xy
 ):
-    """Ruling B-R6: a warm start on a system closed at the loading position sends no XY move when the stage is at the
-    loading XY; a session that died on the way (elsewhere) still goes there. Either way the loading lock applies and
-    the warm start says so."""
+    """A warm start on a system closed at the loading position moves nothing when the stage is still at the loading
+    XY (within 0.1 mm on each axis); a session that died on the way (elsewhere) still goes there. Either way the
+    loading lock applies and the warm start says so."""
     sim = _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
     earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
     if left_at_loading_xy:
@@ -787,7 +787,8 @@ def test_already_homed_away_from_the_loading_position_clears_the_sample_before_x
 
 
 def test_homed_start_closed_at_the_loading_position_moves_back_there(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
-    """Unchanged by B-R6: after a homing startup the stage goes back to the loading position by the loading path."""
+    """A homing startup on a system closed at the loading position goes back there by the loading path, XY only:
+    homing already lowered the lift and retracted the objective."""
     _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
     scope = control.microscope.Microscope.build_from_global_config(True)  # a first launch: homes
     assert scope.startup_homing is StartupHoming.HOMED

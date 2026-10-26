@@ -820,7 +820,7 @@ def test_in_progress_controller_startup(moving, verdict):
 
 
 def test_no_verdict_is_a_normal_startup(monkeypatch, caplog):
-    """Ruling B-R4: a query that gets no verdict (lost to another sender, a timeout) is a normal startup."""
+    """A query that gets no verdict (lost to another sender, a timeout) is a normal startup."""
 
     class NoVerdictSim(FirmwareSimSerial):
         def _query_startup_state(self, cmd):
