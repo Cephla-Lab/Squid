@@ -760,3 +760,42 @@ def test_the_live_controllers_own_channel_lookup_reaches_line_3(monkeypatch):
             assert not fake.shut_open
     finally:
         scope.close()
+
+
+def test_two_tcp_clients_turning_illumination_on_at_once_leave_no_orphan_hold(monkeypatch):
+    """The control server runs each client on its own thread: two overlapping turn_on_illumination calls must leave one
+    hold, which turn_off_illumination releases (an orphan would hold the shutter open and the 560 on)."""
+    import threading
+
+    from control.laser_engine_v2_link import EngineLink
+
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    engine, fake, source = _ready_df_engine()
+    try:
+        live = _live_controller(engine, [561])
+        captured, resume = threading.Event(), threading.Event()
+        original = live.use_current_channel
+
+        def slow_use(name):
+            hold = original(name)
+            if threading.current_thread().name == "first":
+                captured.set()  # the first client has made its hold, not yet recorded it
+                assert resume.wait(5)
+            return hold
+
+        live.use_current_channel = slow_use
+        first = threading.Thread(target=live.hold_current_channel, args=("tcp",), name="first")
+        second = threading.Thread(target=live.hold_current_channel, args=("tcp",), name="second")
+        first.start()
+        assert captured.wait(5)
+        second.start()
+        second.join(0.3)  # the second client, meanwhile
+        resume.set()
+        first.join(5)
+        second.join(5)
+        assert not first.is_alive() and not second.is_alive()
+        assert len(engine._holds) == 1 and fake.shut_open
+        live.release_current_channel("tcp")
+        assert not engine._holds and not fake.shut_open
+    finally:
+        engine.close()

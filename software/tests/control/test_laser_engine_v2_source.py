@@ -1256,3 +1256,48 @@ def test_a_not_ready_close_older_than_an_open_does_not_close_it(monkeypatch):
     resume.set()
     thread.join(5)
     assert not thread.is_alive() and fake.shut_open  # the older "starting" did not close it
+
+
+class _HookOnFirstLetGo:
+    """The engine's RLock, running `hook` once on `thread_name`'s first outermost release: the moment another thread
+    could get in between that thread's check and its action, if they are not under one hold of the lock."""
+
+    def __init__(self, inner, thread_name, hook):
+        self._inner, self._name, self._hook = inner, thread_name, hook
+        self._depth = threading.local()
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        ok = self._inner.acquire(*args, **kwargs)
+        self._depth.n = getattr(self._depth, "n", 0) + 1
+        return ok
+
+    def release(self):
+        self._depth.n -= 1
+        self._inner.release()
+        if self._depth.n == 0 and not self._fired and threading.current_thread().name == self._name:
+            self._fired = True
+            self._hook()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self.release()
+
+
+def test_a_use_starting_while_an_open_by_hand_is_checked_still_takes_over():
+    """Live starts the moment the open-by-hand thread first lets go of the shutter lock: that must be after it has set
+    its flag, so live takes over and ends it (D13), whatever the order of the check and the set inside."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    holds = []
+    engine._shutter_lock = _HookOnFirstLetGo(
+        engine._shutter_lock, "manual", lambda: holds.append(engine.use("live", L3))
+    )
+    manual = threading.Thread(target=engine.set_manual_shutter, args=(True,), name="manual")
+    manual.start()
+    manual.join(5)
+    assert not manual.is_alive() and holds and fake.shut_open
+    holds[0].release()  # live stops: it had taken over, so the open by hand is over and the shutter closes
+    assert not fake.shut_open and not engine.shutter_control().manual_open

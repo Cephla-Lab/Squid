@@ -55,6 +55,8 @@ class LiveController(QObject):
         self._trigger_skip_count = 0
         self._confocal_scan_failed = False  # log a confocal-unit trigger failure once, not on every frame
         self._channel_holds: Dict[str, LightSourceHold] = {}  # hold_current_channel(): they follow set_microscope_mode
+        # Live runs on the GUI thread and each TCP client on its own: one lock for making, releasing and moving them
+        self._channel_holds_lock = threading.RLock()
         self.timer_trigger: Optional[threading.Timer] = None
 
         self.trigger_ID = -1
@@ -166,13 +168,15 @@ class LiveController(QObject):
     def hold_current_channel(self, name: str) -> None:
         """Hold the current channel for `name` (live, the TCP illumination commands) until release_current_channel(name).
         set_microscope_mode moves the hold to each new channel, so it never stays on an old one."""
-        if name not in self._channel_holds:
-            self._channel_holds[name] = self.use_current_channel(name)
+        with self._channel_holds_lock:  # two clients at once must not both make one: the orphan would never be released
+            if name not in self._channel_holds:
+                self._channel_holds[name] = self.use_current_channel(name)
 
     def release_current_channel(self, name: str) -> None:
-        hold = self._channel_holds.pop(name, None)
-        if hold is not None:
-            hold.release()
+        with self._channel_holds_lock:
+            hold = self._channel_holds.pop(name, None)
+            if hold is not None:
+                hold.release()
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Confocal mode
@@ -718,8 +722,9 @@ class LiveController(QObject):
         if self.control_illumination:
             self.update_illumination()
         # every hold on the current channel (live, the TCP illumination commands) moves to the new one, live or not
-        for hold in self._channel_holds.values():
-            hold.update(self._current_wavelengths())
+        with self._channel_holds_lock:
+            for hold in self._channel_holds.values():
+                hold.update(self._current_wavelengths())
 
         # restart live
         if self.is_live is True:

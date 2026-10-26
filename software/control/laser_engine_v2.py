@@ -518,16 +518,20 @@ class LaserEngineV2(QObject):
         """The Laser Engine tab's 560 shutter mode (the tab also saves it): on_use or always_open. Applies at once."""
         if mode not in SHUTTER_MODES:
             raise ValueError(f"shutter mode {mode!r}: one of {', '.join(SHUTTER_MODES)}")
-        self.shutter_mode = mode
-        self._manual_open = False
+        with self._shutter_lock:
+            self.shutter_mode = mode
+            self._manual_open = False
         self.poll_once()
 
     def shutter_control(self) -> ShutterControl:
         """What the tab's shutter button can do now: open by hand only in On use, armed, line 3 READY and nothing using
         the 560."""
         with self._shutter_lock:
-            users = tuple(sorted({h.name for h in self._holds if SOURCE_560_LINE in h.lines}))
-            manual = self._manual_open
+            return self._shutter_control_locked()
+
+    def _shutter_control_locked(self) -> ShutterControl:
+        users = tuple(sorted({h.name for h in self._holds if SOURCE_560_LINE in h.lines}))
+        manual = self._manual_open
         status = self.get_latest_status()
         l3 = status.channels.get("L3") if status is not None else None
         if self.mechanical_shutter is None or self._source is None:
@@ -548,14 +552,16 @@ class LaserEngineV2(QObject):
         """The tab's shutter button: open the shutter by hand (only when shutter_control() allows it) or close it. Pressing
         Open counts as one use of the 560; the idle-off still applies."""
         if open_:
-            control = self.shutter_control()
-            if not control.can_open:
-                raise LaserEngineV2Error("L3", f"shutter not opened: {control.reason}")
+            # checked and set under the lock a use registers under: a use starting meanwhile takes over after this
             with self._shutter_lock:
+                control = self._shutter_control_locked()
+                if not control.can_open:
+                    raise LaserEngineV2Error("L3", f"shutter not opened: {control.reason}")
                 self._manual_open = True
             self._touch_source()
         else:
-            self._manual_open = False
+            with self._shutter_lock:
+                self._manual_open = False
         self.poll_once()  # opens / closes at once
 
     @property
