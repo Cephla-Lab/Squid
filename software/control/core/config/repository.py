@@ -22,6 +22,8 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 import squid.logging
+import control.objectives_config as objectives_config
+from control.atomic_file import NotDurableError, write_atomically
 
 from control.models import (
     AcquisitionChannel,
@@ -51,6 +53,16 @@ from control.models.hardware_bindings import (
 logger = squid.logging.get_logger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
+
+
+class ChannelCopyError(Exception):
+    """A channel-settings copy failed; `__cause__` holds why. `leftover` maps each profile whose
+    earlier copy could not be removed again to the error, so the caller can name the files still
+    in place."""
+
+    def __init__(self, cause: Exception, leftover: Dict[str, OSError]):
+        super().__init__(str(cause) or type(cause).__name__)
+        self.leftover = leftover
 
 
 def _objective_channel_from_general(ch: AcquisitionChannel) -> AcquisitionChannel:
@@ -487,6 +499,66 @@ class ConfigRepository:
         path = self.machine_configs_path / "filter_wheels.yaml"
         self._save_yaml(path, config)
         self._machine_cache["filter_wheel_registry"] = config
+
+    def get_objectives_config(self) -> Optional["objectives_config.ObjectivesConfig"]:
+        """Load machine_configs/objectives.yaml (None if absent). Not cached: the editor
+        is the only caller, and startup reads it through control._def."""
+        return objectives_config.load_objectives_config(self.machine_configs_path / "objectives.yaml")
+
+    def save_objectives_config(self, config: "objectives_config.ObjectivesConfig") -> None:
+        """Save machine_configs/objectives.yaml. Takes effect after a restart."""
+        objectives_config.save_objectives_config(config, self.machine_configs_path / "objectives.yaml")
+
+    def copy_objective_channel_configs(self, source: str, target: str) -> List[str]:
+        """Copy channel_configs/<source>.yaml to <target>.yaml in every profile that has the
+        source and not the target. Never overwrites, moves or deletes the source. Returns the
+        profiles written.
+
+        All or nothing: when a profile fails, the copies this call already made are removed before
+        the error is raised. A profile left holding one would be kept by a retry ("never
+        overwrite"), so a retry from another source would leave the profiles on different sources.
+        Any failure is raised as ChannelCopyError, naming any copy that could not be removed.
+
+        Publishes through write_atomically: a copy that dies partway through (or loses power)
+        never leaves a partial or empty file under the final name. A copy whose directory sync
+        fails is already in place, so it counts as written."""
+        written = []
+        try:
+            for profile in self.get_available_profiles():
+                src = self.objective_channel_config_path(profile, source)
+                dst = self.objective_channel_config_path(profile, target)
+                if src.exists() and not dst.exists():
+                    try:
+                        write_atomically(dst, src.read_bytes())
+                    except NotDurableError as e:
+                        logger.warning(f"copied channel settings, but could not confirm the copy on disk: {e}")
+                    written.append(profile)
+        except Exception as original_exc:
+            leftover = self.remove_objective_channel_configs(target, written)
+            raise ChannelCopyError(original_exc, leftover) from original_exc
+        finally:
+            self._profile_cache.pop(f"objective:{target}", None)
+        return written
+
+    def remove_objective_channel_configs(self, target: str, profiles: List[str]) -> Dict[str, OSError]:
+        """Remove channel_configs/<target>.yaml from `profiles`. Only for undoing copies that a
+        save attempt has just made and that did not exist before it; removing an objective from
+        the list deletes no file. Tries every profile; returns those it could not remove it from,
+        with the error ({} when all went)."""
+        failed = {}
+        for profile in profiles:
+            path = self.objective_channel_config_path(profile, target)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.error(f"Could not remove {path}: {e}")
+                failed[profile] = e
+        self._profile_cache.pop(f"objective:{target}", None)
+        return failed
+
+    def objective_channel_config_path(self, profile: str, objective: str) -> Path:
+        """channel_configs/<objective>.yaml in `profile`."""
+        return self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
 
     def get_camera_names(self) -> List[str]:
         """Get list of available camera names from registry."""
