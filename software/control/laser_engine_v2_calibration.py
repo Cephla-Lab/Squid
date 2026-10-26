@@ -126,7 +126,8 @@ class EngineLineOutput:
         """The engine's set-power call, as live view and acquisitions make it, with the candidate installed; the line
         must then hold the drive the candidate gives for `requested`."""
         self._expected_drive = self._candidate.commanded_percent(requested, 1.0, 1.0)[0]
-        self._engine_call(self._light_source.set_intensity, self._wavelength, requested)
+        channel = self._light_source.channel_mappings[self._wavelength]  # what IlluminationController passes
+        self._engine_call(self._light_source.set_intensity, channel, requested)
         self._line_moved()
         self._check_level()
 

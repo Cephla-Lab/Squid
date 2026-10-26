@@ -63,14 +63,14 @@ def test_a_calibration_for_this_engine_line_is_applied(instrument):
     assert _sets(instrument, 2, mark) == [_drive_amps(c, 50.0)]
 
 
-def test_the_first_intensity_before_any_engine_status_is_calibrated(tmp_path):
-    """No status published yet (the poll thread has not run): the wake-up before the set-point polls the engine, so
-    the very first exposure already goes through the calibration."""
+def test_the_first_intensity_before_any_engine_poll_is_calibrated(tmp_path):
+    """The poll thread has not run: the controller read each engine channel's intensity (a STAT?) when it was built,
+    and the wake-up before the set-point polls the engine, so the very first exposure already goes through the
+    calibration."""
     inst = engine_instrument(tmp_path, start=False)
     try:
         c = make_engine_calibration()
         _install(inst, c)
-        assert inst.engine.get_latest_status() is None
         mark = len(inst.fake.sent)
         inst.illumination.set_intensity(488, 50.0)
         assert _sets(inst, 2, mark) == [_drive_amps(c, 50.0)]

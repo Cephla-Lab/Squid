@@ -64,7 +64,7 @@ def test_560_intensity_goes_through_the_calibration_the_provider_gives():
     c = make_engine_calibration(wavelength_nm=560, port="D3", line=3, ceiling=5.0, unit="V")
     engine.calibration_provider = lambda wavelength: CalibrationLookup(c.file_name, c if wavelength == 560 else None)
     mark, power = len(fake.sent), source.power_mw
-    engine.light_source.set_intensity(560, 50.0)
+    engine.light_source.set_intensity(engine.light_source.channel_mappings[560], 50.0)
     volts = c.commanded_percent(50.0, 1.0, 1.0)[0] / 100.0 * 5.0
     assert _aom_sets(fake.sent, mark) == ["LINE3:SET %.3f" % volts]
     assert source.power_mw == power
