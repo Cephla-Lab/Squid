@@ -704,3 +704,30 @@ def test_close_while_homing_is_refused_and_moves_nothing(qtbot, confirm_exit_yes
         qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=2000)
     finally:
         del gui._cleanup_common  # the teardown's own close runs the real cleanup
+
+
+def test_reset_objective_turret_is_locked_and_refused_while_the_stage_homes(qtbot, confirm_exit_yes, monkeypatch):
+    """The turret reset retracts and restores Z and turns the turret: it must not run under a homing claim (a
+    background Home stage still sweeps XY). Its menu action is disabled for the claim and gets back the state it
+    had; a reset that still gets through is refused, with nothing sent to the changer."""
+    monkeypatch.setattr(control.gui_hcs, "USE_OBJECTIVE_TURRET", True)
+    gui = _gui(qtbot)
+    changer = unittest.mock.MagicMock(name="objective_changer")
+    monkeypatch.setattr(gui, "objective_changer", changer)
+    refusals = _capture_refusals(monkeypatch)
+    (utils,) = [action for action in gui.menuBar().actions() if action.text() == "Utils"]
+    (reset_action,) = [action for action in utils.menu().actions() if action.text() == "Reset Objective Turret"]
+
+    for enabled_before in (True, False):
+        reset_action.setEnabled(enabled_before)
+        claim = gui.microscope.claim_stage_homing("Home stage")
+        try:
+            assert not reset_action.isEnabled()
+            gui.resetObjectiveTurret()
+            assert changer.mock_calls == []
+        finally:
+            claim.release_when_stopped()
+        qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=2000)
+        assert reset_action.isEnabled() is enabled_before
+
+    assert refusals == ["The stage is homing. Reset the objective turret once it has finished."] * 2

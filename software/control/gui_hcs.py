@@ -889,10 +889,12 @@ class HighContentScreeningGui(QMainWindow):
         stage_utils_action = QAction("Stage Utils", self)
         stage_utils_action.triggered.connect(self.stageUtils.show)
         utils_menu.addAction(stage_utils_action)
+        # Kept: the homing lock disables it (the reset drives Z and the turret)
+        self.resetObjectiveTurretAction = None
         if USE_OBJECTIVE_TURRET:
-            reset_turret_action = QAction("Reset Objective Turret", self)
-            reset_turret_action.triggered.connect(self.resetObjectiveTurret)
-            utils_menu.addAction(reset_turret_action)
+            self.resetObjectiveTurretAction = QAction("Reset Objective Turret", self)
+            self.resetObjectiveTurretAction.triggered.connect(self.resetObjectiveTurret)
+            utils_menu.addAction(self.resetObjectiveTurretAction)
         workflow_runner_action = QAction("Workflow Runner...", self)
         workflow_runner_action.triggered.connect(self.openWorkflowRunner)
         utils_menu.addAction(workflow_runner_action)
@@ -2186,6 +2188,13 @@ class HighContentScreeningGui(QMainWindow):
         """Clear faults, re-enable the motor, re-home, and rotate back to the current objective."""
         if self.objective_changer is None:
             return
+        if self.microscope.stage_homing_in_progress:
+            # The reset retracts and restores Z and turns the turret: not while a home sweeps the stage.
+            self.log.info("Reset Objective Turret refused: the stage is homing")
+            QMessageBox.information(
+                self, "Stage Homing", "The stage is homing. Reset the objective turret once it has finished."
+            )
+            return
         self.log.info("Resetting objective turret")
         try:
             current = self.objectiveStore.current_objective or None
@@ -2439,9 +2448,13 @@ class HighContentScreeningGui(QMainWindow):
         self._restore_widgets_state(self._loading_position_saved_enabled)
         self._loading_position_saved_enabled = {}
 
-    # The homing lock: the loading-position set, plus the Z lift tab and the loading toggle (a home lowers the lift
-    # and sweeps XY; neither may move under it).
-    _STAGE_HOMING_BLOCKED_WIDGETS = _LOADING_POSITION_BLOCKED_WIDGETS + ("zLiftWidget", "zLiftLoadingButton")
+    # The homing lock: the loading-position set, plus the Z lift tab, the loading toggle (a home lowers the lift
+    # and sweeps XY; neither may move under it) and the turret reset (it retracts and restores Z).
+    _STAGE_HOMING_BLOCKED_WIDGETS = _LOADING_POSITION_BLOCKED_WIDGETS + (
+        "zLiftWidget",
+        "zLiftLoadingButton",
+        "resetObjectiveTurretAction",
+    )
 
     def _relay_stage_homing_changed(self, active: bool) -> None:
         """Microscope homing listener, called from whichever thread takes or releases the claim. On the GUI thread
