@@ -67,12 +67,11 @@ void send_position_update()
     us_since_last_pos_update = 0;
 
     buffer_tx[0] = cmd_id;
-    if (checksum_error)
-      buffer_tx[1] = CMD_CHECKSUM_ERROR; // cmd_execution_status
-    else if (mcu_cmd_execution_in_progress)
-      buffer_tx[1] = IN_PROGRESS;
-    else
-      buffer_tx[1] = mcu_cmd_execution_status; // COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
+    // cmd_execution_status: CMD_CHECKSUM_ERROR, else the startup verdict reply while one is pending (firmware 1.9,
+    // STARTUP_VERDICT_STATUS_BASE + verdict, so it arrives even while a command is in progress), else IN_PROGRESS,
+    // else COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
+    buffer_tx[1] = hv_packet_status(checksum_error, startup_verdict_pending, startup_verdict,
+                                    mcu_cmd_execution_in_progress, mcu_cmd_execution_status);
 
     // Encoder reporting (firmware 1.6, SET_ENCODER_REPORTING). Two extra TMC4361A
     // reads per packet, only while a host has asked for them. ENC_POS is in
@@ -119,12 +118,6 @@ void send_position_update()
     // Z limit inputs, bits 2-3 (left, right)
     buffer_tx[18] &= ~((1 << BIT_POS_Z_LIMIT_LEFT) | (1 << BIT_POS_Z_LIMIT_RIGHT));
     buffer_tx[18] |= lsc_status_bits(tmc4361A_readLimitSwitches(&tmc4361[z]));
-
-    // Startup verdict (firmware 1.9), bits 4-7: cleared in every packet; while the last command received was
-    // QUERY_STARTUP_STATE, bit 4 is set and bits 5-7 carry its STARTUP_VERDICT_*
-    buffer_tx[18] &= ~((1 << BIT_POS_STARTUP_VERDICT) | (0x07 << STARTUP_VERDICT_SHIFT));
-    if (startup_verdict_pending)
-      buffer_tx[18] |= (1 << BIT_POS_STARTUP_VERDICT) | ((startup_verdict & 0x07) << STARTUP_VERDICT_SHIFT);
 
     // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved)
     // are zero unless encoder reporting is on. The host ignores all of them

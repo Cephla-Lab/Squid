@@ -131,6 +131,7 @@ bool panel_locked_by_host = false;
 HomingValidity homing_validity;
 bool startup_verdict_pending = false;
 uint8_t startup_verdict = STARTUP_VERDICT_NO_SIGNATURE;
+volatile bool power_good_drop_latched = false;
 
 // btns
 uint8_t btns;

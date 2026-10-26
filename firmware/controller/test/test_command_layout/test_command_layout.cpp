@@ -746,6 +746,60 @@ void test_status_packet_reports_the_focus_wheel_count(void)
     TEST_ASSERT_TRUE(enc < wheel);
 }
 
+/***************************************************************************************************/
+/******************************* Startup state, firmware 1.9 (source scans) ************************/
+/***************************************************************************************************/
+
+/* The verdict rides in the status byte (STARTUP_VERDICT_STATUS_BASE + verdict), built by hv_packet_status, whose
+   precedence test_homing_validity pins. Byte 18 bits 4-7 are claimed by other branches (closed-loop PID faults,
+   trigger ready), so the verdict must not write byte 18 at all. */
+void test_startup_verdict_is_in_the_status_byte_not_byte_18(void)
+{
+    const char *proto = load_source("src/constants_protocol.h");
+    TEST_ASSERT_NOT_NULL(proto);
+    TEST_ASSERT_NOT_NULL(strstr(proto, "STARTUP_VERDICT_STATUS_BASE = 64;"));
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(proto, "BIT_POS_STARTUP_VERDICT"));
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(proto, "STARTUP_VERDICT_SHIFT"));
+
+    const char *ser = load_source("src/serial_communication.cpp");
+    TEST_ASSERT_NOT_NULL(ser);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(ser, "buffer_tx[1] ="), "the status byte has one writer");
+    TEST_ASSERT_NOT_NULL(strstr(ser, "buffer_tx[1] = hv_packet_status(checksum_error, startup_verdict_pending, startup_verdict,"));
+    TEST_ASSERT_NOT_NULL(strstr(ser, "mcu_cmd_execution_in_progress, mcu_cmd_execution_status);"));
+    /* byte 18's pre-1.9 writers only, five mentions as in 1.8: joystick bit 0 (clear; set, which names it twice) and
+       the Z limit bits 2-3 (clear, set) */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(5, count_occurrences(ser, "buffer_tx[18]"), "byte 18 must keep only its pre-1.9 writers");
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(ser, "startup_verdict << "));
+    /* a verdict answers only the command that asked: cleared before every dispatch */
+    assert_in_body_before(ser, "serial_communication.cpp", "void process_serial_message()",
+                          "startup_verdict_pending = false;", "CommandCallback p_callback = cmd_map[buffer_rx[1]];");
+}
+
+/* A power-good drop shorter than one loop pass is caught by a falling-edge latch, armed only once PG is high,
+   whose interrupt handler does nothing but set the latch; loop() consumes it before handling any command. */
+void test_power_good_drop_is_latched_by_interrupt_and_consumed_by_loop(void)
+{
+    const char *init = load_source("src/init.cpp");
+    TEST_ASSERT_NOT_NULL(init);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(init, "attachInterrupt("), "one interrupt, in init_power");
+    assert_in_body_before(init, "init.cpp", "void init_power()", "while (!digitalRead(pin_PG))",
+                          "attachInterrupt(digitalPinToInterrupt(pin_PG), ISR_power_good_falling, FALLING);");
+    const char *end = NULL;
+    const char *isr = function_body(init, "static void ISR_power_good_falling()", &end);
+    TEST_ASSERT_NOT_NULL(isr);
+    unsigned statements = 0;
+    for (const char *c = isr; c < end; c++) if (*c == ';') statements++;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, statements, "the PG interrupt handler must only set the latch");
+    TEST_ASSERT_NOT_NULL(strstr(isr, "power_good_drop_latched = true;"));
+
+    const char *ino = load_source("main_controller_teensy41.ino");
+    TEST_ASSERT_NOT_NULL(ino);
+    assert_in_body_before(ino, "main_controller_teensy41.ino", "void loop() {",
+                          "hv_consume_power_drop(&homing_validity, &power_good_drop_latched);", "process_serial_message();");
+    assert_in_body_before(ino, "main_controller_teensy41.ino", "void loop() {",
+                          "hv_power_good(&homing_validity, digitalRead(pin_PG));", "process_serial_message();");
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -800,6 +854,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_panel_lock_is_registered_cleared_and_applied);
     RUN_TEST(test_focus_wheel_delta_is_routed_by_mode);
     RUN_TEST(test_status_packet_reports_the_focus_wheel_count);
+
+    // Startup state, firmware 1.9 (source scan)
+    RUN_TEST(test_startup_verdict_is_in_the_status_byte_not_byte_18);
+    RUN_TEST(test_power_good_drop_is_latched_by_interrupt_and_consumed_by_loop);
 
     return UNITY_END();
 }

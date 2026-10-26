@@ -90,3 +90,17 @@ uint8_t hv_verdict(const HomingValidity *hv, uint32_t signature, uint8_t format,
     }
     return STARTUP_VERDICT_WARM;
 }
+
+void hv_consume_power_drop(HomingValidity *hv, volatile bool *drop_latched) {
+    if (!*drop_latched) return;
+    *drop_latched = false;  // before clearing the flags: a drop latched again after this clears them again next time
+    hv_power_good(hv, false);
+}
+
+uint8_t hv_packet_status(bool checksum_error, bool verdict_pending, uint8_t verdict, bool in_progress,
+                         uint8_t execution_status) {
+    if (checksum_error) return CMD_CHECKSUM_ERROR;
+    if (verdict_pending) return uint8_t(STARTUP_VERDICT_STATUS_BASE + verdict);
+    if (in_progress) return IN_PROGRESS;
+    return execution_status;
+}

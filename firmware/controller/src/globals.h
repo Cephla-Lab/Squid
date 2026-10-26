@@ -139,6 +139,7 @@ extern bool panel_locked_by_host;         // SET_PANEL_LOCK (firmware 1.8): the 
 extern HomingValidity homing_validity;    // homed flags, configuration signature; hv_power_up() in setup()
 extern bool startup_verdict_pending;      // status byte 18 carries startup_verdict; cleared when the next command arrives
 extern uint8_t startup_verdict;           // STARTUP_VERDICT_*, set by QUERY_STARTUP_STATE
+extern volatile bool power_good_drop_latched;  // set by the PG falling-edge interrupt (init.cpp); hv_consume_power_drop clears it
 
 // btns
 extern uint8_t btns;

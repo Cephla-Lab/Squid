@@ -176,6 +176,50 @@ void test_restore_after_config_change_clears_flags(void) {
     TEST_ASSERT_FALSE(hv.homed[0]);
 }
 
+/* The PG falling-edge latch (firmware glue sets it from the interrupt) */
+void test_power_drop_latch_clears_flags_and_latch(void) {
+    warm();
+    volatile bool latched = true;
+    hv_consume_power_drop(&hv, &latched);
+    TEST_ASSERT_FALSE(latched);
+    for (uint8_t a = 0; a < 3; a++) TEST_ASSERT_FALSE(hv.homed[a]);
+    TEST_ASSERT_EQUAL_UINT8(STARTUP_VERDICT_NOT_HOMED, verdict());
+}
+void test_power_drop_latch_clear_changes_nothing(void) {
+    warm();
+    volatile bool latched = false;
+    hv_consume_power_drop(&hv, &latched);
+    TEST_ASSERT_FALSE(latched);
+    TEST_ASSERT_EQUAL_UINT8(STARTUP_VERDICT_WARM, verdict());
+}
+void test_power_drop_latch_disarms_a_home_under_way(void) {
+    hv_store_signature(&hv, SIG, FMT);
+    hv_home_start(&hv, AXIS_X, true);
+    volatile bool latched = true;
+    hv_consume_power_drop(&hv, &latched);
+    hv_home_complete(&hv, AXIS_X, true);
+    TEST_ASSERT_FALSE(hv.homed[AXIS_X]);
+}
+
+/* Packet status byte: checksum error, then a pending verdict (64 + verdict), then IN_PROGRESS, then the status */
+void test_packet_status_is_base_plus_verdict_while_pending(void) {
+    TEST_ASSERT_EQUAL_UINT8(64, STARTUP_VERDICT_STATUS_BASE);
+    for (uint8_t v = STARTUP_VERDICT_WARM; v <= STARTUP_VERDICT_NOT_HOMED; v++) {
+        TEST_ASSERT_EQUAL_UINT8(64 + v, hv_packet_status(false, true, v, false, COMPLETED_WITHOUT_ERRORS));
+        TEST_ASSERT_EQUAL_UINT8(64 + v, hv_packet_status(false, true, v, true, COMPLETED_WITHOUT_ERRORS));
+        TEST_ASSERT_EQUAL_UINT8(64 + v, hv_packet_status(false, true, v, false, CMD_EXECUTION_ERROR));
+    }
+}
+void test_packet_status_checksum_error_wins(void) {
+    TEST_ASSERT_EQUAL_UINT8(CMD_CHECKSUM_ERROR, hv_packet_status(true, true, STARTUP_VERDICT_WARM, true, CMD_EXECUTION_ERROR));
+    TEST_ASSERT_EQUAL_UINT8(CMD_CHECKSUM_ERROR, hv_packet_status(true, false, 0, false, COMPLETED_WITHOUT_ERRORS));
+}
+void test_packet_status_without_a_verdict_is_unchanged(void) {
+    TEST_ASSERT_EQUAL_UINT8(IN_PROGRESS, hv_packet_status(false, false, STARTUP_VERDICT_WARM, true, CMD_EXECUTION_ERROR));
+    TEST_ASSERT_EQUAL_UINT8(COMPLETED_WITHOUT_ERRORS, hv_packet_status(false, false, STARTUP_VERDICT_WARM, false, COMPLETED_WITHOUT_ERRORS));
+    TEST_ASSERT_EQUAL_UINT8(CMD_EXECUTION_ERROR, hv_packet_status(false, false, STARTUP_VERDICT_NOT_HOMED, false, CMD_EXECUTION_ERROR));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_power_up_has_no_signature);
@@ -199,5 +243,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_config_identical_keeps_changed_empties);
     RUN_TEST(test_config_other_axis_independent);
     RUN_TEST(test_restore_after_config_change_clears_flags);
+    RUN_TEST(test_power_drop_latch_clears_flags_and_latch);
+    RUN_TEST(test_power_drop_latch_clear_changes_nothing);
+    RUN_TEST(test_power_drop_latch_disarms_a_home_under_way);
+    RUN_TEST(test_packet_status_is_base_plus_verdict_while_pending);
+    RUN_TEST(test_packet_status_checksum_error_wins);
+    RUN_TEST(test_packet_status_without_a_verdict_is_unchanged);
     return UNITY_END();
 }

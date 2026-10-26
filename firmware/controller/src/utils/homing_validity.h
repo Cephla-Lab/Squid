@@ -43,4 +43,13 @@ void hv_config_received(HomingValidity *hv, uint8_t slot, uint8_t axis, const ui
 uint8_t hv_verdict(const HomingValidity *hv, uint32_t signature, uint8_t format, uint8_t required_mask,
                    uint8_t at_rest_mask, bool power_good, bool tmc_config_ok);
 
+// A power-good drop latched by the PG falling-edge interrupt: if the latch is set, clear it, then clear every homed
+// flag (hv_power_good(false)). Catches a drop shorter than one loop pass, which the per-pass poll can miss.
+void hv_consume_power_drop(HomingValidity *hv, volatile bool *drop_latched);
+
+// The status packet's status byte (byte 1). Precedence: checksum error (CMD_CHECKSUM_ERROR); a pending startup
+// verdict (STARTUP_VERDICT_STATUS_BASE + verdict); IN_PROGRESS; the last command's execution status.
+uint8_t hv_packet_status(bool checksum_error, bool verdict_pending, uint8_t verdict, bool in_progress,
+                         uint8_t execution_status);
+
 #endif /* HOMING_VALIDITY_H_ */

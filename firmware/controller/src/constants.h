@@ -75,9 +75,10 @@
 //               velocity/acceleration, home margin, limit switches) that arrives
 //               with different bytes empties it. Storing a different signature,
 //               or any signature after it was emptied, clears every flag.
-//               QUERY_STARTUP_STATE (68) answers in status byte 18: bit 4 set and
-//               a STARTUP_VERDICT_* in bits 5-7, until the next command. Bits 4-7
-//               are 0 in every other packet, as before 1.9.
+//               QUERY_STARTUP_STATE (68) answers in the packet status byte (byte 1):
+//               STARTUP_VERDICT_STATUS_BASE (64) + STARTUP_VERDICT_*, until the next
+//               command, even while a command is still IN_PROGRESS. Every other
+//               packet is unchanged, and the verdict does not touch byte 18.
 //               The number may move to the next free minor at merge: the piezo
 //               focus wheel design also claims 1.9.
 #define FIRMWARE_VERSION_MAJOR 1

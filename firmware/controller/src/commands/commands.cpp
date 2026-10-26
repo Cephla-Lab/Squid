@@ -442,6 +442,8 @@ void callback_query_startup_state()
         bool intact = tmc_config_intact(tmc);
         tmc_config_ok = tmc_config_ok && intact;
     }
+    // A drop latched since this loop pass began has not been consumed yet: apply it before answering
+    hv_consume_power_drop(&homing_validity, &power_good_drop_latched);
     startup_verdict = hv_verdict(&homing_validity, startup_command_signature(), buffer_rx[6] >> 4, buffer_rx[6] & 0x0F,
                                  at_rest_mask, digitalRead(pin_PG), tmc_config_ok);
     startup_verdict_pending = true;

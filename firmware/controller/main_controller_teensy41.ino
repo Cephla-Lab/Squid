@@ -18,7 +18,9 @@ void setup() {
 
 void loop() {
 
-  // Startup state (1.9): power good low clears every homed flag. Every pass, before any command is handled.
+  // Startup state (1.9): power good low clears every homed flag. Every pass, before any command is handled: a drop
+  // the PG interrupt latched since the last pass, then the level now.
+  hv_consume_power_drop(&homing_validity, &power_good_drop_latched);
   hv_power_good(&homing_validity, digitalRead(pin_PG));
 
   // Illumination safety interlock - turn off all TTL ports if interlock is triggered
