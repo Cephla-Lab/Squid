@@ -627,6 +627,97 @@ def test_already_homed_restores_z_and_leaves_xy(qtbot, confirm_exit_yes, monkeyp
     assert not gui.ramMonitorWidget.isVisible()
 
 
+def _z_lift_system_closed_at_loading(monkeypatch, tmp_path):
+    """A Z lift system (V-308 focus, the lift on the Cephla Z) whose last session was closed at the loading position.
+    Returns its 1.9 controller, patched in as every Microscope's."""
+    _set_z_flags(monkeypatch, homing_z=False, pi_focus=True)
+    for name, value in (
+        ("USE_Z_LIFT_STAGE", True),
+        ("Z_LIFT_MIN_MM", 0.0),
+        ("Z_LIFT_MAX_MM", 8.0),
+        ("Z_LIFT_FOCUS_WHEEL_DRIVES_PI", False),
+        ("Z_LIFT_HEIGHTS_PATH", str(tmp_path / "heights.json")),
+        ("Z_LIFT_LOADING_STATE_PATH", str(tmp_path / "loading_state.json")),
+        ("USE_OBJECTIVE_TURRET", False),
+        ("USE_XERYON", False),
+    ):
+        monkeypatch.setattr(control._def, name, value)
+    (tmp_path / "loading_state.json").write_text(
+        '{"scanning_z_mm": null, "lift_mm": 2.0, "lift_format": "96 well plate"}'
+    )
+    # strict=False: the GUI also sends commands the sim's protocol whitelist lacks (SET_WATCHDOG_TIMEOUT, HEARTBEAT)
+    sim = FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    return sim
+
+
+def _record_xy_moves(monkeypatch, stage):
+    """The absolute X/Y moves sent through `stage` from now on, each still carried out."""
+    moves = []
+    for axis in ("x", "y"):
+        real = getattr(stage, f"move_{axis}_to")
+
+        def spy(mm, *args, _axis=axis, _real=real, **kwargs):
+            moves.append((_axis, mm))
+            return _real(mm, *args, **kwargs)
+
+        monkeypatch.setattr(stage, f"move_{axis}_to", spy)
+    return moves
+
+
+def _gui_on(qtbot, scope):
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    gui.show()
+    qtbot.waitExposed(gui)
+    qtbot.waitUntil(lambda: gui._loading_position_locked, timeout=5000)  # the restored loading state locks it
+    return gui
+
+
+@pytest.mark.parametrize("left_at_loading_xy", [True, False])
+def test_already_homed_at_the_loading_position_moves_xy_only_if_not_there(
+    qtbot, confirm_exit_yes, monkeypatch, tmp_path, left_at_loading_xy
+):
+    """Ruling B-R6: a warm start on a system closed at the loading position sends no XY move when the stage is at the
+    loading XY; a session that died on the way (elsewhere) still goes there. Either way the loading lock applies and
+    the warm start says so."""
+    sim = _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
+    earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
+    if left_at_loading_xy:
+        squid.stage.utils.move_xy_to_loading_position(earlier.stage, is_wellplate=True)
+    else:
+        earlier.stage.move_x_to(10.0)
+        earlier.stage.move_y_to(10.0)
+    earlier.close()
+    sim.reconnect(1)  # the controller stayed powered
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    gui = _gui_on(qtbot, scope)
+
+    loading = (control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM)
+    pos = scope.stage.get_pos()
+    assert (pos.x_mm, pos.y_mm) == pytest.approx(loading, abs=1e-3)
+    assert (moves == []) is left_at_loading_xy
+    assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
+    assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
+
+
+def test_homed_start_closed_at_the_loading_position_moves_back_there(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """Unchanged by B-R6: after a homing startup the stage goes back to the loading position by the loading path."""
+    _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
+    scope = control.microscope.Microscope.build_from_global_config(True)  # a first launch: homes
+    assert scope.startup_homing is StartupHoming.HOMED
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    gui = _gui_on(qtbot, scope)
+
+    loading_x, loading_y = control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM
+    assert moves == [("y", 15), ("x", 35), ("y", loading_y), ("x", loading_x)]
+    assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
+    assert gui.statusBar().currentMessage() == ""
+
+
 # --- One exclusion for every claim, failures shown, close refused while homing ---
 
 

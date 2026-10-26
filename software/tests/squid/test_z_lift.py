@@ -781,6 +781,17 @@ def test_xy_to_the_loading_position_moves_nothing_else():
     assert events == ["y", "x"]
 
 
+@pytest.mark.parametrize(
+    "dx, dy, there", [(0.0, 0.0, True), (0.1, -0.1, True), (0.11, 0.0, False), (0.0, -0.11, False)]
+)
+def test_at_the_loading_xy_within_the_tolerance_per_axis(monkeypatch, dx, dy, there):
+    monkeypatch.setattr(squid.stage.utils, "LOADING_XY_TOLERANCE_MM", 0.1)
+    loading_x, loading_y = _def.SLIDE_POSITION.LOADING_X_MM, _def.SLIDE_POSITION.LOADING_Y_MM
+    stage = MagicMock()
+    stage.get_pos.return_value = Pos(x_mm=loading_x + dx, y_mm=loading_y + dy, z_mm=0.0, theta_rad=None)
+    assert squid.stage.utils.is_at_loading_xy(stage) is there
+
+
 def test_startup_does_not_raise_the_lift_when_closed_at_the_loading_position():
     import control.microscope
 

@@ -1,4 +1,4 @@
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 import json
 import math
 import os
@@ -12,6 +12,8 @@ import control.utils
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
 _MAX_CACHE_BYTES = 4096
+# How far, per axis, the stage's X/Y may be from the loading position's and still count as there (is_at_loading_xy)
+LOADING_XY_TOLERANCE_MM = 0.1
 
 
 def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
@@ -241,8 +243,24 @@ def restore_loading_state(stage: AbstractStage, state: dict) -> bool:
     return complete
 
 
+def _loading_xy_mm() -> Tuple[float, float]:
+    """(X, Y) of the loading position, where move_xy_to_loading_position ends for a wellplate and a slide alike."""
+    return _def.SLIDE_POSITION.LOADING_X_MM, _def.SLIDE_POSITION.LOADING_Y_MM
+
+
+def is_at_loading_xy(stage: AbstractStage) -> bool:
+    """True when the stage's X and Y are each within LOADING_XY_TOLERANCE_MM of the loading position's."""
+    loading_x_mm, loading_y_mm = _loading_xy_mm()
+    pos = stage.get_pos()
+    return (
+        abs(pos.x_mm - loading_x_mm) <= LOADING_XY_TOLERANCE_MM
+        and abs(pos.y_mm - loading_y_mm) <= LOADING_XY_TOLERANCE_MM
+    )
+
+
 def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
     """XY to the loading position, by the same path the loading move takes (lift and Z are not moved)."""
+    loading_x_mm, loading_y_mm = _loading_xy_mm()
     # Set our limits to something large.  Then later reset them back to the safe values.
     if is_wellplate:
         a_large_limit_mm = 125
@@ -258,8 +276,8 @@ def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
         # how to name the variable properly. Right now they should work for all our stages.
         stage.move_y_to(15)
         stage.move_x_to(35)
-        stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
-        stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+        stage.move_y_to(loading_y_mm)
+        stage.move_x_to(loading_x_mm)
 
         stage.set_limits(
             x_pos_mm=stage.get_config().X_AXIS.MAX_POSITION,
@@ -268,8 +286,8 @@ def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
             y_neg_mm=stage.get_config().Y_AXIS.MIN_POSITION,
         )
     else:
-        stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
-        stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+        stage.move_y_to(loading_y_mm)
+        stage.move_x_to(loading_x_mm)
 
 
 def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):

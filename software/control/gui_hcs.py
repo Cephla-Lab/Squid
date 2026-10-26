@@ -812,14 +812,21 @@ class HighContentScreeningGui(QMainWindow):
             self._unreferenced_axes = {"x", "y"} | ({"z"} if z_homes else set())
             self._update_not_homed_warning()
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
-            self.log.info("Squid was closed at the loading position: moving back there (lift lowered, Z retracted).")
-            squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
+            still_homed = self.microscope.startup_homing is StartupHoming.ALREADY_HOMED
+            if still_homed and squid.stage.utils.is_at_loading_xy(self.stage):
+                # Still homed and still there: no round trip through the clamp to arrive where the stage already is
+                self.log.info("Squid was closed at the loading position and the stage is still there, still homed.")
+            else:
+                # Including a still-homed stage elsewhere (a session that died on the way): the loading UI needs it there
+                self.log.info(
+                    "Squid was closed at the loading position: moving back there (lift lowered, Z retracted)."
+                )
+                squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self.microscope.startup_homing is StartupHoming.ALREADY_HOMED:
             # The controller vouched that the stage never lost its homing: X/Y stay where the stage stands (after a
             # crash the cached X/Y is stale anyway). Z comes back as after a homed startup: a clean close retracted it.
             self.log.info("Stage still homed: X/Y stay where they are, Z is restored")
             self._restore_cached_z(squid.stage.utils.get_cached_position())
-            self._startup_status_message = "Stage still homed: startup homing skipped"
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             cached_pos = squid.stage.utils.get_cached_position()
@@ -829,6 +836,9 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_y_to(cached_pos.y_mm)
 
             self._restore_cached_z(cached_pos)
+        if self.microscope.startup_homing is StartupHoming.ALREADY_HOMED:
+            # Every warm start says so, whichever restore ran above
+            self._startup_status_message = "Stage still homed: startup homing skipped"
 
         # Create the menu bar
         menubar = self.menuBar()
