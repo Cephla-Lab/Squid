@@ -101,7 +101,7 @@ def test_run_and_save_in_simulation(qtbot, session, repo, answers):
     )
 
 
-def test_the_run_shows_its_own_readings(qtbot, session, answers):
+def test_the_run_shows_its_own_readings_and_draws_the_curve_as_it_goes(qtbot, session, answers):
     dialog = _dialog(qtbot, session)
     shown_while_running = []
     set_text = dialog.label_reading.setText
@@ -112,9 +112,18 @@ def test_the_run_shows_its_own_readings(qtbot, session, answers):
         set_text(text)
 
     dialog.label_reading.setText = note_text
+    live = []
+    show_plots = dialog._show_plots
+
+    def note_live_curve(row):  # the channel is done: its fitted plot replaces the points drawn during the run
+        live.append(len(dialog.curve_live.getData()[0]))
+        show_plots(row)
+
+    dialog._show_plots = note_live_curve
     _run_405_only(qtbot, dialog)
     assert isinstance(dialog.results["Fluorescence 405 nm Ex"], ChannelResult)
     assert len(shown_while_running) > 100 and all(text.endswith(" mW") for text in shown_while_running)
+    assert live and live[0] > 100  # every reading with the light on, the sweep's 101 levels among them
 
 
 def test_failed_verification_asks_before_saving(qtbot, session, answers):

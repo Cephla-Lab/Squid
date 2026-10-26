@@ -7,7 +7,7 @@ so the window stays responsive and Cancel is answered after the current point. E
 the DAC at 0. Nothing is written until Save.
 """
 
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pyqtgraph as pg
@@ -108,6 +108,11 @@ class IntensityCalibrationDialog(QDialog):
         self.results: Dict[str, Union[ChannelResult, Exception]] = {}
         self._test_beam_target: Optional[ChannelTarget] = None
         self._test_beam_confirmed = False
+        # During a run the meter answers the run only: the dialog shows the run's own readings (_on_reading), and the
+        # curve of the channel being measured fills in as they arrive, until its fitted plot replaces it
+        self._live_channel: Optional[str] = None
+        self._live_points: Tuple[List[float], List[float]] = ([], [])
+        self.curve_live = None
         self.reading_timer = QTimer(self)
         self.reading_timer.setInterval(500)
         self.reading_timer.timeout.connect(self._update_reading)
@@ -422,6 +427,7 @@ class IntensityCalibrationDialog(QDialog):
             return
         self.button_test_beam.setChecked(False)
         self.results = {}
+        self._live_channel = None
         for row in range(self.table.rowCount()):
             self.table.item(row, self.COL_RUN).setText("")
         self._say("")
@@ -452,6 +458,18 @@ class IntensityCalibrationDialog(QDialog):
     def _on_reading(self, channel: str, mw: float, level):
         """During a run the meter answers the run only (_update_reading pauses): show the run's own readings."""
         self.label_reading.setText(f"{mw:.4g} mW")
+        if level is None:
+            return
+        if channel != self._live_channel:
+            self._live_channel = channel
+            self._live_points = ([], [])
+            self.plot_curve.clear()
+            self.plot_verify.clear()
+            self.curve_live = self.plot_curve.plot([], [], pen=None, symbol="o", symbolSize=3)
+        levels, readings = self._live_points
+        levels.append(level)
+        readings.append(mw)
+        self.curve_live.setData(levels, readings)
 
     def _row_of(self, name: str) -> Optional[int]:
         return next((row for row, target in enumerate(self.targets) if target.name == name), None)
