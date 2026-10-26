@@ -1,4 +1,7 @@
 import logging
+import pathlib
+import subprocess
+import sys
 import threading
 import time
 from unittest.mock import MagicMock
@@ -19,10 +22,14 @@ from control.startup_homing import (
     StageHomingInProgressError,
     StageHomingRefused,
     StartupHoming,
+    config_signature,
+    config_signature_text,
     home_stage_confirmation_text,
+    required_homed_axes_mask,
 )
 from tests.control.test_microcontroller import get_test_micro
 
+SOFTWARE_DIR = pathlib.Path(__file__).resolve().parents[2]
 NOT_STOPPED_ERROR = "Homing ended without the controller reporting the stage stopped"
 
 
@@ -556,3 +563,108 @@ def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_f
         assert micro.is_busy() and micro.last_command_aborted_error is None
         assert not micro.reported_idle_since_last_command()
     assert sim.command_log == sent  # nothing resent
+
+
+def test_signature_is_the_same_in_another_process():
+    out = subprocess.run(
+        [sys.executable, "-c", "import control.startup_homing as s; print(s.config_signature())"],
+        cwd=SOFTWARE_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert int(out) == config_signature()
+
+
+def test_signature_text_starts_with_the_format_and_covers_every_axis():
+    lines = config_signature_text().split("\n")
+    assert lines[0] == "format=1"
+    assert len(lines) == 1 + 3 * 13
+    assert all("=" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SCREW_PITCH_X_MM",
+        "MICROSTEPPING_DEFAULT_Y",
+        "Z_MOTOR_RMS_CURRENT_mA",
+        "X_MOTOR_I_HOLD",
+        "MAX_VELOCITY_Y_mm",
+        "MAX_ACCELERATION_Z_mm",
+        "X_HOME_SAFETY_MARGIN_UM",
+    ],
+)
+def test_each_def_setting_changes_the_signature(monkeypatch, name):
+    before = config_signature()
+    monkeypatch.setattr(control._def, name, getattr(control._def, name) * 2 + 1)
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("MOVEMENT_SIGN", "flip"),
+        ("USE_ENCODER", "flip"),
+        ("ENCODER_SIGN", "flip"),
+        ("ENCODER_STEP_SIZE", 0.123),
+        ("FULL_STEPS_PER_REV", 400.0),
+    ],
+)
+def test_each_host_only_setting_changes_the_signature(monkeypatch, field, value):
+    before = config_signature()
+    config = squid.config.get_stage_config()
+    axis = config.Y_AXIS
+    if value == "flip":
+        current = getattr(axis, field)
+        value = (not current) if isinstance(current, bool) else type(current)(-current.value)
+    new_axis = axis.model_copy(update={field: value})
+    monkeypatch.setattr(squid.config, "_stage_config", config.model_copy(update={"Y_AXIS": new_axis}))
+    assert config_signature() != before
+
+
+def test_limit_switch_config_changes_the_signature(monkeypatch):
+    before = config_signature()
+    real = control._def.limit_switch_config_byte
+    monkeypatch.setattr(control._def, "limit_switch_config_byte", lambda a: real(a) ^ 0x01 if a == "z" else real(a))
+    assert config_signature() != before
+
+
+def test_equal_values_written_differently_sign_the_same(monkeypatch):
+    monkeypatch.setattr(control._def, "SCREW_PITCH_X_MM", 2.54)
+    a = config_signature()
+    monkeypatch.setattr(control._def, "SCREW_PITCH_X_MM", float("2.540"))
+    assert config_signature() == a
+    monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.5)
+    b = config_signature()
+    monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.50)
+    assert config_signature() == b
+
+
+def test_format_version_changes_the_signature(monkeypatch):
+    import control.startup_homing
+
+    before = config_signature()
+    monkeypatch.setattr(control.startup_homing, "CONFIG_SIGNATURE_FORMAT", 2)
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "z, pi, lift, mask",
+    [(True, False, False, 0b111), (False, False, False, 0b011), (True, True, False, 0b011), (False, True, True, 0b111)],
+)
+def test_required_axes(monkeypatch, z, pi, lift, mask):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", pi)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", lift)
+    assert required_homed_axes_mask() == mask
+
+
+def test_required_axes_needs_both_x_and_y_homing(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+    assert required_homed_axes_mask() == 0
