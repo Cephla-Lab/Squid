@@ -816,8 +816,17 @@ class HighContentScreeningGui(QMainWindow):
             if still_homed and squid.stage.utils.is_at_loading_xy(self.stage):
                 # Still homed and still there: no round trip through the clamp to arrive where the stage already is
                 self.log.info("Squid was closed at the loading position and the stage is still there, still homed.")
+            elif still_homed:
+                # Still homed elsewhere (a session that died on its way back to scanning, the lift possibly raised and
+                # the objective lowered): the loading UI needs it there, and nothing homed it, so nothing lowered the
+                # lift or retracted the objective yet. Both happen first, as on a move to the loading position.
+                self.log.info(
+                    "Squid was closed at the loading position and the stage is elsewhere, still homed: moving back "
+                    "there (objective retracted and lift lowered first)."
+                )
+                squid.stage.utils.return_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
             else:
-                # Including a still-homed stage elsewhere (a session that died on the way): the loading UI needs it there
+                # Homed at startup: homing lowered the lift and retracted the objective first
                 self.log.info(
                     "Squid was closed at the loading position: moving back there (lift lowered, Z retracted)."
                 )

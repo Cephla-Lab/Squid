@@ -290,14 +290,33 @@ def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
         stage.move_x_to(loading_x_mm)
 
 
-def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+def _clear_sample_for_loading_xy(stage: AbstractStage, is_wellplate: bool):
     # The objective retracts first; with a Z lift, before the lift lowers. The way back raises the lift before it
     # lowers the objective, so the sample never rises toward an objective already at its working height.
     if is_wellplate or getattr(stage, "lift", None) is not None:
         _retract_objective_for_loading(stage)
     _lower_lift_for_loading(stage)
+
+
+def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+    _clear_sample_for_loading_xy(stage, is_wellplate)
     # Recorded once the lift is down, before XY moves: a Squid that dies on the way still starts lowered and locked
     save_loading_state(stage)
+    move_xy_to_loading_position(stage, is_wellplate)
+
+
+def return_to_loading_position(stage: AbstractStage, is_wellplate: bool):
+    """A still-homed startup whose restored loading state (load_loading_state) says the stage is at the loading
+    position, while it is elsewhere: a session that died on its way back to scanning, which raises the lift and may
+    lower the objective before it clears the state. Back by the move to the loading position's steps, in its order:
+    the objective retracts and the lift lowers before XY travels.
+
+    The state is not recorded again, and the Z and lift height to return to stay the ones the stage holds (the
+    restored state's, see restore_loading_state), not the current, possibly raised, ones the retract and the lower
+    note on the stage."""
+    return_heights = getattr(stage, "_scanning_position_z_mm", None), getattr(stage, "_scanning_position_lift_mm", None)
+    _clear_sample_for_loading_xy(stage, is_wellplate)
+    stage._scanning_position_z_mm, stage._scanning_position_lift_mm = return_heights
     move_xy_to_loading_position(stage, is_wellplate)
 
 

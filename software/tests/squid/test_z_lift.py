@@ -720,6 +720,19 @@ def test_an_unreadable_loading_state_still_counts_as_at_the_loading_position():
     assert squid.stage.utils.load_loading_state() == {}  # not None: stay lowered and locked, the safe side
 
 
+def test_the_return_to_a_restored_loading_position_clears_the_sample_first_and_records_nothing():
+    """A still-homed startup away from the loading position its restored state records: the objective retracts and
+    the lift lowers before XY travels, as the move there does, but the state is not recorded again and the Z and lift
+    height to return to stay the restored ones, not the current (raised, lowered) ones."""
+    events = []
+    stage = _recording_stage(events, z_mm=2.5, height=4.0)  # the objective at work, the lift raised
+    stage._scanning_position_z_mm, stage._scanning_position_lift_mm = 1.2, (2.0, "96 well plate")  # restored
+    squid.stage.utils.return_to_loading_position(stage, is_wellplate=False)
+    assert events == [f"z_to_{_def.OBJECTIVE_RETRACTED_POS_MM}", "lift_lower", "y", "x"]
+    assert stage._scanning_position_z_mm == 1.2 and stage._scanning_position_lift_mm == (2.0, "96 well plate")
+    assert squid.stage.utils.load_loading_state() is None
+
+
 def test_the_loading_state_is_recorded_before_xy_moves():
     events = []
     stage = _recording_stage(events)

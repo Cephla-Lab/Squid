@@ -651,17 +651,31 @@ def _z_lift_system_closed_at_loading(monkeypatch, tmp_path):
     return sim
 
 
+def _spy_moves(monkeypatch, moves, owner, method, label):
+    """Append (label, target) to `moves` for each call of owner.<method>(target, ...) from now on, still carried out."""
+    real = getattr(owner, method)
+
+    def spy(mm, *args, **kwargs):
+        moves.append((label, mm))
+        return real(mm, *args, **kwargs)
+
+    monkeypatch.setattr(owner, method, spy)
+
+
 def _record_xy_moves(monkeypatch, stage):
     """The absolute X/Y moves sent through `stage` from now on, each still carried out."""
     moves = []
     for axis in ("x", "y"):
-        real = getattr(stage, f"move_{axis}_to")
+        _spy_moves(monkeypatch, moves, stage, f"move_{axis}_to", axis)
+    return moves
 
-        def spy(mm, *args, _axis=axis, _real=real, **kwargs):
-            moves.append((_axis, mm))
-            return _real(mm, *args, **kwargs)
 
-        monkeypatch.setattr(stage, f"move_{axis}_to", spy)
+def _record_moves(monkeypatch, scope):
+    """The absolute X, Y and Z (objective) moves sent through scope.stage and the Z lift's moves, from now on, in
+    order, each still carried out."""
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    _spy_moves(monkeypatch, moves, scope.stage, "move_z_to", "z")
+    _spy_moves(monkeypatch, moves, scope.z_lift, "move_to", "lift")
     return moves
 
 
@@ -693,13 +707,50 @@ def test_already_homed_at_the_loading_position_moves_xy_only_if_not_there(
 
     scope = control.microscope.Microscope.build_from_global_config(True)
     assert scope.startup_homing is StartupHoming.ALREADY_HOMED
-    moves = _record_xy_moves(monkeypatch, scope.stage)
+    moves = _record_moves(monkeypatch, scope)
     gui = _gui_on(qtbot, scope)
 
     loading = (control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM)
     pos = scope.stage.get_pos()
     assert (pos.x_mm, pos.y_mm) == pytest.approx(loading, abs=1e-3)
-    assert (moves == []) is left_at_loading_xy
+    assert (moves == []) is left_at_loading_xy  # at the loading XY nothing moves: not XY, the objective or the lift
+    assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
+    assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
+
+
+def test_already_homed_away_from_the_loading_position_clears_the_sample_before_xy(
+    qtbot, confirm_exit_yes, monkeypatch, tmp_path
+):
+    """A session that died on its way back to scanning (the lift raised, the objective lowered, the loading state not
+    yet cleared): a warm relaunch retracts the objective and lowers the lift before XY travels back to the loading
+    position, as the move there does. The Z and lift height to return to stay the restored state's."""
+    sim = _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
+    state_path = tmp_path / "loading_state.json"
+    state_path.write_text('{"scanning_z_mm": 1.2, "lift_mm": 2.0, "lift_format": "96 well plate"}')
+    state_before = state_path.read_text()
+    earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
+    earlier.stage.move_x_to(10.0)
+    earlier.stage.move_y_to(10.0)
+    earlier.z_lift.move_to(3.0)  # the return raised the lift
+    earlier.close()
+    sim.reconnect(1)  # the controller stayed powered
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    assert scope.z_lift.get_position_mm() == pytest.approx(3.0, abs=1e-3)  # still raised: a warm start keeps it
+    scope.stage.move_z_to(1.5)  # and the return had lowered the objective to its working height
+    moves = _record_moves(monkeypatch, scope)
+    gui = _gui_on(qtbot, scope)
+
+    first_xy = next(i for i, (label, _) in enumerate(moves) if label in ("x", "y"))
+    assert moves[:first_xy] == [("z", control._def.OBJECTIVE_RETRACTED_POS_MM), ("lift", scope.z_lift.lowered_mm)]
+    loading_x, loading_y = control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM
+    assert moves[first_xy:] == [("y", 15), ("x", 35), ("y", loading_y), ("x", loading_x)]
+    assert scope.z_lift.is_lowered()
+    # Not recorded again, and the heights to return to are the restored ones (not Z 1.5, lift 3.0)
+    assert state_path.read_text() == state_before
+    assert scope.stage._scanning_position_z_mm == 1.2
+    assert scope.stage._scanning_position_lift_mm == (2.0, "96 well plate")
     assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
     assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
 
