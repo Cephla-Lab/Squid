@@ -147,8 +147,49 @@ class AbstractFilterWheelController(ABC):
         pass
 
 
+class LightSourceHold:
+    """A declared use of light source channels (LightSource.use): update() when the channels change, release() when done,
+    or use it as a context manager. This one does nothing: a light source with nothing to do on use returns it."""
+
+    def update(self, channels) -> None:
+        pass
+
+    def release(self) -> None:
+        pass
+
+    def wait_until_ready(
+        self, timeout_s: Optional[float] = None, cancel_fn: Callable[[], bool] = lambda: False
+    ) -> bool:
+        """Block until the held lines can image (e.g. a laser line warmed up, a mechanical shutter open). False on
+        timeout (the light source's own default when None) or when cancel_fn() turns True."""
+        return True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.release()
+
+
+@dataclass(frozen=True)
+class MechanicalShutter:
+    """A mechanical shutter on a light source line (not the exposure gate that ShutterControlMode selects)."""
+
+    open_time_s: float  # from the open command until the shutter is fully open
+
+
 class LightSource(ABC):
     """Abstract base class defining the interface for different light sources."""
+
+    def use(self, name: str, channels) -> LightSourceHold:
+        """`name` (e.g. "live", "acquisition") images with these channels (channel_mappings values) until the hold is
+        released. A light source that switches lines on, keeps them on or opens a mechanical shutter for use acts on it;
+        by default nothing happens."""
+        return LightSourceHold()
+
+    def mechanical_shutter(self, channel) -> Optional[MechanicalShutter]:
+        """The mechanical shutter on this channel's line, if it has one."""
+        return None
 
     @abstractmethod
     def __init__(self):

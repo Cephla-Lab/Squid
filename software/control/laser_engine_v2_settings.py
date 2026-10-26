@@ -5,6 +5,7 @@ They are operator settings, changed in the tab, so they live next to Squid's oth
 
     power_560_mw: 600       # the 560 nm laser power; absent or null = the source's minimum
     idle_off_560_min: 30    # the source switches off after this many minutes unused; 0 = 24 h
+    shutter_mode_560: on_use  # the mechanical shutter: on_use (open while Squid images with the 560) or always_open
 
 load_settings() never fails: a missing or unreadable file, or a bad value, gives the default (logged). The savers never
 raise: they log and return False when the setting was not saved, and keep any other key already in the file.
@@ -25,12 +26,17 @@ DEFAULT_CACHE_PATH = Path("cache/laser_engine_v2.yaml")  # read at call time: te
 DEFAULT_IDLE_OFF_560_MIN = 30.0
 POWER_KEY = "power_560_mw"
 IDLE_OFF_KEY = "idle_off_560_min"
+SHUTTER_MODE_KEY = "shutter_mode_560"
+SHUTTER_ON_USE = "on_use"  # open while line 3 is READY and something images with the 560
+SHUTTER_ALWAYS_OPEN = "always_open"  # open whenever line 3 is READY
+SHUTTER_MODES = (SHUTTER_ON_USE, SHUTTER_ALWAYS_OPEN)
 
 
 @dataclass(frozen=True)
 class LaserEngineV2Settings:
     power_560_mw: Optional[float] = None  # None = the source's minimum
     idle_off_560_min: float = DEFAULT_IDLE_OFF_560_MIN  # 0 = 24 h, so the source is never left on indefinitely
+    shutter_mode_560: str = SHUTTER_ON_USE
 
 
 def _path(cache_path: Optional[Path]) -> Path:
@@ -78,13 +84,20 @@ def load_settings(cache_path: Optional[Path] = None) -> LaserEngineV2Settings:
             f"{path}: {IDLE_OFF_KEY} = {idle!r} is not a number of minutes >= 0: using {DEFAULT_IDLE_OFF_560_MIN:g}"
         )
         idle = None
+    mode = data.get(SHUTTER_MODE_KEY)
+    if mode is not None and mode not in SHUTTER_MODES:
+        _log.error(
+            f"{path}: {SHUTTER_MODE_KEY} = {mode!r} is not one of {', '.join(SHUTTER_MODES)}: using {SHUTTER_ON_USE}"
+        )
+        mode = None
     return LaserEngineV2Settings(
         power_560_mw=None if power is None else float(power),
         idle_off_560_min=DEFAULT_IDLE_OFF_560_MIN if idle is None else float(idle),
+        shutter_mode_560=SHUTTER_ON_USE if mode is None else mode,
     )
 
 
-def _save(key: str, value: float, cache_path: Optional[Path]) -> bool:
+def _save(key: str, value, cache_path: Optional[Path]) -> bool:
     path = _path(cache_path)
     try:
         data = _read(path)
@@ -120,3 +133,13 @@ def save_idle_off_560_min(minutes: float, cache_path: Optional[Path] = None) -> 
         _log.error(f"laser engine setting {IDLE_OFF_KEY} not saved: {e}")
         return False
     return _save(IDLE_OFF_KEY, value, cache_path)
+
+
+def save_shutter_mode_560(mode: str, cache_path: Optional[Path] = None) -> bool:
+    """Remember the 560 mechanical shutter mode. False (logged) when it was not saved."""
+    if mode not in SHUTTER_MODES:
+        _log.error(
+            f"laser engine setting {SHUTTER_MODE_KEY} not saved: {mode!r} is not one of {', '.join(SHUTTER_MODES)}"
+        )
+        return False
+    return _save(SHUTTER_MODE_KEY, mode, cache_path)

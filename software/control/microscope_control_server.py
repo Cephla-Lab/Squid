@@ -587,6 +587,7 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_turn_on_illumination(self) -> Dict[str, Any]:
         """Turn on the illumination for the current channel."""
+        self.microscope.live_controller.hold_current_channel("tcp")  # wakes the line; opens a mechanical shutter
         self.microscope.live_controller.turn_on_illumination()
         return {"illumination": "on"}
 
@@ -594,6 +595,7 @@ class MicroscopeControlServer:
     def _cmd_turn_off_illumination(self) -> Dict[str, Any]:
         """Turn off all illumination."""
         self.microscope.live_controller.turn_off_illumination()
+        self.microscope.live_controller.release_current_channel("tcp")
         return {"illumination": "off"}
 
     @schema_method

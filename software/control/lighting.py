@@ -2,11 +2,12 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from control.microcontroller import Microcontroller
 from control.core.config import ConfigRepository
 from control._def import ILLUMINATION_CODE
+from squid.abc import LightSourceHold
 
 # Number of illumination ports supported (matches firmware)
 NUM_ILLUMINATION_PORTS = 16
@@ -289,6 +290,19 @@ class IlluminationController:
     def get_shutter_state(self):
         return self.is_on
 
+    def use(self, name: str, wavelengths: Iterable[int]) -> "IlluminationHold":
+        """`name` images with these wavelengths until the returned hold is released (or its `with` ends). The light source
+        acts on it: e.g. laser engine v2 switches the lines on, keeps the 560 from idling off and opens its mechanical
+        shutter. Wavelengths with no light source channel are ignored."""
+        hold = IlluminationHold(self)
+        if self.light_source is not None:
+            hold._hold = self.light_source.use(name, self._light_source_channels(wavelengths))
+        return hold
+
+    def _light_source_channels(self, wavelengths: Iterable[int]) -> list:
+        mappings = self.channel_mappings_software
+        return [mappings[w] for w in wavelengths if w in mappings]
+
     # Multi-port illumination methods (firmware v1.0+)
     # These allow multiple ports to be ON simultaneously with independent intensities
 
@@ -401,3 +415,20 @@ class IlluminationController:
         if self.light_source is not None and not self._light_source_closed:
             self._light_source_closed = True
             self.light_source.shut_down()
+
+
+class IlluminationHold(LightSourceHold):
+    """IlluminationController.use(): a light source hold that takes wavelengths."""
+
+    def __init__(self, controller: IlluminationController):
+        self._controller = controller
+        self._hold = LightSourceHold()  # the light source's own hold (does nothing without a light source)
+
+    def update(self, wavelengths: Iterable[int]) -> None:
+        self._hold.update(self._controller._light_source_channels(wavelengths))
+
+    def release(self) -> None:
+        self._hold.release()
+
+    def wait_until_ready(self, timeout_s: Optional[float] = None, cancel_fn=lambda: False) -> bool:
+        return self._hold.wait_until_ready(timeout_s, cancel_fn)
