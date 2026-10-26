@@ -491,6 +491,7 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
         log=MagicMock(),
         _loading_position_locked=False,
         _loading_position_saved_enabled={},
+        _stage_homing_locked=False,
         _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget", "liveControlWidget"),
         navigationWidget=QPushButton(),
         liveControlWidget=QPushButton(),
@@ -500,6 +501,8 @@ def test_everything_locks_when_the_move_to_loading_starts_and_stays_locked_until
         "_connect_loading_position_lock",
         "_lock_stage_at_loading_position",
         "_unlock_stage_after_loading_position",
+        "_disable_widgets_saving_state",
+        "_restore_widgets_state",
     ):
         setattr(fake, name, getattr(Gui, name).__get__(fake))
     fake._connect_loading_position_lock()
@@ -579,6 +582,7 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
         log=MagicMock(),
         _loading_position_locked=False,
         _loading_position_saved_enabled={},
+        _stage_homing_locked=False,
         _LOADING_POSITION_BLOCKED_WIDGETS=("navigationWidget",),
         navigationWidget=QPushButton(),
         _set_control_panel_lock=panel.append,
@@ -588,6 +592,8 @@ def test_a_restored_loading_position_starts_locked_with_the_return_ready(qtbot):
         "_connect_loading_position_lock",
         "_lock_stage_at_loading_position",
         "_unlock_stage_after_loading_position",
+        "_disable_widgets_saving_state",
+        "_restore_widgets_state",
         "_enter_restored_loading_position",
     ):
         setattr(fake, name, getattr(Gui, name).__get__(fake))

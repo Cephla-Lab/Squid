@@ -1,3 +1,4 @@
+import threading
 import unittest.mock
 
 import pytest
@@ -5,11 +6,13 @@ import pytest
 import control._def
 
 import control.gui_hcs
+import control.utils
 import control.widgets
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
 import squid.abc
+import squid.stage.cephla
 import squid.stage.utils
 
 
@@ -343,3 +346,165 @@ def test_objective_prompt_defaults_to_cancel(qtbot):
     assert box.text() == OBJECTIVE_LOWERED_PROMPT
     assert home_btn.text() == "Objective lowered – Home"
     assert box.defaultButton() is not home_btn and box.defaultButton().text() == "Cancel – don't home"
+
+
+# --- Home stage, Home X/Y, the homing lock and the not-homed warning ---
+
+
+@pytest.fixture
+def piezo_only(monkeypatch):
+    monkeypatch.setattr(control._def, "IS_PIEZO_ONLY", True)
+
+
+def _gui(qtbot, **build_kwargs):
+    scope = control.microscope.Microscope.build_from_global_config(True, **build_kwargs)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    return gui
+
+
+def _auto_confirm(monkeypatch):
+    """Accept every homing confirmation (the generic OK/Cancel box and the piezo-only prompt). A refusal would open a
+    modal information box and hang the test: it raises instead."""
+    monkeypatch.setattr(QMessageBox, "exec_", lambda self: QMessageBox.Ok)
+    monkeypatch.setattr(control.widgets, "ask_objective_lowered", lambda parent: True)
+
+    def refused(parent, title, text, *args, **kwargs):
+        raise AssertionError(f"Unexpected refusal: {title} - {text}")
+
+    monkeypatch.setattr(QMessageBox, "information", refused)
+
+
+def _capture_warnings(monkeypatch):
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *args, **kwargs: warnings.append(text))
+    return warnings
+
+
+def _run(fn, **kw):
+    """As threaded_operation_helper calls its callback: (True, None) or (False, the error)."""
+    try:
+        fn(**kw)
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def test_home_stage_refused_while_stage_busy_or_autofocus(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    monkeypatch.setattr(gui.autofocusController, "autofocus_in_progress", True)
+    assert "autofocus" in gui._stage_homing_blocker()
+    monkeypatch.setattr(gui.autofocusController, "autofocus_in_progress", False)
+    monkeypatch.setattr(gui.stage, "get_state", lambda: squid.abc.StageStage(busy=True))
+    assert gui._stage_homing_blocker() is not None
+
+
+def test_home_stage_claims_before_dispatch_and_restores_live(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    dispatched = []
+    monkeypatch.setattr(
+        control.utils,
+        "threaded_operation_helper",
+        lambda fn, cb, **kw: dispatched.append(gui.microscope.stage_homing_in_progress)
+        or threading.Thread(target=lambda: cb(*_run(fn, **kw))).start(),
+    )
+    gui.liveController.start_live()
+    gui._on_home_stage_requested()
+    assert dispatched == [True] and not gui.liveController.is_live
+    qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=10000)
+    qtbot.waitUntil(lambda: gui.liveController.is_live and gui.navigationWidget.isEnabled(), timeout=5000)
+
+
+def test_home_stage_timeout_keeps_gui_locked_until_stopped(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    warnings = _capture_warnings(monkeypatch)
+    sim = gui.microscope.low_level_drivers.microcontroller._serial
+    monkeypatch.setattr(squid.stage.cephla.CephlaStage, "_calc_move_timeout", staticmethod(lambda d, s: 0.3))
+    sim.hold_in_progress = True
+    gui._on_home_stage_requested()
+    qtbot.waitUntil(lambda: bool(warnings), timeout=5000)
+    assert "still reports motion" in warnings[0]
+    assert not gui.navigationWidget.isEnabled() and gui.microscope.stage_homing_in_progress
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    qtbot.waitUntil(lambda: gui.navigationWidget.isEnabled(), timeout=5000)
+
+
+def test_home_x_pauses_live(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    seen = []
+    gui.microscope.add_stage_homing_listener(lambda active: seen.append((active, gui.liveController.is_live)))
+    gui.liveController.start_live()
+    gui.stageUtils.home_x()
+    assert seen[0] == (True, False) and gui.liveController.is_live
+
+
+def test_home_x_on_piezo_only_asks_and_passes_the_confirmation(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
+    gui = _gui(qtbot, confirm_objective_lowered=lambda: True)
+    _auto_confirm(monkeypatch)
+    homes = []
+    monkeypatch.setattr(gui.stage, "home", lambda **kw: homes.append(kw))
+    gui.stageUtils.home_x()
+    assert homes == [dict(x=True, y=False, z=False, theta=False, objective_lowered=True)]
+
+    # Cancel: nothing moves
+    monkeypatch.setattr(control.widgets, "ask_objective_lowered", lambda parent: False)
+    gui.stageUtils.home_y()
+    assert len(homes) == 1
+
+
+def test_tcp_home_locks_the_gui(qtbot, confirm_exit_yes):
+    gui = _gui(qtbot)
+    claim = gui.microscope.claim_stage_homing("TCP home")
+    qtbot.waitUntil(lambda: not gui.navigationWidget.isEnabled(), timeout=2000)
+    assert gui._stage_moves_blocked_by_objective_swap("Click to move")
+    assert gui.multipointController.start_blocker() == "the stage is homing"
+    claim.release_when_stopped()
+    qtbot.waitUntil(lambda: gui.navigationWidget.isEnabled(), timeout=2000)
+
+
+def test_homing_claimed_off_the_gui_thread_locks_the_gui_before_the_claim_returns(qtbot, confirm_exit_yes):
+    """A TCP home claims from the server's thread: the GUI (and the control panel lock command) must be locked
+    before that thread sends its first homing command, and unlocked only after the claim's release."""
+    gui = _gui(qtbot)
+    seen = {}
+
+    def tcp_home():
+        claim = gui.microscope.claim_stage_homing("TCP home")
+        seen["locked_when_claimed"] = not gui.navigationWidget.isEnabled()
+        claim.release_when_stopped()
+        seen["done"] = True
+
+    threading.Thread(target=tcp_home).start()
+    qtbot.waitUntil(lambda: "done" in seen, timeout=5000)
+    assert seen["locked_when_claimed"]
+    qtbot.waitUntil(lambda: gui.navigationWidget.isEnabled(), timeout=2000)
+
+
+def test_declined_startup_moves_nothing_and_warns(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
+    # A piezo-only system has no stepper Z to home: X and Y are the axes startup homes.
+    _set_z_flags(monkeypatch, homing_z=False, pi_focus=False)
+    scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
+    before = scope.stage.get_pos()
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    # The window is never shown in these tests: isVisibleTo(gui) is "visible once the window is", status bar included.
+    assert scope.stage.get_pos() == before and gui._not_homed_label.isVisibleTo(gui)
+    gui.stageUtils.signal_axes_homed.emit({"x"})
+    assert gui._not_homed_label.isVisibleTo(gui)
+    gui.stageUtils.signal_axes_homed.emit({"y"})
+    assert not gui._not_homed_label.isVisibleTo(gui)
+
+
+def test_declined_startup_with_z_homing_warns_until_z_is_homed_too(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
+    _set_z_flags(monkeypatch, homing_z=True, pi_focus=False)
+    scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    gui.stageUtils.signal_axes_homed.emit({"x", "y"})
+    assert gui._not_homed_label.isVisibleTo(gui)
+    gui.stageUtils.signal_axes_homed.emit({"z"})
+    assert not gui._not_homed_label.isVisibleTo(gui)

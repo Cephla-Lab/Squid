@@ -7,7 +7,7 @@ import logging
 import sys
 from functools import partial
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import psutil
 
@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from control.core.memory_profiler import MemoryMonitor
+    from control.microscope import StageHomingClaim
 
 import squid.logging
 from control.core.config import ConfigRepository
@@ -53,6 +54,7 @@ from control.models.sample_format_config import (
 from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
+from control.startup_homing import StageHomingInProgressError
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import (
     move_to_loading_position,
@@ -2835,6 +2837,8 @@ class StageUtils(QDialog):
     signal_threaded_stage_move_started = Signal()
     signal_loading_position_reached = Signal()
     signal_scanning_position_reached = Signal()
+    signal_home_stage_requested = Signal()  # the Home Stage button: the main window runs it (Microscope.home_stage)
+    signal_axes_homed = Signal(object)  # the set of axes ("x", "y", "z") a Home X / Y / Z just homed
 
     def __init__(self, stage: AbstractStage, live_controller: LiveController, is_wellplate: bool, parent=None):
         super().__init__(parent)
@@ -2853,6 +2857,10 @@ class StageUtils(QDialog):
         # returns to its Z once the lift is back up, or stays retracted.
         self.ask_objective_return = False
         self._was_live = False
+        # Home X / Home Y (set_homing_hooks): why the stage must not home now (or None), and the Microscope's homing
+        # claim, which pauses live and refuses other motion until the stage reports it stopped.
+        self._homing_blocker: Optional[Callable[[], Optional[str]]] = None
+        self._claim: Optional[Callable[[str], "StageHomingClaim"]] = None
 
         self.setWindowTitle("Stage Utils")
         self.setModal(False)  # Allow interaction with main window while dialog is open
@@ -2873,6 +2881,11 @@ class StageUtils(QDialog):
         self.btn_home_Z.setDefault(False)
         self.btn_home_Z.setEnabled(HOMING_ENABLED_Z)
 
+        # The full startup homing sequence, finishing at the end-of-homing safe position
+        self.btn_home_stage = QPushButton("Home Stage")
+        self.btn_home_stage.setDefault(False)
+        self.btn_home_stage.setEnabled(control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y)
+
         self.btn_zero_X = QPushButton("Zero X")
         self.btn_zero_X.setDefault(False)
 
@@ -2889,6 +2902,7 @@ class StageUtils(QDialog):
         self.btn_home_X.clicked.connect(self.home_x)
         self.btn_home_Y.clicked.connect(self.home_y)
         self.btn_home_Z.clicked.connect(self.home_z)
+        self.btn_home_stage.clicked.connect(self.signal_home_stage_requested.emit)
         self.btn_zero_X.clicked.connect(self.zero_x)
         self.btn_zero_Y.clicked.connect(self.zero_y)
         self.btn_zero_Z.clicked.connect(self.zero_z)
@@ -2903,6 +2917,7 @@ class StageUtils(QDialog):
         homing_layout.addWidget(self.btn_home_X)
         homing_layout.addWidget(self.btn_home_Y)
         homing_layout.addWidget(self.btn_home_Z)
+        homing_layout.addWidget(self.btn_home_stage)
         homing_group.setLayout(homing_layout)
 
         # Zero section
@@ -2931,21 +2946,64 @@ class StageUtils(QDialog):
 
         self.setLayout(main_layout)
 
+    def set_homing_hooks(
+        self, blocker: Callable[[], Optional[str]], claim: Callable[[str], "StageHomingClaim"]
+    ) -> None:
+        """Home X / Home Y: blocker() returns why the stage must not home now, or None; claim(operation) takes the
+        Microscope's homing claim (Microscope.claim_stage_homing) for the home."""
+        self._homing_blocker = blocker
+        self._claim = claim
+
     def home_x(self):
         """Home X axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=True, y=False, z=False, theta=False)
+        self._home_xy_axis("x")
 
     def home_y(self):
         """Home Y axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=False, y=True, z=False, theta=False)
+        self._home_xy_axis("y")
 
     def home_z(self):
         """Home Z axis with confirmation dialog."""
-        self._show_confirmation_dialog(x=False, y=False, z=True, theta=False)
+        if self._confirm_homing():
+            self.stage.home(x=False, y=False, z=True, theta=False)
+            self.signal_axes_homed.emit({"z"})
         move_z_axis_to_safety_position(self.stage)
 
-    def _show_confirmation_dialog(self, x: bool, y: bool, z: bool, theta: bool):
-        """Display a confirmation dialog and home the specified axis if confirmed."""
+    def _home_xy_axis(self, axis: str):
+        """Home X or Y: refused while something else drives the stage; on a piezo-only system the lower-the-objective
+        prompt replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
+        motion refused), released once the stage reports it stopped."""
+        operation = f"Home {axis.upper()}"
+        if self._homing_refused():
+            return
+        if control._def.IS_PIEZO_ONLY:
+            objective_lowered = ask_objective_lowered(self)
+            confirmed = objective_lowered
+        else:
+            objective_lowered = False
+            confirmed = self._confirm_homing()
+        # Again after the confirmation: something may have started while it was open.
+        if not confirmed or self._homing_refused():
+            return
+        try:
+            claim = self._claim(operation)
+        except StageHomingInProgressError:
+            QMessageBox.information(self, "Homing", "Homing refused: the stage is homing.")
+            return
+        try:
+            self.stage.home(x=axis == "x", y=axis == "y", z=False, theta=False, objective_lowered=objective_lowered)
+        finally:
+            claim.release_when_stopped()
+        self.signal_axes_homed.emit({axis})
+
+    def _homing_refused(self) -> bool:
+        reason = self._homing_blocker()
+        if reason:
+            QMessageBox.information(self, "Homing", f"Homing refused: {reason}.")
+        return bool(reason)
+
+    def _confirm_homing(self) -> bool:
+        """The generic confirmation (systems that lower the objective themselves). Enter is Cancel."""
         msg = QMessageBox()
         msg.setIcon(QMessageBox.Information)
         msg.setText("Confirm your action")
@@ -2953,9 +3011,7 @@ class StageUtils(QDialog):
         msg.setWindowTitle("Confirmation")
         msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         msg.setDefaultButton(QMessageBox.Cancel)
-        retval = msg.exec_()
-        if QMessageBox.Ok == retval:
-            self.stage.home(x=x, y=y, z=z, theta=theta)
+        return msg.exec_() == QMessageBox.Ok
 
     def zero_x(self):
         """Zero X axis position."""
