@@ -1,5 +1,6 @@
 #include "init.h"
 #include "limit_switches.h"
+#include "focus_wheel_power_up.h"
 
 #include "tmc/drivers/driver_probe.h"
 #include "tmc/drivers/stepper_driver.h"
@@ -278,6 +279,12 @@ void init_stages()
   limit_switches_program(x, flip_limit_switch_x);
   limit_switches_program(y, flip_limit_switch_y);
   limit_switches_program(z, false);
+
+  // focus wheel: the saved power-up mode (a lift system saves FOCUS_WHEEL_TO_HOST: the wheel moves nothing
+  // until a host drives its focus axis with it)
+  focus_wheel_power_up_mode = focus_wheel_power_up_load();
+  focus_wheel_mode = focus_wheel_power_up_mode;
+  focus_wheel_host_count = 0;
 
   // motion profile configuration
   max_acceleration_usteps[x] = tmc4361A_ammToMicrosteps(&tmc4361[x], MAX_ACCELERATION_X_mm);

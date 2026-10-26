@@ -2,6 +2,8 @@
 #include "stage_commands.h"           // the readiness gate the move commands use
 
 #include "../limit_switches.h"
+#include "../utils/focus_wheel.h"
+#include "../focus_wheel_power_up.h"
 #include "../init.h"                     // report_driver_probe()
 #include "../tmc/drivers/driver_probe.h"
 #include "../tmc/drivers/stepper_driver.h"
@@ -62,6 +64,8 @@ void init_callbacks()
     cmd_map[SET_ENCODER_REPORTING] = &callback_set_encoder_reporting;
     cmd_map[SET_RAMP_PROFILE] = &callback_set_ramp_profile;
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
+    cmd_map[SET_FOCUS_WHEEL_MODE] = &callback_set_focus_wheel_mode;
+    cmd_map[SET_PANEL_LOCK] = &callback_set_panel_lock;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -209,6 +213,12 @@ void callback_set_encoder_reporting()
     // Reporting reads the chip every packet; a wheel's chip is only usable after INITFILTERWHEEL.
     // A refused command changes nothing.
     if (on && !axis_driver_ready(axis)) return;
+    // The focus wheel count (FOCUS_WHEEL_TO_HOST) uses the same status bytes.
+    if (!fw_encoder_reporting_allowed(on, focus_wheel_mode))
+    {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
 
     encoder_report_axis = on ? axis : 0xFF;
     encoder_report_mode = on ? mode : ENCODER_REPORT_OFF;
@@ -216,6 +226,62 @@ void callback_set_encoder_reporting()
     X_use_encoder = as_position && axis == x;
     Y_use_encoder = as_position && axis == y;
     Z_use_encoder = as_position && axis == z;
+}
+
+// Switch the wheel's routing. Entering TO_HOST restarts the count; entering DRIVES_Z takes Z's
+// target, so the wheel resumes from where Z is headed and do_focus_control() cannot move it (host
+// moves keep focusPosition in step already).
+static void focus_wheel_enter(uint8_t mode)
+{
+    if (mode == FOCUS_WHEEL_TO_HOST && focus_wheel_mode != FOCUS_WHEEL_TO_HOST)
+        focus_wheel_host_count = 0;
+    if (mode == FOCUS_WHEEL_DRIVES_Z && focus_wheel_mode != FOCUS_WHEEL_DRIVES_Z)
+        focusPosition = tmc4361A_targetPosition(&tmc4361[z]);
+    focus_wheel_mode = mode;
+}
+
+// SET_FOCUS_WHEEL_MODE (65): [2] FOCUS_WHEEL_DRIVES_Z or FOCUS_WHEEL_TO_HOST, [3] flags.
+// TO_HOST stops the wheel from moving Z and counts its ticks for the status packet
+// (bytes 14-17, from 0 when enabled), so the host can drive another focus axis. With
+// FOCUS_WHEEL_SAVE_AS_POWER_UP the mode is also stored as the power-up mode (EEPROM, written
+// only when it changes), which power-up, RESET and INITIALIZE use. Refused for an unknown mode
+// or flag, and for TO_HOST while encoder reporting holds those bytes; nothing changes then.
+void callback_set_focus_wheel_mode()
+{
+    uint8_t mode = buffer_rx[2];
+    uint8_t flags = buffer_rx[3];
+    if (!fw_mode_allowed(mode, encoder_report_axis != 0xFF) || (flags & ~FOCUS_WHEEL_SAVE_AS_POWER_UP))
+    {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
+    if (flags & FOCUS_WHEEL_SAVE_AS_POWER_UP)
+    {
+        focus_wheel_power_up_mode = mode;
+        focus_wheel_power_up_save(mode);
+    }
+    focus_wheel_enter(mode);
+}
+
+// SET_PANEL_LOCK (66): [2] 1 locks the control panel, 0 unlocks it. Locked, an accepted panel packet
+// moves nothing (utils/panel_lock.h). Locking also releases the stick now, so a joystick move under way
+// stops at the next check_joystick() through its rest-position branch. Refused for any other value.
+// Not saved: RESET and INITIALIZE unlock.
+void callback_set_panel_lock()
+{
+    uint8_t lock = buffer_rx[2];
+    if (lock > 1)
+    {
+        mcu_cmd_execution_status = CMD_EXECUTION_ERROR;
+        return;
+    }
+    panel_locked_by_host = lock;
+    if (lock)
+    {
+        joystick_delta_x = 0;
+        joystick_delta_y = 0;
+        flag_read_joystick = true;
+    }
 }
 
 // SET_RAMP_PROFILE (47): [2] protocol axis, [3] RAMP_PROFILE_TRAPEZOID (1) or
@@ -354,7 +420,7 @@ void callback_initialize()
 {
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
-    first_packet_from_joystick_panel = true;
+    jp_forget_wheel(&joystick_panel);
     // Re-initialise the TMC4361A and its power stage on each stage axis.
     //
     // This path does NOT call tmc4361A_init(), so driver_type still holds the
@@ -456,6 +522,15 @@ void callback_initialize()
     X_use_encoder = false;
     Y_use_encoder = false;
     Z_use_encoder = false;
+
+    // The control panel is unlocked (1.8; SET_PANEL_LOCK is not saved)
+    panel_locked_by_host = false;
+
+    // The focus wheel goes back to its saved power-up mode (1.8). focusPosition was zeroed above, which
+    // is what DRIVES_Z resumes from here: no resync from Z's target.
+    if (focus_wheel_power_up_mode == FOCUS_WHEEL_TO_HOST && focus_wheel_mode != FOCUS_WHEEL_TO_HOST)
+        focus_wheel_host_count = 0;
+    focus_wheel_mode = focus_wheel_power_up_mode;
 }
 
 void callback_reset()
@@ -492,6 +567,10 @@ void callback_reset()
     X_use_encoder = false;
     Y_use_encoder = false;
     Z_use_encoder = false;
+    // Firmware 1.8: the focus wheel goes back to its saved power-up mode (encoder reporting is off by now),
+    // and the control panel is unlocked (SET_PANEL_LOCK is not saved)
+    focus_wheel_enter(focus_wheel_power_up_mode);
+    panel_locked_by_host = false;
     for (uint8_t i = 0; i < TOTAL_AXES; i++)
     {
         completion_window_units[i] = 0;

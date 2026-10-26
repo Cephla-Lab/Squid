@@ -2,10 +2,14 @@
 import argparse
 import logging
 import os
-
-os.environ["QT_API"] = "pyqt5"
 import signal
 import sys
+
+from squid.qt_binding import SUPPORTED_QT_APIS, select_qt_api
+
+# Before the first qtpy import, which fixes the binding: --qt-api, then SQUID_QT_API, then [GENERAL] qt_api in the
+# configuration ini, then PyQt5.
+QT_API, QT_API_SOURCE = select_qt_api(sys.argv)
 
 # qt libraries
 from qtpy.QtWidgets import *
@@ -53,6 +57,12 @@ if __name__ == "__main__":
         help="Skip hardware initialization and homing (for restart after settings change)",
         action="store_true",
     )
+    parser.add_argument(
+        "--qt-api",
+        choices=SUPPORTED_QT_APIS,
+        help="Qt binding to run on (default: the SQUID_QT_API environment variable, else [GENERAL] qt_api in the "
+        "configuration ini, else pyqt5)",
+    )
     args = parser.parse_args()
 
     # Construct QApplication first so the single-instance check can show a
@@ -98,6 +108,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     log.info(f"Squid Repository State: {control.utils.get_squid_repo_state_description()}")
+    import qtpy
+
+    log.info(f"Qt binding: {qtpy.API_NAME}, Qt {qtpy.QT_VERSION} (from {QT_API_SOURCE})")
 
     # Auto-migrate legacy acquisition configurations if present
     run_auto_migration()
@@ -121,23 +134,7 @@ if __name__ == "__main__":
         skip_init=args.skip_init,
     )
 
-    microscope_utils_menu = QMenu("Utils", win)
-
-    stage_utils_action = QAction("Stage Utils", win)
-    stage_utils_action.triggered.connect(win.stageUtils.show)
-    microscope_utils_menu.addAction(stage_utils_action)
-
-    if control._def.USE_OBJECTIVE_TURRET:
-        reset_turret_action = QAction("Reset Objective Turret", win)
-        reset_turret_action.triggered.connect(win.resetObjectiveTurret)
-        microscope_utils_menu.addAction(reset_turret_action)
-
-    workflow_runner_action = QAction("Workflow Runner...", win)
-    workflow_runner_action.triggered.connect(win.openWorkflowRunner)
-    microscope_utils_menu.addAction(workflow_runner_action)
-
-    menu_bar = win.menuBar()
-    menu_bar.addMenu(microscope_utils_menu)
+    menu_bar = win.menuBar()  # its Utils menu is built by the GUI
 
     # Show startup warning if simulated disk I/O mode is enabled
     if control._def.SIMULATED_DISK_IO_ENABLED:

@@ -376,9 +376,13 @@ class LiveController(QObject):
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(0)
                 elif self.trigger_mode == TriggerMode.HARDWARE:
                     self.microscope.addons.emission_filter_wheel.set_delay_offset_ms(-self.camera.get_strobe_time())
-                self.microscope.addons.emission_filter_wheel.set_filter_wheel_position(
-                    {1: self.currentConfiguration.emission_filter_position}
-                )
+                # The channel's position applies to the first configured wheel (EMISSION_FILTER_WHEEL_INDICES),
+                # which is not always index 1: an Optospin wheel may sit on rotor port 2.
+                wheel = self.microscope.addons.emission_filter_wheel
+                if wheel.available_filter_wheels:
+                    wheel.set_filter_wheel_position(
+                        {wheel.available_filter_wheels[0]: self.currentConfiguration.emission_filter_position}
+                    )
             except Exception as e:
                 self._log.warning(f"Not setting emission filter position: {e}")
 
@@ -507,10 +511,17 @@ class LiveController(QObject):
         return self.is_live or self._is_snapping
 
     def _trigger_acquisition_timer_fn(self):
+        trigger_start = time.monotonic()
         triggered = self.trigger_acquisition()
         if not self.is_live:
             return
-        if triggered or self.microscope.low_level_drivers.microcontroller.is_busy():
+        if triggered:
+            # The live FPS is a trigger rate, so the interval runs from the start of this trigger. A trigger can
+            # block for a whole frame (a confocal scan on NL5/AION takes ~90 ms), and waiting the full interval
+            # after it returned gave about half the set rate.
+            elapsed_ms = (time.monotonic() - trigger_start) * 1000
+            self._start_new_timer(maybe_custom_interval_ms=max(0.0, self.timer_trigger_interval - elapsed_ms))
+        elif self.microscope.low_level_drivers.microcontroller.is_busy():
             # A busy MCU (a stage move) resolves on a 100 ms-to-seconds scale, and every
             # re-check spins up a fresh Timer thread: poll at frame cadence, not every 10 ms.
             self._start_new_timer()
@@ -571,7 +582,7 @@ class LiveController(QObject):
 
     def _start_new_timer(self, maybe_custom_interval_ms=None):
         self._stop_existing_timer()
-        if maybe_custom_interval_ms:
+        if maybe_custom_interval_ms is not None:
             interval_s = maybe_custom_interval_ms / 1000.0
         else:
             interval_s = self.timer_trigger_interval / 1000.0
