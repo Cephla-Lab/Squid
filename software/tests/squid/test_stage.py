@@ -552,7 +552,9 @@ def test_combined_stage_homes_z_before_xy(monkeypatch):
     combined, xy, z = _sim_combined_stage()
 
     calls = []
-    monkeypatch.setattr(xy, "home", lambda x, y, z, theta, blocking=True: calls.append(("xy", blocking)))
+    monkeypatch.setattr(
+        xy, "home", lambda x, y, z, theta, blocking=True, objective_lowered=False: calls.append(("xy", blocking))
+    )
     monkeypatch.setattr(z, "home", lambda x, y, z, theta, blocking=True: calls.append(("z", blocking)))
 
     combined.home(x=True, y=True, z=True, theta=False, blocking=False)

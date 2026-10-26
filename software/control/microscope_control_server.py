@@ -348,6 +348,21 @@ class MicroscopeControlServer:
             if self._server_socket:
                 self._server_socket.close()
 
+    def _execute(self, command: str, params: dict) -> dict:
+        """Run one command and return the response dict."""
+        if command not in self._commands:
+            return {"success": False, "error": f"Unknown command: {command}"}
+        # While the stage homes, only reads and ping are served: anything else could move
+        # an axis, change the light path or start live under the homing sequence.
+        if self.microscope.stage_homing_in_progress and command != "ping" and not command.startswith("get_"):
+            return {"success": False, "error": "the stage is homing"}
+        try:
+            result = self._commands[command](**params)
+            return {"success": True, "result": result}
+        except Exception as e:
+            self._log.error(f"Command '{command}' failed: {e}\n{traceback.format_exc()}")
+            return {"success": False, "error": str(e)}
+
     def _handle_client(self, client_socket: socket.socket):
         """Handle a single client connection."""
         try:
@@ -382,15 +397,7 @@ class MicroscopeControlServer:
             command = request.get("command")
             params = request.get("params", {})
 
-            if command not in self._commands:
-                response = {"success": False, "error": f"Unknown command: {command}"}
-            else:
-                try:
-                    result = self._commands[command](**params)
-                    response = {"success": True, "result": result}
-                except Exception as e:
-                    self._log.error(f"Command '{command}' failed: {e}\n{traceback.format_exc()}")
-                    response = {"success": False, "error": str(e)}
+            response = self._execute(command, params)
 
             # Send response
             client_socket.sendall((json.dumps(response) + "\n").encode("utf-8"))
@@ -456,15 +463,23 @@ class MicroscopeControlServer:
         if dy_mm != 0:
             self.microscope.move_y(dy_mm, blocking=blocking)
         if dz_mm != 0:
-            self.microscope.stage.move_z(dz_mm, blocking=blocking)
+            self.microscope.move_z(dz_mm, blocking=blocking)
 
         pos = self.microscope.stage.get_pos()
         return {"new_position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 
     @schema_method
-    def _cmd_home(self) -> Dict[str, Any]:
+    def _cmd_home(
+        self,
+        objective_lowered: bool = Field(
+            False,
+            description="Required on a piezo-only system: true once the objective has been lowered with the focus knob",
+        ),
+    ) -> Dict[str, Any]:
         """Home all stage axes (X, Y, Z) to reference position."""
-        self.microscope.home_xyz()
+        # Called directly, an unset Field default arrives as a FieldInfo, which is not a confirmation.
+        confirmed = isinstance(objective_lowered, bool) and objective_lowered
+        self.microscope.home_xyz(objective_lowered=confirmed)
         pos = self.microscope.stage.get_pos()
         return {"homed": True, "position": {"x_mm": pos.x_mm, "y_mm": pos.y_mm, "z_mm": pos.z_mm}}
 

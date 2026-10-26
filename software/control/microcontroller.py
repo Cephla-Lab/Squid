@@ -14,6 +14,7 @@ from serial.serialutil import SerialException
 
 import squid.logging
 import control._def
+from control.startup_homing import require_objective_lowered
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -275,6 +276,13 @@ class SimSerial(AbstractCephlaMicroSerial):
         self._illumination_source = None  # Currently selected legacy source
         self._illumination_is_on = False  # Legacy global on/off state
 
+        # Test hooks modelling a controller that stays busy or goes quiet. While hold_in_progress is True, command
+        # responses (and send_status_packet()) carry IN_PROGRESS; while drop_responses is True, commands get no
+        # response (a lost link).
+        self.hold_in_progress = False
+        self.drop_responses = False
+        self._last_command_id = 0
+
         self._closed = False
 
     @staticmethod
@@ -388,10 +396,20 @@ class SimSerial(AbstractCephlaMicroSerial):
             for i in range(SimSerial.NUM_ILLUMINATION_PORTS):
                 self.port_is_on[i] = False
 
+        self._last_command_id = write_bytes[0]
+        if not self.drop_responses:
+            self._queue_status_packet()
+
+        self._update_internal_state()
+
+    def _queue_status_packet(self):
+        status = (
+            CMD_EXECUTION_STATUS.IN_PROGRESS if self.hold_in_progress else CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        )
         self.response_buffer.extend(
             SimSerial.response_bytes_for(
-                write_bytes[0],
-                CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS,
+                self._last_command_id,
+                status,
                 self.x,
                 self.y,
                 self.z,
@@ -402,7 +420,11 @@ class SimSerial(AbstractCephlaMicroSerial):
             )
         )
 
-        self._update_internal_state()
+    def send_status_packet(self) -> None:
+        """Queue one status packet, as the firmware sends periodically: the last command's id, the current status."""
+        with self._update_lock:
+            self._queue_status_packet()
+            self._update_internal_state()
 
     def _update_internal_state(self, clear_buffer: bool = False):
         if clear_buffer:
@@ -701,6 +723,13 @@ class Microcontroller:
         self._received_packet_cv = threading.Condition()
         # The command id the last parsed packet echoed (under _received_packet_cv), for _detect_firmware_version.
         self._cmd_id_at_last_packet = None
+        # For reported_idle_since_last_command(), all under _received_packet_cv: a count of the valid packets
+        # received, with the status and command id the newest one carried, and the count when the host last sent a
+        # command.
+        self._packet_seq = 0
+        self._last_packet_status = None
+        self._last_packet_cmd_id = None
+        self._packet_seq_at_last_send = 0
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -1308,14 +1337,20 @@ class Microcontroller:
         cmd[6] = payload & 0xFF
         self.send_command(cmd)
 
-    def home_x(self, homing_direction: HomingDirection = _default_x_homing_direction):
+    def home_x(
+        self, homing_direction: HomingDirection = _default_x_homing_direction, *, objective_lowered: bool = False
+    ):
+        require_objective_lowered(objective_lowered, "Home X")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.X
         cmd[3] = homing_direction.value
         self.send_command(cmd)
 
-    def home_y(self, homing_direction: HomingDirection = _default_y_homing_direction):
+    def home_y(
+        self, homing_direction: HomingDirection = _default_y_homing_direction, *, objective_lowered: bool = False
+    ):
+        require_objective_lowered(objective_lowered, "Home Y")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.Y
@@ -1340,7 +1375,10 @@ class Microcontroller:
         self,
         homing_direction_x: HomingDirection = _default_x_homing_direction,
         homing_direction_y: HomingDirection = _default_y_homing_direction,
+        *,
+        objective_lowered: bool = False,
     ):
+        require_objective_lowered(objective_lowered, "Home XY")
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.HOME_OR_ZERO
         cmd[2] = AXIS.XY
@@ -1617,6 +1655,9 @@ class Microcontroller:
             cmd_type = command[1]
             cmd_name = _CMD_NAMES.get(cmd_type, f"UNKNOWN({cmd_type})")
             self.log.debug(f"[MCU] >>> sending command {self._cmd_id}, type={cmd_name}")
+            # Taken before the write: a reply can be parsed before write() returns (SimSerial answers inside it).
+            with self._received_packet_cv:
+                self._packet_seq_at_last_send = self._packet_seq
             self._serial.write(command, reconnect_tries=Microcontroller.MAX_RECONNECT_COUNT)
             self.mcu_cmd_execution_in_progress = True
             self.last_command = command
@@ -1744,6 +1785,12 @@ class Microcontroller:
                 self._last_successful_read_time = time.time()
                 self._cmd_id_mcu = msg[0]
                 self._cmd_execution_status = msg[1]
+                # Recorded before the branches below clear the host's in-progress flag, so a caller whose wait
+                # ends on this packet already finds it in reported_idle_since_last_command().
+                with self._received_packet_cv:
+                    self._packet_seq += 1
+                    self._last_packet_status = msg[1]
+                    self._last_packet_cmd_id = msg[0]
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
@@ -1962,6 +2009,23 @@ class Microcontroller:
 
     def is_busy(self):
         return self.mcu_cmd_execution_in_progress
+
+    def reported_idle_since_last_command(self) -> bool:
+        """True only if the controller itself said, after the host's last command, that no command is in progress.
+
+        That needs a packet received since the last send, echoing that command's id (so the firmware had read the
+        command when it built the packet), with COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR: the two statuses the
+        firmware sends only when nothing is in progress. IN_PROGRESS, CMD_CHECKSUM_ERROR (which masks the in-progress
+        state), no packet since the send (a lost link) and is_busy() (the host's own flag, which
+        abort_current_command() clears without stopping anything) are not evidence.
+        """
+        with self._received_packet_cv:
+            return (
+                self._packet_seq > self._packet_seq_at_last_send
+                and self._last_packet_cmd_id == self._cmd_id
+                and self._last_packet_status
+                in (CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS, CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR)
+            )
 
     def set_callback(self, function):
         self.new_packet_callback_external = function

@@ -312,7 +312,13 @@ class AbstractStage(metaclass=abc.ABCMeta):
         pass
 
     @abc.abstractmethod
-    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
+    def reports_stopped(self) -> bool:
+        """True only on fresh evidence from the hardware that the stage is not moving; False if unsure or on any
+        exception. A host-side busy flag (get_state().busy can be one) is not such evidence."""
+        pass
+
+    @abc.abstractmethod
+    def home(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True, objective_lowered: bool = False):
         pass
 
     @abc.abstractmethod
