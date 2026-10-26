@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import serial
@@ -14,7 +14,12 @@ from serial.serialutil import SerialException
 
 import squid.logging
 import control._def
-from control.startup_homing import require_objective_lowered
+from control.startup_homing import (
+    CONFIG_SIGNATURE_FORMAT,
+    config_signature,
+    require_objective_lowered,
+    required_homed_axes_mask,
+)
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -33,6 +38,23 @@ _STARTUP_VERDICT_STATUSES = range(STARTUP_VERDICT_STATUS_BASE, STARTUP_VERDICT_S
 _CMD_EXECUTION_STATUS_NAMES.update(
     {STARTUP_VERDICT_STATUS_BASE + v: f"STARTUP_VERDICT_{v.name}" for v in StartupVerdict}
 )
+# The startup path each verdict leads to, and why: one log line per verdict
+_STARTUP_VERDICT_LOG = {
+    StartupVerdict.WARM: (
+        "Controller reports the stage homed, at rest, healthy, same configuration: startup homing skipped"
+    ),
+    StartupVerdict.NO_SIGNATURE: (
+        "Controller holds no configuration signature (power-up, INITIALIZE, or a setting changed since it was "
+        "stored): normal startup"
+    ),
+    StartupVerdict.SIGNATURE_MISMATCH: "Configuration changed since the controller was homed: normal startup",
+    StartupVerdict.UNHEALTHY: (
+        "Stage hardware not healthy (motor power dropped, or a stage driver lost its configuration or is disabled): "
+        "normal startup"
+    ),
+    StartupVerdict.MOVING: "Stage still moving: normal startup",
+    StartupVerdict.NOT_HOMED: "Stage not homed since power-up, a zero or a driver disable: normal startup",
+}
 
 # Mapping of command type bytes to human-readable names for logging
 _CMD_NAMES = {
@@ -740,6 +762,11 @@ class Microcontroller:
         # (command id, StartupVerdict value) of the newest packet whose status byte was a startup verdict reply
         # (firmware >= STARTUP_STATE_MIN_FIRMWARE), under _received_packet_cv; for query_startup_state().
         self._startup_verdict_packet = None
+        # The startup decision (reset_and_initialize only). startup_verdict: the controller's answer to the startup
+        # query, None when it was not asked (older firmware, --skip-init) or gave none. startup_was_warm: the answer
+        # was WARM, so INITIALIZE and the motor configuration were skipped and the stage is still homed.
+        self.startup_verdict: Optional[StartupVerdict] = None
+        self.startup_was_warm = False
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -752,17 +779,30 @@ class Microcontroller:
             self.check_limit_switch_compatibility()
 
             if reset_and_initialize:
-                self.log.debug("Resetting and initializing microcontroller.")
+                # First, before anything changes the controller's state: may this startup skip homing?
+                self.startup_verdict = self._ask_startup_verdict()
+                self.startup_was_warm = self.startup_verdict is StartupVerdict.WARM
+                # RESET on both paths: it ends a crashed session's command in progress (the query does not wait for
+                # one) and puts back what a session may have changed, and writes no position.
                 self.reset()
-                time.sleep(0.5)
-                self.initialize_drivers()
-                time.sleep(0.5)
-                self.configure_actuators()
-                self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
-                time.sleep(0.5)
+                if self.startup_was_warm:
+                    # The signature proves INITIALIZE and configure_actuators would change nothing
+                    self.log.debug("Resetting the microcontroller (warm start: drivers and actuators kept).")
+                    self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+                else:
+                    self.log.debug("Resetting and initializing microcontroller.")
+                    time.sleep(0.5)
+                    self.initialize_drivers()
+                    time.sleep(0.5)
+                    self.configure_actuators()
+                    self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+                    time.sleep(0.5)
 
             # On both startup paths (--skip-init skips the block above).
             self.apply_limit_switch_config()
+            if reset_and_initialize and not self.startup_was_warm and self.supports_startup_state():
+                # The last covered step: sign the configuration just sent, so a relaunch can be told it still holds
+                self.store_config_signature(config_signature(), CONFIG_SIGNATURE_FORMAT)
             self.apply_focus_wheel_power_up_mode()
             self.unlock_panel()  # a lock left by an earlier session (closed at the loading position, a crash)
         except BaseException:
@@ -2032,6 +2072,27 @@ class Microcontroller:
                 raise RuntimeError(f"controller sent no startup verdict within {timeout_s} [s]. {self._mcu_state()}")
             verdict = StartupVerdict(self._startup_verdict_packet[1])
         self.log.debug(f"Startup verdict: {verdict.name}")
+        return verdict
+
+    def _ask_startup_verdict(self) -> Optional[StartupVerdict]:
+        """The constructor's startup query (QUERY_STARTUP_STATE) with this configuration's signature and the axes
+        startup homes, and the log line saying which startup path it leads to and why.
+
+        None, a normal startup, when the firmware cannot report the startup state or no verdict arrived (another
+        sender ended the reply, or a timeout): an unnecessary home at worst.
+        """
+        if not self.supports_startup_state():
+            self.log.info(
+                f"Firmware {self.firmware_version[0]}.{self.firmware_version[1]} cannot report homing state: "
+                f"normal startup"
+            )
+            return None
+        try:
+            verdict = self.query_startup_state(config_signature(), CONFIG_SIGNATURE_FORMAT, required_homed_axes_mask())
+        except RuntimeError as e:
+            self.log.warning(f"Asked the controller for its startup state and got none ({e}): normal startup")
+            return None
+        self.log.info(_STARTUP_VERDICT_LOG[verdict])
         return verdict
 
     def check_limit_switch_compatibility(self) -> None:

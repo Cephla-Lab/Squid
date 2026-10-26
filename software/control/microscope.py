@@ -776,23 +776,30 @@ class Microscope:
                 if self.z_lift is not None:
                     self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
                     self.z_lift.apply_limits()
-                confirmed = False
-                declined = False
-                if startup_needs_objective_prompt():
-                    if self._confirm_objective_lowered is None:
-                        raise ObjectiveNotLoweredError(
-                            "Startup homing refused: piezo-only system and no one to confirm the objective is "
-                            "lowered; pass confirm_objective_lowered"
-                        )
-                    confirmed = bool(self._confirm_objective_lowered())
-                    declined = not confirmed
-                if declined:
-                    self._log.info("Piezo-only: user cancelled homing; stage not referenced")
-                    self.startup_homing = StartupHoming.DECLINED
+                mcu = self.low_level_drivers.microcontroller
+                if mcu is not None and mcu.startup_was_warm:
+                    # The controller vouched that the stage is still homed under this configuration (the
+                    # Microcontroller's startup query): no prompt, no home_xyz and no lift raise. The stage stays
+                    # where the last session left it.
+                    self.startup_homing = StartupHoming.ALREADY_HOMED
                 else:
-                    self.home_xyz(objective_lowered=confirmed)
-                    self._raise_z_lift_to_sample_height()
-                    self.startup_homing = StartupHoming.HOMED
+                    confirmed = False
+                    declined = False
+                    if startup_needs_objective_prompt():
+                        if self._confirm_objective_lowered is None:
+                            raise ObjectiveNotLoweredError(
+                                "Startup homing refused: piezo-only system and no one to confirm the objective is "
+                                "lowered; pass confirm_objective_lowered"
+                            )
+                        confirmed = bool(self._confirm_objective_lowered())
+                        declined = not confirmed
+                    if declined:
+                        self._log.info("Piezo-only: user cancelled homing; stage not referenced")
+                        self.startup_homing = StartupHoming.DECLINED
+                    else:
+                        self.home_xyz(objective_lowered=confirmed)
+                        self._raise_z_lift_to_sample_height()
+                        self.startup_homing = StartupHoming.HOMED
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:

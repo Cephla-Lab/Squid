@@ -12,10 +12,14 @@ import control.widgets
 from qtpy.QtGui import QCloseEvent
 from qtpy.QtWidgets import QMessageBox
 
+import control.microcontroller
 import control.microscope
 import squid.abc
 import squid.stage.cephla
 import squid.stage.utils
+from control._def import STARTUP_STATE_MIN_FIRMWARE
+from control.firmware_sim_serial import FirmwareSimSerial
+from control.startup_homing import StartupHoming
 
 
 @pytest.fixture
@@ -588,6 +592,39 @@ def test_declined_startup_with_z_homing_warns_until_z_is_homed_too(qtbot, confir
     assert gui._not_homed_label.isVisibleTo(gui)
     gui.stageUtils.signal_axes_homed.emit({"z"})
     assert not gui._not_homed_label.isVisibleTo(gui)
+
+
+def test_already_homed_restores_z_and_leaves_xy(qtbot, confirm_exit_yes, monkeypatch):
+    """A warm relaunch: the controller vouched that the stage is still homed, so X/Y stay where the stage stands
+    (after a crash the cached X/Y is stale) and Z comes back as after a homed startup."""
+    _set_z_flags(monkeypatch, homing_z=True, pi_focus=False)
+    monkeypatch.setattr(control._def, "ENABLE_MEMORY_PROFILING", True)  # the RAM monitor appears with the window
+    # strict=False: the GUI also sends commands the sim's protocol whitelist lacks (SET_WATCHDOG_TIMEOUT, HEARTBEAT)
+    sim = FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
+    earlier.stage.move_x_to(10.0)
+    earlier.stage.move_y_to(10.0)
+    earlier.close()
+    sim.reconnect(1)  # the controller stayed powered
+
+    safety_z_mm = int(control._def.Z_HOME_SAFETY_POINT) / 1000.0
+    cached = squid.abc.Pos(x_mm=40.0, y_mm=25.0, z_mm=safety_z_mm - 0.5, theta_rad=None)
+    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    pos = scope.stage.get_pos()
+    assert (pos.x_mm, pos.y_mm) == pytest.approx((10.0, 10.0), abs=1e-3)  # to a microstep
+    assert pos.z_mm == pytest.approx(safety_z_mm, abs=1e-3)
+
+    # The message shows once the window does, and the status-bar widgets that appear with it do not cover it
+    gui.show()
+    qtbot.waitExposed(gui)
+    assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
+    assert not gui.ramMonitorWidget.isVisible()
 
 
 # --- One exclusion for every claim, failures shown, close refused while homing ---

@@ -46,6 +46,7 @@ class StartupHoming(enum.Enum):
 
     NOT_RUN = "not_run"  # skip_init: startup did not touch the stage
     HOMED = "homed"  # startup homed the stage
+    ALREADY_HOMED = "already_homed"  # the controller vouched the stage is still homed (a warm start): not homed again
     DECLINED = "declined"  # a person cancelled the piezo-only prompt; the stage is not referenced
 
 

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import control._def
+import control.microcontroller
 import control.microscope
 import squid.config
 import squid.stage.cephla
@@ -18,6 +19,7 @@ from control._def import AXIS, CMD_SET, STARTUP_STATE_MIN_FIRMWARE, STARTUP_VERD
 from control.firmware_sim_serial import FirmwareSimSerial
 from control.microcontroller import Microcontroller
 from control.startup_homing import (
+    CONFIG_SIGNATURE_FORMAT,
     ObjectiveNotLoweredError,
     StageHomingInProgressError,
     StageHomingRefused,
@@ -668,3 +670,219 @@ def test_required_axes_needs_both_x_and_y_homing(monkeypatch):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
     monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
     assert required_homed_axes_mask() == 0
+
+
+# --- The startup decision (B5): warm only when the controller vouches for the homing under this configuration ---
+
+COVERED_SETTINGS = (
+    CMD_SET.SET_LEAD_SCREW_PITCH,
+    CMD_SET.CONFIGURE_STEPPER_DRIVER,
+    CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+    CMD_SET.SET_HOME_SAFETY_MERGIN,
+    CMD_SET.SET_LIMIT_SWITCH_CONFIG,
+)
+OLDER_FIRMWARE = (STARTUP_STATE_MIN_FIRMWARE[0], STARTUP_STATE_MIN_FIRMWARE[1] - 1)
+
+
+def _reopen(micro, sim):
+    """End a session the way a relaunch finds it: the host closes, the controller stays powered."""
+    micro.close()
+    sim.reconnect(1)
+    sim.command_log.clear()
+
+
+def _homed(sim=None, before_close=None):
+    """A controller that an earlier session started normally (storing the signature) and homed in X, Y and Z."""
+    sim = sim or FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(serial_device=sim)
+    micro.home_xy(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+    if before_close:
+        before_close(micro)
+    _reopen(micro, sim)
+    return sim
+
+
+def test_first_launch_is_normal_and_stores_the_signature_last():
+    sim = FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(serial_device=sim)
+    log = sim.command_log
+    assert micro.startup_verdict is StartupVerdict.NO_SIGNATURE and not micro.startup_was_warm
+    # Nothing but the version detection before the query, and RESET right after it
+    assert log[:3] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.QUERY_STARTUP_STATE, CMD_SET.RESET]
+    store = log.index(CMD_SET.STORE_CONFIG_SIGNATURE)
+    assert log.index(CMD_SET.INITIALIZE) < log.index(CMD_SET.CONFIGURE_STEPPER_DRIVER) < store
+    assert max(i for i, c in enumerate(log) if c == CMD_SET.SET_LIMIT_SWITCH_CONFIG) < store
+    assert max(i for i, c in enumerate(log) if c in COVERED_SETTINGS) < store  # the last covered step
+    assert log[store + 1 :] == [CMD_SET.SET_FOCUS_WHEEL_MODE, CMD_SET.SET_PANEL_LOCK]
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+
+
+def test_relaunch_is_warm_and_reconfigures_nothing(caplog):
+    sim = _homed(before_close=lambda m: (m.move_x_to_usteps(1000), m.wait_till_operation_is_completed()))
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is StartupVerdict.WARM and micro.startup_was_warm
+    assert "same configuration: startup homing skipped" in caplog.text
+    assert sim.command_log[:3] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.QUERY_STARTUP_STATE, CMD_SET.RESET]
+    for code in (
+        CMD_SET.INITIALIZE,
+        CMD_SET.CONFIGURE_STEPPER_DRIVER,
+        CMD_SET.SET_LEAD_SCREW_PITCH,
+        CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+        CMD_SET.SET_HOME_SAFETY_MERGIN,
+        CMD_SET.STORE_CONFIG_SIGNATURE,
+    ):
+        assert code not in sim.command_log
+    assert sim.x == 1000 and micro.get_pos()[0] == 1000  # the stage kept its position
+    # What the warm start re-sent (the limit-switch config, unchanged) kept the signature: the next relaunch is warm
+    _reopen(micro, sim)
+    assert Microcontroller(serial_device=sim).startup_was_warm
+
+
+@pytest.mark.parametrize(
+    "before_close, after, verdict",
+    [
+        (lambda m: m.zero_x(), None, StartupVerdict.NOT_HOMED),
+        (
+            lambda m: (m.set_axis_enable_disable(AXIS.Y, 0), m.set_axis_enable_disable(AXIS.Y, 1)),
+            None,
+            StartupVerdict.NOT_HOMED,
+        ),
+        (
+            lambda m: m.configure_motor_driver(
+                AXIS.X,
+                2 * control._def.MICROSTEPPING_DEFAULT_X,
+                control._def.X_MOTOR_RMS_CURRENT_mA,
+                control._def.X_MOTOR_I_HOLD,
+            ),
+            None,
+            StartupVerdict.NO_SIGNATURE,
+        ),
+        (None, lambda sim, mp: sim.set_power_good(False), StartupVerdict.UNHEALTHY),
+        (None, lambda sim, mp: setattr(sim, "tmc_config_ok", False), StartupVerdict.UNHEALTHY),
+        (None, lambda sim, mp: sim.moving_axes.add(AXIS.Y), StartupVerdict.MOVING),
+        (
+            None,
+            lambda sim, mp: mp.setattr(control._def, "MAX_VELOCITY_X_mm", control._def.MAX_VELOCITY_X_mm + 1),
+            StartupVerdict.SIGNATURE_MISMATCH,
+        ),
+    ],
+)
+def test_anything_else_is_a_normal_startup(monkeypatch, caplog, before_close, after, verdict):
+    sim = _homed(before_close=before_close)
+    if after:
+        after(sim, monkeypatch)
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is verdict and not micro.startup_was_warm
+    assert CMD_SET.INITIALIZE in sim.command_log
+    assert control.microcontroller._STARTUP_VERDICT_LOG[verdict] in caplog.text  # the reason, one line per verdict
+
+
+@pytest.mark.parametrize("moving, verdict", [({AXIS.Y}, StartupVerdict.MOVING), (set(), StartupVerdict.WARM)])
+def test_in_progress_controller_startup(moving, verdict):
+    sim = _homed()
+    sim.in_progress = True  # a crashed session's command still in progress
+    sim.moving_axes |= moving
+    micro = Microcontroller(serial_device=sim)  # must not time out
+    assert micro.startup_verdict is verdict
+    assert (CMD_SET.INITIALIZE in sim.command_log) == (verdict is not StartupVerdict.WARM)
+    assert not sim.in_progress and not micro.is_busy()  # RESET cleared it on both paths
+
+
+def test_no_verdict_is_a_normal_startup(monkeypatch, caplog):
+    """Ruling B-R4: a query that gets no verdict (lost to another sender, a timeout) is a normal startup."""
+
+    class NoVerdictSim(FirmwareSimSerial):
+        def _query_startup_state(self, cmd):
+            pass  # answers the query as an ordinary command: COMPLETED, no verdict
+
+    real_query = Microcontroller.query_startup_state
+    monkeypatch.setattr(
+        Microcontroller,
+        "query_startup_state",
+        lambda self, *args, **kwargs: real_query(self, *args, **{**kwargs, "timeout_s": 0.2}),
+    )
+    sim = _homed(NoVerdictSim(firmware_version=STARTUP_STATE_MIN_FIRMWARE))
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.QUERY_STARTUP_STATE in sim.command_log and CMD_SET.INITIALIZE in sim.command_log
+    assert CMD_SET.STORE_CONFIG_SIGNATURE in sim.command_log
+    assert "no startup verdict" in caplog.text and "normal startup" in caplog.text
+
+
+def test_reverting_settings_never_restores(monkeypatch):
+    sim = _homed()  # homed under settings A
+    with monkeypatch.context() as m:
+        m.setattr(control._def, "MAX_VELOCITY_X_mm", control._def.MAX_VELOCITY_X_mm + 1)
+        under_b = Microcontroller(serial_device=sim)  # a normal startup: INITIALIZE clears the flags, B is stored
+        assert under_b.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH
+    _reopen(under_b, sim)
+    under_a = Microcontroller(serial_device=sim)  # back under A: a mismatch with B again, so a normal startup again
+    assert under_a.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH and not under_a.startup_was_warm
+    assert CMD_SET.INITIALIZE in sim.command_log
+    _reopen(under_a, sim)
+    # A is stored once more, but the homing done under A before is gone for good
+    assert Microcontroller(serial_device=sim).startup_verdict is StartupVerdict.NOT_HOMED
+
+
+def test_old_firmware_and_skip_init_never_query(caplog):
+    old = FirmwareSimSerial(firmware_version=OLDER_FIRMWARE)
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=old)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.INITIALIZE in old.command_log
+    assert CMD_SET.QUERY_STARTUP_STATE not in old.command_log
+    assert CMD_SET.STORE_CONFIG_SIGNATURE not in old.command_log
+    assert f"Firmware {OLDER_FIRMWARE[0]}.{OLDER_FIRMWARE[1]} cannot report homing state: normal startup" in caplog.text
+
+    sim = _homed()
+    micro = Microcontroller(serial_device=sim, reset_and_initialize=False)  # --skip-init
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    for code in (CMD_SET.QUERY_STARTUP_STATE, CMD_SET.STORE_CONFIG_SIGNATURE, CMD_SET.RESET, CMD_SET.INITIALIZE):
+        assert code not in sim.command_log
+
+
+@pytest.mark.parametrize("z_homes, verdict", [(False, StartupVerdict.WARM), (True, StartupVerdict.NOT_HOMED)])
+def test_z_not_required_when_z_does_not_home(monkeypatch, z_homes, verdict):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z_homes)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+    sim = _homed(before_close=lambda m: m.zero_z())  # only X and Y homed
+    assert Microcontroller(serial_device=sim).startup_verdict is verdict
+
+
+def _scope_sim():
+    """A 1.9 controller for a whole Microscope, which also sends commands the sim's protocol whitelist lacks
+    (SET_WATCHDOG_TIMEOUT, HEARTBEAT): those are answered, not refused."""
+    return FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+
+
+def test_microscope_warm_start_skips_homing_and_prompt(monkeypatch, piezo_only):
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    home = MagicMock()
+    monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda: asked.append(1)
+    )
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED and not asked
+    home.assert_not_called()
+    scope.close()
+
+
+def test_a_microscope_relaunch_is_warm(monkeypatch):
+    """End to end: nothing a normal Microscope startup sends after the store (stage, addons, homing) empties the
+    signature, so the next launch on the same controller is warm."""
+    sim = _scope_sim()
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    first = control.microscope.Microscope.build_from_global_config(True)
+    assert first.startup_homing is StartupHoming.HOMED
+    first.close()
+    sim.reconnect(1)
+    assert control.microscope.Microscope.build_from_global_config(True).startup_homing is StartupHoming.ALREADY_HOMED

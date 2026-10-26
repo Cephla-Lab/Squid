@@ -641,6 +641,8 @@ class HighContentScreeningGui(QMainWindow):
         # Axes startup would have homed but did not (the piezo-only prompt was cancelled): the not-homed warning shows
         # until each is homed again.
         self._unreferenced_axes = set()
+        # A transient status-bar message for startup, shown once the window first appears (showEvent)
+        self._startup_status_message: Optional[str] = None
 
         self.microscope: control.microscope.Microscope = microscope
         self.stage: AbstractStage = microscope.stage
@@ -812,6 +814,12 @@ class HighContentScreeningGui(QMainWindow):
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self._restored_loading_state is not None:
             self.log.info("Squid was closed at the loading position: moving back there (lift lowered, Z retracted).")
             squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
+        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self.microscope.startup_homing is StartupHoming.ALREADY_HOMED:
+            # The controller vouched that the stage never lost its homing: X/Y stay where the stage stands (after a
+            # crash the cached X/Y is stale anyway). Z comes back as after a homed startup: a clean close retracted it.
+            self.log.info("Stage still homed: X/Y stay where they are, Z is restored")
+            self._restore_cached_z(squid.stage.utils.get_cached_position())
+            self._startup_status_message = "Stage still homed: startup homing skipped"
         elif HOMING_ENABLED_X and HOMING_ENABLED_Y:
             # TODO(imo): Why is moving to the cached position after boot hidden behind homing?
             cached_pos = squid.stage.utils.get_cached_position()
@@ -820,26 +828,7 @@ class HighContentScreeningGui(QMainWindow):
                 self.stage.move_x_to(cached_pos.x_mm)
                 self.stage.move_y_to(cached_pos.y_mm)
 
-            if squid.stage.utils.z_is_referenced():
-                if not cached_pos:
-                    self.log.info("No cached position.  Moving Z axis to safety position")
-                    squid.stage.utils.move_z_axis_to_safety_position(self.stage)
-                elif USE_PI_FOCUS_STAGE:
-                    # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
-                    # The PI driver clamps every move to the configured Z limits, so a stale
-                    # cached Z cannot command an out-of-range move.
-                    self.stage.move_z_to(cached_pos.z_mm)
-                else:
-                    safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
-                    if cached_pos.z_mm < safety_z_mm:
-                        self.log.info(
-                            "Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT"
-                        )
-                    self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
-
-                if ENABLE_WELLPLATE_MULTIPOINT:
-                    self.wellplateMultiPointWidget.init_z()
-                self.flexibleMultiPointWidget.init_z()
+            self._restore_cached_z(cached_pos)
 
         # Create the menu bar
         menubar = self.menuBar()
@@ -2584,6 +2573,30 @@ class HighContentScreeningGui(QMainWindow):
         self._unreferenced_axes -= set(axes)
         self._update_not_homed_warning()
 
+    def _restore_cached_z(self, cached_pos: Optional[squid.abc.Pos]) -> None:
+        """Startup's Z restore, once the stage is homed (HOMED) or still homed (ALREADY_HOMED), when Z is referenced:
+        the cached Z, not below Z_HOME_SAFETY_POINT for a stepper Z (a V-308 takes it as is), or the safety position
+        with nothing cached; then the multipoint widgets take the new Z."""
+        if not squid.stage.utils.z_is_referenced():
+            return
+        if not cached_pos:
+            self.log.info("No cached position.  Moving Z axis to safety position")
+            squid.stage.utils.move_z_axis_to_safety_position(self.stage)
+        elif USE_PI_FOCUS_STAGE:
+            # V-308: no Z_HOME_SAFETY_POINT floor; restore the cached absolute Z directly.
+            # The PI driver clamps every move to the configured Z limits, so a stale
+            # cached Z cannot command an out-of-range move.
+            self.stage.move_z_to(cached_pos.z_mm)
+        else:
+            safety_z_mm = int(Z_HOME_SAFETY_POINT) / 1000.0
+            if cached_pos.z_mm < safety_z_mm:
+                self.log.info("Cache z position is smaller than Z_HOME_SAFETY_POINT, move to Z_HOME_SAFETY_POINT")
+            self.stage.move_z_to(max(cached_pos.z_mm, safety_z_mm))
+
+        if ENABLE_WELLPLATE_MULTIPOINT:
+            self.wellplateMultiPointWidget.init_z()
+        self.flexibleMultiPointWidget.init_z()
+
     def _update_not_homed_warning(self):
         self._not_homed_label.setVisible(bool(self._unreferenced_axes))
         self._update_status_bar_visibility()
@@ -3191,6 +3204,10 @@ class HighContentScreeningGui(QMainWindow):
         self._show_event_initialized = True
         self._update_ram_monitor_visibility()
         self._connect_warning_handler()
+        if self._startup_status_message:
+            # After the widgets above: a status-bar widget shown after a transient message is drawn over it. Shown
+            # now, not when built, so its 10 s start when the window appears.
+            self.statusBar().showMessage(self._startup_status_message, 10000)
 
     def _on_plate_view_fov_clicked(self, well_id: str, fov_index: int) -> None:
         """Handle double-click on plate view: navigate NDViewer to FOV and switch tab."""
