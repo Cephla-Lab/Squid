@@ -224,6 +224,8 @@ def test_software_light_source_has_nothing_to_calibrate(qtbot, repo, answers):
     dialog = _dialog(qtbot, session)
     assert dialog.table.rowCount() == 0
     assert "light source itself" in dialog.label_note.text()
+    # shown for every light source that sets power itself (VersaLase and laser engine v2 too): it names none of them
+    assert not any(name in dialog.label_note.text() for name in ("LDI", "CELESTA", "Andor"))
 
 
 def test_test_beam_needs_a_connected_meter(qtbot, session, answers):
