@@ -79,7 +79,10 @@ def test_cli_saves_a_failed_channel_only_when_told_to(tmp_path, monkeypatch, cap
     assert saved.is_file() and repo.get_illumination_config().channels[0].intensity_calibration_file == "405nm_D1.csv"
 
 
-@pytest.mark.parametrize("flag", ["USE_LDI_SERIAL_CONTROL", "USE_CELESTA_ETHERNET_CONTROL", "USE_ANDOR_LASER_CONTROL"])
+@pytest.mark.parametrize(
+    "flag",
+    ["USE_LDI_SERIAL_CONTROL", "USE_CELESTA_ETHERNET_CONTROL", "USE_ANDOR_LASER_CONTROL", "USE_VORTRAN_LASER_CONTROL"],
+)
 def test_cli_refuses_an_instrument_whose_light_source_sets_the_power_before_opening_hardware(
     tmp_path, monkeypatch, capsys, flag
 ):
@@ -113,15 +116,25 @@ def test_cli_in_simulation_calibrates_as_the_simulated_gui_does(tmp_path, monkey
     assert _tool().main(args, config_repo=ConfigRepository(base_path=tmp_path)) == 0
 
 
-def test_cli_refuses_a_laser_engine_instrument(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("simulation", [False, True])
+def test_cli_refuses_a_laser_engine_instrument_before_opening_hardware(tmp_path, monkeypatch, capsys, simulation):
+    # the engine sets each line's power itself, and Squid builds it in simulation too (the simulated engine)
     import control._def
+    import control.microcontroller
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "machine_configs").mkdir()
     (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(YAML)
     monkeypatch.setattr(control._def, "LASER_ENGINE", "v2")
-    status = _tool().main(["--simulation"], config_repo=ConfigRepository(base_path=tmp_path))
-    assert status == 2
+    opened = []
+    monkeypatch.setattr(control.microcontroller, "SimSerial", lambda *a, **k: opened.append("simulated controller"))
+    monkeypatch.setattr(
+        control.microcontroller, "get_microcontroller_serial_device", lambda *a, **k: opened.append("controller")
+    )
+
+    status = _tool().main(["--simulation"] if simulation else [], config_repo=ConfigRepository(base_path=tmp_path))
+
+    assert status == 2 and opened == []
     assert "calibrate its lines from the GUI" in capsys.readouterr().out
 
 
