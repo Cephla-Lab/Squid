@@ -63,7 +63,12 @@ from control.lighting import LightSourceType, IntensityControlMode, ShutterContr
 from control.microcontroller import Microcontroller
 from control.microscope import Microscope
 from control.models import AcquisitionChannel
-from control.startup_homing import StageHomingInProgressError, StartupHoming
+from control.startup_homing import (
+    StageHomingInProgressError,
+    StageHomingRefused,
+    StartupHoming,
+    home_stage_confirmation_text,
+)
 from squid.abc import AbstractCamera, AbstractStage, AbstractFilterWheelController
 import control._def
 import control.lighting
@@ -631,6 +636,8 @@ class HighContentScreeningGui(QMainWindow):
         # Follows the Microscope's homing claim, whoever took it (Home stage, Home X/Y, TCP home): nothing moves.
         self._stage_homing_locked = False
         self._stage_homing_saved_enabled = {}
+        # Firmware < 1.8 cannot lock the control panel: said once per session, not at every home
+        self._panel_lock_unsupported_logged = False
         # Axes startup would have homed but did not (the piezo-only prompt was cancelled): the not-homed warning shows
         # until each is homed again.
         self._unreferenced_axes = set()
@@ -2441,7 +2448,7 @@ class HighContentScreeningGui(QMainWindow):
         the lock changes at once; from another thread (a TCP home, a release once the stage stopped) that thread
         waits until the GUI thread has changed it. So the controls and the control panel lock command are in place
         before that thread sends any homing command, and the changes apply in the order the Microscope made them."""
-        if QThread.currentThread() is self.thread():
+        if QThread.currentThread() == self.thread():
             self._on_stage_homing_changed(active)
         else:
             QMetaObject.invokeMethod(self, "_on_stage_homing_changed", Qt.BlockingQueuedConnection, Q_ARG(bool, active))
@@ -2472,7 +2479,11 @@ class HighContentScreeningGui(QMainWindow):
             self.log.exception(f"Could not {'lock' if active else 'unlock'} the controls for stage homing")
 
     def _stage_homing_blocker(self) -> Optional[str]:
-        """Why the stage must not home now (Home stage, Home X/Y), or None."""
+        """Why the stage must not home now, or None. The Microscope's homing blocker (set_stage_homing_blocker):
+        every homing claim - Home stage, Home X/Y, a TCP home, a script - is refused while it gives a reason, so the
+        homing lock never starts inside another lock. A claim already held is refused by the claim itself.
+
+        Runs on whichever thread claims (the server's for a TCP home): plain reads of flags only, no widget access."""
         if self.multipointController.acquisition_in_progress():
             return "an acquisition is running"
         if self._objective_swap_active:
@@ -2483,8 +2494,6 @@ class HighContentScreeningGui(QMainWindow):
             return "autofocus is running"
         if self.zLiftWidget is not None and self.zLiftWidget.motion_guard.busy:
             return "the Z lift is moving (a lift move, the loading toggle or an objective change)"
-        if self.microscope.stage_homing_in_progress:
-            return "the stage is homing"
         # Not stage.get_state().busy: that is the host's flag, set by every command (live's included). A move still
         # under way is refused by _claim_stage_for_homing, on the controller's own report.
         return None
@@ -2492,18 +2501,20 @@ class HighContentScreeningGui(QMainWindow):
     def _claim_stage_for_homing(self, operation: str) -> "control.microscope.StageHomingClaim":
         """Take the homing claim for a home started here (Home stage, Home X/Y): live paused, other motion refused,
         the controls locked. Then wait up to HOMING_START_SETTLE_S for fresh controller evidence that the stage
-        stopped (AbstractStage.reports_stopped). Raises widgets.HomingRefused if the stage is homing already, or is
-        still moving: that claim is then released once the stage stops, and live resumes."""
+        stopped (AbstractStage.reports_stopped). Raises StageHomingRefused if the homing blocker gives a reason, if
+        the stage is homing already, or if it is still moving: that claim is then released once the stage stops, and
+        live resumes."""
         try:
             claim = self.microscope.claim_stage_homing(operation)
         except StageHomingInProgressError:
-            raise widgets.HomingRefused("the stage is homing") from None
+            raise StageHomingRefused(operation, "the stage is homing") from None
         deadline = time.monotonic() + HOMING_START_SETTLE_S
         while not self.stage.reports_stopped():
             if time.monotonic() >= deadline:
                 self.log.info(f"{operation} refused: the controller still reports the stage moving")
-                claim.release_when_stopped()
-                raise widgets.HomingRefused("the stage is still moving")
+                refusal = "the stage is still moving"
+                claim.release_when_stopped(refusal=refusal)
+                raise StageHomingRefused(operation, refusal)
             time.sleep(HOMING_START_POLL_S)
         return claim
 
@@ -2520,13 +2531,13 @@ class HighContentScreeningGui(QMainWindow):
         else:
             objective_lowered = False
             confirmed = self._confirm_home_stage()
-        # Again after the confirmation: something may have started while it was open.
-        if not confirmed or self._home_stage_refused():
+        if not confirmed:
             return
         try:
+            # The claim asks the blocker again: something may have started while the confirmation was open.
             claim = self._claim_stage_for_homing("Home stage")
-        except widgets.HomingRefused as e:
-            self._refuse_home_stage(str(e))
+        except StageHomingRefused as e:
+            self._refuse_home_stage(e.reason)
             return
         try:
             control.utils.threaded_operation_helper(
@@ -2550,14 +2561,10 @@ class HighContentScreeningGui(QMainWindow):
 
     def _confirm_home_stage(self) -> bool:
         """What will move, and that the stage will not come back. Enter is Cancel."""
-        z_homes = control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE
         msg = QMessageBox(self)
         msg.setIcon(QMessageBox.Question)
         msg.setWindowTitle("Home Stage")
-        msg.setText(
-            f"{'X, Y and Z' if z_homes else 'X and Y'} move to their limit switches. "
-            "The stage will not return to where it is now."
-        )
+        msg.setText(home_stage_confirmation_text(has_z_lift=self.microscope.z_lift is not None))
         msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
         msg.setDefaultButton(QMessageBox.Cancel)
         return msg.exec_() == QMessageBox.Ok
@@ -2568,15 +2575,10 @@ class HighContentScreeningGui(QMainWindow):
             self._unreferenced_axes.clear()
             self._update_not_homed_warning()
             self.statusBar().showMessage("Stage homed", 10000)
-        elif self.microscope.stage_homing_in_progress:
-            QMessageBox.warning(
-                self,
-                "Home Stage",
-                f"Homing did not finish ({error}). The stage still reports motion: motion controls stay locked "
-                "until it stops.",
-            )
         else:
-            QMessageBox.warning(self, "Home Stage", f"Homing failed: {error}")
+            widgets.show_homing_failure(
+                self, "Home Stage", error, still_homing=self.microscope.stage_homing_in_progress
+            )
 
     def _on_axes_homed(self, axes):
         self._unreferenced_axes -= set(axes)
@@ -2587,7 +2589,8 @@ class HighContentScreeningGui(QMainWindow):
         self._update_status_bar_visibility()
 
     def _connect_stage_homing(self):
-        """Home stage, Home X/Y and the homing lock."""
+        """Home stage, Home X/Y, the homing lock, and the one exclusion every homing claim goes through."""
+        self.microscope.set_stage_homing_blocker(self._stage_homing_blocker)
         self.microscope.add_stage_homing_listener(self._relay_stage_homing_changed)
         self.stageUtils.set_homing_hooks(self._stage_homing_blocker, self._claim_stage_for_homing)
         self.stageUtils.signal_home_stage_requested.connect(self._on_home_stage_requested)
@@ -2620,12 +2623,13 @@ class HighContentScreeningGui(QMainWindow):
 
     def _set_control_panel_lock(self, locked: bool):
         """The control panel's joystick and wheel are driven by the controller firmware on its own: lock them too
-        (firmware >= 1.8; older firmware cannot, which is logged)."""
+        (firmware >= 1.8; older firmware cannot, which is logged once per session: every home locks the panel)."""
         mcu = self.microcontroller
         if mcu is None:
             return
         if not mcu.supports_panel_lock():
-            if locked:
+            if locked and not self._panel_lock_unsupported_logged:
+                self._panel_lock_unsupported_logged = True
                 self.log.warning("This controller firmware cannot lock the control panel: its joystick still moves XY")
             return
         try:
@@ -3211,6 +3215,8 @@ class HighContentScreeningGui(QMainWindow):
         then quits the current application. Hardware initialization is skipped in the new
         process since hardware is already in a known state.
         """
+        if self._refuse_to_close_while_homing("Restart"):
+            return
         if not self._confirm_end_fluidics_run("restart"):
             return
 
@@ -3499,7 +3505,19 @@ class HighContentScreeningGui(QMainWindow):
         (skipped for turret or manual setups; the turret re-inits cleanly from any position)."""
         self._cleanup_common(for_restart=True)
 
+    def _refuse_to_close_while_homing(self, action: str) -> bool:
+        """True (and said) while the stage homes: the cleanup would cache a position from mid-sweep and send the Z
+        retract from this thread while the homing thread still drives the controller. action: "Close", "Restart"."""
+        if not self.microscope.stage_homing_in_progress:
+            return False
+        self.log.info(f"{action} refused: the stage is homing")
+        QMessageBox.information(self, "Stage Homing", f"The stage is homing. {action} Squid once it has finished.")
+        return True
+
     def closeEvent(self, event):
+        if self._refuse_to_close_while_homing("Close"):
+            event.ignore()
+            return
         if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
             # The fluidics question doubles as the exit confirmation.
             if not self._confirm_end_fluidics_run("exit"):

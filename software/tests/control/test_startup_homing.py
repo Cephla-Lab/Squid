@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from unittest.mock import MagicMock
@@ -10,8 +11,16 @@ import squid.config
 import squid.stage.cephla
 import squid.stage.prior
 import tests.squid.test_stage
-from control.startup_homing import ObjectiveNotLoweredError, StageHomingInProgressError, StartupHoming
+from control.startup_homing import (
+    ObjectiveNotLoweredError,
+    StageHomingInProgressError,
+    StageHomingRefused,
+    StartupHoming,
+    home_stage_confirmation_text,
+)
 from tests.control.test_microcontroller import get_test_micro
+
+NOT_STOPPED_ERROR = "Homing ended without the controller reporting the stage stopped"
 
 
 @pytest.fixture
@@ -20,9 +29,16 @@ def piezo_only(monkeypatch):
 
 
 def _spy_commands(micro):
+    """The codes of the commands sent from now on, but the watchdog heartbeat's (its own thread, every 2.5 s)."""
     sent = []
     real = micro.send_command
-    micro.send_command = lambda cmd: (sent.append(cmd[1]), real(cmd))[1]
+
+    def spy(cmd):
+        if cmd[1] != control._def.CMD_SET.HEARTBEAT:
+            sent.append(cmd[1])
+        return real(cmd)
+
+    micro.send_command = spy
     return sent
 
 
@@ -237,14 +253,16 @@ def test_homing_pauses_live_and_resumes_only_when_stopped():
     scope.close()
 
 
-def test_timeout_keeps_the_claim_until_the_stage_stops(monkeypatch):
+def test_timeout_keeps_the_claim_until_the_stage_stops(monkeypatch, caplog):
     scope = _scope()
     sim = scope.low_level_drivers.microcontroller._serial
     monkeypatch.setattr(squid.stage.cephla.CephlaStage, "_calc_move_timeout", staticmethod(lambda d, s: 0.3))
     scope.start_live()
     sim.hold_in_progress = True
-    with pytest.raises(TimeoutError):
+    with caplog.at_level(logging.ERROR), pytest.raises(TimeoutError):
         scope.home_stage()
+    # A real one: still logged, once, after the grace for a late report
+    assert [r.levelno for r in caplog.records if NOT_STOPPED_ERROR in r.getMessage()] == [logging.ERROR]
     assert scope.stage_homing_in_progress and not scope.live_controller.is_live
     with pytest.raises(StageHomingInProgressError):
         scope.move_x_to(1.0)
@@ -342,3 +360,98 @@ def test_piezo_only_confirm_asks_once_and_homes(piezo_only):
     )
     assert asked == [1] and scope.startup_homing is StartupHoming.HOMED
     scope.close()
+
+
+# --- One exclusion for every claim (set_stage_homing_blocker) ---
+
+
+def test_a_blocker_refuses_every_claim_with_its_reason_before_anything_moves():
+    scope = _scope()
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    scope.set_stage_homing_blocker(lambda: "an objective change is in progress")
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    with pytest.raises(StageHomingRefused, match="^test refused: an objective change is in progress$") as refused:
+        scope.claim_stage_homing("test")
+    assert refused.value.reason == "an objective change is in progress"
+    for home in (scope.home_xyz, scope.home_stage):
+        with pytest.raises(StageHomingRefused, match="an objective change is in progress"):
+            home()
+    assert sent == [] and events == [] and not scope.stage_homing_in_progress  # no claim taken, nothing moved
+    scope.set_stage_homing_blocker(lambda: None)
+    scope.claim_stage_homing("test").release_when_stopped()
+    scope.set_stage_homing_blocker(None)
+    scope.claim_stage_homing("test").release_when_stopped()
+    assert events == [True, False, True, False]
+    scope.close()
+
+
+# --- No false alarm from a release that the stage confirms a moment later ---
+
+
+def test_startup_without_homing_releases_its_claim_with_no_false_alarm(monkeypatch, caplog):
+    # The last startup command (SET_LIM) is not awaited: its echo can still be in flight when the claim is released.
+    for name in ("HOMING_ENABLED_X", "HOMING_ENABLED_Y", "HOMING_ENABLED_Z"):
+        monkeypatch.setattr(control._def, name, False)
+    for _ in range(3):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            scope = control.microscope.Microscope.build_from_global_config(True)
+        try:
+            assert not scope.stage_homing_in_progress  # released by the time the constructor returns
+            assert not [r for r in caplog.records if NOT_STOPPED_ERROR in r.getMessage()]
+        finally:
+            scope.close()
+
+
+def test_a_refusal_release_logs_no_error(caplog):
+    scope = _scope()
+    sim = scope.low_level_drivers.microcontroller._serial
+    sim.hold_in_progress = True
+    scope.stage.move_x(0.5, blocking=False)  # a move still under way
+    claim = scope.claim_stage_homing("Home X")
+    with caplog.at_level(logging.INFO):
+        claim.release_when_stopped(refusal="the stage is still moving")
+    assert scope.stage_homing_in_progress  # still released only on the controller's report
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r.levelno for r in caplog.records if "the stage is still moving" in r.getMessage()] == [logging.INFO]
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    assert _wait(lambda: not scope.stage_homing_in_progress)
+    scope.close()
+
+
+# --- Wording ---
+
+
+def test_each_home_refuses_under_its_own_name(piezo_only):
+    scope = _scope()
+    with pytest.raises(ObjectiveNotLoweredError, match="^Home XYZ refused"):
+        scope.home_xyz()
+    with pytest.raises(ObjectiveNotLoweredError, match="^Home stage refused"):
+        scope.home_stage()
+    scope.close()
+
+
+@pytest.mark.parametrize(
+    "pi_focus, z_lift, expected",
+    [
+        (False, False, "X and Y move to their limit switches."),
+        (True, False, "The objective retracts, then X and Y move to their limit switches."),
+        (True, True, "The Z lift lowers and the objective retracts, then X and Y move to their limit switches."),
+    ],
+)
+def test_home_stage_confirmation_says_what_moves_first(monkeypatch, pi_focus, z_lift, expected):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", pi_focus)
+    assert home_stage_confirmation_text(has_z_lift=z_lift) == (
+        f"{expected} The stage will not return to where it is now."
+    )
+
+
+def test_home_stage_confirmation_with_a_stepper_z(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", True)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", False)
+    assert home_stage_confirmation_text(has_z_lift=False) == (
+        "X, Y and Z move to their limit switches. The stage will not return to where it is now."
+    )

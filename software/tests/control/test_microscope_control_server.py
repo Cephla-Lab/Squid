@@ -456,7 +456,26 @@ def test_unconfirmed_tcp_home_sends_no_motion(monkeypatch):
     sent = _spy_commands(scope.low_level_drivers.microcontroller)
     response = server._execute("home", {})
     assert response["success"] is False and "objective_lowered=true" in response["error"]
+    assert response["error"].startswith("Home XYZ refused:")  # not Home stage's name
     assert sent == []
+    scope.close()
+
+
+def test_a_blocked_tcp_home_returns_the_reason_moves_nothing_and_takes_no_claim():
+    import control.microscope
+    from tests.control.test_startup_homing import _spy_commands
+
+    scope = control.microscope.Microscope.build_from_global_config(True, skip_init=True)
+    scope.set_stage_homing_blocker(lambda: "an acquisition is running")
+    server = create_mock_server()
+    server.microscope = scope
+    server._commands = {"home": server._cmd_home}
+    events = []
+    scope.add_stage_homing_listener(events.append)
+    sent = _spy_commands(scope.low_level_drivers.microcontroller)
+    response = server._execute("home", {"objective_lowered": True})
+    assert response == {"success": False, "error": "Home XYZ refused: an acquisition is running"}
+    assert sent == [] and events == [] and not scope.stage_homing_in_progress
     scope.close()
 
 

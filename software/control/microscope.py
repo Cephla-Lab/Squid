@@ -20,6 +20,7 @@ from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
 from control.startup_homing import (
     StageHomingInProgressError,
+    StageHomingRefused,
     StartupHoming,
     require_objective_lowered,
     startup_needs_objective_prompt,
@@ -85,6 +86,11 @@ else:
 
 # How often a homing claim whose operation ended with the stage not reported stopped asks the stage again.
 STAGE_STOP_POLL_S = 0.2
+# How long a claim's release waits for a fresh stop report before it says the stage still moves: the operation's last
+# command may have gone out unawaited (CephlaStage.set_limits does not wait), its echo still in flight. Asked every
+# STAGE_STOP_GRACE_POLL_S meanwhile.
+STAGE_STOP_GRACE_S = 2 * STAGE_STOP_POLL_S
+STAGE_STOP_GRACE_POLL_S = 0.01
 
 
 class StageHomingClaim:
@@ -101,22 +107,47 @@ class StageHomingClaim:
         self.was_live = False  # set by claim_stage_homing
         self._lock = threading.Lock()
         self._released = False
-        self._watching = False
+        self._releasing = False  # a release_when_stopped call owns the release
 
-    def release_when_stopped(self) -> None:
-        """Release now if the stage reports it stopped; otherwise once it does. Idempotent."""
+    @property
+    def released(self) -> bool:
+        """True once the stage reported it stopped and the claim was released (or is being released)."""
+        return self._released
+
+    def release_when_stopped(self, refusal: Optional[str] = None) -> None:
+        """Release once the stage reports it stopped: before returning if it does within STAGE_STOP_GRACE_S, else
+        from a watcher thread whenever it does. Idempotent.
+
+        refusal: why the operation was refused before it moved anything, when it was (e.g. "the stage is still
+        moving"). The stage's motion is expected then: no grace wait, and the wait for the stop is logged at INFO.
+        Otherwise a stage that has not reported stopped after the grace is logged as an ERROR.
+        """
         with self._lock:
-            if self._released or self._watching:
+            if self._released or self._releasing:
                 return
+            self._releasing = True
+        if refusal is None:
+            stopped = self._stage_reports_stopped_within(STAGE_STOP_GRACE_S)
+        else:
             stopped = self._microscope._stage_reports_stopped()
-            self._watching = not stopped
         if stopped:
             self._release()
             return
-        _log.error(
-            "Homing ended without the controller reporting the stage stopped: motion stays refused until it does"
-        )
+        if refusal is None:
+            _log.error(
+                "Homing ended without the controller reporting the stage stopped: motion stays refused until it does"
+            )
+        else:
+            _log.info(f"{self.operation} refused ({refusal}): motion stays refused until the stage reports stopped")
         threading.Thread(target=self._release_once_stopped, daemon=True, name="stage-homing-release").start()
+
+    def _stage_reports_stopped_within(self, timeout_s: float) -> bool:
+        deadline = time.monotonic() + timeout_s
+        closed = self._microscope._closed_event
+        while not self._microscope._stage_reports_stopped():
+            if time.monotonic() >= deadline or closed.wait(STAGE_STOP_GRACE_POLL_S):
+                return False
+        return True
 
     def _release_once_stopped(self) -> None:
         closed = self._microscope._closed_event
@@ -611,6 +642,7 @@ class Microscope:
         self._stage_homing_lock = threading.Lock()
         self._stage_homing_claim: Optional[StageHomingClaim] = None
         self._stage_homing_listeners: List[Callable[[bool], None]] = []
+        self._stage_homing_blocker: Optional[Callable[[], Optional[str]]] = None
 
         self.stage: AbstractStage = stage
         self.camera: AbstractCamera = camera
@@ -1136,9 +1168,23 @@ class Microscope:
         listener is refused."""
         self._stage_homing_listeners.append(listener)
 
+    def set_stage_homing_blocker(self, blocker: Optional[Callable[[], Optional[str]]]) -> None:
+        """blocker() says why the stage must not home now (e.g. "an acquisition is running"), or returns None.
+        Every claim_stage_homing consults it first, whoever claims (the GUI, the control server, a script): one
+        exclusion for every home. No Qt here: the caller supplies it. It runs on whichever thread claims, with no
+        lock held, so it must only read plain state (flags, thread liveness), never touch a widget or send a
+        command. None removes it."""
+        self._stage_homing_blocker = blocker
+
     def claim_stage_homing(self, operation: str) -> StageHomingClaim:
         """Take the stage for one homing operation: pause live and refuse other motion until the claim is released
-        (StageHomingClaim.release_when_stopped). Raises StageHomingInProgressError if a claim is already held."""
+        (StageHomingClaim.release_when_stopped). Raises StageHomingRefused, with nothing claimed, while the blocker
+        (set_stage_homing_blocker) gives a reason, and StageHomingInProgressError if a claim is already held."""
+        blocker = self._stage_homing_blocker
+        reason = blocker() if blocker is not None else None
+        if reason:
+            self._log.info(f"{operation} refused: {reason}")
+            raise StageHomingRefused(operation, reason)
         claim = StageHomingClaim(self, operation)
         with self._stage_homing_lock:
             if self._stage_homing_claim is not None:
@@ -1202,12 +1248,13 @@ class Microscope:
         """Home the X, Y, and Z axes based on configuration settings, holding a homing claim (taken here unless one
         is passed in) while it runs.
 
-        On a piezo-only system an XY home needs objective_lowered=True, checked before anything moves. A claim
-        passed in belongs to this call: it is released (once the stage reports stopped) on every exit, a refused
-        confirmation included.
+        On a piezo-only system an XY home needs objective_lowered=True, checked before anything moves. Taking the
+        claim raises StageHomingRefused, with nothing moved, while the homing blocker gives a reason
+        (set_stage_homing_blocker). A claim passed in belongs to this call: it is released (once the stage reports
+        stopped) on every exit, a refused confirmation included.
         """
         try:
-            self._require_home_confirmation(objective_lowered)
+            self._require_home_confirmation(objective_lowered, "Home XYZ")
             if claim is None:
                 claim = self.claim_stage_homing("Home XYZ")
             self._home_xyz(objective_lowered)
@@ -1220,7 +1267,7 @@ class Microscope:
         format's working height and, when Z is referenced, Z to its safety position. Claim and confirmation as
         home_xyz."""
         try:
-            self._require_home_confirmation(objective_lowered)
+            self._require_home_confirmation(objective_lowered, "Home stage")
             if claim is None:
                 claim = self.claim_stage_homing("Home stage")
             self._home_xyz(objective_lowered)
@@ -1232,10 +1279,10 @@ class Microscope:
                 claim.release_when_stopped()
 
     @staticmethod
-    def _require_home_confirmation(objective_lowered: bool) -> None:
+    def _require_home_confirmation(objective_lowered: bool, operation: str) -> None:
         # First, before the Z home, the lift, the V-308 retract and the Y +20 mm move.
         if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
-            require_objective_lowered(objective_lowered, "Home stage")
+            require_objective_lowered(objective_lowered, operation)
 
     def _home_xyz(self, objective_lowered: bool) -> None:
         """The homing sequence. Homes Z first if enabled, then (for a V-308 focus stage) ensures Z is referenced and

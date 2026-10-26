@@ -1,3 +1,4 @@
+import logging
 import threading
 import unittest.mock
 
@@ -8,6 +9,7 @@ import control._def
 import control.gui_hcs
 import control.utils
 import control.widgets
+from qtpy.QtGui import QCloseEvent
 from qtpy.QtWidgets import QMessageBox
 
 import control.microscope
@@ -482,7 +484,10 @@ def test_home_stage_timeout_keeps_gui_locked_until_stopped(qtbot, confirm_exit_y
     assert not gui.navigationWidget.isEnabled() and gui.microscope.stage_homing_in_progress
     sim.hold_in_progress = False
     sim.send_status_packet()
-    qtbot.waitUntil(lambda: gui.navigationWidget.isEnabled(), timeout=5000)
+    # Until the claim clears too: the window refuses to close while the stage homes
+    qtbot.waitUntil(
+        lambda: gui.navigationWidget.isEnabled() and not gui.microscope.stage_homing_in_progress, timeout=5000
+    )
 
 
 def test_home_x_pauses_live(qtbot, confirm_exit_yes, monkeypatch):
@@ -557,12 +562,17 @@ def test_homing_claimed_off_the_gui_thread_locks_the_gui_before_the_claim_return
 def test_declined_startup_moves_nothing_and_warns(qtbot, confirm_exit_yes, monkeypatch, piezo_only):
     # A piezo-only system has no stepper Z to home: X and Y are the axes startup homes.
     _set_z_flags(monkeypatch, homing_z=False, pi_focus=False)
+    # A cached position the startup restore would move to, were the declined startup not special-cased
+    cached = squid.abc.Pos(x_mm=23.0, y_mm=31.0, z_mm=1.5, theta_rad=None)
+    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
     scope = control.microscope.Microscope.build_from_global_config(True, confirm_objective_lowered=lambda: False)
     before = scope.stage.get_pos()
+    assert (before.x_mm, before.y_mm) != (cached.x_mm, cached.y_mm)
     gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
     qtbot.add_widget(gui)
+    assert scope.stage.get_pos() == before
     # The window is never shown in these tests: isVisibleTo(gui) is "visible once the window is", status bar included.
-    assert scope.stage.get_pos() == before and gui._not_homed_label.isVisibleTo(gui)
+    assert gui._not_homed_label.isVisibleTo(gui)
     gui.stageUtils.signal_axes_homed.emit({"x"})
     assert gui._not_homed_label.isVisibleTo(gui)
     gui.stageUtils.signal_axes_homed.emit({"y"})
@@ -578,3 +588,119 @@ def test_declined_startup_with_z_homing_warns_until_z_is_homed_too(qtbot, confir
     assert gui._not_homed_label.isVisibleTo(gui)
     gui.stageUtils.signal_axes_homed.emit({"z"})
     assert not gui._not_homed_label.isVisibleTo(gui)
+
+
+# --- One exclusion for every claim, failures shown, close refused while homing ---
+
+
+@pytest.mark.parametrize("busy", ["objective_swap", "loading_position", "acquisition"])
+def test_tcp_home_is_refused_while_the_gui_drives_the_stage(qtbot, confirm_exit_yes, busy):
+    """A TCP home, on the server's thread, is refused with the GUI's reason while an objective swap, the loading
+    position or an acquisition holds the stage: nothing moves and nothing is claimed, so the homing lock never
+    nests inside those locks."""
+    from control.microscope_control_server import MicroscopeControlServer
+    from tests.control.test_startup_homing import _spy_commands
+
+    gui = _gui(qtbot)
+    server = MicroscopeControlServer(gui.microscope, multipoint_controller=gui.multipointController, gui=gui)
+    acquiring = unittest.mock.patch.object(gui.multipointController, "acquisition_in_progress", return_value=True)
+    reason, start, end = {
+        "objective_swap": (
+            "an objective change is in progress",
+            lambda: gui._on_objective_swap_active(True),
+            lambda: gui._on_objective_swap_active(False),
+        ),
+        "loading_position": (
+            "the stage is at (or moving to or from) the loading position",
+            gui._lock_stage_at_loading_position,
+            gui._unlock_stage_after_loading_position,
+        ),
+        "acquisition": ("an acquisition is running", acquiring.start, acquiring.stop),
+    }[busy]
+    start()
+    try:
+        events = []
+        gui.microscope.add_stage_homing_listener(events.append)
+        sent = _spy_commands(gui.microscope.low_level_drivers.microcontroller)
+        responses = []
+        threading.Thread(target=lambda: responses.append(server._execute("home", {"objective_lowered": True}))).start()
+        qtbot.waitUntil(lambda: bool(responses), timeout=5000)
+        assert responses == [{"success": False, "error": f"Home XYZ refused: {reason}"}]
+        assert sent == [] and events == [] and not gui.microscope.stage_homing_in_progress
+    finally:
+        qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=5000)
+        end()
+
+
+def test_old_firmware_panel_lock_warning_is_logged_once(qtbot, confirm_exit_yes, caplog):
+    gui = _gui(qtbot)
+    assert not gui.microcontroller.supports_panel_lock()  # the simulated controller's firmware is older than 1.8
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            gui.microscope.claim_stage_homing("TCP home").release_when_stopped()
+            qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=2000)
+        gui._lock_stage_at_loading_position()  # the loading lock still asks for the panel lock
+        gui._unlock_stage_after_loading_position()
+    assert len([r for r in caplog.records if "cannot lock the control panel" in r.getMessage()]) == 1
+
+
+def test_home_x_timeout_says_homing_did_not_finish(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    warnings = _capture_warnings(monkeypatch)
+    sim = gui.microscope.low_level_drivers.microcontroller._serial
+    monkeypatch.setattr(squid.stage.cephla.CephlaStage, "_calc_move_timeout", staticmethod(lambda d, s: 0.3))
+    sim.hold_in_progress = True
+    gui.stageUtils.home_x()  # the failure is shown, not raised out of the click
+    assert len(warnings) == 1 and warnings[0].startswith("Homing did not finish (")
+    assert warnings[0].endswith("The stage still reports motion: motion controls stay locked until it stops.")
+    assert gui.microscope.stage_homing_in_progress and not gui.navigationWidget.isEnabled()
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    qtbot.waitUntil(
+        lambda: not gui.microscope.stage_homing_in_progress and gui.navigationWidget.isEnabled(), timeout=5000
+    )
+
+
+def test_home_y_failure_after_release_says_homing_failed(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    warnings = _capture_warnings(monkeypatch)
+    homed = []
+    gui.stageUtils.signal_axes_homed.connect(homed.append)
+
+    def link_lost(**kwargs):
+        raise ConnectionError("link lost")  # before anything was sent: the stage still reports stopped
+
+    monkeypatch.setattr(gui.stage, "home", link_lost)
+    gui.stageUtils.home_y()
+    assert warnings == ["Homing failed: link lost"]
+    assert homed == [] and not gui.microscope.stage_homing_in_progress
+
+
+def test_close_while_homing_is_refused_and_moves_nothing(qtbot, confirm_exit_yes, monkeypatch):
+    """The cleanup would cache a mid-sweep position and send the Z retract from the GUI thread while the homing
+    thread still drives the controller."""
+    from tests.control.test_startup_homing import _spy_commands
+
+    gui = _gui(qtbot)
+    refusals = _capture_refusals(monkeypatch)
+    cleanups = []
+    spawned = []
+    monkeypatch.setattr(control.gui_hcs.subprocess, "Popen", lambda *args, **kwargs: spawned.append(args))
+    gui._cleanup_common = lambda **kw: cleanups.append(kw)
+    try:
+        claim = gui.microscope.claim_stage_homing("Home stage")
+        sent = _spy_commands(gui.microscope.low_level_drivers.microcontroller)
+        event = QCloseEvent()
+        gui.closeEvent(event)
+        gui.restart_application()
+        assert not event.isAccepted() and cleanups == [] and spawned == [] and sent == []
+        assert refusals == [
+            "The stage is homing. Close Squid once it has finished.",
+            "The stage is homing. Restart Squid once it has finished.",
+        ]
+        claim.release_when_stopped()
+        qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=2000)
+    finally:
+        del gui._cleanup_common  # the teardown's own close runs the real cleanup

@@ -25,6 +25,7 @@ from control.core.mosaic_utils import format_well_id
 from control.core.geometry_utils import calculate_well_coverage, default_scan_shape, get_effective_well_size
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
+from control.startup_homing import StageHomingRefused
 from control.channel_sequence import enable_channel_sequence
 import control.utils as utils
 from control.core.coordinate_provenance import (
@@ -2830,8 +2831,18 @@ def ask_objective_lowered(parent) -> bool:
     return box.clickedButton() is home_btn
 
 
-class HomingRefused(Exception):
-    """A home will not start now; str(e) says why (a clause: "the stage is still moving")."""
+def show_homing_failure(parent, title: str, error: str, still_homing: bool) -> None:
+    """A home that raised (Home stage, Home X/Y). still_homing: its claim is still held, as the stage has not
+    reported that it stopped."""
+    if still_homing:
+        QMessageBox.warning(
+            parent,
+            title,
+            f"Homing did not finish ({error}). The stage still reports motion: motion controls stay locked until it "
+            "stops.",
+        )
+    else:
+        QMessageBox.warning(parent, title, f"Homing failed: {error}")
 
 
 class StageUtils(QDialog):
@@ -2953,7 +2964,7 @@ class StageUtils(QDialog):
         self, blocker: Callable[[], Optional[str]], claim: Callable[[str], "StageHomingClaim"]
     ) -> None:
         """Home X / Home Y: blocker() returns why the stage must not home now, or None; claim(operation) takes the
-        Microscope's homing claim for the home once the stage reports it stopped, or raises HomingRefused."""
+        Microscope's homing claim for the home once the stage reports it stopped, or raises StageHomingRefused."""
         self._homing_blocker = blocker
         self._claim = claim
 
@@ -2975,7 +2986,7 @@ class StageUtils(QDialog):
     def _home_xy_axis(self, axis: str):
         """Home X or Y: refused while something else drives the stage; on a piezo-only system the lower-the-objective
         prompt replaces the generic confirmation; the home holds the Microscope's homing claim (live paused, other
-        motion refused), released once the stage reports it stopped."""
+        motion refused), released once the stage reports it stopped. A failure is shown, as Home stage shows it."""
         operation = f"Home {axis.upper()}"
         if self._homing_refused():
             return
@@ -2985,18 +2996,25 @@ class StageUtils(QDialog):
         else:
             objective_lowered = False
             confirmed = self._confirm_homing()
-        # Again after the confirmation: something may have started while it was open.
-        if not confirmed or self._homing_refused():
+        if not confirmed:
             return
         try:
+            # The claim asks the blocker again: something may have started while the confirmation was open.
             claim = self._claim(operation)
-        except HomingRefused as e:
-            self._refuse_homing(str(e))
+        except StageHomingRefused as e:
+            self._refuse_homing(e.reason)
             return
+        error = None
         try:
             self.stage.home(x=axis == "x", y=axis == "y", z=False, theta=False, objective_lowered=objective_lowered)
+        except Exception as e:
+            self.log.exception(f"{operation} failed")
+            error = str(e)
         finally:
             claim.release_when_stopped()
+        if error is not None:
+            show_homing_failure(self, "Homing", error, still_homing=not claim.released)
+            return
         self.signal_axes_homed.emit({axis})
 
     def _homing_refused(self) -> bool:
