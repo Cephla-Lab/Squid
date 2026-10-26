@@ -815,10 +815,10 @@ class Microscope:
                 and self.startup_homing is StartupHoming.ALREADY_HOMED
                 and squid.stage.utils.z_is_referenced()
             ):
-                # A normal startup has homed Z by now; a warm one homed nothing, so Z is where the last session left
-                # it (after a crash, possibly at focus height). It retracts before the Xeryon moves, as for the
-                # loading position. (A turret's home() retracts Z itself.)
-                squid.stage.utils.retract_objective(self.stage)
+                # A normal startup has homed (a V-308: retracted) Z by now; a warm one homed nothing, so Z is where
+                # the last session left it (after a crash, possibly at focus height). It retracts before the Xeryon
+                # moves. (A turret's home() retracts Z itself.)
+                self._retract_z_for_objective_changer()
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
             # homing on a software restart: the controller retains its position counter
             # across close()/re-init (the motor is de-energized but the drive stays
@@ -1339,6 +1339,17 @@ class Microscope:
 
             self._log.info("Homing the Y axis...")
             self.stage.home(x=False, y=True, z=False, theta=False, objective_lowered=objective_lowered)
+
+    def _retract_z_for_objective_changer(self) -> None:
+        """Z to its objective-clear position, where a normal startup leaves it before the objective changer moves.
+        A V-308 retracts as _home_xyz retracts it, through its home(z): referenced if needed, then to its configured
+        retract (the positive travel limit with PI_FOCUS_HOME_TO_POSITIVE_LIMIT, an upright system, where
+        OBJECTIVE_RETRACTED_POS_MM is toward the sample). A stepper Z goes to OBJECTIVE_RETRACTED_POS_MM, only from
+        above it, as for the loading position (squid.stage.utils.retract_objective)."""
+        if control._def.USE_PI_FOCUS_STAGE:
+            self.stage.home(x=False, y=False, z=True, theta=False)
+        else:
+            squid.stage.utils.retract_objective(self.stage)
 
     def _raise_z_lift_to_sample_height(self) -> None:
         """After homing, raise the Z lift to the working height saved for the sample format; with none it stays

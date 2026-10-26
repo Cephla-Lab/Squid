@@ -13,6 +13,7 @@ import control.microcontroller
 import control.microscope
 import squid.config
 import squid.stage.cephla
+import squid.stage.pi
 import squid.stage.prior
 import squid.stage.utils
 import tests.squid.test_stage
@@ -1028,7 +1029,8 @@ def _left_at_z(z_mm):
 
 def _record_changer(monkeypatch, kind):
     """The objective changer of `kind` ("xeryon" or "turret"), simulated, recording in order each stage Z move
-    (move_z_to's target) and each changer call with the Z the stage stood at when it came."""
+    (move_z_to's target), each stage home (its axes) and each changer call with the Z the stage stood at when it
+    came."""
     events = []
 
     def at_z(stage, call):
@@ -1064,13 +1066,18 @@ def _record_changer(monkeypatch, kind):
     monkeypatch.setattr(control._def, "USE_XERYON", kind == "xeryon")
     monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", kind == "turret")
 
-    real_move_z_to = squid.stage.cephla.CephlaStage.move_z_to
+    for stage_class in (squid.stage.cephla.CephlaStage, squid.stage.pi.CombinedStage):
 
-    def move_z_to(stage, abs_mm, blocking=True):
-        events.append(("move_z_to", abs_mm))
-        return real_move_z_to(stage, abs_mm, blocking)
+        def move_z_to(stage, abs_mm, blocking=True, real=stage_class.move_z_to):
+            events.append(("move_z_to", abs_mm))
+            return real(stage, abs_mm, blocking)
 
-    monkeypatch.setattr(squid.stage.cephla.CephlaStage, "move_z_to", move_z_to)
+        def home(stage, x, y, z, theta, blocking=True, objective_lowered=False, real=stage_class.home):
+            events.append(("stage.home", (x, y, z, theta)))
+            return real(stage, x, y, z, theta, blocking, objective_lowered=objective_lowered)
+
+        monkeypatch.setattr(stage_class, "move_z_to", move_z_to)
+        monkeypatch.setattr(stage_class, "home", home)
     return events
 
 
@@ -1124,4 +1131,35 @@ def test_a_warm_start_leaves_the_turret_to_retract_z_itself(monkeypatch):
     events = _record_changer(monkeypatch, "turret")
     scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
     assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
+
+
+@pytest.mark.parametrize("to_positive_limit", [True, False])
+def test_a_warm_start_retracts_a_v308_through_its_home_before_the_xeryon_moves(monkeypatch, to_positive_limit):
+    """A V-308 retracts as _home_xyz retracts it on a normal startup, through its own home(z): to the positive travel
+    limit with PI_FOCUS_HOME_TO_POSITIVE_LIMIT (an upright system, where OBJECTIVE_RETRACTED_POS_MM is toward the
+    sample), otherwise to OBJECTIVE_RETRACTED_POS_MM."""
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True)
+    monkeypatch.setattr(control._def, "PI_FOCUS_INVERT_Z", False)
+    monkeypatch.setattr(control._def, "PI_FOCUS_HOME_TO_POSITIVE_LIMIT", to_positive_limit)
+    real_initialize = squid.stage.pi._SimulatedC414.initialize
+
+    def left_at_focus(c414, reference=True, **kwargs):  # still referenced, at the height a crashed session left
+        real_initialize(c414, reference=reference, **kwargs)
+        c414.move_to(1.5)
+
+    monkeypatch.setattr(squid.stage.pi._SimulatedC414, "initialize", left_at_focus)
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim()))
+    # The positive limit as the startup fenced it (Z's MAX_POSITION), or the retracted position
+    retracted = (
+        squid.config.get_stage_config().Z_AXIS.MAX_POSITION
+        if to_positive_limit
+        else control._def.OBJECTIVE_RETRACTED_POS_MM
+    )
+    assert events == [
+        ("stage.home", (False, False, True, False)),
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
     scope.close()
