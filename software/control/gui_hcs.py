@@ -2520,7 +2520,9 @@ class HighContentScreeningGui(QMainWindow):
 
     def openChannelConfigurationEditor(self):
         """Open the illumination channel configurator dialog"""
-        dialog = widgets.IlluminationChannelConfiguratorDialog(self.microscope.config_repo, self)
+        dialog = widgets.IlluminationChannelConfiguratorDialog(
+            self.microscope.config_repo, self, engine_drive=self.microscope.illumination_controller.engine_drive
+        )
         dialog.signal_channels_updated.connect(self._refresh_channel_lists)
         dialog.exec_()
 
@@ -2561,9 +2563,10 @@ class HighContentScreeningGui(QMainWindow):
         dialog.exec_()
 
     def openIntensityCalibration(self):
-        """Open Utils > Illumination Power Calibration...: measure DAC-driven illumination channels with a power meter
-        and make their intensity linear in power. See control/widgets_intensity_calibration.py."""
-        from control.lighting import IntensityControlMode
+        """Open Utils > Illumination Power Calibration...: measure DAC-driven illumination channels or laser engine v2
+        lines with a power meter and make their intensity linear in power. See control/widgets_intensity_calibration.py.
+        """
+        from control.lighting import IntensityControlMode, LightSourceType
         from control.widgets_intensity_calibration import IntensityCalibrationDialog
         from squid.intensity_calibration_run import CalibrationSession, measured_in_label
 
@@ -2583,11 +2586,17 @@ class HighContentScreeningGui(QMainWindow):
                 self.liveController.update_illumination()
 
         illumination = self.microscope.illumination_controller
+        engine = None
+        if illumination.light_source_type == LightSourceType.CephlaLaserEngineV2:
+            from control.laser_engine_v2_calibration import EngineCalibration
+
+            engine = EngineCalibration(illumination)
         session = CalibrationSession(
             self.microcontroller,
             self.microscope.config_repo,
             dac_driven=illumination.light_source_type is None
             and illumination.intensity_control_mode == IntensityControlMode.SquidControllerDAC,
+            engine=engine,
         )
         measured_in = measured_in_label(
             self.microscope.config_repo.has_confocal(), self.liveController.is_confocal_mode()

@@ -7,6 +7,8 @@ from control.laser_engine_v2 import LaserEngineV2, LaserEngineV2Error
 from control.laser_engine_v2_link import EngineLink
 from control.laser_engine_v2_sim import FakeEngine, FakeSource
 from control.laser_engine_v2_status import LineState
+from control.lighting import CalibrationLookup
+from tests.squid.calibration_fixtures import make_engine_calibration
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +57,27 @@ def test_an_old_560_aom_csv_is_not_used(tmp_path, monkeypatch):
     mark = len(fake.sent)
     engine.set_wavelength_intensity(560, 100.0)
     assert _aom_sets(fake.sent, mark) == ["LINE3:SET 5.000"]  # linear: not the file's 4 V peak
+
+
+def test_560_intensity_goes_through_the_calibration_the_provider_gives():
+    engine, fake, source = _ready_engine()
+    c = make_engine_calibration(wavelength_nm=560, port="D3", line=3, ceiling=5.0, unit="V")
+    engine.calibration_provider = lambda wavelength: CalibrationLookup(c.file_name, c if wavelength == 560 else None)
+    mark, power = len(fake.sent), source.power_mw
+    engine.light_source.set_intensity(engine.light_source.channel_mappings[560], 50.0)
+    volts = c.commanded_percent(50.0, 1.0, 1.0)[0] / 100.0 * 5.0
+    assert _aom_sets(fake.sent, mark) == ["LINE3:SET %.3f" % volts]
+    assert source.power_mw == power
+
+
+def test_aom_set_points_are_the_millivolts_sent():
+    engine, fake, source = _ready_engine()
+    engine.set_line_intensity(3, 40.0)  # 2.000 V
+    mark = len(fake.sent)
+    engine.set_line_intensity(3, 40.018)  # 2.0009 V: 2.001 V on the wire, a change, so it is sent
+    engine.set_line_intensity(3, 40.0196)  # 2.00098 V: the same 2.001 V, not sent again
+    assert _aom_sets(fake.sent, mark) == ["LINE3:SET 2.001"]
+    assert fake.lines[2]["target"] == 2.001
 
 
 def test_wake_sets_the_aom_to_the_requested_intensity_dark_until_asked():

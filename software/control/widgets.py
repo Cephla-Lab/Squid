@@ -14822,10 +14822,13 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     COL_CALIBRATION = 5
     COL_CALIBRATION_STATUS = 6
 
-    def __init__(self, config_repo, parent=None):
+    def __init__(self, config_repo, parent=None, engine_drive=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
         self.config_repo = config_repo
+        # wavelength -> the laser engine line it drives (IlluminationController.engine_drive), for the status column;
+        # None: the channels are driven through the controller DAC
+        self._engine_drive = engine_drive
         self.illumination_config = None
         self.setWindowTitle("Illumination Channel Configurator")
         self.setMinimumSize(900, 500)
@@ -14973,6 +14976,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
     def _calibration_status(self, channel) -> str:
         if channel.wavelength_nm is None:
             return ""
+        engine = self._engine_drive(channel.wavelength_nm) if self._engine_drive is not None else None
         return calibration_status(
             self.config_repo.machine_configs_path / CALIBRATIONS_DIR_NAME,
             channel.intensity_calibration_file,
@@ -14981,6 +14985,7 @@ class IlluminationChannelConfiguratorDialog(QDialog):
             channel.max_output,
             controller_port=channel.controller_port,
             source_code=self.illumination_config.get_source_code(channel),
+            engine=engine,
         )
 
     def _on_type_changed(self, row, new_type):

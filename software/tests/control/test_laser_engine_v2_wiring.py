@@ -126,6 +126,8 @@ def test_simulated_microscope_uses_the_v2_engine(monkeypatch):
         assert ic.intensity_control_mode == IntensityControlMode.Software
         assert ic.shutter_control_mode == ShutterControlMode.TTL
         assert engine._ttl_map() == ic.channel_mappings_TTL  # one wavelength map for intensity and exposure
+        assert engine.calibration_provider == ic.lookup_calibration  # intensities go through the controller's lookup
+        assert engine.serial_number == "SIMULATED"
         assert engine.in_use_provider == scope.live_controller.illumination_wavelengths_in_use  # live counts as use
         assert (
             "TEC1:OUT 1" in engine.sim_engine.sent and "ARM" in engine.sim_engine.sent
@@ -310,9 +312,9 @@ def test_a_power_change_holds_the_acquisition_until_the_source_reads_it(monkeypa
         engine.close()
 
 
-def _engine_controller(engine, ttl_map):
+def _engine_controller(engine, ttl_map, machine_configs_path):
     """An IlluminationController on `engine`, its port map read from `ttl_map` (wavelength -> port code) on every
-    call, so a test can remap a wavelength by editing the dict."""
+    call, so a test can remap a wavelength by editing the dict. No calibration files: intensities stay linear."""
     from types import SimpleNamespace
 
     from control.lighting import IlluminationController, LightSourceType
@@ -325,14 +327,15 @@ def _engine_controller(engine, ttl_map):
         engine.light_source,
     )
     controller.config_repo = MagicMock()
+    controller.config_repo.machine_configs_path = machine_configs_path
     illumination_config = controller.config_repo.get_illumination_config.return_value
-    illumination_config.channels = [SimpleNamespace(wavelength_nm=w) for w in ttl_map]
+    illumination_config.channels = [SimpleNamespace(wavelength_nm=w, intensity_calibration_file=None) for w in ttl_map]
     illumination_config.get_source_code.side_effect = lambda channel: ttl_map[channel.wavelength_nm]
     engine.ttl_map_provider = lambda: controller.channel_mappings_TTL
     return controller
 
 
-def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(monkeypatch):
+def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(monkeypatch, tmp_path):
     from control._def import ILLUMINATION_CODE
     from control.laser_engine_v2_link import EngineLink
 
@@ -341,7 +344,7 @@ def test_a_port_remap_at_the_same_intensity_moves_the_set_point_to_the_new_line(
     try:
         fake.tok = [True] * 5
         ttl_map = {488: ILLUMINATION_CODE.ILLUMINATION_D2}
-        controller = _engine_controller(engine, ttl_map)
+        controller = _engine_controller(engine, ttl_map, tmp_path)
         controller.set_intensity(488, 40)
         assert fake.lines[1]["target"] > 0
         ttl_map[488] = ILLUMINATION_CODE.ILLUMINATION_D4  # the operator remaps 488 nm to D4 (engine line 4)
@@ -356,7 +359,7 @@ def _line2_sets(fake, since):
     return [c for c in fake.sent[since:] if c.startswith("LINE2:SET")]
 
 
-def test_a_wavelength_gets_its_set_point_back_after_another_wavelength_used_its_line(monkeypatch):
+def test_a_wavelength_gets_its_set_point_back_after_another_wavelength_used_its_line(monkeypatch, tmp_path):
     """470 and 488 nm on one port drive one engine line: switching back to 488 at its unchanged % must send it again,
     as the line holds 470's set-point."""
     from control._def import ILLUMINATION_CODE
@@ -367,7 +370,7 @@ def test_a_wavelength_gets_its_set_point_back_after_another_wavelength_used_its_
     try:
         fake.tok = [True] * 5
         controller = _engine_controller(
-            engine, {470: ILLUMINATION_CODE.ILLUMINATION_D2, 488: ILLUMINATION_CODE.ILLUMINATION_D2}
+            engine, {470: ILLUMINATION_CODE.ILLUMINATION_D2, 488: ILLUMINATION_CODE.ILLUMINATION_D2}, tmp_path
         )
         ceiling = fake.lines[1]["max"]
         controller.set_intensity(488, 50)
@@ -380,7 +383,7 @@ def test_a_wavelength_gets_its_set_point_back_after_another_wavelength_used_its_
         engine.close()
 
 
-def test_an_unchanged_percent_of_the_wavelength_a_line_holds_is_not_sent_again(monkeypatch):
+def test_an_unchanged_percent_of_the_wavelength_a_line_holds_is_not_sent_again(monkeypatch, tmp_path):
     """The other side of the test above: each set-point waits out the line's ramp, so one already held is not resent."""
     from control._def import ILLUMINATION_CODE
     from control.laser_engine_v2_link import EngineLink
@@ -390,7 +393,7 @@ def test_an_unchanged_percent_of_the_wavelength_a_line_holds_is_not_sent_again(m
     try:
         fake.tok = [True] * 5
         controller = _engine_controller(
-            engine, {470: ILLUMINATION_CODE.ILLUMINATION_D2, 488: ILLUMINATION_CODE.ILLUMINATION_D2}
+            engine, {470: ILLUMINATION_CODE.ILLUMINATION_D2, 488: ILLUMINATION_CODE.ILLUMINATION_D2}, tmp_path
         )
         controller.set_intensity(470, 20)
         controller.set_intensity(488, 50)

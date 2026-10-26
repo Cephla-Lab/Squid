@@ -3,7 +3,8 @@ the Dragonfly; adds a 560 nm fiber laser with an AOM on line 3).
 
 One object owns the engine link (and, on DF, the engine's 560 nm source). It polls STAT? once a second, which is also the heartbeat the
 firmware needs to stay armed; publishes per-line readiness; arms and brings every line up at Squid startup, and re-arms on use after
-any disarm; and sets intensities, linear in each line's drive (% of its current ceiling; on DF line 3, of the AOM's
+any disarm; and sets intensities: through the calibration Squid resolves for a wavelength (calibration_provider,
+wired by wire_illumination), else linear in the line's drive (% of its current ceiling; on DF line 3, of the AOM's
 0-5 V input). Exposure timing is NOT here: the Squid controller's TTL lines gate the lines in hardware
 (IlluminationController, ShutterControlMode.TTL).
 
@@ -40,6 +41,7 @@ from control.laser_engine_v2_status import (
     SourceStatus,
 )
 from control.lighting import _DEFAULT_CHANNEL_MAPPINGS_TTL, IntensityControlMode, ShutterControlMode
+from squid.intensity_calibration import EngineDrive, EngineLineIdentity, EngineUnavailable
 from squid.abc import LightSource
 
 IDN_PREFIX = "Cephla,LaserEngineCarrier-rev1,"
@@ -127,12 +129,18 @@ class LaserEngineV2(QObject):
         source_factory: Optional[Callable[[], object]] = None,
         query_interval_s: Optional[float] = None,
         options: Optional[EngineOptions] = None,
+        serial_number: str = "",
     ):
         super().__init__()
         self._link_factory = link_factory
         self._source_factory = source_factory
         self.query_interval_s = query_interval_s or self.DEFAULT_QUERY_INTERVAL_S
         self.options = options or EngineOptions()
+        self.serial_number = str(serial_number or "")  # laser_engine_sn: what calibrations are tied to
+        # wavelength -> the calibration that applies (control.lighting.CalibrationLookup): Microscope sets it to
+        # IlluminationController.lookup_calibration (wire_illumination); None = uncalibrated
+        self.calibration_provider: Optional[Callable[[int], object]] = None
+        self._linear_logged: set = set()
         self.notices: List[str] = []
         self._link: Optional[EngineLink] = None
         self.variant = ""
@@ -1038,14 +1046,43 @@ class LaserEngineV2(QObject):
         return 100.0 * float(ln["target"]) / float(ln["max"]) if ln["max"] else 0.0
 
     def set_wavelength_intensity(self, wavelength: int, percent: float) -> None:
-        """Squid's intensity on the line whose TTL port this wavelength uses: linear in the line's drive (% of its
-        current ceiling; on DF line 3, of the AOM's 0-5 V input)."""
+        """Squid's intensity, % of optical power as for its other light sources, on the line whose TTL port this
+        wavelength uses: through the calibration that applies (calibration_provider), else linear in the line's drive.
+        """
         line = self.line_for_wavelength(wavelength)
         if line is None:
             raise LaserEngineV2Error(f"{wavelength} nm", "not on an engine port (D1-D5) in the illumination port map")
         percent = max(0.0, min(100.0, float(percent)))
         self._requested[wavelength] = percent
-        self.set_line_intensity(line, percent)
+        calibration = self._calibration_for(wavelength)
+        if calibration is None:
+            if wavelength not in self._linear_logged:
+                self._linear_logged.add(wavelength)
+                self._log.info(f"{wavelength} nm: no intensity calibration applies - linear % of the L{line} ceiling")
+            self.set_line_intensity(line, percent)
+            return
+        drive, _ = calibration.commanded_percent(percent, 1.0, 1.0)  # x = fraction of the ceiling: no factor
+        self.set_line_intensity(line, drive)
+
+    def _calibration_for(self, wavelength: int):
+        provider = self.calibration_provider
+        return provider(wavelength).calibration if provider is not None else None
+
+    def line_identity(self, line: int) -> EngineDrive:
+        """This line as calibrations are checked against it, from the latest status: no I/O."""
+        if not self.serial_number:
+            return EngineUnavailable("the laser engine's serial number is not known (laser_engine_sn)")
+        if self._lost:
+            return EngineUnavailable("laser engine connection lost")
+        status = self.get_latest_status()
+        if status is None:
+            return EngineUnavailable("laser engine status not read yet")
+        info = status.channels.get(f"L{line}")
+        if info is None or info.state == LineState.UNUSED:
+            return EngineUnavailable(f"nothing on L{line} in this variant")
+        return EngineLineIdentity(
+            self.serial_number, status.variant, line, info.max, "V" if info.kind == "VOLT" else "A"
+        )
 
     def get_wavelength_intensity(self, wavelength: int) -> float:
         if wavelength in self._requested:
@@ -1111,8 +1148,9 @@ class LaserEngineV2(QObject):
         return max(float(src.min_power_mw), min(float(mw), float(src.max_power_mw)))
 
     def _aom_volts_for(self, percent: float) -> float:
-        """Line 3 drive (% of the AOM's 0-5 V input) -> volts."""
-        return AOM_FULL_SCALE_V * min(1.0, max(0.0, percent / 100.0))
+        """Line 3 drive (% of the AOM's 0-5 V input) -> volts, as LINE3:SET sends them (to the millivolt), so what is
+        cached and compared is what the engine holds."""
+        return round(AOM_FULL_SCALE_V * min(1.0, max(0.0, percent / 100.0)), 3)
 
     def aom_percent_for_volts(self, volts: float) -> float:
         """The line 3 drive (%) a set-point is: the inverse of _aom_volts_for (for display; no I/O)."""
@@ -1122,7 +1160,7 @@ class LaserEngineV2(QObject):
         """Line 3 set-point = the AOM analog input. _aom_lock covers compare + send + cache, not the ramp wait (poll_once
         can re-enter _wake_source)."""
         with self._aom_lock:
-            if self._aom_volts is not None and abs(volts - self._aom_volts) < 1e-3:
+            if self._aom_volts is not None and volts == self._aom_volts:  # millivolts, as sent
                 return
             try:
                 self._cmd(f"LINE3:SET {volts:.3f}")
@@ -1229,6 +1267,17 @@ class LaserEngineV2LightSource(LightSource):
     def get_intensity(self, channel: Optional[EngineLine]) -> float:
         return 0.0 if channel is None else self._engine.get_wavelength_intensity(channel.wavelength)
 
+    @property
+    def engine(self) -> LaserEngineV2:
+        return self._engine
+
+    def engine_drive(self, wavelength) -> EngineDrive:
+        """The engine line `wavelength` drives, as calibrations are checked against it (no I/O)."""
+        line = self._engine.line_for_wavelength(wavelength)
+        if line is None:
+            return EngineUnavailable(f"{wavelength} nm is not on an engine port (D1-D5) in the illumination port map")
+        return self._engine.line_identity(line)
+
     def shut_down(self):
         self._engine.close()
 
@@ -1257,4 +1306,13 @@ def build_from_config(sn: Optional[str], options: EngineOptions) -> LaserEngineV
         link_factory=lambda: EngineLink.open(sn=sn),
         source_factory=_production_source_factory(),
         options=options,
+        serial_number="" if sn is None else str(sn),
     )
+
+
+def wire_illumination(engine: LaserEngineV2, illumination) -> None:
+    """Connect the engine to Squid's IlluminationController: a wavelength's line is the port its TTL uses, and its
+    intensity goes through the calibration the controller resolves for it. Both are read live, so port-map edits, a
+    saved calibration and the Microscope.config_repo setter take effect at once."""
+    engine.ttl_map_provider = lambda: illumination.channel_mappings_TTL
+    engine.calibration_provider = illumination.lookup_calibration
