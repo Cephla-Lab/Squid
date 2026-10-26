@@ -95,6 +95,26 @@ def test_a_controller_dac_file_and_an_old_file_are_not_applied_to_an_engine_line
     assert "no laser engine identity" in instrument.illumination.lookup_calibration(405).error
 
 
+# Only the brightfield channel: no channel has a wavelength, so the port map falls back to Squid's default (488 on D2)
+NO_WAVELENGTH_CHANNELS_YAML = ENGINE_YAML[: ENGINE_YAML.index("  - name: Fluorescence 405 nm Ex")]
+
+
+@pytest.mark.parametrize("yaml", [NO_WAVELENGTH_CHANNELS_YAML, None], ids=["no-wavelength-channels", "no-config-file"])
+def test_an_old_file_never_drives_an_engine_line_without_a_channel(tmp_path, yaml):
+    """No channel for 488 nm: the default port map still puts it on L2, and 488.csv is found by name as on master -
+    but a calibration reaches an engine line only through its channel, where its identity is checked."""
+    inst = engine_instrument(tmp_path, yaml=yaml)
+    try:
+        write_legacy_csv(inst.calibrations / "488.csv", DAC, (DAC / 100.0) ** 2)  # far from linear
+        _ready(inst, "L2")
+        mark = len(inst.fake.sent)
+        inst.illumination.set_intensity(488, 50.0)
+        assert _sets(inst, 2, mark) == ["LINE2:SET %.4f" % (0.5 * 2.045)]
+        assert "no channel" in inst.illumination.lookup_calibration(488).error
+    finally:
+        inst.engine.close()
+
+
 def test_a_calibration_for_a_channel_moved_to_another_port_is_not_applied(instrument):
     _install(instrument, make_engine_calibration())
     config = instrument.repo.get_illumination_config(for_edit=True)

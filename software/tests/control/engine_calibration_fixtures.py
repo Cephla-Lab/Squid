@@ -50,7 +50,8 @@ channels:
 def engine_instrument(tmp_path, serial="SN-1", fake=None, yaml=ENGINE_YAML, start=True):
     machine_configs = tmp_path / "machine_configs"
     (machine_configs / "intensity_calibrations").mkdir(parents=True, exist_ok=True)
-    (machine_configs / "illumination_channel_config.yaml").write_text(yaml)
+    if yaml is not None:  # None: no illumination config file at all
+        (machine_configs / "illumination_channel_config.yaml").write_text(yaml)
     repo = ConfigRepository(base_path=tmp_path)
     fake = fake or FakeEngine(tok_delay_polls=0)
     source = FakeSource()

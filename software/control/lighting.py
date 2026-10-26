@@ -324,12 +324,19 @@ class IlluminationController:
 
     def _checked(self, wavelength, channel, calibration, file_name, version, error) -> CalibrationLookup:
         """`calibration` as the lookup's answer if it belongs to `channel` (wavelength, port, controller source and,
-        on a laser engine, the engine line), else none with the reason."""
-        if calibration is not None and channel is not None:
-            source_code = self.config_repo.get_illumination_config().get_source_code(channel)
-            mismatch = calibration.identity_mismatch(
-                channel.wavelength_nm, channel.controller_port, source_code, self.engine_drive(wavelength)
-            )
+        on a laser engine, the engine line), else none with the reason. Without a channel there is nothing to check a
+        file against: the controller DAC applies <wavelength>.csv as master did, a laser engine line applies none (the
+        default port map still puts the wavelength on a line)."""
+        if calibration is not None:
+            if channel is not None:
+                source_code = self.config_repo.get_illumination_config().get_source_code(channel)
+                mismatch = calibration.identity_mismatch(
+                    channel.wavelength_nm, channel.controller_port, source_code, self.engine_drive(wavelength)
+                )
+            elif self._drives_engine():
+                mismatch = f"no channel for {wavelength} nm in the illumination config to check {file_name} against"
+            else:
+                mismatch = None
             if mismatch:
                 self._log_once(
                     logging.WARNING, f"illumination calibration not used, {wavelength} nm runs uncalibrated: {mismatch}"
