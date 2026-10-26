@@ -249,8 +249,8 @@ class IntensityCalibrationDialog(QDialog):
             self.table.setItem(row, self.COL_RUN, self._readonly_item(""))
         if not self.session.dac_driven:
             self.label_note.setText(
-                "This instrument sets illumination power in the light source itself (LDI, CELESTA or Andor), not "
-                "through the controller DAC, so there is nothing to calibrate here."
+                "This instrument sets illumination power in the light source itself, not through the controller "
+                "DAC, so there is nothing to calibrate here."
             )
         elif not self.targets:
             self.label_note.setText(
