@@ -764,8 +764,8 @@ class Microcontroller:
         self._startup_verdict_packet = None
         # The startup decision (reset_and_initialize only). startup_verdict: the controller's answer to the startup
         # query, None when it was not asked (older firmware, --skip-init, a startup that homes no stage axis) or gave
-        # none. startup_was_warm: the answer
-        # was WARM, so INITIALIZE and the motor configuration were skipped and the stage is still homed.
+        # none. startup_was_warm: the answer was WARM, so INITIALIZE and the motor configuration were skipped and the
+        # stage is still homed.
         self.startup_verdict: Optional[StartupVerdict] = None
         self.startup_was_warm = False
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
