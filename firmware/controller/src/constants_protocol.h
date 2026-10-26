@@ -95,6 +95,11 @@ static const int SET_FOCUS_WHEEL_MODE = 65;     // [2]=FOCUS_WHEEL_* mode, [3]=F
 // Firmware 1.8. Locked, the control panel moves nothing: joystick X/Y reads centred and wheel turns are dropped
 // (the wheel baseline still follows, so nothing is released at unlock). Not saved; RESET and INITIALIZE unlock.
 static const int SET_PANEL_LOCK = 66;           // [2]=1 lock, 0 unlock
+// Firmware 1.9 startup state (utils/homing_validity.h): may a relaunched host skip startup homing? Neither command
+// moves anything. [2..5] = the host's configuration signature (big-endian), [6] = (format << 4) | required axes mask.
+static const int STORE_CONFIG_SIGNATURE = 67;   // [6] mask nibble is 0; a different signature or format clears every homed flag
+static const int QUERY_STARTUP_STATE = 68;      // [6] mask bit a = protocol axis a must be homed; the answer is in status
+                                                // byte 18 (BIT_POS_STARTUP_VERDICT) until the next command arrives
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_LIMIT_SWITCH_CONFIG nibble
@@ -154,6 +159,8 @@ static const int AXIS_W2 = 6;
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
 static const int BIT_POS_Z_LIMIT_LEFT = 2;   // status byte 18: Z left limit switch triggered
 static const int BIT_POS_Z_LIMIT_RIGHT = 3;  // status byte 18: Z right limit switch triggered
+static const int BIT_POS_STARTUP_VERDICT = 4;  // status byte 18 (1.9): set while the packet answers QUERY_STARTUP_STATE
+static const int STARTUP_VERDICT_SHIFT = 5;    // status byte 18 bits 5-7 (1.9): the STARTUP_VERDICT_*, valid with bit 4
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;

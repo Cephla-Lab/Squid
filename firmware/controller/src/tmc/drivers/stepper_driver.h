@@ -104,4 +104,11 @@ void    tmc_driver_enable(TMC4361ATypeDef *tmc4361A, bool enable);
 int16_t tmc_driver_config_stallguard(TMC4361ATypeDef *tmc4361A, int8_t sensitivity,
                                      bool filter_en, uint32_t vstall_lim);
 
+/* Firmware 1.9 startup state: is this axis's TMC4361A still set up for its
+   driver? Reads SPIOUT_CONF and compares it with the full word this driver's
+   init() wrote (TMC_SPIOUT_CONF_2660 / TMC_SPIOUT_CONF_2240): a TMC4361A that
+   lost power or was reset since then holds something else. One read, no write.
+   DRIVER_UNKNOWN answers false without reading - nothing was configured. */
+bool    tmc_config_intact(TMC4361ATypeDef *tmc4361A);
+
 #endif /* STEPPER_DRIVER_H */

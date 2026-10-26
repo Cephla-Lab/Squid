@@ -65,8 +65,23 @@
 //               SET_PANEL_LOCK (66) locks the control panel: joystick X/Y reads
 //               centred and wheel turns are dropped (a lift system at its
 //               loading position). Not saved; RESET and INITIALIZE unlock.
+// Version 1.9 = startup state, so a relaunched host can skip startup homing when
+//               the stage is still homed (utils/homing_validity.h). Per X/Y/Z
+//               homed flag: set when a home started and finished with power good
+//               and the driver enabled; cleared by zeroing the axis, disabling its
+//               driver, power good low, INITIALIZE and power-up. RESET keeps it.
+//               STORE_CONFIG_SIGNATURE (67) keeps one signature of the host's
+//               configuration; a covered X/Y/Z setting (pitch, driver,
+//               velocity/acceleration, home margin, limit switches) that arrives
+//               with different bytes empties it. Storing a different signature,
+//               or any signature after it was emptied, clears every flag.
+//               QUERY_STARTUP_STATE (68) answers in status byte 18: bit 4 set and
+//               a STARTUP_VERDICT_* in bits 5-7, until the next command. Bits 4-7
+//               are 0 in every other packet, as before 1.9.
+//               The number may move to the next free minor at merge: the piezo
+//               focus wheel design also claims 1.9.
 #define FIRMWARE_VERSION_MAJOR 1
-#define FIRMWARE_VERSION_MINOR 8
+#define FIRMWARE_VERSION_MINOR 9
 
 #include "def/def_v1.h"
 

@@ -127,6 +127,11 @@ uint8_t focus_wheel_power_up_mode = FOCUS_WHEEL_DRIVES_Z;
 int32_t focus_wheel_host_count = 0;
 bool panel_locked_by_host = false;
 
+// startup state (firmware 1.9)
+HomingValidity homing_validity;
+bool startup_verdict_pending = false;
+uint8_t startup_verdict = STARTUP_VERDICT_NO_SIGNATURE;
+
 // btns
 uint8_t btns;
 

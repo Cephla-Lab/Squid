@@ -39,6 +39,8 @@ void process_serial_message()
           mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
       }
 
+      // Startup state (1.9): a verdict answers only the command that asked for it (QUERY_STARTUP_STATE sets it again)
+      startup_verdict_pending = false;
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
         callback_default();
@@ -117,6 +119,12 @@ void send_position_update()
     // Z limit inputs, bits 2-3 (left, right)
     buffer_tx[18] &= ~((1 << BIT_POS_Z_LIMIT_LEFT) | (1 << BIT_POS_Z_LIMIT_RIGHT));
     buffer_tx[18] |= lsc_status_bits(tmc4361A_readLimitSwitches(&tmc4361[z]));
+
+    // Startup verdict (firmware 1.9), bits 4-7: cleared in every packet; while the last command received was
+    // QUERY_STARTUP_STATE, bit 4 is set and bits 5-7 carry its STARTUP_VERDICT_*
+    buffer_tx[18] &= ~((1 << BIT_POS_STARTUP_VERDICT) | (0x07 << STARTUP_VERDICT_SHIFT));
+    if (startup_verdict_pending)
+      buffer_tx[18] |= (1 << BIT_POS_STARTUP_VERDICT) | ((startup_verdict & 0x07) << STARTUP_VERDICT_SHIFT);
 
     // Bytes 14-17 (theta - no instrument has a theta axis) and 19-21 (reserved)
     // are zero unless encoder reporting is on. The host ignores all of them

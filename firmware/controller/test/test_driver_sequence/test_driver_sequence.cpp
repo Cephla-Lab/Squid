@@ -93,6 +93,10 @@ static uint32_t g_responses[8];
 static unsigned g_response_count;
 static unsigned g_response_idx;
 
+/* Scripted SPIOUT_CONF word for tmc_config_intact (firmware 1.9 startup state). */
+static bool     g_spiout_conf_scripted;
+static uint32_t g_spiout_conf;
+
 /* Any read the modules are not supposed to perform gets this back. Its TOFF
    nibble is 0xF and its MRES nibble is 0xD, so a leaked read-modify-write
    surfaces as an obviously wrong chopper word instead of a plausible one. */
@@ -123,6 +127,8 @@ int32_t tmc4361A_readInt(TMC4361ATypeDef *, uint8_t address)
     uint32_t v = READ_POISON;
     if (address == TMC4361A_COVER_DRV_LOW_RD && g_response_idx < g_response_count)
         v = g_responses[g_response_idx++];
+    else if (address == TMC4361A_SPIOUT_CONF && g_spiout_conf_scripted)
+        v = g_spiout_conf;
     record(OP_READ, address, v);
     return (int32_t)v;
 }
@@ -261,6 +267,9 @@ void setUp(void)
     memset(g_responses, 0, sizeof g_responses);
     g_response_count = 0;
     g_response_idx   = 0;
+
+    g_spiout_conf_scripted = false;
+    g_spiout_conf          = 0;
 
     tmc_test_delay_us_total = 0;
 
@@ -1310,6 +1319,48 @@ void test_config_stallguard_returns_zero_and_writes_nothing_on_unknown_driver(vo
         "a DRIVER_UNKNOWN axis must see zero bus operations");
 }
 
+/*
+  tmc_config_intact (firmware 1.9 startup state): the TMC4361A still holds the
+  SPIOUT_CONF word its driver's init() wrote. One read of SPIOUT_CONF (0x04), no
+  write - the query that calls it must not disturb a configured axis (M5) - and
+  the comparison is against that driver's own full word, not the other driver's
+  or the probe's. Literals, as everywhere in this file.
+*/
+static bool config_intact_with(uint8_t driver_type, uint32_t spiout_conf)
+{
+    reset_trace();
+    g_axis.driver_type = driver_type;
+    g_spiout_conf_scripted = true;
+    g_spiout_conf = spiout_conf;
+    bool intact = tmc_config_intact(&g_axis);
+    const Op want[] = { { OP_READ, 0x04, spiout_conf } };
+    assert_trace(want, 1, "tmc_config_intact");
+    return intact;
+}
+
+void test_config_intact_reads_spiout_conf_once_and_matches_its_drivers_word(void)
+{
+    TEST_ASSERT_TRUE_MESSAGE(config_intact_with(DRIVER_TMC2660, 0x4440108Au), "2660 axis holding the 2660 word");
+    TEST_ASSERT_TRUE_MESSAGE(config_intact_with(DRIVER_TMC2240, 0x4445000Du), "2240 axis holding the 2240 word");
+
+    TEST_ASSERT_FALSE_MESSAGE(config_intact_with(DRIVER_TMC2660, 0x4445000Du), "2660 axis holding the 2240 word");
+    TEST_ASSERT_FALSE_MESSAGE(config_intact_with(DRIVER_TMC2240, 0x4440108Au), "2240 axis holding the 2660 word");
+    TEST_ASSERT_FALSE_MESSAGE(config_intact_with(DRIVER_TMC2660, 0x4445000Au), "2660 axis left at the probe word");
+    TEST_ASSERT_FALSE_MESSAGE(config_intact_with(DRIVER_TMC2660, 0x00000000u), "2660 axis after a TMC4361A reset");
+    TEST_ASSERT_FALSE_MESSAGE(config_intact_with(DRIVER_TMC2240, 0x00000000u), "2240 axis after a TMC4361A reset");
+}
+
+void test_config_intact_is_false_and_reads_nothing_on_unknown_driver(void)
+{
+    g_axis.driver_type = DRIVER_UNKNOWN;
+    g_spiout_conf_scripted = true;
+    g_spiout_conf = 0x4440108Au;
+
+    TEST_ASSERT_FALSE_MESSAGE(tmc_config_intact(&g_axis),
+        "a DRIVER_UNKNOWN axis was never configured, so its configuration cannot be intact");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, g_n, "a DRIVER_UNKNOWN axis must see zero bus operations");
+}
+
 /* ------------------------------------------------------------------------- */
 
 int main(int argc, char **argv)
@@ -1353,6 +1404,8 @@ int main(int argc, char **argv)
     RUN_TEST(test_driver_ready_rejects_unknown_and_never_probed_axes);
     RUN_TEST(test_set_current_returns_false_and_writes_nothing_on_unknown_driver);
     RUN_TEST(test_config_stallguard_returns_zero_and_writes_nothing_on_unknown_driver);
+    RUN_TEST(test_config_intact_reads_spiout_conf_once_and_matches_its_drivers_word);
+    RUN_TEST(test_config_intact_is_false_and_reads_nothing_on_unknown_driver);
 
     return UNITY_END();
 }

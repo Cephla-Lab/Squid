@@ -351,6 +351,8 @@ void finalize_homing_x()
   if (is_homing_X && home_X_found && ( tmc4361A_currentPosition(&tmc4361[x]) == tmc4361A_targetPosition(&tmc4361[x]) || us_since_x_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[x], 0);
+    // Startup state (1.9): homed if the home was armed and power and driver stayed good. Protocol axis AXIS_X, not x.
+    hv_home_complete(&homing_validity, AXIS_X, digitalRead(pin_PG));
     if (stage_PID_enabled[AXIS_X])
       tmc4361A_set_PID(&tmc4361[AXIS_X], PID_BPG0);
     X_pos = 0;
@@ -367,6 +369,8 @@ void finalize_homing_y()
   if (is_homing_Y && home_Y_found && ( tmc4361A_currentPosition(&tmc4361[y]) == tmc4361A_targetPosition(&tmc4361[y]) || us_since_y_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[y], 0);
+    // Startup state (1.9): homed if the home was armed and power and driver stayed good. Protocol axis AXIS_Y, not y.
+    hv_home_complete(&homing_validity, AXIS_Y, digitalRead(pin_PG));
     if (stage_PID_enabled[AXIS_Y])
       tmc4361A_set_PID(&tmc4361[AXIS_Y], PID_BPG0);
     Y_pos = 0;
@@ -383,6 +387,8 @@ void finalize_homing_z()
   if (is_homing_Z && home_Z_found && ( tmc4361A_currentPosition(&tmc4361[z]) == tmc4361A_targetPosition(&tmc4361[z]) || us_since_z_home_found > 500 * 1000 ) )
   {
     tmc4361A_setCurrentPosition(&tmc4361[z], 0);
+    // Startup state (1.9): homed if the home was armed and power and driver stayed good. Protocol axis AXIS_Z, not z.
+    hv_home_complete(&homing_validity, AXIS_Z, digitalRead(pin_PG));
     if (stage_PID_enabled[AXIS_Z])
       tmc4361A_set_PID(&tmc4361[AXIS_Z], PID_BPG0);
     Z_pos = 0;
