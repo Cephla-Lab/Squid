@@ -1,15 +1,17 @@
 """The wide Fluidics display tab: instrument on the left (Initialize, manual control, device status,
-Log | Temperature | Reagents), the Protocol editor on the right."""
+Log | Temperature | Flow | Reagents), the Protocol editor on the right."""
 
 from typing import Callable, Optional, Tuple
 
-from qtpy.QtCore import Qt, QTimer, Signal
+from qtpy.QtCore import QEvent, Qt, QTimer, Signal
 from qtpy.QtWidgets import (
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -21,6 +23,63 @@ import squid.logging
 from control.widgets_fluidics.log_view import FluidicsLogView, ReagentsTable
 from control.widgets_fluidics.protocol_tab import ProtocolTab
 from control.widgets_fluidics.system_panel import DeviceStatusGroup, SystemPanel
+
+
+class InstrumentColumn(QSplitter):
+    """The display tab's left column: the instrument block over the Log / sensor tabs.
+
+    The block gets the height it asks for and scrolls when the window is short; the splitter holds
+    the tabs at their minimum, which the plots' canvases set from the height their labels need. A
+    hidden page's layouts are not activated, so on a short screen the divider moves up the first
+    time a plot tab is opened, then stays. Once the operator drags it the split is theirs (a window
+    resize then scales both panes, as any splitter does)."""
+
+    def __init__(self, instrument: QWidget, tabs: QWidget, parent=None):
+        super().__init__(Qt.Vertical, parent)
+        self._instrument = instrument
+        self.instrument_scroll = QScrollArea()
+        self.instrument_scroll.setWidgetResizable(True)
+        self.instrument_scroll.setFrameShape(QFrame.NoFrame)
+        self.instrument_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.instrument_scroll.setWidget(instrument)
+        self.addWidget(self.instrument_scroll)
+        self.addWidget(tabs)
+        self.setChildrenCollapsible(False)
+        self._dragged = False
+        self.splitterMoved.connect(self._on_dragged)
+        for pane in (instrument, tabs):
+            pane.installEventFilter(self)
+        self._content_changed()
+
+    def eventFilter(self, watched, event) -> bool:
+        # Installed on the two panes only. A pane's size hints are fresh once its own LayoutRequest
+        # arrives (Qt propagates them up one posted event at a time), so that is when to look, not
+        # when a widget is added.
+        if event.type() == QEvent.LayoutRequest:
+            self._content_changed()
+        return super().eventFilter(watched, event)
+
+    def _content_changed(self) -> None:
+        """A pane gained or lost widgets (Initialize mounts manual control and the sensor tabs):
+        never clip the block sideways, scroll bar included, and share the height again."""
+        scroll_bar_width = self.instrument_scroll.verticalScrollBar().sizeHint().width()
+        self.instrument_scroll.setMinimumWidth(self._instrument.minimumSizeHint().width() + scroll_bar_width)
+        self._balance()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._balance()
+
+    def _on_dragged(self, _pos: int, _index: int) -> None:
+        self._dragged = True
+
+    def _balance(self) -> None:
+        height = sum(self.sizes())
+        if self._dragged or height == 0:  # 0: not laid out yet
+            return
+        # setSizes clamps: a negative or too-small size becomes that pane's minimum.
+        wanted = self._instrument.sizeHint().height()
+        self.setSizes([wanted, height - wanted])
 
 
 class FluidicsDisplayTab(QWidget):
@@ -37,6 +96,7 @@ class FluidicsDisplayTab(QWidget):
         self.service = service
         self.fluidics_port = None
         self.temperature_tab = None
+        self.flow_tab = None
         self.run_line_provider: Callable[[], str] = lambda: "—"
 
         self.system_panel = SystemPanel(service)
@@ -111,18 +171,18 @@ class FluidicsDisplayTab(QWidget):
         self.tabs.addTab(self.log_view, "Log")
         self.tabs.addTab(self.reagents_table, "Reagents")
 
-        left = QWidget()
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(self.system_panel)
-        left_layout.addWidget(self.manual_group)
-        left_layout.addWidget(self.device_status)
-        left_layout.addWidget(self.tabs, 1)
-        left.setLayout(left_layout)
+        instrument = QWidget()
+        instrument_layout = QVBoxLayout()
+        instrument_layout.addWidget(self.system_panel)
+        instrument_layout.addWidget(self.manual_group)
+        instrument_layout.addWidget(self.device_status)
+        instrument.setLayout(instrument_layout)
+        self.instrument_column = InstrumentColumn(instrument, self.tabs)
 
         self.protocol_tab = ProtocolTab(service, current_source=current_source)
 
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left)
+        splitter.addWidget(self.instrument_column)
         splitter.addWidget(self.protocol_tab)
         # Content-driven so the instrument column (the temperature plots need real width)
         # is never clipped; the divider is draggable and both panes share resize space.
@@ -163,9 +223,23 @@ class FluidicsDisplayTab(QWidget):
                 from fluidics.qt.sensor_plots import TemperatureControlWidget
 
                 self.temperature_tab = TemperatureControlWidget(tc)
-                self.tabs.insertTab(1, self.temperature_tab, "Temperature")
+                self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.temperature_tab, "Temperature")
             except Exception:
                 self._log.exception("Could not build the Temperature tab")
+
+        sensors = self.service.system.devices.flow_sensors
+        if sensors:
+            try:
+                from fluidics.devices import draw_protection_available
+                from fluidics.qt.sensor_plots import FlowSensorControlWidget
+
+                # a mode nothing acts on was already switched off and reported at bring-up (service.issues)
+                self.flow_tab = FlowSensorControlWidget(
+                    sensors, draw_protection=draw_protection_available(self.service.config)
+                )
+                self.tabs.insertTab(self.tabs.indexOf(self.reagents_table), self.flow_tab, "Flow")
+            except Exception:
+                self._log.exception("Could not build the Flow tab")
         for widget in self._quick_widgets:
             widget.setEnabled(True)
         self.system_ready.emit()
@@ -175,8 +249,9 @@ class FluidicsDisplayTab(QWidget):
         recordings (an embedded tab gets no closeEvent, so the host must ask; see
         SensorTabWidget.close_recordings)."""
         self.log_view.disconnect_logging()
-        if self.temperature_tab is not None:
-            self.temperature_tab.close_recordings()
+        for sensor_tab in (self.temperature_tab, self.flow_tab):
+            if sensor_tab is not None:
+                sensor_tab.close_recordings()
 
     def set_run_active(self, active: bool) -> None:
         """A running protocol owns the instrument: manual control and TEC setpoints go

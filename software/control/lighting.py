@@ -33,6 +33,7 @@ _DEFAULT_CHANNEL_MAPPINGS_TTL = {
     545: ILLUMINATION_CODE.ILLUMINATION_D3,
     550: ILLUMINATION_CODE.ILLUMINATION_D3,
     555: ILLUMINATION_CODE.ILLUMINATION_D3,
+    560: ILLUMINATION_CODE.ILLUMINATION_D3,
     561: ILLUMINATION_CODE.ILLUMINATION_D3,
     638: ILLUMINATION_CODE.ILLUMINATION_D4,
     640: ILLUMINATION_CODE.ILLUMINATION_D4,
@@ -50,6 +51,7 @@ class LightSourceType(Enum):
     VersaLase = 4
     SCI = 5
     AndorLaser = 6
+    CephlaLaserEngineV2 = 7
 
 
 def external_light_source(simulated: bool) -> Optional[LightSourceType]:
@@ -153,10 +155,12 @@ class IlluminationController:
         self.shutter_control_mode = shutter_control_mode
         self.light_source_type = light_source_type
         self.light_source = light_source
+        self._light_source_closed = False
         self.disable_intensity_calibration = disable_intensity_calibration
         self.channel_mappings_software = {}
         self.is_on = {}
         self.intensity_settings = {}
+        self._intensity_lines = {}  # channel -> the line its intensity was last sent on (see set_intensity)
         self.current_channel = None
         self._log = squid.logging.get_logger(self.__class__.__name__)
         # path -> (mtime, calibration or None, error or None). Re-read when the file changes, so a Save from the
@@ -340,9 +344,21 @@ class IlluminationController:
         if channel not in self.intensity_settings:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
-            if intensity != self.intensity_settings[channel]:
-                self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
+            line = self.channel_mappings_software[channel]
+            # A light source whose channel map follows the port map (laser engine v2) moves a channel to another line
+            # when the port map is edited, and that line has not had this channel's intensity yet.
+            moved = line != self._intensity_lines.get(channel, line)
+            if intensity != self.intensity_settings[channel] or moved:
+                self.light_source.set_intensity(line, intensity)
                 self.intensity_settings[channel] = intensity
+                self._intensity_lines[channel] = line
+                # Channels served by the same line (e.g. 470 and 488 on one laser) share its power, so a
+                # later switch to one of them must not skip setting its own intensity.
+                if line is not None:
+                    for other, other_line in self.channel_mappings_software.items():
+                        if other_line == line:
+                            self.intensity_settings[other] = intensity
+                            self._intensity_lines[other] = other_line
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
@@ -476,5 +492,7 @@ class IlluminationController:
         return [i for i in range(NUM_ILLUMINATION_PORTS) if self.port_is_on[i]]
 
     def close(self):
-        if self.light_source is not None:
+        # Both the GUI and Microscope.close() close the controller; shut the light source down once.
+        if self.light_source is not None and not self._light_source_closed:
+            self._light_source_closed = True
             self.light_source.shut_down()

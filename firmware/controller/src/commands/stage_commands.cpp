@@ -1,5 +1,6 @@
 #include "stage_commands.h"
 
+#include "../limit_switches.h"
 #include "../tmc/drivers/stepper_driver.h"   // DRIVER_UNKNOWN, tmc_driver_ready
 
 // Surface a failed move whose callback had already claimed
@@ -266,37 +267,6 @@ void callback_set_lim()
     }
 }
 
-void callback_set_lim_switch_polarity()
-{
-    switch (buffer_rx[2])
-    {
-        case AXIS_X:
-        {
-            if (buffer_rx[3] != DISABLED)
-            {
-            LIM_SWITCH_X_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-            }
-            break;
-        }
-        case AXIS_Y:
-        {
-            if (buffer_rx[3] != DISABLED)
-            {
-            LIM_SWITCH_Y_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-            }
-            break;
-        }
-        case AXIS_Z:
-        {
-            if (buffer_rx[3] != DISABLED)
-            {
-            LIM_SWITCH_Z_ACTIVE_LOW = (buffer_rx[3] == ACTIVE_LOW);
-            }
-            break;
-        }
-    }
-}
-
 void callback_set_home_safety_margin()
 {
     switch (buffer_rx[2])
@@ -306,7 +276,7 @@ void callback_set_home_safety_margin()
             uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[x] = tmc4361A_xmmToMicrosteps(&tmc4361[x], home_safety_margin_mm);
-            tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
+            tmc4361A_enableHomingLimit(&tmc4361[x], limit_switch_homing_polarity(x), TMC4361_homing_sw[x], home_safety_margin[x]);
             break;
         }
         case AXIS_Y:
@@ -314,7 +284,7 @@ void callback_set_home_safety_margin()
             uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[y] = tmc4361A_xmmToMicrosteps(&tmc4361[y], home_safety_margin_mm);
-            tmc4361A_enableHomingLimit(&tmc4361[y], lft_sw_pol[y], TMC4361_homing_sw[y], home_safety_margin[y]);
+            tmc4361A_enableHomingLimit(&tmc4361[y], limit_switch_homing_polarity(y), TMC4361_homing_sw[y], home_safety_margin[y]);
             break;
         }
         case AXIS_Z:
@@ -322,7 +292,7 @@ void callback_set_home_safety_margin()
             uint16_t margin = (uint16_t(buffer_rx[3]) << 8) + uint16_t(buffer_rx[4]);
             float home_safety_margin_mm = float(margin) / 1000.0;
             home_safety_margin[z] = tmc4361A_xmmToMicrosteps(&tmc4361[z], home_safety_margin_mm);
-            tmc4361A_enableHomingLimit(&tmc4361[z], lft_sw_pol[z], TMC4361_homing_sw[z], home_safety_margin[z]);
+            tmc4361A_enableHomingLimit(&tmc4361[z], limit_switch_homing_polarity(z), TMC4361_homing_sw[z], home_safety_margin[z]);
             break;
         }
         case AXIS_W:
@@ -342,6 +312,12 @@ void callback_set_home_safety_margin()
             break;
         }
     }
+}
+
+void callback_set_limit_switch_config()
+{
+    if (!limit_switches_set(buffer_rx[2], buffer_rx[3]))
+        report_move_error();
 }
 
 void callback_set_pid_arguments()
@@ -633,7 +609,7 @@ void callback_home_or_zero()
             home_X_found = false;
             if (homing_direction_X == HOME_NEGATIVE) // use the left limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[x]) == LEFT_SW )
+            if ( limit_switches_homing_read(x, LEFT_SW) == LEFT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_X = true;
@@ -649,7 +625,7 @@ void callback_home_or_zero()
             }
             else // use the right limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[x]) == RGHT_SW )
+            if ( limit_switches_homing_read(x, RGHT_SW) == RGHT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_X = true;
@@ -663,25 +639,6 @@ void callback_home_or_zero()
                 tmc4361A_setSpeed(&tmc4361[x], tmc4361A_vmmToMicrosteps( &tmc4361[x], RGHT_DIR * HOMING_VELOCITY_X * MAX_VELOCITY_X_mm ));
             }
             }
-            /*
-            if(digitalRead(X_LIM)==(LIM_SWITCH_X_ACTIVE_LOW?HIGH:LOW))
-            {
-            is_homing_X = true;
-            if(homing_direction_X==HOME_NEGATIVE)
-                stepper_X.setSpeed(-HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            else
-                stepper_X.setSpeed(HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            }
-            else
-            {
-            // get out of the hysteresis zone
-            is_preparing_for_homing_X = true;
-            if(homing_direction_X==HOME_NEGATIVE)
-                stepper_X.setSpeed(HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            else
-                stepper_X.setSpeed(-HOMING_VELOCITY_X*MAX_VELOCITY_X_mm*steps_per_mm_X);
-            }
-            */
             break;
         case AXIS_Y:
             if (stage_PID_enabled[AXIS_Y] == 1)
@@ -692,7 +649,7 @@ void callback_home_or_zero()
             home_Y_found = false;
             if (homing_direction_Y == HOME_NEGATIVE) // use the left limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[y]) == LEFT_SW )
+            if ( limit_switches_homing_read(y, LEFT_SW) == LEFT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_Y = true;
@@ -708,7 +665,7 @@ void callback_home_or_zero()
             }
             else // use the right limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[y]) == RGHT_SW )
+            if ( limit_switches_homing_read(y, RGHT_SW) == RGHT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_Y = true;
@@ -732,7 +689,7 @@ void callback_home_or_zero()
             home_Z_found = false;
             if (homing_direction_Z == HOME_NEGATIVE) // use the left limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[z]) == LEFT_SW )
+            if ( limit_switches_homing_read(z, LEFT_SW) == LEFT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_Z = true;
@@ -748,7 +705,7 @@ void callback_home_or_zero()
             }
             else // use the right limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[z]) == RGHT_SW )
+            if ( limit_switches_homing_read(z, RGHT_SW) == RGHT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_Z = true;
@@ -878,7 +835,7 @@ void callback_home_or_zero()
             home_X_found = false;
             if (homing_direction_X == HOME_NEGATIVE) // use the left limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[x]) == LEFT_SW )
+            if ( limit_switches_homing_read(x, LEFT_SW) == LEFT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_X = true;
@@ -894,7 +851,7 @@ void callback_home_or_zero()
             }
             else // use the right limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[x]) == RGHT_DIR )
+            if ( limit_switches_homing_read(x, RGHT_SW) == RGHT_DIR )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_X = true;
@@ -913,7 +870,7 @@ void callback_home_or_zero()
             home_Y_found = false;
             if (homing_direction_Y == HOME_NEGATIVE) // use the left limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[y]) == LEFT_SW )
+            if ( limit_switches_homing_read(y, LEFT_SW) == LEFT_SW )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_Y = true;
@@ -929,7 +886,7 @@ void callback_home_or_zero()
             }
             else // use the right limit switch for homing
             {
-            if ( tmc4361A_readLimitSwitches(&tmc4361[y]) == RGHT_DIR )
+            if ( limit_switches_homing_read(y, RGHT_SW) == RGHT_DIR )
             {
                 // get out of the hysteresis zone
                 is_preparing_for_homing_Y = true;
