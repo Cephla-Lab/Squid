@@ -13,7 +13,13 @@ from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
 from control.rcm_scan_trigger import ConfocalScanFailedError, RcmScanTrigger
 
-from control.lighting import LightSourceType, IntensityControlMode, ShutterControlMode, IlluminationController
+from control.lighting import (
+    LightSourceType,
+    IntensityControlMode,
+    ShutterControlMode,
+    IlluminationController,
+    external_light_source,
+)
 from control.microcontroller import Microcontroller
 from control.piezo import PiezoStage
 from control.serial_peripherals import SciMicroscopyLEDArray
@@ -476,13 +482,14 @@ class Microscope:
             hw_set_strobe_delay_ms_fn=acquisition_camera_hw_strobe_delay_fn,
         )
 
-        if control._def.USE_LDI_SERIAL_CONTROL and not simulated:
+        light_source = external_light_source(simulated)  # the tool's guard asks the same question
+        if light_source == LightSourceType.LDI:
             ldi = serial_peripherals.LDI()
 
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller, ldi.intensity_mode, ldi.shutter_mode, LightSourceType.LDI, ldi
             )
-        elif control._def.USE_CELESTA_ETHERNET_CONTROL and not simulated:
+        elif light_source == LightSourceType.CELESTA:
             celesta = control.celesta.CELESTA()
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
@@ -491,7 +498,7 @@ class Microscope:
                 LightSourceType.CELESTA,
                 celesta,
             )
-        elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
+        elif light_source == LightSourceType.AndorLaser:
             andor_laser = control.illumination_andor.AndorLaser(
                 control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
             )
@@ -502,7 +509,7 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
-        elif control._def.USE_VORTRAN_LASER_CONTROL and not simulated:
+        elif light_source == LightSourceType.VersaLase:
             if control._def.VORTRAN_SHUTTER_CONTROL_MODE == "TTL":
                 shutter_mode = ShutterControlMode.TTL
             elif control._def.VORTRAN_SHUTTER_CONTROL_MODE == "Software":
@@ -522,7 +529,7 @@ class Microscope:
                 LightSourceType.VersaLase,
                 versalase,
             )
-        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
+        elif light_source == LightSourceType.CephlaLaserEngineV2 and addons.squid_laser_engine is not None:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,

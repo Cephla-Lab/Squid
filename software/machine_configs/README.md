@@ -21,16 +21,12 @@ Defines:
 - Properties available for configuration (public vs objective-specific)
 
 ### `intensity_calibrations/` (Optional, user-generated)
-Contains CSV files mapping DAC percentage to optical power (mW) for each laser line.
-Files are named by wavelength (e.g., `405.csv`, `488.csv`).
-
-To generate calibration files, run: `tools/generate_intensity_calibrations.py`
-
-### `calibration_tests/` (Optional, user-generated)
-Contains CSV files with calibration test results (measured power at various set points).
-Used to verify calibration accuracy.
-
-To generate test files, run: `tools/evaluate_intensity_calibration.py`
+Illumination power calibrations, one per DAC-driven channel: `<λ>nm_<port>.csv` (a `# key: value` header, then the
+sweep) and a `.png` of the curve and its verification. Make them with **Utils > Illumination Power Calibration...**
+(a Thorlabs power meter at the sample plane), or headless with `tools/generate_intensity_calibrations.py`.
+Power meter setup (Ubuntu, macOS, Windows): `docs/illumination-power-calibration.md`.
+The illumination config's `intensity_calibration_file` names the file a channel uses; `<λ>.csv` files from before
+2026-10 still apply (healthy ones unchanged, broken ones repaired in memory). Replaced files move to `backup/`.
 
 ### `fluidics_config.yaml` (Optional)
 Only for instruments with the fluidics system (`RUN_FLUIDICS = True`). This is the Squid-Fluidics
