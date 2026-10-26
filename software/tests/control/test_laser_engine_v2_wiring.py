@@ -676,11 +676,13 @@ def test_tracking_with_the_560_key_off_reports_and_finishes(monkeypatch):
             selected_configurations=[channel],
             trackingController=SimpleNamespace(flag_stop_tracking_requested=False),
             _run_tracking=lambda: tracked.append(1),
+            image_saver=MagicMock(),  # made in TrackingWorker.__init__, with its own thread
             finished=MagicMock(),
             _log=MagicMock(),
         )
         TrackingWorker.run(worker)
         assert tracked == [] and worker.finished.emit.called and not fake.shut_open
+        worker.image_saver.close.assert_called_once()  # its thread must not outlive a tracking that did not start
     finally:
         engine.close()
 

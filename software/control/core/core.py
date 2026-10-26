@@ -698,6 +698,7 @@ class TrackingWorker(QObject):
                 self._run_tracking()
             else:
                 self._log.error("tracking not started: the illumination did not become ready")
+                self.image_saver.close()  # made in __init__ with its own thread; _run_tracking closes it otherwise
                 self.finished.emit()
 
     def _run_tracking(self):
