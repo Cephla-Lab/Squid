@@ -4,6 +4,7 @@ import serial
 import serial.tools.list_ports
 from typing import List, Dict, Optional
 
+import squid.ftdi
 import squid.logging
 from squid.abc import AbstractFilterWheelController, FilterWheelInfo, FilterControllerError
 from squid.config import OptospinFilterWheelConfig
@@ -26,6 +27,7 @@ class Optospin(AbstractFilterWheelController):
         ]
         if not optospin_port:
             raise ValueError(f"No Optospin device found with serial number: {config.serial_number}")
+        squid.ftdi.warn_if_latency_timer_high(optospin_port[0], "Optospin filter wheel", self.log)
         self.ser = serial.Serial(optospin_port[0], baudrate=self.DEFAULT_BAUDRATE, timeout=self.DEFAULT_TIMEOUT)
         self._available_filter_wheels = []
         self._delay_offset_ms = 0

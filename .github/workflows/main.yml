@@ -61,7 +61,7 @@ jobs:
         # Python GC — the same crash main_hcs.py avoids with os._exit()). The
         # conftest hook hard-exits with pytest's real status once the session
         # is complete, so real test failures still fail the step.
-        run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py
+        run: python3 -m pytest --ignore=tests/control/test_HighContentScreeningGui.py --ignore=tests/control/test_objective_swap_gui.py
         working-directory: ./software
         env:
           SQUID_PYTEST_HARD_EXIT: "1"
@@ -73,6 +73,15 @@ jobs:
         # while the app code (qtpy) uses PyQt5, and the mixed bindings fail
         # with a QObject double-init error.
         run: python3 -m pytest tests/control/test_HighContentScreeningGui.py
+        working-directory: ./software
+        env:
+          QT_API: pyqt5
+          PYTEST_QT_API: pyqt5
+          SQUID_PYTEST_HARD_EXIT: "1"
+      - name: Run the objective-swap GUI test in its own process
+        # Same isolation as above: it builds the full GUI and spins the event loop, which segfaults
+        # when run after the full-application GUI tests in one process.
+        run: python3 -m pytest tests/control/test_objective_swap_gui.py
         working-directory: ./software
         env:
           QT_API: pyqt5

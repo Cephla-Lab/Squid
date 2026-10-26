@@ -184,29 +184,37 @@ def _ready_df_engine():
     return engine, fake, source
 
 
-def test_live_view_counts_as_560_use_through_the_live_controller(monkeypatch):
+def _live_controller(engine, wavelength):
+    """A LiveController on `engine` whose channel illuminates with wavelength[0] (a list, so a test can switch it)."""
     from types import SimpleNamespace
 
     from control._def import TriggerMode
     from control.core.live_controller import LiveController
+
+    micro, camera = MagicMock(), MagicMock()
+    micro.is_busy.return_value = False
+    camera.get_ready_for_trigger.return_value = True
+    scope = SimpleNamespace(
+        addons=SimpleNamespace(squid_laser_engine=engine, sci_microscopy_led_array=None),
+        illumination_controller=MagicMock(),
+        low_level_drivers=SimpleNamespace(microcontroller=micro),
+    )
+    live = LiveController(scope, camera)
+    live._get_illumination_wavelength = lambda: wavelength[0]
+    live._is_led_matrix = lambda: False
+    live.trigger_mode = TriggerMode.HARDWARE
+    live._start_triggerred_acquisition = lambda: None  # frames are not needed: use is polled, not per frame
+    engine.in_use_provider = live.illumination_wavelengths_in_use  # what Microscope wires
+    return live
+
+
+def test_live_view_counts_as_560_use_through_the_live_controller(monkeypatch):
     from control.laser_engine_v2_link import EngineLink
 
     monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
     engine, fake, source = _ready_df_engine()
     try:
-        micro, camera = MagicMock(), MagicMock()
-        micro.is_busy.return_value = False
-        camera.get_ready_for_trigger.return_value = True
-        scope = SimpleNamespace(
-            addons=SimpleNamespace(squid_laser_engine=engine, sci_microscopy_led_array=None),
-            illumination_controller=MagicMock(),
-            low_level_drivers=SimpleNamespace(microcontroller=micro),
-        )
-        live = LiveController(scope, camera)
-        live._get_illumination_wavelength = lambda: 560
-        live.trigger_mode = TriggerMode.HARDWARE
-        live._start_triggerred_acquisition = lambda: None  # frames are not needed: use is polled, not per frame
-        engine.in_use_provider = live.illumination_wavelengths_in_use  # what Microscope wires
+        live = _live_controller(engine, [560])
         assert live.illumination_wavelengths_in_use() == []
         live.start_live()
         assert live.illumination_wavelengths_in_use() == [560]
@@ -217,6 +225,89 @@ def test_live_view_counts_as_560_use_through_the_live_controller(monkeypatch):
         assert source.enabled  # live is use
         live.stop_live()
         assert live.illumination_wavelengths_in_use() == []
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("switched_off_yet", [True, False])  # False: before the source thread runs the switch-off
+@pytest.mark.parametrize("entry", ["channel switch", "live start"])
+def test_going_live_on_the_560_after_its_idle_off_wakes_it(monkeypatch, entry, switched_off_yet):
+    """The 560 idled off while live was on another channel (or off). Going live on the 560 at its unchanged intensity
+    reaches no light source (the intensity is cached), so the switch or the start itself wakes line 3 - also when it
+    comes before the source thread has run the switch-off, while the source still reads ready."""
+    from control.laser_engine_v2_link import EngineLink
+    from control.laser_engine_v2_status import LineState
+
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    engine, fake, source = _ready_df_engine()
+    try:
+        wavelength = [488]
+        live = _live_controller(engine, wavelength)
+        live.update_illumination = lambda: None  # an unchanged intensity: nothing reaches the engine
+        live._stop_existing_timer = live._start_new_timer = lambda: None
+        if entry == "channel switch":
+            live.start_live()
+        engine.source_idle_off_s = 60
+        engine._source_last_use -= 61  # past the 560's idle-off
+        engine.poll_once()  # the idle-off: the switch-off is queued
+        if switched_off_yet:
+            engine.source_step()
+        wavelength[0] = 560
+        if entry == "channel switch":
+            live.set_microscope_mode(MagicMock())  # back to the 560 channel, live still on
+        else:
+            live.start_live()
+        for _ in range(5):
+            engine.source_step()
+            engine.poll_once()
+        assert source.enabled and engine.poll_once().channels["L3"].state == LineState.READY
+    finally:
+        engine.close()
+
+
+def test_after_a_restart_the_shutter_is_open_when_the_acquisition_sees_l3_ready(monkeypatch):
+    from control.core.multi_point_worker import MultiPointWorker
+    from control.laser_engine_v2_link import EngineLink
+
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    engine, fake, source = _ready_df_engine()
+    try:
+        source.enabled = False  # off on its own (or idled off): the next use restarts it behind the closed shutter
+        engine.source_step()
+        engine.wake_up("L3")
+        for _ in range(5):
+            engine.source_step()  # ready again before the next engine poll
+        worker = MultiPointWorker.__new__(MultiPointWorker)  # only the fields the gate reads
+        worker._laser_engine, worker._laser_channels_needed = engine, ["L3"]
+        worker.callbacks, worker.abort_requested_fn = MagicMock(), lambda: False
+        worker._wait_for_laser_engine()
+        worker.callbacks.signal_laser_engine_waiting.assert_not_called()  # READY at once...
+        assert fake.shut_open  # ...with the shutter already open: no dark frames
+    finally:
+        engine.close()
+
+
+def test_a_power_change_holds_the_acquisition_until_the_source_reads_it(monkeypatch):
+    """The worker's first look is the engine's cached status, with no poll since the power change: it must not let the
+    acquisition start at the old power."""
+    from control.core.multi_point_worker import MultiPointWorker
+    from control.laser_engine_v2_link import EngineLink
+
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+    engine, fake, source = _ready_df_engine()
+    try:
+        worker = MultiPointWorker.__new__(MultiPointWorker)  # only the fields the gate reads
+        worker._laser_engine, worker._laser_channels_needed = engine, ["L3"]
+        worker.callbacks, worker.abort_requested_fn = MagicMock(), lambda: False
+        engine.READY_TIMEOUT_S = 0.05  # no source thread here: the laser never reads 600 mW
+        engine.set_source_power_mw(600.0)
+        with pytest.raises(RuntimeError, match="did not reach ready state"):
+            worker._wait_for_laser_engine()
+        worker.callbacks.signal_laser_engine_waiting.assert_called_once_with(["L3"])
+        engine.source_step()  # the laser reads 600 mW
+        worker.callbacks.reset_mock()
+        worker._wait_for_laser_engine()
+        worker.callbacks.signal_laser_engine_waiting.assert_not_called()  # ready at the new power: no wait
     finally:
         engine.close()
 

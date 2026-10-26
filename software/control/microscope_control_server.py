@@ -21,6 +21,7 @@ import squid.logging
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
+import control.utils
 
 # Qt imports for thread-safe GUI operations
 try:
@@ -727,9 +728,8 @@ class MicroscopeControlServer:
         if self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("Acquisition already in progress")
 
-        # Parse well coordinates
-        wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-        well_coords = self._parse_wells(wells, wellplate_settings)
+        # Parse well coordinates (raises on unknown formats)
+        well_coords = self._parse_wells(wells, wellplate_format)
 
         if not well_coords:
             raise ValueError(f"Could not parse wells: {wells}")
@@ -816,9 +816,13 @@ class MicroscopeControlServer:
             self._log.error(traceback.format_exc())
             raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
-    def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
-        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module)."""
-        return parse_wells(wells, wellplate_settings)
+    def _parse_wells(self, wells: str, wellplate_format: str) -> Dict[str, tuple]:
+        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module).
+
+        Resolves through plate_transform_for(wellplate_format), so WELLPLATE_OFFSET is applied like at
+        every other site and an unknown format raises instead of falling back to invented geometry.
+        """
+        return parse_wells(wells, wellplate_format)
 
     @schema_method
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:

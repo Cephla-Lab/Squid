@@ -61,6 +61,9 @@ class AcquisitionParameters:
     apply_channel_offset: bool = True
     skip_saving: bool = False
 
+    # "CHANNEL FIRST" (all channels at each z level) or "Z FIRST" (full z stack per channel)
+    z_stack_order: str = "CHANNEL FIRST"
+
     # Plate dimensions (only used when xy_mode is plate-based, e.g. "Select Wells").
     plate_num_rows: int = 8  # For 96-well plate
     plate_num_cols: int = 12  # For 96-well plate

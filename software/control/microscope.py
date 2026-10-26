@@ -11,6 +11,7 @@ from control.core.contrast_manager import ContrastManager
 from control.core.live_controller import LiveController
 from control.core.objective_store import ObjectiveStore
 from control.core.stream_handler import StreamHandler, StreamHandlerFunctions, NoOpStreamHandlerFunctions
+from control.rcm_scan_trigger import ConfocalScanFailedError, RcmScanTrigger
 
 from control.lighting import (
     LightSourceType,
@@ -27,6 +28,7 @@ from squid.stage.cephla import CephlaStage
 from squid.stage.prior import PriorStage
 import control.celesta
 import control.illumination_andor
+import control.illumination_versalase
 import control.laser_engine_v2 as laser_engine_v2
 import control.laser_engine_v2_sim as laser_engine_v2_sim
 import control.microcontroller
@@ -37,7 +39,9 @@ import squid.config
 import squid.filter_wheel_controller.utils
 import squid.logging
 import squid.stage.cephla
+import squid.stage.lift
 import squid.stage.pi
+import squid.stage.utils
 import squid.stage.utils
 
 _log = squid.logging.get_logger(__name__)
@@ -388,9 +392,33 @@ class Microscope:
                 invert_z=control._def.PI_FOCUS_INVERT_Z,
                 home_to_positive_limit=control._def.PI_FOCUS_HOME_TO_POSITIVE_LIMIT,
                 z_travel_mm=control._def.PI_FOCUS_Z_TRAVEL_MM,
+                on_target_tolerance=(
+                    (
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_MAX_UM / 1000.0,
+                        control._def.PI_FOCUS_ON_TARGET_TOL_STEP_FRACTION,
+                    )
+                    if control._def.PI_FOCUS_ON_TARGET_TOL_MIN_UM
+                    else None
+                ),
+                sub_window_settle_s=control._def.PI_FOCUS_SUB_WINDOW_SETTLE_MS / 1000.0,
                 stage_config=stage_config,
+                profile_state_path=control._def.PI_FOCUS_PROFILE_STATE_PATH,
             )
-            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config)
+            lift = None
+            if control._def.USE_Z_LIFT_STAGE:
+                if control._def.USE_PRIOR_STAGE:
+                    raise ValueError("USE_Z_LIFT_STAGE needs the Cephla stage: the lift is its Z stepper.")
+                lift = squid.stage.lift.LiftStage(
+                    low_level_devices.microcontroller,
+                    stage_config.Z_AXIS,
+                    min_mm=control._def.Z_LIFT_MIN_MM,
+                    max_mm=control._def.Z_LIFT_MAX_MM,
+                    lowered_mm=control._def.Z_LIFT_LOWERED_MM,
+                )
+            stage = squid.stage.pi.CombinedStage(xy_stage=stage, z_stage=z_stage, stage_config=stage_config, lift=lift)
+        elif control._def.USE_Z_LIFT_STAGE:
+            raise ValueError("USE_Z_LIFT_STAGE needs USE_PI_FOCUS_STAGE: the V-308 is the focus Z on a lift system.")
 
         addons = MicroscopeAddons.build_from_global_config(
             stage, low_level_devices.microcontroller, simulated=simulated, skip_init=skip_init
@@ -398,11 +426,37 @@ class Microscope:
 
         cam_trigger_log = squid.logging.get_logger("camera hw functions")
 
+        def rearm_camera_after_stalled_scan():
+            # The camera stopped signalling ready to the confocal unit. Re-applying hardware trigger mode
+            # (stop streaming, set the trigger, start streaming) re-arms it, as toggling the trigger mode did.
+            # Runs on the triggering thread inside send_trigger(), which holds the camera's (reentrant)
+            # trigger lock, so the check and the set are not interleaved with another thread's mode change.
+            try:
+                if camera.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+                    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+                    cam_trigger_log.warning("Re-armed the camera's hardware trigger after a stalled confocal scan")
+            except Exception as e:
+                cam_trigger_log.error(f"Could not re-arm the camera after a stalled confocal scan: {e}")
+
+        rcm_scan_trigger = RcmScanTrigger(
+            control._def.NL5_TRIGGER_TIMEOUT_S,
+            rearm=rearm_camera_after_stalled_scan,
+            frame_id=lambda: camera.get_frame_id(),
+        )
+
         def acquisition_camera_hw_trigger_fn(illumination_time: Optional[float]) -> bool:
             # NOTE(imo): If this succeeds, it means we sent the request,
             # but we didn't necessarily get confirmation of success.
             if addons.nl5 and control._def.NL5_USE_DOUT:
-                addons.nl5.start_acquisition()
+                # The confocal unit triggers the camera; a scan it cannot finish is aborted, not waited on.
+                # The timeout scales with the whole frame time (exposure plus readout), not just the exposure.
+                frame_time_ms = max(illumination_time or 0.0, camera.get_total_frame_time())
+                if not rcm_scan_trigger.trigger(addons.nl5, frame_time_ms / 1000.0):
+                    raise ConfocalScanFailedError(
+                        "The confocal scan stalled and re-arming the camera did not recover it "
+                        "(or an earlier aborted scan is still stuck)"
+                    )
+                return True
             else:
                 illumination_time_us = 1000.0 * illumination_time if illumination_time else 0
                 cam_trigger_log.debug(
@@ -455,6 +509,26 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
+        elif light_source == LightSourceType.VersaLase:
+            if control._def.VORTRAN_SHUTTER_CONTROL_MODE == "TTL":
+                shutter_mode = ShutterControlMode.TTL
+            elif control._def.VORTRAN_SHUTTER_CONTROL_MODE == "Software":
+                shutter_mode = ShutterControlMode.Software
+            else:
+                raise ValueError(
+                    f"VORTRAN_SHUTTER_CONTROL_MODE must be 'TTL' or 'Software', got {control._def.VORTRAN_SHUTTER_CONTROL_MODE!r}"
+                )
+            versalase = control.illumination_versalase.VersaLase(
+                shutter_mode=shutter_mode,
+                ttl_input=control.illumination_versalase.TtlInput(control._def.VORTRAN_TTL_INPUT),
+            )
+            illumination_controller = IlluminationController(
+                low_level_devices.microcontroller,
+                IntensityControlMode.Software,
+                shutter_mode,
+                LightSourceType.VersaLase,
+                versalase,
+            )
         elif light_source == LightSourceType.CephlaLaserEngineV2 and addons.squid_laser_engine is not None:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
@@ -505,6 +579,14 @@ class Microscope:
 
         self.objective_store: ObjectiveStore = ObjectiveStore()
         self._laser_af_controller = None
+
+        # Z lift (USE_Z_LIFT_STAGE): the Cephla Z stepper under the XY stage, with the V-308 as the focus Z.
+        self.z_lift: Optional[squid.stage.lift.LiftStage] = getattr(stage, "lift", None)
+        self.focus_wheel_router: Optional[squid.stage.lift.FocusWheelRouter] = None
+        if self.z_lift is not None:
+            self.z_lift.heights = squid.stage.lift.LiftHeights(control._def.Z_LIFT_HEIGHTS_PATH)
+            # The format the software starts with; the GUI repoints this at its sample format selector.
+            self.z_lift.current_format_fn = lambda: control._def.WELLPLATE_FORMAT
 
         # Centralized config management (assigning through the property below also
         # hands the same repository to the illumination controller).
@@ -618,12 +700,19 @@ class Microscope:
                     z_pos_mm=z_config.MAX_POSITION,
                     z_neg_mm=z_config.MIN_POSITION,
                 )
+                if self.z_lift is not None:
+                    self._log.info(f"Setting Z lift limits: [{self.z_lift.min_mm},{self.z_lift.max_mm}]")
+                    self.z_lift.apply_limits()
                 self.home_xyz()
+                self._raise_z_lift_to_sample_height()
             except TimeoutError:
                 self._log.error("Hardware setup timed out, resetting microcontroller")
                 if self.low_level_drivers.microcontroller:
                     self.low_level_drivers.microcontroller.reset()
                 raise
+
+        if self.z_lift is not None and control._def.Z_LIFT_FOCUS_WHEEL_DRIVES_PI:
+            self._start_focus_wheel_router()
 
         if self.addons.objective_changer:
             # Xeryon always re-homes (findIndex is fast and required). The turret skips
@@ -631,7 +720,7 @@ class Microscope:
             # across close()/re-init (the motor is de-energized but the drive stays
             # powered), so a re-home would just be wasted motion.
             if control._def.USE_XERYON or not skip_init:
-                self.addons.objective_changer.home()
+                self.addons.objective_changer.home()  # a turret homes with Z retracted and leaves it there
             if control._def.USE_XERYON:
                 self.addons.objective_changer.setSpeed(control._def.XERYON_SPEED)
             try:
@@ -891,6 +980,7 @@ class Microscope:
         NZ: int = 1,
         deltaZ_mm: float = 0.0,
         z_stacking_config: str = "FROM BOTTOM",
+        z_stack_order: str = "CHANNEL FIRST",
     ) -> List[str]:
         """Acquire a C+Z stack at the current position.
 
@@ -904,6 +994,8 @@ class Microscope:
             NZ: Number of z-planes.
             deltaZ_mm: Z step size in mm (positive = upward).
             z_stacking_config: "FROM BOTTOM", "FROM CENTER", or "FROM TOP".
+            z_stack_order: "CHANNEL FIRST" (every channel at each z-plane) or
+                "Z FIRST" (the full z-stack in one channel before the next).
 
         Returns:
             List of saved file paths.
@@ -916,6 +1008,8 @@ class Microscope:
             raise ValueError(
                 f"Invalid z_stacking_config '{z_stacking_config}'. Must be one of: {VALID_Z_STACKING_CONFIGS}"
             )
+        if z_stack_order not in control._def.Z_STACK_ORDERS:
+            raise ValueError(f"Invalid z_stack_order '{z_stack_order}'. Must be one of: {control._def.Z_STACK_ORDERS}")
 
         Path(save_path).mkdir(parents=True, exist_ok=True)
 
@@ -928,25 +1022,42 @@ class Microscope:
         # Move to start of z-stack
         if NZ > 1 and z_stacking_config == "FROM CENTER":
             self.stage.move_z(-deltaZ * round((NZ - 1) / 2.0))
-            time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
+
+        def snap(config, z_level):
+            self.live_controller.set_microscope_mode(config)
+            self._wait_for_microcontroller()
+
+            image = self.acquire_image()
+
+            channel_name_safe = config.name.replace(" ", "_")
+            file_id = f"0_0_{z_level}_{channel_name_safe}"
+            saved_paths.append(self.save_image(image, str(Path(save_path) / file_id)))
+
+        def step_z(dz):
+            self.stage.move_z(dz)
+            time.sleep(squid.stage.utils.z_stabilization_time_s())
 
         saved_paths = []
         try:
-            for z_level in range(NZ):
-                for config in configs:
-                    self.live_controller.set_microscope_mode(config)
-                    self._wait_for_microcontroller()
-
-                    image = self.acquire_image()
-
-                    channel_name_safe = config.name.replace(" ", "_")
-                    file_id = f"0_0_{z_level}_{channel_name_safe}"
-                    saved = self.save_image(image, str(Path(save_path) / file_id))
-                    saved_paths.append(saved)
-
-                if z_level < NZ - 1:
-                    self.stage.move_z(deltaZ)
-                    time.sleep(control._def.SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            if z_stack_order == "Z FIRST":
+                # Return to the stack start with an absolute move: a relative move back would not exactly
+                # undo the stack's steps (each move is rounded to microsteps), drifting channel by channel.
+                stack_start_mm = self.stage.get_pos().z_mm
+                for config_idx, config in enumerate(configs):
+                    if config_idx > 0 and NZ > 1:
+                        self.stage.move_z_to(stack_start_mm)
+                        time.sleep(squid.stage.utils.z_stabilization_time_s())
+                    for z_level in range(NZ):
+                        snap(config, z_level)
+                        if z_level < NZ - 1:
+                            step_z(deltaZ)
+            else:
+                for z_level in range(NZ):
+                    for config in configs:
+                        snap(config, z_level)
+                    if z_level < NZ - 1:
+                        step_z(deltaZ)
         finally:
             # Always return Z to starting position
             try:
@@ -967,6 +1078,10 @@ class Microscope:
         """
         if control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE:
             self.stage.home(x=False, y=False, z=True, theta=False)
+
+        # Z lift: down to its bottom sensor first, taking the sample away from the objective before anything moves.
+        if self.z_lift is not None:
+            self.z_lift.home()
 
         # The V-308 voice coil has no self-locking, so before sweeping XY make sure the objective
         # is clear: home(z) references-if-needed and drives Z to the retracted position
@@ -994,6 +1109,42 @@ class Microscope:
 
             self._log.info("Homing the Y axis...")
             self.stage.home(x=False, y=True, z=False, theta=False)
+
+    def _raise_z_lift_to_sample_height(self) -> None:
+        """After homing, raise the Z lift to the working height saved for the sample format; with none it stays
+        lowered. Not when Squid was closed at the loading position: the GUI starts there again, lift lowered."""
+        if self.z_lift is None:
+            return
+        if squid.stage.utils.load_loading_state() is not None:
+            self._log.info("Squid was closed at the loading position: the Z lift stays lowered.")
+            return
+        sample_format = self.z_lift.current_format()
+        height = self.z_lift.sample_height_mm()
+        if height is None:
+            self._log.info(f"Z lift: no height saved for {sample_format}, leaving it lowered.")
+            return
+        self._log.info(f"Z lift: raising to the {sample_format} height, {height:.3f} mm.")
+        self.z_lift.move_to(height)
+
+    def _start_focus_wheel_router(self) -> None:
+        """Hand the control panel's focus wheel to the V-308 (it would otherwise move the lift)."""
+        mcu = self.low_level_drivers.microcontroller
+        if not mcu.supports_focus_wheel_to_host():
+            version = ".".join(str(v) for v in mcu.firmware_version)
+            needed = ".".join(str(v) for v in control._def.FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE)
+            self._log.warning(
+                f"Firmware {version} cannot route the focus wheel to the V-308 (needs {needed}); "
+                "the focus wheel keeps moving the Z lift."
+            )
+            return
+        mm_per_tick = squid.stage.lift.default_focus_wheel_mm_per_tick(squid.config.get_stage_config().Z_AXIS)
+        self.focus_wheel_router = squid.stage.lift.FocusWheelRouter(
+            mcu,
+            self.stage.z_stage,
+            mm_per_tick,
+            max_speed_mm_s=control._def.PI_FOCUS_WHEEL_MAX_SPEED_UM_S / 1000.0,
+        )
+        self.focus_wheel_router.start()
 
     def move_x(self, distance: float, blocking: bool = True) -> None:
         """Move the stage by a relative distance along the X axis.
@@ -1123,12 +1274,30 @@ class Microscope:
         except Exception as e:
             self._log.warning(f"Error stopping live view during close: {e}")
 
+        # Turn an external light source's lines off first, while everything else is still connected.
+        try:
+            self.illumination_controller.close()
+        except Exception as e:
+            self._log.warning(f"Error closing illumination: {e}")
+
+        if self.focus_wheel_router is not None:
+            try:
+                self.focus_wheel_router.stop()  # the wheel stays in TO_HOST: with no Squid it moves nothing
+            except Exception as e:
+                self._log.warning(f"Error stopping the focus wheel router: {e}")
+
         try:
             self.stage.close()  # stage-owned transports, e.g. the PI C-414 serial handle
         except Exception as e:
             self._log.warning(f"Error closing stage: {e}")
 
         if self.low_level_drivers.microcontroller:
+            try:
+                # A lock the GUI set (a Z lift system at the loading position) is not left behind: with Squid
+                # closed the joystick works on its own again.
+                self.low_level_drivers.microcontroller.unlock_panel()
+            except Exception as e:
+                self._log.warning(f"Error unlocking the control panel: {e}")
             try:
                 self.low_level_drivers.microcontroller.close()
             except Exception as e:

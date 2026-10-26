@@ -45,6 +45,7 @@ static const int SET_DAC80508_REFDIV_GAIN = 16;
 static const int SET_ILLUMINATION_INTENSITY_FACTOR = 17;
 static const int MOVETO_W = 18;
 static const int MOVE_W2 = 19;
+// RETIRED: opcode 20 has no handler (it never had an effect); an unknown opcode is a no-op. Never reuse 20.
 static const int SET_LIM_SWITCH_POLARITY = 20;
 static const int CONFIGURE_STEPPER_DRIVER = 21;
 static const int SET_MAX_VELOCITY_ACCELERATION = 22;
@@ -86,8 +87,21 @@ static const int SET_COMPLETION_WINDOW = 49;  // [2]=axis, [3..4]=window in 0.1 
                                               // not to an axis whose closed loop is enabled. Kept in these physical
                                               // units: a later microstepping or pitch change does not alter its width.
 // (45, 46, 48 and 50 are reserved for the closed-loop commands of the Z encoder work.)
+// Configurable limit switches. 45-63 are claimed by open branches, hence 64.
+static const int SET_LIMIT_SWITCH_CONFIG = 64;  // [2]=axis, [3]=LIMIT_SWITCH_* nibble (enable + polarity per side); saved to EEPROM
+// Firmware 1.8. Power-up, RESET and INITIALIZE use the saved power-up mode (FOCUS_WHEEL_DRIVES_Z until one is
+// saved): a lift system saves FOCUS_WHEEL_TO_HOST so the wheel moves nothing while no host runs.
+static const int SET_FOCUS_WHEEL_MODE = 65;     // [2]=FOCUS_WHEEL_* mode, [3]=FOCUS_WHEEL_SAVE_* flags
+// Firmware 1.8. Locked, the control panel moves nothing: joystick X/Y reads centred and wheel turns are dropped
+// (the wheel baseline still follows, so nothing is released at unlock). Not saved; RESET and INITIALIZE unlock.
+static const int SET_PANEL_LOCK = 66;           // [2]=1 lock, 0 unlock
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
+// SET_LIMIT_SWITCH_CONFIG nibble
+static const int LIMIT_SWITCH_LEFT_ENABLED = 1;
+static const int LIMIT_SWITCH_RIGHT_ENABLED = 2;
+static const int LIMIT_SWITCH_LEFT_ACTIVE_HIGH = 4;
+static const int LIMIT_SWITCH_RIGHT_ACTIVE_HIGH = 8;
 // SET_ENCODER_REPORTING modes
 static const int ENCODER_REPORT_OFF = 0;
 static const int ENCODER_REPORT_ENC_IN_THETA = 1;    // bytes 14-17 = ENC_POS of the axis (usteps), byte 19 = ENC_FLAG_*,
@@ -97,6 +111,14 @@ static const int ENCODER_REPORT_ENC_AS_POSITION = 2; // as 1, and the axis's own
 static const int ENC_FLAG_REPORTING = 0;     // reporting active
 static const int ENC_FLAG_PID_ENABLED = 1;   // closed loop enabled on the reported axis
 static const int ENC_FLAG_AXIS_SHIFT = 4;    // bits 4-6: protocol axis id being reported
+// SET_FOCUS_WHEEL_MODE modes
+static const int FOCUS_WHEEL_DRIVES_Z = 0;   // the wheel moves Z (as before 1.8)
+static const int FOCUS_WHEEL_TO_HOST = 1;    // the wheel moves nothing; bytes 14-17 = int32 wheel count since enabled,
+                                             // byte 19 = 1 << FOCUS_WHEEL_FLAG_REPORTING, bytes 20-21 = 0.
+                                             // Refused while encoder reporting is on (same bytes), and vice versa.
+static const int FOCUS_WHEEL_FLAG_REPORTING = 7;  // byte 19 bit: bytes 14-17 carry the focus wheel count
+// SET_FOCUS_WHEEL_MODE [3] flags
+static const int FOCUS_WHEEL_SAVE_AS_POWER_UP = 1;  // also store [2] as the power-up mode (EEPROM 8-11)
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;
@@ -130,6 +152,8 @@ static const int AXIS_W2 = 6;
 
 // Button/switch bit positions in response packet
 static const int BIT_POS_JOYSTICK_BUTTON = 0;
+static const int BIT_POS_Z_LIMIT_LEFT = 2;   // status byte 18: Z left limit switch triggered
+static const int BIT_POS_Z_LIMIT_RIGHT = 3;  // status byte 18: Z right limit switch triggered
 
 // Limit switch codes (for SET_LIM command)
 static const int LIM_CODE_X_POSITIVE = 0;
@@ -138,11 +162,6 @@ static const int LIM_CODE_Y_POSITIVE = 2;
 static const int LIM_CODE_Y_NEGATIVE = 3;
 static const int LIM_CODE_Z_POSITIVE = 4;
 static const int LIM_CODE_Z_NEGATIVE = 5;
-
-// Limit switch polarity
-static const int ACTIVE_LOW = 0;
-static const int ACTIVE_HIGH = 1;
-static const int DISABLED = 2;
 
 /***************************************************************************************************/
 /***************************************** Illumination ********************************************/

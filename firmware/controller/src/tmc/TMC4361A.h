@@ -79,6 +79,7 @@ typedef struct
   uint8_t  driver_type;
   float    r_sense;             /* TMC2660 only, ohms */
   uint8_t  current_range;       /* TMC2240 only: 0 = 1 A, 1 = 2 A, 2/3 = 3 A peak */
+  uint8_t  current_range_floor; /* TMC2240 only: compile-time CURRENT_RANGE_*; set_current steps up from it */
   uint8_t  driver_toff;         /* cached TOFF so enable() can restore it */
   /* The raw 32-bit word of the LAST cover read tmc_driver_probe() performed,
      kept whatever the verdict was. Diagnostic only — nothing branches on it.

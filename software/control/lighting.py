@@ -58,8 +58,8 @@ class LightSourceType(Enum):
 
 def external_light_source(simulated: bool) -> Optional[LightSourceType]:
     """The light source that sets illumination power itself on this instrument, as Microscope.build_from_global_config
-    picks it from the machine ini; None when the controller DAC does. In simulation the LDI, CELESTA and Andor laser
-    are not built (the controller DAC drives the channels); laser engine v2 is, as the simulated engine."""
+    picks it from the machine ini; None when the controller DAC does. In simulation the LDI, CELESTA, Andor laser and
+    VersaLase are not built (the controller DAC drives the channels); laser engine v2 is, as the simulated engine."""
     if not simulated:
         if control._def.USE_LDI_SERIAL_CONTROL:
             return LightSourceType.LDI
@@ -67,6 +67,8 @@ def external_light_source(simulated: bool) -> Optional[LightSourceType]:
             return LightSourceType.CELESTA
         if control._def.USE_ANDOR_LASER_CONTROL:
             return LightSourceType.AndorLaser
+        if control._def.USE_VORTRAN_LASER_CONTROL:
+            return LightSourceType.VersaLase
     if control._def.LASER_ENGINE == "v2":
         return LightSourceType.CephlaLaserEngineV2
     return None
@@ -163,12 +165,12 @@ class IlluminationController:
         self.shutter_control_mode = shutter_control_mode
         self.light_source_type = light_source_type
         self.light_source = light_source
+        self._light_source_closed = False
         self.disable_intensity_calibration = disable_intensity_calibration
         self.channel_mappings_software = {}
         self.is_on = {}
         self.intensity_settings = {}
-        self._intensity_ttl_ports = {}  # channel -> TTL port when its intensity was last sent (see set_intensity)
-        self._port_holders = {}  # TTL port -> the channel whose intensity was last sent while on it (see set_intensity)
+        self._intensity_lines = {}  # channel -> the line its intensity was last sent on (see set_intensity)
         self.current_channel = None
         self._log = squid.logging.get_logger(self.__class__.__name__)
         # path -> (mtime, calibration or None, error or None). Re-read when the file changes, so a Save from the
@@ -313,7 +315,7 @@ class IlluminationController:
         set-point changed under this controller (a calibration run)."""
         for wavelength in wavelengths:
             self.intensity_settings.pop(wavelength, None)
-            self._intensity_ttl_ports.pop(wavelength, None)
+            self._intensity_lines.pop(wavelength, None)
             self._intensity_calibration_keys.pop(wavelength, None)
 
     def _calibration_key(self, wavelength) -> Tuple:
@@ -417,29 +419,33 @@ class IlluminationController:
         if channel not in self.intensity_settings:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
-            # The TTL port is part of the cached identity: a light source that picks its line from the port map (laser
-            # engine v2) must be told again after a remap, even at the same intensity. That line is shared by every
-            # wavelength on the port, so it must also be told again when another of them has set it since.
-            ttl_map = self.channel_mappings_TTL if self.shutter_control_mode == ShutterControlMode.TTL else {}
-            ttl_port = ttl_map.get(channel)
-            # ... and the calibration that applies is part of it too: a saved or edited file, a candidate, an identity
-            # change give an unchanged % another set-point (always unchanged for sources without calibrations)
+            line = self.channel_mappings_software[channel]
+            # A light source whose channel map follows the port map (laser engine v2) moves a channel to another line
+            # when the port map is edited, and that line has not had this channel's intensity yet.
+            moved = line != self._intensity_lines.get(channel, line)
+            # The calibration that applies is part of the cached identity too: a saved or edited file, a candidate, an
+            # identity change give an unchanged % another set-point (always unchanged for sources without calibrations)
             calibration_key = self._calibration_key(channel)
             if (
                 intensity != self.intensity_settings[channel]
-                or ttl_port != self._intensity_ttl_ports.get(channel)
-                or (self._drives_engine() and self._port_holders.get(ttl_port) != channel)
+                or moved
                 or calibration_key != self._intensity_calibration_keys.get(channel, _NO_CALIBRATION_KEY)
             ):
-                self.light_source.set_intensity(self.channel_mappings_software[channel], intensity)
+                self.light_source.set_intensity(line, intensity)
                 self.intensity_settings[channel] = intensity
-                self._intensity_ttl_ports[channel] = ttl_port
-                self._port_holders[ttl_port] = channel
+                self._intensity_lines[channel] = line
                 self._intensity_calibration_keys[channel] = calibration_key
+                # Channels served by the same line (e.g. 470 and 488 on one laser) share its power, so a
+                # later switch to one of them must not skip setting its own intensity.
+                if line is not None:
+                    for other, other_line in self.channel_mappings_software.items():
+                        if other_line == line:
+                            self.intensity_settings[other] = intensity
+                            self._intensity_lines[other] = other_line
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
-                self.microcontroller.set_illumination(ttl_map[channel], intensity)
+                self.microcontroller.set_illumination(self.channel_mappings_TTL[channel], intensity)
         else:
             lookup = self.lookup_calibration(channel)
             if lookup.calibration is not None:
@@ -569,5 +575,7 @@ class IlluminationController:
         return [i for i in range(NUM_ILLUMINATION_PORTS) if self.port_is_on[i]]
 
     def close(self):
-        if self.light_source is not None:
+        # Both the GUI and Microscope.close() close the controller; shut the light source down once.
+        if self.light_source is not None and not self._light_source_closed:
+            self._light_source_closed = True
             self.light_source.shut_down()
