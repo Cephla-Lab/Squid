@@ -211,6 +211,27 @@ def test_waiting_for_a_line_reports_why_and_keeps_the_watchdog_fed(tmp_path):
         inst.engine.close()
 
 
+def test_the_meter_reading_stays_on_show_while_a_line_comes_up(tmp_path):
+    """A line can take minutes to come up (TEC, the 560 source): the run keeps reporting what the meter reads, the
+    light off, instead of the dialog showing the previous channel's last reading all that time."""
+    inst = _with(tmp_path, FakeEngine(tok_delay_polls=50))  # the TEC takes ~50 polls
+    try:
+        session = _session(inst)
+        session.connect()
+        while_not_ready = []
+
+        def note(channel, mw, level):
+            status = inst.engine.get_latest_status()
+            if status is None or not status.channels["L2"].is_ready:
+                while_not_ready.append((channel, level))
+
+        target = next(t for t in session.targets() if t.name == "Fluorescence 488 nm Ex")
+        session.run([target], measured_in="widefield", sensor_limit_mw=500.0, on_reading=note)
+        assert while_not_ready and all(entry == (target.name, None) for entry in while_not_ready)
+    finally:
+        inst.engine.close()
+
+
 def test_a_line_that_does_not_become_ready_fails_with_the_engines_reason(tmp_path):
     inst = _with(tmp_path, FakeEngine(tok_delay_polls=10**6))  # the TEC never settles
     try:

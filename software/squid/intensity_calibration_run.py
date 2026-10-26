@@ -950,9 +950,13 @@ class CalibrationSession:
                     break
                 try:
                     if self.engine is not None:
-                        # before arming: a line can take minutes to warm up, with the light off; the wait feeds the
-                        # watchdog
-                        self.engine.prepare(target, progress, self.feed_watchdog, lambda: self._cancelled)
+                        # before arming: a line can take minutes to warm up, with the light off; every wait step feeds
+                        # the watchdog and reports what the meter reads, as the run's own readings are
+                        def waiting(name=target.name):
+                            self.feed_watchdog()
+                            on_reading(name, self.meter.read_mw(), None)
+
+                        self.engine.prepare(target, progress, waiting, lambda: self._cancelled)
                     deadline = self._arm_watchdog()  # again for every channel, in case it fired during the previous one
                     result: Union[ChannelResult, Exception] = calibrate_channel(
                         target,
