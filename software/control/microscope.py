@@ -509,7 +509,7 @@ class Microscope:
                 LightSourceType.AndorLaser,
                 andor_laser,
             )
-        elif control._def.USE_VORTRAN_LASER_CONTROL and not simulated:
+        elif light_source == LightSourceType.VersaLase:
             if control._def.VORTRAN_SHUTTER_CONTROL_MODE == "TTL":
                 shutter_mode = ShutterControlMode.TTL
             elif control._def.VORTRAN_SHUTTER_CONTROL_MODE == "Software":
@@ -529,7 +529,7 @@ class Microscope:
                 LightSourceType.VersaLase,
                 versalase,
             )
-        elif control._def.LASER_ENGINE == "v2" and addons.squid_laser_engine is not None:
+        elif light_source == LightSourceType.CephlaLaserEngineV2 and addons.squid_laser_engine is not None:
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,
                 IntensityControlMode.Software,
