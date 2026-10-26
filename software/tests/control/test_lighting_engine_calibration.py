@@ -235,6 +235,38 @@ def test_switching_between_calibrated_wavelengths_on_one_line_sends_each_its_set
         inst.engine.close()
 
 
+def test_a_calibrated_wavelength_at_the_percent_another_left_on_its_line_sends_its_own_set_point(tmp_path):
+    """470 at 50 %, 488 at 50 %, 470 at 50 % again: the line holds 488's set-point for 50 %, not 470's."""
+    inst = engine_instrument(tmp_path, yaml=SHARED_LINE_YAML)
+    try:
+        c488 = make_engine_calibration()
+        c470 = make_engine_calibration(model=bench_488_led_mw, wavelength_nm=470, channel="Fluorescence 470 nm Ex")
+        assert _drive_amps(c470, 50.0) != _drive_amps(c488, 50.0)
+        _install(inst, c488)
+        _install(inst, c470, "Fluorescence 470 nm Ex")
+        _ready(inst, "L2")
+        inst.illumination.set_intensity(470, 50.0)
+        inst.illumination.set_intensity(488, 50.0)
+        mark = len(inst.fake.sent)
+        inst.illumination.set_intensity(470, 50.0)
+        assert _sets(inst, 2, mark) == [_drive_amps(c470, 50.0)]
+    finally:
+        inst.engine.close()
+
+
+def test_uncalibrated_wavelengths_on_one_line_at_the_same_percent_are_not_sent_again(tmp_path):
+    """Linear, the same % is the same set-point whichever wavelength asks: the line already holds it."""
+    inst = engine_instrument(tmp_path, yaml=SHARED_LINE_YAML)
+    try:
+        _ready(inst, "L2")
+        inst.illumination.set_intensity(470, 50.0)
+        mark = len(inst.fake.sent)
+        inst.illumination.set_intensity(488, 50.0)
+        assert _sets(inst, 2, mark) == []
+    finally:
+        inst.engine.close()
+
+
 def test_other_software_light_sources_still_skip_an_unchanged_percent(tmp_path):
     light_source = MagicMock()
     light_source.channel_mappings = {405: 405}

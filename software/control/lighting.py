@@ -436,12 +436,14 @@ class IlluminationController:
                 self._intensity_lines[channel] = line
                 self._intensity_calibration_keys[channel] = calibration_key
                 # Channels served by the same line (e.g. 470 and 488 on one laser) share its power, so a
-                # later switch to one of them must not skip setting its own intensity.
+                # later switch to one of them must not skip setting its own intensity. The line holds this channel's
+                # set-point: another channel's same % is that set-point only under the same calibration (both linear).
                 if line is not None:
                     for other, other_line in self.channel_mappings_software.items():
                         if other_line == line:
                             self.intensity_settings[other] = intensity
                             self._intensity_lines[other] = other_line
+                            self._intensity_calibration_keys[other] = calibration_key
             if self.shutter_control_mode == ShutterControlMode.TTL:
                 # This is needed, because we select the channel in microcontroller set_illumination().
                 # Otherwise, the wrong channel will be opened when turn_on_illumination() is called.
