@@ -381,6 +381,20 @@ def _capture_warnings(monkeypatch):
     return warnings
 
 
+def _capture_refusals(monkeypatch):
+    refusals = []
+    monkeypatch.setattr(QMessageBox, "information", lambda parent, title, text, *args, **kwargs: refusals.append(text))
+    return refusals
+
+
+def _start_a_move_that_stays_under_way(gui):
+    """The controller keeps reporting the last command in progress (a move still under way)."""
+    sim = gui.microscope.low_level_drivers.microcontroller._serial
+    sim.hold_in_progress = True
+    gui.stage.move_x(0.5, blocking=False)
+    return sim
+
+
 def _run(fn, **kw):
     """As threaded_operation_helper calls its callback: (True, None) or (False, the error)."""
     try:
@@ -390,13 +404,52 @@ def _run(fn, **kw):
         return False, str(e)
 
 
-def test_home_stage_refused_while_stage_busy_or_autofocus(qtbot, confirm_exit_yes, monkeypatch):
+def test_home_stage_blocker_refuses_autofocus_but_not_the_host_busy_flag(qtbot, confirm_exit_yes, monkeypatch):
     gui = _gui(qtbot)
     monkeypatch.setattr(gui.autofocusController, "autofocus_in_progress", True)
     assert "autofocus" in gui._stage_homing_blocker()
     monkeypatch.setattr(gui.autofocusController, "autofocus_in_progress", False)
+    # The host's flag is set by every command (live's included): it is not evidence that the stage moves.
     monkeypatch.setattr(gui.stage, "get_state", lambda: squid.abc.StageStage(busy=True))
-    assert gui._stage_homing_blocker() is not None
+    assert gui._stage_homing_blocker() is None
+
+
+def test_home_stage_proceeds_with_only_the_host_busy_flag_set(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    micro = gui.microscope.low_level_drivers.microcontroller
+    qtbot.waitUntil(lambda: gui.stage.reports_stopped(), timeout=2000)  # a fresh COMPLETED report
+    micro.mcu_cmd_execution_in_progress = True  # e.g. live's last command, its ack not read yet
+    finished = []
+    gui.signal_home_stage_finished.connect(lambda ok, error: finished.append((ok, error)))
+    gui._on_home_stage_requested()  # a refusal would raise (_auto_confirm)
+    qtbot.waitUntil(lambda: bool(finished), timeout=10000)
+    assert finished == [(True, "")]
+    qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress, timeout=5000)
+
+
+def test_home_stage_refused_while_the_stage_is_still_moving(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    refusals = _capture_refusals(monkeypatch)
+    dispatched = []
+    monkeypatch.setattr(control.utils, "threaded_operation_helper", lambda *args, **kwargs: dispatched.append(args))
+    gui.liveController.start_live()
+    sim = _start_a_move_that_stays_under_way(gui)
+    gui._on_home_stage_requested()
+    assert refusals == ["Homing refused: the stage is still moving."]
+    assert dispatched == []  # nothing homed
+    # The claim stays held until the stage stops: live paused, controls locked
+    assert gui.microscope.stage_homing_in_progress and not gui.liveController.is_live
+    assert not gui.navigationWidget.isEnabled()
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    qtbot.waitUntil(
+        lambda: not gui.microscope.stage_homing_in_progress
+        and gui.liveController.is_live
+        and gui.navigationWidget.isEnabled(),
+        timeout=5000,
+    )
 
 
 def test_home_stage_claims_before_dispatch_and_restores_live(qtbot, confirm_exit_yes, monkeypatch):
@@ -440,6 +493,23 @@ def test_home_x_pauses_live(qtbot, confirm_exit_yes, monkeypatch):
     gui.liveController.start_live()
     gui.stageUtils.home_x()
     assert seen[0] == (True, False) and gui.liveController.is_live
+
+
+def test_home_x_refused_while_the_stage_is_still_moving(qtbot, confirm_exit_yes, monkeypatch):
+    gui = _gui(qtbot)
+    _auto_confirm(monkeypatch)
+    refusals = _capture_refusals(monkeypatch)
+    homes = []
+    monkeypatch.setattr(gui.stage, "home", lambda **kw: homes.append(kw))
+    gui.liveController.start_live()
+    sim = _start_a_move_that_stays_under_way(gui)
+    gui.stageUtils.home_x()
+    assert refusals == ["Homing refused: the stage is still moving."]
+    assert homes == []  # nothing homed
+    assert gui.microscope.stage_homing_in_progress and not gui.liveController.is_live
+    sim.hold_in_progress = False
+    sim.send_status_packet()
+    qtbot.waitUntil(lambda: not gui.microscope.stage_homing_in_progress and gui.liveController.is_live, timeout=5000)
 
 
 def test_home_x_on_piezo_only_asks_and_passes_the_confirmation(qtbot, confirm_exit_yes, monkeypatch, piezo_only):

@@ -54,7 +54,6 @@ from control.models.sample_format_config import (
 from control.models.yaml_store import YamlStoreDamaged
 from control.core.plate_transform import has_well_grid, plate_transform_for, PlateTransform, WellplateSettings
 import control._def  # Import module for runtime access to MCP-modifiable settings
-from control.startup_homing import StageHomingInProgressError
 from squid.abc import AbstractStage, AbstractCamera, AbstractFilterWheelController, CameraError
 from squid.stage.utils import (
     move_to_loading_position,
@@ -2831,6 +2830,10 @@ def ask_objective_lowered(parent) -> bool:
     return box.clickedButton() is home_btn
 
 
+class HomingRefused(Exception):
+    """A home will not start now; str(e) says why (a clause: "the stage is still moving")."""
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
@@ -2858,7 +2861,7 @@ class StageUtils(QDialog):
         self.ask_objective_return = False
         self._was_live = False
         # Home X / Home Y (set_homing_hooks): why the stage must not home now (or None), and the Microscope's homing
-        # claim, which pauses live and refuses other motion until the stage reports it stopped.
+        # claim for a stopped stage, which pauses live and refuses other motion until the stage reports it stopped.
         self._homing_blocker: Optional[Callable[[], Optional[str]]] = None
         self._claim: Optional[Callable[[str], "StageHomingClaim"]] = None
 
@@ -2950,7 +2953,7 @@ class StageUtils(QDialog):
         self, blocker: Callable[[], Optional[str]], claim: Callable[[str], "StageHomingClaim"]
     ) -> None:
         """Home X / Home Y: blocker() returns why the stage must not home now, or None; claim(operation) takes the
-        Microscope's homing claim (Microscope.claim_stage_homing) for the home."""
+        Microscope's homing claim for the home once the stage reports it stopped, or raises HomingRefused."""
         self._homing_blocker = blocker
         self._claim = claim
 
@@ -2987,8 +2990,8 @@ class StageUtils(QDialog):
             return
         try:
             claim = self._claim(operation)
-        except StageHomingInProgressError:
-            QMessageBox.information(self, "Homing", "Homing refused: the stage is homing.")
+        except HomingRefused as e:
+            self._refuse_homing(str(e))
             return
         try:
             self.stage.home(x=axis == "x", y=axis == "y", z=False, theta=False, objective_lowered=objective_lowered)
@@ -2999,8 +3002,11 @@ class StageUtils(QDialog):
     def _homing_refused(self) -> bool:
         reason = self._homing_blocker()
         if reason:
-            QMessageBox.information(self, "Homing", f"Homing refused: {reason}.")
+            self._refuse_homing(reason)
         return bool(reason)
+
+    def _refuse_homing(self, reason: str):
+        QMessageBox.information(self, "Homing", f"Homing refused: {reason}.")
 
     def _confirm_homing(self) -> bool:
         """The generic confirmation (systems that lower the objective themselves). Enter is Cancel."""

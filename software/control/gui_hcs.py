@@ -81,6 +81,11 @@ import squid.stage.utils
 
 log = squid.logging.get_logger(__name__)
 
+# Home stage / Home X / Home Y: once the homing claim has paused live, how long to wait for the controller to report
+# the stage stopped before refusing (a move still under way), and how often to ask.
+HOMING_START_SETTLE_S = 0.5
+HOMING_START_POLL_S = 0.01
+
 if USE_PRIOR_STAGE:
     import squid.stage.prior
 else:
@@ -2480,15 +2485,33 @@ class HighContentScreeningGui(QMainWindow):
             return "the Z lift is moving (a lift move, the loading toggle or an objective change)"
         if self.microscope.stage_homing_in_progress:
             return "the stage is homing"
-        if self.stage.get_state().busy:
-            return "the stage is moving"
+        # Not stage.get_state().busy: that is the host's flag, set by every command (live's included). A move still
+        # under way is refused by _claim_stage_for_homing, on the controller's own report.
         return None
+
+    def _claim_stage_for_homing(self, operation: str) -> "control.microscope.StageHomingClaim":
+        """Take the homing claim for a home started here (Home stage, Home X/Y): live paused, other motion refused,
+        the controls locked. Then wait up to HOMING_START_SETTLE_S for fresh controller evidence that the stage
+        stopped (AbstractStage.reports_stopped). Raises widgets.HomingRefused if the stage is homing already, or is
+        still moving: that claim is then released once the stage stops, and live resumes."""
+        try:
+            claim = self.microscope.claim_stage_homing(operation)
+        except StageHomingInProgressError:
+            raise widgets.HomingRefused("the stage is homing") from None
+        deadline = time.monotonic() + HOMING_START_SETTLE_S
+        while not self.stage.reports_stopped():
+            if time.monotonic() >= deadline:
+                self.log.info(f"{operation} refused: the controller still reports the stage moving")
+                claim.release_when_stopped()
+                raise widgets.HomingRefused("the stage is still moving")
+            time.sleep(HOMING_START_POLL_S)
+        return claim
 
     def _on_home_stage_requested(self):
         """Home stage (Stage Utils): the startup homing sequence, finishing at the end-of-homing safe position, run
         in a worker thread. Refused while anything else drives the stage; confirmed first; the homing claim (live
-        paused, motion refused, the controls locked) is taken here, before the worker starts, and released by
-        Microscope.home_stage once the stage reports it stopped."""
+        paused, motion refused, the controls locked) is taken here, once the stage reports it stopped and before the
+        worker starts, and released by Microscope.home_stage once the stage reports it stopped again."""
         if self._home_stage_refused():
             return
         if control._def.IS_PIEZO_ONLY:
@@ -2501,9 +2524,9 @@ class HighContentScreeningGui(QMainWindow):
         if not confirmed or self._home_stage_refused():
             return
         try:
-            claim = self.microscope.claim_stage_homing("Home stage")
-        except StageHomingInProgressError:
-            QMessageBox.information(self, "Home Stage", "Homing refused: the stage is homing.")
+            claim = self._claim_stage_for_homing("Home stage")
+        except widgets.HomingRefused as e:
+            self._refuse_home_stage(str(e))
             return
         try:
             control.utils.threaded_operation_helper(
@@ -2519,8 +2542,11 @@ class HighContentScreeningGui(QMainWindow):
     def _home_stage_refused(self) -> bool:
         reason = self._stage_homing_blocker()
         if reason:
-            QMessageBox.information(self, "Home Stage", f"Homing refused: {reason}.")
+            self._refuse_home_stage(reason)
         return bool(reason)
+
+    def _refuse_home_stage(self, reason: str):
+        QMessageBox.information(self, "Home Stage", f"Homing refused: {reason}.")
 
     def _confirm_home_stage(self) -> bool:
         """What will move, and that the stage will not come back. Enter is Cancel."""
@@ -2563,7 +2589,7 @@ class HighContentScreeningGui(QMainWindow):
     def _connect_stage_homing(self):
         """Home stage, Home X/Y and the homing lock."""
         self.microscope.add_stage_homing_listener(self._relay_stage_homing_changed)
-        self.stageUtils.set_homing_hooks(self._stage_homing_blocker, self.microscope.claim_stage_homing)
+        self.stageUtils.set_homing_hooks(self._stage_homing_blocker, self._claim_stage_for_homing)
         self.stageUtils.signal_home_stage_requested.connect(self._on_home_stage_requested)
         self.stageUtils.signal_axes_homed.connect(self._on_axes_homed)
         self.signal_home_stage_finished.connect(self._on_home_stage_finished)
