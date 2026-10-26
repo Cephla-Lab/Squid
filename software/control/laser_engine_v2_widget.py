@@ -52,8 +52,7 @@ SHUTTER_MODE_LABELS = {  # the 560 mechanical shutter's modes, as the tab shows 
     laser_engine_v2_settings.SHUTTER_ALWAYS_OPEN: "Always open",
 }
 SHUTTER_MODE_HINTS = {
-    laser_engine_v2_settings.SHUTTER_ON_USE: "open while live, a snap, an acquisition, autofocus, tracking or a script "
-    "images with the 560",
+    laser_engine_v2_settings.SHUTTER_ON_USE: "open while the 560 is used",
     laser_engine_v2_settings.SHUTTER_ALWAYS_OPEN: "open whenever the 560 is ready",
 }
 
@@ -297,6 +296,8 @@ class LaserEngineV2Widget(QWidget):
         self.shutter_combo.currentIndexChanged.connect(
             lambda _i: self.set_shutter_mode(self.shutter_combo.currentData())
         )
+        self.shutter_btn = QPushButton("Open shutter")  # by hand, in On use while nothing uses the 560
+        self.shutter_btn.clicked.connect(lambda _=False: self.toggle_shutter())
         self.shutter_note = QLabel(SHUTTER_MODE_HINTS[engine.shutter_mode])
         self.shutter_note.setWordWrap(True)
         self.shutter_note.setStyleSheet(f"color: {GREY};")
@@ -323,6 +324,7 @@ class LaserEngineV2Widget(QWidget):
         shutter_layout.setContentsMargins(0, 0, 0, 0)
         shutter_layout.addWidget(QLabel("Shutter"))
         shutter_layout.addWidget(self.shutter_combo)
+        shutter_layout.addWidget(self.shutter_btn)
         shutter_layout.addWidget(self.shutter_note, 1)
         self.shutter_row.setVisible(engine.mechanical_shutter is not None)
         rows.addLayout(state_row)
@@ -376,12 +378,38 @@ class LaserEngineV2Widget(QWidget):
             self.shutter_combo.blockSignals(False)
             return
         self.shutter_note.setText(SHUTTER_MODE_HINTS[mode])
+        self._update_shutter_button()
         if not self._save_shutter_mode(mode):
             self._on_notice("560 nm shutter mode not saved (see the log): this session only")
+
+    def toggle_shutter(self) -> None:
+        """The shutter button: open the shutter by hand, or close it again."""
+        opening = not self._engine.shutter_control().manual_open
+        self._run(lambda: self._engine.set_manual_shutter(opening))
+        self._update_shutter_button()
+
+    def _update_shutter_button(self) -> None:
+        """Open / Close by hand in On use while nothing uses the 560 and it is ready; "Shutter in use" (disabled) while
+        something uses it; hidden in Always open, where the mode keeps the shutter open."""
+        control = self._engine.shutter_control()
+        self.shutter_btn.setVisible(self._engine.shutter_mode != laser_engine_v2_settings.SHUTTER_ALWAYS_OPEN)
+        if control.manual_open:
+            text, enabled, tip = "Close shutter", True, "Opened by hand: Close it, or a use of the 560 takes it over"
+        elif control.users:
+            text, enabled, tip = "Shutter in use", False, f"The shutter follows the use of the 560: {control.reason}"
+        else:
+            text, enabled = "Open shutter", control.can_open
+            tip = (
+                "Open the shutter by hand (the idle-off still applies)" if enabled else f"Cannot open: {control.reason}"
+            )
+        self.shutter_btn.setText(text)
+        self.shutter_btn.setEnabled(enabled)
+        self.shutter_btn.setToolTip(tip)
 
     def _update_source_box(self) -> None:
         if self.source_box is None:
             return
+        self._update_shutter_button()
         status = self._engine.source_status
         setpoint = self._engine.source_power_setpoint_mw
         if setpoint is None:  # the engine has closed its source

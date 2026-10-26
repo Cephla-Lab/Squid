@@ -355,3 +355,44 @@ def test_widget_shutter_mode_refused_goes_back_and_is_not_saved(qtbot, monkeypat
     assert shown == ["laser engine connection lost"]
     assert widget.shutter_combo.currentData() == "on_use" and engine.shutter_mode == "on_use" and saved == []
     engine.close()
+
+
+def _ready_widget(qtbot):
+    engine, widget = _widget(qtbot)
+    widget._save_shutter_mode = lambda mode: True
+    engine.wake_up("L3")
+    for _ in range(5):
+        engine.source_step()
+    engine.poll_once()  # the tab updates on every status
+    return engine, widget
+
+
+def test_widget_shutter_button_opens_and_closes_by_hand(qtbot):
+    engine, widget = _ready_widget(qtbot)
+    fake, btn = engine.sim_engine, widget.shutter_btn
+    assert btn.isVisibleTo(widget) and btn.isEnabled() and btn.text() == "Open shutter" and not fake.shut_open
+    btn.click()
+    assert fake.shut_open and btn.text() == "Close shutter" and btn.isEnabled()
+    btn.click()
+    assert not fake.shut_open and btn.text() == "Open shutter"
+    engine.close()
+
+
+def test_widget_shutter_button_while_the_560_is_used_or_not_ready_or_always_open(qtbot):
+    engine, widget = _ready_widget(qtbot)
+    fake, btn = engine.sim_engine, widget.shutter_btn
+    btn.click()  # open by hand ...
+    live = engine.use("live", [engine.light_source.channel_mappings[561]])  # ... then live takes over
+    engine.poll_once()
+    assert btn.text() == "Shutter in use" and not btn.isEnabled() and "live" in btn.toolTip() and fake.shut_open
+    live.release()
+    engine.poll_once()
+    assert btn.text() == "Open shutter" and btn.isEnabled() and not fake.shut_open
+    engine.put_to_sleep("L3")
+    engine.poll_once()
+    assert not btn.isEnabled() and "the 560 is not ready" in btn.toolTip()
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("always_open"))
+    assert not btn.isVisibleTo(widget)  # the mode keeps it open whenever the 560 is ready
+    widget.shutter_combo.setCurrentIndex(widget.shutter_combo.findData("on_use"))
+    assert btn.isVisibleTo(widget)
+    engine.close()

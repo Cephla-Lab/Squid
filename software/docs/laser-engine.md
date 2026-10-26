@@ -92,7 +92,7 @@ needs to stay armed, so the engine disarms itself about 5 s after Squid stops.
   is not READY. States: READY; STARTING; WARMING UP (TEC not in window yet); OFF; NOT ARMED; PAUSED (cover open, the
   engine resumes by itself); SOURCE OFF, NEEDS KEY, NOT CONFIGURED (DF 560); BLOCKED (a TEC left its window: Reset
   faults); FAULT.
-- On DF, the **560 nm laser** box (section 4): laser power, idle-off and the shutter mode.
+- On DF, the **560 nm laser** box (section 4): laser power, idle-off, the shutter mode and the shutter button.
 
 The tab scrolls when Squid's side panel is shorter than it.
 
@@ -115,6 +115,13 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
     illumination on). It opens and closes at once when a use starts or ends; for a use waiting on line 3 it opens as
     soon as the laser reads ready.
   - **Always open**: open whenever line 3 is READY.
+
+  In On use, while nothing uses the 560, the **Open shutter** button opens it by hand (e.g. for alignment or a power
+  meter), when the engine is armed and line 3 is READY; **Close shutter** closes it again. A use of the 560 takes over:
+  the button reads **Shutter in use** (disabled) and the shutter follows the use, which also ends the open by hand, so
+  the shutter closes when the use ends. An open by hand also ends when line 3 stops being READY, and never reopens by
+  itself. It is not a use: pressing Open counts as one use, then the idle-off applies. The button is hidden in Always
+  open.
 
   It opens in 1 ms, and nothing images before it has been open that long: a use that starts while line 3 is READY
   returns only then, and the acquisition's readiness check (and every wait for READY) includes it. It stays open while

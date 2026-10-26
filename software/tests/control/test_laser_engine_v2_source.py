@@ -1091,3 +1091,111 @@ def test_the_light_source_reports_the_560_mechanical_shutter():
     assert shutter is not None and shutter.open_time_s == 0.001
     assert light.mechanical_shutter(light.channel_mappings[488]) is None
     assert light.mechanical_shutter(None) is None
+
+
+# ---- the operator's shutter button (On use, while nothing uses the 560) ------------------------------------------------
+
+
+def test_the_operator_opens_and_closes_the_shutter_by_hand_when_nothing_uses_the_560():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    control = engine.shutter_control()
+    assert control.can_open and not control.manual_open and control.users == () and not fake.shut_open
+    engine.set_manual_shutter(True)
+    assert fake.shut_open and engine.shutter_control().manual_open  # at once
+    engine.poll_once()
+    assert fake.shut_open  # the next poll keeps it open
+    engine.set_manual_shutter(False)
+    assert not fake.shut_open and not engine.shutter_control().manual_open
+
+
+@pytest.mark.parametrize("why", ["line 3 off", "not armed", "in use", "always open"])
+def test_the_shutter_cannot_be_opened_by_hand_unless_permitted(why):
+    engine, fake, source = _with_source()
+    if why == "line 3 off":
+        engine.wake_up("L1")  # armed, line 3 still off
+    else:
+        _to_ready(engine, source)
+    if why == "not armed":
+        engine.disarm()
+        engine.poll_once()
+    elif why == "in use":
+        engine.use("live", L3)
+    elif why == "always open":
+        engine.set_shutter_mode("always_open")
+    control = engine.shutter_control()
+    expected = {
+        "line 3 off": "the 560 is not ready",
+        "not armed": "the engine is not armed",
+        "in use": "in use (live)",
+        "always open": "Always open",
+    }[why]
+    assert not control.can_open and control.reason.startswith(expected)
+    opened_before = fake.shut_open
+    with pytest.raises(LaserEngineV2Error, match="shutter not opened"):
+        engine.set_manual_shutter(True)
+    assert fake.shut_open == opened_before and not engine.shutter_control().manual_open
+
+
+def test_a_use_of_the_560_takes_over_from_an_open_by_hand():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    live = engine.use("live", L3)
+    control = engine.shutter_control()
+    assert fake.shut_open and not control.manual_open and control.users == ("live",)
+    live.release()  # the use ends: the shutter follows On use, the open by hand is over
+    assert not fake.shut_open and engine.shutter_control().can_open
+
+
+def test_an_open_by_hand_does_not_keep_the_560_on_and_never_reopens_by_itself():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61  # unused for longer than the idle-off ...
+    engine.set_manual_shutter(True)  # ... the press counts as one use
+    engine.poll_once()
+    engine.source_step()
+    assert source.enabled and fake.shut_open
+    engine._source_last_use -= 61  # then the idle-off passes with nothing using the 560
+    engine.poll_once()
+    engine.source_step()
+    assert not source.enabled and not fake.shut_open and not engine.shutter_control().manual_open
+    engine.wake_up("L3")  # the 560 comes back (e.g. Wake all): the shutter stays closed
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and not fake.shut_open
+
+
+def test_an_intensity_change_keeps_an_open_by_hand():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    for pct in (30.0, 80.0, 0.0):  # every AOM LINE3:SET ramps line 3
+        engine.light_source.set_intensity(engine.light_source.channel_mappings[561], pct)
+        engine.poll_once()
+    assert fake.shut_open and engine.shutter_control().manual_open
+
+
+def test_a_mode_change_ends_an_open_by_hand():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    engine.set_shutter_mode("always_open")
+    assert fake.shut_open and not engine.shutter_control().manual_open
+    engine.set_shutter_mode("on_use")
+    assert not fake.shut_open
+
+
+def test_an_open_by_hand_ends_when_the_560_drops_out_and_stays_closed_when_it_is_back():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    source.enabled = False  # the 560 goes off by itself (still wanted: the next use restarts it)
+    engine.source_step()
+    engine.poll_once()
+    assert not fake.shut_open and not engine.shutter_control().manual_open
+    engine.wake_up("L3")  # restarted (e.g. Wake all, or a use that has since ended)
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and not fake.shut_open  # not reopened
