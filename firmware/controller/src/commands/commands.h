@@ -23,6 +23,8 @@ void callback_disable_stage_pid();
 void callback_set_encoder_reporting();
 void callback_set_focus_wheel_mode();
 void callback_set_panel_lock();
+void callback_store_config_signature();
+void callback_query_startup_state();
 void callback_set_ramp_profile();
 void callback_set_completion_window();
 void callback_initfilterwheel();

@@ -1,4 +1,4 @@
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple
 import json
 import math
 import os
@@ -12,6 +12,9 @@ import control.utils
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
 _MAX_CACHE_BYTES = 4096
+# How far, per axis, the stage's X/Y may be from a remembered X/Y (the loading position's, the cached position's) and
+# still count as there (is_at_xy)
+SAME_XY_TOLERANCE_MM = 0.1
 
 
 def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
@@ -146,13 +149,19 @@ def objective_is_retracted(z_mm: float) -> bool:
     return z_mm <= _def.OBJECTIVE_RETRACTED_POS_MM + _RETRACTED_TOLERANCE_MM
 
 
-def _retract_objective_for_loading(stage: AbstractStage):
-    # The objective goes up to its retracted position (never down: one already above it stays), remembering where
-    # it was; the way back lowers it there last.
-    stage._scanning_position_z_mm = stage.get_pos().z_mm
-    if not objective_is_retracted(stage._scanning_position_z_mm):
+def retract_objective(stage: AbstractStage):
+    """Z to OBJECTIVE_RETRACTED_POS_MM, then wait for the stage to stop, unless the objective is already retracted
+    (objective_is_retracted): a Z at or below the retracted position stays, so this never moves the objective toward
+    the sample."""
+    if not objective_is_retracted(stage.get_pos().z_mm):
         stage.move_z_to(_def.OBJECTIVE_RETRACTED_POS_MM)
         stage.wait_for_idle(_def.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S)
+
+
+def _retract_objective_for_loading(stage: AbstractStage):
+    # The objective retracts, remembering where it was; the way back lowers it there last.
+    stage._scanning_position_z_mm = stage.get_pos().z_mm
+    retract_objective(stage)
 
 
 def _restore_objective_after_loading(stage: AbstractStage):
@@ -241,8 +250,25 @@ def restore_loading_state(stage: AbstractStage, state: dict) -> bool:
     return complete
 
 
+def _loading_xy_mm() -> Tuple[float, float]:
+    """(X, Y) of the loading position, where move_xy_to_loading_position ends for a wellplate and a slide alike."""
+    return _def.SLIDE_POSITION.LOADING_X_MM, _def.SLIDE_POSITION.LOADING_Y_MM
+
+
+def is_at_xy(stage: AbstractStage, x_mm: float, y_mm: float) -> bool:
+    """True when the stage's X and Y are each within SAME_XY_TOLERANCE_MM of (x_mm, y_mm)."""
+    pos = stage.get_pos()
+    return abs(pos.x_mm - x_mm) <= SAME_XY_TOLERANCE_MM and abs(pos.y_mm - y_mm) <= SAME_XY_TOLERANCE_MM
+
+
+def is_at_loading_xy(stage: AbstractStage) -> bool:
+    """True when the stage's X and Y are each within SAME_XY_TOLERANCE_MM of the loading position's."""
+    return is_at_xy(stage, *_loading_xy_mm())
+
+
 def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
     """XY to the loading position, by the same path the loading move takes (lift and Z are not moved)."""
+    loading_x_mm, loading_y_mm = _loading_xy_mm()
     # Set our limits to something large.  Then later reset them back to the safe values.
     if is_wellplate:
         a_large_limit_mm = 125
@@ -258,8 +284,8 @@ def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
         # how to name the variable properly. Right now they should work for all our stages.
         stage.move_y_to(15)
         stage.move_x_to(35)
-        stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
-        stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+        stage.move_y_to(loading_y_mm)
+        stage.move_x_to(loading_x_mm)
 
         stage.set_limits(
             x_pos_mm=stage.get_config().X_AXIS.MAX_POSITION,
@@ -268,18 +294,37 @@ def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
             y_neg_mm=stage.get_config().Y_AXIS.MIN_POSITION,
         )
     else:
-        stage.move_y_to(_def.SLIDE_POSITION.LOADING_Y_MM)
-        stage.move_x_to(_def.SLIDE_POSITION.LOADING_X_MM)
+        stage.move_y_to(loading_y_mm)
+        stage.move_x_to(loading_x_mm)
 
 
-def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+def _clear_sample_for_loading_xy(stage: AbstractStage, is_wellplate: bool):
     # The objective retracts first; with a Z lift, before the lift lowers. The way back raises the lift before it
     # lowers the objective, so the sample never rises toward an objective already at its working height.
     if is_wellplate or getattr(stage, "lift", None) is not None:
         _retract_objective_for_loading(stage)
     _lower_lift_for_loading(stage)
+
+
+def _move_to_loading_position_impl(stage: AbstractStage, is_wellplate: bool):
+    _clear_sample_for_loading_xy(stage, is_wellplate)
     # Recorded once the lift is down, before XY moves: a Squid that dies on the way still starts lowered and locked
     save_loading_state(stage)
+    move_xy_to_loading_position(stage, is_wellplate)
+
+
+def return_to_loading_position(stage: AbstractStage, is_wellplate: bool):
+    """A still-homed startup whose restored loading state (load_loading_state) says the stage is at the loading
+    position, while it is elsewhere: a session that died on its way back to scanning, which raises the lift and may
+    lower the objective before it clears the state. Back by the move to the loading position's steps, in its order:
+    the objective retracts and the lift lowers before XY travels.
+
+    The state is not recorded again, and the Z and lift height to return to stay the ones the stage holds (the
+    restored state's, see restore_loading_state), not the current, possibly raised, ones the retract and the lower
+    note on the stage."""
+    return_heights = getattr(stage, "_scanning_position_z_mm", None), getattr(stage, "_scanning_position_lift_mm", None)
+    _clear_sample_for_loading_xy(stage, is_wellplate)
+    stage._scanning_position_z_mm, stage._scanning_position_lift_mm = return_heights
     move_xy_to_loading_position(stage, is_wellplate)
 
 

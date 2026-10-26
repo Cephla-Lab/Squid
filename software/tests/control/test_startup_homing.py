@@ -1,4 +1,7 @@
 import logging
+import pathlib
+import subprocess
+import sys
 import threading
 import time
 from unittest.mock import MagicMock
@@ -6,20 +9,31 @@ from unittest.mock import MagicMock
 import pytest
 
 import control._def
+import control.microcontroller
 import control.microscope
 import squid.config
 import squid.stage.cephla
+import squid.stage.pi
 import squid.stage.prior
+import squid.stage.utils
 import tests.squid.test_stage
+from control._def import AXIS, CMD_SET, STARTUP_STATE_MIN_FIRMWARE, STARTUP_VERDICT_STATUS_BASE, StartupVerdict
+from control.firmware_sim_serial import FirmwareSimSerial
+from control.microcontroller import Microcontroller
 from control.startup_homing import (
+    CONFIG_SIGNATURE_FORMAT,
     ObjectiveNotLoweredError,
     StageHomingInProgressError,
     StageHomingRefused,
     StartupHoming,
+    config_signature,
+    config_signature_text,
     home_stage_confirmation_text,
+    required_homed_axes_mask,
 )
 from tests.control.test_microcontroller import get_test_micro
 
+SOFTWARE_DIR = pathlib.Path(__file__).resolve().parents[2]
 NOT_STOPPED_ERROR = "Homing ended without the controller reporting the stage stopped"
 
 
@@ -455,3 +469,697 @@ def test_home_stage_confirmation_with_a_stepper_z(monkeypatch):
     assert home_stage_confirmation_text(has_z_lift=False) == (
         "X, Y and Z move to their limit switches. The stage will not return to where it is now."
     )
+
+
+# Startup state protocol (firmware 1.9): STORE_CONFIG_SIGNATURE / QUERY_STARTUP_STATE, verdict in the status byte.
+
+
+@pytest.fixture
+def new_firmware_micro():
+    sim = FirmwareSimSerial(strict=True, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(sim, reset_and_initialize=False)
+    yield micro, sim
+    micro.close()
+
+
+def test_startup_state_needs_its_firmware():
+    sim = FirmwareSimSerial(strict=True, firmware_version=(1, 8))
+    micro = Microcontroller(sim, reset_and_initialize=False)
+    try:
+        assert not micro.supports_startup_state()
+        sim.command_log.clear()
+        with pytest.raises(RuntimeError, match="1.8"):
+            micro.store_config_signature(0x12345678, 1)
+        with pytest.raises(RuntimeError, match="1.8"):
+            micro.query_startup_state(0x12345678, 1, 0b011)
+        assert sim.command_log == []
+    finally:
+        micro.close()
+
+
+@pytest.mark.parametrize(
+    "signature, signature_format, mask",
+    [(-1, 1, 0), (1 << 32, 1, 0), (0, -1, 0), (0, 16, 0), (0, 1, -1), (0, 1, 0b1000)],
+)
+def test_startup_state_arguments_must_fit_the_wire(new_firmware_micro, signature, signature_format, mask):
+    micro, sim = new_firmware_micro
+    sim.command_log.clear()
+    with pytest.raises(ValueError):
+        micro.query_startup_state(signature, signature_format, mask)
+    if mask == 0:
+        with pytest.raises(ValueError):
+            micro.store_config_signature(signature, signature_format)
+    assert sim.command_log == []
+
+
+def test_store_home_query_is_warm(new_firmware_micro):
+    micro, sim = new_firmware_micro
+    assert micro.supports_startup_state()
+    micro.store_config_signature(0x12345678, 1)
+    assert sim.command_log[-1] == CMD_SET.STORE_CONFIG_SIGNATURE and not micro.is_busy()  # waited for completion
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NOT_HOMED
+    micro.home_xy()
+    micro.wait_till_operation_is_completed()
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.WARM
+    assert micro.query_startup_state(0x12345679, 1, 0b011) is StartupVerdict.SIGNATURE_MISMATCH
+    assert micro.query_startup_state(0x12345678, 2, 0b011) is StartupVerdict.SIGNATURE_MISMATCH
+    assert micro.query_startup_state(0x12345678, 1, 0b111) is StartupVerdict.NOT_HOMED
+
+
+def test_query_never_takes_an_earlier_verdict():
+    micro = Microcontroller(FirmwareSimSerial(firmware_version=(1, 8)), reset_and_initialize=False)
+    try:
+        micro.firmware_version = STARTUP_STATE_MIN_FIRMWARE  # host believes it; the sim sends no verdict
+        micro._startup_verdict_packet = (
+            (micro._cmd_id + 1) % 256,
+            int(StartupVerdict.WARM),
+        )  # stale; same id as the next send
+        with pytest.raises(RuntimeError, match="no startup verdict"):
+            micro.query_startup_state(0x12345678, 1, 0b011)
+    finally:
+        micro.close()
+
+
+def test_host_query_returns_during_genuine_in_progress(new_firmware_micro):
+    micro, sim = new_firmware_micro  # constructed first: its tail legitimately waits for completion
+    sim.in_progress = True
+    sim.moving_axes.add(AXIS.X)
+    t0 = time.time()
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NO_SIGNATURE
+    assert time.time() - t0 < 1.0 and micro.is_busy()  # answered without waiting for completion
+
+
+@pytest.mark.parametrize("verdict", list(StartupVerdict))
+def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_firmware_micro, verdict):
+    micro, sim = new_firmware_micro
+    micro.LAST_COMMAND_ACK_TIMEOUT = 0.01  # the ack-timeout resend would fire on the next packet
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NO_SIGNATURE
+    sent = list(sim.command_log)
+    time.sleep(0.05)
+    for _ in range(3):  # the firmware repeats the verdict in every packet until the next command
+        parsed = threading.Event()
+        micro.set_callback(lambda m: parsed.set())
+        with sim._update_lock:
+            sim.response_buffer.extend(sim._build_response(micro._cmd_id, STARTUP_VERDICT_STATUS_BASE + verdict))
+            sim._update_internal_state()
+        assert parsed.wait(2)
+        assert micro._startup_verdict_packet == (micro._cmd_id, verdict)
+        assert micro.is_busy() and micro.last_command_aborted_error is None
+        assert not micro.reported_idle_since_last_command()
+    assert sim.command_log == sent  # nothing resent
+
+
+def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_micro):
+    """The read loop also accepts a packet whose last byte is 0 (firmware that sent no CRC), but firmware that answers
+    the query always sends one: a verdict status in such a packet (a misaligned read window, say) is not a verdict."""
+    micro, sim = new_firmware_micro
+    status = STARTUP_VERDICT_STATUS_BASE + StartupVerdict.WARM
+    packet = sim._build_response(micro._cmd_id, status)
+    while packet[-1] == 0:  # a real CRC of 0 would make the forged packet a genuine one
+        sim.x += 1
+        packet = sim._build_response(micro._cmd_id, status)
+
+    def parse(raw):
+        parsed = threading.Event()
+        micro.set_callback(lambda m: parsed.set())
+        with sim._update_lock:
+            sim.response_buffer.extend(raw)
+            sim._update_internal_state()
+        assert parsed.wait(2)
+
+    with micro._received_packet_cv:
+        micro._startup_verdict_packet = None
+    parse(packet[:-1] + b"\x00")
+    assert micro._startup_verdict_packet is None
+    parse(packet)  # the same packet with its CRC is one
+    assert micro._startup_verdict_packet == (micro._cmd_id, StartupVerdict.WARM)
+
+
+def test_signature_is_the_same_in_another_process():
+    out = subprocess.run(
+        [sys.executable, "-c", "import control.startup_homing as s; print(s.config_signature())"],
+        cwd=SOFTWARE_DIR,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert int(out) == config_signature()
+
+
+def test_signature_text_starts_with_the_format_and_covers_every_axis():
+    lines = config_signature_text().split("\n")
+    assert lines[0] == "format=1"
+    assert len(lines) == 1 + 3 * 13
+    assert all("=" in line for line in lines)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "SCREW_PITCH_X_MM",
+        "MICROSTEPPING_DEFAULT_Y",
+        "Z_MOTOR_RMS_CURRENT_mA",
+        "X_MOTOR_I_HOLD",
+        "MAX_VELOCITY_Y_mm",
+        "MAX_ACCELERATION_Z_mm",
+        "X_HOME_SAFETY_MARGIN_UM",
+    ],
+)
+def test_each_def_setting_changes_the_signature(monkeypatch, name):
+    before = config_signature()
+    monkeypatch.setattr(control._def, name, getattr(control._def, name) * 2 + 1)
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("MOVEMENT_SIGN", "flip"),
+        ("USE_ENCODER", "flip"),
+        ("ENCODER_SIGN", "flip"),
+        ("ENCODER_STEP_SIZE", 0.123),
+        ("FULL_STEPS_PER_REV", 400.0),
+    ],
+)
+def test_each_host_only_setting_changes_the_signature(monkeypatch, field, value):
+    before = config_signature()
+    config = squid.config.get_stage_config()
+    axis = config.Y_AXIS
+    if value == "flip":
+        current = getattr(axis, field)
+        value = (not current) if isinstance(current, bool) else type(current)(-current.value)
+    new_axis = axis.model_copy(update={field: value})
+    monkeypatch.setattr(squid.config, "_stage_config", config.model_copy(update={"Y_AXIS": new_axis}))
+    assert config_signature() != before
+
+
+def test_limit_switch_config_changes_the_signature(monkeypatch):
+    before = config_signature()
+    real = control._def.limit_switch_config_byte
+    monkeypatch.setattr(control._def, "limit_switch_config_byte", lambda a: real(a) ^ 0x01 if a == "z" else real(a))
+    assert config_signature() != before
+
+
+def test_equal_values_written_differently_sign_the_same(monkeypatch):
+    monkeypatch.setattr(control._def, "SCREW_PITCH_X_MM", 2.54)
+    a = config_signature()
+    monkeypatch.setattr(control._def, "SCREW_PITCH_X_MM", float("2.540"))
+    assert config_signature() == a
+    monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.5)
+    b = config_signature()
+    monkeypatch.setattr(control._def, "X_MOTOR_I_HOLD", 0.50)
+    assert config_signature() == b
+
+
+def test_format_version_changes_the_signature(monkeypatch):
+    import control.startup_homing
+
+    before = config_signature()
+    monkeypatch.setattr(control.startup_homing, "CONFIG_SIGNATURE_FORMAT", 2)
+    assert config_signature() != before
+
+
+@pytest.mark.parametrize(
+    "z, pi, lift, mask",
+    [(True, False, False, 0b111), (False, False, False, 0b011), (True, True, False, 0b011), (False, True, True, 0b111)],
+)
+def test_required_axes(monkeypatch, z, pi, lift, mask):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", pi)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", lift)
+    assert required_homed_axes_mask() == mask
+
+
+def test_required_axes_needs_both_x_and_y_homing(monkeypatch):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_X", True)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Y", False)
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+    assert required_homed_axes_mask() == 0
+
+
+# --- The startup decision (B5): warm only when the controller vouches for the homing under this configuration ---
+
+COVERED_SETTINGS = (
+    CMD_SET.SET_LEAD_SCREW_PITCH,
+    CMD_SET.CONFIGURE_STEPPER_DRIVER,
+    CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+    CMD_SET.SET_HOME_SAFETY_MERGIN,
+    CMD_SET.SET_LIMIT_SWITCH_CONFIG,
+)
+OLDER_FIRMWARE = (STARTUP_STATE_MIN_FIRMWARE[0], STARTUP_STATE_MIN_FIRMWARE[1] - 1)
+
+
+def _reopen(micro, sim):
+    """End a session the way a relaunch finds it: the host closes, the controller stays powered."""
+    micro.close()
+    sim.reconnect(1)
+    sim.command_log.clear()
+
+
+def _homed(sim=None, before_close=None):
+    """A controller that an earlier session started normally (storing the signature) and homed in X, Y and Z."""
+    sim = sim or FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(serial_device=sim)
+    micro.home_xy(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+    if before_close:
+        before_close(micro)
+    _reopen(micro, sim)
+    return sim
+
+
+def test_first_launch_is_normal_and_stores_the_signature_last():
+    sim = FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(serial_device=sim)
+    log = sim.command_log
+    assert micro.startup_verdict is StartupVerdict.NO_SIGNATURE and not micro.startup_was_warm
+    # Nothing but the version detection before the query, and RESET right after it
+    assert log[:3] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.QUERY_STARTUP_STATE, CMD_SET.RESET]
+    store = log.index(CMD_SET.STORE_CONFIG_SIGNATURE)
+    assert log.index(CMD_SET.INITIALIZE) < log.index(CMD_SET.CONFIGURE_STEPPER_DRIVER) < store
+    assert max(i for i, c in enumerate(log) if c == CMD_SET.SET_LIMIT_SWITCH_CONFIG) < store
+    assert max(i for i, c in enumerate(log) if c in COVERED_SETTINGS) < store  # the last covered step
+    assert log[store + 1 :] == [CMD_SET.SET_FOCUS_WHEEL_MODE, CMD_SET.SET_PANEL_LOCK]
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+
+
+def test_relaunch_is_warm_and_reconfigures_nothing(caplog):
+    sim = _homed(before_close=lambda m: (m.move_x_to_usteps(1000), m.wait_till_operation_is_completed()))
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is StartupVerdict.WARM and micro.startup_was_warm
+    assert "same configuration: startup homing skipped" in caplog.text
+    assert sim.command_log[:3] == [CMD_SET.TURN_OFF_ALL_PORTS, CMD_SET.QUERY_STARTUP_STATE, CMD_SET.RESET]
+    for code in (
+        CMD_SET.INITIALIZE,
+        CMD_SET.CONFIGURE_STEPPER_DRIVER,
+        CMD_SET.SET_LEAD_SCREW_PITCH,
+        CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+        CMD_SET.SET_HOME_SAFETY_MERGIN,
+        CMD_SET.STORE_CONFIG_SIGNATURE,
+    ):
+        assert code not in sim.command_log
+    assert sim.x == 1000 and micro.get_pos()[0] == 1000  # the stage kept its position
+    # What the warm start re-sent (the limit-switch config, unchanged) kept the signature: the next relaunch is warm
+    _reopen(micro, sim)
+    assert Microcontroller(serial_device=sim).startup_was_warm
+
+
+@pytest.mark.parametrize(
+    "before_close, after, verdict",
+    [
+        (lambda m: m.zero_x(), None, StartupVerdict.NOT_HOMED),
+        (
+            lambda m: (m.set_axis_enable_disable(AXIS.Y, 0), m.set_axis_enable_disable(AXIS.Y, 1)),
+            None,
+            StartupVerdict.NOT_HOMED,
+        ),
+        (
+            lambda m: m.configure_motor_driver(
+                AXIS.X,
+                2 * control._def.MICROSTEPPING_DEFAULT_X,
+                control._def.X_MOTOR_RMS_CURRENT_mA,
+                control._def.X_MOTOR_I_HOLD,
+            ),
+            None,
+            StartupVerdict.NO_SIGNATURE,
+        ),
+        (None, lambda sim, mp: sim.set_power_good(False), StartupVerdict.UNHEALTHY),
+        (None, lambda sim, mp: setattr(sim, "tmc_config_ok", False), StartupVerdict.UNHEALTHY),
+        (None, lambda sim, mp: sim.moving_axes.add(AXIS.Y), StartupVerdict.MOVING),
+        (
+            None,
+            lambda sim, mp: mp.setattr(control._def, "MAX_VELOCITY_X_mm", control._def.MAX_VELOCITY_X_mm + 1),
+            StartupVerdict.SIGNATURE_MISMATCH,
+        ),
+    ],
+)
+def test_anything_else_is_a_normal_startup(monkeypatch, caplog, before_close, after, verdict):
+    sim = _homed(before_close=before_close)
+    if after:
+        after(sim, monkeypatch)
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is verdict and not micro.startup_was_warm
+    assert CMD_SET.INITIALIZE in sim.command_log
+    assert control.microcontroller._STARTUP_VERDICT_LOG[verdict] in caplog.text  # the reason, one line per verdict
+
+
+@pytest.mark.parametrize("moving, verdict", [({AXIS.Y}, StartupVerdict.MOVING), (set(), StartupVerdict.WARM)])
+def test_in_progress_controller_startup(moving, verdict):
+    sim = _homed()
+    sim.in_progress = True  # a crashed session's command still in progress
+    sim.moving_axes |= moving
+    micro = Microcontroller(serial_device=sim)  # must not time out
+    assert micro.startup_verdict is verdict
+    assert (CMD_SET.INITIALIZE in sim.command_log) == (verdict is not StartupVerdict.WARM)
+    assert not sim.in_progress and not micro.is_busy()  # RESET cleared it on both paths
+
+
+def test_no_verdict_is_a_normal_startup(monkeypatch, caplog):
+    """A query that gets no verdict (lost to another sender, a timeout) is a normal startup."""
+
+    class NoVerdictSim(FirmwareSimSerial):
+        def _query_startup_state(self, cmd):
+            pass  # answers the query as an ordinary command: COMPLETED, no verdict
+
+    real_query = Microcontroller.query_startup_state
+    monkeypatch.setattr(
+        Microcontroller,
+        "query_startup_state",
+        lambda self, *args, **kwargs: real_query(self, *args, **{**kwargs, "timeout_s": 0.2}),
+    )
+    sim = _homed(NoVerdictSim(firmware_version=STARTUP_STATE_MIN_FIRMWARE))
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.QUERY_STARTUP_STATE in sim.command_log and CMD_SET.INITIALIZE in sim.command_log
+    assert CMD_SET.STORE_CONFIG_SIGNATURE in sim.command_log
+    assert "no startup verdict" in caplog.text and "normal startup" in caplog.text
+
+
+def _actuator_settings_received(sim):
+    """What configure_actuators sent the controller for X, Y and Z, decoded back to control._def's names and units."""
+    received = {}
+    for a in ("X", "Y", "Z"):
+        axis = getattr(AXIS, a)
+        pitch, driver, vel_acc, margin = (
+            sim.homing_validity.config[(code, axis)]
+            for code in (
+                CMD_SET.SET_LEAD_SCREW_PITCH,
+                CMD_SET.CONFIGURE_STEPPER_DRIVER,
+                CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+                CMD_SET.SET_HOME_SAFETY_MERGIN,
+            )
+        )
+        received.update(
+            {
+                f"SCREW_PITCH_{a}_MM": int.from_bytes(pitch[0:2], "big") / 1000,
+                f"MICROSTEPPING_DEFAULT_{a}": {0: 1, 255: 256}.get(driver[0], driver[0]),
+                f"{a}_MOTOR_RMS_CURRENT_mA": int.from_bytes(driver[1:3], "big"),
+                f"{a}_MOTOR_I_HOLD": driver[3] / 255,
+                f"MAX_VELOCITY_{a}_mm": int.from_bytes(vel_acc[0:2], "big") / 100,
+                f"MAX_ACCELERATION_{a}_mm": int.from_bytes(vel_acc[2:4], "big") / 10,
+                f"{a}_HOME_SAFETY_MARGIN_UM": int.from_bytes(margin[0:2], "big"),
+            }
+        )
+    return received
+
+
+def test_the_controller_holds_what_the_signature_describes(monkeypatch):
+    """configure_actuators sends every covered setting as control._def holds it when it runs, which is what the
+    signature reads: a setting changed in-process after import is both sent and signed, never one without the other.
+    A relaunch under the same settings is warm; under the old ones, a mismatch."""
+    old = {
+        name: getattr(control._def, name)
+        for a in ("X", "Y", "Z")
+        for name in (
+            f"SCREW_PITCH_{a}_MM",
+            f"MICROSTEPPING_DEFAULT_{a}",
+            f"{a}_MOTOR_RMS_CURRENT_mA",
+            f"{a}_MOTOR_I_HOLD",
+            f"MAX_VELOCITY_{a}_mm",
+            f"MAX_ACCELERATION_{a}_mm",
+            f"{a}_HOME_SAFETY_MARGIN_UM",
+        )
+    }
+    # Each new value differs from the old by more than the wire's rounding (at most 0.1 here)
+    new = {}
+    for name, value in old.items():
+        if name.startswith("MICROSTEPPING_DEFAULT_"):
+            new[name] = 32 if value != 32 else 64
+        elif name.endswith("_MOTOR_I_HOLD"):
+            new[name] = 0.5 if value != 0.5 else 0.25
+        elif name.startswith("SCREW_PITCH_"):
+            new[name] = value + 0.5
+        elif name.startswith("MAX_VELOCITY_"):
+            new[name] = value + 7
+        else:  # currents, accelerations, home margins
+            new[name] = value + 100
+    sim = FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    for name, value in new.items():
+        monkeypatch.setattr(control._def, name, value)
+    micro = Microcontroller(serial_device=sim)
+    assert _actuator_settings_received(sim) == pytest.approx(new, abs=0.1)
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+    micro.home_xy(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+    _reopen(micro, sim)
+
+    same = Microcontroller(serial_device=sim)
+    assert same.startup_was_warm
+    _reopen(same, sim)
+    for name, value in old.items():
+        monkeypatch.setattr(control._def, name, value)
+    assert Microcontroller(serial_device=sim).startup_verdict is StartupVerdict.SIGNATURE_MISMATCH
+
+
+def test_reverting_settings_never_restores(monkeypatch):
+    sim = _homed()  # homed under settings A
+    with monkeypatch.context() as m:
+        m.setattr(control._def, "MAX_VELOCITY_X_mm", control._def.MAX_VELOCITY_X_mm + 1)
+        under_b = Microcontroller(serial_device=sim)  # a normal startup: INITIALIZE clears the flags, B is stored
+        assert under_b.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH
+    _reopen(under_b, sim)
+    under_a = Microcontroller(serial_device=sim)  # back under A: a mismatch with B again, so a normal startup again
+    assert under_a.startup_verdict is StartupVerdict.SIGNATURE_MISMATCH and not under_a.startup_was_warm
+    assert CMD_SET.INITIALIZE in sim.command_log
+    _reopen(under_a, sim)
+    # A is stored once more, but the homing done under A before is gone for good
+    assert Microcontroller(serial_device=sim).startup_verdict is StartupVerdict.NOT_HOMED
+
+
+def test_old_firmware_and_skip_init_never_query(caplog):
+    old = FirmwareSimSerial(firmware_version=OLDER_FIRMWARE)
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=old)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.INITIALIZE in old.command_log
+    assert CMD_SET.QUERY_STARTUP_STATE not in old.command_log
+    assert CMD_SET.STORE_CONFIG_SIGNATURE not in old.command_log
+    assert f"Firmware {OLDER_FIRMWARE[0]}.{OLDER_FIRMWARE[1]} cannot report homing state: normal startup" in caplog.text
+
+    sim = _homed()
+    micro = Microcontroller(serial_device=sim, reset_and_initialize=False)  # --skip-init
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    for code in (CMD_SET.QUERY_STARTUP_STATE, CMD_SET.STORE_CONFIG_SIGNATURE, CMD_SET.RESET, CMD_SET.INITIALIZE):
+        assert code not in sim.command_log
+
+
+def test_a_startup_that_homes_no_stage_axis_is_never_warm(monkeypatch, caplog):
+    """With no axis to find homed, the homed check would pass on any controller: such a startup is a normal one,
+    without the query, and still stores the signature as every normal startup on new firmware does."""
+    sim = _homed()  # signature stored, X/Y/Z homed: asked, this controller would vouch for the stage
+    for name in ("HOMING_ENABLED_X", "HOMING_ENABLED_Y", "HOMING_ENABLED_Z", "USE_Z_LIFT_STAGE"):
+        monkeypatch.setattr(control._def, name, False)
+    assert required_homed_axes_mask() == 0
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.QUERY_STARTUP_STATE not in sim.command_log
+    assert CMD_SET.INITIALIZE in sim.command_log and CMD_SET.CONFIGURE_STEPPER_DRIVER in sim.command_log
+    assert sim.command_log[-3:] == [
+        CMD_SET.STORE_CONFIG_SIGNATURE,
+        CMD_SET.SET_FOCUS_WHEEL_MODE,
+        CMD_SET.SET_PANEL_LOCK,
+    ]
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+    assert "Startup homes no stage axis: normal startup" in caplog.text
+
+
+@pytest.mark.parametrize("z_homes, verdict", [(False, StartupVerdict.WARM), (True, StartupVerdict.NOT_HOMED)])
+def test_z_not_required_when_z_does_not_home(monkeypatch, z_homes, verdict):
+    monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z_homes)
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", False)
+    monkeypatch.setattr(control._def, "USE_Z_LIFT_STAGE", False)
+    sim = _homed(before_close=lambda m: m.zero_z())  # only X and Y homed
+    assert Microcontroller(serial_device=sim).startup_verdict is verdict
+
+
+def _scope_sim():
+    """A 1.9 controller for a whole Microscope, which also sends commands the sim's protocol whitelist lacks
+    (SET_WATCHDOG_TIMEOUT, HEARTBEAT): those are answered, not refused."""
+    return FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+
+
+def test_microscope_warm_start_skips_homing_and_prompt(monkeypatch, piezo_only):
+    sim = _homed(_scope_sim())
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    home = MagicMock()
+    monkeypatch.setattr(control.microscope.Microscope, "home_xyz", home)
+    asked = []
+    scope = control.microscope.Microscope.build_from_global_config(
+        True, confirm_objective_lowered=lambda: asked.append(1)
+    )
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED and not asked
+    home.assert_not_called()
+    scope.close()
+
+
+def test_a_microscope_relaunch_is_warm(monkeypatch):
+    """End to end: nothing a normal Microscope startup sends after the store (stage, addons, homing) empties the
+    signature, so the next launch on the same controller is warm."""
+    sim = _scope_sim()
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    first = control.microscope.Microscope.build_from_global_config(True)
+    assert first.startup_homing is StartupHoming.HOMED
+    first.close()
+    sim.reconnect(1)
+    assert control.microscope.Microscope.build_from_global_config(True).startup_homing is StartupHoming.ALREADY_HOMED
+
+
+# --- A warm start retracts Z before the Xeryon moves, as a normal startup's Z home does ---
+
+
+def _z_usteps(z_mm):
+    return squid.config.get_stage_config().Z_AXIS.convert_real_units_to_ustep(z_mm)
+
+
+def _left_at_z(z_mm):
+    """before_close for _homed: the last session left Z at z_mm (a crash at focus height, or a clean close)."""
+    return lambda m: (m.move_z_to_usteps(_z_usteps(z_mm)), m.wait_till_operation_is_completed())
+
+
+def _record_changer(monkeypatch, kind):
+    """The objective changer of `kind` ("xeryon" or "turret"), simulated, recording in order each stage Z move
+    (move_z_to's target), each stage home (its axes) and each changer call with the Z the stage stood at when it
+    came."""
+    events = []
+
+    def at_z(stage, call):
+        events.append((call, stage.get_pos().z_mm))
+
+    if kind == "xeryon":
+        from control.objective_changer_2_pos_controller import ObjectiveChanger2PosController_Simulation
+
+        class Changer(ObjectiveChanger2PosController_Simulation):
+            def home(self):
+                at_z(self.stage, "home")
+
+            def move_to_objective(self, objective_name):
+                at_z(self.stage, "move_to_objective")
+                super().move_to_objective(objective_name)
+
+        monkeypatch.setattr(control.microscope, "ObjectiveChanger2PosController_Simulation", Changer, raising=False)
+        # One the changer knows, whatever objective the cache (cache/objective_and_sample_format.txt) last held
+        monkeypatch.setattr(control._def, "DEFAULT_OBJECTIVE", control._def.XERYON_OBJECTIVE_SWITCHER_POS_1[0])
+    else:
+
+        class Changer:  # a turret's own home() retracts Z; this one records only
+            def __init__(self, stage=None, **kwargs):
+                self.stage = stage
+
+            def home(self):
+                at_z(self.stage, "home")
+
+            def move_to_objective(self, objective_name, restore_z=True):
+                at_z(self.stage, "move_to_objective")
+
+        monkeypatch.setattr(control.microscope, "ObjectiveTurret4PosControllerSimulation", Changer, raising=False)
+    monkeypatch.setattr(control._def, "USE_XERYON", kind == "xeryon")
+    monkeypatch.setattr(control._def, "USE_OBJECTIVE_TURRET", kind == "turret")
+
+    for stage_class in (squid.stage.cephla.CephlaStage, squid.stage.pi.CombinedStage):
+
+        def move_z_to(stage, abs_mm, blocking=True, real=stage_class.move_z_to):
+            events.append(("move_z_to", abs_mm))
+            return real(stage, abs_mm, blocking)
+
+        def home(stage, x, y, z, theta, blocking=True, objective_lowered=False, real=stage_class.home):
+            events.append(("stage.home", (x, y, z, theta)))
+            return real(stage, x, y, z, theta, blocking, objective_lowered=objective_lowered)
+
+        monkeypatch.setattr(stage_class, "move_z_to", move_z_to)
+        monkeypatch.setattr(stage_class, "home", home)
+    return events
+
+
+def _warm_scope(monkeypatch, sim):
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    return scope
+
+
+def test_a_warm_start_retracts_z_before_the_xeryon_moves(monkeypatch):
+    """Nothing homed Z, which a normal startup homes before the Xeryon's sweep: a Z left at focus height (a crash)
+    moves to the retracted position, the loading move's retract, before the changer's first call."""
+    assert squid.stage.utils.z_is_referenced()
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    retracted = control._def.OBJECTIVE_RETRACTED_POS_MM
+    assert events == [
+        ("move_z_to", retracted),
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()
+
+
+def test_a_warm_start_leaves_a_retracted_z_for_the_xeryon(monkeypatch):
+    """Already retracted (a clean close retracts it): no Z move."""
+    events = _record_changer(monkeypatch, "xeryon")
+    retracted = control._def.OBJECTIVE_RETRACTED_POS_MM
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(retracted)))
+    assert events == [
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()
+
+
+def test_a_warm_start_moves_no_unreferenced_z_for_the_xeryon(monkeypatch):
+    """Z not referenced (a raw step count): no Z move, as a normal startup moves none before the Xeryon either."""
+    for name in ("HOMING_ENABLED_Z", "USE_PI_FOCUS_STAGE", "USE_Z_LIFT_STAGE"):
+        monkeypatch.setattr(control._def, name, False)
+    assert not squid.stage.utils.z_is_referenced()
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
+
+
+def test_a_warm_start_leaves_the_turret_to_retract_z_itself(monkeypatch):
+    """The turret path is unchanged: its home() retracts Z on its own, so startup moves no Z before it."""
+    events = _record_changer(monkeypatch, "turret")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim(), before_close=_left_at_z(1.5)))
+    assert events == [("home", pytest.approx(1.5, abs=1e-3)), ("move_to_objective", pytest.approx(1.5, abs=1e-3))]
+    scope.close()
+
+
+@pytest.mark.parametrize("to_positive_limit", [True, False])
+def test_a_warm_start_retracts_a_v308_through_its_home_before_the_xeryon_moves(monkeypatch, to_positive_limit):
+    """A V-308 retracts as _home_xyz retracts it on a normal startup, through its own home(z): to the positive travel
+    limit with PI_FOCUS_HOME_TO_POSITIVE_LIMIT (an upright system, where OBJECTIVE_RETRACTED_POS_MM is toward the
+    sample), otherwise to OBJECTIVE_RETRACTED_POS_MM."""
+    monkeypatch.setattr(control._def, "USE_PI_FOCUS_STAGE", True)
+    monkeypatch.setattr(control._def, "PI_FOCUS_INVERT_Z", False)
+    monkeypatch.setattr(control._def, "PI_FOCUS_HOME_TO_POSITIVE_LIMIT", to_positive_limit)
+    real_initialize = squid.stage.pi._SimulatedC414.initialize
+
+    def left_at_focus(c414, reference=True, **kwargs):  # still referenced, at the height a crashed session left
+        real_initialize(c414, reference=reference, **kwargs)
+        c414.move_to(1.5)
+
+    monkeypatch.setattr(squid.stage.pi._SimulatedC414, "initialize", left_at_focus)
+    events = _record_changer(monkeypatch, "xeryon")
+    scope = _warm_scope(monkeypatch, _homed(_scope_sim()))
+    # The positive limit as the startup fenced it (Z's MAX_POSITION), or the retracted position
+    retracted = (
+        squid.config.get_stage_config().Z_AXIS.MAX_POSITION
+        if to_positive_limit
+        else control._def.OBJECTIVE_RETRACTED_POS_MM
+    )
+    assert events == [
+        ("stage.home", (False, False, True, False)),
+        ("home", pytest.approx(retracted, abs=1e-3)),
+        ("move_to_objective", pytest.approx(retracted, abs=1e-3)),
+    ]
+    scope.close()

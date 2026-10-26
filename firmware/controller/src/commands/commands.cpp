@@ -65,6 +65,8 @@ void init_callbacks()
     cmd_map[SET_COMPLETION_WINDOW] = &callback_set_completion_window;
     cmd_map[SET_FOCUS_WHEEL_MODE] = &callback_set_focus_wheel_mode;
     cmd_map[SET_PANEL_LOCK] = &callback_set_panel_lock;
+    cmd_map[STORE_CONFIG_SIGNATURE] = &callback_store_config_signature;
+    cmd_map[QUERY_STARTUP_STATE] = &callback_query_startup_state;
     cmd_map[RESET] = &callback_reset;
 }
 
@@ -398,6 +400,11 @@ void callback_set_axis_disable_enable()
     else {
         tmc_driver_enable(&tmc4361[axis], true);
     }
+
+    // Startup state (1.9): a disabled stage driver drops that axis's homed flag, and the stage is unhealthy until it
+    // is enabled again. Stage axes only, by PROTOCOL number (buffer_rx[2]); `axis` above is the internal index.
+    if (buffer_rx[2] == AXIS_X || buffer_rx[2] == AXIS_Y || buffer_rx[2] == AXIS_Z)
+        hv_driver_enable(&homing_validity, buffer_rx[2], status != 0);
 }
 
 void callback_set_trigger_mode()
@@ -406,8 +413,50 @@ void callback_set_trigger_mode()
         trigger_mode = buffer_rx[2];
 }
 
+// Firmware 1.9 startup state. Both commands carry [2..5] = the host's configuration signature (big-endian) and
+// [6] = (format << 4) | mask. Neither moves anything.
+static uint32_t startup_command_signature()
+{
+    return uint32_t(buffer_rx[2]) << 24 | uint32_t(buffer_rx[3]) << 16 | uint32_t(buffer_rx[4]) << 8 | uint32_t(buffer_rx[5]);
+}
+
+// STORE_CONFIG_SIGNATURE (67): keep the signature of the configuration the host has just sent ([6] mask nibble 0).
+// A different signature or format, or one stored after a covered setting changed, clears every homed flag.
+void callback_store_config_signature()
+{
+    hv_store_signature(&homing_validity, startup_command_signature(), buffer_rx[6] >> 4);
+}
+
+// QUERY_STARTUP_STATE (68): [6] low nibble = the axes that must be homed (bit a = protocol axis a). It reads the
+// chips and writes nothing to them. The verdict goes out in the packet's execution-status byte (byte 1), as
+// STARTUP_VERDICT_STATUS_BASE (64) + STARTUP_VERDICT_*, until the next command (send_position_update,
+// hv_packet_status); the query answers even while a crashed session's command is still IN_PROGRESS.
+void callback_query_startup_state()
+{
+    uint8_t at_rest_mask = 0;
+    bool tmc_config_ok = true;
+    for (uint8_t a = AXIS_X; a <= AXIS_Z; a++)   // protocol axes; the chips are indexed by internal axis
+    {
+        TMC4361ATypeDef *tmc = &tmc4361[protocol_axis_to_internal(a)];
+        if (tmc4361A_readInt(tmc, TMC4361A_VACTUAL) == 0 && tmc4361A_currentPosition(tmc) == tmc4361A_targetPosition(tmc))
+            at_rest_mask |= uint8_t(1 << a);
+        bool intact = tmc_config_intact(tmc);
+        tmc_config_ok = tmc_config_ok && intact;
+    }
+    // A drop latched since this loop pass began has not been consumed yet: apply it before answering
+    hv_consume_power_drop(&homing_validity, &power_good_drop_latched);
+    startup_verdict = hv_verdict(&homing_validity, startup_command_signature(), buffer_rx[6] >> 4, buffer_rx[6] & 0x0F,
+                                 at_rest_mask, digitalRead(pin_PG), tmc_config_ok);
+    startup_verdict_pending = true;
+}
+
 void callback_initialize()
 {
+    // Startup state (1.9): the TMC4361A soft resets below (tmc_driver_init) put XACTUAL back to 0, so no axis is homed
+    // any more, and the signature is emptied until the host configures and stores it again. tmc_driver_init also
+    // re-enables every identified driver.
+    hv_initialize(&homing_validity);
+
     // reset z target position so that z does not move when "current position" for z is set to 0
     focusPosition = 0;
     jp_forget_wheel(&joystick_panel);
@@ -525,6 +574,9 @@ void callback_initialize()
 
 void callback_reset()
 {
+    // Startup state (1.9): RESET deliberately leaves homing_validity alone - the homed flags and the configuration
+    // signature survive it. It writes no XACTUAL and touches no driver, so a stage homed before RESET is still homed
+    // after it, and a relaunched host that sends RESET can still be told so.
     mcu_cmd_execution_in_progress = false;
     X_commanded_movement_in_progress = false;
     Y_commanded_movement_in_progress = false;

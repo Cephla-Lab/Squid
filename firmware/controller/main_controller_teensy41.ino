@@ -11,10 +11,17 @@ void setup() {
   init_camera();
   init_io();
   init_stages();
+  // Startup state (1.9): after the drivers are initialised. Power-up: no axis homed, no signature, drivers enabled.
+  hv_power_up(&homing_validity);
   init_callbacks();
 }
 
 void loop() {
+
+  // Startup state (1.9): power good low clears every homed flag. Every pass, before any command is handled: a drop
+  // the PG interrupt latched since the last pass, then the level now.
+  hv_consume_power_drop(&homing_validity, &power_good_drop_latched);
+  hv_power_good(&homing_validity, digitalRead(pin_PG));
 
   // Illumination safety interlock - turn off all TTL ports if interlock is triggered
   if (!INTERLOCK_OK())

@@ -12,10 +12,14 @@ import control.widgets
 from qtpy.QtGui import QCloseEvent
 from qtpy.QtWidgets import QMessageBox
 
+import control.microcontroller
 import control.microscope
 import squid.abc
 import squid.stage.cephla
 import squid.stage.utils
+from control._def import STARTUP_STATE_MIN_FIRMWARE
+from control.firmware_sim_serial import FirmwareSimSerial
+from control.startup_homing import StartupHoming
 
 
 @pytest.fixture
@@ -278,8 +282,8 @@ def _set_z_flags(monkeypatch, *, homing_z, pi_focus):
     for module in (control._def, control.gui_hcs):
         monkeypatch.setattr(module, "HOMING_ENABLED_Z", homing_z)
         monkeypatch.setattr(module, "USE_PI_FOCUS_STAGE", pi_focus)
-    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_X", True)
-    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Y", True)
+        monkeypatch.setattr(module, "HOMING_ENABLED_X", True)
+        monkeypatch.setattr(module, "HOMING_ENABLED_Y", True)
     if pi_focus:
         monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True)
 
@@ -588,6 +592,213 @@ def test_declined_startup_with_z_homing_warns_until_z_is_homed_too(qtbot, confir
     assert gui._not_homed_label.isVisibleTo(gui)
     gui.stageUtils.signal_axes_homed.emit({"z"})
     assert not gui._not_homed_label.isVisibleTo(gui)
+
+
+@pytest.mark.parametrize("at_the_cached_xy", [True, False])
+def test_already_homed_leaves_xy_and_restores_z_only_at_the_cached_xy(
+    qtbot, confirm_exit_yes, monkeypatch, caplog, at_the_cached_xy
+):
+    """A warm relaunch: the controller vouched that the stage is still homed, so X/Y stay where the stage stands.
+    Z comes back as after a homed startup only while X/Y are where the position was cached (within 0.1 mm on each
+    axis). After a crash, or a panel jog while Squid was closed, the cached Z is another place's focus height: Z stays
+    where it is. Either way the multipoint widgets take the Z the stage ends at."""
+    _set_z_flags(monkeypatch, homing_z=True, pi_focus=False)
+    monkeypatch.setattr(control._def, "ENABLE_MEMORY_PROFILING", True)  # the RAM monitor appears with the window
+    # strict=False: the GUI also sends commands the sim's protocol whitelist lacks (SET_WATCHDOG_TIMEOUT, HEARTBEAT)
+    sim = FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
+    earlier.stage.move_x_to(10.0)
+    earlier.stage.move_y_to(10.0)
+    earlier.stage.move_z_to(0.8)  # where that session left Z (it died before a clean close retracted it)
+    earlier.close()
+    sim.reconnect(1)  # the controller stayed powered
+
+    safety_z_mm = int(control._def.Z_HOME_SAFETY_POINT) / 1000.0
+    # Above the safety point, so a restore moves Z to the cached Z itself; Y 0.2 mm off is beyond the 0.1 mm tolerance
+    cached_y_mm = 10.0 if at_the_cached_xy else 10.2
+    cached = squid.abc.Pos(x_mm=10.0, y_mm=cached_y_mm, z_mm=safety_z_mm + 0.5, theta_rad=None)
+    monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    z_before = scope.stage.get_pos().z_mm
+    assert z_before == pytest.approx(0.8, abs=1e-3)  # a warm start kept it
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    _spy_moves(monkeypatch, moves, scope.stage, "move_z_to", "z")
+    init_z_calls = []
+    for widget_class in (control.widgets.FlexibleMultiPointWidget, control.widgets.WellplateMultiPointWidget):
+        real_init_z = widget_class.init_z
+
+        def init_z(self, *args, _real=real_init_z, **kwargs):
+            init_z_calls.append(type(self).__name__)
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(widget_class, "init_z", init_z)
+    with caplog.at_level(logging.INFO):
+        gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    pos = scope.stage.get_pos()
+    assert (pos.x_mm, pos.y_mm) == pytest.approx((10.0, 10.0), abs=1e-3)  # to a microstep
+    if at_the_cached_xy:
+        assert moves == [("z", cached.z_mm)] and pos.z_mm == pytest.approx(cached.z_mm, abs=1e-3)
+        assert "Cached position was saved at another XY" not in caplog.text
+    else:
+        assert moves == [] and pos.z_mm == z_before
+        assert "Cached position was saved at another XY: Z left where it is" in caplog.text
+    # init_z runs either way: the multipoint Z range starts at the Z the stage ends at
+    assert sorted(init_z_calls) == ["FlexibleMultiPointWidget", "WellplateMultiPointWidget"]
+    assert gui.flexibleMultiPointWidget.entry_minZ.value() == pytest.approx(pos.z_mm * 1000, abs=1)
+    assert gui.wellplateMultiPointWidget.entry_minZ.value() == pytest.approx(pos.z_mm * 1000, abs=1)
+
+    # The message shows once the window does, and the status-bar widgets that appear with it do not cover it
+    gui.show()
+    qtbot.waitExposed(gui)
+    assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
+    assert not gui.ramMonitorWidget.isVisible()
+
+
+def _z_lift_system_closed_at_loading(monkeypatch, tmp_path):
+    """A Z lift system (V-308 focus, the lift on the Cephla Z) whose last session was closed at the loading position.
+    Returns its 1.9 controller, patched in as every Microscope's."""
+    _set_z_flags(monkeypatch, homing_z=False, pi_focus=True)
+    for name, value in (
+        ("USE_Z_LIFT_STAGE", True),
+        ("Z_LIFT_MIN_MM", 0.0),
+        ("Z_LIFT_MAX_MM", 8.0),
+        ("Z_LIFT_FOCUS_WHEEL_DRIVES_PI", False),
+        ("Z_LIFT_HEIGHTS_PATH", str(tmp_path / "heights.json")),
+        ("Z_LIFT_LOADING_STATE_PATH", str(tmp_path / "loading_state.json")),
+        ("USE_OBJECTIVE_TURRET", False),
+        ("USE_XERYON", False),
+    ):
+        monkeypatch.setattr(control._def, name, value)
+    (tmp_path / "loading_state.json").write_text(
+        '{"scanning_z_mm": null, "lift_mm": 2.0, "lift_format": "96 well plate"}'
+    )
+    # strict=False: the GUI also sends commands the sim's protocol whitelist lacks (SET_WATCHDOG_TIMEOUT, HEARTBEAT)
+    sim = FirmwareSimSerial(strict=False, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    monkeypatch.setattr(control.microcontroller, "get_microcontroller_serial_device", lambda **kw: sim)
+    return sim
+
+
+def _spy_moves(monkeypatch, moves, owner, method, label):
+    """Append (label, target) to `moves` for each call of owner.<method>(target, ...) from now on, still carried out."""
+    real = getattr(owner, method)
+
+    def spy(mm, *args, **kwargs):
+        moves.append((label, mm))
+        return real(mm, *args, **kwargs)
+
+    monkeypatch.setattr(owner, method, spy)
+
+
+def _record_xy_moves(monkeypatch, stage):
+    """The absolute X/Y moves sent through `stage` from now on, each still carried out."""
+    moves = []
+    for axis in ("x", "y"):
+        _spy_moves(monkeypatch, moves, stage, f"move_{axis}_to", axis)
+    return moves
+
+
+def _record_moves(monkeypatch, scope):
+    """The absolute X, Y and Z (objective) moves sent through scope.stage and the Z lift's moves, from now on, in
+    order, each still carried out."""
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    _spy_moves(monkeypatch, moves, scope.stage, "move_z_to", "z")
+    _spy_moves(monkeypatch, moves, scope.z_lift, "move_to", "lift")
+    return moves
+
+
+def _gui_on(qtbot, scope):
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+    gui.show()
+    qtbot.waitExposed(gui)
+    qtbot.waitUntil(lambda: gui._loading_position_locked, timeout=5000)  # the restored loading state locks it
+    return gui
+
+
+@pytest.mark.parametrize("left_at_loading_xy", [True, False])
+def test_already_homed_at_the_loading_position_moves_xy_only_if_not_there(
+    qtbot, confirm_exit_yes, monkeypatch, tmp_path, left_at_loading_xy
+):
+    """A warm start on a system closed at the loading position moves nothing when the stage is still at the loading
+    XY (within 0.1 mm on each axis); a session that died on the way (elsewhere) still goes there. Either way the
+    loading lock applies and the warm start says so."""
+    sim = _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
+    earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
+    if left_at_loading_xy:
+        squid.stage.utils.move_xy_to_loading_position(earlier.stage, is_wellplate=True)
+    else:
+        earlier.stage.move_x_to(10.0)
+        earlier.stage.move_y_to(10.0)
+    earlier.close()
+    sim.reconnect(1)  # the controller stayed powered
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    moves = _record_moves(monkeypatch, scope)
+    gui = _gui_on(qtbot, scope)
+
+    loading = (control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM)
+    pos = scope.stage.get_pos()
+    assert (pos.x_mm, pos.y_mm) == pytest.approx(loading, abs=1e-3)
+    assert (moves == []) is left_at_loading_xy  # at the loading XY nothing moves: not XY, the objective or the lift
+    assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
+    assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
+
+
+def test_already_homed_away_from_the_loading_position_clears_the_sample_before_xy(
+    qtbot, confirm_exit_yes, monkeypatch, tmp_path
+):
+    """A session that died on its way back to scanning (the lift raised, the objective lowered, the loading state not
+    yet cleared): a warm relaunch retracts the objective and lowers the lift before XY travels back to the loading
+    position, as the move there does. The Z and lift height to return to stay the restored state's."""
+    sim = _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
+    state_path = tmp_path / "loading_state.json"
+    state_path.write_text('{"scanning_z_mm": 1.2, "lift_mm": 2.0, "lift_format": "96 well plate"}')
+    state_before = state_path.read_text()
+    earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
+    earlier.stage.move_x_to(10.0)
+    earlier.stage.move_y_to(10.0)
+    earlier.z_lift.move_to(3.0)  # the return raised the lift
+    earlier.close()
+    sim.reconnect(1)  # the controller stayed powered
+
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    assert scope.startup_homing is StartupHoming.ALREADY_HOMED
+    assert scope.z_lift.get_position_mm() == pytest.approx(3.0, abs=1e-3)  # still raised: a warm start keeps it
+    scope.stage.move_z_to(1.5)  # and the return had lowered the objective to its working height
+    moves = _record_moves(monkeypatch, scope)
+    gui = _gui_on(qtbot, scope)
+
+    first_xy = next(i for i, (label, _) in enumerate(moves) if label in ("x", "y"))
+    assert moves[:first_xy] == [("z", control._def.OBJECTIVE_RETRACTED_POS_MM), ("lift", scope.z_lift.lowered_mm)]
+    loading_x, loading_y = control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM
+    assert moves[first_xy:] == [("y", 15), ("x", 35), ("y", loading_y), ("x", loading_x)]
+    assert scope.z_lift.is_lowered()
+    # Not recorded again, and the heights to return to are the restored ones (not Z 1.5, lift 3.0)
+    assert state_path.read_text() == state_before
+    assert scope.stage._scanning_position_z_mm == 1.2
+    assert scope.stage._scanning_position_lift_mm == (2.0, "96 well plate")
+    assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
+    assert gui.statusBar().currentMessage() == "Stage still homed: startup homing skipped"
+
+
+def test_homed_start_closed_at_the_loading_position_moves_back_there(qtbot, confirm_exit_yes, monkeypatch, tmp_path):
+    """A homing startup on a system closed at the loading position goes back there by the loading path, XY only:
+    homing already lowered the lift and retracted the objective."""
+    _z_lift_system_closed_at_loading(monkeypatch, tmp_path)
+    scope = control.microscope.Microscope.build_from_global_config(True)  # a first launch: homes
+    assert scope.startup_homing is StartupHoming.HOMED
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    gui = _gui_on(qtbot, scope)
+
+    loading_x, loading_y = control._def.SLIDE_POSITION.LOADING_X_MM, control._def.SLIDE_POSITION.LOADING_Y_MM
+    assert moves == [("y", 15), ("x", 35), ("y", loading_y), ("x", loading_x)]
+    assert gui.stageUtils.slide_position == "loading" and not gui.navigationWidget.isEnabled()
+    assert gui.statusBar().currentMessage() == ""
 
 
 # --- One exclusion for every claim, failures shown, close refused while homing ---

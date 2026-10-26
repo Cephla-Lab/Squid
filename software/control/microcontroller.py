@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable, Tuple
+from typing import Callable, Optional, Tuple
 
 import numpy as np
 import serial
@@ -14,7 +14,12 @@ from serial.serialutil import SerialException
 
 import squid.logging
 import control._def
-from control.startup_homing import require_objective_lowered
+from control.startup_homing import (
+    CONFIG_SIGNATURE_FORMAT,
+    config_signature,
+    require_objective_lowered,
+    required_homed_axes_mask,
+)
 from control._def import *
 
 # add user to the dialout group to avoid the need to use sudo
@@ -28,6 +33,28 @@ _log = squid.logging.get_logger("microcontroller")
 
 # Mapping of execution status bytes to human-readable names for logging
 _CMD_EXECUTION_STATUS_NAMES = {value: name for name, value in vars(CMD_EXECUTION_STATUS).items() if name.isupper()}
+# Status byte values of a startup verdict reply (firmware >= STARTUP_STATE_MIN_FIRMWARE): base + StartupVerdict
+_STARTUP_VERDICT_STATUSES = range(STARTUP_VERDICT_STATUS_BASE, STARTUP_VERDICT_STATUS_BASE + len(StartupVerdict))
+_CMD_EXECUTION_STATUS_NAMES.update(
+    {STARTUP_VERDICT_STATUS_BASE + v: f"STARTUP_VERDICT_{v.name}" for v in StartupVerdict}
+)
+# The startup path each verdict leads to, and why: one log line per verdict
+_STARTUP_VERDICT_LOG = {
+    StartupVerdict.WARM: (
+        "Controller reports the stage homed, at rest, healthy, same configuration: startup homing skipped"
+    ),
+    StartupVerdict.NO_SIGNATURE: (
+        "Controller holds no configuration signature (power-up, INITIALIZE, or a setting changed since it was "
+        "stored): normal startup"
+    ),
+    StartupVerdict.SIGNATURE_MISMATCH: "Configuration changed since the controller was homed: normal startup",
+    StartupVerdict.UNHEALTHY: (
+        "Stage hardware not healthy (motor power dropped, or a stage driver lost its configuration or is disabled): "
+        "normal startup"
+    ),
+    StartupVerdict.MOVING: "Stage still moving: normal startup",
+    StartupVerdict.NOT_HOMED: "Stage not homed since power-up, a zero or a driver disable: normal startup",
+}
 
 # Mapping of command type bytes to human-readable names for logging
 _CMD_NAMES = {
@@ -53,6 +80,8 @@ _CMD_NAMES = {
     CMD_SET.MOVETO_W: "MOVETO_W",
     CMD_SET.MOVETO_W2: "MOVETO_W2",
     CMD_SET.SET_LIMIT_SWITCH_CONFIG: "SET_LIMIT_SWITCH_CONFIG",
+    CMD_SET.STORE_CONFIG_SIGNATURE: "STORE_CONFIG_SIGNATURE",
+    CMD_SET.QUERY_STARTUP_STATE: "QUERY_STARTUP_STATE",
     CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
     CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
     CMD_SET.SET_LEAD_SCREW_PITCH: "SET_LEAD_SCREW_PITCH",
@@ -730,6 +759,15 @@ class Microcontroller:
         self._last_packet_status = None
         self._last_packet_cmd_id = None
         self._packet_seq_at_last_send = 0
+        # (command id, StartupVerdict value) of the newest packet whose status byte was a startup verdict reply
+        # (firmware >= STARTUP_STATE_MIN_FIRMWARE), under _received_packet_cv; for query_startup_state().
+        self._startup_verdict_packet = None
+        # The startup decision (reset_and_initialize only). startup_verdict: the controller's answer to the startup
+        # query, None when it was not asked (older firmware, --skip-init, a startup that homes no stage axis) or gave
+        # none. startup_was_warm: the answer was WARM, so INITIALIZE and the motor configuration were skipped and the
+        # stage is still homed.
+        self.startup_verdict: Optional[StartupVerdict] = None
+        self.startup_was_warm = False
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -742,17 +780,33 @@ class Microcontroller:
             self.check_limit_switch_compatibility()
 
             if reset_and_initialize:
-                self.log.debug("Resetting and initializing microcontroller.")
+                # First, before anything changes the controller's state: may this startup skip homing?
+                self.startup_verdict = self._ask_startup_verdict()
+                self.startup_was_warm = self.startup_verdict is StartupVerdict.WARM
+                # RESET on both paths: it ends a crashed session's command in progress (the query does not wait for
+                # one) and puts back what a session may have changed, and writes no position.
                 self.reset()
-                time.sleep(0.5)
-                self.initialize_drivers()
-                time.sleep(0.5)
-                self.configure_actuators()
-                self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
-                time.sleep(0.5)
+                if self.startup_was_warm:
+                    # INITIALIZE would change things: it zeroes XACTUAL and re-initialises the drivers and the DAC
+                    # config. Skipping it keeps the homed frame, which the controller's homed flags and health check
+                    # vouch for. The matching signature covers the other half: configure_actuators would send what
+                    # the controller already holds.
+                    self.log.debug("Resetting the microcontroller (warm start: drivers and actuators kept).")
+                    self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+                else:
+                    self.log.debug("Resetting and initializing microcontroller.")
+                    time.sleep(0.5)
+                    self.initialize_drivers()
+                    time.sleep(0.5)
+                    self.configure_actuators()
+                    self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
+                    time.sleep(0.5)
 
             # On both startup paths (--skip-init skips the block above).
             self.apply_limit_switch_config()
+            if reset_and_initialize and not self.startup_was_warm and self.supports_startup_state():
+                # The last covered step: sign the configuration just sent, so a relaunch can be told it still holds
+                self.store_config_signature(config_signature(), CONFIG_SIGNATURE_FORMAT)
             self.apply_focus_wheel_power_up_mode()
             self.unlock_panel()  # a lock left by an earlier session (closed at the loading position, a crash)
         except BaseException:
@@ -1555,33 +1609,54 @@ class Microcontroller:
         self.send_command(cmd)
 
     def configure_actuators(self):
+        """Send the X, Y and Z pitch, driver, velocity/acceleration and home margin settings, each waited for.
+
+        Every value is read through control._def when this runs, not from the `from control._def import *` binding
+        taken at import: config_signature() reads control._def at call time, and the signature stored after this
+        must describe exactly what the controller was sent.
+        """
         # lead screw pitch
-        self.set_leadscrew_pitch(AXIS.X, SCREW_PITCH_X_MM)
+        self.set_leadscrew_pitch(AXIS.X, control._def.SCREW_PITCH_X_MM)
         self.wait_till_operation_is_completed()
-        self.set_leadscrew_pitch(AXIS.Y, SCREW_PITCH_Y_MM)
+        self.set_leadscrew_pitch(AXIS.Y, control._def.SCREW_PITCH_Y_MM)
         self.wait_till_operation_is_completed()
-        self.set_leadscrew_pitch(AXIS.Z, SCREW_PITCH_Z_MM)
+        self.set_leadscrew_pitch(AXIS.Z, control._def.SCREW_PITCH_Z_MM)
         self.wait_till_operation_is_completed()
         # stepper driver (microstepping,rms current and I_hold)
-        self.configure_motor_driver(AXIS.X, MICROSTEPPING_DEFAULT_X, X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.X,
+            control._def.MICROSTEPPING_DEFAULT_X,
+            control._def.X_MOTOR_RMS_CURRENT_mA,
+            control._def.X_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.Y, MICROSTEPPING_DEFAULT_Y, Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.Y,
+            control._def.MICROSTEPPING_DEFAULT_Y,
+            control._def.Y_MOTOR_RMS_CURRENT_mA,
+            control._def.Y_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.Z, MICROSTEPPING_DEFAULT_Z, Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.Z,
+            control._def.MICROSTEPPING_DEFAULT_Z,
+            control._def.Z_MOTOR_RMS_CURRENT_mA,
+            control._def.Z_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
         # max velocity and acceleration
-        self.set_max_velocity_acceleration(AXIS.X, MAX_VELOCITY_X_mm, MAX_ACCELERATION_X_mm)
+        self.set_max_velocity_acceleration(AXIS.X, control._def.MAX_VELOCITY_X_mm, control._def.MAX_ACCELERATION_X_mm)
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.Y, MAX_VELOCITY_Y_mm, MAX_ACCELERATION_Y_mm)
+        self.set_max_velocity_acceleration(AXIS.Y, control._def.MAX_VELOCITY_Y_mm, control._def.MAX_ACCELERATION_Y_mm)
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.Z, MAX_VELOCITY_Z_mm, MAX_ACCELERATION_Z_mm)
+        self.set_max_velocity_acceleration(AXIS.Z, control._def.MAX_VELOCITY_Z_mm, control._def.MAX_ACCELERATION_Z_mm)
         self.wait_till_operation_is_completed()
         # home safety margin
-        self.set_home_safety_margin(AXIS.X, int(X_HOME_SAFETY_MARGIN_UM))
+        self.set_home_safety_margin(AXIS.X, int(control._def.X_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
-        self.set_home_safety_margin(AXIS.Y, int(Y_HOME_SAFETY_MARGIN_UM))
+        self.set_home_safety_margin(AXIS.Y, int(control._def.Y_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
-        self.set_home_safety_margin(AXIS.Z, int(Z_HOME_SAFETY_MARGIN_UM))
+        self.set_home_safety_margin(AXIS.Z, int(control._def.Z_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
 
     def configure_squidfilter(self, axis=AXIS.W):
@@ -1745,6 +1820,8 @@ class Microcontroller:
                 # This helper reads bytes in the order received by serial, and checks that packet-sized chunks
                 # have valid checksums.  IF the first packet size chunk does not have a valid checksum, it tosses
                 # the first byte and keeps going until it either finds a valid checksum packet or runs out of bytes.
+                # Returns (packet, crc_matched), or (None, False): crc_matched is False for a packet accepted on the
+                # legacy zero "checksum" below.
                 def get_msg_with_good_checksum():
                     maybe_msg = []
                     while self._serial.bytes_available() > 0:
@@ -1756,14 +1833,16 @@ class Microcontroller:
                         # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
                         # here to support firmware that still sends 0 as the checksum.  This means for
                         # the firmware that does support checksums, we can get fooled by zeros!
-                        if checksum == maybe_msg[-1] or maybe_msg[-1] == 0:
-                            return maybe_msg
+                        if checksum == maybe_msg[-1]:
+                            return maybe_msg, True
+                        elif maybe_msg[-1] == 0:
+                            return maybe_msg, False
                         else:
                             self.log.warning(f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'")
                             maybe_msg.pop(0)
-                    return None
+                    return None, False
 
-                msg = get_msg_with_good_checksum()
+                msg, crc_matched = get_msg_with_good_checksum()
 
                 if msg is None:
                     self.log.warning("Back checksums found, skipping.")
@@ -1791,6 +1870,13 @@ class Microcontroller:
                     self._packet_seq += 1
                     self._last_packet_status = msg[1]
                     self._last_packet_cmd_id = msg[0]
+                    # A startup verdict reply (QUERY_STARTUP_STATE). Not an execution status: none of the branches
+                    # below match it, so it neither completes, fails nor resends the command, and it is never idle
+                    # evidence (reported_idle_since_last_command). Taken only from a packet whose CRC matches: firmware
+                    # that answers the query always sends a real one, so a verdict status in a packet accepted on the
+                    # zero "checksum" (a misaligned read window, say) is not a verdict.
+                    if crc_matched and msg[1] in _STARTUP_VERDICT_STATUSES:
+                        self._startup_verdict_packet = (msg[0], msg[1] - STARTUP_VERDICT_STATUS_BASE)
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
@@ -1951,6 +2037,99 @@ class Microcontroller:
     def supports_limit_switch_config(self) -> bool:
         """True if the firmware has SET_LIMIT_SWITCH_CONFIG."""
         return tuple(self.firmware_version) >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
+
+    def supports_startup_state(self) -> bool:
+        """True if the firmware has STORE_CONFIG_SIGNATURE and QUERY_STARTUP_STATE."""
+        return tuple(self.firmware_version) >= STARTUP_STATE_MIN_FIRMWARE
+
+    def _startup_state_command(
+        self, command_code: int, signature: int, signature_format: int, required_axes_mask: int
+    ) -> bytearray:
+        """STORE_CONFIG_SIGNATURE or QUERY_STARTUP_STATE: [2..5] the signature (big-endian), [6] (format << 4) |
+        mask. Older firmware would answer either with a success that does nothing, so refuse it here."""
+        if not self.supports_startup_state():
+            raise RuntimeError(
+                f"Firmware {self.firmware_version[0]}.{self.firmware_version[1]} cannot store or report the startup "
+                f"state (needs {STARTUP_STATE_MIN_FIRMWARE[0]}.{STARTUP_STATE_MIN_FIRMWARE[1]})."
+            )
+        if not 0 <= signature <= 0xFFFFFFFF:
+            raise ValueError(f"Configuration signature {signature} does not fit in 32 bits.")
+        if not 0 <= signature_format <= 0x0F:
+            raise ValueError(f"Signature format {signature_format} does not fit in a nibble.")
+        if not 0 <= required_axes_mask <= 0b111:
+            raise ValueError(f"Required axes mask {required_axes_mask:#b} has bits beyond X, Y and Z.")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = command_code
+        cmd[2:6] = signature.to_bytes(4, "big")
+        cmd[6] = (signature_format << 4) | required_axes_mask
+        return cmd
+
+    def store_config_signature(self, signature: int, signature_format: int) -> None:
+        """Store the signature of the configuration just sent (STORE_CONFIG_SIGNATURE) and wait for completion.
+
+        A different signature or format than the one stored, or none stored (after power-up, INITIALIZE or a changed
+        covered setting), clears every homed flag in the controller.
+        """
+        self.send_command(self._startup_state_command(CMD_SET.STORE_CONFIG_SIGNATURE, signature, signature_format, 0))
+        self.wait_till_operation_is_completed()
+
+    def query_startup_state(
+        self, signature: int, signature_format: int, required_axes_mask: int, timeout_s: float = 2
+    ) -> StartupVerdict:
+        """Ask the controller whether the stage is still homed under this configuration (QUERY_STARTUP_STATE).
+
+        Returns the verdict from the first packet echoing this query's command id with a verdict status
+        (STARTUP_VERDICT_STATUS_BASE + verdict), whatever the controller is busy with: the firmware sends the verdict
+        in place of IN_PROGRESS, so a controller still running a crashed session's move answers too (as in
+        _detect_firmware_version). It does not wait for completion: a verdict status is not one, so the host's
+        in-progress flag stays as the packet left it, and RESET is the next command on either path. The earlier
+        reply is cleared before the send, so a stale tuple can never match this query's id.
+
+        The query must not be interleaved with other senders: any command the controller receives after it (HEARTBEAT
+        included) ends the verdict reply. The heartbeat starts only after the constructor's query.
+
+        Raises RuntimeError if no verdict arrives within timeout_s.
+        """
+        cmd = self._startup_state_command(CMD_SET.QUERY_STARTUP_STATE, signature, signature_format, required_axes_mask)
+        with self._received_packet_cv:
+            self._startup_verdict_packet = None
+        self.send_command(cmd)
+        cmd_id = cmd[0]  # as sent: another sender (the read loop's joystick ack) may have taken a newer id since
+        with self._received_packet_cv:
+            if not self._received_packet_cv.wait_for(
+                lambda: self._startup_verdict_packet is not None and self._startup_verdict_packet[0] == cmd_id,
+                timeout=timeout_s,
+            ):
+                raise RuntimeError(f"controller sent no startup verdict within {timeout_s} [s]. {self._mcu_state()}")
+            verdict = StartupVerdict(self._startup_verdict_packet[1])
+        self.log.debug(f"Startup verdict: {verdict.name}")
+        return verdict
+
+    def _ask_startup_verdict(self) -> Optional[StartupVerdict]:
+        """The constructor's startup query (QUERY_STARTUP_STATE) with this configuration's signature and the axes
+        startup homes, and the log line saying which startup path it leads to and why.
+
+        None, a normal startup, when the firmware cannot report the startup state, when startup homes no stage axis
+        (not asked: with no axis required to be homed, the controller's homed check would pass on anything), or when
+        no verdict arrived (another sender ended the reply, or a timeout): an unnecessary home at worst.
+        """
+        if not self.supports_startup_state():
+            self.log.info(
+                f"Firmware {self.firmware_version[0]}.{self.firmware_version[1]} cannot report homing state: "
+                f"normal startup"
+            )
+            return None
+        required_axes_mask = required_homed_axes_mask()
+        if required_axes_mask == 0:
+            self.log.info("Startup homes no stage axis: normal startup")
+            return None
+        try:
+            verdict = self.query_startup_state(config_signature(), CONFIG_SIGNATURE_FORMAT, required_axes_mask)
+        except RuntimeError as e:
+            self.log.warning(f"Asked the controller for its startup state and got none ({e}): normal startup")
+            return None
+        self.log.info(_STARTUP_VERDICT_LOG[verdict])
+        return verdict
 
     def check_limit_switch_compatibility(self) -> None:
         """Raise LimitSwitchConfigError if [LIMIT_SWITCHES] is invalid, or not the default and the firmware cannot

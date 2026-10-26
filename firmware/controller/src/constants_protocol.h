@@ -95,6 +95,11 @@ static const int SET_FOCUS_WHEEL_MODE = 65;     // [2]=FOCUS_WHEEL_* mode, [3]=F
 // Firmware 1.8. Locked, the control panel moves nothing: joystick X/Y reads centred and wheel turns are dropped
 // (the wheel baseline still follows, so nothing is released at unlock). Not saved; RESET and INITIALIZE unlock.
 static const int SET_PANEL_LOCK = 66;           // [2]=1 lock, 0 unlock
+// Firmware 1.9 startup state (utils/homing_validity.h): may a relaunched host skip startup homing? Neither command
+// moves anything. [2..5] = the host's configuration signature (big-endian), [6] = (format << 4) | required axes mask.
+static const int STORE_CONFIG_SIGNATURE = 67;   // [6] mask nibble is 0; a different signature or format clears every homed flag
+static const int QUERY_STARTUP_STATE = 68;      // [6] mask bit a = protocol axis a must be homed; the answer is the
+                                                // packet status byte (STARTUP_VERDICT_STATUS_BASE) until the next command
 static const int RAMP_PROFILE_TRAPEZOID = 1;
 static const int RAMP_PROFILE_SSHAPE = 2;
 // SET_LIMIT_SWITCH_CONFIG nibble
@@ -130,6 +135,10 @@ static const int IN_PROGRESS = 1;
 static const int CMD_CHECKSUM_ERROR = 2;
 static const int CMD_INVALID = 3;
 static const int CMD_EXECUTION_ERROR = 4;
+// Firmware 1.9: status values 64-69 are the startup verdict reply, STARTUP_VERDICT_STATUS_BASE + STARTUP_VERDICT_*.
+// Sent only in the packets after QUERY_STARTUP_STATE, until the next command arrives; they take precedence over
+// IN_PROGRESS (a crashed session's command may still be running); a checksum error takes precedence over them.
+static const int STARTUP_VERDICT_STATUS_BASE = 64;
 
 // Home/zero command types
 static const int HOME_NEGATIVE = 1;
@@ -194,5 +203,13 @@ static const int ILLUMINATION_SOURCE_488NM = 12;
 static const int ILLUMINATION_SOURCE_561NM = 14;
 static const int ILLUMINATION_SOURCE_638NM = 13;
 static const int ILLUMINATION_SOURCE_730NM = 15;
+
+// Startup verdict (firmware 1.9): why the controller does or does not vouch for the stage still being homed
+static const int STARTUP_VERDICT_WARM = 0;
+static const int STARTUP_VERDICT_NO_SIGNATURE = 1;
+static const int STARTUP_VERDICT_SIGNATURE_MISMATCH = 2;
+static const int STARTUP_VERDICT_UNHEALTHY = 3;
+static const int STARTUP_VERDICT_MOVING = 4;
+static const int STARTUP_VERDICT_NOT_HOMED = 5;
 
 #endif // CONSTANTS_PROTOCOL_H

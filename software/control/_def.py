@@ -7,7 +7,7 @@ from typing import List, Optional, Union
 import json
 import csv
 import squid.logging
-from enum import Enum, auto
+from enum import Enum, IntEnum, auto
 
 log = squid.logging.get_logger(__name__)
 
@@ -214,6 +214,10 @@ class CMD_SET:
     SET_LIMIT_SWITCH_CONFIG = 64
     SET_FOCUS_WHEEL_MODE = 65  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE (see FOCUS_WHEEL_MODE)
     SET_PANEL_LOCK = 66  # Firmware >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE: [2] 1 = the control panel moves nothing
+    # Firmware >= STARTUP_STATE_MIN_FIRMWARE. [2..5] = the configuration signature (big-endian), [6] = (format << 4) |
+    # required axes mask. Neither moves anything.
+    STORE_CONFIG_SIGNATURE = 67  # mask 0; a different signature or format clears every homed flag
+    QUERY_STARTUP_STATE = 68  # mask bit a = protocol axis a must be homed; answered in the status byte (StartupVerdict)
 
 
 class CMD_SET2:
@@ -317,6 +321,23 @@ LIMIT_SWITCH_DEFAULT_CONFIG = 0x03  # both inputs enabled, both active low
 # First firmware with SET_LIMIT_SWITCH_CONFIG. The single source for the Microcontroller's gate, FirmwareSimSerial's
 # cutoff and the tests' versions.
 LIMIT_SWITCH_CONFIG_MIN_FIRMWARE = (1, 7)
+
+
+class StartupVerdict(IntEnum):
+    """QUERY_STARTUP_STATE's answer (firmware >= STARTUP_STATE_MIN_FIRMWARE): may a relaunched host skip startup
+    homing? The first failing check wins, in this order; WARM only if none fails."""
+
+    WARM = 0  # same configuration, healthy, at rest, every required axis homed
+    NO_SIGNATURE = 1  # none stored since power-up or INITIALIZE, or a covered setting changed after the store
+    SIGNATURE_MISMATCH = 2  # the stored signature or format differs from the query's
+    UNHEALTHY = 3  # power not good, a stage TMC4361A lost its configuration, or a stage driver disabled
+    MOVING = 4  # an X/Y/Z ramp has not stopped
+    NOT_HOMED = 5  # a required axis is not homed
+
+
+# First firmware with STORE_CONFIG_SIGNATURE / QUERY_STARTUP_STATE. The single source for the Microcontroller's gate,
+# FirmwareSimSerial's cutoff and the tests' versions.
+STARTUP_STATE_MIN_FIRMWARE = (1, 9)
 
 
 class LIMIT_SWITCHES:
@@ -516,6 +537,12 @@ class CMD_EXECUTION_STATUS:
     CMD_INVALID = 3
     CMD_EXECUTION_ERROR = 4
     ERROR_CODE_EMPTYING_THE_FLUDIIC_LINE_FAILED = 100
+
+
+# Firmware >= STARTUP_STATE_MIN_FIRMWARE: status byte values STARTUP_VERDICT_STATUS_BASE + StartupVerdict (64-69) are
+# QUERY_STARTUP_STATE's reply, sent until the next command arrives, in place of IN_PROGRESS or the last command's
+# status. Not an execution status: never completion, error or idle evidence.
+STARTUP_VERDICT_STATUS_BASE = 64
 
 
 class SpotDetectionMode(Enum):

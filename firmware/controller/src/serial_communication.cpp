@@ -39,6 +39,8 @@ void process_serial_message()
           mcu_cmd_execution_status = COMPLETED_WITHOUT_ERRORS;
       }
 
+      // Startup state (1.9): a verdict answers only the command that asked for it (QUERY_STARTUP_STATE sets it again)
+      startup_verdict_pending = false;
       CommandCallback p_callback = cmd_map[buffer_rx[1]];
       if (!p_callback) {
         callback_default();
@@ -65,12 +67,11 @@ void send_position_update()
     us_since_last_pos_update = 0;
 
     buffer_tx[0] = cmd_id;
-    if (checksum_error)
-      buffer_tx[1] = CMD_CHECKSUM_ERROR; // cmd_execution_status
-    else if (mcu_cmd_execution_in_progress)
-      buffer_tx[1] = IN_PROGRESS;
-    else
-      buffer_tx[1] = mcu_cmd_execution_status; // COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
+    // cmd_execution_status: CMD_CHECKSUM_ERROR, else the startup verdict reply while one is pending (firmware 1.9,
+    // STARTUP_VERDICT_STATUS_BASE + verdict, so it arrives even while a command is in progress), else IN_PROGRESS,
+    // else COMPLETED_WITHOUT_ERRORS or CMD_EXECUTION_ERROR
+    buffer_tx[1] = hv_packet_status(checksum_error, startup_verdict_pending, startup_verdict,
+                                    mcu_cmd_execution_in_progress, mcu_cmd_execution_status);
 
     // Encoder reporting (firmware 1.6, SET_ENCODER_REPORTING). Two extra TMC4361A
     // reads per packet, only while a host has asked for them. ENC_POS is in

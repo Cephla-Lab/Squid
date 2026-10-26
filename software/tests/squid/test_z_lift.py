@@ -720,6 +720,19 @@ def test_an_unreadable_loading_state_still_counts_as_at_the_loading_position():
     assert squid.stage.utils.load_loading_state() == {}  # not None: stay lowered and locked, the safe side
 
 
+def test_the_return_to_a_restored_loading_position_clears_the_sample_first_and_records_nothing():
+    """A still-homed startup away from the loading position its restored state records: the objective retracts and
+    the lift lowers before XY travels, as the move there does, but the state is not recorded again and the Z and lift
+    height to return to stay the restored ones, not the current (raised, lowered) ones."""
+    events = []
+    stage = _recording_stage(events, z_mm=2.5, height=4.0)  # the objective at work, the lift raised
+    stage._scanning_position_z_mm, stage._scanning_position_lift_mm = 1.2, (2.0, "96 well plate")  # restored
+    squid.stage.utils.return_to_loading_position(stage, is_wellplate=False)
+    assert events == [f"z_to_{_def.OBJECTIVE_RETRACTED_POS_MM}", "lift_lower", "y", "x"]
+    assert stage._scanning_position_z_mm == 1.2 and stage._scanning_position_lift_mm == (2.0, "96 well plate")
+    assert squid.stage.utils.load_loading_state() is None
+
+
 def test_the_loading_state_is_recorded_before_xy_moves():
     events = []
     stage = _recording_stage(events)
@@ -779,6 +792,17 @@ def test_xy_to_the_loading_position_moves_nothing_else():
     stage = _recording_stage(events)
     squid.stage.utils.move_xy_to_loading_position(stage, is_wellplate=False)
     assert events == ["y", "x"]
+
+
+@pytest.mark.parametrize(
+    "dx, dy, there", [(0.0, 0.0, True), (0.1, -0.1, True), (0.11, 0.0, False), (0.0, -0.11, False)]
+)
+def test_at_the_loading_xy_within_the_tolerance_per_axis(monkeypatch, dx, dy, there):
+    monkeypatch.setattr(squid.stage.utils, "SAME_XY_TOLERANCE_MM", 0.1)
+    loading_x, loading_y = _def.SLIDE_POSITION.LOADING_X_MM, _def.SLIDE_POSITION.LOADING_Y_MM
+    stage = MagicMock()
+    stage.get_pos.return_value = Pos(x_mm=loading_x + dx, y_mm=loading_y + dy, z_mm=0.0, theta_rad=None)
+    assert squid.stage.utils.is_at_loading_xy(stage) is there
 
 
 def test_startup_does_not_raise_the_lift_when_closed_at_the_loading_position():

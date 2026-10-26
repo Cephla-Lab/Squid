@@ -134,6 +134,14 @@ void init_lasers_and_led_driver() {
   strobeTimer.begin(ISR_strobeTimer, strobeTimer_interval_us);
 }
 
+// Startup state (1.9): any power-good drop, however short, must clear the homed flags. loop() polls PG once a pass,
+// which misses a drop shorter than one pass or one inside a long blocking callback, so a falling edge is latched here
+// and loop() consumes the latch (hv_consume_power_drop). Nothing else happens in interrupt context.
+static void ISR_power_good_falling()
+{
+  power_good_drop_latched = true;
+}
+
 void init_power()
 {
   // power good pin
@@ -145,6 +153,10 @@ void init_power()
   {
     delay(50);
   }
+
+  // PG is high now: from here on a falling edge is a drop (startup state, 1.9). Pin 0 is used only as PG
+  // (Serial1, whose RX it would be, is not used); attachInterrupt keeps the pull-up set above.
+  attachInterrupt(digitalPinToInterrupt(pin_PG), ISR_power_good_falling, FALLING);
 }
 
 void init_camera()

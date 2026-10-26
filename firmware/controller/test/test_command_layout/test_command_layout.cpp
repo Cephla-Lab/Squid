@@ -746,6 +746,237 @@ void test_status_packet_reports_the_focus_wheel_count(void)
     TEST_ASSERT_TRUE(enc < wheel);
 }
 
+/***************************************************************************************************/
+/******************************* Startup state, firmware 1.9 (source scans) ************************/
+/***************************************************************************************************/
+
+/* The verdict rides in the status byte (STARTUP_VERDICT_STATUS_BASE + verdict), built by hv_packet_status, whose
+   precedence test_homing_validity pins. Byte 18 bits 4-7 are claimed by other branches (closed-loop PID faults,
+   trigger ready), so the verdict must not write byte 18 at all. */
+void test_startup_verdict_is_in_the_status_byte_not_byte_18(void)
+{
+    const char *proto = load_source("src/constants_protocol.h");
+    TEST_ASSERT_NOT_NULL(proto);
+    TEST_ASSERT_NOT_NULL(strstr(proto, "STARTUP_VERDICT_STATUS_BASE = 64;"));
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(proto, "BIT_POS_STARTUP_VERDICT"));
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(proto, "STARTUP_VERDICT_SHIFT"));
+
+    const char *ser = load_source("src/serial_communication.cpp");
+    TEST_ASSERT_NOT_NULL(ser);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(ser, "buffer_tx[1] ="), "the status byte has one writer");
+    TEST_ASSERT_NOT_NULL(strstr(ser, "buffer_tx[1] = hv_packet_status(checksum_error, startup_verdict_pending, startup_verdict,"));
+    TEST_ASSERT_NOT_NULL(strstr(ser, "mcu_cmd_execution_in_progress, mcu_cmd_execution_status);"));
+    /* byte 18's pre-1.9 writers only, five mentions as in 1.8: joystick bit 0 (clear; set, which names it twice) and
+       the Z limit bits 2-3 (clear, set) */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(5, count_occurrences(ser, "buffer_tx[18]"), "byte 18 must keep only its pre-1.9 writers");
+    TEST_ASSERT_EQUAL_UINT32(0, count_occurrences(ser, "startup_verdict << "));
+    /* a verdict answers only the command that asked: cleared before every dispatch */
+    assert_in_body_before(ser, "serial_communication.cpp", "void process_serial_message()",
+                          "startup_verdict_pending = false;", "CommandCallback p_callback = cmd_map[buffer_rx[1]];");
+}
+
+/* A power-good drop shorter than one loop pass is caught by a falling-edge latch, armed only once PG is high,
+   whose interrupt handler does nothing but set the latch; loop() consumes it before handling any command. */
+void test_power_good_drop_is_latched_by_interrupt_and_consumed_by_loop(void)
+{
+    const char *init = load_source("src/init.cpp");
+    TEST_ASSERT_NOT_NULL(init);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, count_occurrences(init, "attachInterrupt("), "one interrupt, in init_power");
+    assert_in_body_before(init, "init.cpp", "void init_power()", "while (!digitalRead(pin_PG))",
+                          "attachInterrupt(digitalPinToInterrupt(pin_PG), ISR_power_good_falling, FALLING);");
+    const char *end = NULL;
+    const char *isr = function_body(init, "static void ISR_power_good_falling()", &end);
+    TEST_ASSERT_NOT_NULL(isr);
+    unsigned statements = 0;
+    for (const char *c = isr; c < end; c++) if (*c == ';') statements++;
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(1, statements, "the PG interrupt handler must only set the latch");
+    TEST_ASSERT_NOT_NULL(strstr(isr, "power_good_drop_latched = true;"));
+
+    const char *ino = load_source("main_controller_teensy41.ino");
+    TEST_ASSERT_NOT_NULL(ino);
+    assert_in_body_before(ino, "main_controller_teensy41.ino", "void loop() {",
+                          "hv_consume_power_drop(&homing_validity, &power_good_drop_latched);", "process_serial_message();");
+    assert_in_body_before(ino, "main_controller_teensy41.ino", "void loop() {",
+                          "hv_power_good(&homing_validity, digitalRead(pin_PG));", "process_serial_message();");
+}
+
+/* The startup state's hooks. Every path that takes an axis out of its homed frame or changes a covered setting must
+   reach the homing validity state, or a relaunch would start warm on a re-zeroed, re-homed-elsewhere or reconfigured
+   axis. Pending merges edit these exact callbacks, so the hooks are pinned where they are: each in its own case or
+   completion block, with the counts exact (a new hook is a deliberate edit here). What each hook does is
+   test_homing_validity's. The comments in the scanned files name the hooks without a "(" after them. */
+
+static unsigned count_in_range(const char *from, const char *to, const char *needle)
+{
+    unsigned n = 0;
+    size_t len = strlen(needle);
+    for (const char *p = strstr(from, needle); p != NULL && p < to; p = strstr(p + len, needle))
+        n++;
+    return n;
+}
+
+/* `at` (inside the text starting at `from`) is code, not a line comment. */
+static void assert_not_commented_out(const char *from, const char *at, const char *msg)
+{
+    const char *line = at;
+    while (line > from && line[-1] != '\n') line--;
+    const char *comment = strstr(line, "//");
+    TEST_ASSERT_TRUE_MESSAGE(comment == NULL || comment > at, msg);
+}
+
+/* In [region, region_end): the switch case `label` holds `hook` before the case's first "break;". */
+static void assert_case_hook(const char *region, const char *region_end, const char *where, const char *label,
+                             const char *hook)
+{
+    char msg[384];
+    const char *c = strstr(region, label);
+    snprintf(msg, sizeof msg, "%s has no `%s` - renamed or moved?", where, label);
+    TEST_ASSERT_TRUE_MESSAGE(c != NULL && c < region_end, msg);
+    const char *brk = strstr(c, "break;");
+    const char *h = strstr(c, hook);
+    snprintf(msg, sizeof msg, "%s: `%s` must call `%s` before its break", where, label, hook);
+    TEST_ASSERT_TRUE_MESSAGE(brk != NULL && brk < region_end && h != NULL && h < brk, msg);
+    snprintf(msg, sizeof msg, "%s: `%s` in `%s` is commented out", where, hook, label);
+    assert_not_commented_out(c, h, msg);
+}
+
+/* `hook` is in the body of the function starting at `sig`, and not commented out. */
+static void assert_body_hook(const char *src, const char *file, const char *sig, const char *hook)
+{
+    const char *end = NULL;
+    const char *fn = function_body(src, sig, &end);
+    char msg[384];
+    snprintf(msg, sizeof msg, "%s: %s not found or unbounded", file, sig);
+    TEST_ASSERT_NOT_NULL_MESSAGE(fn, msg);
+    const char *h = strstr(fn, hook);
+    snprintf(msg, sizeof msg, "%s: %s must call `%s`", file, sig, hook);
+    TEST_ASSERT_TRUE_MESSAGE(h != NULL && h < end, msg);
+    snprintf(msg, sizeof msg, "%s: %s: `%s` is commented out", file, sig, hook);
+    assert_not_commented_out(fn, h, msg);
+}
+
+/* Every hv_* call (the ones taking &homing_validity) passes protocol axes: none of its arguments is an internal
+   index (x, y, z, w, w2). Returns the number of calls seen, so a caller can tell the scan was not empty. */
+static unsigned assert_no_internal_index_in_hv_calls(const char *src, const char *file)
+{
+    static const char *const INTERNAL[] = {", x,", ", x)", ", y,", ", y)", ", z,", ", z)",
+                                           ", w,", ", w)", ", w2,", ", w2)"};
+    unsigned calls = 0;
+    const char *needle = "(&homing_validity";
+    for (const char *p = strstr(src, needle); p != NULL; p = strstr(p + 1, needle))
+    {
+        const char *end = strchr(p, ';');
+        TEST_ASSERT_NOT_NULL(end);
+        for (unsigned i = 0; i < sizeof INTERNAL / sizeof INTERNAL[0]; i++)
+        {
+            char msg[256];
+            snprintf(msg, sizeof msg, "%s: an hv_* call passes an internal index (`%s`); hooks take protocol axes",
+                     file, INTERNAL[i]);
+            TEST_ASSERT_EQUAL_UINT32_MESSAGE(0, count_in_range(p, end, INTERNAL[i]), msg);
+        }
+        calls++;
+    }
+    return calls;
+}
+
+void test_startup_state_hooks_in_home_zero_and_config_callbacks(void)
+{
+    const char *src = load_source("src/commands/stage_commands.cpp");
+    TEST_ASSERT_NOT_NULL(src);
+    const char *where = "stage_commands.cpp";
+
+    /* Home and zero: X, Y and Z cases, plus the XY home's two */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(5, count_occurrences(src, "hv_home_start("), "X, Y, Z and XY (twice) homes");
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, count_occurrences(src, "hv_invalidate_axis("), "X, Y and Z zeroes");
+    const char *end = NULL;
+    const char *fn = function_body(src, "void callback_home_or_zero()", &end);
+    TEST_ASSERT_NOT_NULL(fn);
+    const char *zero = strstr(fn, "if (buffer_rx[3] == HOME_OR_ZERO_ZERO)");
+    const char *home = strstr(fn, "else if (buffer_rx[3] == HOME_NEGATIVE || buffer_rx[3] == HOME_POSITIVE)");
+    TEST_ASSERT_TRUE_MESSAGE(zero != NULL && home != NULL && zero < home && home < end,
+                             "callback_home_or_zero: the zero branch, then the home branch");
+    assert_case_hook(zero, home, "the zero branch", "case AXIS_X:", "hv_invalidate_axis(&homing_validity, AXIS_X);");
+    assert_case_hook(zero, home, "the zero branch", "case AXIS_Y:", "hv_invalidate_axis(&homing_validity, AXIS_Y);");
+    assert_case_hook(zero, home, "the zero branch", "case AXIS_Z:", "hv_invalidate_axis(&homing_validity, AXIS_Z);");
+    assert_case_hook(home, end, "the home branch", "case AXIS_X:",
+                     "hv_home_start(&homing_validity, AXIS_X, digitalRead(pin_PG));");
+    assert_case_hook(home, end, "the home branch", "case AXIS_Y:",
+                     "hv_home_start(&homing_validity, AXIS_Y, digitalRead(pin_PG));");
+    assert_case_hook(home, end, "the home branch", "case AXIS_Z:",
+                     "hv_home_start(&homing_validity, AXIS_Z, digitalRead(pin_PG));");
+    assert_case_hook(home, end, "the home branch", "case AXES_XY:",
+                     "hv_home_start(&homing_validity, AXIS_X, digitalRead(pin_PG));");
+    assert_case_hook(home, end, "the home branch", "case AXES_XY:",
+                     "hv_home_start(&homing_validity, AXIS_Y, digitalRead(pin_PG));");
+
+    /* The covered settings: four commands with an X, a Y and a Z case each (the wheels are not covered), and the
+       limit-switch config once it is applied (limit_switches_set refuses anything but X, Y and Z) */
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(13, count_occurrences(src, "hv_config_received("),
+                                     "4 commands x X/Y/Z, plus the limit-switch config");
+    static const struct { const char *sig; const char *slot; } COVERED[] = {
+        {"void callback_set_home_safety_margin()", "HV_CFG_HOME_MARGIN"},
+        {"void callback_configure_stepper_driver()", "HV_CFG_DRIVER"},
+        {"void callback_set_max_velocity_acceleration()", "HV_CFG_VEL_ACC"},
+        {"void callback_set_lead_screw_pitch()", "HV_CFG_PITCH"},
+    };
+    static const char *const AXES[] = {"AXIS_X", "AXIS_Y", "AXIS_Z"};
+    for (unsigned i = 0; i < sizeof COVERED / sizeof COVERED[0]; i++)
+    {
+        const char *body = function_body(src, COVERED[i].sig, &end);
+        char msg[256];
+        snprintf(msg, sizeof msg, "%s: %s not found or unbounded", where, COVERED[i].sig);
+        TEST_ASSERT_NOT_NULL_MESSAGE(body, msg);
+        snprintf(msg, sizeof msg, "%s: %s must report its X, Y and Z cases only", where, COVERED[i].sig);
+        TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, count_in_range(body, end, "hv_config_received("), msg);
+        for (unsigned a = 0; a < 3; a++)
+        {
+            char label[32], hook[128];
+            snprintf(label, sizeof label, "case %s:", AXES[a]);
+            snprintf(hook, sizeof hook, "hv_config_received(&homing_validity, %s, %s, &buffer_rx[3]);",
+                     COVERED[i].slot, AXES[a]);
+            assert_case_hook(body, end, COVERED[i].sig, label, hook);
+        }
+    }
+    assert_in_body_before(src, where, "void callback_set_limit_switch_config()",
+                          "if (!limit_switches_set(buffer_rx[2], buffer_rx[3]))",
+                          "hv_config_received(&homing_validity, HV_CFG_LIMIT_SWITCH, buffer_rx[2], &buffer_rx[3]);");
+
+    TEST_ASSERT_EQUAL_UINT32(21, assert_no_internal_index_in_hv_calls(src, where));
+}
+
+void test_startup_state_hooks_in_homing_completion(void)
+{
+    const char *ops = load_source("src/operations.cpp");
+    TEST_ASSERT_NOT_NULL(ops);
+    TEST_ASSERT_EQUAL_UINT32_MESSAGE(3, count_occurrences(ops, "hv_home_complete("), "X, Y and Z completions");
+    /* Inside the completion if: after its condition, in a function that holds nothing else */
+    assert_in_body_before(ops, "operations.cpp", "void finalize_homing_x()", "if (is_homing_X && home_X_found",
+                          "hv_home_complete(&homing_validity, AXIS_X, digitalRead(pin_PG));");
+    assert_in_body_before(ops, "operations.cpp", "void finalize_homing_y()", "if (is_homing_Y && home_Y_found",
+                          "hv_home_complete(&homing_validity, AXIS_Y, digitalRead(pin_PG));");
+    assert_in_body_before(ops, "operations.cpp", "void finalize_homing_z()", "if (is_homing_Z && home_Z_found",
+                          "hv_home_complete(&homing_validity, AXIS_Z, digitalRead(pin_PG));");
+    TEST_ASSERT_EQUAL_UINT32(3, assert_no_internal_index_in_hv_calls(ops, "operations.cpp"));
+}
+
+void test_startup_state_hooks_in_driver_enable_and_initialize(void)
+{
+    const char *cmds = load_source("src/commands/commands.cpp");
+    TEST_ASSERT_NOT_NULL(cmds);
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "hv_driver_enable("));
+    TEST_ASSERT_EQUAL_UINT32(1, count_occurrences(cmds, "hv_initialize("));
+    /* By protocol axis, X/Y/Z only: `axis` in that callback is the internal index */
+    assert_in_body_before(cmds, "commands.cpp", "void callback_set_axis_disable_enable()",
+                          "if (buffer_rx[2] == AXIS_X || buffer_rx[2] == AXIS_Y || buffer_rx[2] == AXIS_Z)",
+                          "hv_driver_enable(&homing_validity, buffer_rx[2], status != 0);");
+    assert_body_hook(cmds, "commands.cpp", "void callback_initialize()", "hv_initialize(&homing_validity);");
+    TEST_ASSERT_TRUE(assert_no_internal_index_in_hv_calls(cmds, "commands.cpp") > 0);
+
+    const char *ino = load_source("main_controller_teensy41.ino");
+    TEST_ASSERT_NOT_NULL(ino);
+    TEST_ASSERT_TRUE(assert_no_internal_index_in_hv_calls(ino, "main_controller_teensy41.ino") > 0);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -800,6 +1031,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_panel_lock_is_registered_cleared_and_applied);
     RUN_TEST(test_focus_wheel_delta_is_routed_by_mode);
     RUN_TEST(test_status_packet_reports_the_focus_wheel_count);
+
+    // Startup state, firmware 1.9 (source scan)
+    RUN_TEST(test_startup_verdict_is_in_the_status_byte_not_byte_18);
+    RUN_TEST(test_power_good_drop_is_latched_by_interrupt_and_consumed_by_loop);
+    RUN_TEST(test_startup_state_hooks_in_home_zero_and_config_callbacks);
+    RUN_TEST(test_startup_state_hooks_in_homing_completion);
+    RUN_TEST(test_startup_state_hooks_in_driver_enable_and_initialize);
 
     return UNITY_END();
 }

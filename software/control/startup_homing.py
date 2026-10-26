@@ -1,6 +1,7 @@
 """Rules for homing the stage on systems where the software cannot lower the objective."""
 
 import enum
+import hashlib
 
 import control._def
 
@@ -45,6 +46,7 @@ class StartupHoming(enum.Enum):
 
     NOT_RUN = "not_run"  # skip_init: startup did not touch the stage
     HOMED = "homed"  # startup homed the stage
+    ALREADY_HOMED = "already_homed"  # the controller vouched the stage is still homed (a warm start): not homed again
     DECLINED = "declined"  # a person cancelled the piezo-only prompt; the stage is not referenced
 
 
@@ -67,3 +69,60 @@ def home_stage_confirmation_text(has_z_lift: bool) -> str:
         moves = f"{' and '.join(first)}, then {moves}"
         moves = moves[0].upper() + moves[1:]
     return f"{moves} The stage will not return to where it is now."
+
+
+CONFIG_SIGNATURE_FORMAT = 1  # bump when the fields or their rendering below change
+
+
+def _number(value) -> str:
+    """A number as text, independent of how the setting was written: floats by repr, ints and bools as ints."""
+    if isinstance(value, (bool, int)):
+        return str(int(value))
+    return repr(float(value))
+
+
+def config_signature_text() -> str:
+    """The canonical text the configuration signature hashes: one name=value line per setting that the controller was
+    configured with (Microcontroller.configure_actuators, apply_limit_switch_config) or that the homing direction
+    derives from, so a change to any of them makes a stored "homed" verdict stale."""
+    import squid.config  # not at module level: control.microcontroller imports this module
+
+    stage = squid.config.get_stage_config()
+    lines = [f"format={CONFIG_SIGNATURE_FORMAT}"]
+    for a in ("X", "Y", "Z"):
+        axis = getattr(stage, f"{a}_AXIS")
+        fields = [
+            (f"SCREW_PITCH_{a}_MM", _number(getattr(control._def, f"SCREW_PITCH_{a}_MM"))),
+            (f"MICROSTEPPING_DEFAULT_{a}", _number(getattr(control._def, f"MICROSTEPPING_DEFAULT_{a}"))),
+            (f"{a}_MOTOR_RMS_CURRENT_mA", _number(getattr(control._def, f"{a}_MOTOR_RMS_CURRENT_mA"))),
+            (f"{a}_MOTOR_I_HOLD", _number(getattr(control._def, f"{a}_MOTOR_I_HOLD"))),
+            (f"MAX_VELOCITY_{a}_mm", _number(getattr(control._def, f"MAX_VELOCITY_{a}_mm"))),
+            (f"MAX_ACCELERATION_{a}_mm", _number(getattr(control._def, f"MAX_ACCELERATION_{a}_mm"))),
+            (f"{a}_HOME_SAFETY_MARGIN_UM", str(int(getattr(control._def, f"{a}_HOME_SAFETY_MARGIN_UM")))),
+            (f"{a}_LIMIT_SWITCH_CONFIG", str(int(control._def.limit_switch_config_byte(a.lower())))),
+            (f"{a}_MOVEMENT_SIGN", str(int(axis.MOVEMENT_SIGN.value))),
+            (f"{a}_USE_ENCODER", str(int(axis.USE_ENCODER))),
+            (f"{a}_ENCODER_SIGN", str(int(axis.ENCODER_SIGN.value))),
+            (f"{a}_ENCODER_STEP_SIZE", _number(axis.ENCODER_STEP_SIZE)),
+            (f"{a}_FULL_STEPS_PER_REV", _number(axis.FULL_STEPS_PER_REV)),
+        ]
+        lines.extend(f"{name}={value}" for name, value in fields)
+    return "\n".join(lines)
+
+
+def config_signature() -> int:
+    """The 32-bit configuration signature: the first 4 bytes, big-endian, of SHA-256 over the canonical text. Stable
+    across processes and runs (never Python's hash())."""
+    digest = hashlib.sha256(config_signature_text().encode("ascii")).digest()
+    return int.from_bytes(digest[:4], "big")
+
+
+def required_homed_axes_mask() -> int:
+    """The axes (bit 1 << control._def.AXIS.<axis>) that startup must find homed to skip homing. 0 when startup homes
+    no stage axis: such a startup never skips anything (Microcontroller does not even ask)."""
+    mask = 0
+    if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
+        mask |= 1 << control._def.AXIS.X | 1 << control._def.AXIS.Y
+    if (control._def.HOMING_ENABLED_Z and not control._def.USE_PI_FOCUS_STAGE) or control._def.USE_Z_LIFT_STAGE:
+        mask |= 1 << control._def.AXIS.Z
+    return mask

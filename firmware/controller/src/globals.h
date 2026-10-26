@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include "utils/joystick_panel.h"
+#include "utils/homing_validity.h"
 
 extern byte buffer_rx[512];
 extern byte buffer_tx[MSG_LENGTH];
@@ -133,6 +134,12 @@ extern uint8_t focus_wheel_mode;          // FOCUS_WHEEL_* (firmware 1.8, SET_FO
 extern uint8_t focus_wheel_power_up_mode; // the mode at power-up / RESET / INITIALIZE, saved in EEPROM 8-11
 extern int32_t focus_wheel_host_count;    // wheel ticks since FOCUS_WHEEL_TO_HOST was enabled (wraps)
 extern bool panel_locked_by_host;         // SET_PANEL_LOCK (firmware 1.8): the control panel moves nothing
+
+// Startup state (firmware 1.9, utils/homing_validity.h). Hooks pass PROTOCOL axes (AXIS_X/Y/Z), never internal indices.
+extern HomingValidity homing_validity;    // homed flags, configuration signature; hv_power_up() in setup()
+extern bool startup_verdict_pending;      // the status byte (byte 1) carries 64 + startup_verdict; cleared by the next command
+extern uint8_t startup_verdict;           // STARTUP_VERDICT_*, set by QUERY_STARTUP_STATE
+extern volatile bool power_good_drop_latched;  // set by the PG falling-edge interrupt (init.cpp); hv_consume_power_drop clears it
 
 // btns
 extern uint8_t btns;
