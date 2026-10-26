@@ -594,9 +594,14 @@ def test_declined_startup_with_z_homing_warns_until_z_is_homed_too(qtbot, confir
     assert not gui._not_homed_label.isVisibleTo(gui)
 
 
-def test_already_homed_restores_z_and_leaves_xy(qtbot, confirm_exit_yes, monkeypatch):
-    """A warm relaunch: the controller vouched that the stage is still homed, so X/Y stay where the stage stands
-    (after a crash the cached X/Y is stale) and Z comes back as after a homed startup."""
+@pytest.mark.parametrize("at_the_cached_xy", [True, False])
+def test_already_homed_leaves_xy_and_restores_z_only_at_the_cached_xy(
+    qtbot, confirm_exit_yes, monkeypatch, caplog, at_the_cached_xy
+):
+    """A warm relaunch: the controller vouched that the stage is still homed, so X/Y stay where the stage stands.
+    Z comes back as after a homed startup only while X/Y are where the position was cached (within 0.1 mm on each
+    axis). After a crash, or a panel jog while Squid was closed, the cached Z is another place's focus height: Z stays
+    where it is. Either way the multipoint widgets take the Z the stage ends at."""
     _set_z_flags(monkeypatch, homing_z=True, pi_focus=False)
     monkeypatch.setattr(control._def, "ENABLE_MEMORY_PROFILING", True)  # the RAM monitor appears with the window
     # strict=False: the GUI also sends commands the sim's protocol whitelist lacks (SET_WATCHDOG_TIMEOUT, HEARTBEAT)
@@ -605,20 +610,46 @@ def test_already_homed_restores_z_and_leaves_xy(qtbot, confirm_exit_yes, monkeyp
     earlier = control.microscope.Microscope.build_from_global_config(True)  # homes and stores the signature
     earlier.stage.move_x_to(10.0)
     earlier.stage.move_y_to(10.0)
+    earlier.stage.move_z_to(0.8)  # where that session left Z (it died before a clean close retracted it)
     earlier.close()
     sim.reconnect(1)  # the controller stayed powered
 
     safety_z_mm = int(control._def.Z_HOME_SAFETY_POINT) / 1000.0
-    cached = squid.abc.Pos(x_mm=40.0, y_mm=25.0, z_mm=safety_z_mm - 0.5, theta_rad=None)
+    # Above the safety point, so a restore moves Z to the cached Z itself; Y 0.2 mm off is beyond the 0.1 mm tolerance
+    cached_y_mm = 10.0 if at_the_cached_xy else 10.2
+    cached = squid.abc.Pos(x_mm=10.0, y_mm=cached_y_mm, z_mm=safety_z_mm + 0.5, theta_rad=None)
     monkeypatch.setattr(squid.stage.utils, "get_cached_position", lambda *args, **kwargs: cached)
     scope = control.microscope.Microscope.build_from_global_config(True)
     assert scope.startup_homing is StartupHoming.ALREADY_HOMED
-    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    z_before = scope.stage.get_pos().z_mm
+    assert z_before == pytest.approx(0.8, abs=1e-3)  # a warm start kept it
+    moves = _record_xy_moves(monkeypatch, scope.stage)
+    _spy_moves(monkeypatch, moves, scope.stage, "move_z_to", "z")
+    init_z_calls = []
+    for widget_class in (control.widgets.FlexibleMultiPointWidget, control.widgets.WellplateMultiPointWidget):
+        real_init_z = widget_class.init_z
+
+        def init_z(self, *args, _real=real_init_z, **kwargs):
+            init_z_calls.append(type(self).__name__)
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(widget_class, "init_z", init_z)
+    with caplog.at_level(logging.INFO):
+        gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
     qtbot.add_widget(gui)
 
     pos = scope.stage.get_pos()
     assert (pos.x_mm, pos.y_mm) == pytest.approx((10.0, 10.0), abs=1e-3)  # to a microstep
-    assert pos.z_mm == pytest.approx(safety_z_mm, abs=1e-3)
+    if at_the_cached_xy:
+        assert moves == [("z", cached.z_mm)] and pos.z_mm == pytest.approx(cached.z_mm, abs=1e-3)
+        assert "Cached position was saved at another XY" not in caplog.text
+    else:
+        assert moves == [] and pos.z_mm == z_before
+        assert "Cached position was saved at another XY: Z left where it is" in caplog.text
+    # init_z runs either way: the multipoint Z range starts at the Z the stage ends at
+    assert sorted(init_z_calls) == ["FlexibleMultiPointWidget", "WellplateMultiPointWidget"]
+    assert gui.flexibleMultiPointWidget.entry_minZ.value() == pytest.approx(pos.z_mm * 1000, abs=1)
+    assert gui.wellplateMultiPointWidget.entry_minZ.value() == pytest.approx(pos.z_mm * 1000, abs=1)
 
     # The message shows once the window does, and the status-bar widgets that appear with it do not cover it
     gui.show()

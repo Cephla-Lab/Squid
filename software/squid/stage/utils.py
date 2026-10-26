@@ -12,8 +12,9 @@ import control.utils
 _log = squid.logging.get_logger(__package__)
 _DEFAULT_CACHE_PATH = "cache/last_coords.txt"
 _MAX_CACHE_BYTES = 4096
-# How far, per axis, the stage's X/Y may be from the loading position's and still count as there (is_at_loading_xy)
-LOADING_XY_TOLERANCE_MM = 0.1
+# How far, per axis, the stage's X/Y may be from a remembered X/Y (the loading position's, the cached position's) and
+# still count as there (is_at_xy)
+SAME_XY_TOLERANCE_MM = 0.1
 
 
 def get_cached_position(cache_path=_DEFAULT_CACHE_PATH) -> Optional[Pos]:
@@ -248,14 +249,15 @@ def _loading_xy_mm() -> Tuple[float, float]:
     return _def.SLIDE_POSITION.LOADING_X_MM, _def.SLIDE_POSITION.LOADING_Y_MM
 
 
-def is_at_loading_xy(stage: AbstractStage) -> bool:
-    """True when the stage's X and Y are each within LOADING_XY_TOLERANCE_MM of the loading position's."""
-    loading_x_mm, loading_y_mm = _loading_xy_mm()
+def is_at_xy(stage: AbstractStage, x_mm: float, y_mm: float) -> bool:
+    """True when the stage's X and Y are each within SAME_XY_TOLERANCE_MM of (x_mm, y_mm)."""
     pos = stage.get_pos()
-    return (
-        abs(pos.x_mm - loading_x_mm) <= LOADING_XY_TOLERANCE_MM
-        and abs(pos.y_mm - loading_y_mm) <= LOADING_XY_TOLERANCE_MM
-    )
+    return abs(pos.x_mm - x_mm) <= SAME_XY_TOLERANCE_MM and abs(pos.y_mm - y_mm) <= SAME_XY_TOLERANCE_MM
+
+
+def is_at_loading_xy(stage: AbstractStage) -> bool:
+    """True when the stage's X and Y are each within SAME_XY_TOLERANCE_MM of the loading position's."""
+    return is_at_xy(stage, *_loading_xy_mm())
 
 
 def move_xy_to_loading_position(stage: AbstractStage, is_wellplate: bool):
