@@ -38,6 +38,14 @@ def _number_text(value: Optional[float]) -> str:
     return text[:-2] if text.endswith(".0") else text
 
 
+def _reason(e: Exception) -> str:
+    """An error's text for a message that already names the file: an OSError's reason without the
+    path it repeats."""
+    if isinstance(e, OSError) and e.strerror:
+        return e.strerror
+    return str(e) or type(e).__name__
+
+
 def _float_or_none(text: str) -> Optional[float]:
     try:
         return float(text)
@@ -337,7 +345,9 @@ class ObjectivesEditorDialog(QDialog):
             failed = self._repo.remove_objective_channel_configs(name, profiles)
             if failed:
                 self._leftover[name] = list(failed)
-                stuck += [f"{self._repo.objective_channel_config_path(p, name)} ({e})" for p, e in failed.items()]
+                stuck += [
+                    f"{self._repo.objective_channel_config_path(p, name)} ({_reason(e)})" for p, e in failed.items()
+                ]
         if not stuck:
             return ""
         return (
@@ -354,6 +364,15 @@ class ObjectivesEditorDialog(QDialog):
                 combo.setEnabled(False)
                 combo.setToolTip(f"Channel settings were copied from {source} when the list was saved")
 
+    def reject(self):
+        """Closing (Cancel, Esc, the window's close button) names any copy a failed save could not
+        remove: once the dialog is gone, nothing refuses a save while it remains, and adding that
+        objective again would keep it as its channel settings ("never overwrite")."""
+        stuck = self._undo_copies([])
+        if stuck:
+            QMessageBox.warning(self, "Objectives", stuck.strip())
+        super().reject()
+
     def save(self) -> bool:
         rows = self.rows()
         try:
@@ -362,11 +381,10 @@ class ObjectivesEditorDialog(QDialog):
         except oc.ObjectivesConfigError as e:
             QMessageBox.warning(self, "Objectives", f"{e.field}: {e.reason}")
             return False
-        if self._leftover:
-            stuck = self._undo_copies([])
-            if stuck:
-                QMessageBox.critical(self, "Objectives", "The objective list was NOT saved." + stuck)
-                return False
+        stuck = self._undo_copies([])
+        if stuck:
+            QMessageBox.critical(self, "Objectives", "The objective list was NOT saved." + stuck)
+            return False
         # Channel-config copies happen before the YAML write, so a copy failure never leaves an
         # objectives.yaml pointing at an objective whose channel settings did not make it to disk.
         # The attempt is all or nothing: when a copy or the YAML write fails, the copies it made are
@@ -378,6 +396,7 @@ class ObjectivesEditorDialog(QDialog):
                 try:
                     profiles = self._repo.copy_objective_channel_configs(row.copy_from, row.name)
                 except ChannelCopyError as e:
+                    self._log.exception(f"could not copy channel settings {row.copy_from} -> {row.name}")
                     made.append((row, list(e.leftover)))
                     QMessageBox.critical(
                         self,
@@ -398,11 +417,13 @@ class ObjectivesEditorDialog(QDialog):
                 f" The system could not confirm the save reached the disk ({e}): if the power fails "
                 "before it does, the previous list may come back."
             )
-        except OSError as e:
+        except Exception as e:
+            # Any failure here leaves objectives.yaml as it was (save_objectives_config publishes last).
+            self._log.exception(f"could not write {objectives_yaml_path}")
             QMessageBox.critical(
                 self,
                 "Objectives",
-                f"Could not write {objectives_yaml_path}: {e}. The objective list was not written."
+                f"Could not write {objectives_yaml_path}: {_reason(e)}. The objective list was not written."
                 + self._undo_copies(made),
             )
             return False

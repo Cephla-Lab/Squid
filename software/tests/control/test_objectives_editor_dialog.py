@@ -1,4 +1,5 @@
 import copy
+import errno
 import os
 import stat
 from pathlib import Path
@@ -216,13 +217,20 @@ def test_a_copy_that_cannot_be_removed_after_a_failed_save_is_named(qtbot, repo,
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)
     dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    real_save, real_unlink = repo.save_objectives_config, Path.unlink
     monkeypatch.setattr(repo, "save_objectives_config", _raise_disk_full)
     monkeypatch.setattr(Path, "unlink", _unremovable(_channel_config(tmp_path, "a", "20x water")))
     assert not dialog.save()
     message = no_dialogs["critical"][0]
-    assert "disk full" in message and "permission denied" in message
-    assert str(_channel_config(tmp_path, "a", "20x water")) in message and "delete" in message
+    assert "disk full" in message and "(Permission denied)" in message
+    assert message.count(str(_channel_config(tmp_path, "a", "20x water"))) == 1 and "delete" in message
     assert str(_channel_config(tmp_path, "b", "20x water")) not in message  # b's copy was removed
+
+    monkeypatch.setattr(repo, "save_objectives_config", real_save)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert dialog.save()
+    for profile in ("a", "b"):
+        assert _channel_config(tmp_path, profile, "20x water").read_text() == f"{profile}-20x"
 
 
 def _unremovable(path_to_keep):
@@ -230,7 +238,7 @@ def _unremovable(path_to_keep):
 
     def _unlink(self, missing_ok=False):
         if self == path_to_keep:
-            raise OSError("permission denied")
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))  # shaped like the real one
         real_unlink(self, missing_ok=missing_ok)
 
     return _unlink
@@ -296,6 +304,94 @@ def test_save_is_refused_while_a_copy_left_by_a_failed_save_cannot_be_removed(
     assert str(_channel_config(tmp_path, "a", "20x water")) in message and "delete" in message
     assert repo.get_objectives_config() is None
     assert not _channel_config(tmp_path, "b", "20x water").exists()
+
+
+def test_any_failure_during_a_copy_undoes_the_save_and_names_what_stays(qtbot, repo, no_dialogs, tmp_path, monkeypatch):
+    # Not only OSError: "20x water" copied to a and b, then "10x oil" failed some other way, and
+    # a's earlier copy could not be removed. The save must still be undone and the stray named.
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)  # frees slot 1
+    dialog.remove_row(0)  # frees slot 2
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    dialog.add_row(EditorRow("10x oil", 10.0, 0.4, 180.0, 2, copy_from="10x"), new=True)
+    real_write, real_unlink = repository.write_atomically, Path.unlink
+
+    def _fail_for_10x_oil(path, data):
+        if path.name == "10x oil.yaml":
+            raise RuntimeError("unexpected")
+        real_write(path, data)
+
+    stray = _channel_config(tmp_path, "a", "20x water")
+    monkeypatch.setattr(repository, "write_atomically", _fail_for_10x_oil)
+    monkeypatch.setattr(Path, "unlink", _unremovable(stray))
+    assert not dialog.save()
+    message = no_dialogs["critical"][0]
+    assert "unexpected" in message and "NOT saved" in message and str(stray) in message
+    assert not _channel_config(tmp_path, "b", "20x water").exists()
+    assert no_dialogs["question"] == []
+
+    monkeypatch.setattr(repository, "write_atomically", real_write)
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    rows = {dialog._table.item(r, widgets_objectives._COL_NAME).text(): r for r in range(dialog._table.rowCount())}
+    combo = dialog._table.cellWidget(rows["20x water"], widgets_objectives._COL_COPY)
+    combo.setCurrentIndex(combo.findText("10x"))
+    assert dialog.save()
+    for profile in ("a", "b"):
+        assert _channel_config(tmp_path, profile, "20x water").read_text() == f"{profile}-10x"
+        assert _channel_config(tmp_path, profile, "10x oil").read_text() == f"{profile}-10x"
+
+
+def test_any_failure_writing_the_list_undoes_the_copies_and_is_reported(qtbot, repo, no_dialogs, tmp_path, monkeypatch):
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    real_save = repo.save_objectives_config
+
+    def _raise_unexpected(config):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(repo, "save_objectives_config", _raise_unexpected)
+    assert not dialog.save()
+    assert "unexpected" in no_dialogs["critical"][0] and "not written" in no_dialogs["critical"][0]
+    for profile in ("a", "b"):
+        assert not _channel_config(tmp_path, profile, "20x water").exists()
+    assert _new_row_combo(dialog).isEnabled()  # nothing was saved, so the source can still change
+
+    monkeypatch.setattr(repo, "save_objectives_config", real_save)
+    _new_row_combo(dialog).setCurrentIndex(_new_row_combo(dialog).findText("10x"))
+    assert dialog.save()
+    for profile in ("a", "b"):
+        assert _channel_config(tmp_path, profile, "20x water").read_text() == f"{profile}-10x"
+
+
+def test_closing_with_a_copy_left_by_a_failed_save_names_it(qtbot, repo, no_dialogs, tmp_path, monkeypatch):
+    # The refusal to save only lasts while the dialog is open: after closing, adding the objective
+    # again would keep the stray copy ("never overwrite"), so closing says which file to delete.
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    _fail_copy_in_b_and_keep_as_copy(tmp_path, monkeypatch)
+    assert not dialog.save()
+    dialog.reject()
+    assert len(no_dialogs["warning"]) == 1
+    warning = no_dialogs["warning"][0]
+    assert str(_channel_config(tmp_path, "a", "20x water")) in warning and "delete" in warning
+
+
+def test_closing_after_the_fault_clears_removes_the_leftover_quietly(qtbot, repo, no_dialogs, tmp_path, monkeypatch):
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    clear = _fail_copy_in_b_and_keep_as_copy(tmp_path, monkeypatch)
+    assert not dialog.save()
+    clear("write", "unlink")
+    dialog.reject()
+    assert no_dialogs["warning"] == []
+    assert not _channel_config(tmp_path, "a", "20x water").exists()
 
 
 def test_copy_source_is_locked_once_the_list_is_saved(qtbot, repo, no_dialogs, tmp_path):

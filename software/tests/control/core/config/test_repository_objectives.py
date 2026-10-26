@@ -74,7 +74,7 @@ def test_failed_copy_leaves_no_target_file(tmp_path, monkeypatch):
     a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
     repo = ConfigRepository(base_path=tmp_path)
     monkeypatch.setattr(atomic_file.os, "fsync", _fail_mid_copy)
-    with pytest.raises(OSError):
+    with pytest.raises(repository.ChannelCopyError):
         repo.copy_objective_channel_configs("10x", "20x water")
     assert not (a / "20x water.yaml").exists()
     assert [p.name for p in a.iterdir()] == ["10x.yaml"]  # no temp file left behind either
@@ -84,7 +84,7 @@ def test_retry_after_the_fault_is_removed_copies_the_full_file(tmp_path, monkeyp
     a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
     repo = ConfigRepository(base_path=tmp_path)
     monkeypatch.setattr(atomic_file.os, "fsync", _fail_mid_copy)
-    with pytest.raises(OSError):
+    with pytest.raises(repository.ChannelCopyError):
         repo.copy_objective_channel_configs("10x", "20x water")
     monkeypatch.undo()  # the fault is fixed
     assert repo.copy_objective_channel_configs("10x", "20x water") == ["a"]
@@ -96,13 +96,14 @@ def _fail_mid_copy_non_oserror(fd):
     raise ValueError("boom")
 
 
-def test_non_oserror_during_copy_leaves_no_temp_file_and_propagates(tmp_path, monkeypatch):
+def test_non_oserror_during_copy_leaves_no_temp_file_and_is_reported(tmp_path, monkeypatch):
     # The cleanup must run for ANY exception during the copy/replace, not only OSError.
     a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
     repo = ConfigRepository(base_path=tmp_path)
     monkeypatch.setattr(atomic_file.os, "fsync", _fail_mid_copy_non_oserror)
-    with pytest.raises(ValueError, match="boom"):
+    with pytest.raises(repository.ChannelCopyError, match="boom") as raised:
         repo.copy_objective_channel_configs("10x", "20x water")
+    assert isinstance(raised.value.__cause__, ValueError)
     assert [p.name for p in a.iterdir()] == ["10x.yaml"]  # no temp file left behind
 
 
@@ -115,7 +116,7 @@ def test_unlink_failure_during_copy_cleanup_does_not_mask_the_original_error(tmp
 
     monkeypatch.setattr(atomic_file.os, "fsync", _fail_mid_copy)
     monkeypatch.setattr(Path, "unlink", _raise_unlink)
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(repository.ChannelCopyError, match="disk full"):
         repo.copy_objective_channel_configs("10x", "20x water")
 
 
@@ -177,8 +178,9 @@ def test_copy_that_fails_in_a_later_profile_removes_the_earlier_copies(tmp_path,
     b = _profile(tmp_path, "b", {"10x.yaml": "B10"})
     repo = ConfigRepository(base_path=tmp_path)
     monkeypatch.setattr(repository, "write_atomically", _fail_for_profile("b", repository.write_atomically))
-    with pytest.raises(OSError, match="disk full in b"):
+    with pytest.raises(repository.ChannelCopyError, match="disk full in b") as raised:
         repo.copy_objective_channel_configs("10x", "20x water")
+    assert raised.value.leftover == {}
     assert not (a / "20x water.yaml").exists()
     assert not (b / "20x water.yaml").exists()
 
@@ -204,10 +206,33 @@ def test_copy_whose_undo_fails_names_the_profiles_still_holding_it(tmp_path, mon
     monkeypatch.setattr(Path, "unlink", _unremovable(a / "20x water.yaml"))
     with pytest.raises(repository.ChannelCopyError, match="disk full in b") as raised:
         repo.copy_objective_channel_configs("10x", "20x water")
-    assert isinstance(raised.value, OSError)
     assert list(raised.value.leftover) == ["a"]
     assert "permission denied" in str(raised.value.leftover["a"])
     assert (a / "20x water.yaml").exists()
+
+
+def test_any_failure_in_a_later_profile_undoes_the_earlier_copies_and_names_what_stays(tmp_path, monkeypatch):
+    # Not only OSError: whatever stops the copy in profile b, a's copy is undone or reported.
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
+    b = _profile(tmp_path, "b", {"10x.yaml": "B10"})
+    repo = ConfigRepository(base_path=tmp_path)
+    real_write = repository.write_atomically
+
+    def _fail_in_b(path, data):
+        if path.parent.parent.name == "b":
+            raise MemoryError()
+        real_write(path, data)
+
+    monkeypatch.setattr(repository, "write_atomically", _fail_in_b)
+    with pytest.raises(repository.ChannelCopyError, match="MemoryError") as raised:
+        repo.copy_objective_channel_configs("10x", "20x water")
+    assert isinstance(raised.value.__cause__, MemoryError) and raised.value.leftover == {}
+    assert not (a / "20x water.yaml").exists() and not (b / "20x water.yaml").exists()
+
+    monkeypatch.setattr(Path, "unlink", _unremovable(a / "20x water.yaml"))
+    with pytest.raises(repository.ChannelCopyError) as raised:
+        repo.copy_objective_channel_configs("10x", "20x water")
+    assert list(raised.value.leftover) == ["a"]
 
 
 def test_remove_objective_channel_configs_reports_what_it_could_not_remove(tmp_path, monkeypatch):

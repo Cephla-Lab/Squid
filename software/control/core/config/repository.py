@@ -55,12 +55,13 @@ logger = squid.logging.get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
-class ChannelCopyError(OSError):
-    """A channel-settings copy failed. `leftover` maps each profile whose earlier copy could not
-    be removed again to the error, so the caller can name the files still in place."""
+class ChannelCopyError(Exception):
+    """A channel-settings copy failed; `__cause__` holds why. `leftover` maps each profile whose
+    earlier copy could not be removed again to the error, so the caller can name the files still
+    in place."""
 
-    def __init__(self, cause: OSError, leftover: Dict[str, OSError]):
-        super().__init__(str(cause))
+    def __init__(self, cause: Exception, leftover: Dict[str, OSError]):
+        super().__init__(str(cause) or type(cause).__name__)
         self.leftover = leftover
 
 
@@ -516,7 +517,7 @@ class ConfigRepository:
         All or nothing: when a profile fails, the copies this call already made are removed before
         the error is raised. A profile left holding one would be kept by a retry ("never
         overwrite"), so a retry from another source would leave the profiles on different sources.
-        A failed OSError is raised as ChannelCopyError, naming any copy that could not be removed.
+        Any failure is raised as ChannelCopyError, naming any copy that could not be removed.
 
         Publishes through write_atomically: a copy that dies partway through (or loses power)
         never leaves a partial or empty file under the final name. A copy whose directory sync
@@ -534,9 +535,7 @@ class ConfigRepository:
                     written.append(profile)
         except Exception as original_exc:
             leftover = self.remove_objective_channel_configs(target, written)
-            if isinstance(original_exc, OSError):
-                raise ChannelCopyError(original_exc, leftover) from original_exc
-            raise original_exc
+            raise ChannelCopyError(original_exc, leftover) from original_exc
         finally:
             self._profile_cache.pop(f"objective:{target}", None)
         return written
