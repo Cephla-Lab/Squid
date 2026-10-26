@@ -1696,13 +1696,17 @@ class HighContentScreeningGui(QMainWindow):
             )
             self.streamHandler_focus_camera.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
-            self.streamHandler_focus_camera.image_to_display.connect(
-                self.displacementMeasurementController.update_measurement
-            )
-            self.displacementMeasurementController.signal_plots.connect(self.waveformDisplay.plot)
-            self.displacementMeasurementController.signal_readings.connect(
-                self.displacementMeasurementWidget.display_readings
-            )
+            # The legacy displacement measurement computes a whole-frame centroid on the GUI
+            # thread for every live frame, which makes full-sensor focus-camera live crawl.
+            # Only run it when its windows are actually shown.
+            if SHOW_LEGACY_DISPLACEMENT_MEASUREMENT_WINDOWS:
+                self.streamHandler_focus_camera.image_to_display.connect(
+                    self.displacementMeasurementController.update_measurement
+                )
+                self.displacementMeasurementController.signal_plots.connect(self.waveformDisplay.plot)
+                self.displacementMeasurementController.signal_readings.connect(
+                    self.displacementMeasurementWidget.display_readings
+                )
             self.laserAutofocusController.image_to_display.connect(self.imageDisplayWindow_focus.display_image)
 
             # Add connection for piezo position updates
