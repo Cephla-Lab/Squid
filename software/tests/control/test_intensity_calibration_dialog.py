@@ -104,25 +104,25 @@ def test_run_and_save_in_simulation(qtbot, session, repo, answers):
     )
 
 
-def test_the_run_shows_its_own_readings_and_draws_the_curve_as_it_goes(qtbot, session, answers):
+def test_the_run_shows_its_own_readings_and_draws_the_curve_as_it_goes(qtbot, session, answers, monkeypatch):
+    # observed through class-level patches that monkeypatch undoes: a closure stored on the dialog or one of its
+    # widgets would tie the Qt wrappers in a reference cycle, freed later at any point (a crash in a later test)
+    shown_while_running, live = [], []
+    on_reading = IntensityCalibrationDialog._on_reading
+    on_channel_done = IntensityCalibrationDialog._on_channel_done
+
+    def note_reading(self, channel, mw, level):
+        on_reading(self, channel, mw, level)
+        if self._running():
+            shown_while_running.append(self.label_reading.text())
+
+    def note_live_curve(self, name, result):  # its fitted plot then replaces the points drawn during the run
+        live.append(len(self.curve_live.getData()[0]))
+        on_channel_done(self, name, result)
+
+    monkeypatch.setattr(IntensityCalibrationDialog, "_on_reading", note_reading)
+    monkeypatch.setattr(IntensityCalibrationDialog, "_on_channel_done", note_live_curve)
     dialog = _dialog(qtbot, session)
-    shown_while_running = []
-    set_text = dialog.label_reading.setText
-
-    def note_text(text):
-        if dialog._running():
-            shown_while_running.append(text)
-        set_text(text)
-
-    dialog.label_reading.setText = note_text
-    live = []
-    show_plots = dialog._show_plots
-
-    def note_live_curve(row):  # the channel is done: its fitted plot replaces the points drawn during the run
-        live.append(len(dialog.curve_live.getData()[0]))
-        show_plots(row)
-
-    dialog._show_plots = note_live_curve
     _run_405_only(qtbot, dialog)
     assert isinstance(dialog.results["Fluorescence 405 nm Ex"], ChannelResult)
     assert len(shown_while_running) > 100 and all(text.endswith(" mW") for text in shown_while_running)
