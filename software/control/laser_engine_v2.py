@@ -204,6 +204,9 @@ class LaserEngineV2(QObject):
         self._holds: set = set()
         self.shutter_mode = self.options.shutter_mode  # the tab changes it
         self._shutter_opened_at: Optional[float] = None  # time.monotonic() of the open; None = closed
+        # Accepted opens, counted under _shutter_lock: a close decided on a snapshot taken before the latest open is
+        # obsolete (that open was decided on fresher facts), as a restart makes an older open obsolete (_shutter_gen).
+        self._shutter_opens = 0
         self._shutter_present = False  # the engine reports a mechanical shutter (STAT? shutter.present, read at open)
         # The tab's Open shutter (On use, nothing using the 560): until Close, a use of the 560 (it takes over), a mode
         # change or line 3 not READY; it never reopens by itself. Not a use: the idle-off still applies.
@@ -365,6 +368,7 @@ class LaserEngineV2(QObject):
         if self._lost or link is None:
             return None
         gen = self._shutter_gen  # before the snapshot: a restart or switch-off after this point makes it obsolete
+        opens = self._shutter_opens  # likewise: an open after this point makes a close decided on it obsolete
         try:
             raw = link.status()
         except EngineLinkError as e:
@@ -382,7 +386,7 @@ class LaserEngineV2(QObject):
                 time.monotonic()
             )  # open since a moment not known here: count its open time from now
         status = parse_status(raw, source=self._source_status, has_source=self._source is not None, timestamp_s=t)
-        self._after_poll(status, gen)  # the 560 source decisions (and the held-open shutter)
+        self._after_poll(status, gen, opens)  # the 560 source decisions (and the held-open shutter)
         self._bringup_step(status)  # the startup bring-up, one non-blocking step per poll
         self.status_updated.emit(status)
         return status
@@ -1048,7 +1052,7 @@ class LaserEngineV2(QObject):
                 self._log.exception("560 nm source shutdown")
         self._source = None
 
-    def _after_poll(self, status: EngineV2Status, gen: Optional[int] = None) -> None:
+    def _after_poll(self, status: EngineV2Status, gen: Optional[int] = None, opens: Optional[int] = None) -> None:
         """Poll thread: decide only. Queue source requests (never talk to the source here); short engine commands for the shutter.
         Retrying a disable that did not take is source_step's job (it keeps running after the engine link is lost);
         the shutter needs the engine link, so it is handled here. Sleep (LINE3:EN 0) and DISARM close the shutter in
@@ -1084,14 +1088,15 @@ class LaserEngineV2(QObject):
             return  # an obsolete fault / not-armed snapshot: the next poll decides on a fresh one
         elif l3 is not None and l3.state == LineState.READY and want_open:
             self._open_held_shutter(self._shutter_gen if gen is None else gen)
-        elif not want_open or l3 is None or l3.state != LineState.STARTING or source_starting:
-            # Open only at READY, and in On use only while line 3 is held or opened by hand: neither (On use), NEEDS KEY,
-            # the source off or starting (also by itself, between two polls), line 3 off or paused close it. The source
-            # stays wanted (the next use restarts it behind the closed shutter). A line-3 ramp with the source ready
-            # leaves the shutter as it is: every AOM LINE3:SET ramps. An open by hand ends here: it never reopens by
-            # itself.
-            self._manual_open = False
-            self._set_held_shutter(False, raw)
+        elif l3 is None or l3.state not in (LineState.READY, LineState.STARTING) or source_starting:
+            # Open only at READY: NEEDS KEY, the source off or starting (also by itself, between two polls), line 3 off
+            # or paused close it, in every mode, and end an open by hand (it never reopens by itself). The source stays
+            # wanted (the next use restarts it behind the closed shutter).
+            self._close_held_shutter(raw, opens, unwanted=False)
+        elif not want_open:
+            # READY, or a line-3 ramp with the source ready (every AOM LINE3:SET ramps), and in On use nothing holds line
+            # 3 or opened it by hand: closed. A ramp while it is wanted open leaves the shutter as it is.
+            self._close_held_shutter(raw, opens, unwanted=True)
 
     def _open_held_shutter(self, gen: int) -> None:
         """Line 3 read READY: open the shutter, but only on facts that are still true when the command goes out. The
@@ -1109,6 +1114,21 @@ class LaserEngineV2(QObject):
                 return
             self._set_held_shutter(True, self._latest_raw or {})
 
+    def _close_held_shutter(self, raw: dict, opens: Optional[int], unwanted: bool) -> None:
+        """Close the shutter, but only on facts that are still true when the command goes out (as _open_held_shutter):
+        a close decided on a snapshot older than the latest open is obsolete, and a close because nothing wanted the
+        shutter open is dropped when something wants it now. Either way a use that has opened it since must not have
+        its exposure darkened; the next poll decides again. A close because line 3 is not ready ends an open by hand."""
+        with self._shutter_lock:
+            if opens is not None and opens != self._shutter_opens:
+                return
+            if unwanted:
+                if self._shutter_wanted():
+                    return
+            else:
+                self._manual_open = False
+            self._set_held_shutter(False, raw)
+
     def _set_held_shutter(self, want_open: bool, raw: dict) -> None:
         """DF: the mechanical shutter - open while line 3 is READY and the mode wants it open (Always open, or On use
         with line 3 held), closed otherwise, so the beam is blocked whenever it is not in use or the source is not known
@@ -1122,9 +1142,9 @@ class LaserEngineV2(QObject):
         except (EngineCommandError, LaserEngineV2Error) as e:
             self._log.warning(f"shutter {'open' if want_open else 'close'} not done: {e}")
             return
-        self._shutter_opened_at = (
-            time.monotonic() if want_open else None
-        )  # once accepted: its open time counts from here
+        self._shutter_opened_at = time.monotonic() if want_open else None  # accepted: its open time counts from here
+        if want_open:
+            self._shutter_opens += 1
 
     def _on_lost(self) -> None:
         self._disable_source()

@@ -737,11 +737,11 @@ def _pause_a_poll_before_its_decisions(engine):
     captured, resume = threading.Event(), threading.Event()
     original = engine._after_poll
 
-    def held(status, gen=None):
+    def held(status, *args):
         if threading.current_thread().name == "held-poll":
             captured.set()
             assert resume.wait(2)
-        original(status, gen)
+        original(status, *args)
 
     engine._after_poll = held
     thread = threading.Thread(target=engine.poll_once, name="held-poll")
@@ -1199,3 +1199,60 @@ def test_an_open_by_hand_ends_when_the_560_drops_out_and_stays_closed_when_it_is
     for _ in range(5):
         engine.source_step()
     assert engine.poll_once().channels["L3"].state == LineState.READY and not fake.shut_open  # not reopened
+
+
+# ---- a close decided on an older snapshot never darkens a newer open (PR review) ---------------------------------------
+
+
+def _pause_after_deciding(engine, monkeypatch, thread_name):
+    """Hold the named thread's poll right after it has decided whether the shutter is wanted (before it acts on it)."""
+    captured, resume = threading.Event(), threading.Event()
+    original = engine._shutter_wanted
+
+    def paused():
+        wanted = original()
+        if threading.current_thread().name == thread_name:
+            captured.set()
+            assert resume.wait(5)
+        return wanted
+
+    monkeypatch.setattr(engine, "_shutter_wanted", paused)
+    return captured, resume
+
+
+def test_a_release_cannot_close_the_shutter_a_new_hold_is_imaging_behind(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    old = engine.use("old", L3)
+    captured, resume = _pause_after_deciding(engine, monkeypatch, "release")
+    thread = threading.Thread(target=old.release, name="release")
+    thread.start()
+    assert captured.wait(5)  # the release's poll has decided: nothing wants the shutter open
+    new = engine.use("new", L3)
+    assert new.wait_until_ready(1) and fake.shut_open  # the new user images now
+    resume.set()
+    thread.join(5)
+    assert not thread.is_alive() and fake.shut_open  # the old decision did not close it
+    new.release()
+    assert not fake.shut_open
+
+
+def test_a_not_ready_close_older_than_an_open_does_not_close_it(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.use("acquisition", L3)
+    assert fake.shut_open
+    source.enabled = False  # the 560 drops out while the shutter is open
+    engine.source_step()
+    captured, resume = _pause_after_deciding(engine, monkeypatch, "stale")
+    thread = threading.Thread(target=engine.poll_once, name="stale")
+    thread.start()
+    assert captured.wait(5)  # this poll read the 560 off with the shutter open: it will close the shutter
+    engine.wake_up("L3")  # meanwhile the 560 restarts behind a closed shutter ...
+    for _ in range(5):
+        engine.source_step()  # ... and reads READY: that step's poll opens the shutter again
+    time.sleep(engine.SHUTTER_OPEN_TIME_S)
+    assert engine.is_ready_to_image(["L3"]) and fake.shut_open  # the acquisition images now
+    resume.set()
+    thread.join(5)
+    assert not thread.is_alive() and fake.shut_open  # the older "starting" did not close it
