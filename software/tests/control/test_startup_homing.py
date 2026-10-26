@@ -815,6 +815,84 @@ def test_no_verdict_is_a_normal_startup(monkeypatch, caplog):
     assert "no startup verdict" in caplog.text and "normal startup" in caplog.text
 
 
+def _actuator_settings_received(sim):
+    """What configure_actuators sent the controller for X, Y and Z, decoded back to control._def's names and units."""
+    received = {}
+    for a in ("X", "Y", "Z"):
+        axis = getattr(AXIS, a)
+        pitch, driver, vel_acc, margin = (
+            sim.homing_validity.config[(code, axis)]
+            for code in (
+                CMD_SET.SET_LEAD_SCREW_PITCH,
+                CMD_SET.CONFIGURE_STEPPER_DRIVER,
+                CMD_SET.SET_MAX_VELOCITY_ACCELERATION,
+                CMD_SET.SET_HOME_SAFETY_MERGIN,
+            )
+        )
+        received.update(
+            {
+                f"SCREW_PITCH_{a}_MM": int.from_bytes(pitch[0:2], "big") / 1000,
+                f"MICROSTEPPING_DEFAULT_{a}": {0: 1, 255: 256}.get(driver[0], driver[0]),
+                f"{a}_MOTOR_RMS_CURRENT_mA": int.from_bytes(driver[1:3], "big"),
+                f"{a}_MOTOR_I_HOLD": driver[3] / 255,
+                f"MAX_VELOCITY_{a}_mm": int.from_bytes(vel_acc[0:2], "big") / 100,
+                f"MAX_ACCELERATION_{a}_mm": int.from_bytes(vel_acc[2:4], "big") / 10,
+                f"{a}_HOME_SAFETY_MARGIN_UM": int.from_bytes(margin[0:2], "big"),
+            }
+        )
+    return received
+
+
+def test_the_controller_holds_what_the_signature_describes(monkeypatch):
+    """configure_actuators sends every covered setting as control._def holds it when it runs, which is what the
+    signature reads: a setting changed in-process after import is both sent and signed, never one without the other.
+    A relaunch under the same settings is warm; under the old ones, a mismatch."""
+    old = {
+        name: getattr(control._def, name)
+        for a in ("X", "Y", "Z")
+        for name in (
+            f"SCREW_PITCH_{a}_MM",
+            f"MICROSTEPPING_DEFAULT_{a}",
+            f"{a}_MOTOR_RMS_CURRENT_mA",
+            f"{a}_MOTOR_I_HOLD",
+            f"MAX_VELOCITY_{a}_mm",
+            f"MAX_ACCELERATION_{a}_mm",
+            f"{a}_HOME_SAFETY_MARGIN_UM",
+        )
+    }
+    # Each new value differs from the old by more than the wire's rounding (at most 0.1 here)
+    new = {}
+    for name, value in old.items():
+        if name.startswith("MICROSTEPPING_DEFAULT_"):
+            new[name] = 32 if value != 32 else 64
+        elif name.endswith("_MOTOR_I_HOLD"):
+            new[name] = 0.5 if value != 0.5 else 0.25
+        elif name.startswith("SCREW_PITCH_"):
+            new[name] = value + 0.5
+        elif name.startswith("MAX_VELOCITY_"):
+            new[name] = value + 7
+        else:  # currents, accelerations, home margins
+            new[name] = value + 100
+    sim = FirmwareSimSerial(firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    for name, value in new.items():
+        monkeypatch.setattr(control._def, name, value)
+    micro = Microcontroller(serial_device=sim)
+    assert _actuator_settings_received(sim) == pytest.approx(new, abs=0.1)
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+    micro.home_xy(objective_lowered=True)
+    micro.wait_till_operation_is_completed()
+    micro.home_z()
+    micro.wait_till_operation_is_completed()
+    _reopen(micro, sim)
+
+    same = Microcontroller(serial_device=sim)
+    assert same.startup_was_warm
+    _reopen(same, sim)
+    for name, value in old.items():
+        monkeypatch.setattr(control._def, name, value)
+    assert Microcontroller(serial_device=sim).startup_verdict is StartupVerdict.SIGNATURE_MISMATCH
+
+
 def test_reverting_settings_never_restores(monkeypatch):
     sim = _homed()  # homed under settings A
     with monkeypatch.context() as m:

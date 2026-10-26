@@ -1609,33 +1609,54 @@ class Microcontroller:
         self.send_command(cmd)
 
     def configure_actuators(self):
+        """Send the X, Y and Z pitch, driver, velocity/acceleration and home margin settings, each waited for.
+
+        Every value is read through control._def when this runs, not from the `from control._def import *` binding
+        taken at import: config_signature() reads control._def at call time, and the signature stored after this
+        must describe exactly what the controller was sent.
+        """
         # lead screw pitch
-        self.set_leadscrew_pitch(AXIS.X, SCREW_PITCH_X_MM)
+        self.set_leadscrew_pitch(AXIS.X, control._def.SCREW_PITCH_X_MM)
         self.wait_till_operation_is_completed()
-        self.set_leadscrew_pitch(AXIS.Y, SCREW_PITCH_Y_MM)
+        self.set_leadscrew_pitch(AXIS.Y, control._def.SCREW_PITCH_Y_MM)
         self.wait_till_operation_is_completed()
-        self.set_leadscrew_pitch(AXIS.Z, SCREW_PITCH_Z_MM)
+        self.set_leadscrew_pitch(AXIS.Z, control._def.SCREW_PITCH_Z_MM)
         self.wait_till_operation_is_completed()
         # stepper driver (microstepping,rms current and I_hold)
-        self.configure_motor_driver(AXIS.X, MICROSTEPPING_DEFAULT_X, X_MOTOR_RMS_CURRENT_mA, X_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.X,
+            control._def.MICROSTEPPING_DEFAULT_X,
+            control._def.X_MOTOR_RMS_CURRENT_mA,
+            control._def.X_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.Y, MICROSTEPPING_DEFAULT_Y, Y_MOTOR_RMS_CURRENT_mA, Y_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.Y,
+            control._def.MICROSTEPPING_DEFAULT_Y,
+            control._def.Y_MOTOR_RMS_CURRENT_mA,
+            control._def.Y_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
-        self.configure_motor_driver(AXIS.Z, MICROSTEPPING_DEFAULT_Z, Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD)
+        self.configure_motor_driver(
+            AXIS.Z,
+            control._def.MICROSTEPPING_DEFAULT_Z,
+            control._def.Z_MOTOR_RMS_CURRENT_mA,
+            control._def.Z_MOTOR_I_HOLD,
+        )
         self.wait_till_operation_is_completed()
         # max velocity and acceleration
-        self.set_max_velocity_acceleration(AXIS.X, MAX_VELOCITY_X_mm, MAX_ACCELERATION_X_mm)
+        self.set_max_velocity_acceleration(AXIS.X, control._def.MAX_VELOCITY_X_mm, control._def.MAX_ACCELERATION_X_mm)
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.Y, MAX_VELOCITY_Y_mm, MAX_ACCELERATION_Y_mm)
+        self.set_max_velocity_acceleration(AXIS.Y, control._def.MAX_VELOCITY_Y_mm, control._def.MAX_ACCELERATION_Y_mm)
         self.wait_till_operation_is_completed()
-        self.set_max_velocity_acceleration(AXIS.Z, MAX_VELOCITY_Z_mm, MAX_ACCELERATION_Z_mm)
+        self.set_max_velocity_acceleration(AXIS.Z, control._def.MAX_VELOCITY_Z_mm, control._def.MAX_ACCELERATION_Z_mm)
         self.wait_till_operation_is_completed()
         # home safety margin
-        self.set_home_safety_margin(AXIS.X, int(X_HOME_SAFETY_MARGIN_UM))
+        self.set_home_safety_margin(AXIS.X, int(control._def.X_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
-        self.set_home_safety_margin(AXIS.Y, int(Y_HOME_SAFETY_MARGIN_UM))
+        self.set_home_safety_margin(AXIS.Y, int(control._def.Y_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
-        self.set_home_safety_margin(AXIS.Z, int(Z_HOME_SAFETY_MARGIN_UM))
+        self.set_home_safety_margin(AXIS.Z, int(control._def.Z_HOME_SAFETY_MARGIN_UM))
         self.wait_till_operation_is_completed()
 
     def configure_squidfilter(self, axis=AXIS.W):

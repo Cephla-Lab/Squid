@@ -822,7 +822,12 @@ class HighContentScreeningGui(QMainWindow):
                     "Squid was closed at the loading position: moving back there (lift lowered, Z retracted)."
                 )
                 squid.stage.utils.move_xy_to_loading_position(self.stage, is_wellplate=self.stageUtils.is_wellplate)
-        elif HOMING_ENABLED_X and HOMING_ENABLED_Y and self.microscope.startup_homing is StartupHoming.ALREADY_HOMED:
+        elif (
+            control._def.HOMING_ENABLED_X
+            and control._def.HOMING_ENABLED_Y
+            and self.microscope.startup_homing is StartupHoming.ALREADY_HOMED
+        ):
+            # (The flags read through control._def, as the startup decision, required_homed_axes_mask, reads them.)
             # The controller vouched that the stage never lost its homing: X/Y stay where the stage stands (after a
             # crash the cached X/Y is stale anyway). Z comes back as after a homed startup: a clean close retracted it.
             self.log.info("Stage still homed: X/Y stay where they are, Z is restored")

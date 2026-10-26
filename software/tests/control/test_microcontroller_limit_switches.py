@@ -6,6 +6,7 @@ import threading
 
 import pytest
 
+import control._def
 import control.microcontroller
 from control._def import AXIS, CMD_EXECUTION_STATUS, CMD_SET, LIMIT_SWITCH_CONFIG_MIN_FIRMWARE, LIMIT_SWITCHES
 from control.firmware_sim_serial import FirmwareSimSerial
@@ -128,7 +129,7 @@ def test_incompatible_config_refuses_before_any_command(version, reset_and_initi
 
 
 def test_incompatible_config_takes_precedence_over_an_unsupported_current(monkeypatch):
-    monkeypatch.setattr(control.microcontroller, "Z_MOTOR_RMS_CURRENT_mA", 1000)
+    monkeypatch.setattr(control._def, "Z_MOTOR_RMS_CURRENT_mA", 1000)  # configure_actuators reads it there
 
     # The modelled old firmware does refuse that current: with default limit switches, startup ends there.
     sim = _sim("old")

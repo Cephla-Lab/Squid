@@ -282,8 +282,8 @@ def _set_z_flags(monkeypatch, *, homing_z, pi_focus):
     for module in (control._def, control.gui_hcs):
         monkeypatch.setattr(module, "HOMING_ENABLED_Z", homing_z)
         monkeypatch.setattr(module, "USE_PI_FOCUS_STAGE", pi_focus)
-    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_X", True)
-    monkeypatch.setattr(control.gui_hcs, "HOMING_ENABLED_Y", True)
+        monkeypatch.setattr(module, "HOMING_ENABLED_X", True)
+        monkeypatch.setattr(module, "HOMING_ENABLED_Y", True)
     if pi_focus:
         monkeypatch.setattr(control._def, "SIMULATE_PI_FOCUS_STAGE", True)
 
