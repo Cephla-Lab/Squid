@@ -14,11 +14,16 @@ import re
 import struct
 import threading
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from crc import CrcCalculator, Crc8
 
-from control._def import FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE, LIMIT_SWITCH_CONFIG_MIN_FIRMWARE, LIMIT_SWITCH_DEFAULT_CONFIG
+from control._def import (
+    FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE,
+    LIMIT_SWITCH_CONFIG_MIN_FIRMWARE,
+    LIMIT_SWITCH_DEFAULT_CONFIG,
+    STARTUP_STATE_MIN_FIRMWARE,
+)
 from control.microcontroller import AbstractCephlaMicroSerial
 
 
@@ -100,6 +105,8 @@ class FirmwareConstants:
             "SET_LIMIT_SWITCH_CONFIG",
             "SET_FOCUS_WHEEL_MODE",
             "SET_PANEL_LOCK",
+            "STORE_CONFIG_SIGNATURE",
+            "QUERY_STARTUP_STATE",
             "CONFIGURE_STEPPER_DRIVER",
             "SET_MAX_VELOCITY_ACCELERATION",
             "SET_LEAD_SCREW_PITCH",
@@ -125,6 +132,85 @@ class FirmwareConstants:
             "TURN_OFF_ALL_PORTS",
         ]
         return {name: self._constants[name] for name in command_names if name in self._constants}
+
+
+class HomingValidity:
+    """Python twin of the firmware's homing validity state (firmware 1.9, utils/homing_validity.{h,cpp}): per-axis
+    homed, armed and driver-enabled flags, one configuration signature and the covered settings' bytes as last
+    received. Each method mirrors the hv_* function of the same name. Axes are protocol numbers 0..2 (X, Y, Z)."""
+
+    AXES = (0, 1, 2)
+
+    def __init__(self, fw: FirmwareConstants):  # hv_power_up
+        self._fw = fw
+        self.homed = [False] * 3
+        self.armed = [False] * 3  # a home started with power good and the driver enabled
+        self.driver_enabled = [True] * 3
+        self.signature: Optional[Tuple[int, int]] = None  # (signature, format) while one is stored
+        self.config: Dict[Tuple[int, int], bytes] = {}  # (covered command code, axis) -> bytes [3..6] last received
+
+    def _clear_all_axes(self) -> None:
+        for axis in self.AXES:
+            self.invalidate_axis(axis)
+
+    def home_start(self, axis: int, power_good: bool) -> None:
+        self.homed[axis] = False
+        self.armed[axis] = power_good and self.driver_enabled[axis]
+
+    def home_complete(self, axis: int, power_good: bool) -> None:
+        self.homed[axis] = self.armed[axis] and power_good and self.driver_enabled[axis]
+        self.armed[axis] = False
+
+    def invalidate_axis(self, axis: int) -> None:
+        self.homed[axis] = False
+        self.armed[axis] = False
+
+    def driver_enable(self, axis: int, enabled: bool) -> None:
+        self.driver_enabled[axis] = enabled
+        if not enabled:
+            self.invalidate_axis(axis)
+
+    def power_good(self, power_good: bool) -> None:
+        if not power_good:
+            self._clear_all_axes()
+
+    def initialize(self) -> None:
+        self._clear_all_axes()
+        self.signature = None
+        self.driver_enabled = [True] * 3
+
+    def store_signature(self, signature: int, signature_format: int) -> None:
+        # An emptied signature counts as different: old flags are never vouched for under a changed configuration
+        if self.signature != (signature, signature_format):
+            self._clear_all_axes()
+        self.signature = (signature, signature_format)
+
+    def config_received(self, code: int, axis: int, data: bytes) -> None:
+        if self.config.get((code, axis)) != data:  # changed, or the first time this axis's setting is seen
+            self.signature = None
+        self.config[(code, axis)] = data
+
+    def verdict(
+        self,
+        signature: int,
+        signature_format: int,
+        required_mask: int,
+        at_rest_mask: int,
+        power_good: bool,
+        tmc_config_ok: bool,
+    ) -> int:
+        """hv_verdict: the first failing check wins. Returns the firmware's STARTUP_VERDICT_* value."""
+        if self.signature is None:
+            return self._fw.STARTUP_VERDICT_NO_SIGNATURE
+        if self.signature != (signature, signature_format):
+            return self._fw.STARTUP_VERDICT_SIGNATURE_MISMATCH
+        if not (power_good and tmc_config_ok and all(self.driver_enabled)):
+            return self._fw.STARTUP_VERDICT_UNHEALTHY
+        if at_rest_mask != 0b111:
+            return self._fw.STARTUP_VERDICT_MOVING
+        if any(required_mask & (1 << axis) and not self.homed[axis] for axis in self.AXES):
+            return self._fw.STARTUP_VERDICT_NOT_HOMED
+        return self._fw.STARTUP_VERDICT_WARM
 
 
 class FirmwareSimSerial(AbstractCephlaMicroSerial):
@@ -193,11 +279,32 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         self.focus_wheel_count = 0
         self.panel_locked = False  # SET_PANEL_LOCK: the control panel moves nothing
 
+        # Test hooks. command_log: every command code received, in order. in_progress: every packet says IN_PROGRESS,
+        # as the firmware's mcu_cmd_execution_in_progress does while a command (a previous session's, say) runs;
+        # RESET clears it. moving_axes: protocol axes whose ramp has not stopped; INITIALIZE stops them, RESET does
+        # not. tmc_config_ok: False when a stage TMC4361A lost its configuration. Power good: set_power_good().
+        self.command_log: List[int] = []
+        self.in_progress = False
+        self.moving_axes: Set[int] = set()
+        self.tmc_config_ok = True
+        self._power_good = True
+        # Startup state (firmware >= STARTUP_STATE_MIN_FIRMWARE). Kept on older firmware too, where nothing can read
+        # it: STORE_CONFIG_SIGNATURE and QUERY_STARTUP_STATE are no-ops there.
+        self.homing_validity = HomingValidity(self.fw)
+        self._startup_verdict_pending = False  # the status byte carries the verdict until the next command
+        self._startup_verdict = 0
+
         # Validation tracking
         # Note: validation_errors accumulates across commands for debugging.
         # Call clear_validation_errors() to reset between test runs if needed.
         self.commands_validated = 0
         self.validation_errors = []
+
+    def set_power_good(self, power_good: bool) -> None:
+        """The stage power supply's power-good line. Low clears every homed flag (and the query reports UNHEALTHY
+        until it is high again); the flags stay cleared after it comes back."""
+        self._power_good = power_good
+        self.homing_validity.power_good(power_good)
 
     def clear_validation_errors(self) -> None:
         """Clear accumulated validation errors. Call between test runs if needed."""
@@ -382,6 +489,10 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         cmd_id = cmd[0]
         cmd_code = cmd[1]
         status = self.fw.get("COMPLETED_WITHOUT_ERRORS", 0)
+        self.command_log.append(cmd_code)
+        # A verdict answers only the command that asked for it (the firmware clears it before every dispatch)
+        self._startup_verdict_pending = False
+        startup_state = self.firmware_version >= STARTUP_STATE_MIN_FIRMWARE
 
         # Extract 4-byte position from bytes 2-5
         def get_position() -> int:
@@ -411,38 +522,27 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
         elif cmd_code == self.fw.get("MOVETO_W2"):
             self.w2 = get_position()
         elif cmd_code == self.fw.get("HOME_OR_ZERO"):
-            axis = cmd[2]
-            # home_type at cmd[3] indicates HOME_NEGATIVE, HOME_POSITIVE, or ZERO
-            # In simulation, all variants simply zero the position
-            # Zero or home sets position to 0
-            if axis == self.fw.get("AXIS_X", 0):
-                self.x = 0
-            elif axis == self.fw.get("AXIS_Y", 1):
-                self.y = 0
-            elif axis == self.fw.get("AXIS_Z", 2):
-                self.z = 0
-            elif axis == self.fw.get("AXIS_THETA", 3):
-                self.theta = 0
-            elif axis == self.fw.get("AXES_XY", 4):
-                self.x = 0
-                self.y = 0
-            elif axis == self.fw.get("AXIS_W", 5):
-                self.w = 0
-            elif axis == self.fw.get("AXIS_W2", 6):
-                self.w2 = 0
+            self._home_or_zero(cmd[2], cmd[3])
         elif cmd_code == self.fw.get("RESET"):
-            # Reset clears positions
-            self.x = 0
-            self.y = 0
-            self.z = 0
-            self.theta = 0
-            self.w = 0
-            self.w2 = 0
+            # callback_reset ends any command in progress but writes no XACTUAL and stops no ramp: positions, moving
+            # axes and the startup state survive it
+            self.in_progress = False
             self._enter_focus_wheel_mode(self.focus_wheel_power_up_mode)
             self.panel_locked = False
         elif cmd_code == self.fw.get("INITIALIZE"):
+            # The TMC4361A soft reset of each stage axis puts XACTUAL back to 0 and stops its ramp
+            self.homing_validity.initialize()
+            self.x = 0
+            self.y = 0
+            self.z = 0
+            self.moving_axes.clear()
             self._enter_focus_wheel_mode(self.focus_wheel_power_up_mode)
             self.panel_locked = False
+        elif cmd_code == self.fw.get("SET_AXIS_DISABLE_ENABLE"):
+            if cmd[2] in self._stage_axes:
+                self.homing_validity.driver_enable(cmd[2], cmd[3] != 0)
+        elif cmd_code in self._covered_settings:
+            self._config_received(cmd)
         elif cmd_code == self.fw.get("SET_PANEL_LOCK"):
             if self.firmware_version >= FOCUS_WHEEL_TO_HOST_MIN_FIRMWARE:  # older firmware: no handler, a no-op
                 if cmd[2] > 1:
@@ -453,13 +553,97 @@ class FirmwareSimSerial(AbstractCephlaMicroSerial):
             if not self._set_focus_wheel_mode(cmd[2], cmd[3]):
                 status = self.fw.get("CMD_EXECUTION_ERROR", 4)
         elif cmd_code == self.fw.get("SET_LIMIT_SWITCH_CONFIG"):
-            if not self._set_limit_switch_config(cmd[2], cmd[3]):
+            if self._set_limit_switch_config(cmd[2], cmd[3]):
+                self._config_received(cmd)  # covered once applied
+            else:
                 status = self.fw.get("CMD_EXECUTION_ERROR", 4)
+        elif cmd_code == self.fw.get("STORE_CONFIG_SIGNATURE"):
+            if startup_state:  # older firmware: no handler, a no-op
+                self.homing_validity.store_signature(int.from_bytes(bytes(cmd[2:6]), "big"), cmd[6] >> 4)
+        elif cmd_code == self.fw.get("QUERY_STARTUP_STATE"):
+            if startup_state:  # older firmware: no handler, a no-op
+                self._query_startup_state(cmd)
 
         # Build and queue response
-        response = self._build_response(cmd_id, status)
+        response = self._build_response(cmd_id, self._packet_status(status))
         self.response_buffer.extend(response)
         self._update_internal_state()
+
+    @property
+    def _stage_axes(self) -> Tuple[int, int, int]:
+        """Protocol X, Y and Z: the axes the startup state covers."""
+        return (self.fw.get("AXIS_X", 0), self.fw.get("AXIS_Y", 1), self.fw.get("AXIS_Z", 2))
+
+    @property
+    def _covered_settings(self) -> Tuple[int, ...]:
+        """The settings whose X/Y/Z bytes [3..6] the startup state compares (SET_LIMIT_SWITCH_CONFIG only once
+        applied, so it is handled with its own command)."""
+        return tuple(
+            self.fw.get(name)
+            for name in (
+                "SET_LEAD_SCREW_PITCH",
+                "CONFIGURE_STEPPER_DRIVER",
+                "SET_MAX_VELOCITY_ACCELERATION",
+                "SET_HOME_SAFETY_MERGIN",
+            )
+        )
+
+    def _config_received(self, cmd: bytearray) -> None:
+        """hv_config_received for an X/Y/Z covered setting: a changed or first-seen value empties the signature.
+        The filter wheels are not covered."""
+        if cmd[2] in self._stage_axes:
+            self.homing_validity.config_received(cmd[1], cmd[2], bytes(cmd[3:7]))
+
+    def _home_or_zero(self, axis: int, kind: int) -> None:
+        """HOME_OR_ZERO. A home completes at once; a zero (kind HOME_OR_ZERO_ZERO) re-origins the axis where it
+        stands. Either way the position becomes 0. An X/Y/Z home counts as homed only if power was good and the
+        driver enabled at its start and end; a zero leaves the axis not homed."""
+        positions = {
+            self.fw.get("AXIS_X", 0): ("x",),
+            self.fw.get("AXIS_Y", 1): ("y",),
+            self.fw.get("AXIS_Z", 2): ("z",),
+            self.fw.get("AXIS_THETA", 3): ("theta",),
+            self.fw.get("AXES_XY", 4): ("x", "y"),
+            self.fw.get("AXIS_W", 5): ("w",),
+            self.fw.get("AXIS_W2", 6): ("w2",),
+        }.get(axis, ())
+        for name in positions:
+            setattr(self, name, 0)
+        stage_axes = [a for a, name in zip(self._stage_axes, ("x", "y", "z")) if name in positions]
+        if kind == self.fw.get("HOME_OR_ZERO_ZERO", 2):
+            for a in stage_axes:
+                self.homing_validity.invalidate_axis(a)
+            return
+        for a in stage_axes:
+            self.homing_validity.home_start(a, self._power_good)
+        for a in stage_axes:
+            self.homing_validity.home_complete(a, self._power_good)
+
+    def _query_startup_state(self, cmd: bytearray) -> None:
+        """callback_query_startup_state: [2..5] signature, [6] (format << 4) | required axes mask. Reads, never
+        stores; the verdict goes out in the status byte until the next command."""
+        at_rest_mask = 0
+        for a in self._stage_axes:
+            if a not in self.moving_axes:
+                at_rest_mask |= 1 << a
+        self._startup_verdict = self.homing_validity.verdict(
+            int.from_bytes(bytes(cmd[2:6]), "big"),
+            cmd[6] >> 4,
+            cmd[6] & 0x0F,
+            at_rest_mask,
+            self._power_good,
+            self.tmc_config_ok,
+        )
+        self._startup_verdict_pending = True
+
+    def _packet_status(self, execution_status: int) -> int:
+        """hv_packet_status: a pending startup verdict, else IN_PROGRESS while in progress, else the command's
+        status. (The firmware's checksum error comes first; this sim raises on a bad checksum instead.)"""
+        if self._startup_verdict_pending:
+            return self.fw.STARTUP_VERDICT_STATUS_BASE + self._startup_verdict
+        if self.in_progress:
+            return self.fw.get("IN_PROGRESS", 1)
+        return execution_status
 
     def _set_focus_wheel_mode(self, mode: int, flags: int = 0) -> bool:
         """SET_FOCUS_WHEEL_MODE. Older firmware has no handler (callback_default: success, nothing happens); newer

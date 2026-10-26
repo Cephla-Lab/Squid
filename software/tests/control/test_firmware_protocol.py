@@ -28,6 +28,8 @@ from control._def import (
     BIT_POS_Z_LIMIT_RIGHT,
     CMD_EXECUTION_STATUS,
     ILLUMINATION_CODE,
+    STARTUP_VERDICT_STATUS_BASE,
+    StartupVerdict,
 )
 
 
@@ -139,6 +141,8 @@ class TestProtocolConsistency:
             "SET_ENCODER_REPORTING": CMD_SET.SET_ENCODER_REPORTING,
             "SET_RAMP_PROFILE": CMD_SET.SET_RAMP_PROFILE,
             "SET_COMPLETION_WINDOW": CMD_SET.SET_COMPLETION_WINDOW,
+            "STORE_CONFIG_SIGNATURE": CMD_SET.STORE_CONFIG_SIGNATURE,
+            "QUERY_STARTUP_STATE": CMD_SET.QUERY_STARTUP_STATE,
             "INITIALIZE": CMD_SET.INITIALIZE,
             "RESET": CMD_SET.RESET,
         }
@@ -207,6 +211,20 @@ class TestProtocolConsistency:
                 mismatches.append(f"{fw_name}: not found in firmware")
 
         assert len(mismatches) == 0, f"Execution status mismatches:\n" + "\n".join(mismatches)
+
+    def test_startup_verdict_values_match(self, firmware_constants):
+        """Verify the startup verdict reply (firmware 1.9: status byte = base + verdict) matches."""
+        assert firmware_constants.get("STARTUP_VERDICT_STATUS_BASE") == STARTUP_VERDICT_STATUS_BASE
+        firmware_verdicts = {
+            name[len("STARTUP_VERDICT_") :]: value
+            for name, value in firmware_constants.items()
+            if name.startswith("STARTUP_VERDICT_") and name != "STARTUP_VERDICT_STATUS_BASE"
+        }
+        assert firmware_verdicts == {verdict.name: verdict.value for verdict in StartupVerdict}
+        # The verdict statuses collide with no execution status
+        assert not {STARTUP_VERDICT_STATUS_BASE + v for v in StartupVerdict} & {
+            value for name, value in vars(CMD_EXECUTION_STATUS).items() if name.isupper()
+        }
 
     def test_limit_codes_match(self, firmware_constants):
         """Verify limit switch codes match."""

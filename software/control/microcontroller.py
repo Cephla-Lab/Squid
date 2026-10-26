@@ -28,6 +28,11 @@ _log = squid.logging.get_logger("microcontroller")
 
 # Mapping of execution status bytes to human-readable names for logging
 _CMD_EXECUTION_STATUS_NAMES = {value: name for name, value in vars(CMD_EXECUTION_STATUS).items() if name.isupper()}
+# Status byte values of a startup verdict reply (firmware >= STARTUP_STATE_MIN_FIRMWARE): base + StartupVerdict
+_STARTUP_VERDICT_STATUSES = range(STARTUP_VERDICT_STATUS_BASE, STARTUP_VERDICT_STATUS_BASE + len(StartupVerdict))
+_CMD_EXECUTION_STATUS_NAMES.update(
+    {STARTUP_VERDICT_STATUS_BASE + v: f"STARTUP_VERDICT_{v.name}" for v in StartupVerdict}
+)
 
 # Mapping of command type bytes to human-readable names for logging
 _CMD_NAMES = {
@@ -53,6 +58,8 @@ _CMD_NAMES = {
     CMD_SET.MOVETO_W: "MOVETO_W",
     CMD_SET.MOVETO_W2: "MOVETO_W2",
     CMD_SET.SET_LIMIT_SWITCH_CONFIG: "SET_LIMIT_SWITCH_CONFIG",
+    CMD_SET.STORE_CONFIG_SIGNATURE: "STORE_CONFIG_SIGNATURE",
+    CMD_SET.QUERY_STARTUP_STATE: "QUERY_STARTUP_STATE",
     CMD_SET.CONFIGURE_STEPPER_DRIVER: "CONFIGURE_STEPPER_DRIVER",
     CMD_SET.SET_MAX_VELOCITY_ACCELERATION: "SET_MAX_VELOCITY_ACCELERATION",
     CMD_SET.SET_LEAD_SCREW_PITCH: "SET_LEAD_SCREW_PITCH",
@@ -730,6 +737,9 @@ class Microcontroller:
         self._last_packet_status = None
         self._last_packet_cmd_id = None
         self._packet_seq_at_last_send = 0
+        # (command id, StartupVerdict value) of the newest packet whose status byte was a startup verdict reply
+        # (firmware >= STARTUP_STATE_MIN_FIRMWARE), under _received_packet_cv; for query_startup_state().
+        self._startup_verdict_packet = None
         self.thread_read_received_packet = threading.Thread(target=self.read_received_packet, daemon=True)
         self.thread_read_received_packet.start()
 
@@ -1791,6 +1801,11 @@ class Microcontroller:
                     self._packet_seq += 1
                     self._last_packet_status = msg[1]
                     self._last_packet_cmd_id = msg[0]
+                    # A startup verdict reply (QUERY_STARTUP_STATE). Not an execution status: none of the branches
+                    # below match it, so it neither completes, fails nor resends the command, and it is never idle
+                    # evidence (reported_idle_since_last_command).
+                    if msg[1] in _STARTUP_VERDICT_STATUSES:
+                        self._startup_verdict_packet = (msg[0], msg[1] - STARTUP_VERDICT_STATUS_BASE)
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
                 ):
@@ -1951,6 +1966,73 @@ class Microcontroller:
     def supports_limit_switch_config(self) -> bool:
         """True if the firmware has SET_LIMIT_SWITCH_CONFIG."""
         return tuple(self.firmware_version) >= LIMIT_SWITCH_CONFIG_MIN_FIRMWARE
+
+    def supports_startup_state(self) -> bool:
+        """True if the firmware has STORE_CONFIG_SIGNATURE and QUERY_STARTUP_STATE."""
+        return tuple(self.firmware_version) >= STARTUP_STATE_MIN_FIRMWARE
+
+    def _startup_state_command(
+        self, command_code: int, signature: int, signature_format: int, required_axes_mask: int
+    ) -> bytearray:
+        """STORE_CONFIG_SIGNATURE or QUERY_STARTUP_STATE: [2..5] the signature (big-endian), [6] (format << 4) |
+        mask. Older firmware would answer either with a success that does nothing, so refuse it here."""
+        if not self.supports_startup_state():
+            raise RuntimeError(
+                f"Firmware {self.firmware_version[0]}.{self.firmware_version[1]} cannot store or report the startup "
+                f"state (needs {STARTUP_STATE_MIN_FIRMWARE[0]}.{STARTUP_STATE_MIN_FIRMWARE[1]})."
+            )
+        if not 0 <= signature <= 0xFFFFFFFF:
+            raise ValueError(f"Configuration signature {signature} does not fit in 32 bits.")
+        if not 0 <= signature_format <= 0x0F:
+            raise ValueError(f"Signature format {signature_format} does not fit in a nibble.")
+        if not 0 <= required_axes_mask <= 0b111:
+            raise ValueError(f"Required axes mask {required_axes_mask:#b} has bits beyond X, Y and Z.")
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = command_code
+        cmd[2:6] = signature.to_bytes(4, "big")
+        cmd[6] = (signature_format << 4) | required_axes_mask
+        return cmd
+
+    def store_config_signature(self, signature: int, signature_format: int) -> None:
+        """Store the signature of the configuration just sent (STORE_CONFIG_SIGNATURE) and wait for completion.
+
+        A different signature or format than the one stored, or none stored (after power-up, INITIALIZE or a changed
+        covered setting), clears every homed flag in the controller.
+        """
+        self.send_command(self._startup_state_command(CMD_SET.STORE_CONFIG_SIGNATURE, signature, signature_format, 0))
+        self.wait_till_operation_is_completed()
+
+    def query_startup_state(
+        self, signature: int, signature_format: int, required_axes_mask: int, timeout_s: float = 2
+    ) -> StartupVerdict:
+        """Ask the controller whether the stage is still homed under this configuration (QUERY_STARTUP_STATE).
+
+        Returns the verdict from the first packet echoing this query's command id with a verdict status
+        (STARTUP_VERDICT_STATUS_BASE + verdict), whatever the controller is busy with: the firmware sends the verdict
+        in place of IN_PROGRESS, so a controller still running a crashed session's move answers too (as in
+        _detect_firmware_version). It does not wait for completion: a verdict status is not one, so the host's
+        in-progress flag stays as the packet left it, and RESET is the next command on either path. The earlier
+        reply is cleared before the send, so a stale tuple can never match this query's id.
+
+        The query must not be interleaved with other senders: any command the controller receives after it (HEARTBEAT
+        included) ends the verdict reply. The heartbeat starts only after the constructor's query.
+
+        Raises RuntimeError if no verdict arrives within timeout_s.
+        """
+        cmd = self._startup_state_command(CMD_SET.QUERY_STARTUP_STATE, signature, signature_format, required_axes_mask)
+        with self._received_packet_cv:
+            self._startup_verdict_packet = None
+        self.send_command(cmd)
+        cmd_id = cmd[0]  # as sent: another sender (the read loop's joystick ack) may have taken a newer id since
+        with self._received_packet_cv:
+            if not self._received_packet_cv.wait_for(
+                lambda: self._startup_verdict_packet is not None and self._startup_verdict_packet[0] == cmd_id,
+                timeout=timeout_s,
+            ):
+                raise RuntimeError(f"controller sent no startup verdict within {timeout_s} [s]. {self._mcu_state()}")
+            verdict = StartupVerdict(self._startup_verdict_packet[1])
+        self.log.debug(f"Startup verdict: {verdict.name}")
+        return verdict
 
     def check_limit_switch_compatibility(self) -> None:
         """Raise LimitSwitchConfigError if [LIMIT_SWITCHES] is invalid, or not the default and the firmware cannot

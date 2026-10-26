@@ -11,6 +11,9 @@ import squid.config
 import squid.stage.cephla
 import squid.stage.prior
 import tests.squid.test_stage
+from control._def import AXIS, CMD_SET, STARTUP_STATE_MIN_FIRMWARE, STARTUP_VERDICT_STATUS_BASE, StartupVerdict
+from control.firmware_sim_serial import FirmwareSimSerial
+from control.microcontroller import Microcontroller
 from control.startup_homing import (
     ObjectiveNotLoweredError,
     StageHomingInProgressError,
@@ -455,3 +458,101 @@ def test_home_stage_confirmation_with_a_stepper_z(monkeypatch):
     assert home_stage_confirmation_text(has_z_lift=False) == (
         "X, Y and Z move to their limit switches. The stage will not return to where it is now."
     )
+
+
+# Startup state protocol (firmware 1.9): STORE_CONFIG_SIGNATURE / QUERY_STARTUP_STATE, verdict in the status byte.
+
+
+@pytest.fixture
+def new_firmware_micro():
+    sim = FirmwareSimSerial(strict=True, firmware_version=STARTUP_STATE_MIN_FIRMWARE)
+    micro = Microcontroller(sim, reset_and_initialize=False)
+    yield micro, sim
+    micro.close()
+
+
+def test_startup_state_needs_its_firmware():
+    sim = FirmwareSimSerial(strict=True, firmware_version=(1, 8))
+    micro = Microcontroller(sim, reset_and_initialize=False)
+    try:
+        assert not micro.supports_startup_state()
+        sim.command_log.clear()
+        with pytest.raises(RuntimeError, match="1.8"):
+            micro.store_config_signature(0x12345678, 1)
+        with pytest.raises(RuntimeError, match="1.8"):
+            micro.query_startup_state(0x12345678, 1, 0b011)
+        assert sim.command_log == []
+    finally:
+        micro.close()
+
+
+@pytest.mark.parametrize(
+    "signature, signature_format, mask",
+    [(-1, 1, 0), (1 << 32, 1, 0), (0, -1, 0), (0, 16, 0), (0, 1, -1), (0, 1, 0b1000)],
+)
+def test_startup_state_arguments_must_fit_the_wire(new_firmware_micro, signature, signature_format, mask):
+    micro, sim = new_firmware_micro
+    sim.command_log.clear()
+    with pytest.raises(ValueError):
+        micro.query_startup_state(signature, signature_format, mask)
+    if mask == 0:
+        with pytest.raises(ValueError):
+            micro.store_config_signature(signature, signature_format)
+    assert sim.command_log == []
+
+
+def test_store_home_query_is_warm(new_firmware_micro):
+    micro, sim = new_firmware_micro
+    assert micro.supports_startup_state()
+    micro.store_config_signature(0x12345678, 1)
+    assert sim.command_log[-1] == CMD_SET.STORE_CONFIG_SIGNATURE and not micro.is_busy()  # waited for completion
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NOT_HOMED
+    micro.home_xy()
+    micro.wait_till_operation_is_completed()
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.WARM
+    assert micro.query_startup_state(0x12345679, 1, 0b011) is StartupVerdict.SIGNATURE_MISMATCH
+    assert micro.query_startup_state(0x12345678, 2, 0b011) is StartupVerdict.SIGNATURE_MISMATCH
+    assert micro.query_startup_state(0x12345678, 1, 0b111) is StartupVerdict.NOT_HOMED
+
+
+def test_query_never_takes_an_earlier_verdict():
+    micro = Microcontroller(FirmwareSimSerial(firmware_version=(1, 8)), reset_and_initialize=False)
+    try:
+        micro.firmware_version = STARTUP_STATE_MIN_FIRMWARE  # host believes it; the sim sends no verdict
+        micro._startup_verdict_packet = (
+            (micro._cmd_id + 1) % 256,
+            int(StartupVerdict.WARM),
+        )  # stale; same id as the next send
+        with pytest.raises(RuntimeError, match="no startup verdict"):
+            micro.query_startup_state(0x12345678, 1, 0b011)
+    finally:
+        micro.close()
+
+
+def test_host_query_returns_during_genuine_in_progress(new_firmware_micro):
+    micro, sim = new_firmware_micro  # constructed first: its tail legitimately waits for completion
+    sim.in_progress = True
+    sim.moving_axes.add(AXIS.X)
+    t0 = time.time()
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NO_SIGNATURE
+    assert time.time() - t0 < 1.0 and micro.is_busy()  # answered without waiting for completion
+
+
+@pytest.mark.parametrize("verdict", list(StartupVerdict))
+def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_firmware_micro, verdict):
+    micro, sim = new_firmware_micro
+    micro.LAST_COMMAND_ACK_TIMEOUT = 0.01  # the ack-timeout resend would fire on the next packet
+    assert micro.query_startup_state(0x12345678, 1, 0b011) is StartupVerdict.NO_SIGNATURE
+    sent = list(sim.command_log)
+    time.sleep(0.05)
+    for _ in range(3):  # the firmware repeats the verdict in every packet until the next command
+        parsed = threading.Event()
+        micro.set_callback(lambda m: parsed.set())
+        with sim._update_lock:
+            sim.response_buffer.extend(sim._build_response(micro._cmd_id, STARTUP_VERDICT_STATUS_BASE + verdict))
+            sim._update_internal_state()
+        assert parsed.wait(2)
+        assert micro._startup_verdict_packet == (micro._cmd_id, verdict)
+        assert micro.is_busy() and micro.last_command_aborted_error is None
+        assert not micro.reported_idle_since_last_command()
+    assert sim.command_log == sent  # nothing resent
