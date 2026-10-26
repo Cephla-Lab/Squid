@@ -101,6 +101,22 @@ def test_run_and_save_in_simulation(qtbot, session, repo, answers):
     )
 
 
+def test_the_run_shows_its_own_readings(qtbot, session, answers):
+    dialog = _dialog(qtbot, session)
+    shown_while_running = []
+    set_text = dialog.label_reading.setText
+
+    def note_text(text):
+        if dialog._running():
+            shown_while_running.append(text)
+        set_text(text)
+
+    dialog.label_reading.setText = note_text
+    _run_405_only(qtbot, dialog)
+    assert isinstance(dialog.results["Fluorescence 405 nm Ex"], ChannelResult)
+    assert len(shown_while_running) > 100 and all(text.endswith(" mW") for text in shown_while_running)
+
+
 def test_failed_verification_asks_before_saving(qtbot, session, answers):
     dialog = _dialog(qtbot, session)
     _run_405_only(qtbot, dialog)

@@ -76,6 +76,8 @@ TEST_BEAM_MAX_S = 60.0
 TEST_BEAM_DARK_MW = 0.01
 
 Progress = Callable[[str, int, int], None]
+# Every meter reading of a run as it is taken: (channel, mW, the DAC % the light is on at, or None while it is off)
+Reading = Callable[[str, float, Optional[float]], None]
 
 
 class CalibrationCancelled(Exception):
@@ -229,9 +231,10 @@ class MicrocontrollerDacOutput:
 class _Measurer:
     """Takes readings with the light pulsed on at a raw DAC level: waits, reads until two readings agree, feeds the
     watchdog before every read, checks its deadline around every read, and enforces the sensor limit on every
-    reading."""
+    reading. Every reading goes to on_reading(mW, level) as it is taken, with the level the light is on at (None
+    while it is off)."""
 
-    def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive, deadline):
+    def __init__(self, output, meter, sensor_limit_mw, settle_s, sleep, clock, keepalive, deadline, on_reading):
         self.output = output
         self.meter = meter
         self.sensor_limit_mw = sensor_limit_mw
@@ -240,6 +243,8 @@ class _Measurer:
         self.clock = clock
         self.keepalive = keepalive
         self.deadline = deadline
+        self.on_reading = on_reading
+        self.level: Optional[float] = None  # the level the light is on at, None while it is off
         self.sigma_dark = 0.0
         self.on_times: List[float] = []
 
@@ -254,6 +259,7 @@ class _Measurer:
         self._feed()
         reading = self.meter.read_mw()
         self.deadline.check()
+        self.on_reading(reading, self.level)
         return reading
 
     def _read(self, percent: float) -> float:
@@ -288,11 +294,13 @@ class _Measurer:
         """A settled reading at `percent` with the light on only for it: (reading, settled)."""
         self.output.set_percent(percent)
         self.output.on()
+        self.level = percent
         start = self.clock()
         try:
             self.sleep(self.settle_s)
             return self._converged(percent)
         finally:
+            self.level = None
             self.output.off()
             self.on_times.append(self.clock() - start)
 
@@ -300,19 +308,22 @@ class _Measurer:
         return float(np.median([self.at(percent)[0] for _ in range(repeats)]))
 
     def rest(self, duration_s: float, cancelled: Callable[[], bool]) -> None:
-        """Light off for duration_s, still feeding the watchdog: it disarms itself once it fires."""
+        """Light off for duration_s, still feeding the watchdog (it disarms itself once it fires) and reading the
+        dark, so what the meter reads stays on show."""
         self.output.off()
         begin = self.clock()
         while self.clock() - begin < duration_s:
             if cancelled():
                 raise CalibrationCancelled("cancelled while resting before the checks")
-            self._feed()
+            self._fed_read()
             self.sleep(min(0.5, duration_s))
 
     def hold(self, percent: float, duration_s: float, cancelled: Callable[[], bool]) -> Tuple[float, float]:
-        """Light on continuously at `percent` for duration_s: (reading at the start, reading at the end)."""
+        """Light on continuously at `percent` for duration_s: (reading at the start, reading at the end). Read
+        throughout as well, against the sensor limit too, so what the meter reads stays on show."""
         self.output.set_percent(percent)
         self.output.on()
+        self.level = percent
         try:
             self.sleep(self.settle_s)
             start, _ = self._converged(percent)
@@ -320,10 +331,11 @@ class _Measurer:
             while self.clock() - begin < duration_s:
                 if cancelled():
                     raise CalibrationCancelled("cancelled during the continuous hold")
-                self._feed()
+                self._read(percent)
                 self.sleep(min(0.5, duration_s))
             end, _ = self._converged(percent)
         finally:
+            self.level = None
             self.output.off()
         return start, end
 
@@ -368,6 +380,7 @@ def calibrate_channel(
     hold_s: float = HOLD_S,
     rest_s: float = REST_BEFORE_CHECKS_S,
     progress: Progress = lambda message, done, total: None,
+    on_reading: Reading = lambda channel, mw, level: None,
     cancelled: Callable[[], bool] = lambda: False,
     keepalive: Callable[[], None] = lambda: None,
     deadline: Optional[WatchdogDeadline] = None,
@@ -393,6 +406,7 @@ def calibrate_channel(
         clock,
         keepalive,
         WatchdogDeadline(clock=clock) if deadline is None else deadline,
+        lambda mw, level: on_reading(target.name, mw, level),
     )
     dac = np.linspace(0.0, target.ceiling_percent, int(round(1.0 / SWEEP_STEP_FRACTION)) + 1)
     x = dac / 100.0 * factor
@@ -822,6 +836,7 @@ class CalibrationSession:
         measured_in: str,
         sensor_limit_mw: float,
         progress: Progress = lambda message, done, total: None,
+        on_reading: Reading = lambda channel, mw, level: None,
         on_channel_done: Callable[[str, object], None] = lambda name, result: None,
     ) -> Dict[str, Union[ChannelResult, Exception]]:
         """Calibrate each target in turn. A failed channel is reported and the run goes on; a cancel stops it."""
@@ -847,6 +862,7 @@ class CalibrationSession:
                         hold_s=self.hold_s,
                         rest_s=self.rest_s,
                         progress=progress,
+                        on_reading=on_reading,
                         cancelled=lambda: self._cancelled,
                         keepalive=self.feed_watchdog,
                         deadline=deadline,

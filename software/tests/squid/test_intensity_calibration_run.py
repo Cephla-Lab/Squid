@@ -146,6 +146,7 @@ def _run(
     hold_s=10.0,
     rest_s=None,
     cancelled=lambda: False,
+    on_reading=None,
     **meter_kwargs,
 ):
     time = FakeTime()
@@ -164,6 +165,8 @@ def _run(
     )
     if rest_s is not None:
         call["rest_s"] = rest_s
+    if on_reading is not None:
+        call["on_reading"] = on_reading
     return mcu, output, meter, lambda: calibrate_channel(target, output, meter, FACTOR, **call)
 
 
@@ -181,6 +184,38 @@ def test_laser_calibrates_passes_and_ends_with_every_port_off():
     assert c.file_name == "405nm_D1.csv" and c.hold_s == 10.0 and abs(c.hold_droop_fraction) < 0.01
     assert ("off",) not in mcu.calls  # always all ports, never just the selected one
     _assert_off(mcu, output, 11)
+
+
+def test_every_meter_reading_is_reported_with_the_level_it_was_taken_at():
+    """What the dialog shows during a run: the run's own readings, in order, each with the DAC % the light was on at
+    (None while it is off) - no extra meter queries."""
+    reported = []
+    _, output, meter, run = _run(LASER, on_reading=lambda channel, mw, level: reported.append((channel, mw, level)))
+    taken = []
+    read = meter.read_mw
+
+    def read_and_note():
+        mw = read()
+        taken.append((LASER.name, mw, output.commanded_percent if output.is_on else None))
+        return mw
+
+    meter.read_mw = read_and_note
+    run()
+    assert len(taken) > 100 and reported == taken
+    assert any(level is None for _, _, level in reported) and any(level == 100.0 for _, _, level in reported)
+
+
+def test_readings_keep_coming_through_the_rest_and_the_hold():
+    """The display never freezes on an old reading: the light-off rest shows the dark, the continuous hold the source
+    as it holds, at least every second."""
+    stamps = []
+    clock = {}
+    _, _, meter, run = _run(
+        LASER, rest_s=30.0, hold_s=10.0, on_reading=lambda channel, mw, level: stamps.append(clock["now"]())
+    )
+    clock["now"] = meter.time.clock
+    run()
+    assert max(np.diff(stamps)) <= 1.0
 
 
 def test_rolling_over_led_is_reported_and_passes():
@@ -364,6 +399,19 @@ def test_session_run_continues_after_a_failed_channel(repo):
     assert isinstance(results["Fluorescence 730 nm Ex"], ChannelResult)
     assert done == ["Fluorescence 405 nm Ex", "Fluorescence 730 nm Ex"]
     assert session.microcontroller.calls[-2:] == [("off_all",), ("set", 15, 0.0)]
+
+
+def test_session_run_reports_the_readings_of_each_channel(repo):
+    session = _session(repo)
+    session.connect()
+    channels = []
+    session.run(
+        session.targets(),
+        measured_in="n/a",
+        sensor_limit_mw=500.0,
+        on_reading=lambda channel, mw, level: channels.append(channel),
+    )
+    assert list(dict.fromkeys(channels)) == ["Fluorescence 405 nm Ex", "Fluorescence 730 nm Ex"]
 
 
 def _calibrated(session):
