@@ -7,7 +7,7 @@ so the window stays responsive and Cancel is answered after the current point. E
 the DAC at 0. Nothing is written until Save.
 """
 
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pyqtgraph as pg
@@ -52,6 +52,7 @@ class CalibrationWorker(QThread):
     """Runs CalibrationSession.run off the GUI thread. Never raises into Qt: the outcome comes back on a signal."""
 
     signal_progress = Signal(str, int, int)
+    signal_reading = Signal(str, float, object)  # channel, mW, the DAC % the light is on at (None while it is off)
     signal_channel_done = Signal(str, object)  # channel name, ChannelResult or the Exception that stopped it
     signal_finished = Signal(object)  # the results dict, or the Exception that ended the run
 
@@ -69,6 +70,7 @@ class CalibrationWorker(QThread):
                 measured_in=self.measured_in,
                 sensor_limit_mw=self.sensor_limit_mw,
                 progress=self.signal_progress.emit,
+                on_reading=self.signal_reading.emit,
                 on_channel_done=self.signal_channel_done.emit,
             )
         except Exception as e:  # noqa: BLE001 - reported in the dialog
@@ -112,6 +114,11 @@ class IntensityCalibrationDialog(QDialog):
         self.results: Dict[str, Union[ChannelResult, Exception]] = {}
         self._test_beam_target: Optional[ChannelTarget] = None
         self._test_beam_confirmed = False
+        # During a run the meter answers the run only: the dialog shows the run's own readings (_on_reading), and the
+        # curve of the channel being measured fills in as they arrive, until its fitted plot replaces it
+        self._live_channel: Optional[str] = None
+        self._live_points: Tuple[List[float], List[float]] = ([], [])
+        self.curve_live = None
         self.reading_timer = QTimer(self)
         self.reading_timer.setInterval(500)
         self.reading_timer.timeout.connect(self._update_reading)
@@ -441,6 +448,7 @@ class IntensityCalibrationDialog(QDialog):
             return
         self.button_test_beam.setChecked(False)
         self.results = {}
+        self._live_channel = None
         for row in range(self.table.rowCount()):
             self.table.item(row, self.COL_RUN).setText("")
         self._say("")
@@ -449,6 +457,7 @@ class IntensityCalibrationDialog(QDialog):
             self.session, targets, self.measured_in, self.spin_sensor_limit.value(), parent=self
         )
         self.worker.signal_progress.connect(self._on_progress)
+        self.worker.signal_reading.connect(self._on_reading)
         self.worker.signal_channel_done.connect(self._on_channel_done)
         self.worker.signal_finished.connect(self._finished)
         # the thread is done only when QThread.finished arrives (after signal_finished): clear it then, so Close
@@ -466,6 +475,22 @@ class IntensityCalibrationDialog(QDialog):
         self.label_progress.setText(message)
         self.progress.setMaximum(max(total, 1))
         self.progress.setValue(done)
+
+    def _on_reading(self, channel: str, mw: float, level):
+        """During a run the meter answers the run only (_update_reading pauses): show the run's own readings."""
+        self.label_reading.setText(f"{mw:.4g} mW")
+        if level is None:
+            return
+        if channel != self._live_channel:
+            self._live_channel = channel
+            self._live_points = ([], [])
+            self.plot_curve.clear()
+            self.plot_verify.clear()
+            self.curve_live = self.plot_curve.plot([], [], pen=None, symbol="o", symbolSize=3)
+        levels, readings = self._live_points
+        levels.append(level)
+        readings.append(mw)
+        self.curve_live.setData(levels, readings)
 
     def _row_of(self, name: str) -> Optional[int]:
         return next((row for row, target in enumerate(self.targets) if target.name == name), None)

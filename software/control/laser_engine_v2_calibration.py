@@ -72,6 +72,11 @@ class EngineLineOutput:
     def level_text(self, percent: float) -> str:
         return f"{self._key} at {percent:.1f} % of its ceiling"
 
+    @property
+    def drive_percent(self) -> float:
+        """The drive last set, % of the line's ceiling (set_percent's units): what a reading is plotted against."""
+        return self._expected_drive
+
     def _engine_call(self, call: Callable, *args):
         try:
             return call(*args)

@@ -66,9 +66,10 @@ resource with Thorlabs' vendor ID; `--resource` picks another in the headless to
    can only be lowered), and use **Test beam** to centre the sensor.
 3. Pick channels and **Run**. The light is pulsed for each reading, on one meter range per channel; after the sweep
    it stays off for 30 s before the drift check and the verification, so a source that reads low just after full
-   power (a thermal memory) has settled. The dialog shows each channel's curve, its verification (every setpoint from
-   10 % within ±5 %) and any warnings, including the lowest non-zero power of a source that jumps on. About 3 minutes
-   per channel.
+   power (a thermal memory) has settled. While it runs, the reading next to **Connect** is each reading the run takes
+   (the dark while the light is off), and the curve of the channel being measured fills in as it goes. The dialog
+   then shows each channel's fitted curve, its verification (every setpoint from 10 % within ±5 %) and any warnings,
+   including the lowest non-zero power of a source that jumps on. About 3 minutes per channel.
 4. **Save** writes the calibration and points the channel at it; it applies at once. A replaced calibration moves to
    `machine_configs/intensity_calibrations/backup/`.
 
