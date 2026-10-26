@@ -195,4 +195,12 @@ static const int ILLUMINATION_SOURCE_561NM = 14;
 static const int ILLUMINATION_SOURCE_638NM = 13;
 static const int ILLUMINATION_SOURCE_730NM = 15;
 
+// Startup verdict (firmware 1.9): why the controller does or does not vouch for the stage still being homed
+static const int STARTUP_VERDICT_WARM = 0;
+static const int STARTUP_VERDICT_NO_SIGNATURE = 1;
+static const int STARTUP_VERDICT_SIGNATURE_MISMATCH = 2;
+static const int STARTUP_VERDICT_UNHEALTHY = 3;
+static const int STARTUP_VERDICT_MOVING = 4;
+static const int STARTUP_VERDICT_NOT_HOMED = 5;
+
 #endif // CONSTANTS_PROTOCOL_H
