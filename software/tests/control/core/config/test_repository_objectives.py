@@ -183,25 +183,47 @@ def test_copy_that_fails_in_a_later_profile_removes_the_earlier_copies(tmp_path,
     assert not (b / "20x water.yaml").exists()
 
 
-def test_failed_removal_of_earlier_copies_is_logged_and_does_not_mask_the_original_error(tmp_path, monkeypatch, caplog):
-    _profile(tmp_path, "a", {"10x.yaml": "A10"})
+def _unremovable(path_to_keep):
+    real_unlink = Path.unlink
+
+    def _unlink(self, missing_ok=False):
+        if self == path_to_keep:
+            raise OSError("permission denied")
+        real_unlink(self, missing_ok=missing_ok)
+
+    return _unlink
+
+
+def test_copy_whose_undo_fails_names_the_profiles_still_holding_it(tmp_path, monkeypatch):
+    # Profile a copied, profile b failed, and a's copy could not be removed: the caller must learn
+    # that a still holds it, or a retry from another source keeps it ("never overwrite").
+    a = _profile(tmp_path, "a", {"10x.yaml": "A10"})
     _profile(tmp_path, "b", {"10x.yaml": "B10"})
     repo = ConfigRepository(base_path=tmp_path)
     monkeypatch.setattr(repository, "write_atomically", _fail_for_profile("b", repository.write_atomically))
-
-    def _raise(*a, **k):
-        raise OSError("cannot remove")
-
-    monkeypatch.setattr(repo, "remove_objective_channel_configs", _raise)
-    with pytest.raises(OSError, match="disk full in b"):
+    monkeypatch.setattr(Path, "unlink", _unremovable(a / "20x water.yaml"))
+    with pytest.raises(repository.ChannelCopyError, match="disk full in b") as raised:
         repo.copy_objective_channel_configs("10x", "20x water")
-    assert "cannot remove" in caplog.text and "disk full in b" in caplog.text
+    assert isinstance(raised.value, OSError)
+    assert list(raised.value.leftover) == ["a"]
+    assert "permission denied" in str(raised.value.leftover["a"])
+    assert (a / "20x water.yaml").exists()
+
+
+def test_remove_objective_channel_configs_reports_what_it_could_not_remove(tmp_path, monkeypatch):
+    a = _profile(tmp_path, "a", {"20x water.yaml": "A"})
+    b = _profile(tmp_path, "b", {"20x water.yaml": "B"})
+    repo = ConfigRepository(base_path=tmp_path)
+    monkeypatch.setattr(Path, "unlink", _unremovable(a / "20x water.yaml"))
+    failed = repo.remove_objective_channel_configs("20x water", ["a", "b"])
+    assert list(failed) == ["a"] and "permission denied" in str(failed["a"])
+    assert not (b / "20x water.yaml").exists()  # the other profile is still cleaned
 
 
 def test_remove_objective_channel_configs_removes_only_the_named_profiles(tmp_path):
     a = _profile(tmp_path, "a", {"10x.yaml": "A10", "20x water.yaml": "A"})
     b = _profile(tmp_path, "b", {"10x.yaml": "B10", "20x water.yaml": "B"})
     repo = ConfigRepository(base_path=tmp_path)
-    repo.remove_objective_channel_configs("20x water", ["a"])
+    assert repo.remove_objective_channel_configs("20x water", ["a"]) == {}
     assert sorted(p.name for p in a.iterdir()) == ["10x.yaml"]
     assert sorted(p.name for p in b.iterdir()) == ["10x.yaml", "20x water.yaml"]

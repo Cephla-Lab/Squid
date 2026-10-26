@@ -55,6 +55,15 @@ logger = squid.logging.get_logger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+class ChannelCopyError(OSError):
+    """A channel-settings copy failed. `leftover` maps each profile whose earlier copy could not
+    be removed again to the error, so the caller can name the files still in place."""
+
+    def __init__(self, cause: OSError, leftover: Dict[str, OSError]):
+        super().__init__(str(cause))
+        self.leftover = leftover
+
+
 def _objective_channel_from_general(ch: AcquisitionChannel) -> AcquisitionChannel:
     """Build a per-objective channel entry seeded from a general.yaml channel.
 
@@ -507,6 +516,7 @@ class ConfigRepository:
         All or nothing: when a profile fails, the copies this call already made are removed before
         the error is raised. A profile left holding one would be kept by a retry ("never
         overwrite"), so a retry from another source would leave the profiles on different sources.
+        A failed OSError is raised as ChannelCopyError, naming any copy that could not be removed.
 
         Publishes through write_atomically: a copy that dies partway through (or loses power)
         never leaves a partial or empty file under the final name. A copy whose directory sync
@@ -514,8 +524,8 @@ class ConfigRepository:
         written = []
         try:
             for profile in self.get_available_profiles():
-                src = self.user_profiles_path / profile / "channel_configs" / f"{source}.yaml"
-                dst = src.with_name(f"{target}.yaml")
+                src = self.objective_channel_config_path(profile, source)
+                dst = self.objective_channel_config_path(profile, target)
                 if src.exists() and not dst.exists():
                     try:
                         write_atomically(dst, src.read_bytes())
@@ -523,31 +533,33 @@ class ConfigRepository:
                         logger.warning(f"copied channel settings, but could not confirm the copy on disk: {e}")
                     written.append(profile)
         except Exception as original_exc:
-            try:
-                self.remove_objective_channel_configs(target, written)
-            except OSError as rollback_exc:
-                logger.error(
-                    f"Could not remove the partial copy of '{target}' channel settings in profiles {written}: "
-                    f"{rollback_exc}. Original: {original_exc}"
-                )
+            leftover = self.remove_objective_channel_configs(target, written)
+            if isinstance(original_exc, OSError):
+                raise ChannelCopyError(original_exc, leftover) from original_exc
             raise original_exc
         finally:
             self._profile_cache.pop(f"objective:{target}", None)
         return written
 
-    def remove_objective_channel_configs(self, target: str, profiles: List[str]) -> None:
+    def remove_objective_channel_configs(self, target: str, profiles: List[str]) -> Dict[str, OSError]:
         """Remove channel_configs/<target>.yaml from `profiles`. Only for undoing copies that a
         save attempt has just made and that did not exist before it; removing an objective from
-        the list deletes no file. Tries every profile, then raises the first error."""
-        first_error = None
+        the list deletes no file. Tries every profile; returns those it could not remove it from,
+        with the error ({} when all went)."""
+        failed = {}
         for profile in profiles:
+            path = self.objective_channel_config_path(profile, target)
             try:
-                (self.user_profiles_path / profile / "channel_configs" / f"{target}.yaml").unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             except OSError as e:
-                first_error = first_error or e
+                logger.error(f"Could not remove {path}: {e}")
+                failed[profile] = e
         self._profile_cache.pop(f"objective:{target}", None)
-        if first_error is not None:
-            raise first_error
+        return failed
+
+    def objective_channel_config_path(self, profile: str, objective: str) -> Path:
+        """channel_configs/<objective>.yaml in `profile`."""
+        return self.user_profiles_path / profile / "channel_configs" / f"{objective}.yaml"
 
     def get_camera_names(self) -> List[str]:
         """Get list of available camera names from registry."""

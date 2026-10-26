@@ -1,6 +1,7 @@
 import copy
 import os
 import stat
+from pathlib import Path
 
 import pytest
 import yaml
@@ -202,7 +203,7 @@ def test_a_failed_save_removes_the_copies_of_every_row_it_made(qtbot, repo, no_d
 
     def _copy(source, target):
         if target == "10x oil":
-            raise OSError("disk full")
+            raise repository.ChannelCopyError(OSError("disk full"), {})
         return real_copy(source, target)
 
     monkeypatch.setattr(repo, "copy_objective_channel_configs", _copy)
@@ -215,16 +216,86 @@ def test_a_copy_that_cannot_be_removed_after_a_failed_save_is_named(qtbot, repo,
     dialog = _turret_dialog(qtbot, repo)
     dialog.remove_row(0)
     dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
-
-    def _raise_permission_denied(*a, **k):
-        raise OSError("permission denied")
-
     monkeypatch.setattr(repo, "save_objectives_config", _raise_disk_full)
-    monkeypatch.setattr(repo, "remove_objective_channel_configs", _raise_permission_denied, raising=False)
+    monkeypatch.setattr(Path, "unlink", _unremovable(_channel_config(tmp_path, "a", "20x water")))
     assert not dialog.save()
     message = no_dialogs["critical"][0]
     assert "disk full" in message and "permission denied" in message
-    assert "20x water" in message and "delete" in message
+    assert str(_channel_config(tmp_path, "a", "20x water")) in message and "delete" in message
+    assert str(_channel_config(tmp_path, "b", "20x water")) not in message  # b's copy was removed
+
+
+def _unremovable(path_to_keep):
+    real_unlink = Path.unlink
+
+    def _unlink(self, missing_ok=False):
+        if self == path_to_keep:
+            raise OSError("permission denied")
+        real_unlink(self, missing_ok=missing_ok)
+
+    return _unlink
+
+
+def _fail_copy_in_b_and_keep_as_copy(tmp_path, monkeypatch):
+    """Profile a copies, profile b fails, and a's copy cannot be removed. Returns a callable that
+    clears the faults it names: "write", "unlink"."""
+    real_write, real_unlink = repository.write_atomically, Path.unlink
+
+    def _fail_in_b(path, data):
+        if path.parent.parent.name == "b":
+            raise OSError("disk full")
+        real_write(path, data)
+
+    monkeypatch.setattr(repository, "write_atomically", _fail_in_b)
+    monkeypatch.setattr(Path, "unlink", _unremovable(_channel_config(tmp_path, "a", "20x water")))
+
+    def clear(*faults):
+        if "write" in faults:
+            monkeypatch.setattr(repository, "write_atomically", real_write)
+        if "unlink" in faults:
+            monkeypatch.setattr(Path, "unlink", real_unlink)
+
+    return clear
+
+
+def test_a_copy_left_by_a_failed_save_is_named_and_removed_before_the_retry(
+    qtbot, repo, no_dialogs, tmp_path, monkeypatch
+):
+    # The review's sequence: a copies from 20x, b fails, removing a's copy fails too. Without this,
+    # the retry from 10x kept a's 20x settings while b got 10x's, and nothing said so.
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    clear = _fail_copy_in_b_and_keep_as_copy(tmp_path, monkeypatch)
+    assert not dialog.save()
+    message = no_dialogs["critical"][0]
+    assert str(_channel_config(tmp_path, "a", "20x water")) in message and "delete" in message
+
+    clear("write", "unlink")
+    _new_row_combo(dialog).setCurrentIndex(_new_row_combo(dialog).findText("10x"))
+    assert dialog.save()
+    for profile in ("a", "b"):
+        assert _channel_config(tmp_path, profile, "20x water").read_text() == f"{profile}-10x"
+
+
+def test_save_is_refused_while_a_copy_left_by_a_failed_save_cannot_be_removed(
+    qtbot, repo, no_dialogs, tmp_path, monkeypatch
+):
+    _add_10x_settings(tmp_path)
+    dialog = _turret_dialog(qtbot, repo)
+    dialog.remove_row(0)
+    dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
+    clear = _fail_copy_in_b_and_keep_as_copy(tmp_path, monkeypatch)
+    assert not dialog.save()
+    clear("write")  # a's copy still cannot be removed
+
+    _new_row_combo(dialog).setCurrentIndex(_new_row_combo(dialog).findText("10x"))
+    assert not dialog.save()
+    message = no_dialogs["critical"][-1]
+    assert str(_channel_config(tmp_path, "a", "20x water")) in message and "delete" in message
+    assert repo.get_objectives_config() is None
+    assert not _channel_config(tmp_path, "b", "20x water").exists()
 
 
 def test_copy_source_is_locked_once_the_list_is_saved(qtbot, repo, no_dialogs, tmp_path):
@@ -278,7 +349,7 @@ def test_copy_failure_shows_critical_and_does_not_write_yaml(qtbot, repo, no_dia
     dialog.add_row(EditorRow("20x water", 20.0, 0.95, 180.0, 1, copy_from="20x"), new=True)
 
     def _raise(*a, **k):
-        raise OSError("disk full")
+        raise repository.ChannelCopyError(OSError("disk full"), {})
 
     monkeypatch.setattr(repo, "copy_objective_channel_configs", _raise)
     assert not dialog.save()

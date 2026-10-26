@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
 import control._def
 import control.objectives_config as oc
 from control.atomic_file import NotDurableError
+from control.core.config.repository import ChannelCopyError
 import squid.logging
 
 _COLUMNS = ["Name", "Magnification", "NA", "Tube lens (mm)", "Slot", "Model", "Serial", "Copy settings from"]
@@ -70,6 +71,9 @@ class ObjectivesEditorDialog(QDialog):
         self._catalog = catalog
         self._on_restart = on_restart
         self._copied = set()  # (source, target) pairs copied by an earlier, successful Save
+        # Objective name -> profiles still holding a copy a failed save made and could not remove.
+        # Save is refused until they are gone: a retry would keep them ("never overwrite").
+        self._leftover: Dict[str, List[str]] = {}
         # The objectives mounted when this dialog opened (from the existing config or the seed):
         # spec A §5's "mounted objective" choices for a newly added row's copy-source combo.
         # Populated by add_row() for such rows and fixed for the life of the dialog -- removing
@@ -322,20 +326,23 @@ class ObjectivesEditorDialog(QDialog):
             self.remove_row(index)
 
     def _undo_copies(self, made) -> str:
-        """Remove the copies a failed save attempt made. Returns a sentence for the error message
-        naming those that could not be removed ("" when all were)."""
-        stuck = []
+        """Remove the copies a failed save attempt made, and any an earlier attempt left behind.
+        Returns a sentence for the error message naming the files still in place ("" when none)."""
+        pending = {name: list(profiles) for name, profiles in self._leftover.items()}
         for row, profiles in made:
-            try:
-                self._repo.remove_objective_channel_configs(row.name, profiles)
-            except OSError as e:
-                self._log.error(f"could not remove the channel settings copied to '{row.name}' in {profiles}: {e}")
-                stuck.append(f"'{row.name}' ({e})")
+            pending.setdefault(row.name, []).extend(profiles)
+        self._leftover = {}
+        stuck = []
+        for name, profiles in pending.items():
+            failed = self._repo.remove_objective_channel_configs(name, profiles)
+            if failed:
+                self._leftover[name] = list(failed)
+                stuck += [f"{self._repo.objective_channel_config_path(p, name)} ({e})" for p, e in failed.items()]
         if not stuck:
             return ""
         return (
-            f" The channel settings this save copied for {', '.join(stuck)} could not be removed: delete them by "
-            "hand before saving again, or they will be kept as they are."
+            " The channel settings copied by a failed save could not be removed, so delete these files by hand "
+            f"before saving again: {'; '.join(stuck)}."
         )
 
     def _lock_copy_source(self, name: str, source: str) -> None:
@@ -355,6 +362,11 @@ class ObjectivesEditorDialog(QDialog):
         except oc.ObjectivesConfigError as e:
             QMessageBox.warning(self, "Objectives", f"{e.field}: {e.reason}")
             return False
+        if self._leftover:
+            stuck = self._undo_copies([])
+            if stuck:
+                QMessageBox.critical(self, "Objectives", "The objective list was NOT saved." + stuck)
+                return False
         # Channel-config copies happen before the YAML write, so a copy failure never leaves an
         # objectives.yaml pointing at an objective whose channel settings did not make it to disk.
         # The attempt is all or nothing: when a copy or the YAML write fails, the copies it made are
@@ -365,7 +377,8 @@ class ObjectivesEditorDialog(QDialog):
             if row.copy_from and (row.copy_from, row.name) not in self._copied:
                 try:
                     profiles = self._repo.copy_objective_channel_configs(row.copy_from, row.name)
-                except OSError as e:
+                except ChannelCopyError as e:
+                    made.append((row, list(e.leftover)))
                     QMessageBox.critical(
                         self,
                         "Objectives",
