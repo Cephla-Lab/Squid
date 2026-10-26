@@ -1820,6 +1820,8 @@ class Microcontroller:
                 # This helper reads bytes in the order received by serial, and checks that packet-sized chunks
                 # have valid checksums.  IF the first packet size chunk does not have a valid checksum, it tosses
                 # the first byte and keeps going until it either finds a valid checksum packet or runs out of bytes.
+                # Returns (packet, crc_matched), or (None, False): crc_matched is False for a packet accepted on the
+                # legacy zero "checksum" below.
                 def get_msg_with_good_checksum():
                     maybe_msg = []
                     while self._serial.bytes_available() > 0:
@@ -1831,14 +1833,16 @@ class Microcontroller:
                         # NOTE(imo): Before April 2025, we didn't send the crc from the micro.  This is
                         # here to support firmware that still sends 0 as the checksum.  This means for
                         # the firmware that does support checksums, we can get fooled by zeros!
-                        if checksum == maybe_msg[-1] or maybe_msg[-1] == 0:
-                            return maybe_msg
+                        if checksum == maybe_msg[-1]:
+                            return maybe_msg, True
+                        elif maybe_msg[-1] == 0:
+                            return maybe_msg, False
                         else:
                             self.log.warning(f"Bad checksum {checksum} for packet '{maybe_msg}, tossing first byte'")
                             maybe_msg.pop(0)
-                    return None
+                    return None, False
 
-                msg = get_msg_with_good_checksum()
+                msg, crc_matched = get_msg_with_good_checksum()
 
                 if msg is None:
                     self.log.warning("Back checksums found, skipping.")
@@ -1868,8 +1872,10 @@ class Microcontroller:
                     self._last_packet_cmd_id = msg[0]
                     # A startup verdict reply (QUERY_STARTUP_STATE). Not an execution status: none of the branches
                     # below match it, so it neither completes, fails nor resends the command, and it is never idle
-                    # evidence (reported_idle_since_last_command).
-                    if msg[1] in _STARTUP_VERDICT_STATUSES:
+                    # evidence (reported_idle_since_last_command). Taken only from a packet whose CRC matches: firmware
+                    # that answers the query always sends a real one, so a verdict status in a packet accepted on the
+                    # zero "checksum" (a misaligned read window, say) is not a verdict.
+                    if crc_matched and msg[1] in _STARTUP_VERDICT_STATUSES:
                         self._startup_verdict_packet = (msg[0], msg[1] - STARTUP_VERDICT_STATUS_BASE)
                 if (self._cmd_id_mcu == self._cmd_id) and (
                     self._cmd_execution_status == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS

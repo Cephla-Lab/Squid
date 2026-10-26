@@ -567,6 +567,32 @@ def test_a_verdict_status_never_completes_aborts_resends_or_counts_as_idle(new_f
     assert sim.command_log == sent  # nothing resent
 
 
+def test_a_verdict_is_taken_only_from_a_packet_whose_crc_matches(new_firmware_micro):
+    """The read loop also accepts a packet whose last byte is 0 (firmware that sent no CRC), but firmware that answers
+    the query always sends one: a verdict status in such a packet (a misaligned read window, say) is not a verdict."""
+    micro, sim = new_firmware_micro
+    status = STARTUP_VERDICT_STATUS_BASE + StartupVerdict.WARM
+    packet = sim._build_response(micro._cmd_id, status)
+    while packet[-1] == 0:  # a real CRC of 0 would make the forged packet a genuine one
+        sim.x += 1
+        packet = sim._build_response(micro._cmd_id, status)
+
+    def parse(raw):
+        parsed = threading.Event()
+        micro.set_callback(lambda m: parsed.set())
+        with sim._update_lock:
+            sim.response_buffer.extend(raw)
+            sim._update_internal_state()
+        assert parsed.wait(2)
+
+    with micro._received_packet_cv:
+        micro._startup_verdict_packet = None
+    parse(packet[:-1] + b"\x00")
+    assert micro._startup_verdict_packet is None
+    parse(packet)  # the same packet with its CRC is one
+    assert micro._startup_verdict_packet == (micro._cmd_id, StartupVerdict.WARM)
+
+
 def test_signature_is_the_same_in_another_process():
     out = subprocess.run(
         [sys.executable, "-c", "import control.startup_homing as s; print(s.config_signature())"],
