@@ -137,7 +137,7 @@ extern bool panel_locked_by_host;         // SET_PANEL_LOCK (firmware 1.8): the 
 
 // Startup state (firmware 1.9, utils/homing_validity.h). Hooks pass PROTOCOL axes (AXIS_X/Y/Z), never internal indices.
 extern HomingValidity homing_validity;    // homed flags, configuration signature; hv_power_up() in setup()
-extern bool startup_verdict_pending;      // status byte 18 carries startup_verdict; cleared when the next command arrives
+extern bool startup_verdict_pending;      // the status byte (byte 1) carries 64 + startup_verdict; cleared by the next command
 extern uint8_t startup_verdict;           // STARTUP_VERDICT_*, set by QUERY_STARTUP_STATE
 extern volatile bool power_good_drop_latched;  // set by the PG falling-edge interrupt (init.cpp); hv_consume_power_drop clears it
 

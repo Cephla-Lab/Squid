@@ -428,8 +428,9 @@ void callback_store_config_signature()
 }
 
 // QUERY_STARTUP_STATE (68): [6] low nibble = the axes that must be homed (bit a = protocol axis a). It reads the
-// chips and writes nothing to them. The STARTUP_VERDICT_* goes out in status byte 18 until the next command
-// (send_position_update); the query answers even while a crashed session's command is still IN_PROGRESS.
+// chips and writes nothing to them. The verdict goes out in the packet's execution-status byte (byte 1), as
+// STARTUP_VERDICT_STATUS_BASE (64) + STARTUP_VERDICT_*, until the next command (send_position_update,
+// hv_packet_status); the query answers even while a crashed session's command is still IN_PROGRESS.
 void callback_query_startup_state()
 {
     uint8_t at_rest_mask = 0;
