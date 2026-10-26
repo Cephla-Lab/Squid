@@ -17,6 +17,7 @@ same key.
 | Which engine, its USB serial number | machine ini, `laser_engine`, `laser_engine_sn` | no engine |
 | DF: 560 nm laser power | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | the source's minimum |
 | DF: 560 nm idle-off | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | 30 min |
+| DF: 560 nm shutter mode | Laser Engine tab, kept in `cache/laser_engine_v2.yaml` | On use |
 
 ## 1. Machine ini
 
@@ -40,8 +41,8 @@ Legacy v1 keys are still read, so a v1 machine ini keeps working unchanged:
 - `use_squid_laser_engine = True` together with `laser_engine = v2` is a contradiction and stops the software at
   start. Together with `laser_engine = v1` it is accepted.
 
-There are no other engine keys in the ini: the DF 560 nm source is found by its own USB IDs, and its power and
-idle-off are operator settings kept in the cache (section 4).
+There are no other engine keys in the ini: the DF 560 nm source is found by its own USB IDs, and its power,
+idle-off and shutter mode are operator settings kept in the cache (section 4).
 
 ## 2. Cabling and how Squid drives the engine
 
@@ -65,10 +66,21 @@ At start, Squid connects (one fault reset when anything is latched, since the en
 the tab says what it cleared), switches the TECs on, arms and brings every fitted line up, one step per status poll, so the GUI never
 waits for the TECs. **Sleep all** or **Disarm** while it runs stops it, and a line put to sleep is not switched on
 again by it. A line that was switched off, or an engine that disarmed (key cycle, host timeout), comes back
-on the next use: starting live view, switching live to its channel, a snap or a new intensity wakes the line, and an
-acquisition waits for its lines to read READY
-(up to 5 minutes; a lost link aborts the acquisition). Squid polls the engine once a second; that poll is also the
-heartbeat the engine needs to stay armed, so the engine disarms itself about 5 s after Squid stops.
+on the next use. Everything that images declares which channels it uses, through Squid's lighting layer
+(`IlluminationController.use`), and that wakes their lines:
+
+| Use | Channels | Held | Waits for READY |
+|---|---|---|---|
+| live view | the live channel (follows a channel switch) | start → stop | no: warns "image may be dim" |
+| snap | the live channel | the frame | no: warns |
+| acquisition | its channels, plus the autofocus channel with contrast autofocus | each time point (released in the wait between time points) | yes, before each time point (up to 5 min; a lost link aborts) |
+| autofocus (contrast) | the live channel | the autofocus run | yes (skipped if it does not come up) |
+| tracking | the tracking channels | the tracking run | yes (not started if it does not come up) |
+| `Microscope.acquire_image` (scripts, TCP `acquire_image`) | the current channel | the frame | yes (raises if it does not come up) |
+| TCP `turn_on_illumination` | the current channel (follows `set_channel`) | on → `turn_off_illumination` | no |
+
+A new intensity also wakes its line. Squid polls the engine once a second; that poll is also the heartbeat the engine
+needs to stay armed, so the engine disarms itself about 5 s after Squid stops.
 
 ## 3. The Laser Engine tab
 
@@ -80,7 +92,7 @@ heartbeat the engine needs to stay armed, so the engine disarms itself about 5 s
   is not READY. States: READY; STARTING; WARMING UP (TEC not in window yet); OFF; NOT ARMED; PAUSED (cover open, the
   engine resumes by itself); SOURCE OFF, NEEDS KEY, NOT CONFIGURED (DF 560); BLOCKED (a TEC left its window: Reset
   faults); FAULT.
-- On DF, the **560 nm laser** box (section 4).
+- On DF, the **560 nm laser** box (section 4): laser power, idle-off and the shutter mode.
 
 The tab scrolls when Squid's side panel is shorter than it.
 
@@ -96,26 +108,38 @@ The 560 nm fiber laser sits behind an AOM and a shutter. Each has one job:
 - **Intensity** in Squid (the 560 channel's intensity) is the AOM amplitude: line 3's set-point, 0-5 V, full scale =
   full transmission. The AOM's on/off input is the controller's D3 TTL, so exposure timing works as for the other
   lines. The intensity is linear in AOM volts (50 % = 2.5 V).
-- **Shutter**: safety only, never per exposure, and not part of line 3's readiness. It opens as soon as line 3 is
-  READY (when the laser reads ready, not at the next status poll) and stays open while line 3 ramps to
-  a new AOM set-point (every 560 intensity change) as long as the source reads ready. It is closed in every other
-  state (key not cycled, source off or starting, line 3 off or paused, a fault, disarm) and before any source
-  restart; a restart is abandoned if the engine refuses the close or the engine link is lost on the way.
-- **Idle-off**: the 560 laser switches off after this many minutes without use (an acquisition using the 560 counts
-  as use at every position, live view on the 560 counts while it runs), so it is never left on indefinitely. 0 means
-  24 h; there is no "never". Line 3 reads SOURCE OFF from the moment it is switched off, and the next use starts it
-  again behind the closed shutter.
+- **Shutter**: a mechanical shutter, never moved per exposure and not part of line 3's readiness. Its mode is set in
+  the tab:
+  - **On use** (default): open while line 3 is READY **and** something uses the 560 (section 2: live view on the 560
+    channel, a 560 snap, a time point of an acquisition with a 560 channel, autofocus, tracking, `acquire_image`, TCP
+    illumination on). It opens and closes at once when a use starts or ends; for a use waiting on line 3 it opens as
+    soon as the laser reads ready.
+  - **Always open**: open whenever line 3 is READY.
 
-The power and the idle-off are kept across sessions in `cache/laser_engine_v2.yaml` (the power when **Set** is
-pressed, the idle-off whenever it is changed):
+  It opens in 1 ms, and nothing images before it has been open that long: a use that starts while line 3 is READY
+  returns only then, and the acquisition's readiness check (and every wait for READY) includes it. It stays open while
+  line 3 ramps to a new AOM set-point (every 560 intensity change) as long as the source reads ready. It is closed in
+  every other state (On use with nothing using the 560, key not cycled, source off or starting, line 3 off or paused,
+  a fault, disarm) and before any source restart; a restart is abandoned if the engine refuses the close or the engine
+  link is lost on the way.
+- **Idle-off**: the 560 laser switches off after this many minutes without use, so it is never left on
+  indefinitely. It never switches off while something uses the 560, and counts from the end of the last use. An
+  acquisition releases the 560 between time points, so a long time-lapse interval can switch it off; the next time
+  point waits for it. 0 means 24 h; there is no "never". Line 3 reads SOURCE OFF from the moment it is switched off,
+  and the next use starts it again behind the closed shutter.
+
+The power, the idle-off and the shutter mode are kept across sessions in `cache/laser_engine_v2.yaml` (the power
+when **Set** is pressed, the others whenever they are changed):
 
 ```yaml
 idle_off_560_min: 30.0
 power_560_mw: 600.0
+shutter_mode_560: on_use   # or always_open
 ```
 
 A missing or unreadable file, or a bad value, gives the default for that value (logged). If the file cannot be
-written the setting still applies for the session and the tab says it was not saved. Deleting the file resets both.
+written the setting still applies for the session and the tab says it was not saved. Deleting the file resets all
+three.
 
 A 560 laser found on at connect (a previous session that ended without switching it off) is switched off first.
 When the source asks for its key to be turned off and on (as after a power-up), line 3 reads NEEDS KEY and the
@@ -148,8 +172,10 @@ Bring up on connect, Connect / Disconnect), the Laser Engine tab, a service pane
 has per-line intensity, Wake and Sleep, the 560 source state, and a raw command line (a trailing `?` is a query).
 The bench has no Squid controller and so no TTL: the per-line **Gate (bench, no TTL)** box holds the line's gate on
 in the firmware instead; emission still needs the hardware permits, and on line 3 it drives only the AOM's analog
-path. Every line starts at a set-point of 0 at connect, and Disconnect releases the gates before it disarms. The
-560 power and idle-off come from, and are saved to, the same `cache/laser_engine_v2.yaml` as Squid's.
+path. The 560 shutter follows the shutter mode: closed in On use (nothing on the bench declares a use), open at READY
+in Always open. Every line starts at a set-point of 0 at connect, and Disconnect releases the gates before it disarms.
+The 560 power, idle-off and shutter mode come from, and are saved to, the same `cache/laser_engine_v2.yaml` as
+Squid's.
 
 ## 7. Troubleshooting
 

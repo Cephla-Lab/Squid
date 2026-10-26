@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import time
 import threading
-from typing import List, Optional, TYPE_CHECKING
+from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 from qtpy.QtCore import QObject, Signal
 
 import squid.logging
 from control.microcontroller import Microcontroller
 from control.serial_peripherals import SerialDeviceError
-from squid.abc import CameraAcquisitionMode, AbstractCamera
+from squid.abc import CameraAcquisitionMode, AbstractCamera, LightSourceHold
 from control.rcm_scan_trigger import ConfocalScanFailedError
 
 from control._def import *
@@ -54,6 +54,7 @@ class LiveController(QObject):
         self.timer_trigger_interval = (1.0 / self.fps_trigger) * 1000
         self._trigger_skip_count = 0
         self._confocal_scan_failed = False  # log a confocal-unit trigger failure once, not on every frame
+        self._channel_holds: Dict[str, LightSourceHold] = {}  # hold_current_channel(): they follow set_microscope_mode
         self.timer_trigger: Optional[threading.Timer] = None
 
         self.trigger_ID = -1
@@ -114,14 +115,6 @@ class LiveController(QObject):
     # Squid laser engine readiness (warn-only)
     # ─────────────────────────────────────────────────────────────────────────────
 
-    def illumination_wavelengths_in_use(self) -> List[int]:
-        """The wavelength live is illuminating with right now; [] when live is off or the channel has none (LED matrix).
-        The laser engine v2 polls this from its own thread, so a long live session counts as use of its lines."""
-        if not self.is_live:
-            return []
-        wavelength = self._get_illumination_wavelength()
-        return [] if wavelength is None else [wavelength]
-
     def _check_laser_engine_warn_only(self) -> None:
         """Warn (don't block) at Live start if the channel isn't yet ACTIVE."""
         engine = getattr(self.microscope.addons, "squid_laser_engine", None)
@@ -140,6 +133,46 @@ class LiveController(QObject):
             engine.wake_up(k)
         self._log.warning(f"Squid laser engine not ready for channel(s) {needed}; live started anyway")
         self.signal_warning.emit(f"Laser engine warming up (channel {','.join(needed)}); image may be dim")
+
+    # ─────────────────────────────────────────────────────────────────────────────
+    # Declared use of the light source (IlluminationController.use)
+    # ─────────────────────────────────────────────────────────────────────────────
+
+    def _current_wavelengths(self) -> List[int]:
+        """The current channel's wavelength; [] for a channel without one (LED matrix)."""
+        wavelength = self._get_illumination_wavelength()
+        return [] if wavelength is None else [wavelength]
+
+    def use_current_channel(self, name: str) -> LightSourceHold:
+        """`name` images with the current channel until the hold is released (or its `with` ends). The light source acts on
+        it: laser engine v2 wakes the line, keeps the 560 from idling off and opens its mechanical shutter. Does nothing
+        on a controller that does not drive the illumination (the laser AF camera's)."""
+        if not self.control_illumination:
+            return LightSourceHold()
+        return self.microscope.illumination_controller.use(name, self._current_wavelengths())
+
+    def use_channels(self, name: str, configurations: Iterable["AcquisitionChannel"]) -> LightSourceHold:
+        """As use_current_channel, for every channel in `configurations` (e.g. tracking's)."""
+        if not self.control_illumination:
+            return LightSourceHold()
+        ill_config = self._get_illumination_config()
+        wavelengths = []
+        for configuration in configurations if ill_config is not None else []:
+            wavelength = configuration.get_illumination_wavelength(ill_config)
+            if wavelength is not None:
+                wavelengths.append(wavelength)
+        return self.microscope.illumination_controller.use(name, wavelengths)
+
+    def hold_current_channel(self, name: str) -> None:
+        """Hold the current channel for `name` (live, the TCP illumination commands) until release_current_channel(name).
+        set_microscope_mode moves the hold to each new channel, so it never stays on an old one."""
+        if name not in self._channel_holds:
+            self._channel_holds[name] = self.use_current_channel(name)
+
+    def release_current_channel(self, name: str) -> None:
+        hold = self._channel_holds.pop(name, None)
+        if hold is not None:
+            hold.release()
 
     # ─────────────────────────────────────────────────────────────────────────────
     # Confocal mode
@@ -396,6 +429,7 @@ class LiveController(QObject):
 
     def start_live(self):
         self._check_laser_engine_warn_only()
+        self.hold_current_channel("live")
         self.is_live = True
         self.camera.start_streaming()
         if self.trigger_mode == TriggerMode.SOFTWARE or (
@@ -427,6 +461,7 @@ class LiveController(QObject):
                 self._stop_triggerred_acquisition()
             if self.control_illumination:
                 self.turn_off_illumination()
+            self.release_current_channel("live")
             # if controlling the laser displacement measurement camera
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
@@ -475,6 +510,7 @@ class LiveController(QObject):
         callback_id = self.camera.add_frame_callback(lambda _frame: frame_propagated.set())
         self._is_snapping = True
         got_frame = False
+        snap_hold = self.use_current_channel("snap")
         try:
             # In HARDWARE mode the microcontroller strobes the illumination for the
             # exposure, so don't also turn it on here. In CONTINUOUS mode it stays on
@@ -499,6 +535,7 @@ class LiveController(QObject):
             # Light off first, then let the frame finish its trip to the display.
             if self.control_illumination and self.illumination_on:
                 self.turn_off_illumination()
+            snap_hold.release()
             if self.for_displacement_measurement:
                 self.microscope.low_level_drivers.microcontroller.set_pin_level(MCU_PINS.AF_LASER, 0)
             if got_frame:
@@ -680,6 +717,9 @@ class LiveController(QObject):
         # set illumination
         if self.control_illumination:
             self.update_illumination()
+        # every hold on the current channel (live, the TCP illumination commands) moves to the new one, live or not
+        for hold in self._channel_holds.values():
+            hold.update(self._current_wavelengths())
 
         # restart live
         if self.is_live is True:

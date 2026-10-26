@@ -493,6 +493,7 @@ class MultiPointWorker:
 
             # Cache laser-engine refs for the gate (None when flag is off).
             self._laser_engine = getattr(self.microscope.addons, "squid_laser_engine", None)
+            self._illumination_wavelengths = self._compute_illumination_wavelengths()
             self._laser_channels_needed = self._compute_laser_channels_needed()
 
             # Warn once if non-zero channel offsets won't be applied this run.
@@ -505,15 +506,18 @@ class MultiPointWorker:
                     break
                 self._run_state_beat()
 
-                # Gate on laser engine readiness for the channels this acquisition will fire.
-                # Re-checked every timepoint so dt-induced sleep gaps are handled.
-                if self._laser_engine is not None and self._laser_channels_needed:
-                    self._wait_for_laser_engine()
-                    if self.abort_requested_fn():
-                        break
+                # The time point uses its channels (wakes the lines, keeps the 560 on, opens its mechanical shutter),
+                # released for the wait to the next one. The gate runs inside it, so it sees the shutter open.
+                with self.microscope.illumination_controller.use("acquisition", self._illumination_wavelengths):
+                    # Gate on laser engine readiness for the channels this acquisition will fire.
+                    # Re-checked every timepoint so dt-induced sleep gaps are handled.
+                    if self._laser_engine is not None and self._laser_channels_needed:
+                        self._wait_for_laser_engine()
+                        if self.abort_requested_fn():
+                            break
 
-                with self._timing.get_timer("run_single_time_point"):
-                    self.run_single_time_point()
+                    with self._timing.get_timer("run_single_time_point"):
+                        self.run_single_time_point()
 
                 self.time_point = self.time_point + 1
                 if self.dt == 0:  # continous acquisition
@@ -591,29 +595,39 @@ class MultiPointWorker:
 
             self.callbacks.signal_acquisition_finished()
 
-    def _compute_laser_channels_needed(self) -> List[str]:
-        if self._laser_engine is None:
-            return []
+    def _compute_illumination_wavelengths(self) -> List[int]:
+        """The wavelengths this acquisition images with: its channels, and the contrast autofocus channel when it runs."""
         ill_config = self.microscope.config_repo.get_illumination_config()
         if ill_config is None:
             return []
+        configs = list(self.selected_configurations)
+        if self.do_autofocus and not self.do_reflection_af:
+            config_af = self.liveController.get_channel_by_name(
+                self.objectiveStore.current_objective, MULTIPOINT_AUTOFOCUS_CHANNEL
+            )
+            if config_af is not None:
+                configs.append(config_af)
         wavelengths = []
-        for cfg in self.selected_configurations:
+        for cfg in configs:
             try:
                 w = cfg.get_illumination_wavelength(ill_config)
             except Exception:
                 w = None
-            if w is not None:
+            if w is not None and w not in wavelengths:
                 wavelengths.append(w)
-        return self._laser_engine.channel_keys_for_wavelengths(wavelengths)
+        return wavelengths
+
+    def _compute_laser_channels_needed(self) -> List[str]:
+        if self._laser_engine is None:
+            return []
+        return self._laser_engine.channel_keys_for_wavelengths(self._illumination_wavelengths)
 
     def _wait_for_laser_engine(self) -> None:
         """Block until needed channels are ACTIVE. Raises on timeout / disconnect / ERROR.
 
         Returns silently when abort_requested_fn fires — caller handles abort.
         """
-        status = self._laser_engine.get_latest_status()
-        if status is not None and status.is_ready_for(self._laser_channels_needed):
+        if self._laser_engine.is_ready_to_image(self._laser_channels_needed):
             return
         self.callbacks.signal_laser_engine_waiting(list(self._laser_channels_needed))
         try:
@@ -636,12 +650,6 @@ class MultiPointWorker:
                 f"Laser engine did not reach ready state within timeout "
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
-
-    def _note_laser_engine_use(self) -> None:
-        """Tell the laser engine its channels are in use (laser engine v2 switches an idle source off; v1 has no note_use)."""
-        note_use = getattr(self._laser_engine, "note_use", None)
-        if note_use is not None and self._laser_channels_needed:
-            note_use(self._laser_channels_needed)
 
     def _wait_for_outstanding_callback_images(self):
         # If there are outstanding frames, wait for them to come in.
@@ -1099,7 +1107,6 @@ class MultiPointWorker:
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
-        self._note_laser_engine_use()
         self._applied_config = None
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
@@ -1555,7 +1562,6 @@ class MultiPointWorker:
     def acquire_camera_image(
         self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
     ):
-        self._note_laser_engine_use()  # per image too: a single FOV (long z-stack) can outlast the 560 idle-off
         if not self._config_already_applied(config):
             self._select_config(config)
 

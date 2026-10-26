@@ -691,6 +691,16 @@ class TrackingWorker(QObject):
         self.microcontroller.wait_till_operation_is_completed()
 
     def run(self):
+        # every tracking channel is in use for the whole run: wakes the lines, opens a mechanical shutter
+        with self.liveController.use_channels("tracking", self.selected_configurations) as light:
+            # e.g. the 560 restarting after its idle-off: never track on dark frames
+            if light.wait_until_ready(cancel_fn=lambda: self.trackingController.flag_stop_tracking_requested):
+                self._run_tracking()
+            else:
+                self._log.error("tracking not started: the illumination did not become ready")
+                self.finished.emit()
+
+    def _run_tracking(self):
 
         tracking_frame_counter = 0
         t0 = time.time()

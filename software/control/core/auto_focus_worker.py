@@ -43,7 +43,12 @@ class AutofocusWorker:
 
     def run(self):
         try:
-            self.run_autofocus()
+            with self.liveController.use_current_channel("autofocus") as light:  # wakes the line, opens its shutter
+                # e.g. the 560 restarting after its idle-off: never focus on dark frames
+                if light.wait_until_ready(cancel_fn=lambda: not self._keep_running.is_set()):
+                    self.run_autofocus()
+                else:
+                    self._log.error("autofocus skipped: the illumination did not become ready")
         finally:
             self._finished_fn()
 

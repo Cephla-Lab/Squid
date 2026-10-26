@@ -12,6 +12,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QFrame,
     QGridLayout,
@@ -46,7 +47,15 @@ _STATE_COLOURS = {
     LineState.FAULT: RED,
 }
 _UNITS = {"WLD": "A", "CHASSIS": "A", "VOLT": "V"}  # set-point unit per line kind (VOLT = DF line 3, the AOM input)
-SHUTTER_NOTE = "Shutter: safety only — open while the 560 is in use"
+SHUTTER_MODE_LABELS = {  # the 560 mechanical shutter's modes, as the tab shows them
+    laser_engine_v2_settings.SHUTTER_ON_USE: "On use",
+    laser_engine_v2_settings.SHUTTER_ALWAYS_OPEN: "Always open",
+}
+SHUTTER_MODE_HINTS = {
+    laser_engine_v2_settings.SHUTTER_ON_USE: "open while live, a snap, an acquisition, autofocus, tracking or a script "
+    "images with the 560",
+    laser_engine_v2_settings.SHUTTER_ALWAYS_OPEN: "open whenever the 560 is ready",
+}
 
 
 def engine_state(status: Optional[EngineV2Status], lost: bool) -> Tuple[str, str]:
@@ -104,11 +113,19 @@ class _NoWheelSpinBox(QSpinBox):
         event.ignore()
 
 
-def _not_saved_in_simulation(setting: str) -> Callable[[float], bool]:
+class _NoWheelComboBox(QComboBox):
+    """Never takes the mouse wheel: scrolling the tab must not change (and save) the 560 shutter mode."""
+
+    def wheelEvent(self, event) -> None:
+        event.ignore()
+
+
+def _not_saved_in_simulation(setting: str) -> Callable[[object], bool]:
     """A simulated engine keeps its settings to itself: the fake source's limits are not the machine's."""
 
-    def not_saved(value: float) -> bool:
-        squid.logging.get_logger(__name__).info(f"simulation: {setting} {value:g} not saved")
+    def not_saved(value) -> bool:
+        shown = f"{value:g}" if isinstance(value, (int, float)) else value
+        squid.logging.get_logger(__name__).info(f"simulation: {setting} {shown} not saved")
         return False
 
     return not_saved
@@ -139,6 +156,7 @@ class LaserEngineV2Widget(QWidget):
         parent: Optional[QWidget] = None,
         save_power: Optional[Callable[[float], bool]] = None,
         save_idle_off: Optional[Callable[[float], bool]] = None,
+        save_shutter_mode: Optional[Callable[[str], bool]] = None,
     ):
         super().__init__(parent)
         self._engine = engine
@@ -155,8 +173,15 @@ class LaserEngineV2Widget(QWidget):
                 if simulated
                 else laser_engine_v2_settings.save_idle_off_560_min
             )
-        self._save_power = save_power  # these two remember the 560 settings across sessions (the cache)
+        if save_shutter_mode is None:
+            save_shutter_mode = (
+                _not_saved_in_simulation("560 nm shutter mode")
+                if simulated
+                else laser_engine_v2_settings.save_shutter_mode_560
+            )
+        self._save_power = save_power  # these three remember the 560 settings across sessions (the cache)
         self._save_idle_off = save_idle_off
+        self._save_shutter_mode = save_shutter_mode
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self._content = QWidget()
@@ -264,7 +289,16 @@ class LaserEngineV2Widget(QWidget):
         self.idle_off_spin.setSpecialValueText("24 h")  # shown at 0: there is no "never off"
         self.idle_off_spin.setValue(round(engine.source_idle_off_s / 60) % (24 * 60))
         self.idle_off_spin.valueChanged.connect(self.set_source_idle_off)
-        self.shutter_note = QLabel(SHUTTER_NOTE)
+        self.shutter_combo = _NoWheelComboBox()
+        self.shutter_combo.setFocusPolicy(Qt.StrongFocus)
+        for mode, label in SHUTTER_MODE_LABELS.items():
+            self.shutter_combo.addItem(label, mode)
+        self.shutter_combo.setCurrentIndex(self.shutter_combo.findData(engine.shutter_mode))
+        self.shutter_combo.currentIndexChanged.connect(
+            lambda _i: self.set_shutter_mode(self.shutter_combo.currentData())
+        )
+        self.shutter_note = QLabel(SHUTTER_MODE_HINTS[engine.shutter_mode])
+        self.shutter_note.setWordWrap(True)
         self.shutter_note.setStyleSheet(f"color: {GREY};")
         self.source_limits_label.setStyleSheet(f"color: {GREY};")
 
@@ -284,9 +318,16 @@ class LaserEngineV2Widget(QWidget):
         set_row.addWidget(QLabel("Idle-off"))
         set_row.addWidget(self.idle_off_spin)
         set_row.addStretch(1)
+        self.shutter_row = QWidget()  # Shutter [On use]  open while live, a snap, ... images with the 560
+        shutter_layout = QHBoxLayout(self.shutter_row)
+        shutter_layout.setContentsMargins(0, 0, 0, 0)
+        shutter_layout.addWidget(QLabel("Shutter"))
+        shutter_layout.addWidget(self.shutter_combo)
+        shutter_layout.addWidget(self.shutter_note, 1)
+        self.shutter_row.setVisible(engine.mechanical_shutter is not None)
         rows.addLayout(state_row)
         rows.addLayout(set_row)
-        rows.addWidget(self.shutter_note)
+        rows.addWidget(self.shutter_row)
         return self.source_box
 
     @staticmethod
@@ -308,7 +349,7 @@ class LaserEngineV2Widget(QWidget):
             return False
         return True
 
-    # ---- 560 nm laser power and idle-off -----------------------------------------------------------------------------
+    # ---- 560 nm laser power, idle-off and shutter mode ---------------------------------------------------------------
     def set_source_power(self) -> None:
         """Set: the power goes to the engine (clamped to the laser's limits), then into the cache."""
         self.power_spin.interpretText()  # a typed value not yet committed (Enter / focus-out; a Mac button takes no focus)
@@ -326,6 +367,17 @@ class LaserEngineV2Widget(QWidget):
             return
         if not self._save_idle_off(minutes):
             self._on_notice("560 nm idle-off not saved (see the log): this session only")
+
+    def set_shutter_mode(self, mode: str) -> None:
+        """The shutter mode changed: the mode goes to the engine, then into the cache."""
+        if not self._run(lambda: self._engine.set_shutter_mode(mode)):
+            self.shutter_combo.blockSignals(True)  # back to the engine's mode, without setting it again
+            self.shutter_combo.setCurrentIndex(self.shutter_combo.findData(self._engine.shutter_mode))
+            self.shutter_combo.blockSignals(False)
+            return
+        self.shutter_note.setText(SHUTTER_MODE_HINTS[mode])
+        if not self._save_shutter_mode(mode):
+            self._on_notice("560 nm shutter mode not saved (see the log): this session only")
 
     def _update_source_box(self) -> None:
         if self.source_box is None:
