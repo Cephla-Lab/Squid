@@ -847,6 +847,27 @@ def test_old_firmware_and_skip_init_never_query(caplog):
         assert code not in sim.command_log
 
 
+def test_a_startup_that_homes_no_stage_axis_is_never_warm(monkeypatch, caplog):
+    """With no axis to find homed, the homed check would pass on any controller: such a startup is a normal one,
+    without the query, and still stores the signature as every normal startup on new firmware does."""
+    sim = _homed()  # signature stored, X/Y/Z homed: asked, this controller would vouch for the stage
+    for name in ("HOMING_ENABLED_X", "HOMING_ENABLED_Y", "HOMING_ENABLED_Z", "USE_Z_LIFT_STAGE"):
+        monkeypatch.setattr(control._def, name, False)
+    assert required_homed_axes_mask() == 0
+    with caplog.at_level(logging.INFO):
+        micro = Microcontroller(serial_device=sim)
+    assert micro.startup_verdict is None and not micro.startup_was_warm
+    assert CMD_SET.QUERY_STARTUP_STATE not in sim.command_log
+    assert CMD_SET.INITIALIZE in sim.command_log and CMD_SET.CONFIGURE_STEPPER_DRIVER in sim.command_log
+    assert sim.command_log[-3:] == [
+        CMD_SET.STORE_CONFIG_SIGNATURE,
+        CMD_SET.SET_FOCUS_WHEEL_MODE,
+        CMD_SET.SET_PANEL_LOCK,
+    ]
+    assert sim.homing_validity.signature == (config_signature(), CONFIG_SIGNATURE_FORMAT)
+    assert "Startup homes no stage axis: normal startup" in caplog.text
+
+
 @pytest.mark.parametrize("z_homes, verdict", [(False, StartupVerdict.WARM), (True, StartupVerdict.NOT_HOMED)])
 def test_z_not_required_when_z_does_not_home(monkeypatch, z_homes, verdict):
     monkeypatch.setattr(control._def, "HOMING_ENABLED_Z", z_homes)

@@ -118,7 +118,8 @@ def config_signature() -> int:
 
 
 def required_homed_axes_mask() -> int:
-    """The axes (bit 1 << control._def.AXIS.<axis>) that startup must find homed to skip homing."""
+    """The axes (bit 1 << control._def.AXIS.<axis>) that startup must find homed to skip homing. 0 when startup homes
+    no stage axis: such a startup never skips anything (Microcontroller does not even ask)."""
     mask = 0
     if control._def.HOMING_ENABLED_X and control._def.HOMING_ENABLED_Y:
         mask |= 1 << control._def.AXIS.X | 1 << control._def.AXIS.Y

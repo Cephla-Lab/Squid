@@ -763,7 +763,8 @@ class Microcontroller:
         # (firmware >= STARTUP_STATE_MIN_FIRMWARE), under _received_packet_cv; for query_startup_state().
         self._startup_verdict_packet = None
         # The startup decision (reset_and_initialize only). startup_verdict: the controller's answer to the startup
-        # query, None when it was not asked (older firmware, --skip-init) or gave none. startup_was_warm: the answer
+        # query, None when it was not asked (older firmware, --skip-init, a startup that homes no stage axis) or gave
+        # none. startup_was_warm: the answer
         # was WARM, so INITIALIZE and the motor configuration were skipped and the stage is still homed.
         self.startup_verdict: Optional[StartupVerdict] = None
         self.startup_was_warm = False
@@ -786,7 +787,10 @@ class Microcontroller:
                 # one) and puts back what a session may have changed, and writes no position.
                 self.reset()
                 if self.startup_was_warm:
-                    # The signature proves INITIALIZE and configure_actuators would change nothing
+                    # INITIALIZE would change things: it zeroes XACTUAL and re-initialises the drivers and the DAC
+                    # config. Skipping it keeps the homed frame, which the controller's homed flags and health check
+                    # vouch for. The matching signature covers the other half: configure_actuators would send what
+                    # the controller already holds.
                     self.log.debug("Resetting the microcontroller (warm start: drivers and actuators kept).")
                     self.set_dac80508_scaling_factor_for_illumination(ILLUMINATION_INTENSITY_FACTOR)
                 else:
@@ -2078,8 +2082,9 @@ class Microcontroller:
         """The constructor's startup query (QUERY_STARTUP_STATE) with this configuration's signature and the axes
         startup homes, and the log line saying which startup path it leads to and why.
 
-        None, a normal startup, when the firmware cannot report the startup state or no verdict arrived (another
-        sender ended the reply, or a timeout): an unnecessary home at worst.
+        None, a normal startup, when the firmware cannot report the startup state, when startup homes no stage axis
+        (not asked: with no axis required to be homed, the controller's homed check would pass on anything), or when
+        no verdict arrived (another sender ended the reply, or a timeout): an unnecessary home at worst.
         """
         if not self.supports_startup_state():
             self.log.info(
@@ -2087,8 +2092,12 @@ class Microcontroller:
                 f"normal startup"
             )
             return None
+        required_axes_mask = required_homed_axes_mask()
+        if required_axes_mask == 0:
+            self.log.info("Startup homes no stage axis: normal startup")
+            return None
         try:
-            verdict = self.query_startup_state(config_signature(), CONFIG_SIGNATURE_FORMAT, required_homed_axes_mask())
+            verdict = self.query_startup_state(config_signature(), CONFIG_SIGNATURE_FORMAT, required_axes_mask)
         except RuntimeError as e:
             self.log.warning(f"Asked the controller for its startup state and got none ({e}): normal startup")
             return None
