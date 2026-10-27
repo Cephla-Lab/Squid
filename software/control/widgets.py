@@ -4145,6 +4145,7 @@ class ObjectivesWidget(QWidget):
         the sample, and restoring returns to the pre-swap focus height. The controller's motion profile
         is frozen at that focus height first: re-engaging then moves nothing wherever Z drifted, and
         the restore that lands back there switches it on again (see PIFocusStage.freeze_profile).
+        With PI_FOCUS_SWAP_RETRACT off, the servo is released in place, at that focus height.
 
         The stage calls run off the GUI thread in two phases around the dialog. Until the whole swap
         ends, the dropdown stays disabled as the re-entry guard and signal_swap_active holds True so
@@ -4169,10 +4170,11 @@ class ObjectivesWidget(QWidget):
     def _retract_z_and_release_servo(self):
         self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
         self.focus_servo.freeze_profile()
-        # home(z) drives the V-308 to its configured objective-clear position.
-        self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
-        self._swap_retracted = True
-        self._log.info(f"Z retracted from {self._swap_z_before_mm:.4f} mm for objective change")
+        if control._def.PI_FOCUS_SWAP_RETRACT:
+            # home(z) drives the V-308 to its configured objective-clear position.
+            self.focus_servo.home(x=False, y=False, z=True, theta=False, blocking=True)
+            self._swap_retracted = True
+            self._log.info(f"Z retracted from {self._swap_z_before_mm:.4f} mm for objective change")
         if self.z_lift is not None:
             # Whatever the magnification: the sample is clear of the objective while it is changed (and for the
             # profile's return trip below, when Z stays retracted).
@@ -4207,13 +4209,18 @@ class ObjectivesWidget(QWidget):
             if self._swap_lift_lowered
             else ""
         )
+        released = (
+            "Z is retracted and the focus servo is disengaged."
+            if self._swap_retracted
+            else f"The focus servo is disengaged with Z at {self._swap_z_before_mm:.4f} mm (not retracted)."
+        )
         reply = _ask_objective_z_return(
             self,
             "Change Objective",
-            f"Z is retracted and the focus servo is disengaged.\n\n"
+            f"{released}\n\n"
             f"{lift_note}"
             f"Load the {objective_name} objective and make sure it is securely seated. Then choose where Z goes "
-            f"once the servo is re-engaged: back to {self._swap_z_before_mm:.4f} mm, or staying retracted.\n\n"
+            f"once the servo is re-engaged: back to {self._swap_z_before_mm:.4f} mm, or retracted.\n\n"
             f"Cancel keeps {previous_objective} (put it back first if you removed it); Z then returns to "
             f"{self._swap_z_before_mm:.4f} mm.",
             self._swap_z_before_mm,
