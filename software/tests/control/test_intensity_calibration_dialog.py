@@ -216,6 +216,29 @@ def test_test_beam_over_the_sensor_limit_turns_off(qtbot, session, answers):
     assert not dialog.button_test_beam.isChecked() and "above the sensor limit" in dialog.label_result.text()
 
 
+def test_test_beam_needs_a_sensor_limit(qtbot, session, answers):
+    # review 6: a sensor limit of 0 - what Connect leaves when the meter does not report one - switched the test
+    # beam's limit check off; Run refused to start, but the test beam came on
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.spin_sensor_limit.setValue(0)
+    dialog.button_test_beam.setChecked(True)
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "sensor limit" in dialog.label_result.text()
+
+
+def test_test_beam_turns_off_when_the_sensor_limit_is_cleared(qtbot, session, answers):
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    dialog.spin_sensor_limit.setValue(0)
+    dialog._update_reading()
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "sensor limit" in dialog.label_result.text()
+
+
 def test_software_light_source_has_nothing_to_calibrate(qtbot, repo, answers):
     session = CalibrationSession(get_test_microcontroller(), repo, dac_driven=False)
     dialog = _dialog(qtbot, session)

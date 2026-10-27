@@ -326,7 +326,11 @@ class IntensityCalibrationDialog(QDialog):
             text += " - no light at this level? Raise the test beam level"
         self.label_reading.setText(text)
         limit = self.spin_sensor_limit.value()
-        if self._test_beam_target is not None and limit > 0 and reading > limit:
+        if self._test_beam_target is not None and limit <= 0:
+            # cleared while the beam was on: nothing to check the readings against
+            self.button_test_beam.setChecked(False)
+            self._say("Test beam turned off: enter the sensor limit (the sensor's maximum power) to use it.")
+        elif self._test_beam_target is not None and reading > limit:
             self.button_test_beam.setChecked(False)
             self._say(f"Test beam turned off: {reading:.4g} mW is above the sensor limit ({limit:g} mW).")
 
@@ -351,11 +355,7 @@ class IntensityCalibrationDialog(QDialog):
             self.test_beam_timer.stop()
             return
         target = self._selected_target()
-        reason = self._busy() or (
-            None
-            if self.session.meter is not None
-            else "Connect a power meter first: the test beam is for centering it."
-        )
+        reason = self._busy() or self._test_beam_needs()
         if target is None or self._running() or reason or not self._confirm_test_beam(target):
             if reason:
                 self._say(f"Test beam not turned on. {reason}")
@@ -369,6 +369,14 @@ class IntensityCalibrationDialog(QDialog):
             log.error("Turning the test beam on failed", exc_info=True)
             self._say(f"Test beam failed: {e}")
             self.button_test_beam.setChecked(False)
+
+    def _test_beam_needs(self) -> Optional[str]:
+        """What is missing before the test beam may come on: a meter reading it, and a limit to check that against."""
+        if self.session.meter is None:
+            return "Connect a power meter first: the test beam is for centering it."
+        if self.spin_sensor_limit.value() <= 0:
+            return "Enter the sensor limit (the sensor's maximum power) first: the test beam turns off above it."
+        return None
 
     def _confirm_test_beam(self, target: ChannelTarget) -> bool:
         if self._test_beam_confirmed:
