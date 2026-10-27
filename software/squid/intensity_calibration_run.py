@@ -889,7 +889,7 @@ class CalibrationSession:
         self, calibrations: Sequence[IntensityCalibration], now: Optional[datetime.datetime] = None
     ) -> List[Tuple[Path, Optional[Path]]]:
         """Back up, write CSV + PNG, and point each channel's intensity_calibration_file at its file. Refuses, writing
-        nothing, if a channel was renamed, removed or re-ported since the run."""
+        nothing, if a channel was renamed, removed or re-ported since the run, or two would share a file."""
         config = self.config_repo.get_illumination_config(for_edit=True)
         channels = {channel.name: channel for channel in (config.channels if config is not None else [])}
         changed = [
@@ -904,6 +904,17 @@ class CalibrationSession:
             raise ValueError(
                 f"changed in the illumination config since the run (renamed, removed, re-ported or remapped): "
                 f"{', '.join(changed)}; run the calibration again"
+            )
+        # A file is named after its port and wavelength: two channels sharing both would stage, publish and back up
+        # onto each other, losing the calibration they replace
+        channels_by_file: Dict[str, List[str]] = {}
+        for c in calibrations:
+            channels_by_file.setdefault(c.file_name, []).append(c.channel)
+        shared = [f"{', '.join(names)} ({name})" for name, names in channels_by_file.items() if len(names) > 1]
+        if shared:
+            raise ValueError(
+                f"these channels drive one port at one wavelength, which has one calibration file: {'; '.join(shared)}; "
+                "run the calibration with only one of them checked"
             )
         now = now or datetime.datetime.now()
         directory = self.calibrations_dir()

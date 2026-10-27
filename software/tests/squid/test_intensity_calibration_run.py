@@ -447,6 +447,25 @@ def test_save_refuses_when_the_channel_changed_since_the_run(repo):
     assert not (session.calibrations_dir() / "405nm_D1.csv").exists()
 
 
+def test_save_refuses_two_channels_that_would_share_a_file(tmp_path):
+    # review 6: two channels on one port at one wavelength are both saved as <λ>nm_<port>.csv; in one Save the second
+    # channel's backup overwrote the first's, and the calibration they replaced was lost
+    (tmp_path / "machine_configs").mkdir()
+    (tmp_path / "machine_configs" / "illumination_channel_config.yaml").write_text(
+        YAML + "  - name: Fluorescence 405 nm Ex twin\n    type: epi_illumination\n    controller_port: D1\n"
+        "    wavelength_nm: 405\n"
+    )
+    session = _session(ConfigRepository(base_path=tmp_path))
+    first = datetime.datetime(2026, 10, 8, 14, 30, 12)
+    [(path, _)] = session.save([_calibrated(session)], now=first)
+    previous = path.read_bytes()
+    twins = [t for t in session.targets() if t.wavelength_nm == 405]
+    results = session.run(twins, measured_in="n/a", sensor_limit_mw=500.0)
+    with pytest.raises(ValueError, match="Fluorescence 405 nm Ex twin"):
+        session.save([r.calibration for r in results.values()], now=first + datetime.timedelta(minutes=1))
+    assert path.read_bytes() == previous and not (path.parent / "backup").exists()
+
+
 class _ClosingFails:
     info = None
 
