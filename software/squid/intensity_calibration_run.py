@@ -376,6 +376,7 @@ def calibrate_channel(
     meter_info: PowerMeterInfo,
     measured_in: str,
     sensor_limit_mw: float,
+    software_commit: str,
     settle_s: Optional[float] = None,
     hold_s: float = HOLD_S,
     rest_s: float = REST_BEFORE_CHECKS_S,
@@ -392,6 +393,7 @@ def calibrate_channel(
 
     Raises CalibrationCancelled, SensorLimitExceeded, WatchdogDeadlineMissed, PowerMeterError or CalibrationError.
     However it ends, all illumination is off and the DAC at 0 afterwards. `deadline` is the one `output` sends through.
+    `software_commit` is read by the caller beforehand: git can take seconds, and nothing reaches the watchdog then.
     """
     if meter_info.wavelength_range_nm is not None:
         low, high = meter_info.wavelength_range_nm
@@ -456,7 +458,7 @@ def calibrate_channel(
             controller_port=target.controller_port,
             wavelength_nm=target.wavelength_nm,
             calibrated_at=(now or datetime.datetime.now()).isoformat(timespec="seconds"),
-            software_commit=software_commit(),
+            software_commit=software_commit,
             meter=meter_info.meter,
             sensor=meter_info.sensor,
             factor=factor,
@@ -841,6 +843,7 @@ class CalibrationSession:
         if self.meter is None:
             raise PowerMeterError("Connect a power meter first")
         results: Dict[str, Union[ChannelResult, Exception]] = {}
+        commit = software_commit()  # before the watchdog is ours: git can take seconds
         self._pause_heartbeat()
         try:
             for target in targets:
@@ -856,6 +859,7 @@ class CalibrationSession:
                         meter_info=self.meter.info,
                         measured_in=measured_in,
                         sensor_limit_mw=sensor_limit_mw,
+                        software_commit=commit,
                         settle_s=self.settle_s,
                         hold_s=self.hold_s,
                         rest_s=self.rest_s,

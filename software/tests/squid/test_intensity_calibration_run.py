@@ -157,6 +157,7 @@ def _run(
         meter_info=meter.info,
         measured_in="widefield",
         sensor_limit_mw=sensor_limit_mw,
+        software_commit="test",
         settle_s=0.0,
         hold_s=hold_s,
         cancelled=cancelled,
@@ -849,6 +850,23 @@ def test_a_timeout_while_arming_the_test_beam_gives_the_watchdog_back(repo):
     assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
     mcu.turn_on_illumination()  # live view, after the failed test beam
     assert mcu.unprotected_on == 0
+
+
+def test_the_software_commit_is_read_before_the_session_takes_the_watchdog(repo, monkeypatch):
+    # review 6: git ran (timeout 5 s, the watchdog's period) between the sweep and the checks, with nothing sent to
+    # the controller meanwhile; a slow git - cold cache, antivirus - missed the deadline and threw the sweep away
+    time = FakeTime()
+    mcu = OneShotWatchdog(time)
+    session = _owned_session(repo, time, mcu)
+
+    def slow_git():
+        time.sleep(6.0)
+        return "abcd1234"
+
+    monkeypatch.setattr("squid.intensity_calibration_run.software_commit", slow_git)
+    result = session.run([session.targets()[0]], measured_in="n/a", sensor_limit_mw=500.0)["Fluorescence 405 nm Ex"]
+    assert isinstance(result, ChannelResult), result
+    assert result.calibration.software_commit == "abcd1234"
 
 
 def test_save_refuses_when_the_port_was_remapped_since_the_run(repo):
