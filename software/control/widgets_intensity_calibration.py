@@ -308,7 +308,14 @@ class IntensityCalibrationDialog(QDialog):
 
     def _update_reading(self):
         if self._test_beam_target is not None:
-            self.session.feed_watchdog()
+            try:
+                self.session.feed_watchdog()
+            except Exception as e:  # noqa: BLE001 - a timer callback: Qt would swallow it
+                # the watchdog may now go unfed: the beam must not stay on without it
+                log.error("Feeding the watchdog during the test beam failed", exc_info=True)
+                self.button_test_beam.setChecked(False)
+                self._say(f"Test beam turned off: the controller did not take the watchdog feed ({e}).")
+                return
         if self._running() or self.session.meter is None:
             return
         try:

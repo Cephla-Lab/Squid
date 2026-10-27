@@ -291,6 +291,19 @@ def test_a_failed_reading_turns_the_test_beam_off(qtbot, session, answers, error
     assert "Test beam turned off" in dialog.label_result.text()
 
 
+def test_a_failed_watchdog_feed_turns_the_test_beam_off(qtbot, session, answers):
+    # review 6: the reading timer fed the watchdog with no try/except; Qt swallows a timer callback's exception, so a
+    # failed feed went unlogged and the beam stayed on with the watchdog maybe unfed
+    dialog = _dialog(qtbot, session)
+    dialog.button_connect.click()
+    dialog.table.selectRow(0)
+    dialog.button_test_beam.setChecked(True)
+    session.feed_watchdog = MagicMock(side_effect=OSError("serial write failed"))
+    dialog._update_reading()
+    assert not dialog.button_test_beam.isChecked() and session.source_state() == (False, 0.0)
+    assert "serial write failed" in dialog.label_result.text()
+
+
 def test_a_dark_test_beam_says_to_raise_the_level(qtbot, session, answers):
     # bench 2026-10-09: a test beam below the LED engine's switch-on (DAC ~19 %) gave no light and no clue why
     dialog = _dialog(qtbot, session)
