@@ -6946,7 +6946,6 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         # Create spacer items
         EDGE_SPACING = 4  # Adjust this value as needed
-        edge_spacer = QSpacerItem(EDGE_SPACING, 0, QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         # Create first row layouts
         if self.use_overlap:
@@ -6956,10 +6955,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             xy_half.addStretch(1)
             xy_half.addWidget(QLabel("Ny"))
             xy_half.addWidget(self.entry_NY)
-            xy_half.addSpacerItem(edge_spacer)
+            xy_half.addSpacing(EDGE_SPACING)
 
             overlap_half = QHBoxLayout()
-            overlap_half.addSpacerItem(edge_spacer)
+            overlap_half.addSpacing(EDGE_SPACING)
             overlap_half.addWidget(QLabel("FOV Overlap"), alignment=Qt.AlignRight)
             overlap_half.addWidget(self.entry_overlap)
         else:
@@ -6970,10 +6969,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
             x_half.addStretch(1)
             x_half.addWidget(QLabel("Nx"))
             x_half.addWidget(self.entry_NX)
-            x_half.addSpacerItem(edge_spacer)
+            x_half.addSpacing(EDGE_SPACING)
 
             y_half = QHBoxLayout()
-            y_half.addSpacerItem(edge_spacer)
+            y_half.addSpacing(EDGE_SPACING)
             y_half.addWidget(QLabel("dy"))
             y_half.addWidget(self.entry_deltaY)
             y_half.addStretch(1)
@@ -6988,10 +6987,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         dz_half.addWidget(QLabel("Nz"))
         dz_half.addWidget(self.entry_NZ)
         dz_half.addWidget(self.combobox_z_order)
-        dz_half.addSpacerItem(edge_spacer)
+        dz_half.addSpacing(EDGE_SPACING)
 
         dt_half = QHBoxLayout()
-        dt_half.addSpacerItem(edge_spacer)
+        dt_half.addSpacing(EDGE_SPACING)
         dt_half.addWidget(QLabel("dt"))
         dt_half.addWidget(self.entry_dt)
         dt_half.addStretch(1)
@@ -7013,10 +7012,10 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
         self.z_min_layout.addWidget(self.set_minZ_button)
         self.z_min_layout.addWidget(QLabel("Z-min"), Qt.AlignRight)
         self.z_min_layout.addWidget(self.entry_minZ)
-        self.z_min_layout.addSpacerItem(edge_spacer)
+        self.z_min_layout.addSpacing(EDGE_SPACING)
 
         self.z_max_layout = QHBoxLayout()
-        self.z_max_layout.addSpacerItem(edge_spacer)
+        self.z_max_layout.addSpacing(EDGE_SPACING)
         self.z_max_layout.addWidget(self.set_maxZ_button)
         self.z_max_layout.addWidget(QLabel("Z-max"), Qt.AlignRight)
         self.z_max_layout.addWidget(self.entry_maxZ)
@@ -7041,14 +7040,14 @@ class FlexibleMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMixi
 
         grid_config = QHBoxLayout()
         grid_config.addWidget(self.list_configurations)
-        grid_config.addSpacerItem(edge_spacer)
+        grid_config.addSpacing(EDGE_SPACING)
 
         button_layout = QVBoxLayout()
         button_layout.addWidget(self.btn_snap_images)
         button_layout.addWidget(self.btn_startAcquisition)
 
         grid_acquisition = QHBoxLayout()
-        grid_acquisition.addSpacerItem(edge_spacer)
+        grid_acquisition.addSpacing(EDGE_SPACING)
         grid_acquisition.addLayout(grid_af)
         grid_acquisition.addLayout(button_layout)
 

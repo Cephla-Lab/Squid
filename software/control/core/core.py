@@ -1142,7 +1142,7 @@ class ImageDisplayWindow(QMainWindow):
             self.graphics_widget.view.scene().sigMouseMoved.connect(self.handle_mouse_move)
 
         # Set up timer for updating stage and piezo positions
-        self.update_timer = QTimer()
+        self.update_timer = QTimer(self.widget)
         self.update_timer.timeout.connect(self.update_stage_piezo_positions)
         self.update_timer.start(100)  # Update every 100ms
 
