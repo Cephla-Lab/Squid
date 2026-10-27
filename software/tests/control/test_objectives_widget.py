@@ -7,6 +7,7 @@ import pytest
 from qtpy.QtCore import QObject, Signal
 from qtpy.QtWidgets import QMessageBox
 
+import control._def
 import tests.control.test_stubs as ts
 from control.widgets import ObjectivesWidget
 from control.widgets_z_lift import LiftMotionGuard, LoadingPositionButton
@@ -374,6 +375,64 @@ def test_servo_swap_can_leave_z_retracted(qtbot, with_lift):
     raised = ["lift_to_4.0"] if with_lift else []
     assert events == ["freeze", "retract", *lift, "servo_off", "dialog", "servo_on", "retract", *raised]
     assert store.current_objective == "40x"
+
+
+@pytest.fixture
+def _release_in_place(monkeypatch):
+    monkeypatch.setattr(control._def, "PI_FOCUS_SWAP_RETRACT", False)
+
+
+@pytest.mark.parametrize("with_lift", [True, False])
+def test_servo_swap_can_release_in_place(qtbot, _release_in_place, with_lift):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(
+        store, focus_servo=_RecordingServo(events), z_lift=_RecordingLift(events) if with_lift else None
+    )
+    qtbot.addWidget(widget)
+
+    with patch(
+        "control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.Ok)
+    ) as question:
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    # Frozen at the focus height and released there, so the restore lands back on the frozen setpoint. A lift still
+    # lowers the sample for the swap.
+    lift = ["lift_lower"] if with_lift else []
+    raised = ["lift_to_4.0"] if with_lift else []
+    assert events == ["freeze", *lift, "servo_off", "dialog", "servo_on", *raised, "restore_2.5"]
+    assert "not retracted" in question.call_args.args[2]
+    assert store.current_objective == "40x"
+
+
+def test_keep_z_retracted_after_an_in_place_swap_retracts_once_the_servo_holds_z(qtbot, _release_in_place):
+    store = ts.get_test_objective_store()  # starts on 20x
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events))
+    qtbot.addWidget(widget)
+
+    with patch("control.widgets._ask_objective_z_return", side_effect=_dialog_answering(events, QMessageBox.No)):
+        with qtbot.waitSignal(widget.signal_objective_changed, timeout=3000):
+            widget.dropdown.setCurrentText("40x")
+
+    assert events == ["freeze", "servo_off", "dialog", "servo_on", "retract"]
+
+
+def test_failed_in_place_release_does_not_say_z_was_retracted(qtbot, _release_in_place):
+    store = ts.get_test_objective_store()
+    events = []
+    widget = ObjectivesWidget(store, focus_servo=_RecordingServo(events, fail_on=False))
+    qtbot.addWidget(widget)
+
+    with patch("control.widgets._ask_objective_z_return") as question, patch.object(QMessageBox, "warning") as warning:
+        widget.dropdown.setCurrentText("10x")
+        qtbot.waitUntil(widget.dropdown.isEnabled, timeout=3000)
+
+    assert events == ["freeze"]
+    question.assert_not_called()
+    assert "retracted" not in warning.call_args.args[2]
+    assert store.current_objective == store.default_objective
 
 
 def test_a_lift_that_fails_to_rise_after_a_swap_leaves_z_retracted(qtbot):

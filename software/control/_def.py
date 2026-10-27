@@ -1308,6 +1308,10 @@ PI_FOCUS_SUB_WINDOW_SETTLE_MS = 20
 PI_FOCUS_PROFILE_STATE_PATH = "cache/pi_focus_profile.json"
 # When neither of the above applies, Z retracts to OBJECTIVE_RETRACTED_POS_MM (the existing Squid
 # retract constant) on home() and before XY homing -- set that for the objective-clear position.
+# A manual objective swap (no objective changer) retracts Z before it releases the V-308 servo. False releases it in
+# place, at the focus height. Only safe when the V-308's weight force compensation holds the mounted objective: an
+# under-compensated stage falls toward the sample on an upright system once the servo is off.
+PI_FOCUS_SWAP_RETRACT = True
 
 # Z lift: on an upright system with a PI V-308 as the focus Z, the Cephla Z stepper lifts the XY stage and the sample.
 # It lowers (homes, to its bottom sensor) before XY homing and before the loading position, by Z_LIFT_SWAP_LOWER_MM for
