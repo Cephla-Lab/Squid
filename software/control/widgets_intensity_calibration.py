@@ -439,6 +439,9 @@ class IntensityCalibrationDialog(QDialog):
         for row in range(self.table.rowCount()):
             self.table.item(row, self.COL_RUN).setText("")
         self._say("")
+        # cleared here, not when the last run's result came: Cancel stays enabled until its thread ends, so a click in
+        # between would otherwise stop this run before its first channel
+        self.session.clear_cancel()
         self._set_running(True)
         self.worker = CalibrationWorker(
             self.session, targets, self.measured_in, self.spin_sensor_limit.value(), parent=self
@@ -504,7 +507,6 @@ class IntensityCalibrationDialog(QDialog):
             self._show_plots(row)
 
     def _finished(self, result):
-        self.session.clear_cancel()
         if isinstance(result, Exception):
             self._say(f"Run failed: {result}")
         else:

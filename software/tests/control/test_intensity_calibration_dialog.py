@@ -126,6 +126,17 @@ def test_the_run_shows_its_own_readings_and_draws_the_curve_as_it_goes(qtbot, se
     assert live and live[0] > 100  # every reading with the light on, the sweep's 101 levels among them
 
 
+def test_a_cancel_after_the_run_finished_does_not_stop_the_next_run(qtbot, session, answers):
+    # review 6: the cancel flag was cleared when the run's result arrived, but Cancel stays enabled until the thread
+    # ends; a click in between left the flag set, and the next Run stopped before its first channel ("0 of 0")
+    dialog = _dialog(qtbot, session)
+    _run_405_only(qtbot, dialog)
+    session.cancel()  # what that late click leaves behind
+    dialog.button_run.click()
+    qtbot.waitUntil(lambda: dialog.worker is None, timeout=120000)
+    assert isinstance(dialog.results.get("Fluorescence 405 nm Ex"), ChannelResult), dialog.label_result.text()
+
+
 def test_failed_verification_asks_before_saving(qtbot, session, answers):
     dialog = _dialog(qtbot, session)
     _run_405_only(qtbot, dialog)
