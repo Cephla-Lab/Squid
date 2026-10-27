@@ -823,6 +823,34 @@ def test_a_stall_while_setting_up_the_test_beam_keeps_it_off(repo):
     assert mcu.calls[-1] == ("start_heartbeat", 2.5)  # the heartbeat is back
 
 
+class _TimesOutOnceWhileArming(OneShotWatchdog):
+    """The controller does not acknowledge the first arming in time: the wait for it raises, as the real one does."""
+
+    def __init__(self, time):
+        super().__init__(time)
+        self.timed_out = False
+
+    def wait_till_operation_is_completed(self, timeout_limit_s=5):
+        super().wait_till_operation_is_completed(timeout_limit_s)
+        if not self.timed_out and self.calls[-1][0] == "set_watchdog_timeout":
+            self.timed_out = True
+            raise TimeoutError("Current mcu operation timed out")
+
+
+def test_a_timeout_while_arming_the_test_beam_gives_the_watchdog_back(repo):
+    # review 6: the test beam armed the watchdog outside its cleanup, so a timeout there left the heartbeat stopped
+    # for good - the one-shot watchdog then fired once and live view ran without it
+    time = FakeTime()
+    mcu = _TimesOutOnceWhileArming(time)
+    session = _owned_session(repo, time, mcu)
+    with pytest.raises(TimeoutError):
+        session.test_beam_on(session.targets()[0], 10.0)
+    assert session.source_state() == (False, 0.0)
+    assert mcu.armed and mcu.calls[-1] == ("start_heartbeat", 2.5)
+    mcu.turn_on_illumination()  # live view, after the failed test beam
+    assert mcu.unprotected_on == 0
+
+
 def test_save_refuses_when_the_port_was_remapped_since_the_run(repo):
     session = _session(repo)
     calibration = _calibrated(session)

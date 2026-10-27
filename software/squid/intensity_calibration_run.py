@@ -810,16 +810,14 @@ class CalibrationSession:
         if self.meter is not None:
             self.meter.set_wavelength(target.wavelength_nm)
         self._pause_heartbeat()
-        output = self._output_for(target, self._arm_watchdog())
         try:
+            # arming is inside: if it fails, the heartbeat must still come back
+            output = self._output_for(target, self._arm_watchdog())
             output.off()
             output.set_percent(target.ceiling_percent * min(max(percent_of_ceiling, 0.0), 100.0) / 100.0)
             output.on()
         except Exception:
-            try:
-                output.safe_off()
-            finally:
-                self._resume_heartbeat()
+            self.test_beam_off(target)
             raise
 
     def test_beam_off(self, target: ChannelTarget) -> None:
