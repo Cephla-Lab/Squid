@@ -586,6 +586,28 @@ def test_user_abort_reports_user_abort():
     assert mpc.last_end_reason == "user_abort"
 
 
+def test_frame_timeout_ends_the_run_as_error_and_logs_how_long_it_waited(monkeypatch, caplog):
+    """A software trigger whose frame never arrives must end the run as an error, and the log line must carry
+    the timeout it waited (it was not an f-string, so it printed the placeholder name instead of the seconds)."""
+    import logging
+    import re
+
+    scope, tt, mpc = _controller_with_tracker()
+    mpc.scanCoordinates.remove_region("region_2")  # one FOV, one channel: the run pays the timeout once
+    mpc.scanCoordinates.remove_region("region_grid")
+    mpc.selected_configurations = mpc.selected_configurations[:1]
+    monkeypatch.setattr(scope.camera, "_send_trigger_imp", lambda illumination_time=None: None)  # no frame, ever
+    with caplog.at_level(logging.ERROR):
+        mpc.run_acquisition()
+        assert tt.finished_event.wait(60)
+    mpc.thread.join(10)
+
+    assert mpc.last_end_reason == "error"
+    timeout_lines = [r.getMessage() for r in caplog.records if "Timed out waiting" in r.getMessage()]
+    assert timeout_lines, "the frame timeout was not logged"
+    assert re.search(r"Timed out waiting \d+(\.\d+)? \[s\] for a frame", timeout_lines[0]), timeout_lines[0]
+
+
 def test_validation_failure_reports_failed_to_start_exactly_once():
     scope, tt, mpc = _controller_with_tracker()
     mpc.laserAutoFocusController.laser_af_properties.has_reference = False

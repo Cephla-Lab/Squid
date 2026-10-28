@@ -731,7 +731,7 @@ class MultiPointWorkerBase:
                 # wrong.
                 non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
                 if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
-                    self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
+                    self._log.error(f"Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
                     self._abort_due_to_error()
                     # Let this fall through so we still turn off illumination.  Let the caller actually break out
                     # of the acquisition.
