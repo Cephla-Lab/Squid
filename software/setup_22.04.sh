@@ -64,6 +64,10 @@ pip3 install qtpy pyserial pandas imageio crc==1.3.0 lxml "numpy<2" tifffile sci
 pip3 install opencv-python-headless opencv-contrib-python-headless
 pip3 install napari==0.5.4 scikit-image dask_image ome_zarr aicsimageio basicpy pytest pytest-qt pytest-xvfb gitpython matplotlib pydantic_xml pyvisa hidapi filelock lxml_html_clean psutil mcp ndv
 
+# Zarr v3 saving (FILE_SAVING_OPTION = ZARR_V3, and always for Record + Z-Stack). control/core/zarr_writer.py
+# imports tensorstore lazily, so without it the acquisition starts normally and dies at the first frame.
+pip3 install tensorstore
+
 # Optional: PI V-308 / C-414 focus stage (USE_PI_FOCUS_STAGE). Safe to skip if unused;
 # squid.stage.pi imports it lazily and only needs it to connect to real hardware, so
 # `||` keeps an install failure non-fatal under set -e.
