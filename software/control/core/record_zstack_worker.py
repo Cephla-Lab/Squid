@@ -206,8 +206,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.liveController.stop_live()
             except Exception:
                 log.exception("Failed to stop live view before acquisition")
-        if self.params.zstack_enabled and self.liveController.trigger_mode != TriggerMode.SOFTWARE:
-            self._switch_to_software_trigger_streaming()
 
         try:
             if self.params.recording_enabled:
@@ -305,33 +303,6 @@ class RecordZStackWorker(MultiPointWorkerBase):
                 self.callbacks.signal_acquisition_finished()
             except Exception:
                 log.exception("signal_acquisition_finished callback failed")
-
-    def _switch_to_software_trigger_streaming(self) -> None:
-        """Put the z-stack's software trigger in place once, at the start, with the camera streaming.
-
-        Why: a ToupTek camera moves its trigger source off the hardware input only when the trigger
-        mode changes on a running stream. Every later mode write in this run happens on a stopped
-        stream (each phase stops the camera on the way out), so a hardware-to-software switch made
-        there leaves the source on the hardware input and every z-stack trigger is ignored: no
-        z-stack, "Timed out waiting ... for a frame". Measured on an ITR3CMOS26000KMA; the SDK
-        documentation does not describe it, and other models are untested.
-
-        Scope: called only for runs with a z-stack that start outside software trigger. Runs that
-        start in software trigger, and recording-only runs, are unchanged. The user's mode is
-        restored in run()'s finally as before; the camera driver is not changed.
-
-        Side effect: a camera left stopped (e.g. by a previous run) is started here.
-
-        If the switch fails it is only logged, and zstack() switches as before. On a ToupTek camera
-        that later switch happens on a stopped stream, so it does not cure the trigger source; it
-        keeps other cameras and the LiveController in sync.
-        """
-        try:
-            if not self.camera.get_is_streaming():
-                self.camera.start_streaming()
-            self.liveController.set_trigger_mode(TriggerMode.SOFTWARE)
-        except Exception:
-            log.exception("Failed to switch to software trigger before the acquisition")
 
     # ------------------------------------------------------------- reference
     def establish_reference(self) -> float:
