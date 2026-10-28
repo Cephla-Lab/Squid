@@ -2413,3 +2413,58 @@ def test_validate_rejects_zero_zstack_exposure(qtbot, simulated_widget_deps, mon
     monkeypatch.setattr(w, "_get_zstack_row_values", lambda name: (0.0, 0.0, 50.0))
     err = w.validate()
     assert err is not None and "exposure" in err
+
+
+def test_editors_and_labels_are_never_narrower_than_their_size_hints(qtbot, simulated_widget_deps):
+    """Widths must come from the font in use, not from pixel counts tuned on one machine.
+
+    With a 12 pt GUI font the fixed widths left "FPS: 100", "25.0 ms", "Z-min: -3.0 μm" and the
+    "Experiment ID:" label cut off. Qt's sizeHint already fits each editor's widest value text in the
+    current font, so no editor or label may end up narrower than its own hint.
+    """
+    from qtpy.QtWidgets import QAbstractSpinBox, QApplication, QComboBox, QLabel, QScrollArea
+    from control.widgets import RecordZStackMultiPointWidget
+
+    w = RecordZStackMultiPointWidget(**simulated_widget_deps)
+    qtbot.addWidget(w)
+    w.checkbox_recording.setChecked(True)
+    w.checkbox_zstack.setChecked(True)
+    w.checkbox_time.setChecked(True)
+    w.entry_recording_Nz.setValue(2)  # shows dz too
+    w._add_zstack_channel_row(w.liveController.get_channels(w.objectiveStore.current_objective)[0].name)
+    w.entry_fps.setValue(100)
+    w.show()
+    qtbot.waitExposed(w)
+    QApplication.processEvents()
+
+    # The GUI's left panel is as wide as the widest multipoint tab, which is never narrower than this
+    # tab's own content; the tab scrolls, so its sizeHint is the scroll area's, not the content's.
+    content = w.findChild(QScrollArea).widget()
+
+    def _fit_content():
+        chrome = w.width() - content.width()
+        w.resize(content.sizeHint().width() + chrome, w.sizeHint().height())
+        QApplication.processEvents()
+
+    _fit_content()
+
+    def _label(widget):
+        shown = widget.currentText() if isinstance(widget, QComboBox) else widget.text()
+        return f"{type(widget).__name__}({shown!r})"
+
+    def _too_narrow():
+        checked = [c for c in w.findChildren(QAbstractSpinBox) + w.findChildren(QLabel) if c.isVisible()]
+        checked += [w.combobox_shape, w.combobox_xy_mode]
+        assert len(checked) > 20, "the tab's editors were not found"
+        return [
+            f"{_label(c)}: {c.width()}px < hint {c.sizeHint().width()}px"
+            for c in checked
+            if c.width() < c.sizeHint().width()
+        ]
+
+    assert not _too_narrow(), "\n".join(_too_narrow())
+
+    # Nz > 1 with Laser AF on moves Nz/dz to a row of their own under FPS/Dur, aligned by column.
+    w.checkbox_laser_af.setChecked(True)
+    _fit_content()
+    assert not _too_narrow(), "\n".join(_too_narrow())

@@ -17090,7 +17090,6 @@ def _add_channel_settings_spinboxes(
     exposure: float,
     gain: float,
     illumination: float,
-    max_widths: Tuple[int, int, int],
 ) -> Tuple[QDoubleSpinBox, QDoubleSpinBox, QDoubleSpinBox]:
     """Put the exposure, gain and illumination editors in columns 1-3 of *row* and return them."""
     exp_spin = QDoubleSpinBox()
@@ -17113,9 +17112,8 @@ def _add_channel_settings_spinboxes(
     illum_spin.setDecimals(1)
 
     spinboxes = (exp_spin, gain_spin, illum_spin)
-    for column, (spinbox, max_width) in enumerate(zip(spinboxes, max_widths), start=1):
+    for column, spinbox in enumerate(spinboxes, start=1):
         spinbox.setKeyboardTracking(False)
-        spinbox.setMaximumWidth(max_width)
         table.setCellWidget(row, column, spinbox)
     return spinboxes
 
@@ -17273,14 +17271,15 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(6)
 
-        # Fixed-width label column so both input fields start at the same x
-        # (sized for the wider "Experiment ID:" label).
-        label_col_w = 112
+        # Shared label column so both input fields start at the same x, sized
+        # from the wider label in the font in use.
+        base_label = QLabel("Base path:")
+        exp_label = QLabel("Experiment ID:")
+        label_col_w = max(base_label.sizeHint().width(), exp_label.sizeHint().width())
 
         # Row 1: Base path lineedit + Browse button
         row1 = QHBoxLayout()
         row1.setSpacing(6)
-        base_label = QLabel("Base path:")
         base_label.setFixedWidth(label_col_w)
         base_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         row1.addWidget(base_label)
@@ -17297,7 +17296,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # Row 2: Experiment ID on its own row
         row2 = QHBoxLayout()
         row2.setSpacing(6)
-        exp_label = QLabel("Experiment ID:")
         exp_label.setFixedWidth(label_col_w)
         exp_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         row2.addWidget(exp_label)
@@ -17315,18 +17313,12 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         vbox.setContentsMargins(4, 2, 4, 2)
         vbox.setSpacing(6)
 
-        # Consistent widths so label+field pairs line up cleanly across rows.
-        field_w = 70  # spinbox / combo width
         pair_gap = 6  # horizontal gap between adjacent label+field pairs
 
         def _pair_label(text: str) -> QLabel:
             lbl = QLabel(text)
             lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             return lbl
-
-        # First-column labels share a width so the first field of each row aligns
-        # (sized for the wider "Overlap:" label).
-        first_label_w = 52
 
         # --- XY / Time tabs row: mirrors WellplateMultiPointWidget's XY/Z/Time
         # tabs (checkbox + combo in a frame that highlights when active). Z is
@@ -17339,7 +17331,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.checkbox_xy.setChecked(True)
         self.combobox_xy_mode = QComboBox()
         self.combobox_xy_mode.addItems(["Current Position", "Select Wells"])
-        self.combobox_xy_mode.setMaximumWidth(130)
         # Select Wells (tile a grid over the selected wells) is the default so
         # existing tiling behavior is unchanged out of the box; Current
         # Position is a single FOV at the live stage position, bypassing
@@ -17376,23 +17367,18 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row1.setSpacing(4)
 
         overlap_label = _pair_label("Overlap:")
-        overlap_label.setFixedWidth(first_label_w)
         row1.addWidget(overlap_label)
         self.entry_overlap = QDoubleSpinBox()
         self.entry_overlap.setRange(-1000, 99)
         self.entry_overlap.setValue(10)
         self.entry_overlap.setSuffix(" %")
         self.entry_overlap.setKeyboardTracking(False)
-        self.entry_overlap.setFixedWidth(field_w)
         row1.addWidget(self.entry_overlap)
 
         row1.addSpacing(pair_gap)
         row1.addWidget(_pair_label("Shape:"))
         self.combobox_shape = QComboBox()
         self.combobox_shape.addItems(["Square", "Circle", "Rectangle"])
-        # Wider than field_w: word options ("Rectangle") need more room than
-        # the numeric+suffix spinboxes elsewhere in this row.
-        self.combobox_shape.setFixedWidth(90)
         row1.addWidget(self.combobox_shape)
 
         row1.addSpacing(pair_gap)
@@ -17403,7 +17389,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_scan_size.setSuffix(" mm")
         self.entry_scan_size.setDecimals(2)
         self.entry_scan_size.setKeyboardTracking(False)
-        self.entry_scan_size.setFixedWidth(field_w)
         row1.addWidget(self.entry_scan_size)
 
         row1.addStretch(1)
@@ -17416,13 +17401,11 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         row2.setSpacing(4)
 
         nt_label = _pair_label("Nt:")
-        nt_label.setFixedWidth(first_label_w)
         row2.addWidget(nt_label)
         self.entry_Nt = QSpinBox()
         self.entry_Nt.setMinimum(1)
         self.entry_Nt.setMaximum(5000)
         self.entry_Nt.setValue(1)
-        self.entry_Nt.setFixedWidth(field_w)
         row2.addWidget(self.entry_Nt)
 
         row2.addSpacing(pair_gap)
@@ -17432,11 +17415,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_dt.setValue(0)
         self.entry_dt.setSuffix(" s")
         self.entry_dt.setKeyboardTracking(False)
-        self.entry_dt.setFixedWidth(field_w)
         row2.addWidget(self.entry_dt)
 
         row2.addStretch(1)
         vbox.addWidget(self.time_controls_frame)
+
+        # Consistent widths so the label+field pairs of the XY and Time rows line
+        # up, taken from the widgets' own size hints (the font in use) the way
+        # WellplateMultiPointWidget sizes its entries.
+        fields = (self.entry_overlap, self.entry_scan_size, self.entry_Nt, self.entry_dt)
+        field_w = max(field.sizeHint().width() for field in fields)
+        for field in fields:
+            field.setFixedWidth(field_w)
+        first_label_w = max(overlap_label.sizeHint().width(), nt_label.sizeHint().width())
+        overlap_label.setFixedWidth(first_label_w)
+        nt_label.setFixedWidth(first_label_w)
 
         # Wire FOV-grid signals
         self.entry_overlap.valueChanged.connect(self._update_scan_regions)
@@ -17550,10 +17543,9 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self._recording_ch_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.recording_channel_table.setCellWidget(0, 0, self._recording_ch_combo)
 
-        # Cols 1-3: exposure, gain, illumination (widths capped so the Channel column keeps
-        # room for full names)
+        # Cols 1-3: exposure, gain, illumination
         self._recording_exp_spin, self._recording_gain_spin, self._recording_illum_spin = (
-            _add_channel_settings_spinboxes(self.recording_channel_table, 0, 50.0, 0.0, 50.0, (68, 48, 60))
+            _add_channel_settings_spinboxes(self.recording_channel_table, 0, 50.0, 0.0, 50.0)
         )
 
         # Col 4: ↻ refresh-from-channel-config button
@@ -17590,39 +17582,21 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         # their own row 2 together when all 3 are visible at once (Nz>1 AND
         # Laser AF on) — that's too many fields for one row. See
         # _rebuild_recording_rows, called from _update_recording_planes_ui
-        # whenever Nz or Laser AF change.
-        # FPS/Dur always use their own compact widths (fit the actual text,
-        # not shared with anything). Nz/dz normally use their OWN, smaller
-        # compact widths too — they only borrow FPS's/Dur's (wider) widths
-        # when _rebuild_recording_rows puts them on row 2 for alignment;
-        # forcing the wider shared width unconditionally (as an earlier pass
-        # here did) left visible dead space after "Nz:"/"dz:" even in the
-        # common single-row case, where nothing needs to align with them.
-        self._recording_col1_label_w = 30  # fits "FPS:"
-        self._recording_col1_entry_w = 50  # fits FPS's spinbox
-        self._recording_col2_label_w = 28  # fits "Dur:"
-        self._recording_col2_entry_w = 64  # fits Duration's spinbox
-        self._recording_nz_label_w = 24  # fits "Nz:" on its own
-        self._recording_nz_entry_w = 44  # fits Nz's spinbox on its own
-        self._recording_dz_label_w = 22  # fits "dz:" on its own
-        self._recording_dz_entry_w = 78  # fits dz's spinbox+suffix on its own
-
+        # whenever Nz or Laser AF change; it also sets the widths, from the
+        # widgets' own size hints (the font in use).
         self.fps_row = QHBoxLayout()
         self.fps_row.setSpacing(4)
 
         label_fps = QLabel("FPS:")
-        label_fps.setFixedWidth(self._recording_col1_label_w)
         self.fps_row.addWidget(label_fps)
         self.entry_fps = QDoubleSpinBox()
         self.entry_fps.setRange(1, 1000)
         self.entry_fps.setDecimals(0)
         self.entry_fps.setValue(10.0)
         self.entry_fps.setKeyboardTracking(False)
-        self.entry_fps.setFixedWidth(self._recording_col1_entry_w)
         self.fps_row.addWidget(self.entry_fps)
 
         label_dur = QLabel("Dur:")
-        label_dur.setFixedWidth(self._recording_col2_label_w)
         self.fps_row.addWidget(label_dur)
         self.entry_duration = QDoubleSpinBox()
         self.entry_duration.setRange(1, 3600)
@@ -17630,7 +17604,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_duration.setValue(1.0)
         self.entry_duration.setSuffix(" s")
         self.entry_duration.setKeyboardTracking(False)
-        self.entry_duration.setFixedWidth(self._recording_col2_entry_w)
         self.fps_row.addWidget(self.entry_duration)
 
         # Fixed prefix length (FPS label/spin, spacing, Dur label/spin) that
@@ -17671,8 +17644,14 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_recording_bottom_z.setValue(0.0)
         self.entry_recording_bottom_z.setSuffix(" µm")
         self.entry_recording_bottom_z.setKeyboardTracking(False)
-        self.entry_recording_bottom_z.setMaximumWidth(85)
         self.entry_recording_bottom_z.setToolTip("Bottom plane offset relative to the Z reference")
+
+        # Column pairs for _rebuild_recording_rows: Nz sits under FPS and dz
+        # under Dur when they get a row of their own.
+        self._recording_columns = (
+            ((label_fps, self.entry_fps), (self.label_recording_Nz, self.entry_recording_Nz)),
+            ((label_dur, self.entry_duration), (self.label_recording_dz, self.entry_recording_dz)),
+        )
 
         # Wire up dz visibility (Nz), Z-offset visibility (Laser AF — the
         # offset is relative to the AF reference plane), the offset caption
@@ -17718,7 +17697,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_zmin.setDecimals(1)
         self.entry_zmin.setSingleStep(0.5)
         self.entry_zmin.setKeyboardTracking(False)
-        self.entry_zmin.setMaximumWidth(68)  # a hair more than zmax: room for the "-" sign
         layout.addWidget(QLabel("Z-min:"), 0, 0)
         layout.addWidget(self.entry_zmin, 0, 1)
 
@@ -17729,7 +17707,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_zmax.setDecimals(1)
         self.entry_zmax.setSingleStep(0.5)
         self.entry_zmax.setKeyboardTracking(False)
-        self.entry_zmax.setMaximumWidth(62)
         layout.addWidget(QLabel("Z-max:"), 0, 2)
         layout.addWidget(self.entry_zmax, 0, 3)
 
@@ -17740,8 +17717,6 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.entry_step.setDecimals(2)
         self.entry_step.setSingleStep(0.1)
         self.entry_step.setKeyboardTracking(False)
-        # Slightly wider than zmin/zmax: 2 decimals ("1.00 μm") need ~1 extra char.
-        self.entry_step.setMaximumWidth(68)
         layout.addWidget(QLabel("Step:"), 0, 4)
         layout.addWidget(self.entry_step, 0, 5)
 
@@ -18015,21 +17990,15 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         use_second_row = multi and use_af
         target = self.z_row if use_second_row else self.fps_row
 
-        # Compact widths normally; only widen to match FPS/Dur when Nz/dz
-        # actually sit below them on row 2, so the common single-row case
-        # never carries dead space sized for an alignment it isn't doing.
-        self.label_recording_Nz.setFixedWidth(
-            self._recording_col1_label_w if use_second_row else self._recording_nz_label_w
-        )
-        self.entry_recording_Nz.setFixedWidth(
-            self._recording_col1_entry_w if use_second_row else self._recording_nz_entry_w
-        )
-        self.label_recording_dz.setFixedWidth(
-            self._recording_col2_label_w if use_second_row else self._recording_dz_label_w
-        )
-        self.entry_recording_dz.setFixedWidth(
-            self._recording_col2_entry_w if use_second_row else self._recording_dz_entry_w
-        )
+        # Each widget's own hint normally; when Nz/dz sit below FPS/Dur on
+        # row 2, each column takes the wider of its two hints so the rows
+        # align (sized that way unconditionally, the common single-row case
+        # carried dead space for an alignment it isn't doing).
+        for top_pair, bottom_pair in self._recording_columns:
+            for top, bottom in zip(top_pair, bottom_pair):
+                hints = (top.sizeHint().width(), bottom.sizeHint().width())
+                top.setFixedWidth(max(hints) if use_second_row else hints[0])
+                bottom.setFixedWidth(max(hints) if use_second_row else hints[1])
 
         target.addWidget(self.label_recording_Nz)
         target.addWidget(self.entry_recording_Nz)
@@ -18072,7 +18041,7 @@ class RecordZStackMultiPointWidget(AcquisitionYAMLDropMixin, QFrame):
         self.zstack_channel_table.setItem(row, 0, item)
 
         # Cols 1-3: exposure, gain, illumination
-        _add_channel_settings_spinboxes(self.zstack_channel_table, row, exposure, gain, illumination, (85, 60, 76))
+        _add_channel_settings_spinboxes(self.zstack_channel_table, row, exposure, gain, illumination)
 
         # Col 4: action buttons (⟳ Live + ✕)
         btn_container = QWidget()
