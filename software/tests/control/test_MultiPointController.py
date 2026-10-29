@@ -279,7 +279,10 @@ def test_multi_point_controller_basic_acquisition():
 
     mpc.run_acquisition()
 
-    timeout_s = 5
+    # A normal run of these simulated acquisitions takes 4.2-4.5 s (measured 2026-09-21), so a 5 s limit
+    # failed whenever the machine hiccuped. wait() returns as soon as the event fires: a generous limit
+    # costs nothing when the test passes. The newer tests below already use 30 s.
+    timeout_s = 30
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
@@ -309,7 +312,7 @@ def test_multi_point_with_laser_af():
 
     mpc.run_acquisition()
 
-    timeout_s = 5
+    timeout_s = 30
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
@@ -334,7 +337,7 @@ def test_multi_point_with_contrast_af():
     mpc.set_af_flag(True)
     mpc.run_acquisition()
 
-    timeout_s = 5
+    timeout_s = 30
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
@@ -432,7 +435,7 @@ def test_focus_map_does_not_mutate_gui_scan_coordinates():
     mpc.set_focus_map(StubFocusMap())
     mpc.run_acquisition()
 
-    timeout_s = 5
+    timeout_s = 30
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
@@ -468,7 +471,7 @@ def test_acquisition_moves_to_per_fov_z():
     select_some_configs(mpc, scope.objective_store.current_objective)
     mpc.run_acquisition()
 
-    timeout_s = 5
+    timeout_s = 30
     assert tt.started_event.wait(timeout_s)
     assert tt.finished_event.wait(timeout_s)
 
