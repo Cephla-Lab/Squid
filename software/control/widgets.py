@@ -1219,6 +1219,12 @@ class PreferencesDialog(QDialog):
 
     signal_config_changed = Signal()
 
+    OME_ZARR_TOOLTIP = (
+        "OME-Zarr 0.5 (Zarr v3).\n"
+        "Tools that only read OME-Zarr 0.4 / Zarr v2 cannot open it;\n"
+        "use a reader with Zarr v3 support, such as ngff-zarr, iohub or ome-zarr-py."
+    )
+
     def __init__(self, config, config_filepath, parent=None, on_restart=None):
         super().__init__(parent)
         self._log = squid.logging.get_logger(self.__class__.__name__)
@@ -1262,11 +1268,20 @@ class PreferencesDialog(QDialog):
         layout = QFormLayout(tab)
         layout.setSpacing(10)
 
-        # File Saving Format
+        # File Saving Format. Each item's data is the FileSavingOption name stored in the config file,
+        # so an item can show a friendlier label without changing what existing configs contain.
         self.file_saving_combo = QComboBox()
-        self.file_saving_combo.addItems([e.name for e in FileSavingOption])
-        current_value = self._get_file_saving_option()
-        self.file_saving_combo.setCurrentText(current_value)
+        for option in FileSavingOption:
+            if option is FileSavingOption.ZARR_V3:
+                self.file_saving_combo.addItem("OME-Zarr", option.name)
+                self.file_saving_combo.setItemData(
+                    self.file_saving_combo.count() - 1, self.OME_ZARR_TOOLTIP, Qt.ToolTipRole
+                )
+            else:
+                self.file_saving_combo.addItem(option.name, option.name)
+        current_index = self.file_saving_combo.findData(self._get_file_saving_option())
+        if current_index >= 0:
+            self.file_saving_combo.setCurrentIndex(current_index)
         layout.addRow("File Saving Format:", self.file_saving_combo)
 
         # TIFF Compression (only visible for the TIFF formats that support it)
@@ -1493,8 +1508,8 @@ class PreferencesDialog(QDialog):
         stage_group.content.addLayout(stage_layout)
         layout.addWidget(stage_group)
 
-        # Zarr v3 Options section
-        zarr_group = CollapsibleGroupBox("Zarr v3 Options", collapsed=True)
+        # OME-Zarr Options section
+        zarr_group = CollapsibleGroupBox("OME-Zarr Options", collapsed=True)
         zarr_layout = QFormLayout()
 
         self.zarr_chunk_mode_combo = QComboBox()
@@ -1511,13 +1526,13 @@ class PreferencesDialog(QDialog):
         self.zarr_6d_fov_checkbox = QCheckBox()
         self.zarr_6d_fov_checkbox.setToolTip(
             "When enabled, non-HCS acquisitions use a single 6D zarr per region\n"
-            "with shape (FOV, T, C, Z, Y, X). This is non-standard but groups\n"
-            "all FOVs together. When disabled (default), creates separate 5D\n"
-            "OME-NGFF compliant zarr files per FOV."
+            "with shape (FOV, T, C, Z, Y, X). This groups all FOVs together but\n"
+            "is not OME-Zarr: OME-Zarr readers cannot open it. When disabled\n"
+            "(default), creates a separate 5D OME-Zarr image per FOV."
         )
         zarr_6d_fov_value = self._get_config_bool("GENERAL", "zarr_use_6d_fov_dimension", False)
         self.zarr_6d_fov_checkbox.setChecked(zarr_6d_fov_value)
-        zarr_layout.addRow("Use 6D FOV Dimension:", self.zarr_6d_fov_checkbox)
+        zarr_layout.addRow("Use 6D FOV Dimension (not OME-Zarr):", self.zarr_6d_fov_checkbox)
 
         zarr_group.content.addLayout(zarr_layout)
         layout.addWidget(zarr_group)
@@ -2058,9 +2073,10 @@ class PreferencesDialog(QDialog):
 
     def _update_file_format_options_visibility(self):
         """Show/hide format specific options based on file saving format."""
-        current_format = self.file_saving_combo.currentText()
+        current_format = self.file_saving_combo.currentData()
 
         is_zarr = current_format == "ZARR_V3"
+        self.file_saving_combo.setToolTip(self.OME_ZARR_TOOLTIP if is_zarr else "")
         self.zarr_compression_label.setVisible(is_zarr)
         self.zarr_compression_combo.setVisible(is_zarr)
 
@@ -2081,7 +2097,7 @@ class PreferencesDialog(QDialog):
             self._ensure_section(section)
 
         # General settings
-        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentText())
+        self.config.set("GENERAL", "file_saving_option", self.file_saving_combo.currentData())
         self.config.set("GENERAL", "tiff_compression_level", str(self.tiff_compression_spinbox.value()))
         self.config.set("GENERAL", "zarr_compression", self.zarr_compression_combo.currentText())
         self.config.set("GENERAL", "zarr_chunk_mode", self.zarr_chunk_mode_combo.currentText())
@@ -2262,7 +2278,7 @@ class PreferencesDialog(QDialog):
         """Apply settings that can take effect without restart."""
         # File saving option
         control._def.FILE_SAVING_OPTION = control._def.FileSavingOption.convert_to_enum(
-            self.file_saving_combo.currentText()
+            self.file_saving_combo.currentData()
         )
 
         # TIFF compression level (only applicable when saving individual or multi page TIFFs)
@@ -2349,7 +2365,7 @@ class PreferencesDialog(QDialog):
 
         # General settings (live update)
         old_val = self._get_file_saving_option()
-        new_val = self.file_saving_combo.currentText()
+        new_val = self.file_saving_combo.currentData()
         if old_val != new_val:
             changes.append(("File Saving Format", old_val, new_val, False))
 
