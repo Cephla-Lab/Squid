@@ -111,15 +111,36 @@ def _stage_raw(mcu, staged: bytes):
         _write_word(mcu, index, data)
 
 
-class TestFirmwareVersion:
-    def test_the_simulator_reports_sequencer_firmware(self, mcu):
-        assert mcu.firmware_version == sp.MIN_FIRMWARE_VERSION
+class TestSequencerSupport:
+    def test_the_simulator_answers_the_probe_like_sequencer_firmware(self, mcu):
         assert mcu.supports_hardware_sequencer()
 
-    def test_status_is_idle_before_anything_runs(self, mcu):
+    def test_status_is_hidden_until_the_sequencer_speaks(self, mcu):
+        # Bytes 14..17 are theta until a sequencer command: the host must not decode a position.
+        assert mcu.seq_status is None
+
+    def test_status_shows_the_refused_probe_until_a_program_commits(self, mcu):
+        mcu.supports_hardware_sequencer()
+        assert mcu.seq_status.state == sp.SeqState.IDLE
+        assert mcu.seq_status.error == sp.SeqError.BAD_PROGRAM
+        assert mcu.seq_status.detail == sp.BAD_PROGRAM_LENGTH
+        assert mcu.seq_status.frames_fired == 0
+
+        mcu.seq_upload(stack_program())
         assert mcu.seq_status.state == sp.SeqState.IDLE
         assert mcu.seq_status.error == sp.SeqError.NONE
-        assert mcu.seq_status.frames_fired == 0
+
+    def test_the_field_goes_back_to_theta_after_the_hold(self, mcu, monkeypatch):
+        monkeypatch.setattr(seq_sim, "STATUS_HOLD_S", 0.05)
+        mcu.supports_hardware_sequencer()
+        time.sleep(0.1)
+
+        mcu._serial.theta = -4321
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed()
+
+        assert mcu.theta_pos == -4321
+        assert mcu.seq_status.error == sp.SeqError.BAD_PROGRAM  # the last report is kept
 
 
 class TestRun:

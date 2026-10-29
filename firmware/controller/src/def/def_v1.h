@@ -25,7 +25,10 @@ static const float R_sense_xy = 0.22;
 static const float R_sense_z = 0.43;
 static const float R_sense_w = 0.105;  // Used by both W and W2 (identical hardware)
 
-// TMC2240 — integrated current sense, no external resistor. CURRENT_RANGE
+// TMC2240 — integrated current sense, no external resistor. CURRENT_RANGE_*
+// are FLOORS: tmc2240_driver_set_current stays on the floor when the requested
+// current fits and steps up to the next range only when it does not (so a
+// 1000 mA Z works on a floor-0 axis). CURRENT_RANGE
 // selects the sine PEAK full-scale current: 0 = 0.98 A, 1 = 2.0 A, 2/3 = 3.0 A
 // (KIFS/R_ref with R_ref = 12 kOhm, confirmed on the Squid 2240 board).
 //

@@ -702,10 +702,6 @@ class TestHeaderCrossCheck:
         assert names == {"HEARTBEAT", "SEQ_CANCEL", "TURN_OFF_ALL_PORTS", "RESET"}
         assert seq_sim.ALLOWED_WHILE_RUNNING == {getattr(CMD_SET, name) for name in names}
 
-    def test_minimum_firmware_version(self, seq_wire_h):
-        k = _parse_constexpr(seq_wire_h)
-        assert (k["kFwMajor"], k["kFwMinor"]) == sp.MIN_FIRMWARE_VERSION
-
     def test_layout_offsets(self, seq_wire_h):
         k = _parse_constexpr(seq_wire_h)
         assert k["kLoopOffset"] == sp.LOOP_OFFSET

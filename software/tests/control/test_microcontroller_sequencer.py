@@ -1,8 +1,9 @@
 """Tests for Microcontroller.seq_* — the wire layer that speaks to the hardware sequencer.
 
 These use a recording serial stub rather than the sequencer simulator: the point here is
-exactly what goes on the wire, the firmware version gate, and how a failed SEQ command is
-surfaced.  End-to-end running lives in test_sequencer_simulation.py.
+exactly what goes on the wire, the probe that decides whether the firmware has a sequencer,
+and how a failed SEQ command is surfaced.  End-to-end running lives in
+test_sequencer_simulation.py.
 """
 
 import struct
@@ -11,7 +12,7 @@ import threading
 import pytest
 
 import control.sequencer_program as sp
-from control._def import CMD_EXECUTION_STATUS, CMD_SET
+from control._def import CMD_EXECUTION_STATUS, CMD_SET, ENC_FLAG, SEQ_FLAG_STATUS
 from control.microcontroller import (
     AbstractCephlaMicroSerial,
     CommandAborted,
@@ -26,9 +27,9 @@ from tests.control.test_sequencer_program import golden_program, minimal_program
 def status_as_theta(state: sp.SeqState, error: sp.SeqError, detail: int = 0, frames_fired: int = 0) -> int:
     """Sequencer status bytes 14..17, expressed as the int32 SimSerial writes there.
 
-    Bytes 14..17 used to carry a theta position no firmware ever wrote; from firmware 1.7
-    they are the sequencer status (seq_wire.h).  Reusing the existing response builder keeps
-    this test honest about the packet layout.
+    Bytes 14..17 are the theta field, which the sequencer takes over (flagged in byte 19 by
+    SEQ_FLAG_STATUS) to carry its status (seq_wire.h).  Reusing the existing response builder
+    keeps this test honest about the packet layout.
     """
     packed = bytes(
         sp.SequencerStatus(state=state, error=error, detail=detail, frames_fired=frames_fired).to_response_bytes()
@@ -36,14 +37,27 @@ def status_as_theta(state: sp.SeqState, error: sp.SeqError, detail: int = 0, fra
     return int.from_bytes(packed, "big", signed=True)
 
 
-class RecordingSerial(AbstractCephlaMicroSerial):
-    """Answers every command immediately, records it, and reports a chosen firmware version."""
+def is_probe(command: bytes) -> bool:
+    """The host's "is there a sequencer?" question: a SEQ_COMMIT of length 0 with CRC 0."""
+    return command[1] == CMD_SET.SEQ_COMMIT and command[2:6] == bytes(4)
 
-    def __init__(self, firmware_version=sp.MIN_FIRMWARE_VERSION, status=CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS):
+
+class RecordingSerial(AbstractCephlaMicroSerial):
+    """Answers every command immediately, records it, and reports a chosen firmware version.
+
+    `sequencer` says which firmware this is.  With the sequencer, the host's probe (an empty
+    SEQ_COMMIT) is refused and bytes 14..17 are flagged as the sequencer's status.  Without
+    it, every SEQ_* opcode completes (callback_default) and bytes 14..17 are theta.  Either
+    way `status` answers everything else, and `flags` is byte 19 of every packet.
+    """
+
+    def __init__(self, firmware_version=(1, 8), status=CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS, sequencer=True):
         super().__init__()
         self._lock = threading.Lock()
         self.firmware_version = firmware_version
         self.status = status
+        self.sequencer = sequencer
+        self.flags = (1 << SEQ_FLAG_STATUS) if sequencer else 0
         self.theta = 0
         self.commands = []
         self._buffer = bytearray()
@@ -54,11 +68,15 @@ class RecordingSerial(AbstractCephlaMicroSerial):
 
     def write(self, data, reconnect_tries: int = 0) -> int:
         with self._lock:
-            self.commands.append(bytes(data))
+            command = bytes(data)
+            self.commands.append(command)
+            status = self.status
+            if self.sequencer and is_probe(command):
+                status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR  # Staging::commit() refuses a zero-length program
             self._buffer.extend(
                 SimSerial.response_bytes_for(
                     data[0],
-                    self.status,
+                    status,
                     0,
                     0,
                     0,
@@ -66,6 +84,7 @@ class RecordingSerial(AbstractCephlaMicroSerial):
                     False,
                     False,
                     firmware_version=self.firmware_version,
+                    flags=self.flags,
                 )
             )
         return len(data)
@@ -106,46 +125,78 @@ def mcu_and_serial():
 
 
 @pytest.fixture
-def legacy_mcu_and_serial():
-    serial = RecordingSerial(firmware_version=(1, 6))
+def no_sequencer_mcu_and_serial():
+    """Firmware without the sequencer - master's, which reports the same version number."""
+    serial = RecordingSerial(sequencer=False)
     mcu = Microcontroller(serial, reset_and_initialize=False)
     yield mcu, serial
     mcu.close()
 
 
-class TestFirmwareGate:
-    def test_reports_support_on_1_7(self, mcu_and_serial):
-        mcu, _ = mcu_and_serial
-        assert mcu.firmware_version == (1, 7)
+def probes_sent(serial) -> list:
+    return [c for c in serial.commands if is_probe(c)]
+
+
+def program_commits(serial) -> list:
+    """The SEQ_COMMITs that sealed a program, as opposed to the probe."""
+    return [c for c in serial.commands_of_type(CMD_SET.SEQ_COMMIT) if not is_probe(c)]
+
+
+class TestSequencerProbe:
+    def test_nothing_is_sent_until_asked(self, mcu_and_serial):
+        _, serial = mcu_and_serial
+        assert serial.commands_of_type(CMD_SET.SEQ_COMMIT) == []
+
+    def test_firmware_that_refuses_an_empty_commit_has_the_sequencer(self, mcu_and_serial):
+        mcu, serial = mcu_and_serial
         assert mcu.supports_hardware_sequencer()
+        assert len(probes_sent(serial)) == 1
 
-    def test_reports_no_support_on_1_6(self, legacy_mcu_and_serial):
-        mcu, _ = legacy_mcu_and_serial
-        assert mcu.firmware_version == (1, 6)
+    def test_firmware_that_completes_an_empty_commit_has_no_sequencer(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
         assert not mcu.supports_hardware_sequencer()
+        assert len(probes_sent(serial)) == 1
 
-    def test_seq_upload_raises_on_old_firmware(self, legacy_mcu_and_serial):
-        mcu, serial = legacy_mcu_and_serial
-        with pytest.raises(SequencerNotSupportedError, match=r"1\.6"):
+    def test_the_version_number_does_not_decide(self):
+        # Master firmware 1.8 and sequencer firmware report the same version; only the probe can tell.
+        serial = RecordingSerial(firmware_version=(1, 8), sequencer=False)
+        mcu = Microcontroller(serial, reset_and_initialize=False)
+        try:
+            assert mcu.firmware_version == (1, 8)
+            assert not mcu.supports_hardware_sequencer()
+        finally:
+            mcu.close()
+
+    def test_asks_once_per_connection(self, mcu_and_serial):
+        mcu, serial = mcu_and_serial
+        assert mcu.supports_hardware_sequencer()
+        assert mcu.supports_hardware_sequencer()
+        assert len(probes_sent(serial)) == 1
+
+    def test_the_refusal_leaves_no_aborted_command_behind(self, mcu_and_serial):
+        mcu, _ = mcu_and_serial
+        mcu.supports_hardware_sequencer()
+        assert mcu.last_command_aborted_error is None
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed()  # the next command is unaffected
+
+    def test_seq_upload_raises_without_the_sequencer(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
+        with pytest.raises(SequencerNotSupportedError, match="completed an empty SEQ_COMMIT"):
             mcu.seq_upload(minimal_program())
         assert serial.commands_of_type(CMD_SET.SEQ_WRITE) == []
 
-    def test_seq_run_raises_on_old_firmware(self, legacy_mcu_and_serial):
-        mcu, serial = legacy_mcu_and_serial
+    def test_seq_run_raises_without_the_sequencer(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
         with pytest.raises(SequencerNotSupportedError):
             mcu.seq_run(0)
         assert serial.commands_of_type(CMD_SET.SEQ_RUN) == []
 
-    def test_seq_cancel_raises_on_old_firmware(self, legacy_mcu_and_serial):
-        mcu, serial = legacy_mcu_and_serial
+    def test_seq_cancel_raises_without_the_sequencer(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
         with pytest.raises(SequencerNotSupportedError):
             mcu.seq_cancel()
         assert serial.commands_of_type(CMD_SET.SEQ_CANCEL) == []
-
-    def test_the_error_names_the_required_version(self, legacy_mcu_and_serial):
-        mcu, _ = legacy_mcu_and_serial
-        with pytest.raises(SequencerNotSupportedError, match=r"1\.7"):
-            mcu.seq_run(0)
 
 
 class TestSeqUpload:
@@ -155,9 +206,8 @@ class TestSeqUpload:
         mcu.seq_upload(program)
 
         writes = serial.commands_of_type(CMD_SET.SEQ_WRITE)
-        commits = serial.commands_of_type(CMD_SET.SEQ_COMMIT)
         assert len(writes) == len(program.words()) == 20
-        assert len(commits) == 1
+        assert len(program_commits(serial)) == 1
         # commit comes last
         assert serial.commands[-1][1] == CMD_SET.SEQ_COMMIT
 
@@ -184,7 +234,7 @@ class TestSeqUpload:
         program = golden_program()
         mcu.seq_upload(program)
 
-        commit = serial.commands_of_type(CMD_SET.SEQ_COMMIT)[0]
+        [commit] = program_commits(serial)
         assert struct.unpack(">H", commit[2:4])[0] == len(program.pack()) == 80
         assert struct.unpack(">H", commit[4:6])[0] == program.crc16()
 
@@ -193,7 +243,7 @@ class TestSeqUpload:
         program = golden_program()
         mcu.seq_upload(program)
 
-        commit = serial.commands_of_type(CMD_SET.SEQ_COMMIT)[0]
+        [commit] = program_commits(serial)
         assert struct.unpack(">H", commit[4:6])[0] == sp.crc16_ccitt_false(program.pack())
 
     def test_one_pending_command_at_a_time(self, mcu_and_serial):
@@ -207,7 +257,7 @@ class TestSeqUpload:
         with pytest.raises(sp.ProgramValidationError):
             mcu.seq_upload(minimal_program(channels=()))
         assert serial.commands_of_type(CMD_SET.SEQ_WRITE) == []
-        assert serial.commands_of_type(CMD_SET.SEQ_COMMIT) == []
+        assert serial.commands_of_type(CMD_SET.SEQ_COMMIT) == []  # not even the probe
 
 
 class TestSeqRunAndCancel:
@@ -234,9 +284,37 @@ class TestSeqRunAndCancel:
 
 
 class TestSeqStatus:
-    def test_is_none_before_any_sequencer_firmware_packet(self, legacy_mcu_and_serial):
-        mcu, _ = legacy_mcu_and_serial
+    def test_is_none_until_the_firmware_flags_the_field(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
+        # Bytes that would decode as a status are still theta while byte 19 does not say otherwise.
+        serial.theta = status_as_theta(sp.SeqState.EXPOSING, sp.SeqError.NONE, frames_fired=1234)
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed()
         assert mcu.seq_status is None
+
+    def test_an_encoder_report_is_not_a_sequencer_status(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
+        serial.flags = 1 << ENC_FLAG.REPORTING
+        serial.theta = 777
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed()
+        assert mcu.seq_status is None
+        assert mcu.encoder_pos == 777
+
+    def test_keeps_the_last_report_once_the_flag_clears(self, mcu_and_serial):
+        mcu, serial = mcu_and_serial
+        serial.theta = status_as_theta(sp.SeqState.DONE, sp.SeqError.NONE, frames_fired=20)
+        mcu.seq_cancel()
+        mcu.wait_till_operation_is_completed()
+
+        serial.flags = 0  # the hold expired: the field went back to its other owners
+        serial.theta = -12345
+        mcu.turn_off_all_ports()
+        mcu.wait_till_operation_is_completed()
+
+        assert mcu.seq_status.state == sp.SeqState.DONE
+        assert mcu.seq_status.frames_fired == 20
+        assert mcu.theta_pos == -12345
 
     def test_is_parsed_from_bytes_14_to_17(self, mcu_and_serial):
         mcu, serial = mcu_and_serial
@@ -261,18 +339,18 @@ class TestSeqStatus:
 
 
 class TestThetaPosition:
-    def test_theta_stays_zero_on_sequencer_firmware(self, mcu_and_serial):
+    def test_theta_keeps_its_value_while_the_sequencer_owns_the_field(self, mcu_and_serial):
         mcu, serial = mcu_and_serial
         serial.theta = status_as_theta(sp.SeqState.EXPOSING, sp.SeqError.NONE, frames_fired=7)
         mcu.seq_cancel()
         mcu.wait_till_operation_is_completed()
 
-        # Bytes 14..17 are the sequencer status now, not a position.
+        # Bytes 14..17 are the sequencer status while flagged, not a position.
         assert mcu.theta_pos == 0
         assert mcu.get_pos()[3] == 0
 
-    def test_theta_is_still_parsed_on_older_firmware(self, legacy_mcu_and_serial):
-        mcu, serial = legacy_mcu_and_serial
+    def test_theta_is_parsed_when_nothing_else_owns_the_field(self, no_sequencer_mcu_and_serial):
+        mcu, serial = no_sequencer_mcu_and_serial
         serial.theta = -12345
         mcu.turn_off_all_ports()
         mcu.wait_till_operation_is_completed()

@@ -77,6 +77,7 @@ def settings_block_from_acquisition(data: AcquisitionYAMLData, source_path: str)
             "nz": data.nz,
             "delta_z_um": data.delta_z_um,
             "config": data.z_stacking_config,
+            "order": data.z_stack_order,
             "use_piezo": data.use_piezo,
             "z_range_mm": list(data.z_range_mm) if data.z_range_mm else None,
         },

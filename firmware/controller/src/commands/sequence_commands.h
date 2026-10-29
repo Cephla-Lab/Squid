@@ -18,6 +18,9 @@ void callback_seq_cancel();
 
 // Dispatcher choke point: true when `opcode` must be refused because a sequence is running.
 bool seq_command_refused(uint8_t opcode);
+// True while status bytes 14-17 belong to the sequencer (a sequence runs, or for kStatusHoldMs after its last
+// command or terminal state); the packet builder then fills them and sets SEQ_FLAG_STATUS in byte 19.
+bool seq_status_owned(uint32_t now_ms);
 
 // Once per loop() pass, after seq_tick(): completes the pending SEQ_RUN / SEQ_CANCEL.
 void seq_transport_tick();

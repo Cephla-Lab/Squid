@@ -24,11 +24,6 @@ def test_create_simulated_microcontroller():
 
 
 def test_microcontroller_simulated_positions():
-    # The theta position (the 4th element) is always 0: from firmware 1.7 on, response
-    # bytes 14..17 carry the hardware sequencer's status, not a theta position -- see
-    # firmware/controller/src/sequencer/seq_wire.h. Firmware never wrote a theta position
-    # there, so this only ever looked different in simulation. The theta COMMANDS below
-    # still go on the wire and are still exercised.
     micro = get_test_micro()
 
     micro.move_x_to_usteps(1000)
@@ -40,19 +35,19 @@ def test_microcontroller_simulated_positions():
     micro.move_theta_usteps(4000)
     micro.wait_till_operation_is_completed()
 
-    assert_pos_almost_equal((1000, 2000, 3000, 0), micro.get_pos())
+    assert_pos_almost_equal((1000, 2000, 3000, 4000), micro.get_pos())
 
     micro.home_x()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 2000, 3000, 0), micro.get_pos())
+    assert_pos_almost_equal((0, 2000, 3000, 4000), micro.get_pos())
 
     micro.home_y()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 3000, 0), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 3000, 4000), micro.get_pos())
 
     micro.home_z()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 0, 0), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 0, 4000), micro.get_pos())
 
     micro.home_theta()
     micro.wait_till_operation_is_completed()
@@ -66,7 +61,7 @@ def test_microcontroller_simulated_positions():
     micro.wait_till_operation_is_completed()
     micro.move_theta_usteps(4000)
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((1000, 2000, 3000, 0), micro.get_pos())
+    assert_pos_almost_equal((1000, 2000, 3000, 4000), micro.get_pos())
 
     micro.move_x_usteps(1)
     micro.wait_till_operation_is_completed()
@@ -76,19 +71,19 @@ def test_microcontroller_simulated_positions():
     micro.wait_till_operation_is_completed()
     micro.move_theta_usteps(4)
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((1001, 2002, 3003, 0), micro.get_pos())
+    assert_pos_almost_equal((1001, 2002, 3003, 4004), micro.get_pos())
 
     micro.zero_x()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 2002, 3003, 0), micro.get_pos())
+    assert_pos_almost_equal((0, 2002, 3003, 4004), micro.get_pos())
 
     micro.zero_y()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 3003, 0), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 3003, 4004), micro.get_pos())
 
     micro.zero_z()
     micro.wait_till_operation_is_completed()
-    assert_pos_almost_equal((0, 0, 0, 0), micro.get_pos())
+    assert_pos_almost_equal((0, 0, 0, 4004), micro.get_pos())
 
     micro.zero_theta()
     micro.wait_till_operation_is_completed()
@@ -325,5 +320,97 @@ def test_wait_timeout_error_includes_mcu_state():
 
         with pytest.raises(TimeoutError, match=r"timed out after 0.05 \[s\].*Sent cmd \d+ \(MOVETO_Z\)"):
             micro.wait_till_operation_is_completed(0.05)
+    finally:
+        micro.close()
+
+
+def test_set_completion_window_encoding():
+    """SET_COMPLETION_WINDOW (49, firmware >= 1.6): axis in byte 2, the window in 0.1 um big-endian in bytes 3-4.
+    For a wheel one "mm" is one revolution, so 5 degrees is 139 x 1e-4 rev."""
+    micro = get_test_micro()
+    micro.set_completion_window(control._def.AXIS.W, 5.0 / 360.0)
+    assert micro.last_command[1] == control._def.CMD_SET.SET_COMPLETION_WINDOW == 49
+    assert micro.last_command[2] == control._def.AXIS.W
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 139
+    micro.set_completion_window(control._def.AXIS.W2, 0.0)
+    assert micro.last_command[2] == control._def.AXIS.W2
+    assert (micro.last_command[3] << 8) + micro.last_command[4] == 0
+    for bad in (-0.001, 6.6):
+        with pytest.raises(ValueError):
+            micro.set_completion_window(control._def.AXIS.W, bad)
+
+
+def test_set_encoder_reporting_and_ramp_profile_encoding():
+    """SET_ENCODER_REPORTING (44) and SET_RAMP_PROFILE (47), firmware >= 1.6: axis in byte 2, mode in byte 3."""
+    micro = get_test_micro()
+    try:
+        micro.set_encoder_reporting(control._def.AXIS.W)
+        assert micro.last_command[1] == control._def.CMD_SET.SET_ENCODER_REPORTING == 44
+        assert micro.last_command[2] == control._def.AXIS.W
+        assert micro.last_command[3] == control._def.ENCODER_REPORTING.ENC_IN_THETA == 1
+        micro.set_encoder_reporting(control._def.AXIS.W, control._def.ENCODER_REPORTING.OFF)
+        assert micro.last_command[3] == 0
+
+        micro.set_ramp_profile(control._def.AXIS.W, control._def.RAMP_PROFILE.TRAPEZOID)
+        assert micro.last_command[1] == control._def.CMD_SET.SET_RAMP_PROFILE == 47
+        assert micro.last_command[2] == control._def.AXIS.W
+        assert micro.last_command[3] == 1
+        micro.set_ramp_profile(control._def.AXIS.W2, control._def.RAMP_PROFILE.SSHAPE)
+        assert (micro.last_command[2], micro.last_command[3]) == (control._def.AXIS.W2, 2)
+        with pytest.raises(ValueError):
+            micro.set_ramp_profile(control._def.AXIS.W, 3)
+        with pytest.raises(ValueError):
+            micro.set_encoder_reporting(control._def.AXIS.W, 3)  # validated like its sibling
+    finally:
+        micro.close()
+
+
+def _status_packet(theta, byte19, dev):
+    from crc import CrcCalculator, Crc8
+
+    msg = bytearray(control.microcontroller.SimSerial.response_bytes_for(0, 0, 0, 0, 0, theta, False, False))
+    msg[19] = byte19
+    msg[20:22] = int(dev).to_bytes(2, "big", signed=True)
+    msg[-1] = CrcCalculator(Crc8.CCITT, table_based=True).calculate_checksum(bytes(msg[:-1]))
+    return bytes(msg)
+
+
+def _wait_for(predicate, timeout_s=2.0):
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_status_packet_with_encoder_reporting_is_decoded():
+    """Firmware >= 1.6 with reporting on: theta field = ENC_POS, byte 19 = flags (bit 0 reporting, bits 4-6 the
+    axis), bytes 20-21 = int16 ENC_POS - XACTUAL. A packet without the reporting bit clears the flags and
+    keeps the last reading."""
+    micro = get_test_micro()
+    try:
+        serial = micro._serial
+        flags = (1 << control._def.ENC_FLAG.REPORTING) | (control._def.AXIS.W << control._def.ENC_FLAG.AXIS_SHIFT)
+        with serial._update_lock:
+            serial.response_buffer.extend(_status_packet(-12345, flags, -7))
+            serial._in_waiting = len(serial.response_buffer)
+        assert _wait_for(lambda: micro.get_encoder_state()["reporting"])
+        assert micro.get_pos()[3] == 0  # the theta field carries the encoder: theta itself is unchanged
+        state = micro.get_encoder_state()
+        assert state == {
+            "reporting": True,
+            "pid_enabled": False,
+            "axis": control._def.AXIS.W,
+            "encoder_pos": -12345,
+            "deviation": -7,
+        }
+
+        with serial._update_lock:
+            serial.response_buffer.extend(_status_packet(0, 0, 0))
+            serial._in_waiting = len(serial.response_buffer)
+        assert _wait_for(lambda: not micro.get_encoder_state()["reporting"])
+        state = micro.get_encoder_state()
+        assert (state["encoder_pos"], state["deviation"]) == (-12345, -7)
     finally:
         micro.close()

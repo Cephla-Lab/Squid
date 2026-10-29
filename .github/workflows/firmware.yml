@@ -27,8 +27,41 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build controller firmware (Teensy 4.1)
-        run: pio run -e teensy41
+      - name: Build controller firmware (both controller profiles) - no library may print on the protocol serial port
+        # The USB serial port carries the binary host protocol; text from a library's logging
+        # (FastLED >= 3.10 does this by default) corrupts the packet stream. The build already
+        # refuses a FastLED log level above 0 (src/functions.h); this checks the linked image
+        # itself: FastLED's print sink and log pipeline must not be in it. Symbols, not message
+        # text - FastLED 3.10.8 dropped the debug message an earlier check grepped for while its
+        # error logging stayed linked. Every way of not looking fails the step instead of passing:
+        # a missing image or nm, nm failing on the file, or a symbol table without our setup().
+        # Each image is checked right after its own build: on a fresh runner, building the next
+        # env deletes the previous env's .pio/build output.
+        run: |
+          nm="$HOME/.platformio/packages/toolchain-gccarmnoneeabi-teensy/bin/arm-none-eabi-nm"
+          for env in teensy41 teensy41_newctrl; do
+            pio run -e "$env"
+            elf=.pio/build/$env/firmware.elf
+            for f in "$nm" "$elf"; do
+              if [ ! -f "$f" ]; then
+                echo "::error::$f not found"
+                exit 1
+              fi
+            done
+            # nm runs on its own: piped straight into grep, an nm error reads as "no matching symbols".
+            if ! symbols=$("$nm" -C "$elf"); then
+              echo "::error::nm could not read $elf"
+              exit 1
+            fi
+            if ! grep -q ' T setup$' <<< "$symbols"; then
+              echo "::error::setup() is not among the symbols nm read from $elf - nothing was checked"
+              exit 1
+            fi
+            if grep -E 'fl::(platforms::)?print(ln)?\(|fl::detail::log_emit' <<< "$symbols"; then
+              echo "::error::FastLED logging is linked into the $env firmware - it would print on the protocol serial port"
+              exit 1
+            fi
+          done
         working-directory: ./firmware/controller
 
       - name: Build controller firmware (Teensy 4.1, new controller profile)

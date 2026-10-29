@@ -8,11 +8,22 @@ These tests verify that FirmwareSimSerial:
 - Works as a drop-in replacement for SimSerial
 """
 
+import itertools
 import struct
 import pytest
 from crc import CrcCalculator, Crc8
 
-from control._def import CMD_SET, AXIS, MicrocontrollerDef, CMD_EXECUTION_STATUS
+from control._def import (
+    CMD_SET,
+    AXIS,
+    MicrocontrollerDef,
+    CMD_EXECUTION_STATUS,
+    ENC_FLAG,
+    FOCUS_WHEEL_FLAG_REPORTING,
+    LIMIT_SWITCH_CONFIG_MIN_FIRMWARE,
+    RESPONSE_BYTE_FIRMWARE_VERSION,
+    SEQ_FLAG_STATUS,
+)
 from control.firmware_sim_serial import (
     FirmwareSimSerial,
     FirmwareConstants,
@@ -91,6 +102,13 @@ class TestFirmwareConstants:
         assert fw.SEQ_COMMIT == CMD_SET.SEQ_COMMIT == 61
         assert fw.SEQ_RUN == CMD_SET.SEQ_RUN == 62
         assert fw.SEQ_CANCEL == CMD_SET.SEQ_CANCEL == 63
+
+    def test_sequencer_status_flag_matches_python_def(self):
+        """Byte 19's "bytes 14-17 are the sequencer's" bit, next to the encoder and focus-wheel bits."""
+        fw = FirmwareConstants()
+        assert fw.SEQ_FLAG_STATUS == SEQ_FLAG_STATUS == 2
+        assert fw.SEQ_FLAG_STATUS not in (ENC_FLAG.REPORTING, ENC_FLAG.PID_ENABLED, FOCUS_WHEEL_FLAG_REPORTING)
+        assert not (ENC_FLAG.AXIS_SHIFT <= fw.SEQ_FLAG_STATUS < ENC_FLAG.AXIS_SHIFT + 3)
 
     def test_sequencer_opcodes_are_in_the_command_whitelist(self):
         """FirmwareSimSerial rejects any command code not in command_ids, so the four
@@ -404,3 +422,78 @@ class TestFirmwareSimSerialWithMicrocontroller:
         assert sim.x == 1000
         assert sim.y == 2000
         assert sim.z == -500
+
+
+# The version just before the first one that ships SET_LIMIT_SWITCH_CONFIG.
+OLD_FIRMWARE = (LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[0], LIMIT_SWITCH_CONFIG_MIN_FIRMWARE[1] - 1)
+STOCK_LIMIT_SWITCHES = {AXIS.X: 0x03, AXIS.Y: 0x03, AXIS.Z: 0x03}
+# (protocol axis, nibble) that firmware with SET_LIMIT_SWITCH_CONFIG refuses: not X/Y/Z, or wider than a nibble.
+REFUSED_LIMIT_SWITCH_CONFIGS = [(AXIS.THETA, 0x03), (AXIS.W, 0x03), (AXIS.W2, 0x03), (255, 0x03), (AXIS.Z, 0x10)]
+
+
+def _send(sim, cmd_code, *payload):
+    """Send one command (payload from byte 2) to the sim and return its response packet."""
+    cmd = bytearray(MicrocontrollerDef.CMD_LENGTH)
+    cmd[0] = 1
+    cmd[1] = cmd_code
+    cmd[2 : 2 + len(payload)] = bytes(payload)
+    cmd[-1] = CrcCalculator(Crc8.CCITT, table_based=True).calculate_checksum(cmd[:-1])
+    sim.write(cmd)
+    return sim.read(MicrocontrollerDef.MSG_LENGTH)
+
+
+class TestFirmwareSimSerialLimitSwitches:
+    """Firmware version byte, SET_LIMIT_SWITCH_CONFIG (64) and the Z limit bits of byte 18."""
+
+    @pytest.mark.parametrize("version", [OLD_FIRMWARE, LIMIT_SWITCH_CONFIG_MIN_FIRMWARE, (2, 15)])
+    def test_byte_22_carries_the_firmware_version(self, version):
+        sim = FirmwareSimSerial(strict=True, firmware_version=version)
+        response = _send(sim, CMD_SET.TURN_OFF_ALL_PORTS)
+        assert response[RESPONSE_BYTE_FIRMWARE_VERSION] == (version[0] << 4) | version[1]
+
+    def test_default_firmware_version_is_legacy(self):
+        sim = FirmwareSimSerial(strict=True)
+        assert _send(sim, CMD_SET.TURN_OFF_ALL_PORTS)[RESPONSE_BYTE_FIRMWARE_VERSION] == 0
+
+    def test_limit_switch_config_starts_stock(self):
+        assert FirmwareSimSerial(strict=True).limit_switch_config == STOCK_LIMIT_SWITCHES
+
+    def test_limit_switch_config_stores_xyz_nibbles(self):
+        sim = FirmwareSimSerial(strict=True, firmware_version=LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+        for axis, nibble in [(AXIS.X, 0x01), (AXIS.Y, 0x02), (AXIS.Z, 0x0F)]:
+            response = _send(sim, CMD_SET.SET_LIMIT_SWITCH_CONFIG, axis, nibble)
+            assert response[1] == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        assert sim.limit_switch_config == {AXIS.X: 0x01, AXIS.Y: 0x02, AXIS.Z: 0x0F}
+        assert sim.validation_errors == []
+
+    @pytest.mark.parametrize("axis, nibble", REFUSED_LIMIT_SWITCH_CONFIGS)
+    def test_limit_switch_config_refuses_other_axes_and_wide_nibbles(self, axis, nibble):
+        sim = FirmwareSimSerial(strict=True, firmware_version=LIMIT_SWITCH_CONFIG_MIN_FIRMWARE)
+        response = _send(sim, CMD_SET.SET_LIMIT_SWITCH_CONFIG, axis, nibble)  # must not raise
+        assert response[1] == CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
+        assert sim.limit_switch_config == STOCK_LIMIT_SWITCHES
+        assert sim.validation_errors == []
+
+    @pytest.mark.parametrize("version", [None, OLD_FIRMWARE])
+    @pytest.mark.parametrize("axis, nibble", [(AXIS.X, 0x0F), (AXIS.Z, 0x0F)] + REFUSED_LIMIT_SWITCH_CONFIGS)
+    def test_limit_switch_config_is_a_no_op_before_its_firmware(self, version, axis, nibble):
+        # Older firmware has no handler for 64: callback_default answers success and does nothing.
+        if version is None:
+            sim = FirmwareSimSerial(strict=True)  # the default, (0, 0)
+        else:
+            sim = FirmwareSimSerial(strict=True, firmware_version=version)
+        response = _send(sim, CMD_SET.SET_LIMIT_SWITCH_CONFIG, axis, nibble)
+        assert response[1] == CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
+        assert sim.limit_switch_config == STOCK_LIMIT_SWITCHES
+        assert sim.validation_errors == []
+
+    @pytest.mark.parametrize("button, switch, left, right", list(itertools.product([False, True], repeat=4)))
+    def test_z_limits_set_byte_18_bits_2_and_3(self, button, switch, left, right):
+        sim = FirmwareSimSerial(strict=True)
+        sim.joystick_button, sim.switch, sim.z_limit_left, sim.z_limit_right = button, switch, left, right
+        response = _send(sim, CMD_SET.TURN_OFF_ALL_PORTS)
+        assert response[18] == button | switch << 1 | left << 2 | right << 3
+
+    def test_z_limits_default_clear(self):
+        sim = FirmwareSimSerial(strict=True)
+        assert (sim.z_limit_left, sim.z_limit_right) == (False, False)

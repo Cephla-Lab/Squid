@@ -4,8 +4,11 @@
 #include "../globals.h"
 #include "../sequencer/seq_bind.h"
 #include "../sequencer/seq_staging.h"
+#include "../sequencer/seq_status_field.h"
 
 namespace {
+
+seq::StatusField status_field;  // who owns status bytes 14-17 (seq_status_field.h)
 
 seq::wire::Staging staging;
 seq::wire::ParsedProgram program;  // ~0.5 kB: static, not on the callback's stack
@@ -29,12 +32,14 @@ void refuse(seq::SeqError e, uint8_t detail) {
 }  // namespace
 
 void callback_seq_write() {
+    status_field.note_activity(millis());
     committed = false;  // any write invalidates the sealed program
     if (!staging.write_word(buffer_rx[2], &buffer_rx[3]))
         refuse(seq::SeqError::BadProgram, seq::wire::kBadProgramLength);
 }
 
 void callback_seq_commit() {
+    status_field.note_activity(millis());
     committed = false;
     const uint16_t length = (uint16_t)(uint16_t(buffer_rx[2]) << 8 | buffer_rx[3]);
     const uint16_t crc = (uint16_t)(uint16_t(buffer_rx[4]) << 8 | buffer_rx[5]);
@@ -49,6 +54,7 @@ void callback_seq_commit() {
 }
 
 void callback_seq_run() {
+    status_field.note_activity(millis());
     if (!committed) {
         refuse(seq::SeqError::NotCommitted, 0);
         return;
@@ -71,11 +77,14 @@ void callback_seq_run() {
 }
 
 void callback_seq_cancel() {
+    status_field.note_activity(millis());
     if (!seq_running()) return;  // nothing to cancel: completes at once, successfully
     seq_cancel();
     mcu_cmd_execution_in_progress = true;  // this command now completes when the run is terminal
     run_pending = true;
 }
+
+bool seq_status_owned(uint32_t now_ms) { return status_field.owned(now_ms, seq_running()); }
 
 bool seq_command_refused(uint8_t opcode) {
     return seq_running() && !seq::wire::allowed_while_running(opcode);
@@ -84,6 +93,7 @@ bool seq_command_refused(uint8_t opcode) {
 void seq_transport_tick() {
     if (!run_pending || seq_running()) return;
     run_pending = false;
+    status_field.note_activity(millis());  // the terminal status is readable for kStatusHoldMs
     mcu_cmd_execution_in_progress = false;
     if (seq_state() == seq::SeqState::Failed && !quiet_abort)
         mcu_cmd_execution_status = CMD_EXECUTION_ERROR;

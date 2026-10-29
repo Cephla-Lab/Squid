@@ -25,17 +25,20 @@ constexpr uint8_t kOpSeqCommit = 61;  // [2..3] byte length BE, [4..5] CRC-16/CC
 constexpr uint8_t kOpSeqRun = 62;     // [2..5] i32 stack_start BE (DAC LSB for a piezo stack)
 constexpr uint8_t kOpSeqCancel = 63;
 
-// Sequencer status in the 24-byte v1 response. Bytes 19-21 belong to PR #645. Bytes 14-17
-// were never written by firmware (the host parsed them as an unused theta position).
+// Sequencer status in the 24-byte v1 response. Bytes 14-17 are a multiplexed field shared
+// with encoder reporting (1.6) and the focus-wheel count (1.8); byte 19 says who owns it. The
+// sequencer owns it while a sequence runs and for kStatusHoldMs after any sequencer command
+// or terminal state (seq_status_field.h), and the packet builder then sets SEQ_FLAG_STATUS
+// (constants_protocol.h) in byte 19. The host reads these bytes only when that bit is set.
 constexpr uint8_t kStatusByteState = 14;     // SeqState (3 b) << 5 | SeqError (5 b)
 constexpr uint8_t kStatusByteDetail = 15;    // abort detail (channel index / axis id)
 constexpr uint8_t kStatusByteFramesHi = 16;  // frames_fired, big-endian like the positions
 constexpr uint8_t kStatusByteFramesLo = 17;
 
-// First firmware version that implements this contract. Older firmware routes unknown
-// opcodes to callback_default() and reports success, so the host must gate on this.
-constexpr uint8_t kFwMajor = 1;
-constexpr uint8_t kFwMinor = 7;
+// There is no minimum firmware version: the host asks instead. Firmware without the
+// sequencer routes these opcodes to callback_default() and reports success, so the host
+// sends a zero-length SEQ_COMMIT once per connection - this firmware refuses it
+// (BadProgram), firmware that would silently ignore a sequence completes it.
 
 constexpr uint8_t kWordBytes = 4;
 

@@ -1,0 +1,1303 @@
+import threading
+import time
+
+import pytest
+
+from control.laser_engine_v2 import EngineHold, EngineLine, EngineOptions, LaserEngineV2, LaserEngineV2Error
+from control.laser_engine_v2_link import EngineLink
+from control.laser_engine_v2_sim import FakeEngine, FakeSource
+from control.laser_engine_v2_status import LineState
+
+
+@pytest.fixture(autouse=True)
+def _fast_resync(monkeypatch):
+    monkeypatch.setattr(EngineLink, "RESYNC_WAIT_S", 0.0)
+
+
+def _with_source(source=None, options=None):
+    source = source or FakeSource()  # 200-1000 mW, like a DF engine's 560 source
+    fake = FakeEngine(tok_delay_polls=0)
+    engine = LaserEngineV2(
+        link_factory=lambda: EngineLink(fake),
+        source_factory=lambda: source,
+        query_interval_s=0.01,
+        options=options,
+    )
+    engine.open()
+    return engine, fake, source
+
+
+def _to_ready(engine, source):
+    engine.wake_up("L3")  # arm, LINE3:EN 1, queue the source enable
+    for _ in range(5):
+        engine.source_step()
+    status = engine.poll_once()
+    assert status.channels["L3"].state == LineState.READY, status.channels["L3"]
+
+
+def test_starts_at_the_source_minimum_then_the_operator_power():
+    engine, fake, source = _with_source()
+    assert engine.set_source_power_mw(500.0) == 500.0  # set in the tab before the source is on
+    assert source.calls == []  # stored only: the source is off
+    _to_ready(engine, source)
+    assert "LINE3:SET 0.000" in fake.sent  # the AOM dark: no intensity asked yet
+    assert source.calls[:2] == ["power 200.0", "enable"]  # the source's own minimum first
+    assert "power 500.0" in source.calls and source.calls.count("enable") == 1
+
+
+def test_key_not_cycled_raises_without_touching_line3_or_source():
+    source = FakeSource()
+    source.needs_key = True
+    engine, fake, _ = _with_source(source)
+    with pytest.raises(LaserEngineV2Error, match="560 key OFF then ON"):
+        engine.wait_until_ready(["L3"], timeout_s=30.0)
+    assert "LINE3:EN 1" not in fake.sent and "enable" not in source.calls
+
+
+def test_source_switched_off_elsewhere_is_rewoken():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.enabled = False  # e.g. switched off on its own front panel
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.SOURCE_OFF
+    engine.wake_up("L3")
+    engine.source_step()
+    assert source.calls.count("enable") == 2
+
+
+def test_disarm_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.disarm()
+    engine.source_step()
+    assert source.calls[-1] == "disable" and not source.enabled
+
+
+def test_engine_side_disarm_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    fake.armed = False  # the firmware disarmed on its own (HOST_LOST / key off)
+    engine.poll_once()
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_connection_lost_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    fake.unplug()
+    engine.poll_once()
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_l3_error_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    fake.faults = ["OVERTEMP"]  # a system fault latched: every line, L3 included, reads FAULT
+    assert engine.poll_once().channels["L3"].state == LineState.FAULT
+    engine.source_step()
+    assert source.calls[-1] == "disable" and not source.enabled
+
+
+def test_put_to_sleep_l3_disables_source():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.put_to_sleep("L3")
+    engine.source_step()
+    assert "LINE3:EN 0" in fake.sent and source.calls[-1] == "disable" and not source.enabled
+
+
+def test_idle_off():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 0.0
+    time.sleep(0.01)
+    engine.poll_once()
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_the_idle_off_shows_at_once_so_a_use_before_the_switch_off_restarts_the_source():
+    """Between the idle-off decision and the source thread switching the source off, the source still reads ready. L3
+    must not read READY then: a use in that window (live switch, live start, snap) would skip its wake and stay dark."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61
+    engine.poll_once()  # the idle-off: the switch-off is queued, not run yet
+    assert source.enabled
+    assert engine.get_latest_status().channels["L3"].state == LineState.SOURCE_OFF
+    engine.wake_up("L3")  # a use in the window: a restart is queued behind the switch-off
+    assert engine.get_latest_status().channels["L3"].state == LineState.STARTING  # not READY on the old reading
+    for _ in range(5):
+        engine.source_step()
+    assert source.enabled and engine.poll_once().channels["L3"].state == LineState.READY
+
+
+def test_a_use_between_the_idle_off_decision_and_the_switch_off_keeps_the_source_on():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61
+    disable = engine._disable_source
+
+    def used_meanwhile(*args, **kwargs):  # the use lands after the poll measured the idle time
+        engine.use("live", L3)
+        return disable(*args, **kwargs)
+
+    engine._disable_source = used_meanwhile
+    engine.poll_once()
+    engine.source_step()
+    assert source.enabled and engine._source_want_on
+
+
+def test_idle_off_minutes_zero_means_24_h():
+    engine, _, _ = _with_source(options=EngineOptions(source_idle_off_min=0))
+    assert engine.source_idle_off_s == 24 * 3600
+    engine.set_source_idle_off_min(5)
+    assert engine.source_idle_off_s == 300
+    with pytest.raises(ValueError):
+        engine.set_source_idle_off_min(-1)
+
+
+def _refuse_once(fake, command):
+    """The engine refuses `command` once (e.g. a transient expander error), then accepts it again."""
+    real_reply, left = fake._reply, [1]
+
+    def reply(cmd):
+        if cmd == command and left[0]:
+            left[0] -= 1
+            return "ERR simulated refusal"
+        return real_reply(cmd)
+
+    fake._reply = reply
+
+
+def test_refused_aom_close_is_sent_again():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_line_intensity(3, 50.0)
+    _refuse_once(fake, "LINE3:SET 0.000")
+    with pytest.raises(LaserEngineV2Error, match="simulated refusal"):
+        engine.set_line_intensity(3, 0.0)
+    n_sent = len(fake.sent)
+    engine.set_line_intensity(3, 0.0)  # the AOM never closed: the retry must send the close again
+    assert "LINE3:SET 0.000" in fake.sent[n_sent:] and fake.lines[2]["target"] == 0.0
+
+
+def test_refused_aom_open_is_sent_again():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)  # the AOM at 0 V (nothing asked)
+    _refuse_once(fake, "LINE3:SET 2.500")
+    with pytest.raises(LaserEngineV2Error, match="simulated refusal"):
+        engine.set_line_intensity(3, 50.0)
+    n_sent = len(fake.sent)
+    engine.set_line_intensity(3, 50.0)  # the AOM never opened: the retry must send it again
+    assert "LINE3:SET 2.500" in fake.sent[n_sent:] and fake.lines[2]["target"] == pytest.approx(2.5)
+
+
+def test_slow_source_does_not_delay_heartbeat():
+    source = FakeSource()
+    source.poll_delay_s = 0.5
+    engine, fake, _ = _with_source(source)
+    engine.start()
+    time.sleep(0.4)
+    engine.close()
+    assert fake.sent.count("STAT?") >= 8  # 0.01 s polls keep running while every source poll takes 0.5 s
+
+
+def test_ready_only_once_power_has_settled():
+    engine, fake, source = _with_source()
+    engine.set_source_power_mw(500.0)
+    engine.wake_up("L3")
+    for _ in range(3):  # enable at 200 mW + starting; starting; ready at 200 mW with 500 mW just applied
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING
+    engine.source_step()  # now reading 500 mW
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+
+
+def test_a_hold_on_line_3_keeps_the_source_on_and_the_idle_off_counts_from_its_release():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 0.5
+    hold = engine.use("acquisition", [EngineLine(1, 405), EngineLine(3, 561)])
+    engine._source_last_use -= 1.0  # rewind instead of sleeping: held for longer than the idle-off
+    engine.poll_once()
+    engine.source_step()
+    assert "disable" not in source.calls
+    hold.release()  # the idle-off counts from here
+    engine.poll_once()
+    engine.source_step()
+    assert "disable" not in source.calls
+    engine._source_last_use -= 1.0
+    engine.poll_once()
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_a_hold_without_line_3_does_not_keep_the_source_on():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 0.5
+    engine.use("acquisition", [EngineLine(1, 405)])
+    engine._source_last_use -= 1.0
+    engine.poll_once()
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_a_hold_wakes_the_560_after_an_idle_off():
+    """Every path that declares use wakes its lines: after an idle-off the 560 restarts without a live start."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 0.5
+    engine._source_last_use -= 1.0
+    engine.poll_once()
+    engine.source_step()
+    assert not source.enabled and engine.poll_once().channels["L3"].state == LineState.SOURCE_OFF
+    engine.use("autofocus", L3)  # e.g. autofocus on a 561 channel
+    for _ in range(5):
+        engine.source_step()
+    assert source.enabled and engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open
+
+
+def test_source_found_on_at_connect_is_switched_off():
+    source = FakeSource()
+    source.enabled = True  # left on by a session that crashed
+    engine, fake, _ = _with_source(source)
+    assert source.calls == ["disable"] and not source.enabled
+    assert any("was on at connect" in n for n in engine.notices)
+    assert engine.poll_once().channels["L3"].state == LineState.NOT_ARMED
+
+
+def test_request_during_the_start_still_starts_at_the_minimum():
+    engine, fake, source = _with_source()
+    engine.wake_up("L3")  # enable queued at the 200 mW minimum, nothing set yet
+    engine.set_source_power_mw(500.0)  # before the source thread has run the enable
+    engine.source_step()
+    assert source.calls == ["power 200.0", "enable"]  # not 500 mW during the start-up
+    for _ in range(3):
+        engine.source_step()
+    assert source.calls[-1] == "power 500.0"
+
+
+def test_refusing_source_becomes_a_fault_until_reset():
+    source = FakeSource()
+    source.fail_enable = True
+    engine, fake, _ = _with_source(source)
+    for _ in range(engine.SOURCE_ENABLE_ATTEMPTS):
+        engine.wake_up("L3")
+        engine.source_step()
+    with pytest.raises(LaserEngineV2Error, match="enable failed"):
+        engine.wait_until_ready(["L3"], timeout_s=5.0)
+    engine.fault_reset()  # the operator's reset also clears the source error
+    engine.source_step()
+    assert not engine._source_status.fault
+
+
+def test_no_source_is_not_an_error_until_requested():
+    fake = FakeEngine(tok_delay_polls=0)
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
+    engine.open()
+    status = engine.poll_once()
+    assert status.channels["L3"].state == LineState.NOT_CONFIGURED and not status.any_error()
+    with pytest.raises(LaserEngineV2Error, match="not configured"):
+        engine.wait_until_ready(["L3"], timeout_s=1.0)
+
+
+def test_startup_bring_up_includes_the_560():
+    engine, fake, source = _with_source()
+    engine.on_startup()
+    for _ in range(6):
+        engine.poll_once()
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+    assert source.calls[:2] == ["power 200.0", "enable"] and engine.bringup_state == "done"
+
+
+def test_bring_up_waits_for_the_560_key_cycle():
+    source = FakeSource()
+    source.needs_key = True  # key-locked after a power-up
+    engine, fake, _ = _with_source(source)
+    engine.on_startup()
+    for _ in range(3):
+        engine.poll_once()
+        engine.source_step()
+    status = engine.poll_once()
+    assert status.channels["L3"].state == LineState.NEEDS_KEY and status.channels["L1"].state == LineState.READY
+    assert engine.bringup_state == "running" and "LINE3:EN 1" not in fake.sent and "enable" not in source.calls
+    assert any("L3 waits for the operator" in n for n in engine.notices)
+    source.needs_key = False  # the operator turned the 560 key OFF then ON
+    for _ in range(6):
+        engine.source_step()
+        engine.poll_once()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and engine.bringup_state == "done"
+
+
+# ---- a failed disable is retried; an enable is never queued twice -----------------------------------------------------
+
+
+def test_failed_disable_is_retried():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.fail_disable = 1  # the source's own disable() raises once (e.g. a serial hiccup)
+    engine.disarm()
+    engine.source_step()  # this disable fails; the source is still on
+    assert source.enabled
+    engine.poll_once()  # not wanted and still reads ready: the step above queued another disable
+    engine.source_step()
+    assert not source.enabled
+
+
+def test_enable_is_not_repeated_while_the_first_start_is_polled():
+    class CallerDuringPoll(FakeSource):
+        """A caller (wake_up) runs during the source thread's own poll, right after the first enable."""
+
+        def __init__(self):
+            super().__init__()
+            self.engine = None
+            self.fired = False
+
+        def poll(self):
+            if self.engine is not None and not self.fired and self.calls.count("enable") == 1:
+                self.fired = True
+                self.engine.wake_up("L3")  # what a live-view / set-intensity caller does on another thread
+            return super().poll()
+
+    source = CallerDuringPoll()
+    engine, fake, _ = _with_source(source)
+    source.engine = engine
+    engine.wake_up("L3")
+    for _ in range(6):
+        engine.source_step()
+    assert source.calls.count("enable") == 1
+
+
+# ---- concurrent wake / disable; the reconcile survives link loss ------------------------------------------------------
+
+
+def test_concurrent_wake_during_line3_set_enables_once():
+    """A second wake_up / wait_until_ready caller lands inside the LINE3:SET round-trip. The lock around the
+    enable_pending check-then-set makes the second call a no-op."""
+    engine, fake, source = _with_source()
+    real_cmd = engine._cmd
+    fired = [False]
+
+    def cmd_with_nested_wake(line):
+        if line.startswith("LINE3:SET") and not fired[0]:
+            fired[0] = True
+            engine._wake_source()  # a second caller's wake, landing in this window
+        return real_cmd(line)
+
+    engine._cmd = cmd_with_nested_wake
+    engine.wake_up("L3")
+    for _ in range(4):
+        engine.source_step()
+    assert source.calls.count("enable") == 1
+
+
+def test_aom_set_racing_the_wake_line3_set_stays_consistent():
+    """Another thread's AOM set-point (0 V) lands inside the wake's LINE3:SET round-trip (the requested 50 %, 2.5 V).
+    _aom_lock orders the two sends, so the engine ends at the cached value, not at the wake's."""
+    engine, fake, source = _with_source()
+    engine.set_line_intensity(3, 50.0)  # the 560 intensity asked before the source is on: the wake sends 2.5 V
+    real_cmd = engine._cmd
+    helpers = []
+
+    def cmd_with_racing_close(line):
+        if line.startswith("LINE3:SET") and not helpers:
+            t = threading.Thread(target=engine._set_aom_volts, args=(0.0,))
+            helpers.append(t)
+            t.start()
+            t.join(0.2)  # blocks on _aom_lock until the wake's send is done: no deadlock, just a wait
+        return real_cmd(line)
+
+    engine._cmd = cmd_with_racing_close
+    engine.wake_up("L3")
+    for t in helpers:
+        t.join()  # the close has run: the outcome does not depend on scheduling
+    assert helpers
+    assert [c for c in fake.sent if c.startswith("LINE3:SET")][-1] == "LINE3:SET 0.000" and engine._aom_volts == 0.0
+
+
+def test_disable_racing_the_enable_put_stays_consistent():
+    """A disable from another thread lands between _wake_source setting _source_want_on = True and its own
+    queue.put(("enable", ...)). The lock serialises the two, so the source's enabled state and _source_want_on
+    agree once both threads are done."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.enabled = False  # e.g. switched off on its own front panel: L3 reads SOURCE_OFF, _source_want_on still True
+    engine.source_step()
+    engine.poll_once()
+    real_put = engine._source_queue.put
+    helpers = []
+
+    def put_with_interleaved_disable(item, *a, **kw):
+        if item[0] == "enable":
+            t = threading.Thread(target=engine._disable_source)
+            helpers.append(t)
+            t.start()
+            t.join(0.2)  # blocks on _source_lock until this put's caller releases it: no deadlock, just a wait
+        return real_put(item, *a, **kw)
+
+    engine._source_queue.put = put_with_interleaved_disable
+    engine.wake_up("L3")
+    for t in helpers:
+        t.join()  # the disable has run before the step: the outcome does not depend on scheduling
+    assert helpers
+    engine.source_step()
+    assert source.enabled == engine._source_want_on
+
+
+def test_failed_disable_after_link_loss_is_retried():
+    """Once the engine link is lost, poll_once() returns None and the poll thread stops calling _after_poll, so a
+    failed disable is retried by source_step itself, with no further poll_once() at all."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    source.fail_disable = 1
+    fake.unplug()
+    engine.poll_once()  # link lost -> _on_lost() -> _disable_source() queues a disable
+    for _ in range(3):
+        engine.source_step()  # no poll_once() in between: the reconcile must live in source_step, not _after_poll
+    assert not source.enabled
+
+
+# ---- the operator's 560 laser power (the AOM does the intensity) ----------------------------------------------------
+
+
+def test_source_power_defaults_to_the_minimum():
+    engine, fake, source = _with_source()
+    assert engine.source_power_setpoint_mw == 200.0
+    _to_ready(engine, source)
+    assert source.power_mw == pytest.approx(200.0) and "power 200.0" in source.calls
+
+
+def test_saved_source_power_is_used_at_the_start():
+    engine, fake, source = _with_source(options=EngineOptions(source_power_mw=600))
+    assert engine.source_power_setpoint_mw == 600.0
+    _to_ready(engine, source)
+    assert source.calls[:2] == ["power 200.0", "enable"] and source.calls[-1] == "power 600.0"
+    assert source.power_mw == pytest.approx(600.0)
+
+
+def test_saved_source_power_outside_the_limits_is_clamped_and_said():
+    engine, fake, source = _with_source(options=EngineOptions(source_power_mw=5000))
+    assert engine.source_power_setpoint_mw == 1000.0
+    assert any("saved 560 nm laser power 5000 mW is outside" in n and "using 1000 mW" in n for n in engine.notices)
+
+
+def test_set_source_power_clamps_to_the_limits():
+    engine, fake, source = _with_source()  # 200-1000 mW
+    assert engine.set_source_power_mw(5000.0) == 1000.0 and engine.source_power_setpoint_mw == 1000.0
+    assert engine.set_source_power_mw(50.0) == 200.0
+    assert engine.notices[-1].startswith("560 nm laser set to 200 mW") and "50 mW is outside" in engine.notices[-1]
+    with pytest.raises(ValueError):
+        engine.set_source_power_mw(float("nan"))
+
+
+def test_set_source_power_is_applied_when_on():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    assert engine.set_source_power_mw(600.0) == 600.0
+    assert engine.notices[-1] == "560 nm laser set to 600 mW"
+    engine.source_step()
+    assert source.calls[-1] == "power 600.0" and source.power_mw == pytest.approx(600.0)
+    assert engine.poll_once().channels["L3"].state == LineState.READY  # settled at the new power
+    mark = len(fake.sent)
+    engine.set_line_intensity(3, 30.0)  # Squid's intensity: the AOM only
+    engine.source_step()
+    assert source.calls[-1] == "power 600.0" and "LINE3:SET 1.500" in fake.sent[mark:]
+
+
+def test_a_power_change_is_not_ready_before_the_source_reads_the_new_power():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)  # ready at 200 mW
+    engine.set_source_power_mw(600.0)
+    assert engine.get_latest_status().channels["L3"].state == LineState.STARTING  # no poll since: the cached status too
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING  # the source still reads 200 mW
+    assert engine.wait_until_ready(["L3"], timeout_s=0.0) is False  # an acquisition does not start at 200 mW
+    engine.source_step()  # applies 600 mW and reads it
+    assert engine.wait_until_ready(["L3"], timeout_s=0.0) is True
+
+
+def test_set_source_power_while_starting_is_applied_once_ready():
+    engine, fake, source = _with_source()
+    engine.wake_up("L3")
+    engine.source_step()  # enabled at the minimum, starting
+    engine.set_source_power_mw(700.0)
+    engine.source_step()  # still starting
+    assert source.calls == ["power 200.0", "enable"]  # not during the start-up
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING
+    engine.source_step()  # ready: now the operator's power
+    assert source.calls[-1] == "power 700.0" and source.power_mw == pytest.approx(700.0)
+    engine.source_step()  # its next reading is at 700 mW: settled
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+
+
+def test_set_source_power_while_off_applies_at_the_next_start():
+    engine, fake, source = _with_source()
+    engine.set_source_power_mw(450.0)
+    assert "applies when the 560 is next switched on" in engine.notices[-1] and source.calls == []
+    _to_ready(engine, source)
+    assert source.power_mw == pytest.approx(450.0)
+
+
+def test_set_source_power_without_a_source_raises():
+    fake = FakeEngine(tok_delay_polls=0)
+    engine = LaserEngineV2(link_factory=lambda: EngineLink(fake), query_interval_s=0.01)
+    engine.open()
+    with pytest.raises(LaserEngineV2Error, match="560 nm source not configured") as e:
+        engine.set_source_power_mw(500.0)
+    assert e.value.channel_key == "L3" and engine.source_power_setpoint_mw is None
+
+
+# ---- the shutter is safety only -------------------------------------------------------------------------------------
+
+
+L3 = [EngineLine(3, 561)]
+
+
+def _imaging_with_the_560(engine):
+    """An acquisition holds line 3 for the whole test: in On use the shutter opens whenever line 3 is READY."""
+    return engine.use("acquisition", L3)
+
+
+def test_shutter_is_mcu_controlled_from_connect():
+    engine, fake, source = _with_source()
+    assert "SHUT:SRC MCU" in fake.sent and fake.shut_src == "MCU"
+    assert not any(c.startswith("SHUT:SRC TTL") for c in fake.sent)
+
+
+def test_shutter_opens_when_l3_is_ready_while_in_use_and_is_never_sent_per_exposure():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    engine.wake_up("L3")
+    engine.source_step()
+    engine.poll_once()  # L3 still starting
+    shutter = [c for c in fake.sent if c.startswith("SHUT:OPEN")]
+    assert shutter == ["SHUT:OPEN 0"] and not fake.shut_open  # only the restart's close, always sent
+    for _ in range(4):
+        engine.source_step()
+    engine.poll_once()  # L3 READY: the shutter opens
+    assert fake.sent.count("SHUT:OPEN 1") == 1 and fake.shut_open
+    opened_at = len(fake.sent)
+    for pct in (30.0, 60.0, 0.0, 100.0):  # live view / acquisition: intensity per channel switch
+        engine.light_source.set_intensity(engine.light_source.channel_mappings[560], pct)
+        engine.poll_once()
+        engine.source_step()
+    engine.set_source_power_mw(800.0)
+    for _ in range(3):
+        engine.source_step()
+        engine.poll_once()
+    assert not any(c.startswith("SHUT:OPEN") for c in fake.sent[opened_at:]) and fake.shut_open  # never per exposure
+
+
+def test_shutter_closes_on_idle_off():
+    engine, fake, source = _with_source(options=EngineOptions(shutter_mode="always_open"))  # a hold blocks the idle-off
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    engine.source_idle_off_s = 0.0
+    time.sleep(0.01)
+    engine.poll_once()  # idle: the source goes off and the shutter closes
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_shutter_closes_on_sleep_and_disarm():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    engine.put_to_sleep("L3")
+    assert not fake.shut_open  # LINE3:EN 0 closes it in the firmware (PERMIT3 needs line 3 on)
+    engine.poll_once()
+    assert fake.sent.count("SHUT:OPEN 1") == 1  # not re-opened
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open and fake.sent.count("SHUT:OPEN 1") == 2
+    engine.disarm()
+    engine.poll_once()
+    assert not fake.shut_open and fake.sent.count("SHUT:OPEN 1") == 2
+
+
+def test_shutter_left_open_with_the_source_off_is_closed_by_the_driver():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    engine.put_to_sleep("L3")
+    fake.shut_open = True  # a firmware that did not close it with line 3
+    engine.poll_once()
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+
+
+def test_shutter_closes_on_an_l3_error():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    fake.faults = ["OVERTEMP"]  # every line, L3 included, reads FAULT
+    engine.poll_once()
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.source_step()
+    assert source.calls[-1] == "disable"
+
+
+def test_shutter_closes_when_the_key_is_turned_off_and_reopens_only_at_ready():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    source.needs_key = True  # the operator turns the 560 key off
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.NEEDS_KEY
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.source_step()
+    engine.poll_once()
+    assert not fake.shut_open and "disable" not in source.calls  # still wanted: the key cycle brings it back
+    source.needs_key = False  # key OFF then ON
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY
+    assert fake.shut_open and fake.sent.count("SHUT:OPEN 1") == 2
+
+
+def test_shutter_closes_when_the_source_switches_itself_off_and_the_restart_is_behind_it():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    source.enabled = False  # off on its own (its front panel or its own protection)
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.SOURCE_OFF
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    engine.wake_up("L3")  # the next use restarts it
+    engine.source_step()
+    assert source.calls.count("enable") == 2
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING and not fake.shut_open
+    for _ in range(4):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open
+
+
+def _lose_reply(fake, command, nth=1):
+    """The engine acts on the nth `command` but its reply is lost: the link reports no reply (connection lost)."""
+    real_write, seen = fake.write, [0]
+
+    def write(data):
+        if data.decode().strip() == command:
+            seen[0] += 1
+            if seen[0] == nth:
+                fake.sent.append(command)
+                fake.shut_open = command == "SHUT:OPEN 1"
+                return
+        real_write(data)
+
+    fake.write = write
+
+
+@pytest.mark.parametrize("nth", [1, 2])  # 1: the poll's close (same wake_up), 2: _wake_source's own close
+def test_connection_lost_on_a_restart_close_does_not_start_the_source(nth):
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    source.enabled = False  # off on its own
+    engine.source_step()
+    _lose_reply(fake, "SHUT:OPEN 0", nth)
+    engine.wake_up("L3")  # sees SOURCE_OFF, closes the shutter, restarts the source
+    assert engine.is_connection_lost() and not engine._source_want_on
+    for _ in range(4):
+        engine.source_step()
+    assert source.calls.count("enable") == 1 and not source.enabled  # no second start after the link was lost
+
+
+def test_source_restarting_by_itself_between_polls_closes_the_shutter():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    source.enable()  # off and on again between two polls (front panel): it reads starting, never off
+    engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.STARTING
+    assert fake.sent[-1] == "SHUT:OPEN 0" and not fake.shut_open
+    for _ in range(3):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open
+
+
+def _pause_a_poll_before_its_decisions(engine):
+    """Start a poll on another thread and hold it after its STAT? (it has read the state) until resume is set."""
+    captured, resume = threading.Event(), threading.Event()
+    original = engine._after_poll
+
+    def held(status, *args):
+        if threading.current_thread().name == "held-poll":
+            captured.set()
+            assert resume.wait(2)
+        original(status, *args)
+
+    engine._after_poll = held
+    thread = threading.Thread(target=engine.poll_once, name="held-poll")
+    thread.start()
+    assert captured.wait(2)
+    return thread, resume
+
+
+def test_a_ready_poll_older_than_a_restart_does_not_reopen_the_shutter():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # the heartbeat has just read L3 READY ...
+    source.enabled = False  # ... then the source goes off by itself
+    engine.source_step()
+    engine.wake_up("L3")  # another caller restarts it behind a closed shutter
+    engine.source_step()
+    assert engine.source_status.starting and not fake.shut_open
+    resume.set()
+    thread.join(2)
+    assert not thread.is_alive() and not fake.shut_open  # the old READY did not reopen it over a starting source
+    for _ in range(4):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open  # a fresh READY does
+
+
+def test_a_long_live_session_on_the_560_keeps_it_on():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    live = engine.use("live", L3)
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61  # live has run past the idle-off with no other call into the engine
+    engine.poll_once()
+    engine.source_step()
+    assert source.enabled and fake.shut_open
+    live.release()  # live stopped
+    engine._source_last_use -= 61
+    engine.poll_once()
+    engine.source_step()
+    assert not source.enabled and not fake.shut_open
+
+
+def test_a_restart_closes_the_shutter_even_when_the_cached_status_says_closed():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    stale = dict(engine._latest_raw)
+    stale["shutter"] = dict(stale["shutter"], open=0)
+    engine._latest_raw = stale  # a STAT? taken before the open, assigned last by a slow caller
+    source.enabled = False  # the source goes off by itself
+    engine.source_step()
+    engine._wake_source()  # what the next use does on SOURCE_OFF
+    assert not fake.shut_open  # closed although the cache said it already was
+    engine.source_step()
+    assert source.calls.count("enable") == 2 and not fake.shut_open  # the restart is behind the closed shutter
+
+
+def test_the_shutter_opens_only_while_something_images_with_the_560():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert not fake.shut_open  # L3 READY, but nothing images with it
+    live = engine.use("live", L3)
+    assert fake.shut_open  # at once, not at the next poll
+    engine.poll_once()
+    assert fake.shut_open
+    live.release()
+    assert not fake.shut_open  # at once too
+    engine.poll_once()
+    assert not fake.shut_open
+
+
+def test_the_shutter_stays_open_until_the_last_hold_lets_go():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    live = engine.use("live", L3)
+    acquisition = engine.use("acquisition", [EngineLine(1, 405), EngineLine(3, 561)])
+    live.release()
+    assert fake.shut_open
+    acquisition.release()
+    assert not fake.shut_open
+
+
+@pytest.mark.parametrize("first", [0, 1])
+def test_two_holds_with_one_name_do_not_release_each_other(first):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    holds = [engine.use("acquire_image", L3), engine.use("acquire_image", L3)]  # e.g. a TCP call and a script
+    holds[first].release()
+    assert fake.shut_open
+    holds[1 - first].release()
+    assert not fake.shut_open
+
+
+def test_a_user_of_other_lines_leaves_the_shutter_closed():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.use("acquisition", [EngineLine(2, 488), EngineLine(4, 638)])
+    engine.poll_once()
+    assert not fake.shut_open
+
+
+def test_the_shutter_opens_for_its_user_as_the_source_becomes_ready_not_at_the_next_poll():
+    """The shutter is not part of L3's readiness, so for a user waiting on L3 it opens as soon as a source reading makes
+    L3 ready: a caller that sees READY before the next engine poll would otherwise image behind the closed shutter."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.use("acquisition", L3)
+    source.enabled = False  # off on its own: the next use restarts it behind the closed shutter
+    engine.source_step()
+    engine.wake_up("L3")
+    assert not fake.shut_open
+    for _ in range(5):
+        engine.source_step()  # ready again between two engine polls
+    assert engine.get_latest_status().is_ready_for(["L3"]) and fake.shut_open
+
+
+def test_an_open_decided_before_the_last_user_let_go_is_not_sent():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.use("live", L3).release()
+    engine.poll_once()  # the cached STAT? now reads the shutter closed
+    engine._open_held_shutter(engine._shutter_gen)  # a poll that read L3 READY with live still on, sending only now
+    assert not fake.shut_open
+
+
+def test_a_restart_whose_shutter_close_is_refused_does_not_start_the_source():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    assert fake.shut_open
+    source.enabled = False  # the source goes off by itself: the shutter is still open
+    engine.source_step()
+    _refuse_once(fake, "SHUT:OPEN 0")
+    with pytest.raises(LaserEngineV2Error, match="shutter did not close: simulated refusal"):
+        engine._wake_source()  # what the next use does on SOURCE_OFF
+    engine.source_step()
+    assert source.calls.count("enable") == 1 and fake.shut_open  # no start behind the open shutter
+    engine._wake_source()  # the next use: the close goes through, then the restart
+    engine.source_step()
+    assert source.calls.count("enable") == 2 and not fake.shut_open
+
+
+def test_a_switch_off_does_not_wait_for_a_shutter_command_in_flight():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    held, release = threading.Event(), threading.Event()
+
+    def shutter_round_trip():  # e.g. a slow SHUT:OPEN on a failing link
+        with engine._shutter_lock:
+            held.set()
+            release.wait(2)
+
+    thread = threading.Thread(target=shutter_round_trip)
+    thread.start()
+    assert held.wait(1)
+    t0 = time.monotonic()
+    engine._disable_source()
+    waited = time.monotonic() - t0
+    release.set()
+    thread.join(2)
+    assert waited < 0.5 and not engine._source_want_on
+
+
+def test_a_not_armed_snapshot_from_before_a_restart_does_not_switch_the_new_start_off():
+    engine, fake, source = _with_source()  # connected, not armed
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # this poll has read "not armed" ...
+    engine.wake_up("L3")  # ... then another caller arms, enables line 3 and starts the source
+    for _ in range(2):
+        engine.source_step()
+    resume.set()
+    thread.join(2)
+    assert not thread.is_alive() and engine._source_want_on and "disable" not in source.calls
+
+
+def test_a_ready_poll_older_than_a_completed_restart_waits_for_a_fresh_one():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # read READY ...
+    source.enabled = False
+    engine.source_step()
+    engine.put_to_sleep("L3")  # ... the shutter closes with line 3 ...
+    engine.wake_up("L3")  # ... and the 560 is restarted
+    for _ in range(4):
+        engine.source_step()
+    assert engine.source_status.ready and not engine._source_enable_pending  # ready again, as the old snapshot said
+    mark = len(fake.sent)
+    resume.set()
+    thread.join(2)
+    assert "SHUT:OPEN 1" not in fake.sent[mark:]  # only the snapshot's age (the generation) stops this open
+    assert engine.poll_once().channels["L3"].state == LineState.READY and fake.shut_open  # a fresh READY opens it
+
+
+def test_a_fault_poll_older_than_a_reset_and_restart_does_not_switch_the_recovered_source_off():
+    engine, fake, source = _with_source()
+    _imaging_with_the_560(engine)
+    _to_ready(engine, source)
+    engine.poll_once()
+    fake.faults = ["OVERTEMP"]  # the firmware's fault teardown: latched, disarmed, every line off
+    fake.armed = False
+    for i in range(5):
+        fake._line_off(i)
+    thread, resume = _pause_a_poll_before_its_decisions(engine)  # this poll has read L3 FAULT ...
+    engine.fault_reset()  # ... the cause cleared; the operator resets and the 560 is used again
+    engine.wake_up("L3")
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and source.enabled and fake.shut_open
+    resume.set()
+    thread.join(3)
+    assert not thread.is_alive()
+    for _ in range(5):
+        engine.source_step()
+        engine.poll_once()
+    assert engine._source_want_on and source.enabled and fake.shut_open  # the old FAULT did not cancel the recovery
+    assert engine.get_latest_status().channels["L3"].state == LineState.READY
+
+
+def test_a_current_fault_still_switches_the_source_off():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.poll_once()
+    fake.faults = ["OVERTEMP"]
+    engine.poll_once()
+    engine.source_step()
+    assert not engine._source_want_on and source.calls[-1] == "disable" and not fake.shut_open
+
+
+# ---- shutter modes and the open time ----------------------------------------------------------------------------------
+
+
+def _record_opens(engine, monkeypatch):
+    """time.monotonic() right after each accepted SHUT:OPEN 1 (the engine stamps its open no earlier than this)."""
+    opened, real_cmd = [], engine._cmd
+
+    def cmd(line):
+        reply = real_cmd(line)
+        if line == "SHUT:OPEN 1":
+            opened.append(time.monotonic())
+        return reply
+
+    monkeypatch.setattr(engine, "_cmd", cmd)
+    return opened
+
+
+def test_on_use_is_the_default():
+    engine, fake, source = _with_source()
+    assert engine.shutter_mode == "on_use"
+    _to_ready(engine, source)
+    assert not fake.shut_open
+
+
+def test_always_open_opens_at_ready_without_a_hold_and_a_mode_change_applies_at_once():
+    engine, fake, source = _with_source(options=EngineOptions(shutter_mode="always_open"))
+    _to_ready(engine, source)
+    assert fake.shut_open
+    engine.set_shutter_mode("on_use")
+    assert not fake.shut_open
+    engine.set_shutter_mode("always_open")
+    assert fake.shut_open
+    with pytest.raises(ValueError):
+        engine.set_shutter_mode("per_pulse")  # the next PR
+    with pytest.raises(ValueError):
+        EngineOptions(shutter_mode="sometimes")
+
+
+def test_always_open_still_closes_when_line_3_is_not_ready():
+    engine, fake, source = _with_source(options=EngineOptions(shutter_mode="always_open"))
+    _to_ready(engine, source)
+    source.enabled = False  # the source goes off by itself
+    engine.source_step()
+    engine.poll_once()
+    assert not fake.shut_open
+
+
+def test_a_hold_returns_once_the_shutter_has_been_open_for_its_open_time(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.SHUTTER_OPEN_TIME_S = 0.05  # long enough to tell from the command round trips
+    opened = _record_opens(engine, monkeypatch)
+    engine.use("snap", L3)
+    assert len(opened) == 1 and time.monotonic() - opened[0] >= 0.05 and fake.shut_open
+
+
+def test_a_hold_on_a_line_3_not_ready_returns_at_once():
+    engine, fake, source = _with_source()
+    engine.SHUTTER_OPEN_TIME_S = 10.0  # would hang the test if it waited
+    engine.use("live", L3)  # line 3 off: woken, not ready yet
+    assert not fake.shut_open
+
+
+def test_is_ready_to_image_waits_for_the_shutter_open_time():
+    engine, fake, source = _with_source()
+    engine.SHUTTER_OPEN_TIME_S = 0.05
+    hold = engine.use("acquisition", L3)  # line 3 off: no wait here
+    for _ in range(5):
+        engine.source_step()  # READY: that step's poll opens the shutter
+    assert fake.shut_open and engine.get_latest_status().is_ready_for(["L3"])
+    assert not engine.is_ready_to_image(["L3"])  # open, but not yet for its open time
+    time.sleep(0.06)
+    assert engine.is_ready_to_image(["L3"])
+    assert engine.is_ready_to_image(["L1"]) is False or engine.get_latest_status().is_ready_for(["L1"])
+    hold.release()
+    assert engine.is_ready_to_image(["L3"])  # in On use without a hold nothing would open it: not waited for
+
+
+def test_wait_until_ready_returns_once_the_shutter_has_been_open_for_its_open_time(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.SHUTTER_OPEN_TIME_S = 0.05
+    hold = EngineHold(engine, "acquisition")
+    hold.lines = frozenset({3})
+    engine._holds.add(hold)  # held, but the shutter not opened yet (a poll will)
+    opened = _record_opens(engine, monkeypatch)
+    assert engine.wait_until_ready(["L3"], timeout_s=1.0)
+    assert fake.shut_open and len(opened) == 1 and time.monotonic() - opened[0] >= 0.05
+
+
+def test_a_shutter_the_firmware_closed_counts_its_open_time_again_from_the_reopen():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.use("live", L3)
+    engine.SHUTTER_OPEN_TIME_S = 0.05
+    time.sleep(0.06)
+    assert engine.is_ready_to_image(["L3"])
+    fake.shut_open = False  # closed by the engine itself (e.g. the cover interlock, then back)
+    _refuse_once(fake, "SHUT:OPEN 1")
+    engine.poll_once()  # reads it closed; the reopen is refused
+    assert not fake.shut_open and not engine.is_ready_to_image(["L3"])  # not counted as open any more
+    engine.poll_once()  # reopened: its open time counts from now
+    assert fake.shut_open and not engine.is_ready_to_image(["L3"])
+    time.sleep(0.06)
+    assert engine.is_ready_to_image(["L3"])
+
+
+def test_the_light_source_reports_the_560_mechanical_shutter():
+    engine, fake, source = _with_source()
+    light = engine.light_source
+    shutter = light.mechanical_shutter(light.channel_mappings[561])
+    assert shutter is not None and shutter.open_time_s == 0.001
+    assert light.mechanical_shutter(light.channel_mappings[488]) is None
+    assert light.mechanical_shutter(None) is None
+
+
+# ---- the operator's shutter button (On use, while nothing uses the 560) ------------------------------------------------
+
+
+def test_the_operator_opens_and_closes_the_shutter_by_hand_when_nothing_uses_the_560():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    control = engine.shutter_control()
+    assert control.can_open and not control.manual_open and control.users == () and not fake.shut_open
+    engine.set_manual_shutter(True)
+    assert fake.shut_open and engine.shutter_control().manual_open  # at once
+    engine.poll_once()
+    assert fake.shut_open  # the next poll keeps it open
+    engine.set_manual_shutter(False)
+    assert not fake.shut_open and not engine.shutter_control().manual_open
+
+
+@pytest.mark.parametrize("why", ["line 3 off", "not armed", "in use", "always open"])
+def test_the_shutter_cannot_be_opened_by_hand_unless_permitted(why):
+    engine, fake, source = _with_source()
+    if why == "line 3 off":
+        engine.wake_up("L1")  # armed, line 3 still off
+    else:
+        _to_ready(engine, source)
+    if why == "not armed":
+        engine.disarm()
+        engine.poll_once()
+    elif why == "in use":
+        engine.use("live", L3)
+    elif why == "always open":
+        engine.set_shutter_mode("always_open")
+    control = engine.shutter_control()
+    expected = {
+        "line 3 off": "the 560 is not ready",
+        "not armed": "the engine is not armed",
+        "in use": "in use (live)",
+        "always open": "Always open",
+    }[why]
+    assert not control.can_open and control.reason.startswith(expected)
+    opened_before = fake.shut_open
+    with pytest.raises(LaserEngineV2Error, match="shutter not opened"):
+        engine.set_manual_shutter(True)
+    assert fake.shut_open == opened_before and not engine.shutter_control().manual_open
+
+
+def test_a_use_of_the_560_takes_over_from_an_open_by_hand():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    live = engine.use("live", L3)
+    control = engine.shutter_control()
+    assert fake.shut_open and not control.manual_open and control.users == ("live",)
+    live.release()  # the use ends: the shutter follows On use, the open by hand is over
+    assert not fake.shut_open and engine.shutter_control().can_open
+
+
+def test_an_open_by_hand_does_not_keep_the_560_on_and_never_reopens_by_itself():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.source_idle_off_s = 60
+    engine._source_last_use -= 61  # unused for longer than the idle-off ...
+    engine.set_manual_shutter(True)  # ... the press counts as one use
+    engine.poll_once()
+    engine.source_step()
+    assert source.enabled and fake.shut_open
+    engine._source_last_use -= 61  # then the idle-off passes with nothing using the 560
+    engine.poll_once()
+    engine.source_step()
+    assert not source.enabled and not fake.shut_open and not engine.shutter_control().manual_open
+    engine.wake_up("L3")  # the 560 comes back (e.g. Wake all): the shutter stays closed
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and not fake.shut_open
+
+
+def test_an_intensity_change_keeps_an_open_by_hand():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    for pct in (30.0, 80.0, 0.0):  # every AOM LINE3:SET ramps line 3
+        engine.light_source.set_intensity(engine.light_source.channel_mappings[561], pct)
+        engine.poll_once()
+    assert fake.shut_open and engine.shutter_control().manual_open
+
+
+def test_a_mode_change_ends_an_open_by_hand():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    engine.set_shutter_mode("always_open")
+    assert fake.shut_open and not engine.shutter_control().manual_open
+    engine.set_shutter_mode("on_use")
+    assert not fake.shut_open
+
+
+def test_an_open_by_hand_ends_when_the_560_drops_out_and_stays_closed_when_it_is_back():
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.set_manual_shutter(True)
+    source.enabled = False  # the 560 goes off by itself (still wanted: the next use restarts it)
+    engine.source_step()
+    engine.poll_once()
+    assert not fake.shut_open and not engine.shutter_control().manual_open
+    engine.wake_up("L3")  # restarted (e.g. Wake all, or a use that has since ended)
+    for _ in range(5):
+        engine.source_step()
+    assert engine.poll_once().channels["L3"].state == LineState.READY and not fake.shut_open  # not reopened
+
+
+# ---- a close decided on an older snapshot never darkens a newer open (PR review) ---------------------------------------
+
+
+def _pause_after_deciding(engine, monkeypatch, thread_name):
+    """Hold the named thread's poll right after it has decided whether the shutter is wanted (before it acts on it)."""
+    captured, resume = threading.Event(), threading.Event()
+    original = engine._shutter_wanted
+
+    def paused():
+        wanted = original()
+        if threading.current_thread().name == thread_name:
+            captured.set()
+            assert resume.wait(5)
+        return wanted
+
+    monkeypatch.setattr(engine, "_shutter_wanted", paused)
+    return captured, resume
+
+
+def test_a_release_cannot_close_the_shutter_a_new_hold_is_imaging_behind(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    old = engine.use("old", L3)
+    captured, resume = _pause_after_deciding(engine, monkeypatch, "release")
+    thread = threading.Thread(target=old.release, name="release")
+    thread.start()
+    assert captured.wait(5)  # the release's poll has decided: nothing wants the shutter open
+    new = engine.use("new", L3)
+    assert new.wait_until_ready(1) and fake.shut_open  # the new user images now
+    resume.set()
+    thread.join(5)
+    assert not thread.is_alive() and fake.shut_open  # the old decision did not close it
+    new.release()
+    assert not fake.shut_open
+
+
+def test_a_not_ready_close_older_than_an_open_does_not_close_it(monkeypatch):
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    engine.use("acquisition", L3)
+    assert fake.shut_open
+    source.enabled = False  # the 560 drops out while the shutter is open
+    engine.source_step()
+    captured, resume = _pause_after_deciding(engine, monkeypatch, "stale")
+    thread = threading.Thread(target=engine.poll_once, name="stale")
+    thread.start()
+    assert captured.wait(5)  # this poll read the 560 off with the shutter open: it will close the shutter
+    engine.wake_up("L3")  # meanwhile the 560 restarts behind a closed shutter ...
+    for _ in range(5):
+        engine.source_step()  # ... and reads READY: that step's poll opens the shutter again
+    time.sleep(engine.SHUTTER_OPEN_TIME_S)
+    assert engine.is_ready_to_image(["L3"]) and fake.shut_open  # the acquisition images now
+    resume.set()
+    thread.join(5)
+    assert not thread.is_alive() and fake.shut_open  # the older "starting" did not close it
+
+
+class _HookOnFirstLetGo:
+    """The engine's RLock, running `hook` once on `thread_name`'s first outermost release: the moment another thread
+    could get in between that thread's check and its action, if they are not under one hold of the lock."""
+
+    def __init__(self, inner, thread_name, hook):
+        self._inner, self._name, self._hook = inner, thread_name, hook
+        self._depth = threading.local()
+        self._fired = False
+
+    def acquire(self, *args, **kwargs):
+        ok = self._inner.acquire(*args, **kwargs)
+        self._depth.n = getattr(self._depth, "n", 0) + 1
+        return ok
+
+    def release(self):
+        self._depth.n -= 1
+        self._inner.release()
+        if self._depth.n == 0 and not self._fired and threading.current_thread().name == self._name:
+            self._fired = True
+            self._hook()
+
+    def __enter__(self):
+        return self.acquire()
+
+    def __exit__(self, *exc):
+        self.release()
+
+
+def test_a_use_starting_while_an_open_by_hand_is_checked_still_takes_over():
+    """Live starts the moment the open-by-hand thread first lets go of the shutter lock: that must be after it has set
+    its flag, so live takes over and ends it (D13), whatever the order of the check and the set inside."""
+    engine, fake, source = _with_source()
+    _to_ready(engine, source)
+    holds = []
+    engine._shutter_lock = _HookOnFirstLetGo(
+        engine._shutter_lock, "manual", lambda: holds.append(engine.use("live", L3))
+    )
+    manual = threading.Thread(target=engine.set_manual_shutter, args=(True,), name="manual")
+    manual.start()
+    manual.join(5)
+    assert not manual.is_alive() and holds and fake.shut_open
+    holds[0].release()  # live stops: it had taken over, so the open by hand is over and the shutter closes
+    assert not fake.shut_open and not engine.shutter_control().manual_open
