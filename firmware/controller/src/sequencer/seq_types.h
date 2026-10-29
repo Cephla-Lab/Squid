@@ -46,10 +46,13 @@ struct __attribute__((packed)) SeqChannel {
     uint8_t camera_mask;     // != 0; bit i = camera i
     int32_t z_offset;        // per-channel stack-axis offset
     uint8_t flags;           // reserved, 0
+    uint16_t illum_lead_us;  // illumination on this long BEFORE the exposure starts (the source's rise
+                             // time); the trigger waits for it, so the exposure itself is unchanged
+    uint16_t reserved;       // 0
 };
 
 static_assert(sizeof(SeqLoop) == 15, "SeqLoop is wire format (seq_wire.h)");
-static_assert(sizeof(SeqChannel) == 20, "SeqChannel is wire format (seq_wire.h)");
+static_assert(sizeof(SeqChannel) == 24, "SeqChannel is wire format (seq_wire.h)");
 
 // Runtime per-camera config (set via SET_CAMERA_PARAMS, not uploaded with programs).
 struct SeqCameraConfig {

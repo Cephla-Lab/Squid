@@ -16,8 +16,8 @@ struct ExposurePlan {
     uint8_t trigger_mode;    // TriggerMode
     uint8_t illum_ttl_mask;  // TTL ports driven for this exposure
     uint32_t t_assert_us;    // trigger asserted (active edge)
-    uint32_t t_illum_on_us;  // = t_assert + strobe_delay
-    uint32_t t_illum_off_us;  // = t_illum_on + exposure
+    uint32_t t_illum_on_us;  // = t_assert + strobe_delay - illum_lead (precedes t_assert when the lead is longer)
+    uint32_t t_illum_off_us;  // = t_assert + strobe_delay + exposure
     uint32_t t_deassert_us;  // Level: == t_illum_off ; Edge: t_assert + kEdgePulseUs
 };
 

@@ -83,6 +83,76 @@ void test_single_frame_program_completes(void) {
     TEST_ASSERT_EQUAL_UINT32(p.t_illum_off_us, p.t_deassert_us);
 }
 
+// Illumination lead: the light goes on illum_lead_us before the exposure starts (the source's
+// rise time - bench 2026-10-28: 405 nm 3.5 % dimmer at 1 ms with no lead). The trigger, the
+// exposure and the readout all wait for it; the exposure is not shortened.
+void test_illumination_lead_turns_the_light_on_before_the_exposure(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 2;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].illum_lead_us = 100;
+    SeqCameraConfig cams[1] = {cam_level()};  // strobe 500, exposure 10000, readout 20000
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None,
+                            (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/5000000, 40000));
+    run_until(e, hal, 2000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL(2, (int)hal.plans.size());
+    const ExposurePlan& p = hal.plans[0];
+    // The exposure starts at assert + strobe; the light is already on 100 us before that.
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + 500 - 100, p.t_illum_on_us);
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + 500 + 10000, p.t_illum_off_us);
+    TEST_ASSERT_EQUAL_UINT32(p.t_illum_off_us, p.t_deassert_us);
+    // The next frame waits for the readout of the delayed exposure: lead + strobe + exposure + readout.
+    TEST_ASSERT_TRUE((uint32_t)(hal.plans[1].t_illum_on_us - p.t_illum_on_us) >= 100 + 500 + 10000 + 20000);
+}
+
+void test_illumination_lead_longer_than_the_strobe_delay_lights_before_the_trigger(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].illum_lead_us = 100;
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].strobe_delay_us = 0;
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None,
+                            (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/5000000, 40000));
+    run_until(e, hal, 2000000);
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqState::Done, (uint8_t)e.state());
+    TEST_ASSERT_EQUAL(1, (int)hal.plans.size());
+    const ExposurePlan& p = hal.plans[0];
+    TEST_ASSERT_EQUAL_UINT32(p.t_illum_on_us + 100, p.t_assert_us);  // light first, trigger 100 us later
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + 10000, p.t_illum_off_us);
+    TEST_ASSERT_EQUAL_UINT32(p.t_illum_off_us, p.t_deassert_us);
+}
+
+void test_illumination_lead_in_edge_mode_delays_the_pulse_with_the_exposure(void) {
+    FakeHal hal;
+    SeqEngine e(hal);
+    SeqLoop l = good_loop();
+    l.n_layers = 1;
+    l.n_channels = 1;
+    SeqChannel ch[1] = {good_channel()};
+    ch[0].illum_lead_us = 100;
+    SeqCameraConfig cams[1] = {cam_level()};
+    cams[0].trigger_mode = (uint8_t)TriggerMode::Edge;  // strobe 500
+    TEST_ASSERT_EQUAL_UINT8((uint8_t)SeqError::None,
+                            (uint8_t)e.load(l, ch, cams, 1).error);
+    TEST_ASSERT_TRUE(e.start(hal.now_us, /*wait_timeout_us=*/5000000, 40000));
+    run_until(e, hal, 2000000);
+    TEST_ASSERT_EQUAL(1, (int)hal.plans.size());
+    const ExposurePlan& p = hal.plans[0];
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + 500 - 100, p.t_illum_on_us);
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + kEdgePulseUs, p.t_deassert_us);
+    TEST_ASSERT_EQUAL_UINT32(p.t_assert_us + 500 + 10000, p.t_illum_off_us);  // model
+}
+
 // Piezo stack axis: layer z = DAC steps of dz; settle honored before exposure.
 void test_piezo_step_and_settle_gate_exposure(void) {
     FakeHal hal;
@@ -973,6 +1043,9 @@ void test_ttl_only_program_never_touches_the_led_matrix(void) {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_single_frame_program_completes);
+    RUN_TEST(test_illumination_lead_turns_the_light_on_before_the_exposure);
+    RUN_TEST(test_illumination_lead_longer_than_the_strobe_delay_lights_before_the_trigger);
+    RUN_TEST(test_illumination_lead_in_edge_mode_delays_the_pulse_with_the_exposure);
     RUN_TEST(test_piezo_step_and_settle_gate_exposure);
     RUN_TEST(test_stepper_settle_gates_exposure);
     RUN_TEST(test_filter_wheel_gates_exposure);
