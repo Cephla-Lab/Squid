@@ -207,6 +207,12 @@ class CMD_SET:
     SET_ENCODER_REPORTING = 44  # One axis's encoder in the status packet (see ENCODER_REPORTING)
     SET_RAMP_PROFILE = 47  # S-shaped or trapezoidal ramp per axis (see RAMP_PROFILE)
     SET_COMPLETION_WINDOW = 49  # Report a move complete once within a distance of the target
+    # Hardware sequencer (opcodes 60-63; 64-66 are taken above). Wire contract: control/sequencer_program.py, mirroring
+    # firmware/controller/src/sequencer/seq_wire.h.
+    SEQ_WRITE = 60  # [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
+    SEQ_COMMIT = 61  # [2..3]=byte length BE, [4..5]=CRC-16/CCITT-FALSE BE; parse + validate
+    SEQ_RUN = 62  # [2..5]=int32 stack start BE; stays IN_PROGRESS until the sequence is terminal
+    SEQ_CANCEL = 63  # finish the current exposure, then wind down
     INITFILTERWHEEL_W2 = 252
     INITFILTERWHEEL = 253
     INITIALIZE = 254
@@ -266,6 +272,10 @@ class FOCUS_WHEEL_MODE:
 
 
 FOCUS_WHEEL_FLAG_REPORTING = 7  # status byte 19 bit: bytes 14-17 carry the focus wheel count
+# Status byte 19 bit: bytes 14-17 carry the hardware sequencer's status (control.sequencer_program.SequencerStatus)
+# instead of the encoder position / focus wheel count. Set while a sequence runs and for about a second after any
+# sequencer command or terminal state, so a refusal or a final status is readable; the other owners resume afterwards.
+SEQ_FLAG_STATUS = 2
 # SET_FOCUS_WHEEL_MODE [3] flag: also store the mode as the controller's power-up mode (EEPROM; RESET and INITIALIZE
 # use it too). Squid saves TO_HOST on a lift system, so the wheel moves nothing while Squid is not running.
 FOCUS_WHEEL_SAVE_AS_POWER_UP = 1
