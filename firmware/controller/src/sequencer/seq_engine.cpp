@@ -221,6 +221,10 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
     uint8_t chi;
     step_to_layer_channel(k, &layer, &chi);
     const SeqChannel& ch = channels_[chi];
+    // The illumination leads the exposure by illum_lead_us (the source's rise time): the light
+    // goes on at now + strobe_delay as before, and everything the trigger defines - the edge, the
+    // exposure, illumination off, the readout - is pushed later by the lead.
+    const uint32_t lead = ch.illum_lead_us;
     // Every max() is taken in OFFSET space (relative to now_us) and only then added to
     // now_us: absolute timestamps cannot be ordered with > across the micros() wrap.
     uint32_t max_end_off = 0, max_hold_off = 0;
@@ -228,20 +232,20 @@ void SeqEngine::schedule_exposures(uint32_t k, uint32_t now_us) {
     for (uint8_t cam = 0; cam < n_cameras_; cam++) {
         if (!((ch.camera_mask >> cam) & 1)) continue;
         const SeqCameraConfig& cc = cams_[cam];
-        const uint32_t illum_off = cc.strobe_delay_us + ch.exposure_us;
+        const uint32_t illum_off = lead + cc.strobe_delay_us + ch.exposure_us;
         const uint32_t deassert_off =
-            (cc.trigger_mode == (uint8_t)TriggerMode::Level) ? illum_off : kEdgePulseUs;
+            (cc.trigger_mode == (uint8_t)TriggerMode::Level) ? illum_off : lead + kEdgePulseUs;
         const uint32_t end_off = (illum_off > deassert_off) ? illum_off : deassert_off;
         ExposurePlan p{};
         p.camera_id = cam;
         p.trigger_mode = cc.trigger_mode;
         p.illum_ttl_mask = ch.illum_ttl_mask;
-        p.t_assert_us = now_us;
+        p.t_assert_us = now_us + lead;
         p.t_illum_on_us = now_us + cc.strobe_delay_us;
         p.t_illum_off_us = now_us + illum_off;
         p.t_deassert_us = now_us + deassert_off;
         hal_.schedule_exposure(p);
-        last_trigger_us_[cam] = now_us;
+        last_trigger_us_[cam] = now_us + lead;
         trigger_valid_[cam] = true;
         seen_busy_[cam] = false;
         readout_done_us_[cam] = now_us + end_off + cc.readout_time_us;
