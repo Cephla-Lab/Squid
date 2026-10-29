@@ -534,6 +534,44 @@ class TestUIInitialization:
         assert preferences_dialog.af_stop_threshold.value() == 0.85
 
 
+class TestOmeZarrLabel:
+    """ZARR_V3 is shown as "OME-Zarr" but still stored as ZARR_V3, so existing config files keep working."""
+
+    def test_zarr_v3_in_config_is_shown_as_ome_zarr(self, qtbot, sample_config, temp_config_file):
+        sample_config.set("GENERAL", "file_saving_option", "ZARR_V3")
+        dialog = control.widgets.PreferencesDialog(sample_config, temp_config_file)
+        qtbot.addWidget(dialog)
+
+        assert dialog.file_saving_combo.currentText() == "OME-Zarr"
+        assert not [c for c in dialog._get_changes() if c[0] == "File Saving Format"]
+
+    def test_choosing_ome_zarr_saves_and_applies_zarr_v3(self, qtbot, preferences_dialog, temp_config_file):
+        import control._def
+
+        original = control._def.FILE_SAVING_OPTION
+        try:
+            preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+            preferences_dialog.accept = MagicMock()
+            preferences_dialog._save_and_close()
+
+            saved = ConfigParser()
+            saved.read(temp_config_file)
+            assert saved.get("GENERAL", "file_saving_option") == "ZARR_V3"
+            assert control._def.FILE_SAVING_OPTION is control._def.FileSavingOption.ZARR_V3
+        finally:
+            control._def.FILE_SAVING_OPTION = original
+
+    def test_ome_zarr_shows_the_zarr_compression_option(self, preferences_dialog):
+        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+
+        assert preferences_dialog.zarr_compression_combo.isVisibleTo(preferences_dialog)
+
+    def test_ome_zarr_tooltip_names_the_spec_and_zarr_versions(self, preferences_dialog):
+        preferences_dialog.file_saving_combo.setCurrentText("OME-Zarr")
+
+        assert "OME-Zarr 0.5 (Zarr v3)" in preferences_dialog.file_saving_combo.toolTip()
+
+
 class TestFileSavingOptionFallback:
     """The file saving format shown must be the one in effect, even with no key in the config.
 
@@ -899,13 +937,14 @@ class TestTiffCompressionSetting:
         assert not [c for c in dialog._get_changes() if c[0] == "TIFF Compression Level"]
 
     def test_only_shown_for_the_formats_that_support_it(self, preferences_dialog):
-        for file_saving_option, visible in (
+        for file_saving_label, visible in (
             ("INDIVIDUAL_IMAGES", True),
             ("MULTI_PAGE_TIFF", True),
             ("OME_TIFF", False),  # written through a memmap, which can't be compressed
-            ("ZARR_V3", False),
+            ("OME-Zarr", False),
         ):
-            preferences_dialog.file_saving_combo.setCurrentText(file_saving_option)
+            preferences_dialog.file_saving_combo.setCurrentText(file_saving_label)
+            assert preferences_dialog.file_saving_combo.currentText() == file_saving_label
             assert preferences_dialog.tiff_compression_spinbox.isVisibleTo(preferences_dialog) is visible
             assert preferences_dialog.tiff_compression_label.isVisibleTo(preferences_dialog) is visible
 
