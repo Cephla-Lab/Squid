@@ -98,6 +98,10 @@ bool closed_loop_position_control = false;
 // IntervalTimer does not work on teensy with SPI, the below lines are to be removed
 volatile int counter_send_pos_update = 0;
 volatile bool flag_send_pos_update = false;
+
+uint8_t encoder_report_axis = 0xFF;
+uint8_t encoder_report_mode = ENCODER_REPORT_OFF;
+uint16_t completion_window_units[TOTAL_AXES] = {0};
 elapsedMicros us_since_last_pos_update = 5000;
 elapsedMicros us_since_last_check_position = 3000;
 elapsedMicros us_since_last_joystick_update = 3000;
@@ -116,9 +120,12 @@ int16_t joystick_delta_y = 0;
 bool joystick_button_pressed = false;
 long joystick_button_pressed_timestamp = 0;
 
-// focus
-int32_t focuswheel_pos = 0;
-bool first_packet_from_joystick_panel = true;
+// focus wheel and link state; starts disconnected, so the first packet only takes the wheel baseline
+JoystickPanelLink joystick_panel = {false, 0, false, 0, false, 0};
+uint8_t focus_wheel_mode = FOCUS_WHEEL_DRIVES_Z;
+uint8_t focus_wheel_power_up_mode = FOCUS_WHEEL_DRIVES_Z;
+int32_t focus_wheel_host_count = 0;
+bool panel_locked_by_host = false;
 
 // btns
 uint8_t btns;

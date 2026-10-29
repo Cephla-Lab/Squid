@@ -2699,6 +2699,7 @@ def test_update_coordinates_leaves_loaded_plan_untouched():
         has_loaded_coordinates=True,
     )
 
+    fake._plan_is_loaded_file = lambda: control.widgets.WellplateMultiPointWidget._plan_is_loaded_file(fake)
     control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
 
     fake.scanCoordinates.clear_regions.assert_not_called()
@@ -2720,6 +2721,7 @@ def test_update_coordinates_derives_from_wells_when_no_plan_loaded():
         has_loaded_coordinates=False,
     )
 
+    fake._plan_is_loaded_file = lambda: control.widgets.WellplateMultiPointWidget._plan_is_loaded_file(fake)
     control.widgets.WellplateMultiPointWidget.update_coordinates(fake)
 
     fake.scanCoordinates.set_well_coordinates.assert_called_once()
@@ -2956,6 +2958,7 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
         entry_maxZ=widget(value=200.0),
         entry_deltaZ=widget(value=1.5),
         entry_NZ=widget(value=3),
+        combobox_z_order=widget(currentData="Z FIRST"),
         entry_dt=widget(value=0.0),
         entry_Nt=widget(value=1),
         checkbox_useFocusMap=widget(isChecked=use_focus_map),
@@ -2976,7 +2979,8 @@ def _wellplate_ui_fake(fit_ok=True, use_focus_map=False):
     )
 
 
-def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting():
+def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_starting(monkeypatch):
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
     fake = _wellplate_ui_fake()
 
     assert control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake) is None
@@ -2986,6 +2990,7 @@ def test_wellplate_configure_controller_from_ui_pushes_every_setting_without_sta
     mpc.set_focus_map.assert_called_once_with(None)
     mpc.set_deltaZ.assert_called_once_with(1.5)
     mpc.set_NZ.assert_called_once_with(3)
+    mpc.set_z_stack_order.assert_called_once_with("Z FIRST")
     mpc.set_af_flag.assert_called_once_with(True)
     mpc.set_base_path.assert_called_once_with("/tmp/saving")
     mpc.set_widget_type.assert_called_once_with("wellplate")
@@ -3035,3 +3040,17 @@ def test_flexible_set_acquisition_running_state_dispatches_like_the_wellplate_sl
 
     control.widgets.FlexibleMultiPointWidget.set_acquisition_running_state(fake, False)
     fake.acquisition_is_finished.assert_called_once()
+
+
+def test_z_stack_order_choice_is_opt_in(monkeypatch):
+    # Off, the GUI acquires Channel First even if the hidden dropdown says Z First (e.g. after loading an
+    # acquisition YAML).
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", False)
+    fake = _wellplate_ui_fake()
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stack_order.assert_called_once_with("CHANNEL FIRST")
+
+    monkeypatch.setattr(control._def, "ENABLE_Z_STACK_ORDER_SELECTION", True)
+    fake = _wellplate_ui_fake()
+    control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
+    fake.multipointController.set_z_stack_order.assert_called_once_with("Z FIRST")

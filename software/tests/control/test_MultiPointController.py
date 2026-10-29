@@ -1,6 +1,7 @@
 import copy
 import dataclasses
 import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -545,6 +546,35 @@ def test_completed_run_reports_end_reason_and_image_count():
     assert mpc.last_image_count == tt.image_count > 0
 
 
+def test_saving_settings_changed_after_startup_apply_to_the_next_acquisition(tmp_path, monkeypatch):
+    """The saving subprocess is started ahead of the acquisition, with its own copy of control._def
+    from that moment, so the settings have to reach it with the acquisition."""
+    import tifffile
+
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.INDIVIDUAL_IMAGES)
+    monkeypatch.setattr(control._def, "TIFF_COMPRESSION_LEVEL", 0)
+    scope, tt, mpc = _controller_with_tracker()
+    # One image is enough.
+    mpc.scanCoordinates.remove_region("region_2")
+    mpc.scanCoordinates.remove_region("region_grid")
+    mpc.selected_configurations = mpc.selected_configurations[:1]
+    mpc.set_base_path(str(tmp_path))
+    mpc.start_new_experiment("acquisition", add_timestamp=False)
+
+    # What saving the Preferences dialog does.
+    monkeypatch.setattr(control._def, "FILE_SAVING_OPTION", control._def.FileSavingOption.MULTI_PAGE_TIFF)
+    monkeypatch.setattr(control._def, "TIFF_COMPRESSION_LEVEL", 6)
+
+    mpc.run_acquisition()
+    assert tt.finished_event.wait(30)
+    mpc.thread.join(10)
+
+    stacks = list((tmp_path / "acquisition").rglob("*_stack.tiff"))
+    assert stacks, "Nothing was saved as MULTI_PAGE_TIFF"
+    with tifffile.TiffFile(stacks[0]) as tif:
+        assert tif.pages[0].compression == tifffile.COMPRESSION.ADOBE_DEFLATE
+
+
 def test_user_abort_reports_user_abort():
     scope, tt, mpc = _controller_with_tracker()
     mpc.run_acquisition()
@@ -643,3 +673,67 @@ def test_protocol_info_is_consumed_even_when_the_run_fails_to_start(tmp_path):
     mpc.thread.join(10)
     with open(tmp_path / "R02_image" / "acquisition.yaml", encoding="utf-8") as f:
         assert "protocol" not in yaml.safe_load(f)
+
+
+# --- MCU-idle pre-flight -----------------------------------------------------
+# Starting an acquisition must survive a stop_live() timeout and wait for the MCU to
+# go idle before the worker moves the stage (see LiveController.trigger_acquisition).
+
+
+def _stop_live_like_wedged_mcu(live_controller):
+    """Mimic the real failure: is_live goes False, then the illumination-off wait raises."""
+
+    def stop_live():
+        live_controller.is_live = False
+        raise TimeoutError("illumination-off wait timed out")
+
+    return stop_live
+
+
+def test_run_acquisition_aborts_cleanly_when_microcontroller_stays_busy():
+    scope, tt, mpc = _controller_with_tracker()
+
+    mpc.liveController.is_live = True
+    with patch.object(
+        mpc.liveController, "stop_live", side_effect=_stop_live_like_wedged_mcu(mpc.liveController)
+    ), patch.object(
+        mpc.microcontroller, "wait_till_operation_is_completed", side_effect=TimeoutError("busy")
+    ) as wait_mock:
+        assert mpc.run_acquisition() is False  # must not raise, and must say it did not start
+
+    wait_mock.assert_called_once()
+    assert mpc.thread is None
+    assert tt.finished_event.wait(5)
+    assert not tt.started_event.is_set()
+    assert mpc.last_end_reason == "failed_to_start"
+
+
+def test_run_acquisition_continues_when_stop_live_times_out_but_mcu_recovers():
+    scope, tt, mpc = _controller_with_tracker()
+
+    mpc.liveController.is_live = True
+    with patch.object(
+        mpc.liveController, "stop_live", side_effect=_stop_live_like_wedged_mcu(mpc.liveController)
+    ), patch.object(
+        mpc.liveController, "start_live"
+    ):  # keep post-acquisition resume from really starting live
+        assert mpc.run_acquisition() is True
+        assert tt.started_event.wait(5)
+        assert tt.finished_event.wait(30)
+        mpc.thread.join(10)
+
+    assert tt.image_count == mpc.get_acquisition_image_count()
+
+
+def test_start_blocker_refuses_an_acquisition_before_anything_moves():
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    try:
+        mpc = ts.get_test_multi_point_controller(microscope=scope)
+        mpc.validate_acquisition_settings = lambda: True
+        mpc.start_blocker = lambda: "the Z lift is moving"
+        start = scope.stage.get_pos()
+        assert mpc.run_acquisition() is False
+        assert mpc.last_end_reason == "failed_to_start"
+        assert scope.stage.get_pos() == start
+    finally:
+        scope.close()

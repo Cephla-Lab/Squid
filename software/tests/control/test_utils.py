@@ -11,8 +11,10 @@ def test_squid_repo_info():
     assert control.utils.get_squid_repo_state_description()
 
 
+import cv2
 import numpy as np
 import pytest
+from control._def import FocusMeasureOperator
 from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space, threaded_operation_helper
 
 
@@ -96,6 +98,10 @@ def test_invalid_inputs():
     # Test invalid mode
     with pytest.raises(ValueError):
         find_spot_location(np.zeros((480, 640), dtype=np.uint8), mode="invalid")
+
+    # Test unknown parameter
+    with pytest.raises(ValueError, match="peak_width"):
+        find_spot_location(create_test_image([(320, 240)]), params={"peak_width": 5})
 
 
 def test_spot_detection_parameters():
@@ -212,3 +218,57 @@ def test_threaded_operation_helper():
     # Verify results
     assert operation_result == [("value1", "value2")]
     assert callback_result == [(True, None)]
+
+
+def _binary_amplitude_image(dtype, shape=(256, 256), seed=0):
+    """Random (non-periodic) 0/dtype-max image: every pixel edge at full contrast, so maximally sharp."""
+    rng = np.random.default_rng(seed)
+    return ((rng.random(shape) > 0.5) * np.iinfo(dtype).max).astype(dtype)
+
+
+@pytest.mark.parametrize("sigma", [1, 2])
+@pytest.mark.parametrize("method", list(FocusMeasureOperator))
+@pytest.mark.parametrize("dtype", [np.uint8, np.uint16])
+def test_focus_measure_sharp_scores_higher_than_blurred(dtype, method, sigma):
+    sharp = _binary_amplitude_image(dtype)
+    blurred = cv2.GaussianBlur(sharp, (0, 0), sigma)
+
+    assert control.utils.calculate_focus_measure(sharp, method) > control.utils.calculate_focus_measure(blurred, method)
+
+
+def test_focus_measure_lape_non_negative_for_uint8():
+    sharp = _binary_amplitude_image(np.uint8)
+
+    assert control.utils.calculate_focus_measure(sharp, FocusMeasureOperator.LAPE) >= 0
+    assert control.utils.calculate_focus_measure(cv2.GaussianBlur(sharp, (0, 0), 1), FocusMeasureOperator.LAPE) >= 0
+
+
+def test_focus_measure_lape_independent_of_dtype_for_identical_values():
+    as_uint8 = _binary_amplitude_image(np.uint8)
+    as_uint16 = as_uint8.astype(np.uint16)
+
+    assert control.utils.calculate_focus_measure(as_uint8, FocusMeasureOperator.LAPE) == pytest.approx(
+        control.utils.calculate_focus_measure(as_uint16, FocusMeasureOperator.LAPE), rel=1e-9
+    )
+
+
+@pytest.mark.parametrize("rotate", [None, 0, 90, -90, 180])
+@pytest.mark.parametrize("flip", [None, *control.utils.FlipVariant])
+@pytest.mark.parametrize("shape", [(6, 4), (6, 4, 3)])
+def test_rotate_and_flip_image_matches_opencv_and_never_aliases_the_input(rotate, flip, shape):
+    image = np.arange(np.prod(shape), dtype=np.uint16).reshape(shape)
+    original = image.copy()
+    expected = image.copy()
+    if rotate:
+        expected = cv2.rotate(
+            expected, {90: cv2.ROTATE_90_CLOCKWISE, -90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180}[rotate]
+        )
+    if flip is not None:
+        expected = cv2.flip(expected, {"Vertical": 0, "Horizontal": 1, "Both": -1}[flip.value])
+
+    result = control.utils.rotate_and_flip_image(image, rotate_image_angle=rotate, flip_image=flip)
+
+    np.testing.assert_array_equal(result, expected)
+    assert result.flags.c_contiguous
+    assert not np.may_share_memory(result, image)  # callers pass views of driver memory
+    np.testing.assert_array_equal(image, original)

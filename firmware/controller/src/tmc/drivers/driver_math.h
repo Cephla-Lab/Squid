@@ -138,6 +138,21 @@ static inline uint8_t tmc2240_irun(float current_rms_ma, uint8_t current_range)
     return (uint8_t)cs;
 }
 
+/*
+  The lowest CURRENT_RANGE in floor_range..2 whose rms full scale covers the
+  request, or TMC_CURRENT_OUT_OF_RANGE when even range 2 cannot. The compile-time
+  CURRENT_RANGE_* constants are floors: a current that fits stays on its floor
+  (every stock current), and only a larger one steps up. Range 3 is never
+  selected (same 3 A peak as 2; def_v1.h static_asserts 0..2).
+*/
+static inline uint8_t tmc2240_select_range(float current_rms_ma, uint8_t floor_range)
+{
+    for (uint8_t r = floor_range; r <= 2; r++) {
+        if (tmc2240_ifs_rms_a(r) * 1000.0f >= current_rms_ma) return r;
+    }
+    return TMC_CURRENT_OUT_OF_RANGE;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Microstep resolution code                                                */
 /* ------------------------------------------------------------------------ */

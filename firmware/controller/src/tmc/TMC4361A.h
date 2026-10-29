@@ -79,6 +79,7 @@ typedef struct
   uint8_t  driver_type;
   float    r_sense;             /* TMC2660 only, ohms */
   uint8_t  current_range;       /* TMC2240 only: 0 = 1 A, 1 = 2 A, 2/3 = 3 A peak */
+  uint8_t  current_range_floor; /* TMC2240 only: compile-time CURRENT_RANGE_*; set_current steps up from it */
   uint8_t  driver_toff;         /* cached TOFF so enable() can restore it */
   /* The raw 32-bit word of the LAST cover read tmc_driver_probe() performed,
      kept whatever the verdict was. Diagnostic only — nothing branches on it.
@@ -95,6 +96,11 @@ typedef struct
      nothing). Not over the packet protocol: design M7 keeps host visibility to
      a serial log precisely so that no protocol change is needed. */
   uint32_t driver_probe_raw;
+
+  /* Ramp profile used by tmc4361A_sRampInit(): TMC4361A_RAMP_SSHAPE (default,
+     bow-limited) or TMC4361A_RAMP_TRAPEZ (acceleration-limited). Selected per
+     axis by SET_RAMP_PROFILE (firmware 1.6). */
+  uint8_t ramp_profile;
   /* Shadow copy of TMC2240 registers. Cover READS are unreliable, so every
      read-modify-write sources from here. See design §6.3. */
   uint32_t tmc2240_shadow[TMC2240_SHADOW_COUNT];
