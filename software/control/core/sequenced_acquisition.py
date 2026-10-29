@@ -141,8 +141,13 @@ def build_program(
     intensity_factor: float,
     camera: SeqCameraSpec,
     wait_timeout_s: float,
+    illum_lead_us: int = 0,
 ) -> SequencerProgram:
-    """The MCU program for one piezo z-stack: z outer, channels inner — the worker's nesting."""
+    """The MCU program for one piezo z-stack: z outer, channels inner — the worker's nesting.
+
+    illum_lead_us: every channel's light goes on this long before its exposure starts (the source's
+    rise time; SEQUENCER_ILLUMINATION_LEAD_US).
+    """
     channel_specs = []
     for channel in channels:
         if channel.source_code not in SOURCE_CODE_TO_PORT:
@@ -159,6 +164,7 @@ def build_program(
                 intensity_dac=port,
                 intensity=intensity_percent_to_dac(channel.dac_percent, intensity_factor),
                 z_offset=piezo_step_lsb(channel.z_offset_um, piezo_range_um, piezo_flip),
+                illum_lead_us=illum_lead_us,
             )
         )
     program = SequencerProgram(

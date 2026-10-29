@@ -134,6 +134,24 @@ def test_build_program_carries_per_channel_z_offsets_in_piezo_lsb():
     assert program.channels[1].z_offset == piezo_step_lsb(2.0, 300, flip=True)
 
 
+def test_build_program_applies_the_illumination_lead_to_every_channel():
+    channels = [plan(source_code=11), plan(source_code=12)]
+    kwargs = dict(
+        n_layers=3,
+        dz_um=1.5,
+        piezo_range_um=300,
+        piezo_flip=False,
+        z_settle_ms=20,
+        intensity_factor=0.6,
+        camera=CAMERA,
+        wait_timeout_s=5.0,
+    )
+    assert [c.illum_lead_us for c in build_program(channels, **kwargs).channels] == [0, 0]  # the default: no lead
+    with_lead = build_program(channels, illum_lead_us=100, **kwargs)
+    assert [c.illum_lead_us for c in with_lead.channels] == [100, 100]
+    with_lead.validate()
+
+
 def test_build_program_rejects_a_source_the_mcu_cannot_strobe():
     with pytest.raises(ValueError, match="source code 0"):
         build_program(
@@ -345,6 +363,9 @@ def test_settings_default_off():
 
     assert control._def.USE_HARDWARE_SEQUENCED_ACQUISITION is False
     assert control._def.SEQUENCER_USE_CAMERA_READY_LINE is False
+    assert (
+        control._def.SEQUENCER_ILLUMINATION_LEAD_US == 0
+    )  # until the bench has measured the value that closes the gap
 
 
 def test_preferences_dialog_round_trips_the_sequencer_settings(qtbot, tmp_path, monkeypatch):

@@ -125,6 +125,23 @@ def test_sequenced_and_software_sequenced_deliver_the_same_image_set(sequencing_
     assert software_status is None
 
 
+def test_the_illumination_lead_setting_reaches_the_controller(sequencing_setup, monkeypatch):
+    from control.microcontroller import Microcontroller
+
+    uploaded = []
+    original_upload = Microcontroller.seq_upload
+    monkeypatch.setattr(
+        Microcontroller, "seq_upload", lambda self, program: (uploaded.append(program), original_upload(self, program))
+    )
+    monkeypatch.setattr(control._def, "SEQUENCER_ILLUMINATION_LEAD_US", 100)
+
+    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch)
+
+    assert status.frames_fired == NZ * len(FLUORESCENCE)
+    [program] = uploaded
+    assert [channel.illum_lead_us for channel in program.channels] == [100] * len(FLUORESCENCE)
+
+
 def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_setup, monkeypatch):
     # An LED-matrix channel cannot be strobed from an MCU TTL port.
     channels = ["BF LED matrix full", "Fluorescence 488 nm Ex"]

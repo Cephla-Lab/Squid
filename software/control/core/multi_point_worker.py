@@ -1412,6 +1412,7 @@ class MultiPointWorker:
             intensity_factor=control._def.ILLUMINATION_INTENSITY_FACTOR,
             camera=camera_spec,
             wait_timeout_s=control._def.SEQUENCER_WAIT_TIMEOUT_S,
+            illum_lead_us=control._def.SEQUENCER_ILLUMINATION_LEAD_US,
         )
         self.wait_till_operation_is_completed()
         self.microcontroller.seq_upload(program)

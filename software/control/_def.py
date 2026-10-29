@@ -1875,6 +1875,11 @@ SEQUENCER_USE_CAMERA_READY_LINE = False
 SEQUENCER_CAMERA_READOUT_MS = 50.0
 # The controller fails a run when a step waits this long (stack settle, camera ready).
 SEQUENCER_WAIT_TIMEOUT_S = 5.0
+# Turn each channel's illumination on this long BEFORE its exposure starts (the light source's rise
+# time); the controller delays the trigger by it, so the exposure is unchanged and each frame costs
+# this much extra. Bench 2026-10-28: with 0 the 405 nm channel was 3.5 % dimmer at 1 ms exposure than
+# software-sequenced. 0 until the bench has measured the value that closes that gap (about 100 us).
+SEQUENCER_ILLUMINATION_LEAD_US = 0
 MULTIPOINT_PIEZO_UPDATE_DISPLAY = True
 
 USE_TERMINAL_CONSOLE = False
