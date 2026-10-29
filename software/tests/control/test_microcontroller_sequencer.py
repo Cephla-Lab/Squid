@@ -206,7 +206,7 @@ class TestSeqUpload:
         mcu.seq_upload(program)
 
         writes = serial.commands_of_type(CMD_SET.SEQ_WRITE)
-        assert len(writes) == len(program.words()) == 20
+        assert len(writes) == len(program.words()) == 22
         assert len(program_commits(serial)) == 1
         # commit comes last
         assert serial.commands[-1][1] == CMD_SET.SEQ_COMMIT
@@ -235,7 +235,7 @@ class TestSeqUpload:
         mcu.seq_upload(program)
 
         [commit] = program_commits(serial)
-        assert struct.unpack(">H", commit[2:4])[0] == len(program.pack()) == 80
+        assert struct.unpack(">H", commit[2:4])[0] == len(program.pack()) == 88
         assert struct.unpack(">H", commit[4:6])[0] == program.crc16()
 
     def test_commit_crc_is_the_ccitt_false_value(self, mcu_and_serial):

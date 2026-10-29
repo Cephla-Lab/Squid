@@ -35,21 +35,23 @@ from control.sequencer_program import (
 # firmware side can assert the identical bytes.  It was written out by hand from the field
 # offsets in seq_wire.h / seq_types.h, NOT by calling pack().
 #
-#   header  @0  : version=1, n_cameras=1, reserved=0, wait_timeout_us=5_000_000
+#   header  @0  : version=2, n_cameras=1, reserved=0, wait_timeout_us=5_000_000
 #   loop    @8  : Piezo, axis 7, dz=120, n_layers=10, ChannelsInner, z_settle=20_000,
 #                 return_to_start=1, n_channels=2                       (+1 pad byte @23)
 #   ch0     @24 : filter_wheel=NONE, filter_target=0, ttl=0x01, led=NONE, dac=0,
-#                 intensity=1000, exposure=10_000, camera_mask=1, z_offset=0, flags=0
-#   ch1     @44 : ... ttl=0x02, dac=1, intensity=1001, exposure=20_000 ...
-#   cam0    @64 : Level, ready_line=0, ready_active_high=1, readout_overlap_safe=1,
+#                 intensity=1000, exposure=10_000, camera_mask=1, z_offset=0, flags=0,
+#                 illum_lead_us=0, reserved=0
+#   ch1     @48 : ... ttl=0x02, dac=1, intensity=1001, exposure=20_000 ... illum_lead_us=100
+#   cam0    @72 : Level, ready_line=0, ready_active_high=1, readout_overlap_safe=1,
 #                 strobe_delay=300, readout=25_000, min_trigger_period=0
 GOLDEN_HEX = (
-    "01010000404b4c00"
+    "02010000404b4c00"
     "0107780000000a0000204e0000010200"
-    "ff0000000001ff00e80310270000010000000000"
-    "ff0000000002ff01e903204e0000010000000000"
+    "ff0000000001ff00e8031027000001000000000000000000"
+    "ff0000000002ff01e903204e000001000000000064000000"
     "010001012c010000a861000000000000"
 )
+GOLDEN_CRC16 = 0xB921  # pinned by the firmware's test_golden_program_bytes_match_the_host_mirror too
 
 FIRMWARE_SRC = Path(sp.__file__).resolve().parents[2] / "firmware" / "controller" / "src"
 
@@ -68,7 +70,14 @@ def golden_program() -> SequencerProgram:
         ),
         channels=(
             SeqChannelSpec(exposure_us=10000, camera_mask=1, illum_ttl_mask=0x01, intensity_dac=0, intensity=1000),
-            SeqChannelSpec(exposure_us=20000, camera_mask=1, illum_ttl_mask=0x02, intensity_dac=1, intensity=1001),
+            SeqChannelSpec(
+                exposure_us=20000,
+                camera_mask=1,
+                illum_ttl_mask=0x02,
+                intensity_dac=1,
+                intensity=1001,
+                illum_lead_us=100,
+            ),
         ),
         cameras=(
             SeqCameraSpec(
@@ -109,7 +118,7 @@ class TestStructSizes:
     def test_wire_struct_sizes(self):
         assert sp.WIRE_HEADER_BYTES == 8
         assert sp.SEQ_LOOP_BYTES == 15
-        assert sp.SEQ_CHANNEL_BYTES == 20
+        assert sp.SEQ_CHANNEL_BYTES == 24
         assert sp.WIRE_CAMERA_BYTES == 16
 
     def test_struct_formats_produce_the_pinned_sizes(self):
@@ -121,15 +130,15 @@ class TestStructSizes:
     def test_offsets_and_staging_size(self):
         assert sp.LOOP_OFFSET == 8
         assert sp.CHANNELS_OFFSET == 24
-        # kStagingBytes from seq_wire.h, asserted as 472 by the firmware's own test.
-        assert sp.STAGING_BYTES == 472
+        # kStagingBytes from seq_wire.h, asserted as 536 by the firmware's own test.
+        assert sp.STAGING_BYTES == 536
         assert sp.STAGING_BYTES % sp.WORD_BYTES == 0
         # the SEQ_WRITE word index is a single byte
         assert sp.STAGING_BYTES // sp.WORD_BYTES <= 255
 
     def test_program_bytes(self):
-        assert program_bytes(2, 1) == 24 + 2 * 20 + 16
-        assert program_bytes(1, 1) == 60
+        assert program_bytes(2, 1) == 24 + 2 * 24 + 16
+        assert program_bytes(1, 1) == 64
         assert program_bytes(16, 8) == sp.STAGING_BYTES
 
     def test_program_bytes_is_always_word_aligned(self):
@@ -144,10 +153,11 @@ class TestStructSizes:
 class TestPack:
     def test_golden_bytes(self):
         assert golden_program().pack().hex() == GOLDEN_HEX
+        assert golden_program().crc16() == GOLDEN_CRC16
 
     def test_golden_length_is_unpadded_program_bytes(self):
         packed = golden_program().pack()
-        assert len(packed) == program_bytes(2, 1) == 80
+        assert len(packed) == program_bytes(2, 1) == 88
 
     def test_roundtrip(self):
         program = golden_program()
@@ -225,11 +235,12 @@ class TestCrc16:
 class TestWords:
     def test_golden_word_split(self):
         words = golden_program().words()
-        assert len(words) == 20
-        assert [i for i, _ in words] == list(range(20))
-        assert words[0] == (0, bytes.fromhex("01010000"))
+        assert len(words) == 22
+        assert [i for i, _ in words] == list(range(22))
+        assert words[0] == (0, bytes.fromhex("02010000"))
         assert words[1] == (1, bytes.fromhex("404b4c00"))
-        assert words[-1] == (19, bytes.fromhex("00000000"))
+        assert words[17] == (17, bytes.fromhex("64000000"))  # ch1's illum_lead_us = 100, reserved = 0
+        assert words[-1] == (21, bytes.fromhex("00000000"))
 
     def test_words_are_absolute_offsets_so_a_resend_is_idempotent(self):
         packed = golden_program().pack()
@@ -761,3 +772,25 @@ class TestHeaderCrossCheck:
             + types["kMaxCameras"] * sizes["WireCamera"]
         )
         assert expected == sp.STAGING_BYTES
+
+
+class TestIlluminationLead:
+    def test_round_trips_through_the_wire(self):
+        channel = SeqChannelSpec(exposure_us=1000, illum_lead_us=100)
+        assert SeqChannelSpec.unpack(channel.pack()).illum_lead_us == 100
+
+    def test_defaults_to_no_lead(self):
+        assert SeqChannelSpec(exposure_us=1000).illum_lead_us == 0
+
+    def test_rides_the_last_four_bytes_of_the_channel(self):
+        packed = SeqChannelSpec(exposure_us=1000, illum_lead_us=0x1234).pack()
+        assert packed[20:24] == bytes.fromhex("34120000")  # u16 LE lead, u16 reserved = 0
+
+    def test_a_lead_that_does_not_fit_the_u16_is_refused_before_packing(self):
+        program = golden_program().replace(
+            channels=(golden_program().channels[0].replace(illum_lead_us=65536), golden_program().channels[1])
+        )
+        with pytest.raises(ProgramValidationError) as exc:
+            program.validate()
+        assert exc.value.error == SeqError.BAD_DURATION
+        assert exc.value.detail == 0
