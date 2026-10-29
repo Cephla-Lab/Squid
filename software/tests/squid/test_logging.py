@@ -1,6 +1,11 @@
 import logging
+import os
 import queue
+import sys
 import tempfile
+import threading
+
+import pytest
 
 import squid.logging
 from squid.logging import BufferingHandler
@@ -194,11 +199,14 @@ def test_children_loggers():
 def test_file_loggers():
     log_file_name = tempfile.mktemp()
 
+    # Below ERROR, files are written by the logging writer thread: reading one back needs a flush().
     def line_count():
+        assert squid.logging.flush()
         with open(log_file_name, "r") as fh:
             return len(list(fh))
 
     def contains(string):
+        assert squid.logging.flush()
         with open(log_file_name, "r") as fh:
             for l in fh:
                 if string in l:
@@ -222,3 +230,131 @@ def test_file_loggers():
     log.debug(a_debug_message)
     assert line_count() > debug_ling_count
     assert contains(a_debug_message)
+
+
+# --- Console and file output happen on a writer thread, not on the thread that logs --------------------
+#
+# A log call that writes and flushes a file gives up the GIL at every write. When another thread is
+# CPU-bound, getting it back costs a full interpreter switch interval each time: measured 2026-09-21,
+# one log.debug() went from 0.09 ms to 15.2 ms (3 x 5 ms) while another thread pickled camera frames,
+# and a camera read thread that logs three lines per frame fell behind its 41 ms frame period. So the
+# squid logger hands records to a queue; one writer thread owns the console and the files.
+
+
+def _read(path):
+    with open(path, "r", encoding="utf-8") as fh:
+        return fh.read()
+
+
+@pytest.fixture
+def file_sink(tmp_path):
+    path = str(tmp_path / "sink.log")
+    handler = squid.logging.add_file_handler(path)
+    assert handler is not None
+    yield path, handler
+    squid.logging.remove_handler(handler)
+
+
+def test_the_file_is_not_written_on_the_thread_that_logs(file_sink, monkeypatch):
+    path, handler = file_sink
+    writer_threads = []
+    real_emit = handler.emit
+    monkeypatch.setattr(
+        handler, "emit", lambda record: (writer_threads.append(threading.get_ident()), real_emit(record))
+    )
+
+    squid.logging.get_logger("nonblocking").debug("who writes this?")
+    assert squid.logging.flush()
+
+    assert writer_threads and threading.get_ident() not in writer_threads
+    assert "who writes this?" in _read(path)
+
+
+def test_the_thread_id_in_the_file_is_the_loggers_not_the_writers(file_sink):
+    """The thread id is what made the 2026-09-21 stall diagnosable. It must name the thread that logged."""
+    path, _ = file_sink
+    ids = {}
+
+    def log_from_a_thread():
+        ids["logger"] = threading.get_native_id()
+        squid.logging.get_logger("nonblocking").info("from a worker thread")
+
+    thread = threading.Thread(target=log_from_a_thread)
+    thread.start()
+    thread.join()
+    assert squid.logging.flush()
+
+    line = next(line for line in _read(path).splitlines() if "from a worker thread" in line)
+    assert f" - {ids['logger']} - " in line
+
+
+def test_records_reach_the_file_in_the_order_they_were_logged(file_sink):
+    path, _ = file_sink
+    log = squid.logging.get_logger("nonblocking.order")
+    for i in range(400):
+        log.debug(f"line {i:04d}")
+    assert squid.logging.flush()
+    numbers = [int(line.split("line ")[1][:4]) for line in _read(path).splitlines() if "line " in line]
+    assert numbers == list(range(400))
+
+
+def test_an_error_is_on_disk_when_the_log_call_returns(file_sink):
+    """The last lines before a crash are the ones that matter. ERROR and above do not wait for a flush()."""
+    path, _ = file_sink
+    log = squid.logging.get_logger("nonblocking.error")
+    log.debug("context before the error")
+    log.error("something broke")
+    content = _read(path)  # no flush()
+    assert "something broke" in content
+    assert "context before the error" in content  # everything queued before it went out with it
+
+
+def test_removing_a_file_handler_first_writes_what_was_logged_to_it(tmp_path):
+    path = str(tmp_path / "per-acquisition.log")
+    handler = squid.logging.add_file_handler(path)
+    squid.logging.get_logger("nonblocking.remove").info("the last line of the acquisition")
+    squid.logging.remove_handler(handler)  # no flush(): removing must not lose the tail
+    assert "the last line of the acquisition" in _read(path)
+    squid.logging.get_logger("nonblocking.remove").info("after removal")
+    assert squid.logging.flush()
+    assert "after removal" not in _read(path)
+
+
+def test_handler_levels_still_apply(tmp_path):
+    info_path = str(tmp_path / "info.log")
+    info_only = squid.logging.add_file_handler(info_path, level=logging.INFO)
+    try:
+        log = squid.logging.get_logger("nonblocking.levels")
+        log.debug("too quiet for this file")
+        log.info("loud enough")
+        assert squid.logging.flush()
+        content = _read(info_path)
+        assert "loud enough" in content and "too quiet" not in content
+    finally:
+        squid.logging.remove_handler(info_only)
+
+
+def test_the_current_log_file_is_still_found(file_sink):
+    path, _ = file_sink
+    assert squid.logging.get_current_log_file_path() is not None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="fork does not exist on Windows")
+def test_a_forked_child_can_still_log(tmp_path):
+    """The writer thread does not survive fork() (Linux starts the save subprocess that way). The
+    child must get a writer of its own, or everything it logs sits in a queue nobody reads."""
+    path = str(tmp_path / "forked.log")
+    handler = squid.logging.add_file_handler(path)
+    try:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                squid.logging.get_logger("nonblocking.fork").info("hello from the child")
+                ok = squid.logging.flush(timeout_s=5)
+            finally:
+                os._exit(0 if ok else 3)
+        _, status = os.waitpid(pid, 0)
+        assert os.WEXITSTATUS(status) == 0, "the child could not flush its log"
+        assert "hello from the child" in _read(path)
+    finally:
+        squid.logging.remove_handler(handler)
