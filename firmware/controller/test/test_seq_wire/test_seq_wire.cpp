@@ -38,6 +38,7 @@ static uint16_t build(uint8_t* buf, uint8_t n_channels, uint8_t n_cameras,
         c.intensity = (uint16_t)(1000 + i);
         c.exposure_us = 10000u * (i + 1);
         c.camera_mask = 1;
+        c.illum_lead_us = (uint16_t)(100 * i);
         memcpy(buf + kChannelsOffset + i * sizeof(SeqChannel), &c, sizeof c);
     }
     for (uint8_t i = 0; i < n_cameras; i++) {
@@ -60,8 +61,8 @@ void tearDown(void) {}
 void test_layout_constants(void) {
     TEST_ASSERT_EQUAL(8, (int)sizeof(WireHeader));
     TEST_ASSERT_EQUAL(16, (int)sizeof(WireCamera));
-    TEST_ASSERT_EQUAL(472, (int)kStagingBytes);
-    TEST_ASSERT_EQUAL(24 + 2 * 20 + 16, (int)program_bytes(2, 1));
+    TEST_ASSERT_EQUAL(536, (int)kStagingBytes);
+    TEST_ASSERT_EQUAL(24 + 2 * 24 + 16, (int)program_bytes(2, 1));
     TEST_ASSERT_TRUE(kStagingBytes / kWordBytes <= 255);  // word index fits SEQ_WRITE's u8
     TEST_ASSERT_EQUAL(0, (int)(kStagingBytes % kWordBytes));
 }
@@ -149,21 +150,21 @@ void test_wire_numbers_are_frozen(void) {
 }
 
 // Cross-language golden vector. The host mirror (software/control/sequencer_program.py) derives
-// these 80 bytes BY HAND from the field offsets and asserts its pack() against them; here the
+// these 88 bytes BY HAND from the field offsets and asserts its pack() against them; here the
 // compiler's own struct packing must produce the very same bytes and CRC. If this test and
 // software/tests/control/test_sequencer_program.py disagree, the wire contract has forked.
 void test_golden_program_bytes_match_the_host_mirror(void) {
     static const char* kGoldenHex =
-        "01010000404b4c000107780000000a0000204e0000010200ff0000000001ff00e80310270000010000000000"
-        "ff0000000002ff01e903204e0000010000000000010001012c010000a861000000000000";
+        "02010000404b4c000107780000000a0000204e0000010200ff0000000001ff00e80310270000010000000000"
+        "00000000ff0000000002ff01e903204e000001000000000064000000010001012c010000a861000000000000";
     uint8_t buf[kStagingBytes];
     const uint16_t len = build(buf, 2, 1);
-    TEST_ASSERT_EQUAL_UINT16(80, len);
-    TEST_ASSERT_EQUAL(160, (int)strlen(kGoldenHex));
-    char hex[161];
+    TEST_ASSERT_EQUAL_UINT16(88, len);
+    TEST_ASSERT_EQUAL(176, (int)strlen(kGoldenHex));
+    char hex[177];
     for (uint16_t i = 0; i < len; i++) snprintf(hex + 2 * i, 3, "%02x", buf[i]);
     TEST_ASSERT_EQUAL_STRING(kGoldenHex, hex);
-    TEST_ASSERT_EQUAL_HEX16(0x57D3, protocol::crc16_ccitt(buf, len));
+    TEST_ASSERT_EQUAL_HEX16(0xB921, protocol::crc16_ccitt(buf, len));
 }
 
 int main(int, char**) {

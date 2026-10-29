@@ -118,7 +118,7 @@ void test_error_codes_keep_their_wire_numbers(void) {
 // The structs are wire format for the v1 shim (seq_wire.h) — sizes are frozen.
 void test_wire_struct_sizes_are_frozen(void) {
     TEST_ASSERT_EQUAL(15, (int)sizeof(seq::SeqLoop));
-    TEST_ASSERT_EQUAL(20, (int)sizeof(seq::SeqChannel));
+    TEST_ASSERT_EQUAL(24, (int)sizeof(seq::SeqChannel));  // v2: + illum_lead_us + reserved
 }
 
 int main(int, char**) {

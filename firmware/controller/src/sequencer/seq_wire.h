@@ -17,7 +17,7 @@
 namespace seq {
 namespace wire {
 
-constexpr uint8_t kWireVersion = 1;
+constexpr uint8_t kWireVersion = 2;  // v2: SeqChannel grew illum_lead_us + reserved (20 -> 24 bytes)
 
 // v1 opcodes. 44-50 belong to PR #645 — do not use.
 constexpr uint8_t kOpSeqWrite = 60;   // [2] word index, [3..6] 4 data bytes
@@ -68,7 +68,7 @@ struct __attribute__((packed)) WireCamera {
 static_assert(sizeof(WireHeader) == 8, "wire format");
 static_assert(sizeof(WireCamera) == 16, "wire format");
 
-// Staging layout, little-endian: header @0, SeqLoop @8 (15 B + 1 pad), SeqChannel[n] @24,
+// Staging layout, little-endian: header @0, SeqLoop @8 (15 B + 1 pad), SeqChannel[n] @24 (24 B each),
 // WireCamera[n_cameras] directly after the channels.
 constexpr uint16_t kLoopOffset = 8;
 constexpr uint16_t kChannelsOffset = 24;

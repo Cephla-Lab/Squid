@@ -449,5 +449,7 @@ def _frame_time_s(program: sp.SequencerProgram, channel: sp.SeqChannelSpec) -> f
     worst_us = 0
     for camera_id in cameras_in_mask(channel.camera_mask):
         camera = program.cameras[camera_id]
-        worst_us = max(worst_us, camera.strobe_delay_us + channel.exposure_us + camera.readout_time_us)
+        worst_us = max(
+            worst_us, channel.illum_lead_us + camera.strobe_delay_us + channel.exposure_us + camera.readout_time_us
+        )
     return worst_us / 1e6

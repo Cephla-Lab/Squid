@@ -51,7 +51,7 @@ STATUS_BYTE_FRAMES_LO = 17
 
 # --- limits (seq_types.h) ------------------------------------------------------------------
 
-WIRE_VERSION = 1
+WIRE_VERSION = 2  # v2: SeqChannel grew illum_lead_us + reserved (20 -> 24 bytes)
 WORD_BYTES = 4
 MAX_CHANNELS = 16
 MAX_CAMERAS = 8
@@ -82,17 +82,17 @@ BAD_PROGRAM_CRC = 3  # CRC-16 of the staged bytes
 
 WIRE_HEADER_FORMAT = "<BBHI"  # version, n_cameras, reserved, wait_timeout_us
 SEQ_LOOP_FORMAT = "<BBiHBIBB"  # axis type, axis id, dz, n_layers, order, z_settle, ret, n_ch
-SEQ_CHANNEL_FORMAT = "<BiBBBHIBiB"  # see SeqChannelSpec.pack
+SEQ_CHANNEL_FORMAT = "<BiBBBHIBiBHH"  # see SeqChannelSpec.pack
 WIRE_CAMERA_FORMAT = "<BBBBIII"  # see SeqCameraSpec.pack
 
 WIRE_HEADER_BYTES = struct.calcsize(WIRE_HEADER_FORMAT)  # 8
 SEQ_LOOP_BYTES = struct.calcsize(SEQ_LOOP_FORMAT)  # 15
-SEQ_CHANNEL_BYTES = struct.calcsize(SEQ_CHANNEL_FORMAT)  # 20
+SEQ_CHANNEL_BYTES = struct.calcsize(SEQ_CHANNEL_FORMAT)  # 24
 WIRE_CAMERA_BYTES = struct.calcsize(WIRE_CAMERA_FORMAT)  # 16
 
 LOOP_OFFSET = 8  # SeqLoop is 15 B here, followed by 1 pad byte
 CHANNELS_OFFSET = 24
-STAGING_BYTES = CHANNELS_OFFSET + MAX_CHANNELS * SEQ_CHANNEL_BYTES + MAX_CAMERAS * WIRE_CAMERA_BYTES  # 472
+STAGING_BYTES = CHANNELS_OFFSET + MAX_CHANNELS * SEQ_CHANNEL_BYTES + MAX_CAMERAS * WIRE_CAMERA_BYTES  # 536
 
 
 def program_bytes(n_channels: int, n_cameras: int) -> int:
@@ -284,6 +284,9 @@ class SeqChannelSpec(_Replaceable):
     filter_target: int = 0  # absolute microsteps (host owns slot -> ustep mapping)
     z_offset: int = 0  # per-channel stack-axis offset
     flags: int = 0  # reserved, 0
+    #: Illumination on this long BEFORE the exposure starts (the source's rise time); the controller
+    #: delays the trigger by it, so the exposure is unchanged.  u16: at most 65535 us.
+    illum_lead_us: int = 0
 
     def pack(self) -> bytes:
         return struct.pack(
@@ -298,6 +301,8 @@ class SeqChannelSpec(_Replaceable):
             self.camera_mask,
             self.z_offset,
             self.flags,
+            self.illum_lead_us,
+            0,  # reserved
         )
 
     @staticmethod
@@ -313,6 +318,8 @@ class SeqChannelSpec(_Replaceable):
             camera_mask,
             z_offset,
             flags,
+            illum_lead_us,
+            _reserved,
         ) = struct.unpack(SEQ_CHANNEL_FORMAT, data)
         return SeqChannelSpec(
             exposure_us=exposure_us,
@@ -325,6 +332,7 @@ class SeqChannelSpec(_Replaceable):
             filter_target=filter_target,
             z_offset=z_offset,
             flags=flags,
+            illum_lead_us=illum_lead_us,
         )
 
 
@@ -492,6 +500,12 @@ class SequencerProgram(_Replaceable):
             if not 0 < channel.exposure_us <= MAX_DURATION_US:
                 raise ProgramValidationError(
                     SeqError.BAD_EXPOSURE, i, f"exposure_us {channel.exposure_us} must be 1..{MAX_DURATION_US}"
+                )
+            if not 0 <= channel.illum_lead_us <= 0xFFFF:
+                raise ProgramValidationError(
+                    SeqError.BAD_DURATION,
+                    i,
+                    f"illum_lead_us {channel.illum_lead_us} must be 0..65535 (a u16 on the wire)",
                 )
             if channel.camera_mask == 0:
                 raise ProgramValidationError(SeqError.BAD_CAMERA, i, "camera_mask must select at least one camera")
