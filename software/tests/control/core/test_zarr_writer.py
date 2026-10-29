@@ -371,6 +371,51 @@ class TestZarrWriter:
         assert channels[2]["label"] == "Brightfield"
         assert "emission_wavelength" not in channels[2]  # No wavelength for BF
 
+    def test_array_zarr_json_names_its_dimensions(self, temp_dir):
+        """OME-NGFF 0.5 requires dimension_names on the image array, matching the axes."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        output_path = os.path.join(temp_dir, "fov_0.ome.zarr", "0")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(1, 2, 3, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+        )
+
+        writer = ZarrWriter(config)
+        writer.initialize()
+        writer.finalize()
+
+        with open(os.path.join(output_path, "zarr.json")) as f:
+            array_meta = json.load(f)
+        assert array_meta["node_type"] == "array"
+        assert array_meta["dimension_names"] == ["t", "c", "z", "y", "x"]
+
+    def test_multiscales_transforms_are_scale_or_translation(self, temp_dir):
+        """OME-NGFF 0.5 allows only scale and translation transforms; ngff-zarr rejects 'identity'."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        group_path = os.path.join(temp_dir, "fov_0.ome.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=os.path.join(group_path, "0"),
+            shape=(1, 2, 3, 32, 32),
+            dtype=np.uint16,
+            pixel_size_um=0.5,
+            z_step_um=1.5,
+        )
+
+        writer = ZarrWriter(config)
+        writer.initialize()
+        writer.finalize()
+
+        with open(os.path.join(group_path, "zarr.json")) as f:
+            multiscales = json.load(f)["attributes"]["ome"]["multiscales"][0]
+        dataset_transforms = multiscales["datasets"][0]["coordinateTransformations"]
+        for transforms in (multiscales.get("coordinateTransformations", []), dataset_transforms):
+            assert {t["type"] for t in transforms} <= {"scale", "translation"}
+        assert dataset_transforms == [{"type": "scale", "scale": [1.0, 1.0, 1.5, 0.5, 0.5]}]
+
 
 class TestHCSMetadata:
     """Tests for HCS plate metadata functions."""
@@ -414,6 +459,24 @@ class TestHCSMetadata:
         assert attrs["ome"]["plate"]["version"] == "0.5"
         assert attrs["ome"]["plate"]["name"] == "test_plate"
         assert len(attrs["ome"]["plate"]["wells"]) == 2
+
+    def test_write_plate_metadata_makes_each_row_a_group(self, temp_dir):
+        """Zarr v3 has no implicit groups: without row zarr.json, iohub finds no fields in the plate."""
+        from control.core.zarr_writer import write_plate_metadata
+
+        plate_path = os.path.join(temp_dir, "plate.ome.zarr")
+        write_plate_metadata(
+            plate_path=plate_path,
+            rows=["A", "C"],
+            cols=[1, 3],
+            wells=[("A", 1), ("C", 3)],
+        )
+
+        for row in ["A", "C"]:
+            with open(os.path.join(plate_path, row, "zarr.json")) as f:
+                row_meta = json.load(f)
+            assert row_meta["zarr_format"] == 3
+            assert row_meta["node_type"] == "group"
 
     def test_write_well_metadata(self, temp_dir):
         from control.core.zarr_writer import write_well_metadata
@@ -1119,6 +1182,27 @@ class TestSixDimensionalSupport:
         assert attrs["_squid"]["structure"] == "6D-FTCZYX"
 
         writer.finalize()
+
+    def test_6d_array_names_its_dimensions_after_finalize(self, temp_dir):
+        """The 6D store is the array itself; finalize rewrites its zarr.json and must keep dimension_names."""
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        output_path = os.path.join(temp_dir, "acquisition.zarr")
+        config = ZarrAcquisitionConfig(
+            output_path=output_path,
+            shape=(2, 1, 1, 1, 32, 32),  # FOV, T, C, Z, Y, X
+            dtype=np.uint16,
+            pixel_size_um=1.0,
+            is_hcs=False,
+        )
+
+        writer = ZarrWriter(config)
+        writer.initialize()
+        writer.finalize()
+
+        with open(os.path.join(output_path, "zarr.json")) as f:
+            array_meta = json.load(f)
+        assert array_meta["dimension_names"] == ["fov", "t", "c", "z", "y", "x"]
 
     def test_6d_write_multiple_fovs(self, temp_dir):
         """Test writing to multiple FOV indices in a 6D dataset."""
