@@ -1,4 +1,5 @@
 import math
+import contextlib
 import os
 import queue
 import threading
@@ -50,6 +51,7 @@ from control.core.job_processing import (
     JobResult,
 )
 from control.core.in_process_zarr_runner import InProcessZarrRunner
+from control.core.acquisition_setup import compute_pixel_size_um
 from control.core.mosaic_utils import (
     calculate_overlap_pixels,
     parse_well_id,
@@ -77,7 +79,669 @@ class SummarizeResult(NamedTuple):
     had_results: bool  # True if any results were pulled from queue
 
 
-class MultiPointWorker:
+class MultiPointWorkerBase:
+    """Shared acquisition mechanics (camera, stage, channel apply, single-frame
+    capture, frame callback, job dispatch, backpressure, abort, progress).
+
+    Owns NO orchestration loop — subclasses provide run() and the acquisition
+    state it operates on. Subclasses MUST call super().__init__(...) first, then
+    build the real job runners / backpressure controller and refine the
+    placeholder state (use_piezo, time_point, slack notifier, etc.).
+    """
+
+    def __init__(
+        self,
+        scope: Microscope,
+        live_controller: LiveController,
+        callbacks: MultiPointControllerFunctions,
+        abort_requested_fn: Callable[[], bool],
+        request_abort_fn: Callable[[], None],
+        run_state_writer=None,
+    ):
+        # Use type(self).__name__ so each subclass instance gets a logger named
+        # after its own concrete class (e.g. "RecordZStackWorker"), rather than
+        # after the class where the expression is written.  __class__ inside a
+        # method always refers to the defining class (MultiPointWorkerBase), not
+        # the runtime type, so type(self) is required to produce per-subclass names.
+        self._log = squid.logging.get_logger(type(self).__name__)
+        self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+
+        # Hardware / controller handles shared by all acquisition workers.
+        self.microscope: Microscope = scope
+        self.camera: AbstractCamera = scope.camera
+        self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
+        self.stage: squid.abc.AbstractStage = scope.stage
+        self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
+        self.liveController = live_controller
+
+        # Callback / abort plumbing shared by all acquisition workers.
+        self.callbacks: MultiPointControllerFunctions = callbacks
+        self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
+        self.request_abort_fn: Callable[[], None] = request_abort_fn
+        self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
+        self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
+        # Acquisition watchdog breadcrumb (run.json); the null writer when none is wired (tests, side paths).
+        self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
+
+        # Optional SlackNotifier — subclasses set the real one if present.
+        self._slack_notifier = None
+
+        # Counters touched by the shared capture / frame-callback path. Subclasses
+        # may reset these per timepoint, but they must exist for the base methods.
+        self.image_count = 0
+        self._timepoint_fov_count = 0
+        self._timepoint_image_count = 0
+        self._acquisition_error_count = 0
+
+        # Capture state refined by the subclass __init__ from acquisition params.
+        # Defaults are placeholders so lifted methods never read an unset attribute;
+        # subclasses overwrite these with the real per-acquisition values.
+        self.use_piezo = False
+        self.time_point = 0
+        self.z_piezo_um = 0.0
+
+        # Callback-based capture bookkeeping. This is for keeping track of whether
+        # or not we have the last image we tried to capture.
+        # NOTE(imo): Once we do overlapping triggering, we'll want to keep a queue of images we are expecting.
+        # For now, this is an improvement over blocking immediately while waiting for the next image!
+        self._ready_for_next_trigger = threading.Event()
+        # Set this to true so that the first frame capture can proceed.
+        self._ready_for_next_trigger.set()
+        # This is cleared when the image callback is no longer processing an image.  If true, an image is still
+        # in flux and we need to make sure the object doesn't disappear.
+        self._image_callback_idle = threading.Event()
+        self._image_callback_idle.set()
+        # This is protected by the threading event above (aka set after clear, take copy before set)
+        self._current_capture_info: Optional[CaptureInfo] = None
+        # This is only touched via the image callback path.  Don't touch it outside of there!
+        self._current_round_images = {}
+        # A copy of the channel last applied with set_microscope_mode. Within one position, an image whose channel
+        # is unchanged skips re-applying it (camera, MCU, illumination and filter wheel commands on every z level).
+        # Cleared at every position, so whatever runs between positions (autofocus, laser AF) can't leave it stale.
+        self._applied_config: Optional[AcquisitionChannel] = None
+
+        # Job-runner / backpressure handles. The real ones are heavily dependent on
+        # MultiPoint-specific acquisition state (selected configs, scan coords, zarr
+        # writer info, ...), so they are built by the subclass __init__. The base
+        # methods (_finish_jobs, _summarize_runner_outputs, _image_callback) only
+        # need these attributes to exist; placeholders keep them self-contained.
+        self._backpressure: Optional[BackpressureController] = None
+        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
+        # The settings in effect now, for the whole acquisition.
+        self._save_settings = SaveSettings()
+        self._abort_on_failed_job = True
+        self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
+
+    def update_use_piezo(self, value):
+        self.use_piezo = value
+        self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
+
+    def wait_till_operation_is_completed(self):
+        self.microcontroller.wait_till_operation_is_completed()
+
+    def move_to_z_level(self, z_mm):
+        self._log.debug("moving z")
+        self.stage.move_z_to(z_mm)
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def _select_config(self, config: AcquisitionChannel):
+        self.callbacks.signal_current_configuration(config)
+        self.liveController.set_microscope_mode(config)
+        self.wait_till_operation_is_completed()
+        self._applied_config = config.model_copy(deep=True)
+
+    def _config_already_applied(self, config: AcquisitionChannel) -> bool:
+        # Compared by value against the copy, so a channel edited since it was applied is applied again.
+        return (
+            self._applied_config is not None
+            and config == self._applied_config
+            and self.liveController.currentConfiguration == config
+        )
+
+    def _scan_unit_triggers_camera(self) -> bool:
+        # With an NL5/AION and NL5_USE_DOUT, camera.send_trigger() runs one confocal scan and returns once the
+        # unit has triggered the camera (see microscope.py's acquisition_camera_hw_trigger_fn).
+        return self.microscope.addons.nl5 is not None and control._def.NL5_USE_DOUT
+
+    def _create_backpressure(self, prewarmed_bp_values: Optional[BackpressureValues] = None) -> BackpressureController:
+        """Build the acquisition BackpressureController from the global throttling knobs.
+
+        When pre-warmed backpressure values are supplied they are reused, so the
+        controller tracks the same cross-process counters as the pre-warmed
+        JobRunner it is paired with.
+        """
+        bp_kwargs = {
+            "max_jobs": control._def.ACQUISITION_MAX_PENDING_JOBS,
+            "max_mb": control._def.ACQUISITION_MAX_PENDING_MB,
+            "timeout_s": control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
+            "enabled": control._def.ACQUISITION_THROTTLING_ENABLED,
+        }
+        if prewarmed_bp_values is not None:
+            bp_kwargs["bp_values"] = prewarmed_bp_values
+        return BackpressureController(**bp_kwargs)
+
+    def _channel_zarr_metadata(self, configs) -> Tuple[List[str], List[str], List[Optional[int]]]:
+        """Names, display colors, and illumination wavelengths for zarr channel metadata."""
+        illumination_config = self.microscope.config_repo.get_illumination_config()
+        names = [cfg.name for cfg in configs]
+        colors = [cfg.display_color for cfg in configs]
+        wavelengths = [
+            cfg.get_illumination_wavelength(illumination_config) if illumination_config else None for cfg in configs
+        ]
+        return names, colors, wavelengths
+
+    def _adopt_or_create_job_runner(
+        self,
+        prewarmed_job_runner: Optional[JobRunner],
+        prewarmed_bp_values: Optional[BackpressureValues],
+        zarr_writer_info: Optional[ZarrWriterInfo],
+        cleanup_stale_ome_files: bool,
+        job_name: str,
+    ) -> JobRunner:
+        """Adopt the pre-warmed JobRunner when it is ready, else create and start a fresh one.
+
+        IMPORTANT: the pre-warmed runner is adopted only when BOTH it AND its
+        backpressure values were supplied — a runner without matching values would
+        track different counters than the BackpressureController built from them
+        (see _create_backpressure). A supplied runner that is not ready (possibly
+        hung during warmup) is shut down to avoid a resource leak before a fresh
+        runner is created.
+        """
+        if prewarmed_job_runner is not None and prewarmed_bp_values is not None:
+            if prewarmed_job_runner.is_ready():
+                self._log.info(f"Using pre-warmed job runner for {job_name} jobs")
+                # Configure it with the current acquisition settings.
+                prewarmed_job_runner.set_acquisition_info(self.acquisition_info)
+                if zarr_writer_info:
+                    prewarmed_job_runner.set_zarr_writer_info(zarr_writer_info)
+                return prewarmed_job_runner
+            self._log.warning(
+                f"Pre-warmed job runner not ready (possibly hung during warmup), "
+                f"shutting it down and creating new one for {job_name}"
+            )
+            try:
+                prewarmed_job_runner.shutdown(timeout_s=1.0)
+            except Exception as e:
+                self._log.error(f"Error shutting down hung pre-warmed runner: {e}")
+        self._log.info(f"Creating job runner for {job_name} jobs")
+        job_runner = JobRunner(
+            self.acquisition_info,
+            cleanup_stale_ome_files=cleanup_stale_ome_files,
+            # Share the current log file with the subprocess worker.
+            log_file_path=squid.logging.get_current_log_file_path(),
+            # Pass backpressure shared values for cross-process tracking.
+            bp_pending_jobs=self._backpressure.pending_jobs_value,
+            bp_pending_bytes=self._backpressure.pending_bytes_value,
+            bp_capacity_event=self._backpressure.capacity_event,
+            zarr_writer_info=zarr_writer_info,
+        )
+        # Subprocess starts warming up in background - don't block here.
+        job_runner.start()
+        return job_runner
+
+    def _frame_wait_timeout_s(self):
+        return (self.camera.get_total_frame_time() / 1e3) + 10
+
+    def _wait_for_outstanding_callback_images(self):
+        """Block until any in-flight triggered frame has been dispatched/processed."""
+        self._log.info("Waiting for any outstanding frames.")
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
+
+        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
+            self._log.warning("Timed out waiting for the last image to process!")
+
+        # No matter what, set the flags so things can continue
+        self._ready_for_next_trigger.set()
+        self._image_callback_idle.set()
+
+    def _sleep(self, sec):
+        time_to_sleep = max(sec, 1e-6)
+        # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
+        time.sleep(time_to_sleep)
+
+    def _emit_plate_layout(self, image: np.ndarray) -> None:
+        """Hook for subclasses to emit a plate layout on the first image.
+
+        No-op in the base; MultiPointWorker overrides this with the plate-based
+        scan implementation. Lives here so the shared frame callback can call it
+        without referencing subclass-only behavior.
+        """
+        return
+
+    def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
+        """Process job results from output queues.
+
+        Args:
+            drain_all: If True, process ALL available results. If False, process at most one per queue.
+
+        Returns:
+            SummarizeResult with none_failed and had_results.
+        """
+        none_failed = True
+        had_results = False
+        for job_class, job_runner in self._job_runners:
+            if job_runner is None:
+                continue
+            out_queue = job_runner.output_queue()
+            if out_queue is None:
+                # Queue was cleared during shutdown
+                continue
+            if not drain_all and not job_runner.is_alive() and job_runner.has_pending():
+                self._log.error(
+                    f"{job_class.__name__} save subprocess exited (exit code {getattr(job_runner, 'exitcode', None)}) "
+                    f"with jobs pending; aborting the acquisition"
+                )
+                self._abort_due_to_error()
+            while True:
+                try:
+                    job_result: JobResult = out_queue.get_nowait()
+                    none_failed = none_failed and self._summarize_job_result(job_result)
+                    had_results = True
+                    if not drain_all:
+                        break  # Only process one result per queue if not draining
+                except queue.Empty:
+                    break
+                except ValueError:
+                    # Queue was closed during shutdown - nothing more to drain
+                    break
+
+        return SummarizeResult(none_failed=none_failed, had_results=had_results)
+
+    def _summarize_job_result(self, job_result: JobResult) -> bool:
+        """
+        Prints a summary, then returns True if the result was successful or False otherwise.
+        """
+        if job_result.exception is not None:
+            self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
+            self._acquisition_error_count += 1
+            if self._abort_on_failed_job:
+                self._log.error("A save job failed, aborting acquisition because abort_on_failed_job=True")
+                self._abort_due_to_error()
+
+            # Send Slack error notification
+            if self._slack_notifier is not None:
+                try:
+                    context = {"job_id": job_result.job_id}
+                    self._slack_notifier.notify_error(
+                        str(job_result.exception),
+                        context,
+                    )
+                except Exception as e:
+                    self._log.warning(f"Failed to send Slack error notification: {e}")
+            return False
+        else:
+            self._log.info(f"Got result for job {job_result.job_id}, it completed!")
+            # Handle ZarrWriteResult - notify viewer that frame is written
+            if isinstance(job_result.result, ZarrWriteResult):
+                r = job_result.result
+                self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
+            return True
+
+    def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
+        """Create a job instance for the given job class.
+
+        Returns None if the job should be skipped.
+        """
+        return job_class(
+            capture_info=info, capture_image=JobImage(image_array=image), save_settings=self._save_settings
+        )
+
+    def _finish_jobs(self, timeout_s=10):
+        # Drain and summarize all currently available job results before waiting for completion
+        self._summarize_runner_outputs(drain_all=True)
+
+        active_runners = [
+            (job_class, job_runner) for job_class, job_runner in self._job_runners if job_runner is not None
+        ]
+
+        self._log.info(f"Waiting for jobs to finish on {len(active_runners)} job runners before shutting them down...")
+        timeout_time = time.time() + timeout_s
+
+        def timed_out():
+            return time.time() > timeout_time
+
+        def time_left():
+            return max(timeout_time - time.time(), 0)
+
+        # Wait for all pending jobs across all runners (round-robin to avoid blocking on one)
+        while not timed_out():
+            any_pending = False
+            for job_class, job_runner in active_runners:
+                if job_runner.has_pending():
+                    any_pending = True
+                    break
+            if not any_pending:
+                break
+            # Process any available results while waiting
+            self._summarize_runner_outputs(drain_all=True)
+            time.sleep(0.1)
+        else:
+            # Timed out - kill any runners that still have pending jobs
+            abandoned = False
+            for job_class, job_runner in active_runners:
+                if job_runner.has_pending():
+                    self._log.error(
+                        f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
+                    )
+                    job_runner.kill()
+                    abandoned = True
+            if abandoned:
+                # Data is missing, so the run ends as an error (and the Zarr stores are sealed as aborted).
+                self._abort_due_to_error()
+
+        # Drain results before shutdown (a failed job seen here aborts the run too, via _summarize_job_result)
+        self._summarize_runner_outputs(drain_all=True)
+
+        # Shut down the save subprocesses in parallel (in background to avoid blocking on subprocess termination);
+        # the in-process Zarr runner is shut down inline below, because its shutdown seals the stores.
+        # Using daemon threads is safe here because:
+        # 1. All jobs are complete and results are already drained
+        # 2. The subprocess termination is best-effort cleanup only
+        # 3. If app exits before threads complete, OS will terminate subprocesses anyway
+        # 4. This prevents slow subprocess termination from blocking acquisition completion
+        log = self._log  # Capture for closure
+
+        def shutdown_runner(job_runner, timeout):
+            try:
+                job_runner.shutdown(timeout)
+            except Exception as e:
+                log.error(f"Error shutting down job runner in background: {e}")
+
+        self._log.info("Shutting down job runners...")
+        remaining_time = time_left()
+        # A user Stop, an error abort, or a crash out of run(): the store must not claim completeness.
+        aborted = bool(self.abort_requested_fn())
+        for job_class, job_runner in active_runners:
+            if isinstance(job_runner, InProcessZarrRunner):
+                # Its shutdown seals the stores (aborted ones as aborted); do it here so the
+                # acquisition is not reported finished before the metadata says so.
+                try:
+                    if not job_runner.shutdown(remaining_time, aborted=aborted):
+                        self._abort_due_to_error()  # a write was still in flight: the stores were sealed aborted
+                except Exception as e:
+                    log.error(f"Error shutting down the in-process Zarr runner: {e}")
+                continue
+            t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
+            t.start()
+
+        # Final drain of all output queues (should be empty, but check anyway)
+        self._summarize_runner_outputs(drain_all=True)
+
+        # Release backpressure resources now that all jobs are complete
+        try:
+            self._backpressure.close()
+        except Exception as e:
+            self._log.error(f"Error closing backpressure controller: {e}")
+
+    def _create_in_process_zarr_runner(self, zarr_writer_info: Optional[ZarrWriterInfo]) -> InProcessZarrRunner:
+        """Zarr is saved in this process (see in_process_zarr_runner.py); the runner shares our backpressure counters."""
+        runner = InProcessZarrRunner(
+            zarr_writer_info=zarr_writer_info,
+            bp_values=(
+                self._backpressure.pending_jobs_value,
+                self._backpressure.pending_bytes_value,
+                self._backpressure.capacity_event,
+            ),
+        )
+        runner.start()
+        return runner
+
+    def _abort_due_to_error(self) -> None:
+        """Abort the run due to an internal error (vs a user abort).
+
+        The worker only ever aborts itself on error conditions; user aborts arrive
+        via the external abort flag. Tagging the cause here lets
+        MultiPointWorker._compute_end_reason classify the end as "error" instead
+        of "user_abort".
+        """
+        self._abort_cause = "error"
+        self.request_abort_fn()
+
+    def _compute_end_reason(self) -> str:
+        if self.abort_requested_fn():
+            return "error" if self._abort_cause == "error" else "user_abort"
+        if self._acquisition_error_count > 0:
+            return "completed_with_errors"
+        return "completed"
+
+    def _run_state_beat(self) -> None:
+        """Watchdog heartbeat: the base capture path calls it per image, subclasses per FOV / timepoint."""
+        self._run_state.beat(
+            {
+                "timepoint": self.time_point,
+                "fov": self._timepoint_fov_count,
+                "images": self.image_count,
+            }
+        )
+
+    def _end_run_state(self, duration_s: float) -> str:
+        """Settle why the run ended, close the watchdog breadcrumb with the run's stats, return the reason."""
+        self.end_reason = self._compute_end_reason()
+        self._run_state.end(
+            self.end_reason,
+            {
+                "total_images": self.image_count,
+                "total_timepoints": self.time_point,
+                "total_duration_seconds": duration_s,
+                "errors_encountered": self._acquisition_error_count,
+            },
+        )
+        return self.end_reason
+
+    @contextlib.contextmanager
+    def _camera_streaming(self, on_frame: Optional[Callable] = None):
+        """Stream the camera for the block, with on_frame registered when given.
+
+        On the way out: wait for the last in-flight frame, detach the callback and stop
+        streaming (mirrors ContinuousFrameSource.stop()), each failure logged, so the next
+        phase starts on a stopped camera whatever happened inside the block.
+        """
+        cb_id = None
+        try:
+            self.camera.start_streaming()
+            if on_frame is not None:
+                cb_id = self.camera.add_frame_callback(on_frame)
+            yield
+        finally:
+            if cb_id is not None:
+                self._wait_for_outstanding_callback_images()
+                try:
+                    self.camera.remove_frame_callback(cb_id)
+                except Exception:
+                    self._log.exception("Failed to remove the frame callback")
+            try:
+                self.camera.stop_streaming()
+            except Exception:
+                self._log.exception("Failed to stop streaming")
+
+    def _image_callback(self, camera_frame: CameraFrame):
+        try:
+            if self._ready_for_next_trigger.is_set():
+                self._log.warning(
+                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
+                )
+                return
+
+            self._image_callback_idle.clear()
+            with self._timing.get_timer("_image_callback"):
+                self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
+                info = self._current_capture_info
+                self._current_capture_info = None
+
+                self._ready_for_next_trigger.set()
+                if not info:
+                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
+                    self._abort_due_to_error()
+                    return
+
+                image = camera_frame.frame
+                if not camera_frame or image is None:
+                    self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
+                    self._abort_due_to_error()
+                    return
+
+                # Increment image counter for Slack notification stats
+                self._timepoint_image_count += 1
+                self.image_count += 1
+                self._run_state_beat()
+
+                with self._timing.get_timer("job creation and dispatch"):
+                    # Wait for subprocess to be ready before first dispatch
+                    if not self._first_job_dispatched:
+                        for job_class, job_runner in self._job_runners:
+                            if job_runner is not None:
+                                t_wait_start = time.perf_counter()
+                                if job_runner.wait_ready(timeout_s=10.0):
+                                    t_wait_end = time.perf_counter()
+                                    wait_ms = (t_wait_end - t_wait_start) * 1000
+                                    if wait_ms > 10:  # Only log if we actually had to wait
+                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
+                                else:
+                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
+                        self._first_job_dispatched = True
+
+                    for job_class, job_runner in self._job_runners:
+                        job = self._create_job(job_class, info, image)
+                        if job is None:
+                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
+                        if job_runner is not None:
+                            if not job_runner.dispatch(job):
+                                self._log.error("Failed to dispatch multiprocessing job!")
+                                self._abort_due_to_error()
+                                return
+                        else:
+                            try:
+                                # In-process fallback (multiprocessing off) for the TIFF job classes;
+                                # SaveZarrJob always has an InProcessZarrRunner.
+                                # NOTE(imo): We don't have any way of people using results, so for now just
+                                # grab and ignore it.
+                                result = job.run()
+                            except Exception:
+                                self._log.exception("Failed to execute job, abandoning acquisition!")
+                                self._abort_due_to_error()
+                                return
+
+                height, width = image.shape[:2]
+                # with self._timing.get_timer("crop_image"):
+                #     image_to_display = utils.crop_image(
+                #         image,
+                #         round(width * self.display_resolution_scaling),
+                #         round(height * self.display_resolution_scaling),
+                #     )
+                # Emit plate layout once on the first image so the unified mosaic
+                # widget can lay out the plate grid before tiles start arriving.
+                self._emit_plate_layout(image)
+                with self._timing.get_timer("image_to_display*.emit"):
+                    self.callbacks.signal_new_image(camera_frame, info)
+
+        finally:
+            self._image_callback_idle.set()
+
+    def acquire_camera_image(
+        self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
+    ):
+        if not self._config_already_applied(config):
+            self._select_config(config)
+
+        # trigger acquisition (including turning on the illumination) and read frame
+        camera_illumination_time = self.camera.get_exposure_time()
+        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            self.liveController.turn_on_illumination()
+            self.wait_till_operation_is_completed()
+            camera_illumination_time = None
+        # In HARDWARE mode with an NL5/AION (NL5_USE_DOUT), camera.send_trigger() below starts the confocal
+        # scan through the camera's hardware trigger function. Do not also start one here: that second scan
+        # gave every image an extra, untracked camera frame (black frames, channels mixed, aborts).
+        # This is some large timeout that we use just so as to not block forever
+        with self._timing.get_timer("_ready_for_next_trigger.wait"):
+            if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+                self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
+                self._abort_due_to_error()
+                return
+
+        # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
+        # This is when we know the previous image's jobs have been dispatched (and counters incremented)
+        if self._backpressure.should_throttle():
+            with self._timing.get_timer("backpressure.wait_for_capacity"):
+                got_capacity = self._backpressure.wait_for_capacity()
+                if not got_capacity:
+                    self._log.error(
+                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                    )
+
+        with self._timing.get_timer("get_ready_for_trigger re-check"):
+            # This should be a noop - we have the frame already.  Still, check!
+            while not self.camera.get_ready_for_trigger():
+                self._sleep(0.001)
+
+            self._ready_for_next_trigger.clear()
+        with self._timing.get_timer("current_capture_info ="):
+            # Even though the capture time will be slightly after this, we need to capture and set the capture info
+            # before the trigger to be 100% sure the callback doesn't stomp on it.
+            # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
+            # much as we can, but don't use it here because we'd rather take the position as close as possible to the
+            # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
+            current_capture_info = CaptureInfo(
+                position=self.stage.get_pos(),
+                z_index=k,
+                capture_time=time.time(),
+                z_piezo_um=(self.z_piezo_um if self.use_piezo else None),
+                configuration=config,
+                save_directory=current_path,
+                file_id=file_ID,
+                region_id=region_id,
+                fov=fov,
+                configuration_idx=config_idx,
+                time_point=self.time_point,
+            )
+            self._current_capture_info = current_capture_info
+        with self._timing.get_timer("send_trigger"):
+            try:
+                self.camera.send_trigger(illumination_time=camera_illumination_time)
+            except ConfocalScanFailedError as e:
+                # No frame will come for this image: abort now, with the reason, rather than waiting out the
+                # frame timeout. Returning (not raising) keeps the z stack's cleanup, so Z still goes back.
+                self._log.error(f"Aborting the acquisition: {e}")
+                self._current_capture_info = None
+                self._ready_for_next_trigger.set()
+                self._abort_due_to_error()
+                return
+
+        with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
+            if self.liveController.trigger_mode == TriggerMode.HARDWARE and self._scan_unit_triggers_camera():
+                # send_trigger() above already blocked through the confocal scan, so sleeping a full frame time
+                # from here on ended long after the frame had arrived (AION: ~40 ms per image). The frame arriving
+                # proves its exposure has ended; waiting at most a frame time keeps the old upper bound when it
+                # doesn't come (a dropped trigger is still caught by the next image's _ready_for_next_trigger wait).
+                self._ready_for_next_trigger.wait(self.camera.get_total_frame_time() / 1e3)
+            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
+                exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
+                # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
+                # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
+                self._sleep(max(0.0, exposure_done_time - time.time()))
+            else:
+                # In SW trigger mode (or anything not HARDWARE mode), there's indeterminism in the trigger timing.
+                # To overcome this, just wait until the frame for this capture actually comes into the image
+                # callback.  That way we know we have it.  This also helps by making sure the illumination for this
+                # frame is on from before the trigger until after we get the frame (which guarantees it will be on
+                # for the full exposure).
+                #
+                # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
+                # wrong.
+                non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
+                if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
+                    self._log.error(f"Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
+                    self._abort_due_to_error()
+                    # Let this fall through so we still turn off illumination.  Let the caller actually break out
+                    # of the acquisition.
+
+        # turn off the illumination if using software trigger
+        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+            self.liveController.turn_off_illumination()
+
+
+class MultiPointWorker(MultiPointWorkerBase):
     def __init__(
         self,
         scope: Microscope,
@@ -97,35 +761,28 @@ class MultiPointWorker:
         prewarmed_bp_values: Optional["BackpressureValues"] = None,
         run_state_writer=None,
     ):
-        self._log = squid.logging.get_logger(__class__.__name__)
-        self._timing = utils.TimingManager("MultiPointWorker Timer Manager")
+        super().__init__(
+            scope=scope,
+            live_controller=live_controller,
+            callbacks=callbacks,
+            abort_requested_fn=abort_requested_fn,
+            request_abort_fn=request_abort_fn,
+            run_state_writer=run_state_writer,
+        )
         self._alignment_widget = alignment_widget  # Optional AlignmentWidget for coordinate offset
         self._slack_notifier = slack_notifier  # Optional SlackNotifier for notifications
 
         # Slack notification tracking counters
         self._timepoint_image_count = 0
-        self._timepoint_fov_count = 0
         self._timepoint_start_time = 0.0
         self._acquisition_error_count = 0
         self._laser_af_successes = 0
         self._laser_af_failures = 0
         self._current_z_offset_um: float = 0.0
-        self.microscope: Microscope = scope
-        self.camera: AbstractCamera = scope.camera
-        self.microcontroller: Microcontroller = scope.low_level_drivers.microcontroller
-        self.stage: squid.abc.AbstractStage = scope.stage
-        self.piezo: Optional[PiezoStage] = scope.addons.piezo_stage
-        self.liveController = live_controller
         self.autofocusController: Optional[AutoFocusController] = auto_focus_controller
         self.laser_auto_focus_controller: Optional[LaserAutofocusController] = laser_auto_focus_controller
         self.objectiveStore: ObjectiveStore = objective_store
 
-        self.callbacks: MultiPointControllerFunctions = callbacks
-        self.abort_requested_fn: Callable[[], bool] = abort_requested_fn
-        self.request_abort_fn: Callable[[], None] = request_abort_fn
-        self._run_state = run_state_writer or squid.acquisition_state.NullRunStateWriter()
-        self._abort_cause = None  # set to "error" by auto-abort paths (timeout / failed jobs)
-        self.end_reason: Optional[str] = None  # set in run()'s finally; read by the controller
         self.NZ = acquisition_parameters.NZ
         self.deltaZ = acquisition_parameters.deltaZ
 
@@ -145,15 +802,7 @@ class MultiPointWorker:
         self.selected_configurations = acquisition_parameters.selected_configurations
 
         # Pre-compute acquisition metadata that remains constant throughout the run.
-        try:
-            pixel_factor = self.objectiveStore.get_pixel_size_factor()
-            sensor_pixel_um = self.camera.get_pixel_size_binned_um()
-            if pixel_factor is not None and sensor_pixel_um is not None:
-                self._pixel_size_um = float(pixel_factor) * float(sensor_pixel_um)
-            else:
-                self._pixel_size_um = None
-        except Exception:
-            self._pixel_size_um = None
+        self._pixel_size_um = compute_pixel_size_um(self.objectiveStore, self.camera)
         self._time_increment_s = self.dt if self.Nt > 1 and self.dt > 0 else None
         self._physical_size_z_um = abs(self.deltaZ) * 1000 if self.NZ > 1 else None
         self.timestamp_acquisition_started = acquisition_parameters.acquisition_start_time
@@ -170,7 +819,7 @@ class MultiPointWorker:
             physical_size_y_um=self._pixel_size_um,
         )
 
-        self.time_point = 0
+        self.time_point = 0  # also set in base __init__; re-set here for clarity
         self.af_fov_count = 0
         self.num_fovs = 0
         self.total_scans = 0
@@ -193,30 +842,11 @@ class MultiPointWorker:
         self.count = 0
 
         self.merged_image = None
-        self.image_count = 0
-
-        # This is for keeping track of whether or not we have the last image we tried to capture.
-        # NOTE(imo): Once we do overlapping triggering, we'll want to keep a queue of images we are expecting.
-        # For now, this is an improvement over blocking immediately while waiting for the next image!
-        self._ready_for_next_trigger = threading.Event()
-        # Set this to true so that the first frame capture can proceed.
-        self._ready_for_next_trigger.set()
-        # This is cleared when the image callback is no longer processing an image.  If true, an image is still
-        # in flux and we need to make sure the object doesn't disappear.
-        self._image_callback_idle = threading.Event()
-        self._image_callback_idle.set()
-        # This is protected by the threading event above (aka set after clear, take copy before set)
-        self._current_capture_info: Optional[CaptureInfo] = None
-        # This is only touched via the image callback path.  Don't touch it outside of there!
-        self._current_round_images = {}
-        # A copy of the channel last applied with set_microscope_mode. Within one position, an image whose channel
-        # is unchanged skips re-applying it (camera, MCU, illumination and filter wheel commands on every z level).
-        # Cleared at every position, so whatever runs between positions (autofocus, laser AF) can't leave it stale.
-        self._applied_config: Optional[AcquisitionChannel] = None
+        # image_count, the trigger-ready/idle events, and capture-info bookkeeping
+        # are initialized in MultiPointWorkerBase.__init__.
 
         self.skip_saving = acquisition_parameters.skip_saving
-        # The settings in effect now, for the whole acquisition.
-        self._save_settings = SaveSettings()
+        # self._save_settings is initialized in MultiPointWorkerBase.__init__.
         file_saving_option = self._save_settings.file_saving_option
         use_ome_tiff = file_saving_option == FileSavingOption.OME_TIFF
         use_zarr_v3 = file_saving_option == FileSavingOption.ZARR_V3
@@ -249,24 +879,12 @@ class MultiPointWorker:
         # Initialize backpressure controller for throttling acquisition when queue fills up.
         # If pre-warmed values are provided, use them for consistent tracking with the
         # pre-warmed job runner. Otherwise, BackpressureController creates its own values.
-        bp_kwargs = {
-            "max_jobs": control._def.ACQUISITION_MAX_PENDING_JOBS,
-            "max_mb": control._def.ACQUISITION_MAX_PENDING_MB,
-            "timeout_s": control._def.ACQUISITION_THROTTLE_TIMEOUT_S,
-            "enabled": control._def.ACQUISITION_THROTTLING_ENABLED,
-        }
-        if prewarmed_bp_values is not None:
-            bp_kwargs["bp_values"] = prewarmed_bp_values
-        self._backpressure = BackpressureController(**bp_kwargs)
+        self._backpressure = self._create_backpressure(prewarmed_bp_values)
 
         # For now, use 1 runner per job class.  There's no real reason/rationale behind this, though.  The runners
         # can all run any job type.  But 1 per is a reasonable arbitrary arrangement while we don't have a lot
         # of job types.  If we have a lot of custom jobs, this could cause problems via resource hogging.
-        self._job_runners: List[Tuple[Type[Job], JobRunner]] = []
         self._log.info(f"Acquisition.USE_MULTIPROCESSING = {Acquisition.USE_MULTIPROCESSING}")
-
-        # Get the current log file path to share with subprocess workers
-        log_file_path = squid.logging.get_current_log_file_path()
 
         # Build ZarrWriterInfo if using ZARR_V3 format
         # Output structure depends on acquisition type and settings:
@@ -286,15 +904,9 @@ class MultiPointWorker:
                 region_fov_counts[str(region_id)] = len(coords)
 
             # Extract channel metadata for zarr output
-            channel_names = [cfg.name for cfg in self.selected_configurations]
-            channel_colors = [cfg.display_color for cfg in self.selected_configurations]
-
-            # Get wavelengths from illumination config
-            channel_wavelengths = []
-            illumination_config = self.microscope.config_repo.get_illumination_config()
-            for cfg in self.selected_configurations:
-                wavelength = cfg.get_illumination_wavelength(illumination_config) if illumination_config else None
-                channel_wavelengths.append(wavelength)
+            channel_names, channel_colors, channel_wavelengths = self._channel_zarr_metadata(
+                self.selected_configurations
+            )
 
             zarr_writer_info = ZarrWriterInfo(
                 base_path=self.experiment_path,
@@ -320,71 +932,31 @@ class MultiPointWorker:
             self._log.info(f"ZARR_V3 output: {mode_str}, base path: {self.experiment_path}")
 
         # Zarr is saved in this process; the TIFF formats keep the save subprocess.
-        # Use the pre-warmed subprocess if available, otherwise create new ones.
-        # IMPORTANT: Only use the pre-warmed runner if BOTH runner AND backpressure values
-        # are available. Using a runner without matching backpressure values would cause
-        # the BackpressureController to track different counters than the JobRunner.
-        can_use_prewarmed = prewarmed_job_runner is not None and prewarmed_bp_values is not None
-        used_prewarmed = False
-        for job_class in job_classes:
+        # Use the pre-warmed job runner if available (first job class only),
+        # otherwise create new ones; see _adopt_or_create_job_runner for the
+        # pairing/readiness rules.
+        for i, job_class in enumerate(job_classes):
             job_runner = None
             if job_class is SaveZarrJob:
                 job_runner = self._create_in_process_zarr_runner(zarr_writer_info)
-                if can_use_prewarmed and not used_prewarmed:
+                if i == 0 and prewarmed_job_runner is not None:
                     # Nothing here will use the subprocess the controller handed over.
                     self._log.info("Zarr v3 saves in-process; releasing the pre-warmed save subprocess")
                     try:
                         prewarmed_job_runner.shutdown(timeout_s=1.0)
                     except Exception as e:
                         self._log.error(f"Error shutting down the unused pre-warmed runner: {e}")
-                    can_use_prewarmed = False
             elif Acquisition.USE_MULTIPROCESSING:
-                # Try to use pre-warmed runner for the first job class
-                if can_use_prewarmed and not used_prewarmed:
-                    if prewarmed_job_runner.is_ready():
-                        self._log.info(f"Using pre-warmed job runner for {job_class.__name__} jobs")
-                        job_runner = prewarmed_job_runner
-                        # Configure it with current acquisition settings
-                        job_runner.set_acquisition_info(self.acquisition_info)
-                        if zarr_writer_info:
-                            job_runner.set_zarr_writer_info(zarr_writer_info)
-                        used_prewarmed = True
-                    else:
-                        self._log.warning(
-                            f"Pre-warmed job runner not ready (possibly hung during warmup), "
-                            f"shutting it down and creating new one for {job_class.__name__}"
-                        )
-                        # Shutdown the hung pre-warmed runner to avoid resource leak
-                        try:
-                            prewarmed_job_runner.shutdown(timeout_s=1.0)
-                        except Exception as e:
-                            self._log.error(f"Error shutting down hung pre-warmed runner: {e}")
-                        # Don't try to use pre-warmed runner again for subsequent job classes
-                        can_use_prewarmed = False
-
-                if job_runner is None:
-                    self._log.info(f"Creating job runner for {job_class.__name__} jobs")
-                    job_runner = control.core.job_processing.JobRunner(
-                        self.acquisition_info,
-                        cleanup_stale_ome_files=use_ome_tiff,
-                        log_file_path=log_file_path,
-                        # Pass backpressure shared values for cross-process tracking
-                        bp_pending_jobs=self._backpressure.pending_jobs_value,
-                        bp_pending_bytes=self._backpressure.pending_bytes_value,
-                        bp_capacity_event=self._backpressure.capacity_event,
-                        # Pass zarr writer info for ZARR_V3 format
-                        zarr_writer_info=zarr_writer_info,
-                    )
-                    job_runner.start()
-                    # Subprocess starts warming up in background - don't block here
-
+                job_runner = self._adopt_or_create_job_runner(
+                    prewarmed_job_runner if i == 0 else None,
+                    prewarmed_bp_values if i == 0 else None,
+                    zarr_writer_info,
+                    cleanup_stale_ome_files=use_ome_tiff,
+                    job_name=job_class.__name__,
+                )
             self._job_runners.append((job_class, job_runner))
         self._abort_on_failed_job = abort_on_failed_jobs
         self._first_job_dispatched = False  # Track if we've waited for subprocess warmup
-
-    def update_use_piezo(self, value):
-        self.use_piezo = value
-        self._log.info(f"MultiPointWorker: updated use_piezo to {value}")
 
     def _is_well_based_acquisition(self) -> bool:
         """Check if regions represent a valid well-based acquisition.
@@ -453,50 +1025,8 @@ class MultiPointWorker:
         )
         return True
 
-    def _create_in_process_zarr_runner(self, zarr_writer_info: Optional[ZarrWriterInfo]) -> InProcessZarrRunner:
-        """Zarr is saved in this process (see in_process_zarr_runner.py); the runner shares our backpressure counters."""
-        runner = InProcessZarrRunner(
-            zarr_writer_info=zarr_writer_info,
-            bp_values=(
-                self._backpressure.pending_jobs_value,
-                self._backpressure.pending_bytes_value,
-                self._backpressure.capacity_event,
-            ),
-        )
-        runner.start()
-        return runner
-
-    def _abort_due_to_error(self) -> None:
-        """Abort the run due to an internal error (vs a user abort).
-
-        The worker only ever aborts itself on error conditions; user aborts arrive
-        via the external abort flag. Tagging the cause here lets _compute_end_reason
-        classify the end as "error" instead of "user_abort".
-        """
-        self._abort_cause = "error"
-        self.request_abort_fn()
-
-    def _run_state_beat(self) -> None:
-        self._run_state.beat(
-            {
-                "timepoint": self.time_point,
-                "fov": self._timepoint_fov_count,
-                "images": self.image_count,
-            }
-        )
-
-    def _compute_end_reason(self) -> str:
-        if self._run_state_fatal:
-            return "error"
-        if self.abort_requested_fn():
-            return "error" if self._abort_cause == "error" else "user_abort"
-        if self._acquisition_error_count > 0:
-            return "completed_with_errors"
-        return "completed"
-
     def run(self):
         this_image_callback_id = None
-        self._run_state_fatal = False
         try:
             start_time = time.perf_counter_ns()
             self.camera.start_streaming()
@@ -578,7 +1108,7 @@ class MultiPointWorker:
             self._abort_due_to_error()
         except Exception as e:
             self._log.exception(e)
-            self._run_state_fatal = True
+            self._abort_due_to_error()  # the run ends as "error" and the stores seal aborted
             raise
         finally:
             # We do this above, but there are some paths that skip the proper end of the acquisition so make
@@ -591,17 +1121,8 @@ class MultiPointWorker:
             self._finish_jobs()
 
             # Determine why the acquisition ended (drives the watchdog + the in-process finish msg).
-            reason = self.end_reason = self._compute_end_reason()
             total_duration = time.time() - self.timestamp_acquisition_started
-            self._run_state.end(
-                reason,
-                {
-                    "total_images": self.image_count,
-                    "total_timepoints": self.time_point,
-                    "total_duration_seconds": total_duration,
-                    "errors_encountered": self._acquisition_error_count,
-                },
-            )
+            reason = self._end_run_state(total_duration)
 
             # Send Slack acquisition finished notification via callback (ensures ordering with timepoint notifications)
             if self._slack_notifier is not None:
@@ -675,109 +1196,6 @@ class MultiPointWorker:
                 f"Laser engine did not reach ready state within timeout "
                 f"while waiting on channel(s) {channels}; aborting acquisition"
             )
-
-    def _wait_for_outstanding_callback_images(self):
-        # If there are outstanding frames, wait for them to come in.
-        self._log.info("Waiting for any outstanding frames.")
-        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last outstanding frames at end of acquisition!")
-
-        if not self._image_callback_idle.wait(self._frame_wait_timeout_s()):
-            self._log.warning("Timed out waiting for the last image to process!")
-
-        # No matter what, set the flags so things can continue
-        self._ready_for_next_trigger.set()
-        self._image_callback_idle.set()
-
-    def _finish_jobs(self, timeout_s=10):
-        # Drain and summarize all currently available job results before waiting for completion
-        self._summarize_runner_outputs(drain_all=True)
-
-        active_runners = [
-            (job_class, job_runner) for job_class, job_runner in self._job_runners if job_runner is not None
-        ]
-
-        self._log.info(f"Waiting for jobs to finish on {len(active_runners)} job runners before shutting them down...")
-        timeout_time = time.time() + timeout_s
-
-        def timed_out():
-            return time.time() > timeout_time
-
-        def time_left():
-            return max(timeout_time - time.time(), 0)
-
-        # Wait for all pending jobs across all runners (round-robin to avoid blocking on one)
-        while not timed_out():
-            any_pending = False
-            for job_class, job_runner in active_runners:
-                if job_runner.has_pending():
-                    any_pending = True
-                    break
-            if not any_pending:
-                break
-            # Process any available results while waiting
-            self._summarize_runner_outputs(drain_all=True)
-            time.sleep(0.1)
-        else:
-            # Timed out - kill any runners that still have pending jobs
-            abandoned = False
-            for job_class, job_runner in active_runners:
-                if job_runner.has_pending():
-                    self._log.error(
-                        f"Timed out after {timeout_s} [s] waiting for jobs to finish. Pending jobs for {job_class.__name__} abandoned!!!"
-                    )
-                    job_runner.kill()
-                    abandoned = True
-            if abandoned:
-                # Data is missing, so the run ends as an error (and the Zarr stores are sealed as aborted).
-                self._abort_due_to_error()
-
-        # Drain results before shutdown (a failed job seen here aborts the run too, via _summarize_job_result)
-        self._summarize_runner_outputs(drain_all=True)
-
-        # Shut down the save subprocesses in parallel (in background to avoid blocking on subprocess termination);
-        # the in-process Zarr runner is shut down inline below, because its shutdown seals the stores.
-        # Using daemon threads is safe here because:
-        # 1. All jobs are complete and results are already drained
-        # 2. The subprocess termination is best-effort cleanup only
-        # 3. If app exits before threads complete, OS will terminate subprocesses anyway
-        # 4. This prevents slow subprocess termination from blocking acquisition completion
-        log = self._log  # Capture for closure
-
-        def shutdown_runner(job_runner, timeout):
-            try:
-                job_runner.shutdown(timeout)
-            except Exception as e:
-                log.error(f"Error shutting down job runner in background: {e}")
-
-        self._log.info("Shutting down job runners...")
-        remaining_time = time_left()
-        # A user Stop, an error abort, or a crash out of run(): the store must not claim completeness.
-        aborted = bool(self.abort_requested_fn()) or self._run_state_fatal
-        for job_class, job_runner in active_runners:
-            if isinstance(job_runner, InProcessZarrRunner):
-                # Its shutdown seals the stores (aborted ones as aborted); do it here so the
-                # acquisition is not reported finished before the metadata says so.
-                try:
-                    if not job_runner.shutdown(remaining_time, aborted=aborted):
-                        self._abort_due_to_error()  # a write was still in flight: the stores were sealed aborted
-                except Exception as e:
-                    log.error(f"Error shutting down the in-process Zarr runner: {e}")
-                continue
-            t = threading.Thread(target=shutdown_runner, args=(job_runner, remaining_time), daemon=True)
-            t.start()
-
-        # Final drain of all output queues (should be empty, but check anyway)
-        self._summarize_runner_outputs(drain_all=True)
-
-        # Release backpressure resources now that all jobs are complete
-        try:
-            self._backpressure.close()
-        except Exception as e:
-            self._log.error(f"Error closing backpressure controller: {e}")
-
-    def wait_till_operation_is_completed(self):
-        self.microcontroller.wait_till_operation_is_completed()
 
     def run_single_time_point(self):
         try:
@@ -904,89 +1322,6 @@ class MultiPointWorker:
         if len(coordinate_mm) == 3:
             z_mm = coordinate_mm[2]
             self.move_to_z_level(z_mm)
-
-    def move_to_z_level(self, z_mm):
-        self._log.debug("moving z")
-        self.stage.move_z_to(z_mm)
-        self._sleep(squid.stage.utils.z_stabilization_time_s())
-
-    def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
-        """Process job results from output queues.
-
-        Args:
-            drain_all: If True, process ALL available results. If False, process at most one per queue.
-
-        Returns:
-            SummarizeResult with none_failed and had_results.
-        """
-        none_failed = True
-        had_results = False
-        for job_class, job_runner in self._job_runners:
-            if job_runner is None:
-                continue
-            out_queue = job_runner.output_queue()
-            if out_queue is None:
-                # Queue was cleared during shutdown
-                continue
-            if not drain_all and not job_runner.is_alive() and job_runner.has_pending():
-                self._log.error(
-                    f"{job_class.__name__} save subprocess exited (exit code {getattr(job_runner, 'exitcode', None)}) "
-                    f"with jobs pending; aborting the acquisition"
-                )
-                self._abort_due_to_error()
-            while True:
-                try:
-                    job_result: JobResult = out_queue.get_nowait()
-                    none_failed = none_failed and self._summarize_job_result(job_result)
-                    had_results = True
-                    if not drain_all:
-                        break  # Only process one result per queue if not draining
-                except queue.Empty:
-                    break
-                except ValueError:
-                    # Queue was closed during shutdown - nothing more to drain
-                    break
-
-        return SummarizeResult(none_failed=none_failed, had_results=had_results)
-
-    def _summarize_job_result(self, job_result: JobResult) -> bool:
-        """
-        Prints a summary, then returns True if the result was successful or False otherwise.
-        """
-        if job_result.exception is not None:
-            self._log.error(f"Error while running job {job_result.job_id}: {job_result.exception}")
-            self._acquisition_error_count += 1
-            if self._abort_on_failed_job:
-                self._log.error("A save job failed, aborting acquisition because abort_on_failed_job=True")
-                self._abort_due_to_error()
-
-            # Send Slack error notification
-            if self._slack_notifier is not None:
-                try:
-                    context = {"job_id": job_result.job_id}
-                    self._slack_notifier.notify_error(
-                        str(job_result.exception),
-                        context,
-                    )
-                except Exception as e:
-                    self._log.warning(f"Failed to send Slack error notification: {e}")
-            return False
-        else:
-            self._log.info(f"Got result for job {job_result.job_id}, it completed!")
-            # Handle ZarrWriteResult - notify viewer that frame is written
-            if isinstance(job_result.result, ZarrWriteResult):
-                r = job_result.result
-                self.callbacks.signal_zarr_frame_written(r.fov, r.time_point, r.z_index, r.channel_name, r.region_idx)
-            return True
-
-    def _create_job(self, job_class: Type[Job], info: CaptureInfo, image: np.ndarray) -> Optional[Job]:
-        """Create a job instance for the given job class.
-
-        Returns None if the job should be skipped.
-        """
-        return job_class(
-            capture_info=info, capture_image=JobImage(image_array=image), save_settings=self._save_settings
-        )
 
     def _emit_plate_layout(self, image: np.ndarray) -> None:
         """Emit plate_view_init for the unified mosaic widget on the first image.
@@ -1316,25 +1651,6 @@ class MultiPointWorker:
             RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
         )
 
-    def _select_config(self, config: AcquisitionChannel):
-        self.callbacks.signal_current_configuration(config)
-        self.liveController.set_microscope_mode(config)
-        self.wait_till_operation_is_completed()
-        self._applied_config = config.model_copy(deep=True)
-
-    def _config_already_applied(self, config: AcquisitionChannel) -> bool:
-        # Compared by value against the copy, so a channel edited since it was applied is applied again.
-        return (
-            self._applied_config is not None
-            and config == self._applied_config
-            and self.liveController.currentConfiguration == config
-        )
-
-    def _scan_unit_triggers_camera(self) -> bool:
-        # With an NL5/AION and NL5_USE_DOUT, camera.send_trigger() runs one confocal scan and returns once the
-        # unit has triggered the camera (see microscope.py's acquisition_camera_hw_trigger_fn).
-        return self.microscope.addons.nl5 is not None and control._def.NL5_USE_DOUT
-
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
             # contrast-based AF; perform AF only if when not taking z stack or doing z stack from center
@@ -1523,199 +1839,6 @@ class MultiPointWorker:
             return
         reason = "laser AF off" if not self.do_reflection_af else "'Apply channel offset' unchecked"
         self._log.info(f"[multi-point] {reason} — ignoring non-zero z-offsets on channels: [{summary}]")
-
-    def _image_callback(self, camera_frame: CameraFrame):
-        try:
-            if self._ready_for_next_trigger.is_set():
-                self._log.warning(
-                    "Got an image in the image callback, but we didn't send a trigger.  Ignoring the image."
-                )
-                return
-
-            self._image_callback_idle.clear()
-            with self._timing.get_timer("_image_callback"):
-                self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._current_capture_info
-                self._current_capture_info = None
-
-                self._ready_for_next_trigger.set()
-                if not info:
-                    self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
-                    self._abort_due_to_error()
-                    return
-
-                image = camera_frame.frame
-                if not camera_frame or image is None:
-                    self._log.warning("image in frame callback is None. Something is really wrong, aborting!")
-                    self._abort_due_to_error()
-                    return
-
-                # Increment image counter for Slack notification stats
-                self._timepoint_image_count += 1
-                self.image_count += 1
-                self._run_state_beat()
-
-                with self._timing.get_timer("job creation and dispatch"):
-                    # Wait for subprocess to be ready before first dispatch
-                    if not self._first_job_dispatched:
-                        for job_class, job_runner in self._job_runners:
-                            if job_runner is not None:
-                                t_wait_start = time.perf_counter()
-                                if job_runner.wait_ready(timeout_s=10.0):
-                                    t_wait_end = time.perf_counter()
-                                    wait_ms = (t_wait_end - t_wait_start) * 1000
-                                    if wait_ms > 10:  # Only log if we actually had to wait
-                                        self._log.info(f"Job runner ready (waited {wait_ms:.0f}ms for subprocess)")
-                                else:
-                                    self._log.warning(f"Job runner for {job_class.__name__} not ready after 10s")
-                        self._first_job_dispatched = True
-
-                    for job_class, job_runner in self._job_runners:
-                        job = self._create_job(job_class, info, image)
-                        if job is None:
-                            continue  # Skip if job creation returns None (e.g., downsampled views disabled for this image)
-                        if job_runner is not None:
-                            if not job_runner.dispatch(job):
-                                self._log.error("Failed to dispatch multiprocessing job!")
-                                self._abort_due_to_error()
-                                return
-                        else:
-                            try:
-                                # In-process fallback (multiprocessing off) for the TIFF job classes;
-                                # SaveZarrJob always has an InProcessZarrRunner.
-                                # NOTE(imo): We don't have any way of people using results, so for now just
-                                # grab and ignore it.
-                                result = job.run()
-                            except Exception:
-                                self._log.exception("Failed to execute job, abandoning acquisition!")
-                                self._abort_due_to_error()
-                                return
-
-                height, width = image.shape[:2]
-                # with self._timing.get_timer("crop_image"):
-                #     image_to_display = utils.crop_image(
-                #         image,
-                #         round(width * self.display_resolution_scaling),
-                #         round(height * self.display_resolution_scaling),
-                #     )
-                # Emit plate layout once on the first image so the unified mosaic
-                # widget can lay out the plate grid before tiles start arriving.
-                self._emit_plate_layout(image)
-                with self._timing.get_timer("image_to_display*.emit"):
-                    self.callbacks.signal_new_image(camera_frame, info)
-
-        finally:
-            self._image_callback_idle.set()
-
-    def _frame_wait_timeout_s(self):
-        return (self.camera.get_total_frame_time() / 1e3) + 10
-
-    def acquire_camera_image(
-        self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
-    ):
-        if not self._config_already_applied(config):
-            self._select_config(config)
-
-        # trigger acquisition (including turning on the illumination) and read frame
-        camera_illumination_time = self.camera.get_exposure_time()
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_on_illumination()
-            self.wait_till_operation_is_completed()
-            camera_illumination_time = None
-        # In HARDWARE mode with an NL5/AION (NL5_USE_DOUT), camera.send_trigger() below starts the confocal
-        # scan through the camera's hardware trigger function. Do not also start one here: that second scan
-        # gave every image an extra, untracked camera frame (black frames, channels mixed, aborts).
-        # This is some large timeout that we use just so as to not block forever
-        with self._timing.get_timer("_ready_for_next_trigger.wait"):
-            if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
-                self._log.error("Frame callback never set _have_last_triggered_image callback! Aborting acquisition.")
-                self._abort_due_to_error()
-                return
-
-        # Backpressure check AFTER previous frame dispatched, BEFORE next trigger
-        # This is when we know the previous image's jobs have been dispatched (and counters incremented)
-        if self._backpressure.should_throttle():
-            with self._timing.get_timer("backpressure.wait_for_capacity"):
-                got_capacity = self._backpressure.wait_for_capacity()
-                if not got_capacity:
-                    self._log.error(
-                        f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
-                    )
-
-        with self._timing.get_timer("get_ready_for_trigger re-check"):
-            # This should be a noop - we have the frame already.  Still, check!
-            while not self.camera.get_ready_for_trigger():
-                self._sleep(0.001)
-
-            self._ready_for_next_trigger.clear()
-        with self._timing.get_timer("current_capture_info ="):
-            # Even though the capture time will be slightly after this, we need to capture and set the capture info
-            # before the trigger to be 100% sure the callback doesn't stomp on it.
-            # NOTE(imo): One level up from acquire_camera_image, we have acquire_pos.  We're careful to use that as
-            # much as we can, but don't use it here because we'd rather take the position as close as possible to the
-            # real capture time for the image info.  Ideally we'd use this position for the caller's acquire_pos as well.
-            current_capture_info = CaptureInfo(
-                position=self.stage.get_pos(),
-                z_index=k,
-                capture_time=time.time(),
-                z_piezo_um=(self.z_piezo_um if self.use_piezo else None),
-                configuration=config,
-                save_directory=current_path,
-                file_id=file_ID,
-                region_id=region_id,
-                fov=fov,
-                configuration_idx=config_idx,
-                time_point=self.time_point,
-            )
-            self._current_capture_info = current_capture_info
-        with self._timing.get_timer("send_trigger"):
-            try:
-                self.camera.send_trigger(illumination_time=camera_illumination_time)
-            except ConfocalScanFailedError as e:
-                # No frame will come for this image: abort now, with the reason, rather than waiting out the
-                # frame timeout. Returning (not raising) keeps the z stack's cleanup, so Z still goes back.
-                self._log.error(f"Aborting the acquisition: {e}")
-                self._current_capture_info = None
-                self._ready_for_next_trigger.set()
-                self._abort_due_to_error()
-                return
-
-        with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
-            if self.liveController.trigger_mode == TriggerMode.HARDWARE and self._scan_unit_triggers_camera():
-                # send_trigger() above already blocked through the confocal scan, so sleeping a full frame time
-                # from here on ended long after the frame had arrived (AION: ~40 ms per image). The frame arriving
-                # proves its exposure has ended; waiting at most a frame time keeps the old upper bound when it
-                # doesn't come (a dropped trigger is still caught by the next image's _ready_for_next_trigger wait).
-                self._ready_for_next_trigger.wait(self.camera.get_total_frame_time() / 1e3)
-            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-                exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
-                # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
-                # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
-                self._sleep(max(0.0, exposure_done_time - time.time()))
-            else:
-                # In SW trigger mode (or anything not HARDWARE mode), there's indeterminism in the trigger timing.
-                # To overcome this, just wait until the frame for this capture actually comes into the image
-                # callback.  That way we know we have it.  This also helps by making sure the illumination for this
-                # frame is on from before the trigger until after we get the frame (which guarantees it will be on
-                # for the full exposure).
-                #
-                # If we wait for longer than 5x the exposure + 2 seconds, abort the acquisition because something is
-                # wrong.
-                non_hw_frame_timeout = 5 * self.camera.get_total_frame_time() / 1e3 + 2
-                if not self._ready_for_next_trigger.wait(non_hw_frame_timeout):
-                    self._log.error("Timed out waiting {non_hw_frame_timeout} [s] for a frame, aborting acquisition.")
-                    self._abort_due_to_error()
-                    # Let this fall through so we still turn off illumination.  Let the caller actually break out
-                    # of the acquisition.
-
-        # turn off the illumination if using software trigger
-        if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
-            self.liveController.turn_off_illumination()
-
-    def _sleep(self, sec):
-        time_to_sleep = max(sec, 1e-6)
-        # self._log.debug(f"Sleeping for {time_to_sleep} [s]")
-        time.sleep(time_to_sleep)
 
     def acquire_rgb_image(self, config, file_ID, current_path, k, region_id, fov):
         # go through the channels

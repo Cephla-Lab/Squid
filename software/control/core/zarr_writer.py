@@ -72,6 +72,9 @@ class ZarrAcquisitionConfig:
     compression: ZarrCompression = ZarrCompression.FAST
     is_hcs: bool = True  # Default to HCS (5D); non-HCS uses 6D with FOV dimension
     plate_name: str = "plate"
+    # Optional extra keys merged into the "_squid" attributes at metadata-write
+    # time (e.g. per-plane recording metadata: plane_index, plane_z_offset_um).
+    extra_squid_attrs: Optional[Dict[str, object]] = None
 
     @property
     def ndim(self) -> int:
@@ -588,6 +591,9 @@ class ZarrWriter:
             },
         }
 
+        if config.extra_squid_attrs:
+            zattrs["_squid"].update(config.extra_squid_attrs)
+
         # Write metadata to zarr.json attributes (strict Zarr v3 compliance)
         # For HCS, output_path is the array path ({fov}/0), but OME-NGFF metadata
         # should be at the parent group level ({fov}/zarr.json), not the array level.
@@ -628,7 +634,9 @@ class ZarrWriter:
         The returned object's ``.result()`` blocks until the write is committed (and raises if it
         failed). TensorStore copies the source array as part of the write, so ``image`` may be
         released once the future completes. Keeping several submissions in flight lets TensorStore
-        overlap encode, file creation, write and fsync of consecutive frames.
+        overlap encode, file creation, write and fsync of consecutive frames (on the bench a single synchronous
+        writer topped out at ~25 frames/s of 8 MB frames, while 4-8 in flight sustained >100 frames/s
+        to the same NVMe).
 
         Args:
             image: 2D image array (Y, X)
@@ -672,8 +680,63 @@ class ZarrWriter:
         """submit_frame() and wait for it, so the data is on disk for other readers once this returns."""
         self.submit_frame(image, t, c, z, fov).result()
 
-    def finalize(self) -> None:
-        """Finalize the dataset (blocking)."""
+    def _stamp_time_increment(self, zarr_json: dict, time_increment_s: float) -> None:
+        """Replace the t-axis spacing in the store's metadata with a measured value.
+
+        Updates ``_squid.time_increment_s`` and the OME multiscale ``scale`` entry for
+        the t axis, keeping the configured value as ``_squid.nominal_time_increment_s``.
+        Used when the recording source ran off its nominal rate (see
+        StreamingCapture._report_delivered_rate) so the time axis on disk is honest.
+        """
+        attrs = zarr_json.get("attributes", {})
+        squid_attrs = attrs.get("_squid")
+        if squid_attrs is not None:
+            squid_attrs.setdefault("nominal_time_increment_s", squid_attrs.get("time_increment_s"))
+            squid_attrs["time_increment_s"] = time_increment_s
+        try:
+            multiscale = attrs["ome"]["multiscales"][0]
+            t_axis = [a["name"] for a in multiscale["axes"]].index("t")
+            for dataset in multiscale["datasets"]:
+                for transform in dataset.get("coordinateTransformations", []):
+                    if transform.get("type") == "scale":
+                        transform["scale"][t_axis] = time_increment_s
+        except (KeyError, IndexError, ValueError, TypeError):
+            log.warning("could not update the OME t-axis scale with the measured time increment")
+        zarr_json["attributes"] = attrs
+
+    def _seal_metadata(
+        self,
+        zarr_json_path: str,
+        complete: bool,
+        aborted: bool = False,
+        extra_attrs: Optional[Dict[str, object]] = None,
+        time_increment_s: Optional[float] = None,
+    ) -> None:
+        """Record in zarr.json how the acquisition ended (see finalize / abort for the arguments)."""
+        if not os.path.exists(zarr_json_path):
+            return
+        with open(zarr_json_path, "r") as f:
+            zarr_json = json.load(f)
+        attrs = zarr_json.get("attributes", {})
+        if "_squid" in attrs:
+            attrs["_squid"]["acquisition_complete"] = complete
+            if aborted:
+                attrs["_squid"]["aborted"] = True
+            if extra_attrs:
+                attrs["_squid"].update(extra_attrs)
+        if time_increment_s is not None:
+            self._stamp_time_increment(zarr_json, time_increment_s)
+        with open(zarr_json_path, "w") as f:
+            json.dump(zarr_json, f, indent=2)
+
+    def finalize(self, time_increment_s: Optional[float] = None) -> None:
+        """Finalize the dataset (blocking).
+
+        Args:
+            time_increment_s: measured t-axis spacing to stamp into the metadata in
+                place of the configured one (see _stamp_time_increment); None keeps
+                the configured value.
+        """
         if self._finalized:
             log.warning("Writer already finalized")
             return
@@ -683,15 +746,7 @@ class ZarrWriter:
         # Update metadata with completion status (in zarr.json attributes)
         zarr_json_path = self._get_metadata_zarr_json_path()
         try:
-            if os.path.exists(zarr_json_path):
-                with open(zarr_json_path, "r") as f:
-                    zarr_json = json.load(f)
-                attrs = zarr_json.get("attributes", {})
-                if "_squid" in attrs:
-                    attrs["_squid"]["acquisition_complete"] = True
-                    zarr_json["attributes"] = attrs
-                with open(zarr_json_path, "w") as f:
-                    json.dump(zarr_json, f, indent=2)
+            self._seal_metadata(zarr_json_path, complete=True, time_increment_s=time_increment_s)
         except (OSError, json.JSONDecodeError) as e:
             log.error(f"Failed to finalize zarr metadata at {zarr_json_path}: {e}")
             # Don't raise - data is already written, just log the metadata issue
@@ -699,29 +754,41 @@ class ZarrWriter:
         self._finalized = True
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
-    def abort(self) -> None:
-        """Abort and clean up (blocking).
+    def abort(
+        self,
+        mark_aborted: bool = True,
+        extra_attrs: Optional[Dict[str, object]] = None,
+        time_increment_s: Optional[float] = None,
+    ) -> None:
+        """Seal the store as incomplete and clean up (blocking).
+
+        Args:
+            mark_aborted: stamp ``aborted: True`` (a user/programmatic abort).
+                Pass False for non-abort incomplete seals (write errors,
+                dropped frames, under-delivery) so tooling can distinguish
+                "user pressed Stop" from "finished with missing planes".
+            extra_attrs: extra keys merged into ``_squid`` (e.g. error/drop
+                counts) alongside ``acquisition_complete: False``.
+            time_increment_s: measured t-axis spacing to stamp into the
+                metadata in place of the configured one; None keeps it.
 
         Uses try-finally to ensure cleanup always happens, even if an
         unexpected exception occurs during abort.
         """
-        log.warning("Aborting Zarr writer...")
+        log.warning("Aborting Zarr writer..." if mark_aborted else "Sealing Zarr writer as incomplete...")
 
         try:
 
             # Mark as incomplete in metadata (in zarr.json attributes)
             zarr_json_path = self._get_metadata_zarr_json_path()
             try:
-                if os.path.exists(zarr_json_path):
-                    with open(zarr_json_path, "r") as f:
-                        zarr_json = json.load(f)
-                    attrs = zarr_json.get("attributes", {})
-                    if "_squid" in attrs:
-                        attrs["_squid"]["acquisition_complete"] = False
-                        attrs["_squid"]["aborted"] = True
-                        zarr_json["attributes"] = attrs
-                    with open(zarr_json_path, "w") as f:
-                        json.dump(zarr_json, f, indent=2)
+                self._seal_metadata(
+                    zarr_json_path,
+                    complete=False,
+                    aborted=mark_aborted,
+                    extra_attrs=extra_attrs,
+                    time_increment_s=time_increment_s,
+                )
             except (OSError, json.JSONDecodeError) as e:
                 log.error(f"Failed to update abort metadata at {zarr_json_path}: {e}")
         finally:
