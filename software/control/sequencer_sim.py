@@ -44,6 +44,10 @@ SPEED_UP_FACTOR = 1.0
 #: How often a running sequence emits a status packet.  The firmware broadcasts every 10 ms.
 STATUS_INTERVAL_S = 0.01
 
+#: seq::kStatusHoldMs -- how long after its last activity (a command, a terminal state) the
+#: sequencer keeps status bytes 14-17 when no sequence is running.  Read at call time.
+STATUS_HOLD_S = 1.0
+
 #: seq::wire::allowed_while_running() -- the ONLY opcodes the dispatcher accepts while a
 #: sequence runs (design S8).  The MCU owns the stage, the light and the camera trigger for
 #: the duration, so everything else is refused at this one choke point.
@@ -103,6 +107,10 @@ class SimulatedSequencer:
         self._cmd_in_progress = False
         self._cmd_status = CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
 
+        # seq::StatusField: the sequencer owns status bytes 14-17 while running and for
+        # STATUS_HOLD_S after its last activity; None before any activity.
+        self._last_activity_s: Optional[float] = None
+
         self._cancel = threading.Event()
         self._abort = threading.Event()
         # The run was ended by a host safety command that must itself succeed
@@ -133,6 +141,23 @@ class SimulatedSequencer:
     def status_bytes(self) -> Tuple[int, int, int, int]:
         """Response bytes 14..17."""
         return self.status().to_response_bytes()
+
+    def owns_status_field(self) -> bool:
+        """seq_status_owned(): True while response bytes 14..17 are the sequencer's (the serial
+        simulator then flags them with SEQ_FLAG_STATUS), else they belong to the encoder /
+        focus wheel / theta as on master."""
+        with self._lock:
+            if self._cmd_in_progress:
+                return True
+            if self._last_activity_s is None:
+                return False
+            return time.monotonic() - self._last_activity_s < STATUS_HOLD_S
+
+    def report_execution_error(self) -> None:
+        """The serial simulator's own handler refused a command (mcu_cmd_execution_status =
+        CMD_EXECUTION_ERROR): the MCU has one status byte, and this object holds it."""
+        with self._lock:
+            self._cmd_status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
 
     def execution_status(self) -> int:
         """The CMD_EXECUTION_STATUS byte the MCU reports right now.
@@ -218,7 +243,12 @@ class SimulatedSequencer:
 
     # --- opcode handling ------------------------------------------------------------------
 
+    def _note_activity(self) -> None:
+        with self._lock:
+            self._last_activity_s = time.monotonic()
+
     def _handle_seq(self, code: int, command: bytes) -> None:
+        self._note_activity()
         if code == CMD_SET.SEQ_WRITE:
             self._seq_write(command[2], command[3:7])
         elif code == CMD_SET.SEQ_COMMIT:
@@ -335,6 +365,7 @@ class SimulatedSequencer:
             self._engine_detail = detail
             self._show_transport_error = False
             self._cmd_in_progress = False
+            self._last_activity_s = time.monotonic()  # the terminal status stays readable
             if not quiet:
                 self._cmd_status = CMD_EXECUTION_STATUS.CMD_EXECUTION_ERROR
 
@@ -395,6 +426,7 @@ class SimulatedSequencer:
                 # A cancelled run still reached Done, not Failed, so the command COMPLETED.
                 self._engine_error = sp.SeqError.CANCELED
             self._cmd_in_progress = False
+            self._last_activity_s = time.monotonic()  # the terminal status stays readable
 
     def _dwell(self, seconds: float) -> None:
         """Sleep, emitting status packets meanwhile and returning early on abort."""

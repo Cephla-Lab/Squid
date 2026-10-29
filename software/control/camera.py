@@ -493,7 +493,7 @@ class DefaultCamera(AbstractCamera):
         else:
             self._log.warning(f"Current acquisition mode {current_acquisition_mode=} not triggerable.")
 
-    def get_ready_for_trigger(self) -> bool:
+    def _get_ready_for_trigger_imp(self) -> bool:
         time_since_last_s = time.time() - self._last_trigger_timestamp
         timeout_period_s = (4 * self._exposure_time_ms + 5) / 1000.0  # Arbitrary - how do we do somethigng smart here?
         if time_since_last_s > timeout_period_s and self._in_trigger:

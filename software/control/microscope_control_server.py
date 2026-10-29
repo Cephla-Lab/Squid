@@ -21,6 +21,7 @@ import squid.logging
 from control.core.acquisition_settings import apply_acquisition_settings, parse_wells
 
 import control._def  # Module import for runtime access to MCP-modifiable settings
+import control.utils
 
 # Qt imports for thread-safe GUI operations
 try:
@@ -218,6 +219,12 @@ def schema_method(func: Callable) -> Callable:
 
     wrapper._schema = schema
     return wrapper
+
+
+_ACQUISITION_NOT_STARTED = (
+    "Acquisition did not start: the microcontroller stayed busy (home the stage or power-cycle the "
+    "controller) or the run was aborted before its worker launched; see the microscope log."
+)
 
 
 class MicroscopeControlServer:
@@ -580,6 +587,7 @@ class MicroscopeControlServer:
     @schema_method
     def _cmd_turn_on_illumination(self) -> Dict[str, Any]:
         """Turn on the illumination for the current channel."""
+        self.microscope.live_controller.hold_current_channel("tcp")  # wakes the line; opens a mechanical shutter
         self.microscope.live_controller.turn_on_illumination()
         return {"illumination": "on"}
 
@@ -587,6 +595,7 @@ class MicroscopeControlServer:
     def _cmd_turn_off_illumination(self) -> Dict[str, Any]:
         """Turn off all illumination."""
         self.microscope.live_controller.turn_off_illumination()
+        self.microscope.live_controller.release_current_channel("tcp")
         return {"illumination": "off"}
 
     @schema_method
@@ -721,9 +730,8 @@ class MicroscopeControlServer:
         if self.multipoint_controller.acquisition_in_progress():
             raise RuntimeError("Acquisition already in progress")
 
-        # Parse well coordinates
-        wellplate_settings = control._def.get_wellplate_settings(wellplate_format)
-        well_coords = self._parse_wells(wells, wellplate_settings)
+        # Parse well coordinates (raises on unknown formats)
+        well_coords = self._parse_wells(wells, wellplate_format)
 
         if not well_coords:
             raise ValueError(f"Could not parse wells: {wells}")
@@ -788,7 +796,8 @@ class MicroscopeControlServer:
             total_images = total_fovs * len(channels)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            self.multipoint_controller.run_acquisition()
+            if not self.multipoint_controller.run_acquisition():
+                raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             return {
                 "started": True,
@@ -809,9 +818,13 @@ class MicroscopeControlServer:
             self._log.error(traceback.format_exc())
             raise RuntimeError(f"Failed to start acquisition: {str(e)}") from e
 
-    def _parse_wells(self, wells: str, wellplate_settings: dict) -> Dict[str, tuple]:
-        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module)."""
-        return parse_wells(wells, wellplate_settings)
+    def _parse_wells(self, wells: str, wellplate_format: str) -> Dict[str, tuple]:
+        """Parse 'A1:B3' / 'A1,A2,B1' into {well_id: (x_mm, y_mm)} (shared with the acquisition-settings module).
+
+        Resolves through plate_transform_for(wellplate_format), so WELLPLATE_OFFSET is applied like at
+        every other site and an unknown format raises instead of falling back to invented geometry.
+        """
+        return parse_wells(wells, wellplate_format)
 
     @schema_method
     def _cmd_get_acquisition_status(self) -> Dict[str, Any]:
@@ -1071,7 +1084,9 @@ class MicroscopeControlServer:
             self._set_gui_acquisition_state(yaml_data, is_running=True)
 
             # Run the acquisition (non-blocking - runs in worker thread)
-            self.multipoint_controller.run_acquisition()
+            if not self.multipoint_controller.run_acquisition():
+                self._set_gui_acquisition_state(yaml_data, is_running=False)
+                raise RuntimeError(_ACQUISITION_NOT_STARTED)
 
             self._log.info(
                 f"Acquisition started: {total_fovs} FOVs, {len(yaml_data.channel_names)} channels, "

@@ -5,7 +5,6 @@ from typing import Callable
 import numpy as np
 import cv2
 
-from control import utils
 import control._def
 from squid.abc import CameraFrame
 
@@ -33,19 +32,13 @@ NoOpStreamHandlerFunctions = StreamHandlerFunctions(
 
 
 class StreamHandler:
-    def __init__(
-        self,
-        handler_functions: StreamHandlerFunctions,
-        display_resolution_scaling=1,
-    ):
+    def __init__(self, handler_functions: StreamHandlerFunctions):
         self.fps_display = 1
         self.fps_save = 1
         self.fps_track = 1
         self.timestamp_last_display = 0
         self.timestamp_last_save = 0
         self.timestamp_last_track = 0
-
-        self.display_resolution_scaling = display_resolution_scaling
 
         self.save_image_flag = False
         self.handler_busy = False
@@ -68,10 +61,6 @@ class StreamHandler:
 
     def set_save_fps(self, fps):
         self.fps_save = fps
-
-    def set_display_resolution_scaling(self, display_resolution_scaling):
-        self.display_resolution_scaling = display_resolution_scaling / 100
-        print(self.display_resolution_scaling)
 
     def set_functions(self, functions: StreamHandlerFunctions):
         if not functions:
@@ -96,19 +85,12 @@ class StreamHandler:
             if control._def.PRINT_CAMERA_FPS:
                 print("real camera fps is " + str(self.fps_real))
 
-        # crop image
         image = np.squeeze(frame.frame)
 
         # send image to display
         time_now = time.time()
         if self._fns.force_display() or time_now - self.timestamp_last_display >= 1 / self.fps_display:
-            self._fns.image_to_display(
-                utils.crop_image(
-                    image,
-                    round(image.shape[1] * self.display_resolution_scaling),
-                    round(image.shape[0] * self.display_resolution_scaling),
-                )
-            )
+            self._fns.image_to_display(image)
             self.timestamp_last_display = time_now
 
         # send image to write

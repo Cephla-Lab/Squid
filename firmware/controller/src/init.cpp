@@ -1,4 +1,6 @@
 #include "init.h"
+#include "limit_switches.h"
+#include "focus_wheel_power_up.h"
 
 #include "tmc/drivers/driver_probe.h"
 #include "tmc/drivers/stepper_driver.h"
@@ -227,9 +229,9 @@ void init_stages()
   // This must precede the first tmc_driver_set_current() below. tmc4361A_init()
   // just above zeroed both fields, and a TMC2660 axis asked for current with
   // r_sense = 0 encodes CS = 0 - minimum current, a stage that cannot move.
-  tmc4361[x].r_sense = R_sense_xy;  tmc4361[x].current_range = CURRENT_RANGE_XY;
-  tmc4361[y].r_sense = R_sense_xy;  tmc4361[y].current_range = CURRENT_RANGE_XY;
-  tmc4361[z].r_sense = R_sense_z;   tmc4361[z].current_range = CURRENT_RANGE_Z;
+  tmc4361[x].r_sense = R_sense_xy;  tmc4361[x].current_range = tmc4361[x].current_range_floor = CURRENT_RANGE_XY;
+  tmc4361[y].r_sense = R_sense_xy;  tmc4361[y].current_range = tmc4361[y].current_range_floor = CURRENT_RANGE_XY;
+  tmc4361[z].r_sense = R_sense_z;   tmc4361[z].current_range = tmc4361[z].current_range_floor = CURRENT_RANGE_Z;
 
   // SPI
   SPI.begin();
@@ -273,12 +275,16 @@ void init_stages()
   tmc4361A_motor_config(&tmc4361[z], Z_MOTOR_RMS_CURRENT_mA, Z_MOTOR_I_HOLD, SCREW_PITCH_Z_MM, FULLSTEPS_PER_REV_Z, MICROSTEPPING_Z); // need to make current scaling on TMC2660 is > 16 (out of 31)
 
   // enable limit switch reading
-  tmc4361A_enableLimitSwitch(&tmc4361[x], lft_sw_pol[x], LEFT_SW, flip_limit_switch_x);
-  tmc4361A_enableLimitSwitch(&tmc4361[x], rht_sw_pol[x], RGHT_SW, flip_limit_switch_x);
-  tmc4361A_enableLimitSwitch(&tmc4361[y], lft_sw_pol[y], LEFT_SW, flip_limit_switch_y);
-  tmc4361A_enableLimitSwitch(&tmc4361[y], rht_sw_pol[y], RGHT_SW, flip_limit_switch_y);
-  tmc4361A_enableLimitSwitch(&tmc4361[z], rht_sw_pol[z], RGHT_SW, false);
-  tmc4361A_enableLimitSwitch(&tmc4361[z], lft_sw_pol[z], LEFT_SW, false); // removing this causes z homing to not work properly
+  limit_switches_load();
+  limit_switches_program(x, flip_limit_switch_x);
+  limit_switches_program(y, flip_limit_switch_y);
+  limit_switches_program(z, false);
+
+  // focus wheel: the saved power-up mode (a lift system saves FOCUS_WHEEL_TO_HOST: the wheel moves nothing
+  // until a host drives its focus axis with it)
+  focus_wheel_power_up_mode = focus_wheel_power_up_load();
+  focus_wheel_mode = focus_wheel_power_up_mode;
+  focus_wheel_host_count = 0;
 
   // motion profile configuration
   max_acceleration_usteps[x] = tmc4361A_ammToMicrosteps(&tmc4361[x], MAX_ACCELERATION_X_mm);
@@ -302,9 +308,9 @@ void init_stages()
   }
 
   // homing switch settings
-  tmc4361A_enableHomingLimit(&tmc4361[x], lft_sw_pol[x], TMC4361_homing_sw[x], home_safety_margin[x]);
-  tmc4361A_enableHomingLimit(&tmc4361[y], lft_sw_pol[y], TMC4361_homing_sw[y], home_safety_margin[y]);
-  tmc4361A_enableHomingLimit(&tmc4361[z], rht_sw_pol[z], TMC4361_homing_sw[z], home_safety_margin[z]);
+  tmc4361A_enableHomingLimit(&tmc4361[x], limit_switch_homing_polarity(x), TMC4361_homing_sw[x], home_safety_margin[x]);
+  tmc4361A_enableHomingLimit(&tmc4361[y], limit_switch_homing_polarity(y), TMC4361_homing_sw[y], home_safety_margin[y]);
+  tmc4361A_enableHomingLimit(&tmc4361[z], limit_switch_homing_polarity(z), TMC4361_homing_sw[z], home_safety_margin[z]);
 
   /*********************************************************************************************************
    ***************************************** TMC4361A + TMC2660 end ****************************************

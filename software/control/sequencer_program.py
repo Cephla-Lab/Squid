@@ -40,17 +40,14 @@ OP_SEQ_CANCEL = 63
 SEQ_OPCODES = frozenset({OP_SEQ_WRITE, OP_SEQ_COMMIT, OP_SEQ_RUN, OP_SEQ_CANCEL})
 
 # --- response status bytes (seq_wire.h kStatusByte*) ---------------------------------------
-# On firmware < MIN_FIRMWARE_VERSION these four bytes are the (never written) theta position.
+# A multiplexed field: the sequencer owns it only while byte 19 has control._def.SEQ_FLAG_STATUS
+# set (a run, and about a second after any sequencer command or terminal state); otherwise the
+# bytes are the encoder position, the focus wheel count or an unused theta position.
 
 STATUS_BYTE_STATE = 14  # SeqState (3 b) << 5 | SeqError (5 b)
 STATUS_BYTE_DETAIL = 15  # channel index / axis id the error refers to
 STATUS_BYTE_FRAMES_HI = 16  # frames_fired, big-endian like the positions
 STATUS_BYTE_FRAMES_LO = 17
-
-#: First firmware version that implements this contract (seq_wire.h kFwMajor/kFwMinor).
-#: Older firmware routes unknown opcodes to callback_default() and answers
-#: COMPLETED_WITHOUT_ERRORS, so every seq_* call must fail loud below this (design S5).
-MIN_FIRMWARE_VERSION = (1, 7)
 
 # --- limits (seq_types.h) ------------------------------------------------------------------
 

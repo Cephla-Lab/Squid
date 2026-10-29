@@ -38,8 +38,16 @@ class ZStackSettings(BaseModel):
     nz: int = Field(1, ge=1)
     delta_z_um: float = 1.0
     config: str = "FROM CENTER"
+    order: str = "CHANNEL FIRST"  # "CHANNEL FIRST" or "Z FIRST"
     use_piezo: bool = False
     z_range_mm: Optional[List[float]] = None
+
+    @field_validator("order", mode="before")
+    @classmethod
+    def _valid_order(cls, value):
+        from control.acquisition_yaml_loader import parse_z_stack_order
+
+        return parse_z_stack_order(value)
 
 
 class AutofocusSettings(BaseModel):

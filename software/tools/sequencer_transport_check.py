@@ -1,7 +1,7 @@
 """Controller-only check of the hardware sequencer's serial transport.
 
 Needs ONLY a controller on USB — no camera, no scope, no light, no motors. It drives the real
-firmware (>= 1.7) through every transport path and prints PASS / FAIL per check:
+firmware through every transport path and prints PASS / FAIL per check:
 
     upload + commit, run, run again with a new stack start, a corrupted upload (CRC), run without
     a committed program, a stack that leaves the DAC range, recovery after a failure, cancel
@@ -30,7 +30,7 @@ USAGE (from software/, with the Squid GUI closed — only one process can hold t
         # idles at, checks the gate in both polarities, and checks that an unplugged cable would
         # read NOT READY. Reads the pin only; it drives nothing.
 
-Flash firmware 1.7 first, from firmware/controller on the sequencer branch:
+Flash the sequencer branch's firmware first, from firmware/controller:
     pio run -e teensy41_newctrl -t upload      (new controller: trigger pin 19, ready pin 18)
     pio run -e teensy41 -t upload              (previous controllers)
 """
@@ -46,7 +46,6 @@ from control.core.sequenced_acquisition import camera_record
 import squid.logging
 from control.microcontroller import CommandAborted
 from control.sequencer_program import (
-    MIN_FIRMWARE_VERSION,
     NONE_ID,
     Order,
     SeqCameraSpec,
@@ -196,12 +195,15 @@ class Checker:
 
     # --- the checks ------------------------------------------------------------------------
 
-    def firmware_version(self) -> str:
-        version = self.mcu.firmware_version
-        if version < MIN_FIRMWARE_VERSION:
+    def has_sequencer(self) -> str:
+        # Asked, not read off the version number: master firmware is numbered independently of this
+        # feature, and firmware without the sequencer completes every SEQ_* opcode (callback_default).
+        if not self.mcu.supports_hardware_sequencer():
+            version = self.mcu.firmware_version
             return (
-                f"controller reports firmware {version[0]}.{version[1]}; the sequencer needs "
-                f">= {MIN_FIRMWARE_VERSION[0]}.{MIN_FIRMWARE_VERSION[1]}. Flash the sequencer branch first."
+                f"the controller (firmware {version[0]}.{version[1]}) completed an empty SEQ_COMMIT instead of "
+                "refusing it: it has no hardware sequencer and would silently ignore a sequence. Flash the "
+                "sequencer branch first."
             )
         return ""
 
@@ -389,7 +391,7 @@ class Checker:
         return ""
 
     def run_all(self) -> bool:
-        self.check("firmware is >= 1.7", self.firmware_version)
+        self.check("firmware has the sequencer (an empty SEQ_COMMIT is refused)", self.has_sequencer)
         if not self.results[-1][1]:
             return False
         self.check("upload + commit a 3-layer x 2-channel program", self.upload(3))

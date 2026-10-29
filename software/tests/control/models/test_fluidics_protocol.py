@@ -201,3 +201,22 @@ def test_expand_rounds_keeps_the_folder_base_and_derives_per_round():
     added = [r for r in out.sequences if r["type"] == "imaging" and r.get("round") in ("R02", "R03")]
     assert [r["folder"] for r in added] == ["image", "image"]  # the base is unchanged across rounds
     assert [imaging_folder(r["round"], r["folder"]) for r in added] == ["R02_image", "R03_image"]  # derived, unique
+
+
+def test_settings_block_keeps_z_stack_order_through_to_the_acquisition_data():
+    from control.core.acquisition_settings import acquisition_data_from_blocks
+
+    block = SettingsBlock.model_validate({**SETTINGS, "z_stack": {**SETTINGS["z_stack"], "order": "z first"}})
+    assert block.z_stack.order == "Z FIRST"
+    assert acquisition_data_from_blocks(block.model_dump(), COORDS).z_stack_order == "Z FIRST"
+
+
+def test_settings_block_without_order_is_channel_first():
+    assert SettingsBlock.model_validate(SETTINGS).z_stack.order == "CHANNEL FIRST"
+
+
+def test_settings_block_rejects_an_unknown_z_stack_order_at_load():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="z_stack.order"):
+        SettingsBlock.model_validate({**SETTINGS, "z_stack": {"order": "TIME FIRST"}})

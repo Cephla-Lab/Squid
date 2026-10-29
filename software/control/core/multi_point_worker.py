@@ -32,6 +32,8 @@ from control.piezo import PiezoStage
 from control.models import AcquisitionChannel
 from squid.abc import AbstractCamera, CameraFrame, CameraFrameFormat
 import squid.acquisition_state
+import squid.stage.utils
+from control.rcm_scan_trigger import ConfocalScanFailedError
 import squid.logging
 import control.core.job_processing
 from control.core.pending_captures import PendingCaptures
@@ -53,6 +55,7 @@ from control.core.job_processing import (
     CaptureInfo,
     SaveImageJob,
     SaveOMETiffJob,
+    SaveSettings,
     SaveZarrJob,
     ZarrWriterInfo,
     AcquisitionInfo,
@@ -70,6 +73,15 @@ from squid.config import CameraPixelFormat
 
 # Module-level logger for static methods
 _log = squid.logging.get_logger(__name__)
+
+
+def save_job_classes_for_format(file_saving_option: FileSavingOption) -> List[Type[Job]]:
+    """The saving job classes that implement the given file saving format."""
+    if file_saving_option == FileSavingOption.OME_TIFF:
+        return [SaveOMETiffJob]
+    if file_saving_option == FileSavingOption.ZARR_V3:
+        return [SaveZarrJob]
+    return [SaveImageJob]
 
 
 class SummarizeResult(NamedTuple):
@@ -183,6 +195,7 @@ class MultiPointWorker:
         self.scan_region_coords_mm = acquisition_parameters.scan_position_information.scan_region_coords_mm
         self.scan_region_names = acquisition_parameters.scan_position_information.scan_region_names
         self.z_stacking_config = acquisition_parameters.z_stacking_config  # default 'from bottom'
+        self.z_stack_order = acquisition_parameters.z_stack_order  # 'CHANNEL FIRST' or 'Z FIRST'
         self.z_range = acquisition_parameters.z_range
 
         self.crop = SEGMENTATION_CROP
@@ -220,18 +233,18 @@ class MultiPointWorker:
         self._burst_dispatcher: Optional[BurstDispatcher] = None
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
+        # A copy of the channel last applied with set_microscope_mode. Within one position, an image whose channel
+        # is unchanged skips re-applying it (camera, MCU, illumination and filter wheel commands on every z level).
+        # Cleared at every position, so whatever runs between positions (autofocus, laser AF) can't leave it stale.
+        self._applied_config: Optional[AcquisitionChannel] = None
 
         self.skip_saving = acquisition_parameters.skip_saving
-        job_classes = []
-        use_ome_tiff = FILE_SAVING_OPTION == FileSavingOption.OME_TIFF
-        use_zarr_v3 = FILE_SAVING_OPTION == FileSavingOption.ZARR_V3
-        if not self.skip_saving:
-            if use_ome_tiff:
-                job_classes.append(SaveOMETiffJob)
-            elif use_zarr_v3:
-                job_classes.append(SaveZarrJob)
-            else:
-                job_classes.append(SaveImageJob)
+        # The settings in effect now, for the whole acquisition.
+        self._save_settings = SaveSettings()
+        file_saving_option = self._save_settings.file_saving_option
+        use_ome_tiff = file_saving_option == FileSavingOption.OME_TIFF
+        use_zarr_v3 = file_saving_option == FileSavingOption.ZARR_V3
+        job_classes = [] if self.skip_saving else save_job_classes_for_format(file_saving_option)
 
         if extra_job_classes:
             job_classes.extend(extra_job_classes)
@@ -506,6 +519,7 @@ class MultiPointWorker:
 
             # Cache laser-engine refs for the gate (None when flag is off).
             self._laser_engine = getattr(self.microscope.addons, "squid_laser_engine", None)
+            self._illumination_wavelengths = self._compute_illumination_wavelengths()
             self._laser_channels_needed = self._compute_laser_channels_needed()
 
             # Warn once if non-zero channel offsets won't be applied this run.
@@ -518,15 +532,18 @@ class MultiPointWorker:
                     break
                 self._run_state_beat()
 
-                # Gate on laser engine readiness for the channels this acquisition will fire.
-                # Re-checked every timepoint so dt-induced sleep gaps are handled.
-                if self._laser_engine is not None and self._laser_channels_needed:
-                    self._wait_for_laser_engine()
-                    if self.abort_requested_fn():
-                        break
+                # The time point uses its channels (wakes the lines, keeps the 560 on, opens its mechanical shutter),
+                # released for the wait to the next one. The gate runs inside it, so it sees the shutter open.
+                with self.microscope.illumination_controller.use("acquisition", self._illumination_wavelengths):
+                    # Gate on laser engine readiness for the channels this acquisition will fire.
+                    # Re-checked every timepoint so dt-induced sleep gaps are handled.
+                    if self._laser_engine is not None and self._laser_channels_needed:
+                        self._wait_for_laser_engine()
+                        if self.abort_requested_fn():
+                            break
 
-                with self._timing.get_timer("run_single_time_point"):
-                    self.run_single_time_point()
+                    with self._timing.get_timer("run_single_time_point"):
+                        self.run_single_time_point()
 
                 self.time_point = self.time_point + 1
                 if self.dt == 0:  # continous acquisition
@@ -607,29 +624,39 @@ class MultiPointWorker:
 
             self.callbacks.signal_acquisition_finished()
 
-    def _compute_laser_channels_needed(self) -> List[str]:
-        if self._laser_engine is None:
-            return []
+    def _compute_illumination_wavelengths(self) -> List[int]:
+        """The wavelengths this acquisition images with: its channels, and the contrast autofocus channel when it runs."""
         ill_config = self.microscope.config_repo.get_illumination_config()
         if ill_config is None:
             return []
+        configs = list(self.selected_configurations)
+        if self.do_autofocus and not self.do_reflection_af:
+            config_af = self.liveController.get_channel_by_name(
+                self.objectiveStore.current_objective, MULTIPOINT_AUTOFOCUS_CHANNEL
+            )
+            if config_af is not None:
+                configs.append(config_af)
         wavelengths = []
-        for cfg in self.selected_configurations:
+        for cfg in configs:
             try:
                 w = cfg.get_illumination_wavelength(ill_config)
             except Exception:
                 w = None
-            if w is not None:
+            if w is not None and w not in wavelengths:
                 wavelengths.append(w)
-        return self._laser_engine.channel_keys_for_wavelengths(wavelengths)
+        return wavelengths
+
+    def _compute_laser_channels_needed(self) -> List[str]:
+        if self._laser_engine is None:
+            return []
+        return self._laser_engine.channel_keys_for_wavelengths(self._illumination_wavelengths)
 
     def _wait_for_laser_engine(self) -> None:
         """Block until needed channels are ACTIVE. Raises on timeout / disconnect / ERROR.
 
         Returns silently when abort_requested_fn fires — caller handles abort.
         """
-        status = self._laser_engine.get_latest_status()
-        if status is not None and status.is_ready_for(self._laser_channels_needed):
+        if self._laser_engine.is_ready_to_image(self._laser_channels_needed):
             return
         self.callbacks.signal_laser_engine_waiting(list(self._laser_channels_needed))
         try:
@@ -832,7 +859,7 @@ class MultiPointWorker:
         piezo_column = ["z_piezo (um)"] if self.use_piezo else []
         self.coordinates_pd = pd.DataFrame(columns=["region", "fov"] + base_columns + piezo_column)
 
-    def update_coordinates_dataframe(self, region_id, z_level, pos: squid.abc.Pos, fov=None):
+    def update_coordinates_dataframe(self, region_id, z_level, pos: squid.abc.Pos, fov=None, z_piezo_um=None):
         base_data = {
             "z_level": [z_level],
             "x (mm)": [pos.x_mm],
@@ -840,7 +867,9 @@ class MultiPointWorker:
             "z (um)": [pos.z_mm * 1000],
             "time": [datetime.now().strftime("%Y-%m-%d_%H-%M-%S.%f")],
         }
-        piezo_data = {"z_piezo (um)": [self.z_piezo_um]} if self.use_piezo else {}
+        piezo_data = {}
+        if self.use_piezo:
+            piezo_data = {"z_piezo (um)": [self.z_piezo_um if z_piezo_um is None else z_piezo_um]}
 
         new_row = pd.DataFrame({"region": [region_id], "fov": [fov], **base_data, **piezo_data})
 
@@ -881,7 +910,7 @@ class MultiPointWorker:
     def move_to_z_level(self, z_mm):
         self._log.debug("moving z")
         self.stage.move_z_to(z_mm)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _summarize_runner_outputs(self, drain_all: bool = False) -> SummarizeResult:
         """Process job results from output queues.
@@ -948,7 +977,9 @@ class MultiPointWorker:
 
         Returns None if the job should be skipped.
         """
-        return job_class(capture_info=info, capture_image=JobImage(image_array=image))
+        return job_class(
+            capture_info=info, capture_image=JobImage(image_array=image), save_settings=self._save_settings
+        )
 
     def _emit_plate_layout(self, image: np.ndarray) -> None:
         """Emit plate_view_init for the unified mosaic widget on the first image.
@@ -1120,6 +1151,7 @@ class MultiPointWorker:
                     return
 
     def acquire_at_position(self, region_id, current_path, fov):
+        self._applied_config = None
         af_succeeded = self.perform_autofocus(region_id, fov)
         if not af_succeeded:
             self._log.error(
@@ -1138,76 +1170,152 @@ class MultiPointWorker:
             self._timepoint_fov_count += 1
             return
 
+        if self.z_stack_order == "Z FIRST" and self.NZ > 1:
+            z_steps_taken = self._acquire_z_first(region_id, current_path, fov, af_succeeded)
+        else:
+            z_steps_taken = self._acquire_channel_first(region_id, current_path, fov, af_succeeded)
+
+        if self.NZ > 1:
+            # Undo only the steps actually taken: an abort leaves the loop before the last plane.
+            self.move_z_back_after_stack(z_steps_taken)
+
+        # Increment FOV counter for Slack notification stats
+        self._timepoint_fov_count += 1
+
+    def _acquire_channel_first(self, region_id, current_path, fov, af_succeeded) -> int:
+        """At each z level, acquire every selected channel before stepping to the next z level.
+
+        Returns the number of z steps taken (fewer than NZ - 1 after an abort).
+        """
+        n_configs = len(self.selected_configurations)
+        z_steps_taken = 0
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
+            acquire_pos = self._begin_z_level(region_id, current_path, fov, z_level, file_ID)
 
-            acquire_pos = self.stage.get_pos()
-            metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
-            self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
-
-            if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
-                self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
-
-            # laser af characterization mode
-            if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
-                image = self.laser_auto_focus_controller.get_image()
-                saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
-                iio.imwrite(saving_path, image)
-
-            current_round_images = {}
             # iterate through selected modes
             try:
                 for config_idx, config in enumerate(self.selected_configurations):
+                    if self.abort_requested_fn():
+                        break
                     self._apply_channel_z_offset(config, af_succeeded)
-
-                    # acquire image
-                    with self._timing.get_timer("acquire_camera_image"):
-                        # TODO(imo): This really should not look for a string in a user configurable name.  We
-                        # need some proper flag on the config to signal this instead...
-                        if "RGB" in config.name:
-                            self.acquire_rgb_image(config, file_ID, current_path, z_level, region_id, fov)
-                        else:
-                            self.acquire_camera_image(
-                                config,
-                                file_ID,
-                                current_path,
-                                z_level,
-                                region_id=region_id,
-                                fov=fov,
-                                config_idx=config_idx,
-                            )
-
-                    current_image = (
-                        fov * self.NZ * len(self.selected_configurations)
-                        + z_level * len(self.selected_configurations)
-                        + config_idx
-                        + 1
-                    )
-                    self.callbacks.signal_region_progress(
-                        RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
+                    current_image = fov * self.NZ * n_configs + z_level * n_configs + config_idx + 1
+                    self._acquire_channel_image(
+                        config, config_idx, file_ID, current_path, z_level, region_id, fov, current_image
                     )
             finally:
                 self._reset_channel_z_offset()
 
-            # updates coordinates df
-            self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov)
-            self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
+            self._finish_z_level(region_id, fov, z_level, acquire_pos)
 
-            # check if the acquisition should be aborted
+            # On an abort, stop here: the caller (run_coordinate_acquisition) handles it once. Carrying on
+            # would still try every remaining z level and channel, each waiting out its frame timeout.
             if self.abort_requested_fn():
-                self.handle_acquisition_abort(current_path)
+                break
 
             # update FOV counter
             self.af_fov_count = self.af_fov_count + 1
 
             if z_level < self.NZ - 1:
                 self.move_z_for_stack()
+                z_steps_taken += 1
+        return z_steps_taken
 
-        if self.NZ > 1:
-            self.move_z_back_after_stack()
+    def _acquire_z_first(self, region_id, current_path, fov, af_succeeded) -> int:
+        """For each selected channel, acquire the whole z stack before switching to the next channel.
 
-        # Increment FOV counter for Slack notification stats
-        self._timepoint_fov_count += 1
+        Per-z bookkeeping (coordinates.csv row, FOV signal, AF counter) happens during the first
+        channel's pass only. Positions are recorded without the channel z-offset, matching the
+        channel-first order. Returns the number of z steps above the first plane where it stopped
+        (NZ - 1 unless aborted), so move_z_back_after_stack() applies unchanged.
+        """
+        n_configs = len(self.selected_configurations)
+        z_steps_taken = 0
+        try:
+            for config_idx, config in enumerate(self.selected_configurations):
+                if self.abort_requested_fn():
+                    break
+                if config_idx > 0:
+                    self._move_z_to_stack_start(stack_start)
+                    z_steps_taken = 0
+                self._apply_channel_z_offset(config, af_succeeded)
+                # Where this channel's stack starts (piezo um or stage mm), offset included.
+                stack_start = self.z_piezo_um if self.use_piezo else self.stage.get_pos().z_mm
+                first_pass = config_idx == 0
+                for z_level in range(self.NZ):
+                    if self.abort_requested_fn():
+                        break
+                    file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
+                    if first_pass:
+                        # Record the un-offset position (stage z, or piezo for piezo stacks).
+                        offset_um = self._current_z_offset_um
+                        acquire_pos = self.stage.get_pos()
+                        z_piezo_um = None
+                        if self.use_piezo:
+                            z_piezo_um = self.z_piezo_um - offset_um
+                        else:
+                            acquire_pos = acquire_pos.model_copy(update={"z_mm": acquire_pos.z_mm - offset_um / 1000})
+                        self._begin_z_level(region_id, current_path, fov, z_level, file_ID, acquire_pos)
+
+                    current_image = fov * self.NZ * n_configs + config_idx * self.NZ + z_level + 1
+                    self._acquire_channel_image(
+                        config, config_idx, file_ID, current_path, z_level, region_id, fov, current_image
+                    )
+
+                    if first_pass:
+                        self._finish_z_level(region_id, fov, z_level, acquire_pos, z_piezo_um)
+                        if not self.abort_requested_fn():
+                            self.af_fov_count = self.af_fov_count + 1
+
+                    if z_level < self.NZ - 1 and not self.abort_requested_fn():
+                        self.move_z_for_stack()
+                        z_steps_taken += 1
+        finally:
+            self._reset_channel_z_offset()
+        return z_steps_taken
+
+    def _begin_z_level(self, region_id, current_path, fov, z_level, file_ID, acquire_pos=None):
+        if acquire_pos is None:
+            acquire_pos = self.stage.get_pos()
+        metadata = {"x": acquire_pos.x_mm, "y": acquire_pos.y_mm, "z": acquire_pos.z_mm}
+        self._log.info(f"Acquiring image: ID={file_ID}, Metadata={metadata}")
+
+        if z_level == 0 and (self.do_reflection_af or self.do_autofocus) and self.Nt > 1:
+            self._last_time_point_z_pos[(region_id, fov)] = acquire_pos.z_mm
+
+        # laser af characterization mode
+        if self.laser_auto_focus_controller and self.laser_auto_focus_controller.characterization_mode:
+            image = self.laser_auto_focus_controller.get_image()
+            saving_path = os.path.join(current_path, file_ID + "_laser af camera" + ".bmp")
+            iio.imwrite(saving_path, image)
+
+        return acquire_pos
+
+    def _finish_z_level(self, region_id, fov, z_level, acquire_pos, z_piezo_um=None):
+        # updates coordinates df
+        self.update_coordinates_dataframe(region_id, z_level, acquire_pos, fov, z_piezo_um=z_piezo_um)
+        self.callbacks.signal_current_fov(acquire_pos.x_mm, acquire_pos.y_mm)
+
+    def _acquire_channel_image(self, config, config_idx, file_ID, current_path, z_level, region_id, fov, current_image):
+        with self._timing.get_timer("acquire_camera_image"):
+            # TODO(imo): This really should not look for a string in a user configurable name.  We
+            # need some proper flag on the config to signal this instead...
+            if "RGB" in config.name:
+                self.acquire_rgb_image(config, file_ID, current_path, z_level, region_id, fov)
+            else:
+                self.acquire_camera_image(
+                    config,
+                    file_ID,
+                    current_path,
+                    z_level,
+                    region_id=region_id,
+                    fov=fov,
+                    config_idx=config_idx,
+                )
+
+        self.callbacks.signal_region_progress(
+            RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
+        )
 
     # ------------------------------------------------------------------------------------------
     # Hardware-sequenced acquisition (opt-in, controller firmware >= 1.7). Pure logic lives in
@@ -1493,6 +1601,20 @@ class MultiPointWorker:
         self.callbacks.signal_current_configuration(config)
         self.liveController.set_microscope_mode(config)
         self.wait_till_operation_is_completed()
+        self._applied_config = config.model_copy(deep=True)
+
+    def _config_already_applied(self, config: AcquisitionChannel) -> bool:
+        # Compared by value against the copy, so a channel edited since it was applied is applied again.
+        return (
+            self._applied_config is not None
+            and config == self._applied_config
+            and self.liveController.currentConfiguration == config
+        )
+
+    def _scan_unit_triggers_camera(self) -> bool:
+        # With an NL5/AION and NL5_USE_DOUT, camera.send_trigger() runs one confocal scan and returns once the
+        # unit has triggered the camera (see microscope.py's acquisition_camera_hw_trigger_fn).
+        return self.microscope.addons.nl5 is not None and control._def.NL5_USE_DOUT
 
     def perform_autofocus(self, region_id, fov):
         if not self.do_reflection_af:
@@ -1547,8 +1669,8 @@ class MultiPointWorker:
         # move to bottom of the z stack
         if self.z_stacking_config == "FROM CENTER":
             self.stage.move_z(-self.deltaZ * round((self.NZ - 1) / 2.0))
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
-        self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
+        self._sleep(squid.stage.utils.z_stabilization_time_s())
 
     def _move_z_for_offset(self, delta_um: float) -> float:
         """Dispatch a relative z move via piezo when use_piezo, otherwise via stage.
@@ -1586,7 +1708,7 @@ class MultiPointWorker:
         else:
             self.stage.move_z(delta_um / 1000)
             self.wait_till_operation_is_completed()
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
             self._log.info(
                 f"[z-offset] moved {delta_um:+.2f} µm via stage; actual z = {self.stage.get_pos().z_mm:.5f} mm"
             )
@@ -1779,7 +1901,8 @@ class MultiPointWorker:
     def acquire_camera_image(
         self, config, file_ID: str, current_path: str, k: int, region_id: int, fov: int, config_idx: int
     ):
-        self._select_config(config)
+        if not self._config_already_applied(config):
+            self._select_config(config)
 
         # trigger acquisition (including turning on the illumination) and read frame
         camera_illumination_time = self.camera.get_exposure_time()
@@ -1787,12 +1910,9 @@ class MultiPointWorker:
             self.liveController.turn_on_illumination()
             self.wait_till_operation_is_completed()
             camera_illumination_time = None
-        elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
-            if "Fluorescence" in config.name and ENABLE_NL5 and NL5_USE_DOUT:
-                # TODO(imo): This used to use the "reset_image_ready_flag=False" on the read_frame, but oinly the toupcam camera implementation had the
-                #  "reset_image_ready_flag" arg, so this is broken for all other cameras.  Also this used to do some other funky stuff like setting internal camera flags.
-                #   I am pretty sure this is broken!
-                self.microscope.addons.nl5.start_acquisition()
+        # In HARDWARE mode with an NL5/AION (NL5_USE_DOUT), camera.send_trigger() below starts the confocal
+        # scan through the camera's hardware trigger function. Do not also start one here: that second scan
+        # gave every image an extra, untracked camera frame (black frames, channels mixed, aborts).
         # This is some large timeout that we use just so as to not block forever
         with self._timing.get_timer("_ready_for_next_trigger.wait"):
             if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
@@ -1837,10 +1957,25 @@ class MultiPointWorker:
             )
             self._pending_captures.expect([current_capture_info])
         with self._timing.get_timer("send_trigger"):
-            self.camera.send_trigger(illumination_time=camera_illumination_time)
+            try:
+                self.camera.send_trigger(illumination_time=camera_illumination_time)
+            except ConfocalScanFailedError as e:
+                # No frame will come for this image: abort now, with the reason, rather than waiting out the
+                # frame timeout. Returning (not raising) keeps the z stack's cleanup, so Z still goes back.
+                self._log.error(f"Aborting the acquisition: {e}")
+                self._current_capture_info = None
+                self._ready_for_next_trigger.set()
+                self._abort_due_to_error()
+                return
 
         with self._timing.get_timer("exposure_time_done_sleep_hw or wait_for_image_sw"):
-            if self.liveController.trigger_mode == TriggerMode.HARDWARE:
+            if self.liveController.trigger_mode == TriggerMode.HARDWARE and self._scan_unit_triggers_camera():
+                # send_trigger() above already blocked through the confocal scan, so sleeping a full frame time
+                # from here on ended long after the frame had arrived (AION: ~40 ms per image). The frame arriving
+                # proves its exposure has ended; waiting at most a frame time keeps the old upper bound when it
+                # doesn't come (a dropped trigger is still caught by the next image's _ready_for_next_trigger wait).
+                self._ready_for_next_trigger.wait(self.camera.get_total_frame_time() / 1e3)
+            elif self.liveController.trigger_mode == TriggerMode.HARDWARE:
                 exposure_done_time = time.time() + self.camera.get_total_frame_time() / 1e3
                 # Even though we can do overlapping triggers, we want to make sure that we don't move before our exposure
                 # is done.  So we still need to at least sleep for the total frame time corresponding to this exposure.
@@ -2037,11 +2172,30 @@ class MultiPointWorker:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
             self.stage.move_z(self.deltaZ)
-            self._sleep(SCAN_STABILIZATION_TIME_MS_Z / 1000)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
 
-    def move_z_back_after_stack(self):
+    def _move_z_to_stack_start(self, stack_start: float):
+        """Return to the first z level of the stack (z-first order, between channels).
+
+        An absolute move to the recorded start (piezo um, or stage mm): a relative move back would not
+        exactly undo the stack's steps, since the stage rounds each move to whole microsteps, and the
+        error would build up channel after channel.
+        """
         if self.use_piezo:
-            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * (self.NZ - 1)
+            self.z_piezo_um = stack_start
+            self.piezo.move_to(self.z_piezo_um)
+            if self.liveController.trigger_mode == TriggerMode.SOFTWARE:
+                self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
+        else:
+            self.stage.move_z_to(stack_start)
+            self._sleep(squid.stage.utils.z_stabilization_time_s())
+
+    def move_z_back_after_stack(self, steps_taken: Optional[int] = None):
+        """Return Z to where the stack started, undoing steps_taken z steps (default: a full stack)."""
+        if steps_taken is None:
+            steps_taken = self.NZ - 1
+        if self.use_piezo:
+            self.z_piezo_um = self.z_piezo_um - self.deltaZ * 1000 * steps_taken
             self.piezo.move_to(self.z_piezo_um)
             if (
                 self.liveController.trigger_mode == TriggerMode.SOFTWARE
@@ -2049,8 +2203,8 @@ class MultiPointWorker:
                 self._sleep(MULTIPOINT_PIEZO_DELAY_MS / 1000)
         else:
             if self.z_stacking_config == "FROM CENTER":
-                rel_z_to_start = -self.deltaZ * (self.NZ - 1) + self.deltaZ * round((self.NZ - 1) / 2)
+                rel_z_to_start = -self.deltaZ * steps_taken + self.deltaZ * round((self.NZ - 1) / 2)
             else:
-                rel_z_to_start = -self.deltaZ * (self.NZ - 1)
+                rel_z_to_start = -self.deltaZ * steps_taken
 
             self.stage.move_z(rel_z_to_start)

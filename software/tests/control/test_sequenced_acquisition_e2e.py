@@ -121,7 +121,8 @@ def test_sequenced_and_software_sequenced_deliver_the_same_image_set(sequencing_
     # and it really was the controller that ran the stack
     assert status.state == SeqState.DONE and status.error == SeqError.NONE
     assert status.frames_fired == NZ * len(FLUORESCENCE)
-    assert software_status.frames_fired == 0
+    # ... and the software-sequenced run never spoke to the sequencer: the status field was never flagged.
+    assert software_status is None
 
 
 def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_setup, monkeypatch):
