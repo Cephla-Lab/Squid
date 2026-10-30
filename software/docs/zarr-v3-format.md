@@ -30,6 +30,7 @@ When acquiring from wellplate positions (region names match pattern `[A-Z]+\d+`)
 └── plate.ome.zarr/
     ├── zarr.json          # Plate metadata (ome.plate)
     ├── A/
+    │   ├── zarr.json      # Row group (no metadata; Zarr v3 has no implicit groups)
     │   └── 1/
     │       ├── zarr.json  # Well metadata (ome.well)
     │       ├── 0/
@@ -119,6 +120,13 @@ Shape: `(FOV, T, C, Z, Y, X)` where:
   }
 }
 ```
+
+Each array's own `zarr.json` carries `dimension_names` matching the axes
+(`["t", "c", "z", "y", "x"]`, or `["fov", "t", "c", "z", "y", "x"]` in 6D mode), as OME-NGFF 0.5 requires.
+
+CI writes a small HCS plate and a per-FOV image and opens them with
+[ngff-zarr](https://github.com/thewtex/ngff-zarr) (with validation) and
+[iohub](https://github.com/czbiohub-sf/iohub); see `tests/ngff_readers/`.
 
 ## Sharding and Chunks
 
