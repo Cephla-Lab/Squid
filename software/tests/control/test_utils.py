@@ -15,7 +15,14 @@ import cv2
 import numpy as np
 import pytest
 from control._def import FocusMeasureOperator
-from control.utils import find_spot_location, SpotDetectionMode, get_available_disk_space, threaded_operation_helper
+from control.utils import (
+    center_crop_origin,
+    find_spot_location,
+    find_spot_peaks,
+    SpotDetectionMode,
+    get_available_disk_space,
+    threaded_operation_helper,
+)
 
 
 def create_test_image(spot_positions, image_size=(480, 640), spot_size=20):
@@ -52,38 +59,75 @@ def test_single_spot_detection():
     assert abs(detected_y - spot_y) < 5
 
 
-def test_dual_spot_detection():
-    # Create test image with two spots
-    spots = [(280, 240), (360, 240)]
-    image = create_test_image(spots)
+THREE_SPOTS = [(200, 240), (280, 240), (360, 240)]  # x increases to the right, as on the display
 
-    # Test right spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.DUAL_RIGHT)
+
+@pytest.mark.parametrize("spot_index, expected_x", [(1, 200), (2, 280), (3, 360)])
+def test_nth_spot_from_left(spot_index, expected_x):
+    image = create_test_image(THREE_SPOTS)
+
+    result = find_spot_location(image, mode=SpotDetectionMode.NTH_FROM_LEFT, spot_index=spot_index)
+
     assert result is not None
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[1][0]) < 5
+    assert abs(result[0] - expected_x) < 5
 
-    # Test left spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.DUAL_LEFT)
+
+@pytest.mark.parametrize("spot_index, expected_x", [(1, 360), (2, 280), (3, 200)])
+def test_nth_spot_from_right(spot_index, expected_x):
+    image = create_test_image(THREE_SPOTS)
+
+    result = find_spot_location(image, mode=SpotDetectionMode.NTH_FROM_RIGHT, spot_index=spot_index)
+
     assert result is not None
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[0][0]) < 5
+    assert abs(result[0] - expected_x) < 5
 
 
-def test_multi_spot_detection():
-    # Create test image with multiple spots
-    spots = [(200, 240), (280, 240), (360, 240)]
-    image = create_test_image(spots)
+@pytest.mark.parametrize("mode", [SpotDetectionMode.NTH_FROM_LEFT, SpotDetectionMode.NTH_FROM_RIGHT])
+def test_nth_spot_beyond_detected_count_fails(mode):
+    """Three spots cannot satisfy "4th from a side": the error must surface, not wrap around to another spot."""
+    image = create_test_image(THREE_SPOTS)
 
-    # Test rightmost spot detection
-    result = find_spot_location(image, mode=SpotDetectionMode.MULTI_RIGHT)
-    assert result
-    detected_x, detected_y = result
-    assert abs(detected_x - spots[2][0]) < 5
+    with pytest.raises(ValueError, match="4"):
+        find_spot_location(image, mode=mode, spot_index=4)
 
-    # Test second from right spot detection
-    with pytest.raises(NotImplementedError):
-        result = find_spot_location(image, mode=SpotDetectionMode.MULTI_SECOND_RIGHT)
+
+@pytest.mark.parametrize("mode", [SpotDetectionMode.NTH_FROM_LEFT, SpotDetectionMode.NTH_FROM_RIGHT])
+def test_spot_index_counts_from_one(mode):
+    """Index 0 is not a spot (and -0 would silently alias the leftmost)."""
+    image = create_test_image(THREE_SPOTS)
+
+    with pytest.raises(ValueError):
+        find_spot_location(image, mode=mode, spot_index=0)
+
+
+@pytest.mark.parametrize(
+    "image_size, crop_size, origin",
+    [
+        ((1920, 1080), (1200, 800), (360, 140)),
+        ((1921, 1081), (1200, 800), (360, 140)),  # odd sizes round the way crop_image does
+        ((1920, 1080), (2800, 1800), (0, 0)),  # a crop larger than the image starts at its corner
+    ],
+)
+def test_center_crop_origin_matches_the_crop_actually_taken(image_size, crop_size, origin):
+    width, height = image_size
+    image = np.arange(width * height, dtype=np.int32).reshape(height, width)
+
+    left, top = center_crop_origin(width, height, *crop_size)
+    cropped = control.utils.crop_image(image, *crop_size)
+
+    assert (left, top) == origin
+    assert cropped[0, 0] == image[top, left]
+    peaks = find_spot_peaks(create_test_image(THREE_SPOTS))
+
+    assert len(peaks) == 3
+    assert [abs(p - x) < 5 for p, x in zip(peaks, (200, 280, 360))] == [True, True, True]
+
+
+def test_single_mode_rejects_multiple_spots():
+    image = create_test_image(THREE_SPOTS)
+
+    with pytest.raises(ValueError):
+        find_spot_location(image, mode=SpotDetectionMode.SINGLE)
 
 
 def test_invalid_inputs():

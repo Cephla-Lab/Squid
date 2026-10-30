@@ -19,8 +19,13 @@ def check_image_from_disk(image_path: str):
 
     print(f"Loaded image shape: {image.shape}")
 
-    # Try different detection modes
-    modes = [SpotDetectionMode.SINGLE, SpotDetectionMode.DUAL_LEFT, SpotDetectionMode.DUAL_RIGHT]
+    # Try different detection modes: (mode, N)
+    modes = [
+        (SpotDetectionMode.SINGLE, 1),
+        (SpotDetectionMode.NTH_FROM_LEFT, 1),
+        (SpotDetectionMode.NTH_FROM_RIGHT, 1),
+        (SpotDetectionMode.NTH_FROM_RIGHT, 2),
+    ]
 
     # Test parameters to try
     param_sets = [
@@ -44,15 +49,20 @@ def check_image_from_disk(image_path: str):
     plt.figure(figsize=(15, 10))
 
     # Try each mode and parameter set
-    for i, mode in enumerate(modes):
-        print(f"\nTesting {mode.name}:")
+    for i, (mode, spot_index) in enumerate(modes):
+        print(f"\nTesting {mode.name} (N={spot_index}):")
 
         for j, params in enumerate(param_sets):
             print(f"\nParameters set {j+1}:")
             print(params)
 
             result = find_spot_location(
-                image, mode=mode, params=params, filter_sigma=LASER_AF_FILTER_SIGMA, debug_plot=True
+                image,
+                mode=mode,
+                spot_index=spot_index,
+                params=params,
+                filter_sigma=LASER_AF_FILTER_SIGMA,
+                debug_plot=True,
             )
 
             if result is not None:
