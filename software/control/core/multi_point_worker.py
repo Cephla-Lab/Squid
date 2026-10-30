@@ -195,6 +195,10 @@ class MultiPointWorker:
         self.scan_region_coords_mm = acquisition_parameters.scan_position_information.scan_region_coords_mm
         self.scan_region_names = acquisition_parameters.scan_position_information.scan_region_names
         self.z_stacking_config = acquisition_parameters.z_stacking_config  # default 'from bottom'
+        if self.z_stacking_config == "FROM TOP":
+            # The stack steps DOWN. Resolved here, once: what is built per acquisition (the sequencer
+            # program) and what runs per time point (initialize_z_stack) must agree on the sign.
+            self.deltaZ = -abs(self.deltaZ)
         self.z_stack_order = acquisition_parameters.z_stack_order  # 'CHANNEL FIRST' or 'Z FIRST'
         self.z_range = acquisition_parameters.z_range
 
@@ -845,9 +849,8 @@ class MultiPointWorker:
             self.microcontroller.enable_joystick(True)
 
     def initialize_z_stack(self):
-        # z stacking config
+        # z stacking config (deltaZ already carries FROM TOP's sign, see __init__)
         if self.z_stacking_config == "FROM TOP":
-            self.deltaZ = -abs(self.deltaZ)
             self.move_to_z_level(self.z_range[1])
         else:
             self.move_to_z_level(self.z_range[0])

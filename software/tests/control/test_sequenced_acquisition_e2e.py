@@ -63,7 +63,9 @@ def saved_files(mpc) -> list:
     return sorted(found)
 
 
-def run_acquisition(channels, *, sequenced: bool, monkeypatch, n_regions=1, nz=NZ, nt=1, binning=None):
+def run_acquisition(
+    channels, *, sequenced: bool, monkeypatch, n_regions=1, nz=NZ, nt=1, binning=None, z_stacking_config=None
+):
     monkeypatch.setattr(control._def, "USE_HARDWARE_SEQUENCED_ACQUISITION", sequenced)
     scope = control.microscope.Microscope.build_from_global_config(True)
     try:
@@ -95,6 +97,8 @@ def run_acquisition(channels, *, sequenced: bool, monkeypatch, n_regions=1, nz=N
         mpc.set_NZ(nz)
         mpc.set_deltaZ(DZ_UM)
         mpc.set_Nt(nt)
+        if z_stacking_config is not None:
+            mpc.z_stacking_config = z_stacking_config
         mpc.run_acquisition()
         assert tracker.finished.wait(300), "acquisition did not finish"
         tracker.files = saved_files(mpc)
@@ -140,6 +144,30 @@ def test_the_illumination_lead_setting_reaches_the_controller(sequencing_setup, 
     assert status.frames_fired == NZ * len(FLUORESCENCE)
     [program] = uploaded
     assert [channel.illum_lead_us for channel in program.channels] == [100] * len(FLUORESCENCE)
+
+
+def test_a_from_top_stack_steps_the_piezo_down_in_the_program_as_in_the_metadata(sequencing_setup, monkeypatch):
+    """FROM TOP makes the stack step DOWN. The worker resolves that sign at the start of every time point,
+    but the program is built once per acquisition, before any time point: built from the unresolved
+    delta, it would step the piezo UP while every CaptureInfo says the next plane is below."""
+    from control.core.sequenced_acquisition import piezo_step_lsb
+    from control.microcontroller import Microcontroller
+
+    uploaded = []
+    original_upload = Microcontroller.seq_upload
+    monkeypatch.setattr(
+        Microcontroller, "seq_upload", lambda self, program: (uploaded.append(program), original_upload(self, program))
+    )
+
+    tracker, status, _ = run_acquisition(
+        FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, z_stacking_config="FROM TOP"
+    )
+
+    assert status.frames_fired == NZ * len(FLUORESCENCE)
+    [program] = uploaded
+    assert program.loop.dz == piezo_step_lsb(-DZ_UM, control._def.OBJECTIVE_PIEZO_RANGE_UM, False)
+    piezo_um = [z for _, _, _, z in tracker.images]  # z 0, 0, 1, 1, 2, 2
+    assert piezo_um[len(FLUORESCENCE)] - piezo_um[0] == pytest.approx(-DZ_UM)  # the metadata steps down too
 
 
 def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_setup, monkeypatch):
