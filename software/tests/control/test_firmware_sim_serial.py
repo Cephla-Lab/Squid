@@ -18,8 +18,11 @@ from control._def import (
     AXIS,
     MicrocontrollerDef,
     CMD_EXECUTION_STATUS,
+    ENC_FLAG,
+    FOCUS_WHEEL_FLAG_REPORTING,
     LIMIT_SWITCH_CONFIG_MIN_FIRMWARE,
     RESPONSE_BYTE_FIRMWARE_VERSION,
+    SEQ_FLAG_STATUS,
 )
 from control.firmware_sim_serial import (
     FirmwareSimSerial,
@@ -90,6 +93,40 @@ class TestFirmwareConstants:
         assert fw.MOVETO_X == CMD_SET.MOVETO_X
         assert fw.HOME_OR_ZERO == CMD_SET.HOME_OR_ZERO
         assert fw.SET_ILLUMINATION == CMD_SET.SET_ILLUMINATION
+
+    def test_sequencer_opcodes_match_python_def(self):
+        """The hardware sequencer opcodes (firmware 1.7) are mirrored in _def.py."""
+        fw = FirmwareConstants()
+
+        assert fw.SEQ_WRITE == CMD_SET.SEQ_WRITE == 60
+        assert fw.SEQ_COMMIT == CMD_SET.SEQ_COMMIT == 61
+        assert fw.SEQ_RUN == CMD_SET.SEQ_RUN == 62
+        assert fw.SEQ_CANCEL == CMD_SET.SEQ_CANCEL == 63
+
+    def test_sequencer_status_flag_matches_python_def(self):
+        """Byte 19's "bytes 14-17 are the sequencer's" bit, next to the encoder and focus-wheel bits."""
+        fw = FirmwareConstants()
+        assert fw.SEQ_FLAG_STATUS == SEQ_FLAG_STATUS == 2
+        assert fw.SEQ_FLAG_STATUS not in (ENC_FLAG.REPORTING, ENC_FLAG.PID_ENABLED, FOCUS_WHEEL_FLAG_REPORTING)
+        assert not (ENC_FLAG.AXIS_SHIFT <= fw.SEQ_FLAG_STATUS < ENC_FLAG.AXIS_SHIFT + 3)
+
+    def test_sequencer_opcodes_are_in_the_command_whitelist(self):
+        """FirmwareSimSerial rejects any command code not in command_ids, so the four
+        sequencer opcodes have to be listed there or every seq_* call fails validation."""
+        cmd_ids = FirmwareConstants().command_ids
+
+        assert cmd_ids["SEQ_WRITE"] == CMD_SET.SEQ_WRITE
+        assert cmd_ids["SEQ_COMMIT"] == CMD_SET.SEQ_COMMIT
+        assert cmd_ids["SEQ_RUN"] == CMD_SET.SEQ_RUN
+        assert cmd_ids["SEQ_CANCEL"] == CMD_SET.SEQ_CANCEL
+
+    def test_background_sender_commands_are_in_the_command_whitelist(self):
+        """HEARTBEAT and SET_WATCHDOG_TIMEOUT are sent by Microcontroller during any
+        sequenced acquisition; they must not trip the validator."""
+        cmd_ids = FirmwareConstants().command_ids
+
+        assert cmd_ids["HEARTBEAT"] == CMD_SET.HEARTBEAT
+        assert cmd_ids["SET_WATCHDOG_TIMEOUT"] == CMD_SET.SET_WATCHDOG_TIMEOUT
 
 
 class TestFirmwareSimSerialValidation:

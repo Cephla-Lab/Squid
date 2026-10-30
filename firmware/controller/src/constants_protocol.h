@@ -117,8 +117,18 @@ static const int FOCUS_WHEEL_TO_HOST = 1;    // the wheel moves nothing; bytes 1
                                              // byte 19 = 1 << FOCUS_WHEEL_FLAG_REPORTING, bytes 20-21 = 0.
                                              // Refused while encoder reporting is on (same bytes), and vice versa.
 static const int FOCUS_WHEEL_FLAG_REPORTING = 7;  // byte 19 bit: bytes 14-17 carry the focus wheel count
+// byte 19 bit: bytes 14-17 carry the hardware sequencer's status (state|error, detail, frames fired) - while a
+// sequence runs and for a moment after any sequencer command, so the host can read a terminal status or a refusal;
+// the encoder / focus-wheel owners of the same bytes resume afterwards (src/sequencer/seq_status_field.h).
+static const int SEQ_FLAG_STATUS = 2;
 // SET_FOCUS_WHEEL_MODE [3] flags
 static const int FOCUS_WHEEL_SAVE_AS_POWER_UP = 1;  // also store [2] as the power-up mode (EEPROM 8-11)
+
+// Hardware sequencer. Wire contract: src/sequencer/seq_wire.h. 60-63; 64-66 are taken above.
+static const int SEQ_WRITE = 60;              // [2]=word index, [3..6]=4 bytes of the staged program (absolute, idempotent)
+static const int SEQ_COMMIT = 61;             // [2..3]=byte length, [4..5]=CRC-16/CCITT-FALSE of the staged bytes; parse + validate
+static const int SEQ_RUN = 62;                // [2..5]=int32 stack start; stays IN_PROGRESS until the sequence is terminal
+static const int SEQ_CANCEL = 63;             // finish the current exposure, then wind down
 static const int INITFILTERWHEEL_W2 = 252;
 static const int INITFILTERWHEEL = 253;
 static const int INITIALIZE = 254;

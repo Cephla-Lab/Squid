@@ -54,6 +54,7 @@ def _worker(order, nz=3, channels=("A", "B"), use_piezo=False, offsets=None, z_s
     w.z_stacking_config = z_stacking_config
     w.selected_configurations = [_channel(name, offsets.get(name, 0.0)) for name in channels]
     w.use_piezo = use_piezo
+    w._sequenced_program = None  # software-sequenced: the worker drives the z loop itself
     w.stage = _FakeStage()
     w.piezo = _FakePiezo() if use_piezo else None
     # Like the real worker, z_piezo_um only exists once a piezo stack sets it.
