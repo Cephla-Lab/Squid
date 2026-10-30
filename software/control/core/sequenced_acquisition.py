@@ -199,6 +199,8 @@ def ineligibility_reason(
     byte_budget: Optional[int],
     use_ready_line: bool,
     camera_drives_ready_line: bool,
+    z_stack_order: str,
+    nz: int,
 ) -> Optional[str]:
     """Why this acquisition cannot be hardware-sequenced, or None when it can.
 
@@ -223,6 +225,13 @@ def ineligibility_reason(
         return "the camera is not in hardware trigger mode"
     if not use_piezo:
         return "the z-stack does not use the piezo (stepper z-stacks are not sequenced yet)"
+    if nz > 1 and z_stack_order != "CHANNEL FIRST":
+        # The program runs every channel at each z level. A Z FIRST acquisition would write the same
+        # files, but acquiring them in another physical order is a different experiment (bleaching,
+        # drift and the timing between channels differ), so the order asked for is honoured instead.
+        return (
+            f"the z-stack order is '{z_stack_order}' (the sequencer runs every channel at each z level, CHANNEL FIRST)"
+        )
     if not global_reset_active:
         return (
             "LEVEL trigger + global reset is not active (hardware_trigger_mode = LEVEL and "

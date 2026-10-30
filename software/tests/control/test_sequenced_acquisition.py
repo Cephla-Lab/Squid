@@ -184,6 +184,8 @@ def eligible_kwargs(**overrides):
         byte_budget=2_000_000_000,
         use_ready_line=False,
         camera_drives_ready_line=False,
+        z_stack_order="CHANNEL FIRST",
+        nz=3,
     )
     kwargs.update(overrides)
     return kwargs
@@ -210,6 +212,8 @@ def test_a_plain_fluorescence_piezo_stack_is_eligible():
         # Two bursts can be in memory at once: one being handed to the save jobs, one just validated.
         (dict(burst_bytes=1_200_000_000), "memory"),
         (dict(channels=[], camera_gains=[]), "no channels"),
+        # Z FIRST writes the same files in a different physical order (bleaching, drift and timing differ).
+        (dict(z_stack_order="Z FIRST"), "z-stack order"),
     ],
 )
 def test_each_ineligibility_names_its_reason(overrides, fragment):
@@ -219,6 +223,10 @@ def test_each_ineligibility_names_its_reason(overrides, fragment):
 
 def test_no_byte_budget_means_no_memory_limit():
     assert ineligibility_reason(**eligible_kwargs(burst_bytes=10**12, byte_budget=None)) is None
+
+
+def test_the_z_stack_order_does_not_matter_for_a_single_plane():
+    assert ineligibility_reason(**eligible_kwargs(z_stack_order="Z FIRST", nz=1)) is None
 
 
 def test_old_firmware_is_not_an_ineligibility_but_an_error():

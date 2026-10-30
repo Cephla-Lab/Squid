@@ -64,7 +64,16 @@ def saved_files(mpc) -> list:
 
 
 def run_acquisition(
-    channels, *, sequenced: bool, monkeypatch, n_regions=1, nz=NZ, nt=1, binning=None, z_stacking_config=None
+    channels,
+    *,
+    sequenced: bool,
+    monkeypatch,
+    n_regions=1,
+    nz=NZ,
+    nt=1,
+    binning=None,
+    z_stacking_config=None,
+    z_stack_order=None,
 ):
     monkeypatch.setattr(control._def, "USE_HARDWARE_SEQUENCED_ACQUISITION", sequenced)
     scope = control.microscope.Microscope.build_from_global_config(True)
@@ -99,6 +108,8 @@ def run_acquisition(
         mpc.set_Nt(nt)
         if z_stacking_config is not None:
             mpc.z_stacking_config = z_stacking_config
+        if z_stack_order is not None:
+            mpc.set_z_stack_order(z_stack_order)
         mpc.run_acquisition()
         assert tracker.finished.wait(300), "acquisition did not finish"
         tracker.files = saved_files(mpc)
@@ -175,6 +186,19 @@ def test_an_ineligible_acquisition_falls_back_to_software_sequencing(sequencing_
     channels = ["BF LED matrix full", "Fluorescence 488 nm Ex"]
     tracker, status, _ = run_acquisition(channels, sequenced=True, monkeypatch=monkeypatch)
     assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for z in range(NZ) for name in channels]
+    assert status.frames_fired == 0  # the controller's sequencer was never used
+
+
+def test_a_z_first_acquisition_runs_software_sequenced_in_the_order_it_asked_for(sequencing_setup, monkeypatch):
+    """The program runs every channel at each z level (CHANNEL FIRST). A Z FIRST acquisition would
+    write the same files, but acquiring them in a different physical order is a different experiment
+    (bleaching, drift and the timing between channels differ), so it stays software-sequenced."""
+    tracker, status, _ = run_acquisition(FLUORESCENCE, sequenced=True, monkeypatch=monkeypatch, z_stack_order="Z FIRST")
+
+    assert [(z, name) for z, name, _, _ in tracker.images] == [(z, name) for name in FLUORESCENCE for z in range(NZ)]
+    assert [z_um for _, _, _, z_um in tracker.images] == pytest.approx(
+        [20 + z * DZ_UM for _ in FLUORESCENCE for z in range(NZ)]
+    )
     assert status.frames_fired == 0  # the controller's sequencer was never used
 
 

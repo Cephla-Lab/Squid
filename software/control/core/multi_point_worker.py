@@ -1377,6 +1377,8 @@ class MultiPointWorker:
             byte_budget=int(control._def.ACQUISITION_MAX_PENDING_MB * 1024 * 1024),
             use_ready_line=control._def.SEQUENCER_USE_CAMERA_READY_LINE,
             camera_drives_ready_line=control._def.CAMERA_TRIGGER_READY_OUTPUT,
+            z_stack_order=self.z_stack_order,
+            nz=self.NZ,
         )
         if (
             reason is None
