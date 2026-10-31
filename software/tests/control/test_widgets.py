@@ -3054,3 +3054,61 @@ def test_z_stack_order_choice_is_opt_in(monkeypatch):
     fake = _wellplate_ui_fake()
     control.widgets.WellplateMultiPointWidget.configure_controller_from_ui(fake)
     fake.multipointController.set_z_stack_order.assert_called_once_with("Z FIRST")
+
+
+class TestQt6CheckboxAndJoystick:
+    """stateChanged sends an int, which PyQt6 never equates with Qt.Checked (an enum there), and PyQt6's
+    QRectF.contains() rejects the QPoint a mouse event gives. Both pass silently on PyQt5."""
+
+    @pytest.mark.parametrize("widget_class", ["WavelengthWidget", "SourceCodeWidget"])
+    def test_checking_the_box_shows_the_spinbox(self, qtbot, widget_class):
+        widget = getattr(control.widgets, widget_class)()
+        qtbot.add_widget(widget)
+        widget.show()
+        assert not widget.spinbox.isVisible()
+
+        widget.checkbox.setChecked(True)
+        assert widget.spinbox.isVisible() and not widget.na_label.isVisible()
+
+        widget.checkbox.setChecked(False)
+        assert not widget.spinbox.isVisible() and widget.na_label.isVisible()
+
+    def test_click_to_move_connects_and_disconnects_the_viewer_click(self):
+        calibration = SimpleNamespace(live_viewer=MagicMock(), viewerClicked=object())
+        signal = calibration.live_viewer.signal_calibration_viewer_click
+
+        control.widgets.WellplateCalibration.toggleClickToMove(calibration, getattr(Qt.Checked, "value", Qt.Checked))
+        signal.connect.assert_called_once_with(calibration.viewerClicked)
+
+        control.widgets.WellplateCalibration.toggleClickToMove(
+            calibration, getattr(Qt.Unchecked, "value", Qt.Unchecked)
+        )
+        signal.disconnect.assert_called_once_with(calibration.viewerClicked)
+
+    def test_joystick_press_drag_release(self, qtbot):
+        from qtpy.QtCore import QPoint
+        from qtpy.QtTest import QTest
+
+        joystick = control.widgets.Joystick()
+        qtbot.add_widget(joystick)
+        joystick.show()
+        moves = []
+        joystick.joystickMoved.connect(lambda x, y: moves.append((x, y)))
+
+        QTest.mousePress(joystick, Qt.LeftButton, Qt.NoModifier, QPoint(150, 100))
+        assert joystick.is_pressed and joystick.current_x > 0
+        qtbot.waitUntil(lambda: any(x > 0 for x, _ in moves), timeout=1000)
+
+        QTest.mouseRelease(joystick, Qt.LeftButton, Qt.NoModifier, QPoint(150, 100))
+        assert not joystick.is_pressed and moves[-1] == (0, 0)
+
+    def test_joystick_release_without_a_press_on_the_pad_does_not_raise(self, qtbot):
+        from qtpy.QtCore import QPoint
+        from qtpy.QtTest import QTest
+
+        joystick = control.widgets.Joystick()
+        qtbot.add_widget(joystick)
+        joystick.show()
+
+        QTest.mouseRelease(joystick, Qt.LeftButton, Qt.NoModifier, QPoint(100, 100))
+        assert not joystick.is_pressed

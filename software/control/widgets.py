@@ -12840,7 +12840,7 @@ class WellplateCalibration(QDialog):
         self.stage.move_y(dy)
 
     def toggleClickToMove(self, state):
-        if state == Qt.Checked:
+        if Qt.CheckState(state) == Qt.Checked:  # stateChanged sends an int; PyQt6 never equates it with the enum
             self.live_viewer.signal_calibration_viewer_click.connect(self.viewerClicked)
         else:
             self.live_viewer.signal_calibration_viewer_click.disconnect(self.viewerClicked)
@@ -13943,17 +13943,21 @@ class Joystick(QWidget):
         painter.drawEllipse(QPointF(joystick_x, joystick_y), self.inner_radius, self.inner_radius)
 
     def mousePressEvent(self, event):
-        if QRectF(0, 0, 200, 200).contains(event.pos()):
+        pos = QPointF(event.pos())  # PyQt6's QRectF.contains() rejects a QPoint
+        if QRectF(0, 0, 200, 200).contains(pos):
             self.is_pressed = True
-            self.updateJoystickPosition(event.pos())
+            self.updateJoystickPosition(pos)
             self.timer.timeout.connect(self.update_position)
             self.timer.start(10)
 
     def mouseMoveEvent(self, event):
-        if self.is_pressed and QRectF(0, 0, 200, 200).contains(event.pos()):
-            self.updateJoystickPosition(event.pos())
+        pos = QPointF(event.pos())
+        if self.is_pressed and QRectF(0, 0, 200, 200).contains(pos):
+            self.updateJoystickPosition(pos)
 
     def mouseReleaseEvent(self, event):
+        if not self.is_pressed:
+            return  # the press missed the pad, so the timer was never connected
         self.is_pressed = False
         self.updateJoystickPosition(QPointF(100, 100))  # Center position
         self.timer.timeout.disconnect(self.update_position)
@@ -14747,7 +14751,7 @@ class WavelengthWidget(QWidget):
             self.na_label.setVisible(True)
 
     def _on_checkbox_changed(self, state):
-        checked = state == Qt.Checked
+        checked = Qt.CheckState(state) == Qt.Checked  # stateChanged sends an int; PyQt6 never equates it with the enum
         self.spinbox.setVisible(checked)
         self.na_label.setVisible(not checked)
 
@@ -15383,7 +15387,7 @@ class SourceCodeWidget(QWidget):
             self.na_label.setVisible(True)
 
     def _on_checkbox_changed(self, state):
-        checked = state == Qt.Checked
+        checked = Qt.CheckState(state) == Qt.Checked  # stateChanged sends an int; PyQt6 never equates it with the enum
         self.spinbox.setVisible(checked)
         self.na_label.setVisible(not checked)
 

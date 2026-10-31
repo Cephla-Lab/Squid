@@ -351,3 +351,31 @@ def test_there_is_one_utils_menu_with_every_utility(qtbot, monkeypatch, confirm_
     assert len(menus) == 1
     items = [action.text() for action in menus[0].menu().actions()]
     assert items[:3] == ["Stage Utils", "Reset Objective Turret", "Workflow Runner..."]
+
+
+def test_closing_after_a_restart_neither_asks_nor_cleans_up_again(qtbot, monkeypatch):
+    """Qt 6's QApplication.quit() closes every top-level window, so restart_application's quit runs closeEvent after
+    the restart cleanup (Qt 5's quit() does not). A second full cleanup would retract Z and switch off the PID loops on
+    hardware the new process is opening, and answering "No" to a second exit prompt would leave this process running
+    with its hardware closed."""
+    scope = control.microscope.Microscope.build_from_global_config(True)
+    gui = control.gui_hcs.HighContentScreeningGui(microscope=scope, is_simulation=True)
+    qtbot.add_widget(gui)
+
+    cleanups = []
+    monkeypatch.setattr(gui, "_cleanup_common", lambda for_restart=False: cleanups.append(for_restart))
+    spawned = []
+    monkeypatch.setattr(control.gui_hcs.subprocess, "Popen", lambda args: spawned.append(args))
+    # Stand in for quit() as Qt 6 performs it: close the window.
+    monkeypatch.setattr(control.gui_hcs.QApplication.instance(), "quit", gui.close)
+
+    def no_dialog(*args, **kwargs):
+        raise AssertionError("closeEvent asked for confirmation after a restart")
+
+    monkeypatch.setattr(QMessageBox, "question", no_dialog)
+
+    gui.restart_application()
+
+    assert cleanups == [True]  # the restart cleanup only
+    assert len(spawned) == 1 and spawned[0][-1] == "--skip-init"
+    assert not gui.isVisible()

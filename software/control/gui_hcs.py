@@ -616,6 +616,9 @@ class HighContentScreeningGui(QMainWindow):
 
         self.log = squid.logging.get_logger(self.__class__.__name__)
         self._skip_init = skip_init
+        # Set once restart_application has cleaned up the hardware for the new process; closeEvent then neither asks
+        # for confirmation nor cleans up again (Qt 6's QApplication.quit() closes every window, so it runs closeEvent).
+        self._restart_cleanup_done = False
         # Set while a manual V-308 objective swap runs (retract, servo off, confirm, servo on, restore).
         self._objective_swap_active = False
         self._loading_position_locked = False  # a Z lift system at the loading position: nothing moves
@@ -3013,6 +3016,7 @@ class HighContentScreeningGui(QMainWindow):
 
         # Clean up hardware BEFORE spawning new process to release resources
         self._cleanup_for_restart()
+        self._restart_cleanup_done = True
 
         # Spawn new process AFTER cleanup so it can acquire hardware
         try:
@@ -3290,24 +3294,29 @@ class HighContentScreeningGui(QMainWindow):
         self._cleanup_common(for_restart=True)
 
     def closeEvent(self, event):
-        if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
-            # The fluidics question doubles as the exit confirmation.
-            if not self._confirm_end_fluidics_run("exit"):
-                event.ignore()
-                return
-        else:
-            reply = QMessageBox.question(
-                self,
-                "Confirm Exit",
-                "Are you sure you want to exit the software?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply == QMessageBox.No:
-                event.ignore()
-                return
+        # Under Qt 6, restart_application's QApplication.quit() closes every top-level window, so this runs after the
+        # restart cleanup (Qt 5's quit() only leaves the event loop). Asking again would let "No" keep this process
+        # alive with its hardware closed, and a second full cleanup would retract Z and switch off the PID loops on
+        # hardware the new process is already opening.
+        if not self._restart_cleanup_done:
+            if self.fluidicsProtocolWidget is not None and self.fluidicsProtocolWidget.is_run_active():
+                # The fluidics question doubles as the exit confirmation.
+                if not self._confirm_end_fluidics_run("exit"):
+                    event.ignore()
+                    return
+            else:
+                reply = QMessageBox.question(
+                    self,
+                    "Confirm Exit",
+                    "Are you sure you want to exit the software?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply == QMessageBox.No:
+                    event.ignore()
+                    return
 
-        self._cleanup_common(for_restart=False)
+            self._cleanup_common(for_restart=False)
 
         try:
             self.cswWindow.closeForReal(event)
