@@ -39,6 +39,10 @@ sudo apt update
 sudo apt install python3-pip -y
 sudo apt install python3-pyqtgraph python3-pyqt5 -y
 sudo apt install python3-pyqt5.qtsvg -y
+# On 24.04 python3-pyqtgraph already pulls in python3-pyqt6, but not its SVG module, which napari needs: a machine
+# that selects PyQt6 ([GENERAL] qt_api = pyqt6, --qt-api pyqt6) otherwise fails at startup with
+# "No module named 'PyQt6.QtSvg'".
+sudo apt install python3-pyqt6.qtsvg -y
 
 sudo apt-get install git -y
 ## clone the repo if we don't already have it.
