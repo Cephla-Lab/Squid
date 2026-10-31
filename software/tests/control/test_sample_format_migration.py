@@ -238,3 +238,23 @@ def test_cache_missing_a_shipped_format_keeps_the_calibrations_it_has(migration_
     assert sample_formats["96 well plate"]["a1_x_mm"] == 11.41  # the calibration survived...
     assert load_user_sample_formats().formats["96 well plate"].a1_x_mm == 11.41  # ...into the user store
     assert not os.path.exists(os.path.join("cache", CSV)) and os.path.exists(os.path.join("cache", CSV + ".migrated"))
+
+
+def test_a_calibrated_glass_slide_does_not_stop_the_migration(migration_tree, caplog):
+    """Bench 2026-10-30: a cache whose glass slide row carried a measured a1 made from_settings reject the
+    pitchless 1x1 format, which aborted the WHOLE migration on every start-up."""
+
+    def edit(formats):
+        formats["glass slide"].update({"a1_x_mm": 20.5, "a1_y_mm": 15.25})
+        formats["96 well plate"].update({"a1_x_mm": 11.604, "a1_y_mm": 10.638})
+
+    write_legacy_cache(migration_tree, edit)
+
+    with caplog.at_level(logging.ERROR):
+        _def.load_formats()
+
+    assert not any("Migration" in r.getMessage() and "failed" in r.getMessage() for r in caplog.records)
+    formats = load_user_sample_formats().formats
+    assert formats["glass slide"].a1_x_mm == 20.5 and formats["glass slide"].is_measured
+    assert formats["96 well plate"].a1_x_mm == 11.604
+    assert os.path.exists(os.path.join("cache", CSV + ".migrated"))

@@ -68,13 +68,14 @@ class SampleFormat(SidecarModel):
     a1_y_mm: float = 0.0
     a1_x_pixel: int = 0
     a1_y_pixel: int = 0
-    # Scalar OR per-axis; the validator requires exactly one form of each.
-    well_spacing_mm: Optional[float] = Field(None, gt=0)
-    well_spacing_x_mm: Optional[float] = Field(None, gt=0)
-    well_spacing_y_mm: Optional[float] = Field(None, gt=0)
-    well_size_mm: Optional[float] = Field(None, gt=0)
-    well_size_x_mm: Optional[float] = Field(None, gt=0)
-    well_size_y_mm: Optional[float] = Field(None, gt=0)
+    # Scalar OR per-axis; the validator requires exactly one form of each. Zero is allowed only for the
+    # pitchless 1x1 formats (glass slide, "0"), whose single well has no pitch or size to speak of.
+    well_spacing_mm: Optional[float] = Field(None, ge=0)
+    well_spacing_x_mm: Optional[float] = Field(None, ge=0)
+    well_spacing_y_mm: Optional[float] = Field(None, ge=0)
+    well_size_mm: Optional[float] = Field(None, ge=0)
+    well_size_x_mm: Optional[float] = Field(None, ge=0)
+    well_size_y_mm: Optional[float] = Field(None, ge=0)
     well_shape: str = Field("circle", pattern="^(circle|rectangle)$")
     number_of_skip: int = Field(0, ge=0)
     # Per-format rotation override: null/absent => inherit the holder angle.
@@ -98,6 +99,12 @@ class SampleFormat(SidecarModel):
             raise ValueError("set either well_size_mm OR well_size_x/y_mm, not both")
         if self.well_size_mm is None and (self.well_size_x_mm is None or self.well_size_y_mm is None):
             raise ValueError("well_size_mm, or both well_size_x_mm and well_size_y_mm, is required")
+        if self.rows * self.cols > 1:
+            settings = self.to_settings()
+            if min(settings["well_spacing_x_mm"], settings["well_spacing_y_mm"]) <= 0:
+                raise ValueError("a format with more than one well needs a positive well pitch")
+            if min(settings["well_size_x_mm"], settings["well_size_y_mm"]) <= 0:
+                raise ValueError("a format with more than one well needs a positive well size")
         if self.rotation_deg is not None and (self.rotation_measured is None or len(self.rotation_measured.points) < 2):
             # Same no-arbitrary-numbers rule the holder record enforces: an
             # angle needs the multi-well fit behind it, and a single A1 touch

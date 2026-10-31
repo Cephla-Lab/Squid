@@ -286,3 +286,30 @@ def test_unknown_key_is_damage_not_a_default(tmp_path, caplog):
     with caplog.at_level(logging.ERROR):
         assert load_user_sample_formats(str(path)) is None
     assert "NOT BEING APPLIED" in caplog.text
+
+
+# ------------------------------------------------------------ pitchless 1x1 formats (glass slide, "0")
+
+
+def test_a_single_well_format_may_have_no_pitch_or_well_size():
+    slide = SampleFormat(rows=1, cols=1, well_spacing_mm=0, well_size_mm=0, well_shape="rectangle")
+
+    assert slide.to_settings()["well_spacing_x_mm"] == 0
+    assert slide.to_settings()["well_size_mm"] == 0
+
+
+def test_a_calibrated_glass_slide_round_trips_through_from_settings():
+    # the shipped row is all zeros; a measured a1 is the only thing a slide calibration changes
+    settings = dict(_def.get_wellplate_settings("glass slide"))
+    settings["a1_x_mm"], settings["a1_y_mm"] = 20.5, 15.25
+
+    slide = SampleFormat.from_settings(settings, measured=a1_touch(20.5, 15.25))
+
+    assert slide.rows == slide.cols == 1
+    assert slide.is_measured
+    assert slide.to_settings()["a1_x_mm"] == 20.5
+
+
+def test_a_multi_well_format_still_needs_a_pitch():
+    with pytest.raises(ValueError, match="pitch"):
+        SampleFormat(rows=8, cols=12, well_spacing_mm=0, well_size_mm=6.5)
