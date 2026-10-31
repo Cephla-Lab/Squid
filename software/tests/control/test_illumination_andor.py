@@ -33,6 +33,8 @@ class FakeHleUnit:
         self.interleaved = 0  # writes that arrived while another transaction was still unanswered
         self.peers = [self]  # every unit of the engine, set by the hle fixture
         self.max_open_lines_seen = 0  # across the engine, updated on every shutter write
+        self.stall_reads = 0  # reads that come back empty although a reply is queued (a late reply)
+        self.stray_after_next_write = None  # a report that turns up ahead of the next command's reply
 
     def open(self, vid, pid, serial):
         assert serial == self.serial_number
@@ -53,8 +55,14 @@ class FakeHleUnit:
         command = bytes(data[1:])
         self.sent.append(command)
         self.pending.append([0x00] + self._execute(command))
+        if self.stray_after_next_write is not None:
+            self.pending.insert(0, self.stray_after_next_write)
+            self.stray_after_next_write = None
 
     def read(self, size, timeout_ms=0):
+        if self.stall_reads:
+            self.stall_reads -= 1
+            return []
         if self.pending:
             self.in_transaction = False
             frame = self.pending.pop(0)
@@ -386,3 +394,29 @@ def test_shut_down_still_zeroes_the_other_lines_and_closes_the_shutter_when_one_
     assert unit.transmission[0] == 0 and unit.transmission[2] == 0
     assert unit.shutter_mask == 0
     assert unit.closed
+
+
+# ------------------------------------------------------------------ stale and stray reports
+
+
+def test_a_reply_that_arrives_after_the_deadline_does_not_answer_the_next_command(hle):
+    (unit,) = hle(FakeHleUnit("HLE-1", FOUR_LINE_UNIT))
+    laser = andor.AndorLaser(timeout_s=0.02)
+    laser.initialize()
+    laser.set_intensity(("HLE-1", 1), 12.5)
+    unit.stall_reads = 10**6  # the reply to the next query only shows up after the driver has given up
+
+    with pytest.raises(RuntimeError, match="did not answer"):
+        laser.get_intensity(("HLE-1", 1))
+    unit.stall_reads = 0  # ... and is now sitting in the input queue
+
+    assert laser.get_intensity(("HLE-1", 2)) == 0.0  # not the stale 12.5 meant for line 1
+
+
+def test_a_stray_report_while_waiting_is_skipped(hle):
+    (unit,) = hle(FakeHleUnit("HLE-1", FOUR_LINE_UNIT))
+    laser = make_laser()
+    laser.set_intensity(("HLE-1", 1), 12.5)
+    unit.stray_after_next_write = [0x00, Op.READ_SHUTTER_STATE, 0x00]  # e.g. a late reply to another query
+
+    assert laser.get_intensity(("HLE-1", 1)) == 12.5

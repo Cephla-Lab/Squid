@@ -140,28 +140,35 @@ class AndorLaser(LightSource):
 
     def _transact(self, unit: LaserUnit, command: bytes, reply_length: int) -> bytes:
         """Send one command and return its reply (without the report id); raises on error or timeout."""
+        opcode = command[0]
         with unit.lock:
             if unit.device is None:
                 raise RuntimeError(f"Andor laser unit {unit.serial_number} is closed")
+            # A reply that arrived after an earlier deadline is still queued; it must not answer this command.
+            while unit.device.read(REPORT_SIZE, 0):
+                pass
             unit.device.write(b"\x00" + command)  # report id 0 first
             deadline = time.monotonic() + self.timeout_s
             reply = b""
-            while not reply:
+            while True:
                 remaining_ms = int((deadline - time.monotonic()) * 1000)
                 if remaining_ms <= 0:
                     break
                 data = unit.device.read(REPORT_SIZE, remaining_ms)
-                if data:  # report id 0 first, as the unit sends it; tolerate a reply without it
-                    reply = bytes(data[1 : reply_length + 1] if data[0] == 0x00 else data[:reply_length])
-        opcode = command[0]
+                if not data:
+                    continue
+                # Report id 0 first, as the unit sends it; tolerate a reply without it
+                candidate = bytes(data[1 : reply_length + 1] if data[0] == 0x00 else data[:reply_length])
+                if candidate and candidate[0] in (opcode, LaserCommands.ERROR_RESPONSE):
+                    reply = candidate
+                    break
+                log.debug(
+                    f"Andor laser unit {unit.serial_number}: skipping report {candidate.hex()} while awaiting 0x{opcode:02x}"
+                )
         if not reply:
             raise RuntimeError(f"Andor laser unit {unit.serial_number} did not answer command 0x{opcode:02x}")
         if reply[0] == LaserCommands.ERROR_RESPONSE:
             raise RuntimeError(f"Andor laser unit {unit.serial_number} rejected command 0x{opcode:02x}")
-        if reply[0] != opcode:
-            raise RuntimeError(
-                f"Andor laser unit {unit.serial_number} answered command 0x{opcode:02x} with 0x{reply[0]:02x}"
-            )
         return reply
 
     def _set_shutter_mask(self, unit: LaserUnit, mask: int):
