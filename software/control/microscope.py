@@ -493,7 +493,9 @@ class Microscope:
             )
         elif control._def.USE_ANDOR_LASER_CONTROL and not simulated:
             andor_laser = control.illumination_andor.AndorLaser(
-                control._def.ANDOR_LASER_VID, control._def.ANDOR_LASER_PID
+                control._def.ANDOR_LASER_VID,
+                control._def.ANDOR_LASER_PID,
+                active_blanking=control._def.USE_ANDOR_ACTIVE_BLANKING,
             )
             illumination_controller = IlluminationController(
                 low_level_devices.microcontroller,

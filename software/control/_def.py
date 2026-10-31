@@ -1098,6 +1098,10 @@ USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
+# Active blanking on the Andor laser engine: when a channel's intensity is set, only that line's shutter is
+# open (every other line on every unit is closed), so the camera's exposure signal gates the one active
+# line. Off by default; with two Andor cameras on the Dragonfly see USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA too.
+USE_ANDOR_ACTIVE_BLANKING = False
 # Active blanking with TWO Andor SDK3 cameras on the Dragonfly: the camera's AUX OUT pin follows the "all
 # rows exposing" window (SDK3 AuxiliaryOutSource "FireAll") so the laser engine is blanked during readout.
 # A single camera using active blanking does not need this. Off by default.

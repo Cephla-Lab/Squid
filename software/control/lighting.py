@@ -32,6 +32,28 @@ _DEFAULT_CHANNEL_MAPPINGS_TTL = {
 }
 
 
+# Channel groups shared by the software-controlled light sources (VersaLase, Andor HLE, ...): every
+# Squid channel in a group is served by the same laser line.
+CHANNEL_GROUPS = [
+    [405],
+    [470, 488],
+    [545, 550, 555, 561],
+    [638, 640],
+    [730, 735, 750],
+]
+# A line serves a group when its nominal wavelength is this close to one of the group's
+# wavelengths (e.g. a 639 nm line serves the 638/640 channels).
+WAVELENGTH_MATCH_TOLERANCE_NM = 5
+
+
+def channel_group_for(wavelength_nm: float) -> Optional[List[int]]:
+    """The channel group a laser line of this wavelength serves, or None if it matches none."""
+    return next(
+        (g for g in CHANNEL_GROUPS if any(abs(wavelength_nm - wl) <= WAVELENGTH_MATCH_TOLERANCE_NM for wl in g)),
+        None,
+    )
+
+
 class LightSourceType(Enum):
     SquidLED = 0
     SquidLaser = 1
