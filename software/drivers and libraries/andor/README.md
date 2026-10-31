@@ -33,10 +33,10 @@ In the `.ini`, under `[GENERAL]`:
 ```ini
 camera_type = Andor
 main_camera_model = ZYLA-4.2P-USB3-C   ; see AndorCameraModel in squid/config.py
-use_andor_active_blanking = False      ; True: AUX OUT follows the "all rows exposing" window
+use_andor_camera_active_blanking = False   ; True: AUX OUT follows the "all rows exposing" window
 ```
 
 plus the usual `[CAMERA_CONFIG]` section (pixel format, binning, crop, ROI defaults). Resolutions
-and pixel size are read from the camera. `use_andor_active_blanking = True` sets the camera's AUX
-OUT source to SDK3 `FireAll` so a laser engine wired to that pin is blanked during readout; it is
-off by default and only makes sense with that wiring.
+and pixel size are read from the camera. `use_andor_camera_active_blanking = True` sets the camera's
+AUX OUT source to SDK3 `FireAll` so a laser engine wired to that pin is blanked during readout; it
+is off by default and only makes sense with that wiring (the laser engine's half has its own flag).
