@@ -1,31 +1,44 @@
-import time
-import numpy as np
-import threading
 import os
-from typing import Optional, Callable, Sequence, Tuple, Dict
+import sys
+import threading
+import time
+from typing import Callable, Dict, Optional, Sequence, Tuple
+
+import numpy as np
 import pydantic
 
 import pyAndorSDK3
 from pyAndorSDK3 import AndorSDK3
-from control._def import *
+
+import control.utils
+import squid.logging
+from control._def import ANDOR_AUX_OUTPUT_SOURCE
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
-import control.utils
+
+_log = squid.logging.get_logger(__name__)
 
 
-# For using in Windows only
-package_path = os.path.dirname(pyAndorSDK3.__file__)
-library_path = os.path.join(package_path, "libs", "Windows", "64")
-pyAndorSDK3.utils.add_library_path(library_path)
+def _sdk_library_dir(package_path: str, platform: str = sys.platform) -> str:
+    """Where pyAndorSDK3 keeps the SDK3 shared libraries for this platform."""
+    return os.path.join(package_path, "libs", "Windows" if platform == "win32" else "Linux", "64")
+
+
+# pyAndorSDK3 bundles the SDK3 libraries per platform but only finds them once told where to look.
+_library_dir = _sdk_library_dir(os.path.dirname(pyAndorSDK3.__file__))
+if os.path.isdir(_library_dir):
+    pyAndorSDK3.utils.add_library_path(_library_dir)
 
 
 class AndorCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+    pixel_size_um: float
 
 
 class AndorCamera(AbstractCamera):
-    PIXEL_SIZE_UM: float = 6.5  # ZL 41 Cell
+    # The binning options SDK3 offers on the Zyla family; the resolution of each follows the sensor size.
+    BINNING_FACTORS = (1, 2, 3, 4, 8)
 
     @staticmethod
     def _open(index=None, sn=None) -> Tuple["pyAndorSDK3.Camera", AndorCapabilities]:
@@ -49,21 +62,18 @@ class AndorCamera(AbstractCamera):
         except Exception as e:
             raise CameraError(f"Failed to open Andor camera with index={index}: {e}")
 
-        # Get camera capabilities
+        # Capabilities come from the camera, so any SDK3 model with these binning options works
         try:
-            camera_model = camera.CameraModel
-            log.info(f"Andor camera model: {camera_model}")
-            # For now, we only support ZL41 Cell 4.2
-            supported_resolutions = {
-                (1, 1): (2048, 2048),
-                (2, 2): (1024, 1024),
-                (3, 3): (682, 682),
-                (4, 4): (512, 512),
-                (8, 8): (256, 256),
-            }
-
-            capabilities = AndorCapabilities(binning_to_resolution=supported_resolutions)
-
+            width, height = int(camera.SensorWidth), int(camera.SensorHeight)
+            pixel_size_um = float(camera.PixelWidth)
+            _log.info(
+                f"Andor camera: model={camera.CameraModel} serial={camera.SerialNumber} "
+                f"sensor={width}x{height} pixel={pixel_size_um} um"
+            )
+            capabilities = AndorCapabilities(
+                binning_to_resolution={(b, b): (width // b, height // b) for b in AndorCamera.BINNING_FACTORS},
+                pixel_size_um=pixel_size_um,
+            )
             return camera, capabilities
         except Exception as e:
             camera.close()
@@ -81,7 +91,7 @@ class AndorCamera(AbstractCamera):
         self._read_thread: Optional[threading.Thread] = None
         self._read_thread_keep_running = threading.Event()
         self._read_thread_keep_running.clear()
-        self._read_thread_wait_period_s = 0.01
+        self._read_thread_wait_period_s = 1.0  # also how long one wait_buffer() blocks
         self._read_thread_running = threading.Event()
         self._read_thread_running.clear()
 
@@ -123,8 +133,11 @@ class AndorCamera(AbstractCamera):
             self.EXPOSURE_TIME_MS_MAX = 30000.0
 
         self.set_exposure_time(self._exposure_time_ms)
-        self.set_pixel_format(CameraPixelFormat.MONO16)
+        self.set_pixel_format(self._config.default_pixel_format)
         self.set_binning(*self._config.default_binning)
+        if ANDOR_AUX_OUTPUT_SOURCE:
+            # e.g. "FireAll": high only while every row exposes, to blank a laser during readout
+            self._camera.AuxiliaryOutSource = ANDOR_AUX_OUTPUT_SOURCE
 
     def close(self):
         self._cleanup_read_thread()
@@ -158,7 +171,7 @@ class AndorCamera(AbstractCamera):
             try:
                 try:
                     # Wait for frame with timeout
-                    acq = self._camera.wait_buffer(1000)  # 1000ms timeout
+                    acq = self._camera.wait_buffer(int(self._read_thread_wait_period_s * 1000))
 
                     # Queue a new buffer
                     self._camera.queue(acq._np_data, self._camera.ImageSizeBytes)
@@ -321,23 +334,22 @@ class AndorCamera(AbstractCamera):
             raise CameraError("Could not determine binning")
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.binning_to_resolution.keys()
+        return list(self._capabilities.binning_to_resolution.keys())
 
     def get_pixel_size_unbinned_um(self) -> float:
-        return self.PIXEL_SIZE_UM
+        return self._capabilities.pixel_size_um
 
     def get_pixel_size_binned_um(self) -> float:
-        return self.PIXEL_SIZE_UM * self.get_binning()[0]
+        return self._capabilities.pixel_size_um * self.get_binning()[0]
 
     def set_analog_gain(self, analog_gain: float):
-        # Andor cameras typically don't have analog gain
-        self._log.warning("Analog gain is not supported for Andor cameras")
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_analog_gain(self) -> float:
-        return 0.0
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_gain_range(self) -> CameraGainRange:
-        raise NotImplementedError("Analog gain is not supported for Andor cameras")
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def _ensure_read_thread_running(self):
         with self._read_thread_lock:
@@ -393,12 +405,14 @@ class AndorCamera(AbstractCamera):
         if not self._is_streaming.is_set():
             self._log.debug("Already stopped, stop_streaming is noop")
             return
+        # Clear the flag before tearing down capture so get_ready_for_trigger()
+        # reports not-ready for the whole teardown, not just after it.
+        self._is_streaming.clear()
         try:
             self._camera.AcquisitionStop()
             self._camera.flush()
             self._buffer_queue = []
             self._trigger_sent.clear()
-            self._is_streaming.clear()
             self._log.info("Andor camera stopped streaming")
         except Exception as e:
             self._log.error(f"Error stopping streaming: {e}")
@@ -438,7 +452,7 @@ class AndorCamera(AbstractCamera):
     def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
         raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
 
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+    def set_auto_white_balance_gains(self, on: bool) -> Tuple[float, float, float]:
         raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
 
     def set_black_level(self, black_level: float):
@@ -510,6 +524,10 @@ class AndorCamera(AbstractCamera):
                 raise CameraError(f"Failed to send software trigger: {e}")
 
     def _get_ready_for_trigger_imp(self) -> bool:
+        # Not ready while streaming is stopped - callers skip and retry instead of
+        # triggering into a stopped stream.
+        if not self.get_is_streaming():
+            return False
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()

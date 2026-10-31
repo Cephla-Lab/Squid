@@ -1347,6 +1347,9 @@ DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 # for just the exposure (see ToupcamCamera._set_global_reset for why).  Needs a camera that supports the option
 # (eg: the ITR10CMOS26000KMA); on other cameras it is ignored.
 ENABLE_TOUPCAM_GLOBAL_RESET = False
+# Andor SDK3 cameras: what the camera's AUX OUT pin signals, e.g. "FireAll" (high only while every row is
+# exposing) to blank a laser engine during readout. None leaves the camera's own setting untouched.
+ANDOR_AUX_OUTPUT_SOURCE = None
 
 
 class HardwareTriggerMode:
