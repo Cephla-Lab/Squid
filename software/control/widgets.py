@@ -9349,7 +9349,11 @@ class WellplateMultiPointWidget(AcquisitionYAMLDropMixin, _ApplyChannelOffsetMix
         # Show dz/Nz widgets
         for i in range(self.dz_layout.count()):
             widget = self.dz_layout.itemAt(i).widget()
-            if widget:
+            if widget is self.combobox_z_order:
+                # Opt-in choice (ENABLE_Z_STACK_ORDER_SELECTION): off, it stays hidden with the row shown, since
+                # the start path (_z_stack_order_to_start) ignores it and would silently run Channel First.
+                widget.setVisible(visible and control._def.ENABLE_Z_STACK_ORDER_SELECTION)
+            elif widget:
                 widget.setVisible(visible)
 
         # Show/hide Z-min/Z-max based on dropdown selection AND visibility
