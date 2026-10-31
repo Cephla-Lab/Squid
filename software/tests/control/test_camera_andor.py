@@ -2,21 +2,22 @@
 
 pyAndorSDK3 ships with Andor's licensed SDK and is not installed in CI, so a fake module stands in
 for it; only that SDK boundary is faked, the driver under test is the real one. The fake camera
-models SDK3 the way pyAndorSDK3 exposes it: features are attributes, image data flows through
-queue() / wait_buffer().
+models SDK3 the way pyAndorSDK3 exposes it: features are attributes (with SDK3's AOI range rules),
+image data flows through queue() / wait_buffer(), and a frame is delivered only after a trigger.
 """
 
+import importlib
 import logging
+import os
+import queue
 import sys
-import threading
-import time
 import types
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from squid.abc import CameraAcquisitionMode
+from squid.abc import CameraAcquisitionMode, CameraError
 from squid.config import AndorCameraModel, CameraConfig, CameraPixelFormat, CameraVariant
 
 
@@ -32,9 +33,7 @@ class FakeAndorCamera:
         self.max_ExposureTime = 30.0
         self.ExposureTime = 0.02
         self.AOIBinning = "1x1"
-        self.AOILeft = 1
-        self.AOITop = 1
-        self.AOIWidth, self.AOIHeight = sensor
+        self._aoi = {"AOILeft": 1, "AOITop": 1, "AOIWidth": sensor[0], "AOIHeight": sensor[1]}
         self.PixelEncoding = "Mono16"
         self.SimplePreAmpGainControl = "16-bit (low noise & high well capacity)"
         self.TriggerMode = "Internal"
@@ -44,13 +43,32 @@ class FakeAndorCamera:
         self.SensorTemperature = -5.0
         self.is_open = False
         self.acquiring = False
+        self.fail_next_stop = False
         self.software_triggers = 0
-        self.frames = []  # 2-D uint16 arrays the "sensor" delivers, in order
+        self.frames = []  # 2-D uint16 arrays the sensor will expose, one per trigger
         self.row_padding_bytes = 0  # SDK3 may pad rows: AOIStride > AOIWidth * 2
-        self.scrub_requeued_buffers = False  # model the SDK writing into a buffer as soon as it gets it back
+        self.scrub_requeued_buffers = False  # the SDK writing into a buffer as soon as it gets it back
+        self._exposed = []  # frames whose trigger has fired, waiting for a buffer
         self._queued = []
 
-    # ---- layout the SDK reports for the current AOI
+    # ---- AOI features, with SDK3's rule that the region must stay on the sensor
+    def _set_aoi(self, name, value):
+        candidate = dict(self._aoi, **{name: int(value)})
+        if candidate["AOILeft"] < 1 or candidate["AOILeft"] + candidate["AOIWidth"] - 1 > self.SensorWidth:
+            raise ValueError(f"AT_ERR_OUTOFRANGE setting {name}={value}")
+        if candidate["AOITop"] < 1 or candidate["AOITop"] + candidate["AOIHeight"] - 1 > self.SensorHeight:
+            raise ValueError(f"AT_ERR_OUTOFRANGE setting {name}={value}")
+        self._aoi = candidate
+
+    AOILeft = property(lambda self: self._aoi["AOILeft"], lambda self, v: self._set_aoi("AOILeft", v))
+    AOITop = property(lambda self: self._aoi["AOITop"], lambda self, v: self._set_aoi("AOITop", v))
+    AOIWidth = property(lambda self: self._aoi["AOIWidth"], lambda self, v: self._set_aoi("AOIWidth", v))
+    AOIHeight = property(lambda self: self._aoi["AOIHeight"], lambda self, v: self._set_aoi("AOIHeight", v))
+
+    @property
+    def aoi(self):
+        return (self.AOILeft, self.AOITop, self.AOIWidth, self.AOIHeight)
+
     @property
     def AOIStride(self):
         return self.AOIWidth * 2 + self.row_padding_bytes
@@ -70,10 +88,15 @@ class FakeAndorCamera:
         self.acquiring = True
 
     def AcquisitionStop(self):
+        if self.fail_next_stop:
+            self.fail_next_stop = False
+            raise RuntimeError("AT_ERR_COMM")
         self.acquiring = False
 
     def SoftwareTrigger(self):
         self.software_triggers += 1
+        if self.frames:
+            self._exposed.append(self.frames.pop(0))
 
     def queue(self, buf, size):
         if self.scrub_requeued_buffers:
@@ -84,10 +107,9 @@ class FakeAndorCamera:
         self._queued = []
 
     def wait_buffer(self, timeout_ms):
-        if not self.frames or not self._queued:
-            time.sleep(min(timeout_ms, 50) / 1000.0)
+        if not self._exposed or not self._queued:
             raise TimeoutError("AT_WaitBuffer timeout")
-        frame = self.frames.pop(0)
+        frame = self._exposed.pop(0)
         buf = self._queued.pop(0)
         assert frame.shape == (self.AOIHeight, self.AOIWidth), "the sensor delivers the AOI"
         rows = buf[: self.ImageSizeBytes].reshape(self.AOIHeight, self.AOIStride)
@@ -108,9 +130,18 @@ class FakeAndorSDK3:
         return self.cameras[index]
 
 
-def _install_fake_sdk():
+camera_andor = None  # the driver module, imported against the fake SDK by the fixture below
+fake_sdk = None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _driver_against_the_fake_sdk():
+    """Import control.camera_andor with a fake pyAndorSDK3 in place, and undo both afterwards."""
+    global camera_andor, fake_sdk
+    saved = {name: sys.modules.get(name) for name in ("pyAndorSDK3", "pyAndorSDK3.utils", "control.camera_andor")}
+
     module = types.ModuleType("pyAndorSDK3")
-    module.__file__ = "/nonexistent/pyAndorSDK3/__init__.py"
+    module.__file__ = os.path.join(os.sep, "nonexistent", "pyAndorSDK3", "__init__.py")
     utils = types.ModuleType("pyAndorSDK3.utils")
     utils.added_library_paths = []
     utils.add_library_path = utils.added_library_paths.append
@@ -118,11 +149,15 @@ def _install_fake_sdk():
     module.AndorSDK3 = FakeAndorSDK3
     sys.modules["pyAndorSDK3"] = module
     sys.modules["pyAndorSDK3.utils"] = utils
-    return module
-
-
-fake_sdk = _install_fake_sdk()
-import control.camera_andor as camera_andor  # noqa: E402 - needs the fake SDK in place
+    sys.modules.pop("control.camera_andor", None)
+    fake_sdk = module
+    camera_andor = importlib.import_module("control.camera_andor")
+    yield
+    for name, original in saved.items():
+        if original is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
 
 
 def _config(**overrides) -> CameraConfig:
@@ -138,13 +173,6 @@ def _config(**overrides) -> CameraConfig:
     return CameraConfig(**fields)
 
 
-@pytest.fixture
-def sdk_camera(monkeypatch):
-    fake = FakeAndorCamera()
-    monkeypatch.setattr(FakeAndorSDK3, "cameras", [fake])
-    return fake
-
-
 def make_camera(sdk_camera, monkeypatch, **config_overrides):
     monkeypatch.setattr(FakeAndorSDK3, "cameras", [sdk_camera])
     strobe_delays = []
@@ -158,10 +186,28 @@ def make_camera(sdk_camera, monkeypatch, **config_overrides):
 
 
 @pytest.fixture
+def sdk_camera():
+    return FakeAndorCamera()
+
+
+@pytest.fixture
 def camera(sdk_camera, monkeypatch):
     cam = make_camera(sdk_camera, monkeypatch)
     yield cam
     cam.close()
+
+
+def _frames_via_callback(camera):
+    received = queue.Queue()
+    camera.add_frame_callback(received.put)
+    return received
+
+
+def _expose(camera, sdk_camera, received, value):
+    """Trigger one frame of `value` and return it as the callback delivered it."""
+    sdk_camera.frames.append(np.full((sdk_camera.AOIHeight, sdk_camera.AOIWidth), value, dtype=np.uint16))
+    camera.send_trigger()
+    return received.get(timeout=5)
 
 
 # ------------------------------------------------------------------ bring-up
@@ -174,7 +220,7 @@ def test_the_sdk_library_path_is_only_added_where_it_exists():
 
 @pytest.mark.parametrize("platform, folder", [("win32", "Windows"), ("linux", "Linux")])
 def test_the_sdk_library_folder_matches_the_platform(platform, folder):
-    assert camera_andor._sdk_library_dir("/pkg", platform) == f"/pkg/libs/{folder}/64"
+    assert camera_andor._sdk_library_dir("pkg", platform) == os.path.join("pkg", "libs", folder, "64")
 
 
 def test_opens_the_first_camera(sdk_camera, monkeypatch):
@@ -231,6 +277,21 @@ def test_active_blanking_drives_aux_out_from_the_all_rows_exposing_window(sdk_ca
     cam.close()
 
 
+def test_default_roi_from_the_config_is_applied_at_startup(sdk_camera, monkeypatch):
+    cam = make_camera(sdk_camera, monkeypatch, default_roi=(256, 128, 1024, 512))
+
+    assert sdk_camera.aoi == (257, 129, 1024, 512)
+    assert cam.get_region_of_interest() == (256, 128, 1024, 512)
+    cam.close()
+
+
+def test_a_partly_unset_default_roi_leaves_the_camera_at_full_frame(sdk_camera, monkeypatch):
+    cam = make_camera(sdk_camera, monkeypatch, default_roi=(None, None, 1024, None))
+
+    assert sdk_camera.aoi == (1, 1, 2048, 2048)
+    cam.close()
+
+
 # ------------------------------------------------------------------ settings
 
 
@@ -276,20 +337,15 @@ def test_not_ready_for_trigger_while_streaming_is_stopped(camera):
 def test_software_trigger_delivers_numbered_frames(camera, sdk_camera):
     camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
     camera.start_streaming()
-    received = []
-    camera.add_frame_callback(received.append)
+    received = _frames_via_callback(camera)
 
-    for value in (7, 8):
-        sdk_camera.frames.append(np.full((2048, 2048), value, dtype=np.uint16))
-        camera.send_trigger()
-        frame = camera.read_camera_frame()
-        assert frame is not None
-        assert frame.frame.shape == (2048, 2048)
-        assert frame.frame.dtype == np.uint16
-        assert int(frame.frame[0, 0]) == value
+    frames = [_expose(camera, sdk_camera, received, value) for value in (7, 8)]
 
     assert sdk_camera.software_triggers == 2
-    assert [f.frame_id for f in received] == [1, 2]
+    assert [f.frame_id for f in frames] == [1, 2]
+    assert [int(f.frame[0, 0]) for f in frames] == [7, 8]
+    assert frames[0].frame.shape == (2048, 2048) and frames[0].frame.dtype == np.uint16
+    assert camera.get_frame_id() == 2
 
 
 def test_close_stops_the_read_thread_promptly(camera, caplog):
@@ -303,21 +359,45 @@ def test_close_stops_the_read_thread_promptly(camera, caplog):
     assert not any("refused to exit" in record.getMessage() for record in caplog.records)
 
 
+def test_close_stops_acquisition_even_after_a_failed_stop(camera, sdk_camera):
+    camera.start_streaming()
+    sdk_camera.fail_next_stop = True
+
+    camera.stop_streaming()  # the SDK refused; the camera is still acquiring
+    assert sdk_camera.acquiring
+    assert not camera.get_ready_for_trigger()
+
+    camera.close()
+    assert not sdk_camera.acquiring
+    assert not sdk_camera.is_open
+
+
+def test_a_buffer_from_a_previous_allocation_is_dropped_not_requeued(camera, sdk_camera):
+    camera.start_streaming()
+    stale = np.zeros(camera._camera.ImageSizeBytes, dtype="B")  # never handed to this capture
+
+    assert camera._take_frame(stale) is None
+    assert all(buf is not stale for buf in sdk_camera._queued)
+
+
+def test_a_buffer_from_before_an_roi_change_is_dropped_not_requeued(camera, sdk_camera):
+    camera.start_streaming()
+    old_buffer = camera._buffer_queue[0]
+
+    camera.set_region_of_interest(256, 128, 1024, 512)  # pauses streaming: new layout, new buffers
+
+    assert camera._take_frame(old_buffer) is None
+    assert all(buf is not old_buffer for buf in sdk_camera._queued)
+
+
 # ------------------------------------------------------------------ region of interest
-
-
-def _roi_frame(camera, sdk_camera, value):
-    sdk_camera.frames.append(np.full((sdk_camera.AOIHeight, sdk_camera.AOIWidth), value, dtype=np.uint16))
-    camera.send_trigger()
-    return camera.read_camera_frame()
 
 
 def test_roi_is_set_through_the_aoi_features(camera, sdk_camera):
     camera.set_region_of_interest(256, 128, 1024, 512)
 
     # SDK3: width/height in (binned) pixels, left/top 1-based
-    assert (sdk_camera.AOIWidth, sdk_camera.AOIHeight) == (1024, 512)
-    assert (sdk_camera.AOILeft, sdk_camera.AOITop) == (257, 129)
+    assert sdk_camera.aoi == (257, 129, 1024, 512)
     assert camera.get_region_of_interest() == (256, 128, 1024, 512)
 
 
@@ -327,9 +407,31 @@ def test_roi_offsets_are_in_binned_pixels_as_the_gui_passes_them(camera, sdk_cam
     camera.set_region_of_interest(100, 50, 400, 200)
 
     # left/top are unbinned sensor coordinates on the camera
-    assert (sdk_camera.AOILeft, sdk_camera.AOITop) == (201, 101)
-    assert (sdk_camera.AOIWidth, sdk_camera.AOIHeight) == (400, 200)
+    assert sdk_camera.aoi == (201, 101, 400, 200)
     assert camera.get_region_of_interest() == (100, 50, 400, 200)
+
+
+def test_an_off_centre_roi_can_be_widened_back_to_the_full_frame(camera, sdk_camera):
+    camera.set_region_of_interest(512, 0, 1024, 2048)
+
+    camera.set_region_of_interest(0, 0, 2048, 2048)  # invalid if the width is set while AOILeft is still 513
+
+    assert sdk_camera.aoi == (1, 1, 2048, 2048)
+
+
+def test_a_rejected_roi_leaves_the_previous_one_and_its_timing_in_place(camera, sdk_camera):
+    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    camera.set_exposure_time(20.0)
+    camera.set_region_of_interest(0, 0, 2048, 1024)
+    assert camera.get_strobe_time() == pytest.approx(10.24)
+
+    with pytest.raises(CameraError):
+        camera.set_region_of_interest(0, 1536, 2048, 768)  # 768 rows from row 1536 run off the sensor
+
+    assert sdk_camera.aoi == (1, 1, 2048, 1024)
+    assert camera.get_strobe_time() == pytest.approx(10.24)
+    assert camera.hw_strobe_delays_ms[-1] == pytest.approx(10.24)
+    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 10.24) / 1000.0)
 
 
 def test_frames_follow_the_aoi_and_its_row_stride(camera, sdk_camera):
@@ -337,8 +439,9 @@ def test_frames_follow_the_aoi_and_its_row_stride(camera, sdk_camera):
     camera.set_region_of_interest(256, 128, 1024, 512)
     camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
     camera.start_streaming()
+    received = _frames_via_callback(camera)
 
-    frame = _roi_frame(camera, sdk_camera, 1234)
+    frame = _expose(camera, sdk_camera, received, 1234)
 
     assert frame.frame.shape == (512, 1024)
     assert int(frame.frame.min()) == 1234 and int(frame.frame.max()) == 1234
@@ -348,8 +451,9 @@ def test_frame_data_is_copied_before_the_buffer_goes_back_to_the_sdk(camera, sdk
     sdk_camera.scrub_requeued_buffers = True
     camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
     camera.start_streaming()
+    received = _frames_via_callback(camera)
 
-    frame = _roi_frame(camera, sdk_camera, 99)
+    frame = _expose(camera, sdk_camera, received, 99)
 
     assert int(frame.frame[0, 0]) == 99
 
