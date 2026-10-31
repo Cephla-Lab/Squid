@@ -682,6 +682,11 @@ class ZmotionMcuShim:
             if us and us != self._cam_expo_us:
                 self.link.set_var("pCamExpo", us)
                 self._cam_expo_us = us
+            # Bench run 12: switching live view to hardware trigger goes through stop_live, which turns the
+            # light off, and the hardware path never calls turn_on_illumination (the trigger is meant to
+            # light the frame). control_illumination=True is that request: the light must be on.
+            if control_illumination:
+                self._light_wanted = True
             self._send_blv_if_changed()
             self.link.set_var("pBLCnt", 1)  # not sticky on the bench: re-sent every shot
             self.link.run_task(TRIGGER_TASK, "CtrlBL")
