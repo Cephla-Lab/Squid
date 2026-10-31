@@ -881,6 +881,11 @@ class CAMERA_CONFIG:
     # None keeps the camera's own setting; "rising", "falling", "high" or "low" sets the trigger
     # input activation (SET_INPUTACTIVATION) for the selected source.
     TOUPCAM_TRIGGER_INPUT_ACTIVATION = None
+    # Hardware-trigger exposure: True (default) means the controller strobes the light for the requested
+    # exposure inside a longer sensor exposure, so the driver adds the rolling-shutter strobe time to the
+    # sensor exposure (Cephla). False means the light is continuous and nothing strobes it (the Zmotion
+    # bench instrument): the sensor exposure must equal the requested one, or every image is over-exposed.
+    STROBED_ILLUMINATION = True
     ROI_OFFSET_X_DEFAULT = None
     ROI_OFFSET_Y_DEFAULT = None
     ROI_WIDTH_DEFAULT = None

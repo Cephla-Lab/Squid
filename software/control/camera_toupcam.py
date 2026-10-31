@@ -659,7 +659,7 @@ class ToupcamCamera(AbstractCamera):
     def _calculate_camera_exposure_time(self, image_exposure_time_ms):
         exposure_for_camera_ms = image_exposure_time_ms
         # In the calls below, we need to make sure we convert to microseconds.
-        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER:
+        if self.get_acquisition_mode() == CameraAcquisitionMode.HARDWARE_TRIGGER and CAMERA_CONFIG.STROBED_ILLUMINATION:
             # Only add the strobe_time_us, and not strobe_time_us + trigger_delay_us.  We'll tell the lighting
             # to come on at strobe_time_us + trigger_delay_us since that's when the common (all row) exposure time
             # starts, but if we tell that to the camera we'll get an extra trigger_delay_us of exposure.
