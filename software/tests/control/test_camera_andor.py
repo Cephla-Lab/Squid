@@ -46,12 +46,14 @@ class FakeAndorCamera:
         self.acquiring = False
         self.software_triggers = 0
         self.frames = []  # 2-D uint16 arrays the "sensor" delivers, in order
+        self.row_padding_bytes = 0  # SDK3 may pad rows: AOIStride > AOIWidth * 2
+        self.scrub_requeued_buffers = False  # model the SDK writing into a buffer as soon as it gets it back
         self._queued = []
 
-    # ---- layout the SDK reports for the current AOI (no row padding in the fake)
+    # ---- layout the SDK reports for the current AOI
     @property
     def AOIStride(self):
-        return self.AOIWidth * 2
+        return self.AOIWidth * 2 + self.row_padding_bytes
 
     @property
     def ImageSizeBytes(self):
@@ -74,6 +76,8 @@ class FakeAndorCamera:
         self.software_triggers += 1
 
     def queue(self, buf, size):
+        if self.scrub_requeued_buffers:
+            buf[:] = 0
         self._queued.append(buf)
 
     def flush(self):
@@ -85,7 +89,11 @@ class FakeAndorCamera:
             raise TimeoutError("AT_WaitBuffer timeout")
         frame = self.frames.pop(0)
         buf = self._queued.pop(0)
-        buf[: frame.nbytes] = np.frombuffer(frame.astype("<u2").tobytes(), dtype=np.uint8)
+        assert frame.shape == (self.AOIHeight, self.AOIWidth), "the sensor delivers the AOI"
+        rows = buf[: self.ImageSizeBytes].reshape(self.AOIHeight, self.AOIStride)
+        rows[:, : self.AOIWidth * 2] = np.frombuffer(frame.astype("<u2").tobytes(), dtype=np.uint8).reshape(
+            self.AOIHeight, self.AOIWidth * 2
+        )
         return SimpleNamespace(_np_data=buf)
 
 
@@ -293,3 +301,66 @@ def test_close_stops_the_read_thread_promptly(camera, caplog):
 
     assert thread is not None and not thread.is_alive()
     assert not any("refused to exit" in record.getMessage() for record in caplog.records)
+
+
+# ------------------------------------------------------------------ region of interest
+
+
+def _roi_frame(camera, sdk_camera, value):
+    sdk_camera.frames.append(np.full((sdk_camera.AOIHeight, sdk_camera.AOIWidth), value, dtype=np.uint16))
+    camera.send_trigger()
+    return camera.read_camera_frame()
+
+
+def test_roi_is_set_through_the_aoi_features(camera, sdk_camera):
+    camera.set_region_of_interest(256, 128, 1024, 512)
+
+    # SDK3: width/height in (binned) pixels, left/top 1-based
+    assert (sdk_camera.AOIWidth, sdk_camera.AOIHeight) == (1024, 512)
+    assert (sdk_camera.AOILeft, sdk_camera.AOITop) == (257, 129)
+    assert camera.get_region_of_interest() == (256, 128, 1024, 512)
+
+
+def test_roi_offsets_are_in_binned_pixels_as_the_gui_passes_them(camera, sdk_camera):
+    camera.set_binning(2, 2)
+
+    camera.set_region_of_interest(100, 50, 400, 200)
+
+    # left/top are unbinned sensor coordinates on the camera
+    assert (sdk_camera.AOILeft, sdk_camera.AOITop) == (201, 101)
+    assert (sdk_camera.AOIWidth, sdk_camera.AOIHeight) == (400, 200)
+    assert camera.get_region_of_interest() == (100, 50, 400, 200)
+
+
+def test_frames_follow_the_aoi_and_its_row_stride(camera, sdk_camera):
+    sdk_camera.row_padding_bytes = 64
+    camera.set_region_of_interest(256, 128, 1024, 512)
+    camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    camera.start_streaming()
+
+    frame = _roi_frame(camera, sdk_camera, 1234)
+
+    assert frame.frame.shape == (512, 1024)
+    assert int(frame.frame.min()) == 1234 and int(frame.frame.max()) == 1234
+
+
+def test_frame_data_is_copied_before_the_buffer_goes_back_to_the_sdk(camera, sdk_camera):
+    sdk_camera.scrub_requeued_buffers = True
+    camera.set_acquisition_mode(CameraAcquisitionMode.SOFTWARE_TRIGGER)
+    camera.start_streaming()
+
+    frame = _roi_frame(camera, sdk_camera, 99)
+
+    assert int(frame.frame[0, 0]) == 99
+
+
+def test_roi_change_reapplies_exposure_and_strobe_in_hardware_trigger_mode(camera, sdk_camera):
+    camera.set_acquisition_mode(CameraAcquisitionMode.HARDWARE_TRIGGER)
+    camera.set_exposure_time(20.0)
+
+    camera.set_region_of_interest(0, 768, 2048, 512)
+
+    # readout now covers 512 rows at 10 us per row
+    assert camera.get_strobe_time() == pytest.approx(5.12)
+    assert camera.hw_strobe_delays_ms[-1] == pytest.approx(5.12)
+    assert sdk_camera.ExposureTime == pytest.approx((20.0 + 5.12) / 1000.0)
