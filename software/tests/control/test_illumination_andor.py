@@ -314,3 +314,14 @@ def test_shut_down_releases_the_other_units_when_one_stops_answering(hle):
 
     assert b.transmission[0] == 0 and b.shutter_mask == 0
     assert a.closed and b.closed
+
+
+def test_shutter_state_comes_from_the_byte_the_driver_last_wrote(hle):
+    (unit,) = hle(FakeHleUnit("HLE-1", FOUR_LINE_UNIT))
+    laser = make_laser(active_blanking=True)
+    laser.set_intensity(("HLE-1", 2), 10.0)
+    sent_before = len(unit.sent)
+
+    assert laser.get_shutter_state(("HLE-1", 2)) is True
+    assert laser.get_shutter_state(("HLE-1", 1)) is False
+    assert len(unit.sent) == sent_before  # the driver is the only writer of the shutter byte: no round trip

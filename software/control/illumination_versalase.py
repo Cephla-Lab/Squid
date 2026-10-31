@@ -30,13 +30,7 @@ from typing import Dict, List, Optional
 import hid
 
 import control.versalase_guard
-from control.lighting import (  # noqa: F401 - CHANNEL_GROUPS and the tolerance stay importable from here
-    CHANNEL_GROUPS,
-    WAVELENGTH_MATCH_TOLERANCE_NM,
-    IntensityControlMode,
-    ShutterControlMode,
-    channel_group_for,
-)
+from control.lighting import CHANNEL_GROUPS, IntensityControlMode, ShutterControlMode, channel_group_for
 from control.vortran_hid import (  # noqa: F401 - the transport's names stay importable from here
     COMMAND_TIMEOUT_S,
     OP_ACK,

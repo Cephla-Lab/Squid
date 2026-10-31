@@ -26,7 +26,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import hid
 
@@ -63,7 +63,6 @@ class LaserCommands(IntEnum):
 
 @dataclass
 class LaserUnit:
-    """One HLE unit: its open HID device, its lines, and the shutter byte last written to it."""
 
     serial_number: str
     device: object  # hid.device
@@ -144,12 +143,13 @@ class AndorLaser(LightSource):
             unit.device.write(b"\x00" + command)  # report id 0 first
             deadline = time.monotonic() + self.timeout_s
             reply = b""
-            while time.monotonic() < deadline:
-                data = unit.device.read(REPORT_SIZE, int(self.timeout_s * 1000))
-                if data:
-                    # The unit sends report id 0 first; tolerate a reply without it
-                    reply = bytes(data[1 : reply_length + 1] if data[0] == 0x00 else data[:reply_length])
+            while not reply:
+                remaining_ms = int((deadline - time.monotonic()) * 1000)
+                if remaining_ms <= 0:
                     break
+                data = unit.device.read(REPORT_SIZE, remaining_ms)
+                if data:  # report id 0 first, as the unit sends it; tolerate a reply without it
+                    reply = bytes(data[1 : reply_length + 1] if data[0] == 0x00 else data[:reply_length])
         opcode = command[0]
         if not reply:
             raise RuntimeError(f"Andor laser unit {unit.serial_number} did not answer command 0x{opcode:02x}")
@@ -161,8 +161,9 @@ class AndorLaser(LightSource):
             )
         return reply
 
-    def _set_shutter_mask(self, unit: LaserUnit, mask: int):
-        if unit.shutter_mask == mask:
+    def _set_shutter_mask(self, unit: LaserUnit, mask: int, force: bool = False):
+        """Write the shutter byte unless it is what this driver last wrote (force writes it regardless)."""
+        if unit.shutter_mask == mask and not force:
             return
         self._transact(unit, struct.pack(">BB", LaserCommands.SET_SHUTTER_STATE, mask), 1)
         unit.shutter_mask = mask
@@ -178,10 +179,6 @@ class AndorLaser(LightSource):
             if wavelength >= CONTROL_LINE_BELOW_NM:
                 lines[index] = wavelength
         return lines
-
-    def _unit_for(self, channel: Channel) -> Tuple[LaserUnit, int]:
-        unit_id, line = channel
-        return self.units[unit_id], line
 
     # ----------------------------------------------------------------- LightSource
 
@@ -205,7 +202,8 @@ class AndorLaser(LightSource):
             return
         if intensity < 0.0 or intensity > 100.0:
             raise ValueError(f"Invalid intensity {intensity}. Must be 0.0-100.0")
-        unit, line = self._unit_for(channel)
+        unit_id, line = channel
+        unit = self.units[unit_id]
         if self.active_blanking:
             # Only the line being used may emit: close every other line on every unit, open this one
             for other in self.units.values():
@@ -218,8 +216,8 @@ class AndorLaser(LightSource):
     def get_intensity(self, channel: Optional[Channel]) -> float:
         if channel is None:
             return 0.0
-        unit, line = self._unit_for(channel)
-        reply = self._transact(unit, struct.pack(">BB", LaserCommands.READ_TRANSMISSION, line), 3)
+        unit_id, line = channel
+        reply = self._transact(self.units[unit_id], struct.pack(">BB", LaserCommands.READ_TRANSMISSION, line), 3)
         return struct.unpack(">H", reply[1:3])[0] / 10.0
 
     def set_shutter_state(self, channel: Optional[Channel], state: bool):
@@ -230,9 +228,12 @@ class AndorLaser(LightSource):
     def get_shutter_state(self, channel: Optional[Channel]) -> bool:
         if channel is None:
             return False
-        unit, line = self._unit_for(channel)
-        reply = self._transact(unit, struct.pack(">B", LaserCommands.READ_SHUTTER_STATE), 2)
-        return bool((reply[1] >> line) & 0x01)
+        unit_id, line = channel
+        unit = self.units[unit_id]
+        if unit.shutter_mask is None:  # nothing else writes the byte, so after our first write the cache is the truth
+            reply = self._transact(unit, struct.pack(">B", LaserCommands.READ_SHUTTER_STATE), 2)
+            unit.shutter_mask = reply[1]
+        return bool((unit.shutter_mask >> line) & 0x01)
 
     def shut_down(self):
         """Zero every line, close every shutter and release every unit; safe to call more than once."""
@@ -241,8 +242,7 @@ class AndorLaser(LightSource):
             try:
                 for line in unit.lines:
                     self._transact(unit, struct.pack(">BBH", LaserCommands.SET_TRANSMISSION, line, 0), 1)
-                unit.shutter_mask = None  # write the closed state even if it is what we last sent
-                self._set_shutter_mask(unit, 0)
+                self._set_shutter_mask(unit, 0, force=True)
             except Exception as e:
                 log.warning(f"Could not turn off Andor laser unit {unit.serial_number} before closing it: {e}")
             finally:
