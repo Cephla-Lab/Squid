@@ -23,6 +23,7 @@ import ctypes
 import logging
 import os
 import pathlib
+import platform
 import sys
 import threading
 import time
@@ -125,29 +126,64 @@ class ZmotionError(RuntimeError):
 # ----------------------------------------------------------------------------------------------
 
 
+# ctypes prototypes of the functions the spike calls, as declared in the vendor header
+# ("drivers and libraries/zmotion/zmotion.h"): ZMC_HANDLE is void*, int32/uint32 are (unsigned) int,
+# and __stdcall is #defined empty there, so on Linux these are plain SysV calls (CDLL). On Windows x64
+# there is one calling convention, so WinDLL and CDLL behave the same.
+_PROTOTYPES = {
+    # int32 ZMC_OpenEth(char *ipaddr, ZMC_HANDLE *phandle);
+    "ZMC_OpenEth": (ctypes.c_int32, [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]),
+    # int32 ZMC_Close(ZMC_HANDLE handle);
+    "ZMC_Close": (ctypes.c_int32, [ctypes.c_void_p]),
+    # int32 ZMC_SetTimeOut(ZMC_HANDLE handle, uint32 timems);
+    "ZMC_SetTimeOut": (ctypes.c_int32, [ctypes.c_void_p, ctypes.c_uint32]),
+    # int32 ZMC_DirectCommand(ZMC_HANDLE handle, const char* pszCommand, char* psResponse, uint32 uiResponseLength);
+    "ZMC_DirectCommand": (ctypes.c_int32, [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]),
+    # int32 ZMC_Execute(ZMC_HANDLE handle, const char* pszCommand, uint32 uimswait, char* psResponse, uint32 uiResponseLength);
+    "ZMC_Execute": (
+        ctypes.c_int32,
+        [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32],
+    ),
+    # int32 ZMC_ExecuteNoAck(ZMC_HANDLE handle, const char* pszCommand, uint32 uimswait);
+    "ZMC_ExecuteNoAck": (ctypes.c_int32, [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]),
+}
+# Linux only, and the vendor requires it before any other call: bool ZMC_LinuxLibInit();
+# It returns true (1) on success and false (0) on failure (it is `ZSecure_Init() == 0`).
+_LINUX_INIT = "ZMC_LinuxLibInit"
+
+_loaded_libraries: Dict[str, ctypes.CDLL] = {}
+_load_lock = threading.Lock()
+
+
+def _load_library(lib_path: pathlib.Path) -> ctypes.CDLL:
+    """Load the vendor library once per process (Linux: ZMC_LinuxLibInit once, before anything else)."""
+    key = str(pathlib.Path(lib_path).resolve())
+    with _load_lock:
+        if key in _loaded_libraries:
+            return _loaded_libraries[key]
+        try:
+            dll = ctypes.WinDLL(key) if sys.platform == "win32" else ctypes.CDLL(key)
+        except OSError as e:
+            raise ZmotionError(f"could not load the Zmotion library {key}: {e}") from e
+        if sys.platform != "win32":
+            init = getattr(dll, _LINUX_INIT, None)
+            if init is None:
+                raise ZmotionError(f"{key} has no {_LINUX_INIT}; not the vendor's Linux library")
+            init.argtypes = []
+            init.restype = ctypes.c_bool
+            if not init():
+                raise ZmotionError(f"{_LINUX_INIT}() in {key} returned false (library initialisation failed)")
+        for name, (restype, argtypes) in _PROTOTYPES.items():
+            fn = getattr(dll, name)
+            fn.restype = restype
+            fn.argtypes = argtypes
+        _loaded_libraries[key] = dll
+        return dll
+
+
 class _NativeLink:
     def __init__(self, ip: str, lib_path: pathlib.Path, timeout_ms: int = 2000):
-        if sys.platform == "win32":
-            self._dll = ctypes.WinDLL(str(lib_path))
-        else:
-            self._dll = ctypes.CDLL(str(lib_path))
-            init = getattr(self._dll, "ZMC_LinuxLibInit", None)
-            if init is not None:
-                init.restype = ctypes.c_int32
-                init()
-        d = self._dll
-        d.ZMC_OpenEth.argtypes = [ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p)]
-        d.ZMC_OpenEth.restype = ctypes.c_int32
-        d.ZMC_Close.argtypes = [ctypes.c_void_p]
-        d.ZMC_Close.restype = ctypes.c_int32
-        d.ZMC_SetTimeOut.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-        d.ZMC_SetTimeOut.restype = ctypes.c_int32
-        d.ZMC_DirectCommand.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32]
-        d.ZMC_DirectCommand.restype = ctypes.c_int32
-        d.ZMC_Execute.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32]
-        d.ZMC_Execute.restype = ctypes.c_int32
-        d.ZMC_ExecuteNoAck.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
-        d.ZMC_ExecuteNoAck.restype = ctypes.c_int32
+        self._dll = d = _load_library(lib_path)
         self._handle = ctypes.c_void_p()
         rc = d.ZMC_OpenEth(ip.encode("ascii"), ctypes.byref(self._handle))
         if rc != 0 or not self._handle.value:
@@ -345,15 +381,27 @@ def _find_library(explicit: Optional[str]) -> pathlib.Path:
     if os.environ.get("ZMOTION_LIB"):
         cands.append(pathlib.Path(os.environ["ZMOTION_LIB"]))
     base = here / "drivers and libraries" / "zmotion"
-    if sys.platform == "win32":
-        cands += [base / "windows" / "x64" / "zmotion.dll", here / "zmotion.dll"]
+    # Vendored builds are x86-64 only (README in that folder); elsewhere only an explicit path is tried.
+    is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
+    if sys.platform == "win32" and is_64bit:
+        lib_name = "zmotion.dll"
+        cands += [base / "windows" / "x64" / lib_name, here / lib_name]
+    elif sys.platform.startswith("linux") and is_64bit and platform.machine() == "x86_64":
+        lib_name = "libzmotion.so"
+        cands += [base / "linux" / "x64" / lib_name, here / lib_name]
     else:
-        cands += [base / "linux" / "x64" / "libzmotion.so", here / "libzmotion.so"]
+        lib_name = None
     for c in cands:
         if c.exists():
             return c
+    if lib_name is None:
+        raise ZmotionError(
+            f"no vendored Zmotion library for {sys.platform}/{platform.machine()} "
+            f"({8 * ctypes.sizeof(ctypes.c_void_p)}-bit Python); set ZMOTION_LIB or run with --simulation. "
+            "Tried: " + (", ".join(map(str, cands)) or "nothing")
+        )
     raise ZmotionError(
-        "Zmotion library not found; set ZMOTION_LIB or copy zmotion.dll next to main_hcs.py. Tried: "
+        f"Zmotion library not found; set ZMOTION_LIB or copy {lib_name} next to main_hcs.py. Tried: "
         + ", ".join(map(str, cands))
     )
 

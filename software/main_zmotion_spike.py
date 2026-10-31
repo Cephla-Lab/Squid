@@ -1,7 +1,9 @@
 """THROWAWAY SPIKE launcher: Squid on a Zmotion-controlled scanner with no Cephla microcontroller.
 
-Usage (bench PC, configuration_Zmotion_spike.ini copied next to this file, zmotion.dll next to it
-or at "drivers and libraries/zmotion/windows/x64/zmotion.dll", or ZMOTION_LIB set):
+Usage (bench PC, configuration_Zmotion_spike.ini copied next to this file; the vendor library is
+vendored at "drivers and libraries/zmotion/windows/x64/zmotion.dll" (Windows x64) and
+"drivers and libraries/zmotion/linux/x64/libzmotion.so" (Linux x86-64); ZMOTION_LIB overrides it.
+Ubuntu notes: docs/zmotion-ubuntu.md):
     python main_zmotion_spike.py                 # real controller at ZMOTION_IP (default 10.0.0.100)
     python main_zmotion_spike.py --simulation    # simulated camera and an in-memory controller
 All other arguments are main_hcs.py's (--verbose, --live-only, --skip-init, --start-server, --qt-api).
