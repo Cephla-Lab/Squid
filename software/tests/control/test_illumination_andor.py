@@ -16,6 +16,11 @@ from control.lighting import IlluminationController, IntensityControlMode, Light
 from control.microcontroller import Microcontroller, SimSerial
 
 
+class WouldHang(BaseException):
+    """The driver made a HID call that blocks forever on real hardware. BaseException, so a driver's
+    `except Exception` cannot rewrap it and every test fails on it directly."""
+
+
 class FakeHleUnit:
     """One HLE unit: lines (index -> nm), per-line transmission in 0.1 %, one shutter byte."""
 
@@ -34,7 +39,7 @@ class FakeHleUnit:
         self.peers = [self]  # every unit of the engine, set by the hle fixture
         self.max_open_lines_seen = 0  # across the engine, updated on every shutter write
         self.stall_reads = 0  # reads that come back empty although a reply is queued (a late reply)
-        self.nonblocking = False  # hidapi's default; see read()
+        self.nonblocking = False  # hidapi's default
         self.stray_after_next_write = None  # a report that turns up ahead of the next command's reply
 
     def open(self, vid, pid, serial):
@@ -62,9 +67,9 @@ class FakeHleUnit:
 
     def read(self, size, timeout_ms=0):
         # cython-hidapi: timeout_ms == 0 is a plain hid_read(), which blocks until data arrives unless the
-        # device is in non-blocking mode. A driver that does that with nothing queued hangs the application.
+        # device is in non-blocking mode (bench 2026-10-30: start-up hung on exactly this).
         if timeout_ms == 0 and not self.nonblocking and not self.pending:
-            raise AssertionError("hid_read() with nothing queued on a blocking device: this would hang forever")
+            raise WouldHang("hid_read() with nothing queued on a blocking device")
         if self.stall_reads:
             self.stall_reads -= 1
             return []
@@ -427,13 +432,10 @@ def test_a_stray_report_while_waiting_is_skipped(hle):
     assert laser.get_intensity(("HLE-1", 1)) == 12.5
 
 
-def test_no_read_can_block_forever(hle):
-    """Bench 2026-10-30: start-up hung right after 'Found 3 Andor laser unit(s)'. cython-hidapi's read() with
-    timeout_ms=0 is a blocking hid_read() unless the device is non-blocking; the fake raises on that."""
+def test_units_are_opened_non_blocking(hle):
+    """So the drain's zero-timeout read returns at once; FakeHleUnit.read raises WouldHang otherwise."""
     (unit,) = hle(FakeHleUnit("HLE-1", FOUR_LINE_UNIT))
 
-    laser = make_laser()
-    laser.set_intensity(("HLE-1", 1), 10.0)
-    laser.shut_down()
+    make_laser()
 
     assert unit.nonblocking
