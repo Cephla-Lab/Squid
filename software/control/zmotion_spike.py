@@ -638,6 +638,11 @@ class ZmotionMcuShim:
         self.link = link
         self.stage: Optional[ZmotionStage] = None
         self._cam_expo_us: Optional[int] = None
+        # Brightness: spec 3.2.10 makes pBLV (0 off, 1..100) an input of the CtrlBL task. Squid's
+        # intensity slider lands here (set_illumination / set_illumination_led_matrix); the value is
+        # sent before the next CtrlBL run. Harmless if the vendor is right that it is inert on this unit.
+        self._blv: Optional[int] = None
+        self._blv_sent: Optional[int] = None
         self._laser_on = False
         self._warned = set()
 
@@ -651,8 +656,19 @@ class ZmotionMcuShim:
             if us and us != self._cam_expo_us:
                 self.link.set_var("pCamExpo", us)
                 self._cam_expo_us = us
+            self._send_blv_if_changed()
             self.link.set_var("pBLCnt", 1)  # not sticky on the bench: re-sent every shot
             self.link.run_task(TRIGGER_TASK, "CtrlBL")
+
+    def _send_blv_if_changed(self) -> None:
+        if self._blv is not None and self._blv != self._blv_sent:
+            self.link.set_var("pFLCS", 0)
+            self.link.set_var("pBLV", int(self._blv))
+            self._blv_sent = self._blv
+            _log.info(f"Zmotion: pBLV={self._blv}")
+
+    def _set_brightness_percent(self, pct: float) -> None:
+        self._blv = max(0, min(100, int(round(pct))))
 
     def set_strobe_delay_us(self, us: int):
         pass
@@ -679,16 +695,26 @@ class ZmotionMcuShim:
     # ---- illumination: the light is always on; nothing to do -------------------------------
 
     def turn_on_illumination(self):
-        pass
+        # Software-trigger path (LiveController calls this per frame / at start; never in hardware mode):
+        # apply a changed brightness through one single-shot CtrlBL run. Its OP(2) pulse is ignored by a
+        # software-triggered camera.
+        if self._blv is not None and self._blv != self._blv_sent:
+            with self.link.lock:
+                self._send_blv_if_changed()
+                self.link.set_var("pBLCnt", 1)
+                self.link.run_task(TRIGGER_TASK, "CtrlBL")
 
     def turn_off_illumination(self):
         pass
 
     def set_illumination(self, source, intensity, *args, **kwargs):
-        pass
+        self._set_brightness_percent(float(intensity))
 
     def set_illumination_led_matrix(self, source, r, g, b):
-        pass
+        import control._def as _def
+
+        factor = max(_def.LED_MATRIX_R_FACTOR, _def.LED_MATRIX_G_FACTOR, _def.LED_MATRIX_B_FACTOR) or 1.0
+        self._set_brightness_percent(100.0 * max(r, g, b) / factor)
 
     def supports_multi_port(self) -> bool:
         return False
