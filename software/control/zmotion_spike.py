@@ -84,6 +84,17 @@ AXIS = {
     ),
 }
 MIN_Z_STEP_MM = 0.0003  # bench: 1- and 2-count Z targets are accepted but do not move
+MOVE_TOLERANCE_COUNTS = 3  # bench: normal moves end within 1-2 counts of the target
+AXISSTATUS_BITS = {
+    4: "forward hard limit",
+    5: "reverse hard limit",
+    8: "following-error fault",
+    9: "forward soft limit",
+    10: "reverse soft limit",
+    12: "pulse rate over MAX_SPEED",
+    18: "power fault",
+    22: "alarm input",
+}
 
 
 class ZmotionError(RuntimeError):
@@ -423,6 +434,18 @@ class ZmotionStage(AbstractStage):
         err = self.link.query_int("?pErr")
         if err != 0:
             raise ZmotionError(f"{axis.name}: controller error {err} after move")
+        # Bench run 1: X stopped on its forward hard-limit switch at 42.25 mm with idle=-1 and pErr=0,
+        # and the spike reported the move done. Limit/alarm bits and the reached position are checked.
+        status = self.link.query_int(f"?axisstatus({axis.channel})")
+        bad = [name for bit, name in AXISSTATUS_BITS.items() if status & (1 << bit)]
+        if bad:
+            raise ZmotionError(f"{axis.name}: axis status after move: {', '.join(bad)} (axisstatus={status})")
+        reached = self.link.query_float(f"?MPOS({axis.channel})")
+        if abs(reached - counts) > MOVE_TOLERANCE_COUNTS:
+            raise ZmotionError(
+                f"{axis.name}: move ended {reached / axis.res:.4f} mm instead of {counts / axis.res:.4f} mm "
+                f"({abs(reached - counts):.0f} counts off)"
+            )
 
     def _move_by(self, name: str, rel_mm: float, blocking: bool) -> None:
         axis = self._axes[name]
@@ -501,6 +524,16 @@ class ZmotionStage(AbstractStage):
                     axis.commanded_mm = None
                 finally:
                     self._set_busy(-1)
+
+    # The navigation widget calls these (CephlaStage has them); controller counts are the unit.
+    def x_mm_to_usteps(self, mm: float) -> int:
+        return int(round(mm * self._axes["x"].res))
+
+    def y_mm_to_usteps(self, mm: float) -> int:
+        return int(round(mm * self._axes["y"].res))
+
+    def z_mm_to_usteps(self, mm: float) -> int:
+        return int(round(mm * self._axes["z"].res))
 
     def zero(self, x: bool, y: bool, z: bool, theta: bool, blocking: bool = True):
         _log.warning("Zmotion: zero() is not supported (the frame is the controller's homed frame); ignored")
