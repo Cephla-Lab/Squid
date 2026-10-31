@@ -37,7 +37,8 @@ use_andor_active_blanking = False       ; True: AUX OUT follows the "all rows ex
 ```
 
 plus the usual `[CAMERA_CONFIG]` section (pixel format, binning, crop, ROI defaults). Resolutions
-and pixel size are read from the camera. `use_andor_active_blanking = True` is the camera half of active
-blanking (the laser engine's half is in `illumination_andor.py` and keys on the same flag): it sets the
-camera's AUX OUT source to SDK3 `FireAll` so the laser engine wired to that pin is blanked during
-readout. Off by default.
+and pixel size are read from the camera. `use_andor_active_blanking = True` switches on both halves of
+active blanking: the laser engine (`illumination_andor.py`) keeps only the selected line's shutter open,
+and the camera sets its AUX OUT source to SDK3 `FireAll` so the engine wired to that pin is blanked
+during readout. The camera half is what a Dragonfly with two Andor cameras needs; with one camera it
+does no harm. Off by default.

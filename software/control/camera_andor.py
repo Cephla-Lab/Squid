@@ -146,7 +146,8 @@ class AndorCamera(AbstractCamera):
         if roi and all(value is not None for value in roi):
             self.set_region_of_interest(*roi)
         if USE_ANDOR_ACTIVE_BLANKING:
-            # AUX OUT high only while every row is exposing, so the laser is blanked during readout
+            # AUX OUT high only while every row is exposing, so the laser is blanked during readout. The camera
+            # half of active blanking: needed with two Andor cameras on the Dragonfly, harmless with one.
             self._camera.AuxiliaryOutSource = "FireAll"
 
     def close(self):
