@@ -85,6 +85,17 @@ AXIS = {
 }
 MIN_Z_STEP_MM = 0.0003  # bench: 1- and 2-count Z targets are accepted but do not move
 MOVE_TOLERANCE_COUNTS = 3  # bench: normal moves end within 1-2 counts of the target
+# Bench run 1 (user: "x and y crossed"): Squid's X moves the controller's Y axis (channel 1, 120 mm)
+# and Squid's Y the controller's X (channel 0, 80 mm nominal). ZMOTION_SWAP_XY=0 turns the swap off.
+SWAP_XY = os.environ.get("ZMOTION_SWAP_XY", "1") == "1"
+
+
+def _controller_axis_for(squid_axis: str) -> str:
+    if SWAP_XY and squid_axis in ("x", "y"):
+        return "y" if squid_axis == "x" else "x"
+    return squid_axis
+
+
 AXISSTATUS_BITS = {
     4: "forward hard limit",
     5: "reverse hard limit",
@@ -307,8 +318,9 @@ def _find_library(explicit: Optional[str]) -> pathlib.Path:
 
 
 class _Axis:
-    def __init__(self, name: str, link: ZmotionLink, sign: int, max_speed_cfg: float):
-        self.name = name
+    def __init__(self, name: str, ctrl_name: str, link: ZmotionLink, sign: int, max_speed_cfg: float):
+        self.name = name  # Squid's axis name
+        self.ctrl_name = ctrl_name  # the controller program's axis name (may differ: SWAP_XY)
         (
             chq,
             resq,
@@ -323,13 +335,15 @@ class _Axis:
             self.speed_var,
             self.speed_name,
             self.pos_var,
-        ) = AXIS[name]
+        ) = AXIS[ctrl_name]
         self.channel = link.query_int(chq)
         self.res = link.query_float(resq)
         self.travel = link.query_float(traq)
         self.max_speed = link.query_float(spdq)
         if self.channel < 0 or self.res <= 0:
-            raise ZmotionError(f"axis {name} not configured on the controller (channel {self.channel}, res {self.res})")
+            raise ZmotionError(
+                f"axis {name} (controller {ctrl_name}) not configured on the controller (channel {self.channel}, res {self.res})"
+            )
         self.sign = sign
         self.commanded_mm: Optional[float] = None  # controller frame, mm
         self.min_mm: Optional[float] = None
@@ -338,7 +352,7 @@ class _Axis:
         link.set_var(self.speed_var, float(speed))
         link.run_task(0, self.speed_name)
         _log.info(
-            f"Zmotion axis {name}: channel {self.channel}, {self.res:g} counts/mm, travel {self.travel:g} mm, speed {speed:g} mm/s (max {self.max_speed:g})"
+            f"Zmotion axis {name} -> controller {ctrl_name}: channel {self.channel}, {self.res:g} counts/mm, travel {self.travel:g} mm, speed {speed:g} mm/s (max {self.max_speed:g})"
         )
 
 
@@ -353,9 +367,9 @@ class ZmotionStage(AbstractStage):
         microcontroller.stage = self
         cfg = stage_config
         self._axes = {
-            "x": _Axis("x", self.link, int(cfg.X_AXIS.MOVEMENT_SIGN), cfg.X_AXIS.MAX_SPEED),
-            "y": _Axis("y", self.link, int(cfg.Y_AXIS.MOVEMENT_SIGN), cfg.Y_AXIS.MAX_SPEED),
-            "z": _Axis("z", self.link, int(cfg.Z_AXIS.MOVEMENT_SIGN), cfg.Z_AXIS.MAX_SPEED),
+            "x": _Axis("x", _controller_axis_for("x"), self.link, int(cfg.X_AXIS.MOVEMENT_SIGN), cfg.X_AXIS.MAX_SPEED),
+            "y": _Axis("y", _controller_axis_for("y"), self.link, int(cfg.Y_AXIS.MOVEMENT_SIGN), cfg.Y_AXIS.MAX_SPEED),
+            "z": _Axis("z", _controller_axis_for("z"), self.link, int(cfg.Z_AXIS.MOVEMENT_SIGN), cfg.Z_AXIS.MAX_SPEED),
         }
         self._busy = 0
         self._busy_lock = threading.Lock()
@@ -363,11 +377,13 @@ class ZmotionStage(AbstractStage):
 
     # ---- conversions (squid mm <-> controller mm) ------------------------------------------
 
+    # The controller frame is 0..travel. MOVEMENT_SIGN = -1 flips the direction while keeping Squid's
+    # frame at 0..travel too (squid = travel - controller), so the software limits stay meaningful.
     def _to_ctrl(self, axis: _Axis, squid_mm: float) -> float:
-        return squid_mm * axis.sign
+        return squid_mm if axis.sign > 0 else axis.travel - squid_mm
 
     def _to_squid(self, axis: _Axis, ctrl_mm: float) -> float:
-        return ctrl_mm * axis.sign
+        return ctrl_mm if axis.sign > 0 else axis.travel - ctrl_mm
 
     def _mpos_mm(self, axis: _Axis) -> float:
         return self.link.query_float(f"?MPOS({axis.channel})") / axis.res
