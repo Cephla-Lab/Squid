@@ -105,7 +105,10 @@ class AndorLaser(LightSource):
                 device.open(self.vid, self.pid, serial_number)
                 unit = LaserUnit(serial_number=serial_number, device=device)
                 self.units[serial_number] = unit  # before anything else can fail, so shut_down() closes it
-                device.set_nonblocking(0)
+                # Non-blocking: in cython-hidapi read(n, 0) is a plain hid_read(), which on a blocking device
+                # waits forever when nothing is queued (bench 2026-10-30: start-up hung on the first unit).
+                # Reads that wait pass a positive timeout, which hid_read_timeout() honours either way.
+                device.set_nonblocking(1)
                 self._set_shutter_mask(unit, 0)  # the power-on shutter state is unknown
                 unit.lines = self._read_line_setup(unit)
                 log.info(f"Andor laser unit {serial_number} lines: {unit.lines}")
@@ -145,6 +148,7 @@ class AndorLaser(LightSource):
             if unit.device is None:
                 raise RuntimeError(f"Andor laser unit {unit.serial_number} is closed")
             # A reply that arrived after an earlier deadline is still queued; it must not answer this command.
+            # (Immediate: the device is non-blocking, see initialize().)
             while unit.device.read(REPORT_SIZE, 0):
                 pass
             unit.device.write(b"\x00" + command)  # report id 0 first

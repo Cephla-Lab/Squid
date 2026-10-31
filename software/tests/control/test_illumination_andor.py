@@ -34,6 +34,7 @@ class FakeHleUnit:
         self.peers = [self]  # every unit of the engine, set by the hle fixture
         self.max_open_lines_seen = 0  # across the engine, updated on every shutter write
         self.stall_reads = 0  # reads that come back empty although a reply is queued (a late reply)
+        self.nonblocking = False  # hidapi's default; see read()
         self.stray_after_next_write = None  # a report that turns up ahead of the next command's reply
 
     def open(self, vid, pid, serial):
@@ -41,7 +42,7 @@ class FakeHleUnit:
         self.opened = True
 
     def set_nonblocking(self, flag):
-        pass
+        self.nonblocking = bool(flag)
 
     def close(self):
         self.closed = True
@@ -60,6 +61,10 @@ class FakeHleUnit:
             self.stray_after_next_write = None
 
     def read(self, size, timeout_ms=0):
+        # cython-hidapi: timeout_ms == 0 is a plain hid_read(), which blocks until data arrives unless the
+        # device is in non-blocking mode. A driver that does that with nothing queued hangs the application.
+        if timeout_ms == 0 and not self.nonblocking and not self.pending:
+            raise AssertionError("hid_read() with nothing queued on a blocking device: this would hang forever")
         if self.stall_reads:
             self.stall_reads -= 1
             return []
@@ -420,3 +425,15 @@ def test_a_stray_report_while_waiting_is_skipped(hle):
     unit.stray_after_next_write = [0x00, Op.READ_SHUTTER_STATE, 0x00]  # e.g. a late reply to another query
 
     assert laser.get_intensity(("HLE-1", 1)) == 12.5
+
+
+def test_no_read_can_block_forever(hle):
+    """Bench 2026-10-30: start-up hung right after 'Found 3 Andor laser unit(s)'. cython-hidapi's read() with
+    timeout_ms=0 is a blocking hid_read() unless the device is non-blocking; the fake raises on that."""
+    (unit,) = hle(FakeHleUnit("HLE-1", FOUR_LINE_UNIT))
+
+    laser = make_laser()
+    laser.set_intensity(("HLE-1", 1), 10.0)
+    laser.shut_down()
+
+    assert unit.nonblocking
