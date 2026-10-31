@@ -184,7 +184,16 @@ class _SimLink:
     """In-memory stand-in: the few commands the spike uses, with instantaneous motion."""
 
     def __init__(self):
-        self.vars: Dict[str, float] = {"pErr": 0, "pHome": 10, "pCtrlBL": 0, "pBLCnt": 0, "pCamExpo": 0, "pLen": 0}
+        self.vars: Dict[str, float] = {
+            "pErr": 0,
+            "pHome": 10,
+            "pCtrlBL": 0,
+            "pBLCnt": 0,
+            "pCamExpo": 0,
+            "pLen": 0,
+            "pBLV": 10,
+            "pFLCS": 0,
+        }
         self.axes = {"x": (0, 2519.69, 80.0, 30.0), "y": (1, 2519.69, 120.0, 30.0), "z": (2, 10000.0, 6.0, 3.0)}
         self.mpos = {0: 0.0, 1: 0.0, 2: 0.0}
         for a, (ch, res, tra, spd) in self.axes.items():
@@ -638,11 +647,14 @@ class ZmotionMcuShim:
         self.link = link
         self.stage: Optional[ZmotionStage] = None
         self._cam_expo_us: Optional[int] = None
-        # Brightness: spec 3.2.10 makes pBLV (0 off, 1..100) an input of the CtrlBL task. Squid's
-        # intensity slider lands here (set_illumination / set_illumination_led_matrix); the value is
-        # sent before the next CtrlBL run. Harmless if the vendor is right that it is inert on this unit.
-        self._blv: Optional[int] = None
-        self._blv_sent: Optional[int] = None
+        # Light: spec 3.2.10 makes pBLV (0 off, 1..100) an input of the CtrlBL task. Bench 2026-10-31
+        # (camera as detector): pBLV=0 + CtrlBL switches the light OFF and it stays off; 5/50/100 give the
+        # same brightness (no dimming on this unit). So Squid's turn_on/turn_off are real, the slider value
+        # is still sent as pBLV (if the vendor ever maps it to brightness it works unchanged), and every
+        # CtrlBL run (on, off, trigger) also emits the ~1 ms OP(2) camera pulse.
+        self._blv: Optional[int] = None  # slider %, None = never set (light left as found)
+        self._blv_sent: Optional[int] = None  # last pBLV written
+        self._light_wanted = True  # turn_off_illumination() -> False
         self._laser_on = False
         self._warned = set()
 
@@ -660,12 +672,25 @@ class ZmotionMcuShim:
             self.link.set_var("pBLCnt", 1)  # not sticky on the bench: re-sent every shot
             self.link.run_task(TRIGGER_TASK, "CtrlBL")
 
+    def _wanted_blv(self) -> Optional[int]:
+        if not self._light_wanted:
+            return 0
+        return self._blv  # None until the slider has been seen: leave pBLV as found
+
     def _send_blv_if_changed(self) -> None:
-        if self._blv is not None and self._blv != self._blv_sent:
+        wanted = self._wanted_blv()
+        if wanted is not None and wanted != self._blv_sent:
             self.link.set_var("pFLCS", 0)
-            self.link.set_var("pBLV", int(self._blv))
-            self._blv_sent = self._blv
-            _log.info(f"Zmotion: pBLV={self._blv}")
+            self.link.set_var("pBLV", int(wanted))
+            self._blv_sent = wanted
+            _log.info(f"Zmotion: pBLV={wanted} ({'light off' if wanted == 0 else 'light on'})")
+
+    def _run_ctrlbl_once(self) -> None:
+        """Apply pBLV through one single-shot CtrlBL run (also pulses OP(2): a stray camera trigger)."""
+        with self.link.lock:
+            self._send_blv_if_changed()
+            self.link.set_var("pBLCnt", 1)
+            self.link.run_task(TRIGGER_TASK, "CtrlBL")
 
     def _set_brightness_percent(self, pct: float) -> None:
         self._blv = max(0, min(100, int(round(pct))))
@@ -695,17 +720,19 @@ class ZmotionMcuShim:
     # ---- illumination: the light is always on; nothing to do -------------------------------
 
     def turn_on_illumination(self):
-        # Software-trigger path (LiveController calls this per frame / at start; never in hardware mode):
-        # apply a changed brightness through one single-shot CtrlBL run. Its OP(2) pulse is ignored by a
-        # software-triggered camera.
-        if self._blv is not None and self._blv != self._blv_sent:
-            with self.link.lock:
-                self._send_blv_if_changed()
-                self.link.set_var("pBLCnt", 1)
-                self.link.run_task(TRIGGER_TASK, "CtrlBL")
+        # LiveController / MultiPointWorker call this in software-trigger mode (never per frame in
+        # hardware mode, where the trigger itself carries pBLV). A changed value is applied through one
+        # CtrlBL run whose OP(2) pulse a software-triggered camera ignores.
+        self._light_wanted = True
+        if self._wanted_blv() is not None and self._wanted_blv() != self._blv_sent:
+            self._run_ctrlbl_once()
 
     def turn_off_illumination(self):
-        pass
+        # Real on this unit: pBLV=0 through CtrlBL switches the light off and it stays off. Called at
+        # stop_live and between software-triggered frames; in hardware mode only at stop_live.
+        self._light_wanted = False
+        if self._blv_sent != 0:
+            self._run_ctrlbl_once()
 
     def set_illumination(self, source, intensity, *args, **kwargs):
         self._set_brightness_percent(float(intensity))
