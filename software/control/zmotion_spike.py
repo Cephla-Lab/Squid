@@ -525,7 +525,9 @@ class ZmotionStage(AbstractStage):
                     self._wait_flag(axis, timeout_s=60)  # a previous move on this axis
                     self.link.set_var(axis.pos_var, counts)
                     self.link.run_task(axis.move_task, axis.move_name)
-                    axis.commanded_mm = counts / axis.res
+                    axis.commanded_mm = (
+                        target_ctrl  # unrounded: relative moves accumulate from it, not from the quantized landing
+                    )
                 self._wait_move_done(axis, counts)
             finally:
                 self._set_busy(-1)
@@ -588,7 +590,9 @@ class ZmotionStage(AbstractStage):
             base = fresh
             if axis.commanded_mm is not None:
                 commanded_squid = self._to_squid(axis, axis.commanded_mm)
-                if abs(commanded_squid - fresh) <= 1.5 / axis.res:
+                if (
+                    abs(commanded_squid - fresh) <= 3.0 / axis.res
+                ):  # landed on the last target (within the move tolerance)
                     base = commanded_squid
             self._move_to(name, base + rel_mm, blocking)
 
@@ -933,9 +937,20 @@ class ZmotionSequencedZStack(SequencedZStack):
         if n_levels < 1:
             raise ZmotionError("z-stack needs at least one level")
         counts = self._counts_per_level(step_mm)
+        ctrl_step_mm = step_mm if self._axis.sign > 0 else -step_mm
         with self._link.lock:
             if self._link.query_int("?pMoveX") != 0:
                 raise ZmotionError("z-stack: task 1 is busy with an X move")
+            # Host limits apply to the whole trajectory: the last level AND the extra step the task takes
+            # after it (review 2026-10-31: a 3 x 1 um stack under a 2 um ceiling ran to 3 um unrefused).
+            start_ctrl = self._link.query_float(f"?MPOS({self._axis.channel})") / self._axis.res
+            last_level_ctrl = start_ctrl + (counts / self._axis.res) * (n_levels - 1)
+            end_ctrl = start_ctrl + (counts / self._axis.res) * (n_levels + self.extra_steps_after_last_level - 1)
+            for label, ctrl_mm in (("last level", last_level_ctrl), ("end of stack", end_ctrl)):
+                try:
+                    self._stage._check_limits(self._axis, self._stage._to_squid(self._axis, ctrl_mm))
+                except ZmotionError as e:
+                    raise ZmotionError(f"z-stack refused ({label} outside the limits): {e}") from e
             if self._link.query_int("?pMoveZStack1") != 0:
                 # left at 1 by an aborted run (bench); clear it rather than misread the next wait
                 self._link.set_var("pMoveZStack1", 0)
@@ -950,8 +965,7 @@ class ZmotionSequencedZStack(SequencedZStack):
             self._seen_running = False
             self._t_start = time.monotonic()
             self._link.run_task(1, "MoveZStack1")
-            start_ctrl = self._link.query_float(f"?MPOS({self._axis.channel})") / self._axis.res
-            self._axis.commanded_mm = start_ctrl + (counts / self._axis.res) * n_levels
+            self._axis.commanded_mm = start_ctrl + ctrl_step_mm * n_levels
         _log.info(f"Zmotion z-stack started: {n_levels} levels x {counts} counts ({step_mm * 1e3:+.2f} um)")
 
     def running(self) -> bool:
@@ -1069,8 +1083,12 @@ class ZmotionObjectiveChanger:
         with self.link.lock:
             self.link.stop_task(4)
             self.link.run_task(4, "HomeR")
-            self._wait_flag("?pHomeR", 1, timeout_s, "HomeR")
-            self._check_err("HomeR")
+            try:
+                self._wait_flag("?pHomeR", 1, timeout_s, "HomeR")
+                self._check_err("HomeR")
+            except Exception:
+                self._current_objective = None
+                raise
             self._current_objective = self._name_for_slot(self._read_slot())
         _log.info(f"Zmotion turret homed; at {self._current_objective!r}")
 
@@ -1082,6 +1100,9 @@ class ZmotionObjectiveChanger:
             return
         slot = self._slot_for(objective_name)
         captured_z = self._retract_z()
+        # Z is restored only once the controller confirms the slot. After a failed, timed-out or
+        # mis-reported rotation the turret may sit between slots: Z stays retracted and the error propagates
+        # (review 2026-10-31; the 4-position turret driver restores in a finally and should not).
         try:
             with self.link.lock:
                 if self.link.query_int("?pMoveLen") != 0:
@@ -1095,11 +1116,14 @@ class ZmotionObjectiveChanger:
                     raise ZmotionError(
                         f"turret: asked for slot {slot} ({objective_name}), controller reports pLen={reached}"
                     )
-            self._current_objective = objective_name
-            _log.info(f"Zmotion turret: {objective_name} (slot {slot})")
-        finally:
-            if restore_z:
-                self._restore_z(captured_z)
+        except Exception:
+            self._current_objective = None
+            _log.error(f"Zmotion turret: move to {objective_name} failed; Z left retracted at the safe position")
+            raise
+        self._current_objective = objective_name
+        _log.info(f"Zmotion turret: {objective_name} (slot {slot})")
+        if restore_z:
+            self._restore_z(captured_z)
 
     def reset(self, objective_name: Optional[str] = None, timeout_s: float = HOME_TIMEOUT_S) -> None:
         captured_z = self._retract_z()
@@ -1108,8 +1132,10 @@ class ZmotionObjectiveChanger:
             self.home(timeout_s)
             if objective_name:
                 self.move_to_objective(objective_name, restore_z=False)
-        finally:
-            self._restore_z(captured_z)
+        except Exception:
+            _log.error("Zmotion turret: reset failed; Z left retracted at the safe position")
+            raise
+        self._restore_z(captured_z)
 
     def enable(self) -> None:
         pass
