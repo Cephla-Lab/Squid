@@ -259,26 +259,35 @@ class ZmotionLink:
 
     def __init__(self, ip: str, lib_path: Optional[str], simulate: bool):
         self.lock = threading.RLock()
+        self.closed = False  # Microscope.close() closes the link while GUI timers may still poll
         if simulate:
             self._impl = _SimLink()
             _log.warning("Zmotion spike: SIMULATED controller (no vendor library used)")
         else:
             self._impl = _NativeLink(ip, _find_library(lib_path))
 
+    def _check_open(self) -> None:
+        if self.closed:
+            raise ZmotionError("Zmotion link is closed")
+
     def direct(self, cmd: str) -> str:
         with self.lock:
+            self._check_open()
             return self._impl.direct(cmd)
 
     def execute(self, cmd: str) -> str:
         with self.lock:
+            self._check_open()
             return self._impl.execute(cmd)
 
     def run_task(self, task: int, name: str) -> None:
         with self.lock:
+            self._check_open()
             self._impl.no_ack(f"runtask {task},{name}")
 
     def stop_task(self, task: int) -> None:
         with self.lock:
+            self._check_open()
             self._impl.no_ack(f"stoptask {task}")
 
     def query_float(self, cmd: str) -> float:
@@ -294,7 +303,9 @@ class ZmotionLink:
 
     def close(self) -> None:
         with self.lock:
-            self._impl.close()
+            if not self.closed:
+                self.closed = True
+                self._impl.close()
 
 
 def _find_library(explicit: Optional[str]) -> pathlib.Path:
@@ -394,6 +405,8 @@ class ZmotionStage(AbstractStage):
         self._busy = 0
         self._busy_lock = threading.Lock()
         self._theta_rad = 0.0
+        self._last_pos: Optional[Pos] = None
+        self._warned_closed = False
 
     # ---- conversions (squid mm <-> controller mm) ------------------------------------------
 
@@ -520,11 +533,19 @@ class ZmotionStage(AbstractStage):
         self._move_to("z", abs_mm, blocking)
 
     def get_pos(self) -> Pos:
+        # Bench run 6: after Microscope.close() (the settings restart path) the GUI's position timers and
+        # the final cleanup still call get_pos(); answer from the last reading instead of raising 100x.
+        if self.link.closed:
+            if not self._warned_closed:
+                self._warned_closed = True
+                _log.warning("Zmotion: link closed; get_pos() returns the last known position from now on")
+            return self._last_pos or Pos(x_mm=0.0, y_mm=0.0, z_mm=0.0, theta_rad=self._theta_rad)
         with self.link.lock:
             x = self._to_squid(self._axes["x"], self._mpos_mm(self._axes["x"]))
             y = self._to_squid(self._axes["y"], self._mpos_mm(self._axes["y"]))
             z = self._to_squid(self._axes["z"], self._mpos_mm(self._axes["z"]))
-        return Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=self._theta_rad)
+        self._last_pos = Pos(x_mm=x, y_mm=y, z_mm=z, theta_rad=self._theta_rad)
+        return self._last_pos
 
     def get_state(self) -> StageStage:
         with self._busy_lock:

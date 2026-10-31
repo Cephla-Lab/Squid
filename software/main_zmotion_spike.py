@@ -23,5 +23,7 @@ import control.zmotion_spike as spike  # noqa: E402  (imports control._def, whic
 simulate = "--simulation" in sys.argv or os.environ.get("ZMOTION_SIMULATE") == "1"
 spike.install(ip=os.environ.get("ZMOTION_IP", "10.0.0.100"), lib_path=os.environ.get("ZMOTION_LIB"), simulate=simulate)
 
-sys.argv[0] = "main_hcs.py"
+# Squid's settings restart re-runs [sys.executable] + sys.argv (gui_hcs.py), so argv[0] must stay this
+# launcher: a restart through main_hcs.py alone would come up without the shim (bench run 6).
+sys.argv[0] = os.path.abspath(__file__)
 runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "main_hcs.py"), run_name="__main__")
