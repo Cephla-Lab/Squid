@@ -24,11 +24,12 @@ else
     exit 1
 fi
 
-WHEEL="$(find "$SDK_DIR" -name 'pyAndorSDK3*.whl' | head -n 1 || true)"
+# Wheel file names are normalised to lower case, so match case-insensitively
+WHEEL="$(find "$SDK_DIR" -iname 'pyandorsdk3*.whl' | head -n 1 || true)"
 if [ -n "$WHEEL" ]; then
-    pip install "$WHEEL"
+    python3 -m pip install "$WHEEL"
 elif [ -f "$SDK_DIR/python/pyAndorSDK3/setup.py" ]; then
-    pip install "$SDK_DIR/python/pyAndorSDK3"
+    python3 -m pip install "$SDK_DIR/python/pyAndorSDK3"
 else
     echo "pyAndorSDK3 not found under $SDK_DIR/python - install it by hand from the SDK's Python folder" >&2
     exit 1
