@@ -29,7 +29,7 @@ import time
 from typing import Dict, Optional
 
 import squid.logging
-from squid.abc import AbstractStage, Pos, StageStage
+from squid.abc import AbstractStage, Pos, SequencedZStack, StageStage
 from squid.config import StageConfig
 
 _log = squid.logging.get_logger("zmotion_spike")
@@ -196,6 +196,9 @@ class _SimLink:
             "pPosLen": 0,
             "pMoveLen": 0,
             "pHomeR": 1,
+            "pZStackStep": 0,
+            "pZStackLevel": 1,
+            "pMoveZStack1": 0,
         }
         self.axes = {"x": (0, 2519.69, 80.0, 30.0), "y": (1, 2519.69, 120.0, 30.0), "z": (2, 10000.0, 6.0, 3.0)}
         self.mpos = {0: 0.0, 1: 0.0, 2: 0.0}
@@ -264,6 +267,11 @@ class _SimLink:
                 return
             if name == "movelen":
                 self.vars["pLen"] = self.vars["pPosLen"]
+                return
+            if name == "movezstack1":
+                # N dwells and one extra step, as measured; instantaneous, no camera trigger
+                self.mpos[2] += self.vars["pZStackStep"] * self.vars["pZStackLevel"]
+                self.vars["pMoveZStack1"] = 0
                 return
             if name == "homer":
                 self.vars["pHomeR"] = 1
@@ -416,6 +424,7 @@ class ZmotionStage(AbstractStage):
     def __init__(self, microcontroller, stage_config: StageConfig):
         super().__init__(stage_config)
         self.link: ZmotionLink = microcontroller.link
+        self._shim = microcontroller
         microcontroller.stage = self
         cfg = stage_config
         self._axes = {
@@ -604,6 +613,9 @@ class ZmotionStage(AbstractStage):
                     axis.commanded_mm = None
                 finally:
                     self._set_busy(-1)
+
+    def sequenced_z_stack(self):
+        return ZmotionSequencedZStack(self)
 
     # The navigation widget calls these (CephlaStage has them); controller counts are the unit.
     def x_mm_to_usteps(self, mm: float) -> int:
@@ -836,6 +848,102 @@ class ZmotionMcuShim:
             return None
 
         return _noop
+
+
+# ----------------------------------------------------------------------------------------------
+# Controller-sequenced z-stack (task MoveZStack1 on slot 1, shared with MoveX)
+# ----------------------------------------------------------------------------------------------
+
+
+class ZmotionSequencedZStack(SequencedZStack):
+    """Bench 2026-10-31: pZStackStep (counts, signed) and pZStackLevel, RUNTASK 1,MoveZStack1; the task
+    dwells at start + k*step for k = 0..N-1, pulses the camera trigger output once per level ~10 ms
+    after reaching it (frames arrive one per pulse), then takes ONE more step and stops; ?pMoveZStack1
+    goes 1 -> 0. The per-level time is stateful (0.28 to 1.03 s seen), so completion is the flag plus
+    the frame count, never a dwell estimate. STOPTASK 1 stops Z within 50 ms but leaves the flag at 1,
+    so abort() clears it. pCamExpo and pBLCnt play no part; pBLV must be non-zero (light on)."""
+
+    extra_steps_after_last_level = 1
+
+    def __init__(self, stage: "ZmotionStage"):
+        self._stage = stage
+        self._link = stage.link
+        self._axis = stage._axes["z"]
+        self._started = False
+        self._seen_running = False
+        self._t_start = 0.0
+        self.simulated = isinstance(self._link._impl, _SimLink)
+
+    def _counts_per_level(self, step_mm: float) -> int:
+        ctrl_step_mm = step_mm if self._axis.sign > 0 else -step_mm
+        counts = int(round(ctrl_step_mm * self._axis.res))
+        if counts == 0:
+            raise ZmotionError(f"z-stack step {step_mm * 1e3:+.2f} um is below one Z count")
+        return counts
+
+    def start(self, step_mm: float, n_levels: int) -> None:
+        if n_levels < 1:
+            raise ZmotionError("z-stack needs at least one level")
+        counts = self._counts_per_level(step_mm)
+        with self._link.lock:
+            if self._link.query_int("?pMoveX") != 0:
+                raise ZmotionError("z-stack: task 1 is busy with an X move")
+            if self._link.query_int("?pMoveZStack1") != 0:
+                # left at 1 by an aborted run (bench); clear it rather than misread the next wait
+                self._link.set_var("pMoveZStack1", 0)
+            if self._link.query_int(f"?idle({self._axis.channel})") != -1:
+                raise ZmotionError("z-stack: Z is moving")
+            self._stage._shim._light_wanted = True
+            self._stage._shim._send_blv_if_changed()
+            self._link.set_var("pZStackStep", counts)
+            self._link.set_var("pZStackLevel", int(n_levels))
+            self._stage._set_busy(+1)
+            self._started = True
+            self._seen_running = False
+            self._t_start = time.monotonic()
+            self._link.run_task(1, "MoveZStack1")
+            start_ctrl = self._link.query_float(f"?MPOS({self._axis.channel})") / self._axis.res
+            self._axis.commanded_mm = start_ctrl + (counts / self._axis.res) * n_levels
+        _log.info(f"Zmotion z-stack started: {n_levels} levels x {counts} counts ({step_mm * 1e3:+.2f} um)")
+
+    def running(self) -> bool:
+        flag = self._link.query_int("?pMoveZStack1")
+        if flag == 1:
+            self._seen_running = True
+            return True
+        # flag 0: done once we saw it run, or after a grace period for a task that never showed 1
+        return not self._seen_running and (time.monotonic() - self._t_start) < 1.0
+
+    def finish(self) -> None:
+        try:
+            t0 = time.monotonic()
+            while self._link.query_int(f"?idle({self._axis.channel})") != -1:
+                if time.monotonic() - t0 > 5.0:
+                    raise ZmotionError("z-stack: Z not idle after the task finished")
+                time.sleep(0.002)
+            err = self._link.query_int("?pErr")
+            if err != 0:
+                raise ZmotionError(f"z-stack: controller error {err}")
+        finally:
+            self._release()
+
+    def abort(self) -> None:
+        try:
+            with self._link.lock:
+                self._link.stop_task(1)
+                t0 = time.monotonic()
+                while self._link.query_int(f"?idle({self._axis.channel})") != -1 and time.monotonic() - t0 < 2.0:
+                    time.sleep(0.002)
+                self._link.set_var("pMoveZStack1", 0)  # STOPTASK leaves the flag at 1 (bench)
+                self._axis.commanded_mm = None
+            _log.warning("Zmotion z-stack aborted; Z left where it stopped")
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        if self._started:
+            self._started = False
+            self._stage._set_busy(-1)
 
 
 # ----------------------------------------------------------------------------------------------

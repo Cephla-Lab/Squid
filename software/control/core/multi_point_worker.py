@@ -1,6 +1,7 @@
 import math
 import os
 import queue
+import collections
 import threading
 import time
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Type
@@ -206,6 +207,10 @@ class MultiPointWorker:
         self._image_callback_idle.set()
         # This is protected by the threading event above (aka set after clear, take copy before set)
         self._current_capture_info: Optional[CaptureInfo] = None
+        # Controller-sequenced z-stack (stage.sequenced_z_stack()): one capture info per level, consumed
+        # by the frame callback in order while the controller steps Z and triggers the camera.
+        self._burst_capture_infos: Optional[collections.deque] = None
+        self._burst_frames_received = 0
         # This is only touched via the image callback path.  Don't touch it outside of there!
         self._current_round_images = {}
         # A copy of the channel last applied with set_microscope_mode. Within one position, an image whose channel
@@ -1138,6 +1143,13 @@ class MultiPointWorker:
         Returns the number of z steps taken (fewer than NZ - 1 after an abort).
         """
         n_configs = len(self.selected_configurations)
+        if n_configs == 1 and self._sequenced_stack_eligible():
+            config = self.selected_configurations[0]
+            try:
+                self._apply_channel_z_offset(config, af_succeeded)
+                return self._acquire_sequenced_stack(config, 0, region_id, current_path, fov, first_pass=True)
+            finally:
+                self._reset_channel_z_offset()
         z_steps_taken = 0
         for z_level in range(self.NZ):
             file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
@@ -1192,6 +1204,11 @@ class MultiPointWorker:
                 # Where this channel's stack starts (piezo um or stage mm), offset included.
                 stack_start = self.z_piezo_um if self.use_piezo else self.stage.get_pos().z_mm
                 first_pass = config_idx == 0
+                if self._sequenced_stack_eligible():
+                    z_steps_taken = self._acquire_sequenced_stack(
+                        config, config_idx, region_id, current_path, fov, first_pass=first_pass
+                    )
+                    continue
                 for z_level in range(self.NZ):
                     if self.abort_requested_fn():
                         break
@@ -1223,6 +1240,146 @@ class MultiPointWorker:
         finally:
             self._reset_channel_z_offset()
         return z_steps_taken
+
+    def _sequenced_stack_eligible(self) -> bool:
+        """The controller runs the whole stack (Z steps + one trigger per level) when the stage offers
+        it, the user opted in, the camera is hardware-triggered, Z is the stage (no piezo), and no
+        per-channel z offset is in play. Anything else takes the software loop."""
+        if not control._def.USE_HARDWARE_SEQUENCED_Z_STACK or self.NZ < 2 or self.use_piezo:
+            return False
+        if self.liveController.trigger_mode != TriggerMode.HARDWARE or self._scan_unit_triggers_camera():
+            return False
+        seq = self.stage.sequenced_z_stack()
+        if seq is None or seq.simulated:
+            return False
+        if self.apply_channel_offset and self.do_reflection_af:
+            return False
+        return True
+
+    def _acquire_sequenced_stack(self, config, config_idx, region_id, current_path, fov, first_pass: bool) -> int:
+        """One channel's whole z-stack by the controller: arm N capture infos, start the controller's
+        stack, let the frame callback consume them in order, wait for the controller and the N frames.
+        Returns the number of z steps the stage ends up above the stack start (NZ - 1 plus the
+        controller's extra steps), for move_z_back_after_stack(); 0 after an abort (Z is moved back here)."""
+        seq = self.stage.sequenced_z_stack()
+        n_configs = len(self.selected_configurations)
+        if not self._config_already_applied(config):
+            self._select_config(config)
+
+        start_pos = self.stage.get_pos()
+        offset_um = self._current_z_offset_um
+        infos = collections.deque()
+        level_positions = []
+        for z_level in range(self.NZ):
+            file_ID = f"{region_id}_{fov:0{FILE_ID_PADDING}}_{z_level:0{FILE_ID_PADDING}}"
+            # Positions as the controller will produce them: start + k * step (verified within 0.3 um on
+            # the bench); the recorded position excludes the channel offset, as the software path does.
+            level_pos = start_pos.model_copy(update={"z_mm": start_pos.z_mm + z_level * self.deltaZ - offset_um / 1000})
+            level_positions.append(level_pos)
+            if first_pass:
+                self._begin_z_level(region_id, current_path, fov, z_level, file_ID, level_pos)
+            infos.append(
+                CaptureInfo(
+                    position=level_pos,
+                    z_index=z_level,
+                    capture_time=time.time(),
+                    z_piezo_um=None,
+                    configuration=config,
+                    save_directory=current_path,
+                    file_id=file_ID,
+                    region_id=region_id,
+                    fov=fov,
+                    configuration_idx=config_idx,
+                    time_point=self.time_point,
+                )
+            )
+
+        # Same gates as a single image: the previous frame dispatched, backpressure, camera ready.
+        if not self._ready_for_next_trigger.wait(self._frame_wait_timeout_s()):
+            self._log.error("Frame callback never set _ready_for_next_trigger before the z-stack. Aborting.")
+            self._abort_due_to_error()
+            return 0
+        if self._backpressure.should_throttle():
+            if not self._backpressure.wait_for_capacity():
+                self._log.error(
+                    f"Backpressure timeout - disk I/O cannot keep up. Stats: {self._backpressure.get_stats()}"
+                )
+        while not self.camera.get_ready_for_trigger():
+            self._sleep(0.001)
+
+        self._ready_for_next_trigger.clear()
+        self._burst_frames_received = 0
+        self._burst_capture_infos = infos
+        # Per-level time on the bench ranged 0.28 to 1.03 s with no setting explaining it, so the budget is
+        # generous: the controller's flag and the frame count decide, never a dwell estimate.
+        frame_time_s = self.camera.get_total_frame_time() / 1e3
+        deadline = time.monotonic() + self.NZ * (1.5 + frame_time_s) + 5.0
+        steps_taken = self.NZ - 1 + seq.extra_steps_after_last_level
+        aborted = False
+        try:
+            seq.start(self.deltaZ, self.NZ)
+            with self._timing.get_timer("sequenced_z_stack"):
+                while True:
+                    controller_running = seq.running()
+                    frames_done = self._burst_frames_received >= self.NZ
+                    if not controller_running and frames_done:
+                        break
+                    if self.abort_requested_fn():
+                        self._log.warning("Abort requested during a sequenced z-stack; stopping the controller.")
+                        seq.abort()
+                        aborted = True
+                        break
+                    if time.monotonic() > deadline:
+                        self._log.error(
+                            f"Sequenced z-stack timed out: controller running={controller_running}, "
+                            f"frames {self._burst_frames_received}/{self.NZ}. Aborting the acquisition."
+                        )
+                        seq.abort()
+                        aborted = True
+                        self._abort_due_to_error()
+                        break
+                    self._sleep(0.005)
+            if not aborted:
+                seq.finish()
+        except Exception as e:
+            self._log.exception(f"Sequenced z-stack failed: {e}")
+            try:
+                seq.abort()
+            except Exception:
+                self._log.exception("Aborting the sequenced z-stack also failed")
+            aborted = True
+            self._abort_due_to_error()
+        finally:
+            self._burst_capture_infos = None
+            self._ready_for_next_trigger.set()
+
+        if aborted:
+            # Z is wherever the controller stopped; go back to the stack start so the caller's return move
+            # (steps_taken = 0) is a no-op and the next FOV starts from a known place.
+            self.stage.move_z_to(start_pos.z_mm)
+            return 0
+
+        received = self._burst_frames_received
+        if received != self.NZ:
+            self._log.error(f"Sequenced z-stack: {received} of {self.NZ} frames arrived. Aborting the acquisition.")
+            self._abort_due_to_error()
+            return steps_taken
+
+        for z_level, level_pos in enumerate(level_positions):
+            if first_pass:
+                self._finish_z_level(region_id, fov, z_level, level_pos)
+                self.af_fov_count = self.af_fov_count + 1
+            if self.z_stack_order == "Z FIRST":
+                current_image = fov * self.NZ * n_configs + config_idx * self.NZ + z_level + 1
+            else:
+                current_image = fov * self.NZ * n_configs + z_level * n_configs + config_idx + 1
+            self.callbacks.signal_region_progress(
+                RegionProgressUpdate(current_fov=current_image, region_fovs=self.total_scans)
+            )
+        self._log.info(
+            f"Sequenced z-stack done: {self.NZ} levels, {received} frames, Z now {self.stage.get_pos().z_mm:.4f} mm"
+        )
+        return steps_taken
 
     def _begin_z_level(self, region_id, current_path, fov, z_level, file_ID, acquire_pos=None):
         if acquire_pos is None:
@@ -1486,10 +1643,21 @@ class MultiPointWorker:
             self._image_callback_idle.clear()
             with self._timing.get_timer("_image_callback"):
                 self._log.debug(f"In Image callback for frame_id={camera_frame.frame_id}")
-                info = self._current_capture_info
-                self._current_capture_info = None
+                if self._burst_capture_infos is not None:
+                    # Controller-sequenced z-stack: frames arrive in level order without per-frame triggers.
+                    if not self._burst_capture_infos:
+                        self._log.warning("Extra frame during a sequenced z-stack burst; ignoring it.")
+                        self._image_callback_idle.set()
+                        return
+                    info = self._burst_capture_infos.popleft()
+                    self._burst_frames_received += 1
+                    if not self._burst_capture_infos:
+                        self._ready_for_next_trigger.set()
+                else:
+                    info = self._current_capture_info
+                    self._current_capture_info = None
 
-                self._ready_for_next_trigger.set()
+                    self._ready_for_next_trigger.set()
                 if not info:
                     self._log.error("In image callback, no current capture info! Something is wrong. Aborting.")
                     self._abort_due_to_error()

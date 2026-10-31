@@ -310,6 +310,34 @@ class StageStage(pydantic.BaseModel):
     busy: bool
 
 
+class SequencedZStack(abc.ABC):
+    """A z-stack run by the motion controller: Z steps by `step_mm` through `n_levels` levels and the
+    controller pulses the camera trigger once per level. The host arms the camera first, then
+    start(), then polls running() while collecting frames, then finish(); abort() stops a run."""
+
+    #: Steps the controller takes AFTER the last level before it stops (the Zmotion program takes one).
+    extra_steps_after_last_level: int = 0
+    #: True when no camera trigger is produced (an in-memory controller): the host must not expect frames.
+    simulated: bool = False
+
+    @abc.abstractmethod
+    def start(self, step_mm: float, n_levels: int) -> None:
+        pass
+
+    @abc.abstractmethod
+    def running(self) -> bool:
+        pass
+
+    @abc.abstractmethod
+    def finish(self) -> None:
+        """Verify the run ended cleanly (idle, no controller error); raises otherwise."""
+        pass
+
+    @abc.abstractmethod
+    def abort(self) -> None:
+        pass
+
+
 class AbstractStage(metaclass=abc.ABCMeta):
     def __init__(self, stage_config: StageConfig):
         self._config = stage_config
@@ -376,6 +404,11 @@ class AbstractStage(metaclass=abc.ABCMeta):
 
     def get_config(self) -> StageConfig:
         return self._config
+
+    def sequenced_z_stack(self) -> Optional["SequencedZStack"]:
+        """A controller-driven z-stack (the controller steps Z and pulses the camera trigger once per
+        level while the host only collects frames), or None when this stage has no such facility."""
+        return None
 
     def wait_for_idle(self, timeout_s):
         start_time = time.time()
