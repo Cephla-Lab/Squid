@@ -1094,13 +1094,41 @@ class ToupcamCamera(AbstractCamera):
                     # TODO(imo): Propagate error in some way and handle
                     self._log.error("Unable to select trigger source: " + error_type)
             else:
-                # select trigger source to GPIO0
+                # select the trigger source: GPIO0 (Cephla wiring) or the opto-isolated input
+                source_name = str(CAMERA_CONFIG.TOUPCAM_TRIGGER_SOURCE or "gpio0").lower()
+                if source_name == "opto":
+                    io_index, source = 0, 0  # 0x00 => opto-isolated input
+                elif source_name == "gpio0":
+                    io_index, source = 1, 1
+                else:
+                    raise ValueError(
+                        f"CAMERA_CONFIG.TOUPCAM_TRIGGER_SOURCE={source_name!r}: expected 'gpio0' or 'opto'"
+                    )
                 try:
-                    self._camera.IoControl(1, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, 1)
+                    self._camera.IoControl(io_index, toupcam.TOUPCAM_IOCONTROLTYPE_SET_TRIGGERSOURCE, source)
+                    self._log.info(f"ToupCam trigger source: {source_name}")
                 except toupcam.HRESULTException as ex:
                     error_type = hresult_checker(ex)
                     self._log.exception("Unable to select trigger source: " + error_type)
                     raise
+                activation_name = CAMERA_CONFIG.TOUPCAM_TRIGGER_INPUT_ACTIVATION
+                if activation_name:
+                    activations = {"rising": 0, "falling": 1, "high": 2, "low": 3}
+                    if str(activation_name).lower() not in activations:
+                        raise ValueError(
+                            f"CAMERA_CONFIG.TOUPCAM_TRIGGER_INPUT_ACTIVATION={activation_name!r}: expected one of {list(activations)}"
+                        )
+                    try:
+                        self._camera.IoControl(
+                            io_index,
+                            toupcam.TOUPCAM_IOCONTROLTYPE_SET_INPUTACTIVATION,
+                            activations[str(activation_name).lower()],
+                        )
+                        self._log.info(f"ToupCam trigger input activation: {activation_name}")
+                    except toupcam.HRESULTException as ex:
+                        error_type = hresult_checker(ex)
+                        self._log.exception("Unable to set trigger input activation: " + error_type)
+                        raise
                 # set GPIO1 to trigger wait
                 try:
                     self._camera.IoControl(3, toupcam.TOUPCAM_IOCONTROLTYPE_SET_OUTPUTMODE, 0)

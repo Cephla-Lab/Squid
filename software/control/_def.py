@@ -874,6 +874,13 @@ TRACKING_SHOW_MICROSCOPE_CONFIGURATIONS = False  # set to true when doing multim
 
 
 class CAMERA_CONFIG:
+    # ToupCam hardware-trigger wiring (EDGE mode). "gpio0": the trigger pulse arrives on GPIO0 (Cephla
+    # controllers, the default). "opto": on the opto-isolated input (PLC-style 24 V outputs; the Zmotion
+    # bench instrument drives it with an active-low ~1 ms pulse on its output 2).
+    TOUPCAM_TRIGGER_SOURCE = "gpio0"
+    # None keeps the camera's own setting; "rising", "falling", "high" or "low" sets the trigger
+    # input activation (SET_INPUTACTIVATION) for the selected source.
+    TOUPCAM_TRIGGER_INPUT_ACTIVATION = None
     ROI_OFFSET_X_DEFAULT = None
     ROI_OFFSET_Y_DEFAULT = None
     ROI_WIDTH_DEFAULT = None
