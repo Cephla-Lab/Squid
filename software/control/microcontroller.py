@@ -4,7 +4,7 @@ import struct
 import threading
 import time
 from abc import abstractmethod
-from typing import Callable, Tuple
+from typing import Callable, List, Tuple
 
 import numpy as np
 import serial
@@ -587,6 +587,38 @@ class MicrocontrollerSerial(AbstractCephlaMicroSerial):
         return self.is_open()
 
 
+#: The USB vendor id of every Teensy (PJRC). The controller is the only Teensy on a Squid, and the
+#: id is reported on every platform, so it identifies the controller's port without a serial number.
+TEENSY_USB_VID = 0x16C0
+
+
+def find_controller_ports(ports, version=None, sn=None, platform=sys.platform) -> List[str]:
+    """The serial ports among `ports` (serial.tools.list_ports entries) that are the controller.
+
+    A serial number pins the port outright. Otherwise the Teensy is recognised by its USB vendor
+    id (or the "Teensyduino" manufacturer string Linux and macOS report). The old Windows rule,
+    "any port whose driver is Microsoft's usbser", is kept only as a fallback: it matches every
+    USB-serial instrument on the machine (a stage controller, a laser engine), and on 2026-10-28
+    a bench host opened a Xeryon stage's port as the controller because that port was listed
+    first. When the fallback is all there is, the log says so.
+    """
+    if version == "Arduino Due":
+        return [p.device for p in ports if "Arduino Due" == p.description]  # autodetect - based on Deepak's code
+    if sn is not None:
+        return [p.device for p in ports if sn == p.serial_number]
+    teensy = [p.device for p in ports if p.vid == TEENSY_USB_VID or p.manufacturer == "Teensyduino"]
+    if teensy or platform != "win32":
+        return teensy
+    usbser = [p.device for p in ports if p.manufacturer == "Microsoft"]
+    if usbser:
+        _log.warning(
+            f"No serial port reports the Teensy vendor id {TEENSY_USB_VID:04X}; falling back to the usbser "
+            f"port(s) {usbser}, which may belong to another instrument. Set the controller's serial number in "
+            "the configuration to pin its port."
+        )
+    return usbser
+
+
 def get_microcontroller_serial_device(
     version=None, sn=None, baudrate=2000000, simulated=False
 ) -> AbstractCephlaMicroSerial:
@@ -594,27 +626,12 @@ def get_microcontroller_serial_device(
         return SimSerial()
     else:
         _log.info(f"Getting serial device for microcontroller {version=}")
-        if version == "Arduino Due":
-            controller_ports = [
-                p.device for p in serial.tools.list_ports.comports() if "Arduino Due" == p.description
-            ]  # autodetect - based on Deepak's code
-        else:
-            if sn is not None:
-                controller_ports = [p.device for p in serial.tools.list_ports.comports() if sn == p.serial_number]
-            else:
-                if sys.platform == "win32":
-                    controller_ports = [
-                        p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Microsoft"
-                    ]
-                else:
-                    controller_ports = [
-                        p.device for p in serial.tools.list_ports.comports() if p.manufacturer == "Teensyduino"
-                    ]
+        controller_ports = find_controller_ports(serial.tools.list_ports.comports(), version=version, sn=sn)
 
         if not controller_ports:
             raise IOError("no controller found for serial device")
         if len(controller_ports) > 1:
-            _log.warning("multiple controller found - using the first")
+            _log.warning(f"multiple controllers found {controller_ports} - using the first")
 
         return MicrocontrollerSerial(controller_ports[0], baudrate)
 
