@@ -1,31 +1,44 @@
-import time
-import numpy as np
-import threading
 import os
-from typing import Optional, Callable, Sequence, Tuple, Dict
+import sys
+import threading
+import time
+from typing import Callable, Dict, Optional, Sequence, Tuple
+
+import numpy as np
 import pydantic
 
 import pyAndorSDK3
 from pyAndorSDK3 import AndorSDK3
-from control._def import *
+
+import control.utils
+import squid.logging
+from control._def import USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
-import control.utils
+
+_log = squid.logging.get_logger(__name__)
 
 
-# For using in Windows only
-package_path = os.path.dirname(pyAndorSDK3.__file__)
-library_path = os.path.join(package_path, "libs", "Windows", "64")
-pyAndorSDK3.utils.add_library_path(library_path)
+def _sdk_library_dir(package_path: str, platform: str = sys.platform) -> str:
+    """Where pyAndorSDK3 keeps the SDK3 shared libraries for this platform."""
+    return os.path.join(package_path, "libs", "Windows" if platform == "win32" else "Linux", "64")
+
+
+# pyAndorSDK3 bundles the SDK3 libraries per platform but only finds them once told where to look.
+_library_dir = _sdk_library_dir(os.path.dirname(pyAndorSDK3.__file__))
+if os.path.isdir(_library_dir):
+    pyAndorSDK3.utils.add_library_path(_library_dir)
 
 
 class AndorCapabilities(pydantic.BaseModel):
     binning_to_resolution: Dict[Tuple[int, int], Tuple[int, int]]
+    pixel_size_um: float
 
 
 class AndorCamera(AbstractCamera):
-    PIXEL_SIZE_UM: float = 6.5  # ZL 41 Cell
+    # The binning options SDK3 offers on the Zyla family; the resolution of each follows the sensor size.
+    BINNING_FACTORS = (1, 2, 3, 4, 8)
 
     @staticmethod
     def _open(index=None, sn=None) -> Tuple["pyAndorSDK3.Camera", AndorCapabilities]:
@@ -49,21 +62,18 @@ class AndorCamera(AbstractCamera):
         except Exception as e:
             raise CameraError(f"Failed to open Andor camera with index={index}: {e}")
 
-        # Get camera capabilities
+        # Capabilities come from the camera, so any SDK3 model with these binning options works
         try:
-            camera_model = camera.CameraModel
-            log.info(f"Andor camera model: {camera_model}")
-            # For now, we only support ZL41 Cell 4.2
-            supported_resolutions = {
-                (1, 1): (2048, 2048),
-                (2, 2): (1024, 1024),
-                (3, 3): (682, 682),
-                (4, 4): (512, 512),
-                (8, 8): (256, 256),
-            }
-
-            capabilities = AndorCapabilities(binning_to_resolution=supported_resolutions)
-
+            width, height = int(camera.SensorWidth), int(camera.SensorHeight)
+            pixel_size_um = float(camera.PixelWidth)
+            _log.info(
+                f"Andor camera: model={camera.CameraModel} serial={camera.SerialNumber} "
+                f"sensor={width}x{height} pixel={pixel_size_um} um"
+            )
+            capabilities = AndorCapabilities(
+                binning_to_resolution={(b, b): (width // b, height // b) for b in AndorCamera.BINNING_FACTORS},
+                pixel_size_um=pixel_size_um,
+            )
             return camera, capabilities
         except Exception as e:
             camera.close()
@@ -81,10 +91,17 @@ class AndorCamera(AbstractCamera):
         self._read_thread: Optional[threading.Thread] = None
         self._read_thread_keep_running = threading.Event()
         self._read_thread_keep_running.clear()
-        self._read_thread_wait_period_s = 0.01
+        self._read_thread_wait_period_s = 1.0  # also how long one wait_buffer() blocks
         self._read_thread_running = threading.Event()
         self._read_thread_running.clear()
 
+        # Held across every capture transition (start/stop) and by the read thread from taking a frame
+        # out of an SDK buffer through handing the buffer back, so a buffer from a capture that has since
+        # been stopped or re-allocated (an ROI change) is never decoded with the new layout or re-queued
+        # against the new ImageSizeBytes. Taken after _trigger_lock, before _frame_lock.
+        self._capture_lock = threading.Lock()
+        self._buffer_ids = set()  # id() of every buffer handed to the SDK for the current capture
+        self._acquisition_started = False  # AcquisitionStart has run and no stop has succeeded since
         self._frame_lock = threading.Lock()
         self._current_frame: Optional[CameraFrame] = None
         self._last_trigger_timestamp = 0
@@ -99,7 +116,7 @@ class AndorCamera(AbstractCamera):
         # Andor specific properties
         self._strobe_delay_us: Optional[float] = None
         self._buffer_queue = []
-        self._binning = self._config.default_binning
+        self._aoi_layout: Optional[Tuple[int, int, int]] = None  # (height, width, stride bytes) while streaming
 
         # We store exposure time so we don't need to worry about backing out strobe time
         self._exposure_time_ms: float = 20
@@ -123,32 +140,62 @@ class AndorCamera(AbstractCamera):
             self.EXPOSURE_TIME_MS_MAX = 30000.0
 
         self.set_exposure_time(self._exposure_time_ms)
-        self.set_pixel_format(CameraPixelFormat.MONO16)
+        self.set_pixel_format(self._config.default_pixel_format)
         self.set_binning(*self._config.default_binning)
+        roi = self._config.default_roi
+        if roi and all(value is not None for value in roi):
+            self.set_region_of_interest(*roi)
+        if USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA:
+            # AUX OUT high only while every row is exposing, so the laser is blanked during readout
+            self._camera.AuxiliaryOutSource = "FireAll"
 
     def close(self):
         self._cleanup_read_thread()
-
-        if self._is_streaming.is_set():
-            self.stop_streaming()
+        self._is_streaming.clear()
+        if self._acquisition_started:  # also after a stop_streaming() whose AcquisitionStop failed
+            self._stop_capture()
 
         if self._camera is not None:
             self._camera.close()
             self._camera = None
 
     def _allocate_read_buffers(self, count=2):
-        """Allocate buffers for the Andor camera"""
+        """Allocate buffers for the Andor camera. The caller must hold _capture_lock."""
         try:
+            # The AOI cannot change while streaming (every setter pauses it), so capture its layout once
+            self._aoi_layout = (int(self._camera.AOIHeight), int(self._camera.AOIWidth), int(self._camera.AOIStride))
             img_size = self._camera.ImageSizeBytes
             self._buffer_queue = []
             for _ in range(count):
                 buf = np.empty((img_size,), dtype="B")
                 self._camera.queue(buf, img_size)
                 self._buffer_queue.append(buf)  # Keep reference to avoid GC
+            self._buffer_ids = {id(buf) for buf in self._buffer_queue}
             return True
         except Exception as e:
             self._log.error(f"Failed to allocate buffers: {e}")
             return False
+
+    def _frame_from_buffer(self, buffer) -> np.ndarray:
+        """The AOI as a (height, width) uint16 copy; SDK3 may pad each row out to AOIStride bytes."""
+        height, width, stride = self._aoi_layout
+        rows = np.frombuffer(buffer, dtype=np.uint8, count=height * stride).reshape(height, stride)
+        return rows[:, : width * 2].copy().view("<u2")
+
+    def _take_frame(self, buffer) -> Optional[np.ndarray]:
+        """Copy the frame out of an SDK buffer and hand the buffer back, or drop it.
+
+        Dropped when the buffer is not part of the current capture: the reader was holding it while
+        the capture was stopped or re-allocated, so neither the current layout nor ImageSizeBytes
+        apply to it.
+        """
+        with self._capture_lock:
+            if not self._is_streaming.is_set() or id(buffer) not in self._buffer_ids:
+                self._log.debug("Dropping a buffer that is not part of the current capture.")
+                return None
+            img = self._frame_from_buffer(buffer)
+            self._camera.queue(buffer, self._camera.ImageSizeBytes)
+            return img
 
     def _read_frames_when_available(self):
         self._log.info("Starting Andor read thread.")
@@ -158,19 +205,12 @@ class AndorCamera(AbstractCamera):
             try:
                 try:
                     # Wait for frame with timeout
-                    acq = self._camera.wait_buffer(1000)  # 1000ms timeout
+                    acq = self._camera.wait_buffer(int(self._read_thread_wait_period_s * 1000))
 
-                    # Queue a new buffer
-                    self._camera.queue(acq._np_data, self._camera.ImageSizeBytes)
-
-                    # Process the frame
-                    raw = np.asarray(acq._np_data, dtype=np.uint8)
-                    img = raw.view("<u2")  # Andor typically returns 16-bit data
-
-                    # We reshape the image based on the full resolution now. After we implement ROI, we should
-                    # use AOIWidth, AOIHeight, and AOIStride instead.
-                    h, w = self._capabilities.binning_to_resolution[self._binning]
-                    img = img.reshape(h, w)
+                    # Copy the frame out before the buffer goes back to the SDK, which may write into it at once
+                    img = self._take_frame(acq._np_data)
+                    if img is None:
+                        continue
 
                     self._trigger_sent.clear()
 
@@ -239,8 +279,8 @@ class AndorCamera(AbstractCamera):
             self._line_rate_us = None
 
         if self._line_rate_us is not None:
-            resolution = self.get_resolution()
-            self._strobe_delay_us = int(self._line_rate_us * resolution[1])
+            # Rolling shutter: the readout spans the rows of the current AOI
+            self._strobe_delay_us = int(self._line_rate_us * int(self._camera.AOIHeight))
 
     def set_frame_format(self, frame_format: CameraFrameFormat):
         if frame_format != CameraFrameFormat.RAW:
@@ -308,7 +348,6 @@ class AndorCamera(AbstractCamera):
             try:
                 self._camera.AOIBinning = f"{binning_factor_x}x{binning_factor_y}"
                 self._calculate_strobe_delay()
-                self._binning = (binning_factor_x, binning_factor_y)
             except Exception as e:
                 raise CameraError(f"Failed to set binning to {binning_factor_x}x{binning_factor_y}: {e}")
 
@@ -321,23 +360,22 @@ class AndorCamera(AbstractCamera):
             raise CameraError("Could not determine binning")
 
     def get_binning_options(self) -> Sequence[Tuple[int, int]]:
-        return self._capabilities.binning_to_resolution.keys()
+        return list(self._capabilities.binning_to_resolution.keys())
 
     def get_pixel_size_unbinned_um(self) -> float:
-        return self.PIXEL_SIZE_UM
+        return self._capabilities.pixel_size_um
 
     def get_pixel_size_binned_um(self) -> float:
-        return self.PIXEL_SIZE_UM * self.get_binning()[0]
+        return self._capabilities.pixel_size_um * self.get_binning()[0]
 
     def set_analog_gain(self, analog_gain: float):
-        # Andor cameras typically don't have analog gain
-        self._log.warning("Analog gain is not supported for Andor cameras")
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_analog_gain(self) -> float:
-        return 0.0
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def get_gain_range(self) -> CameraGainRange:
-        raise NotImplementedError("Analog gain is not supported for Andor cameras")
+        raise NotImplementedError("Analog gain is not implemented for this camera.")
 
     def _ensure_read_thread_running(self):
         with self._read_thread_lock:
@@ -358,12 +396,13 @@ class AndorCamera(AbstractCamera):
             return True
 
         try:
-            if not self._allocate_read_buffers():
-                raise CameraError("Failed to allocate read buffers")
-
-            self._camera.AcquisitionStart()
+            with self._capture_lock:
+                if not self._allocate_read_buffers():
+                    raise CameraError("Failed to allocate read buffers")
+                self._camera.AcquisitionStart()
+                self._acquisition_started = True
+                self._is_streaming.set()
             self._trigger_sent.clear()
-            self._is_streaming.set()
             self._ensure_read_thread_running()
             self._log.info("Andor camera started streaming")
             return True
@@ -389,19 +428,31 @@ class AndorCamera(AbstractCamera):
             self._read_thread = None
             self._read_thread_running.clear()
 
+    def _stop_capture(self) -> bool:
+        """Stop acquisition and drop the capture's buffers; the reader cannot requeue into it meanwhile."""
+        with self._capture_lock:
+            self._buffer_ids = set()
+            self._buffer_queue = []
+            try:
+                self._camera.AcquisitionStop()
+                self._camera.flush()
+                self._acquisition_started = False
+                return True
+            except Exception as e:
+                self._log.error(f"Error stopping streaming: {e}")
+                return False
+
     def stop_streaming(self):
         if not self._is_streaming.is_set():
             self._log.debug("Already stopped, stop_streaming is noop")
             return
-        try:
-            self._camera.AcquisitionStop()
-            self._camera.flush()
-            self._buffer_queue = []
-            self._trigger_sent.clear()
-            self._is_streaming.clear()
+        # Clear the flag before tearing down capture so get_ready_for_trigger()
+        # reports not-ready for the whole teardown, not just after it. A failed
+        # AcquisitionStop is retried by close() (_acquisition_started stays set).
+        self._is_streaming.clear()
+        if self._stop_capture():
             self._log.info("Andor camera stopped streaming")
-        except Exception as e:
-            self._log.error(f"Error stopping streaming: {e}")
+        self._trigger_sent.clear()
 
     def get_is_streaming(self):
         return self._is_streaming.is_set()
@@ -438,7 +489,7 @@ class AndorCamera(AbstractCamera):
     def set_white_balance_gains(self, red_gain: float, green_gain: float, blue_gain: float):
         raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
 
-    def set_auto_white_balance_gains(self) -> Tuple[float, float, float]:
+    def set_auto_white_balance_gains(self, on: bool) -> Tuple[float, float, float]:
         raise NotImplementedError("White Balance Gains not implemented for the Andor driver.")
 
     def set_black_level(self, black_level: float):
@@ -459,7 +510,6 @@ class AndorCamera(AbstractCamera):
                 elif acquisition_mode == CameraAcquisitionMode.HARDWARE_TRIGGER:
                     self._camera.CycleMode = "Continuous"
                     self._camera.TriggerMode = "External"
-                    self._frame_ID_offset_hardware_trigger = None
                 else:
                     raise ValueError(f"Unhandled acquisition_mode={acquisition_mode}")
 
@@ -510,22 +560,70 @@ class AndorCamera(AbstractCamera):
                 raise CameraError(f"Failed to send software trigger: {e}")
 
     def _get_ready_for_trigger_imp(self) -> bool:
+        # Not ready while streaming is stopped - callers skip and retry instead of
+        # triggering into a stopped stream.
+        if not self.get_is_streaming():
+            return False
         if time.time() - self._last_trigger_timestamp > 1.5 * ((self.get_total_frame_time() + 4) / 1000.0):
             self._trigger_sent.clear()
         return not self._trigger_sent.is_set()
 
-    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
-        # Andor cameras have limited ROI support
-        self._log.warning("ROI is not fully implemented for Andor cameras")
+    def _read_aoi(self) -> Tuple[int, int, int, int]:
+        camera = self._camera
+        return int(camera.AOILeft), int(camera.AOITop), int(camera.AOIWidth), int(camera.AOIHeight)
 
-        # Store ROI parameters for potential future use
-        self.ROI_offset_x = offset_x
-        self.ROI_offset_y = offset_y
-        self.ROI_width = width
-        self.ROI_height = height
+    def _write_aoi(self, left: int, top: int, width: int, height: int):
+        """SDK3 keeps the AOI on the sensor at every step, so park the origin at (1, 1) first: widening an
+        off-centre AOI with its origin in place is rejected. Then each size before its origin, as the
+        SDK3 manual orders them, so an origin that only fits the new size is accepted."""
+        camera = self._camera
+        camera.AOILeft = 1
+        camera.AOITop = 1
+        camera.AOIWidth = width
+        camera.AOILeft = left
+        camera.AOIHeight = height
+        camera.AOITop = top
+
+    def _refresh_timing(self):
+        # The readout (strobe) time follows the AOI height; in hardware trigger mode the camera
+        # exposure and the MCU strobe delay are derived from it, so re-apply them.
+        self._calculate_strobe_delay()
+        self.set_exposure_time(self._exposure_time_ms)
+
+    def set_region_of_interest(self, offset_x: int, offset_y: int, width: int, height: int):
+        """Offset and size in the current binned pixels, as the GUI derives them from get_resolution().
+
+        SDK3 takes the size in binned pixels and the origin in unbinned sensor pixels, 1-based.
+        Trigger lock held across the pause AND the strobe/exposure recalculation, as in Hamamatsu;
+        the binning is read under it too, since set_binning changes it under the same lock.
+        """
+        with self._trigger_lock:
+            binning_x, binning_y = self.get_binning()
+            requested = (int(offset_x) * binning_x + 1, int(offset_y) * binning_y + 1, int(width), int(height))
+            with self._pause_streaming():
+                previous = self._read_aoi()
+                try:
+                    self._write_aoi(*requested)
+                except Exception as e:
+                    # Leave the camera as it was rather than half-changed, with its timing to match
+                    try:
+                        self._write_aoi(*previous)
+                    except Exception as restore_error:
+                        self._log.error(f"Could not restore the previous ROI {previous}: {restore_error}")
+                    self._refresh_timing()
+                    raise CameraError(
+                        f"Failed to set ROI offset=({offset_x}, {offset_y}) size={width}x{height}: {e}"
+                    ) from e
+                self._refresh_timing()
 
     def get_region_of_interest(self) -> Tuple[int, int, int, int]:
-        return (0, 0, self._camera.AOIWidth, self._camera.AOIHeight)
+        binning_x, binning_y = self.get_binning()
+        return (
+            (int(self._camera.AOILeft) - 1) // binning_x,
+            (int(self._camera.AOITop) - 1) // binning_y,
+            int(self._camera.AOIWidth),
+            int(self._camera.AOIHeight),
+        )
 
     def set_temperature(self, temperature_deg_c: Optional[float]):
         raise NotImplementedError("Temperature control is not implemented for this Andor camera model.")
