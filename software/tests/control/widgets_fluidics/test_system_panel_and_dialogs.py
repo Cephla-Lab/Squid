@@ -100,6 +100,22 @@ def test_preflight_dialog_blocks_start_on_problems(qtbot):
     assert ready.start_button.isEnabled()
 
 
+def test_preflight_dialog_offers_the_tec_off_option_on_the_confirm_path(qtbot):
+    plain = PreflightDialog([], ["ready"])
+    qtbot.addWidget(plain)
+    assert plain.disable_tec_checkbox is None and plain.disable_tec_at_end() is False
+
+    ready = PreflightDialog([], ["ready"], tec_option=True)
+    qtbot.addWidget(ready)
+    assert ready.disable_tec_checkbox is not None and ready.disable_tec_at_end() is False
+    ready.disable_tec_checkbox.setChecked(True)
+    assert ready.disable_tec_at_end() is True
+
+    blocked = PreflightDialog(["bad"], [], tec_option=True)  # confirm-path affordance only
+    qtbot.addWidget(blocked)
+    assert blocked.disable_tec_checkbox is None
+
+
 def test_recovery_dialog_names_the_cursor_step(qtbot):
     manifest = RunManifest(
         run_name="liver",
