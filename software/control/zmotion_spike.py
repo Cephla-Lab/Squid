@@ -88,6 +88,12 @@ MOVE_TOLERANCE_COUNTS = 3  # bench: normal moves end within 1-2 counts of the ta
 # Bench run 1 (user: "x and y crossed"): Squid's X moves the controller's Y axis (channel 1, 120 mm)
 # and Squid's Y the controller's X (channel 0, 80 mm nominal). ZMOTION_SWAP_XY=0 turns the swap off.
 SWAP_XY = os.environ.get("ZMOTION_SWAP_XY", "1") == "1"
+# Bench run 3 (user: "0,0 seems to be at the center"): the controller's power-on homing puts 0 at the
+# CENTRE of XY travel (forward sensors at +42.25 on the 80 mm axis and +63.0 on the 120 mm axis, reverse
+# inputs inactive at 0). Squid wants 0 at a corner, so the shim shifts each XY axis by half its nominal
+# travel: squid_mm = ctrl_mm + travel/2. ZMOTION_<X|Y>_OFFSET_MM (controller axis names) overrides the
+# shift; ZMOTION_CENTER_ZERO=0 turns it off.
+CENTER_ZERO = os.environ.get("ZMOTION_CENTER_ZERO", "1") == "1"
 
 
 def _controller_axis_for(squid_axis: str) -> str:
@@ -352,6 +358,13 @@ class _Axis:
                 f"axis {name} (controller {ctrl_name}) not configured on the controller (channel {self.channel}, res {self.res})"
             )
         self.sign = sign
+        self.offset_mm = 0.0  # squid frame = controller frame + offset (before the sign mirror)
+        if CENTER_ZERO and ctrl_name in ("x", "y"):
+            env = os.environ.get(f"ZMOTION_{ctrl_name.upper()}_OFFSET_MM")
+            self.offset_mm = float(env) if env else self.travel / 2.0
+            _log.info(
+                f"Zmotion axis {name}: controller 0 is the centre of travel; Squid 0 = controller {-self.offset_mm:g} mm"
+            )
         self.commanded_mm: Optional[float] = None  # controller frame, mm
         self.min_mm: Optional[float] = None
         self.max_mm: Optional[float] = None
@@ -387,10 +400,12 @@ class ZmotionStage(AbstractStage):
     # The controller frame is 0..travel. MOVEMENT_SIGN = -1 flips the direction while keeping Squid's
     # frame at 0..travel too (squid = travel - controller), so the software limits stay meaningful.
     def _to_ctrl(self, axis: _Axis, squid_mm: float) -> float:
-        return squid_mm if axis.sign > 0 else axis.travel - squid_mm
+        shifted = squid_mm if axis.sign > 0 else axis.travel - squid_mm
+        return shifted - axis.offset_mm
 
     def _to_squid(self, axis: _Axis, ctrl_mm: float) -> float:
-        return ctrl_mm if axis.sign > 0 else axis.travel - ctrl_mm
+        shifted = ctrl_mm + axis.offset_mm
+        return shifted if axis.sign > 0 else axis.travel - shifted
 
     def _mpos_mm(self, axis: _Axis) -> float:
         return self.link.query_float(f"?MPOS({axis.channel})") / axis.res
