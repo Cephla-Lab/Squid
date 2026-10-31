@@ -282,6 +282,11 @@ class IlluminationController:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
             line = self.channel_mappings_software[channel]
+            # Every time, not only when the power changes below: which line is armed is not part of the power cache.
+            # Optional on the light source, like use(): duck-typed sources (and test fakes) need not have it.
+            select = getattr(self.light_source, "select", None)
+            if select is not None:
+                select(line)
             # A light source whose channel map follows the port map (laser engine v2) moves a channel to another line
             # when the port map is edited, and that line has not had this channel's intensity yet.
             moved = line != self._intensity_lines.get(channel, line)

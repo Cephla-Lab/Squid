@@ -84,6 +84,9 @@ class AndorLaser(LightSource):
         self.active_blanking = active_blanking
         self.timeout_s = timeout_s
         self.units: Dict[str, LaserUnit] = {}
+        # Engine-wide: a line selection (close every other unit, open one line) and shut_down() must not
+        # interleave with each other across threads; the per-unit locks only keep single transactions whole.
+        self._lock = threading.RLock()
         self.channel_mappings: Dict[int, Optional[Channel]] = {wl: None for group in CHANNEL_GROUPS for wl in group}
         self.intensity_control_mode = IntensityControlMode.Software
         self.shutter_control_mode = ShutterControlMode.TTL
@@ -161,9 +164,9 @@ class AndorLaser(LightSource):
             )
         return reply
 
-    def _set_shutter_mask(self, unit: LaserUnit, mask: int, force: bool = False):
-        """Write the shutter byte unless it is what this driver last wrote (force writes it regardless)."""
-        if unit.shutter_mask == mask and not force:
+    def _set_shutter_mask(self, unit: LaserUnit, mask: int):
+        """Write the shutter byte unless it is what this driver last wrote."""
+        if unit.shutter_mask == mask:
             return
         self._transact(unit, struct.pack(">BB", LaserCommands.SET_SHUTTER_STATE, mask), 1)
         unit.shutter_mask = mask
@@ -196,6 +199,19 @@ class AndorLaser(LightSource):
     def get_shutter_control_mode(self) -> ShutterControlMode:
         return self.shutter_control_mode
 
+    def select(self, channel: Optional[Channel]) -> None:
+        """With active blanking, arm only the selected line: every other line on every unit is closed, so the
+        camera's exposure signal can open just this one. None (a channel with no laser line) closes them all."""
+        if not self.active_blanking:
+            return
+        with self._lock:
+            selected = self.units[channel[0]] if channel is not None else None
+            for unit in self.units.values():
+                if unit is not selected:
+                    self._set_shutter_mask(unit, 0)
+            if selected is not None:
+                self._set_shutter_mask(selected, 1 << channel[1])
+
     def set_intensity(self, channel: Optional[Channel], intensity: float):
         """Set a line's transmission as a percentage (0-100). A channel the engine has no line for is ignored."""
         if channel is None:
@@ -203,15 +219,12 @@ class AndorLaser(LightSource):
         if intensity < 0.0 or intensity > 100.0:
             raise ValueError(f"Invalid intensity {intensity}. Must be 0.0-100.0")
         unit_id, line = channel
-        unit = self.units[unit_id]
-        if self.active_blanking:
-            # Only the line being used may emit: close every other line on every unit, open this one
-            for other in self.units.values():
-                if other is not unit:
-                    self._set_shutter_mask(other, 0)
-            self._set_shutter_mask(unit, 1 << line)
-        transmission = int(round(intensity * 10))
-        self._transact(unit, struct.pack(">BBH", LaserCommands.SET_TRANSMISSION, line, transmission), 1)
+        with self._lock:
+            self.select(channel)  # also for callers that set the power without going through the controller
+            transmission = int(round(intensity * 10))
+            self._transact(
+                self.units[unit_id], struct.pack(">BBH", LaserCommands.SET_TRANSMISSION, line, transmission), 1
+            )
 
     def get_intensity(self, channel: Optional[Channel]) -> float:
         if channel is None:
@@ -236,16 +249,19 @@ class AndorLaser(LightSource):
         return bool((unit.shutter_mask >> line) & 0x01)
 
     def shut_down(self):
-        """Zero every line, close every shutter and release every unit; safe to call more than once."""
-        units, self.units = list(self.units.values()), {}
-        for unit in units:
-            try:
+        """Zero every line, close every shutter and release every unit; safe to call more than once.
+
+        Every step is attempted on its own: a line that rejects its zeroing must not keep the other lines
+        at power or the shutter byte open.
+        """
+        with self._lock:
+            units, self.units = list(self.units.values()), {}
+            for unit in units:
                 for line in unit.lines:
-                    self._transact(unit, struct.pack(">BBH", LaserCommands.SET_TRANSMISSION, line, 0), 1)
-                self._set_shutter_mask(unit, 0, force=True)
-            except Exception as e:
-                log.warning(f"Could not turn off Andor laser unit {unit.serial_number} before closing it: {e}")
-            finally:
+                    self._try(
+                        unit, f"zero line {line}", struct.pack(">BBH", LaserCommands.SET_TRANSMISSION, line, 0), 1
+                    )
+                self._try(unit, "close the shutters", struct.pack(">BB", LaserCommands.SET_SHUTTER_STATE, 0), 1)
                 with unit.lock:  # a transaction in flight on another thread finishes first
                     if unit.device is not None:
                         try:
@@ -253,3 +269,9 @@ class AndorLaser(LightSource):
                         except Exception as e:
                             log.warning(f"Failed to close Andor laser unit {unit.serial_number}: {e}")
                         unit.device = None
+
+    def _try(self, unit: LaserUnit, what: str, command: bytes, reply_length: int):
+        try:
+            self._transact(unit, command, reply_length)
+        except Exception as e:
+            log.warning(f"Could not {what} on Andor laser unit {unit.serial_number} before closing it: {e}")

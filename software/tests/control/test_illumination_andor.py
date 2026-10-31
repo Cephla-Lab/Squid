@@ -31,6 +31,8 @@ class FakeHleUnit:
         self.fail_line_setup = False
         self.in_transaction = False
         self.interleaved = 0  # writes that arrived while another transaction was still unanswered
+        self.peers = [self]  # every unit of the engine, set by the hle fixture
+        self.max_open_lines_seen = 0  # across the engine, updated on every shutter write
 
     def open(self, vid, pid, serial):
         assert serial == self.serial_number
@@ -63,6 +65,9 @@ class FakeHleUnit:
         op = command[0]
         if op == Op.SET_SHUTTER_STATE:
             self.shutter_mask = command[1]
+            open_lines = sum(bin(unit.shutter_mask).count("1") for unit in self.peers if unit.shutter_mask != 0xFF)
+            for unit in self.peers:
+                unit.max_open_lines_seen = max(unit.max_open_lines_seen, open_lines)
             return [op]
         if op == Op.READ_SHUTTER_STATE:
             return [op, self.shutter_mask]
@@ -110,6 +115,8 @@ def hle(monkeypatch):
     """Install fake HLE units behind the hid module the driver uses."""
 
     def install(*units):
+        for unit in units:
+            unit.peers = list(units)
         by_serial = {u.serial_number: u for u in units}
         monkeypatch.setattr(andor.hid, "enumerate", lambda vid, pid: [{"serial_number": s} for s in by_serial])
         monkeypatch.setattr(andor.hid, "device", lambda: FakeHidDevice(by_serial))
@@ -325,3 +332,57 @@ def test_shutter_state_comes_from_the_byte_the_driver_last_wrote(hle):
     assert laser.get_shutter_state(("HLE-1", 2)) is True
     assert laser.get_shutter_state(("HLE-1", 1)) is False
     assert len(unit.sent) == sent_before  # the driver is the only writer of the shutter byte: no round trip
+
+
+# ------------------------------------------------------------------ review follow-ups
+
+
+def test_active_blanking_selects_the_line_even_when_the_controller_caches_the_power(hle):
+    """405 at 10 % -> 488 at 10 % -> 405 at 10 %: the controller skips the power write the third time
+    (same value as cached), but the 405 line must still be the one that is open."""
+    (unit,) = hle(FakeHleUnit("HLE-1", FOUR_LINE_UNIT))
+    laser = andor.AndorLaser(active_blanking=True)
+    mcu = Microcontroller(SimSerial(), reset_and_initialize=False)
+    controller = IlluminationController(
+        mcu, IntensityControlMode.Software, ShutterControlMode.TTL, LightSourceType.AndorLaser, laser
+    )
+    try:
+        controller.set_intensity(405, 10.0)
+        controller.set_intensity(488, 10.0)
+        assert unit.shutter_mask == 0b0010
+        controller.set_intensity(405, 10.0)
+        assert unit.shutter_mask == 0b0001
+    finally:
+        controller.close()
+        mcu.close()
+
+
+def test_active_blanking_never_has_two_lines_open_across_threads(hle):
+    a, b = hle(FakeHleUnit("HLE-A", {0: 405}), FakeHleUnit("HLE-B", {0: 561}))
+    laser = make_laser(active_blanking=True)
+
+    def switch_to(channel):
+        for _ in range(40):
+            laser.set_intensity(channel, 10.0)
+
+    threads = [threading.Thread(target=switch_to, args=(c,)) for c in (("HLE-A", 0), ("HLE-B", 0))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert a.max_open_lines_seen <= 1
+
+
+def test_shut_down_still_zeroes_the_other_lines_and_closes_the_shutter_when_one_line_is_rejected(hle):
+    (unit,) = hle(FakeHleUnit("HLE-1", {0: 405, 1: 488, 2: 561}))
+    laser = make_laser(active_blanking=True)
+    for line in range(3):
+        laser.set_intensity(("HLE-1", line), 20.0)
+    del unit.lines[1]  # line 1 now rejects every command (as a faulted line would)
+
+    laser.shut_down()
+
+    assert unit.transmission[0] == 0 and unit.transmission[2] == 0
+    assert unit.shutter_mask == 0
+    assert unit.closed
