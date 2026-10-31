@@ -84,7 +84,9 @@ AXIS = {
     ),
 }
 MIN_Z_STEP_MM = 0.0003  # bench: 1- and 2-count Z targets are accepted but do not move
-MOVE_TOLERANCE_COUNTS = 3  # bench: normal moves end within 1-2 counts of the target
+# Bench: XY moves land exactly; single Z steps within 1-2 counts, but back-to-back 5 um wheel steps
+# ended 4 counts (0.4 um) short once (run 9), so Z gets a 1 um tolerance.
+MOVE_TOLERANCE_COUNTS = {"x": 3, "y": 3, "z": 10}
 # Bench run 1 (user: "x and y crossed"): Squid's X moves the controller's Y axis (channel 1, 120 mm)
 # and Squid's Y the controller's X (channel 0, 80 mm nominal). ZMOTION_SWAP_XY=0 turns the swap off.
 SWAP_XY = os.environ.get("ZMOTION_SWAP_XY", "1") == "1"
@@ -492,7 +494,7 @@ class ZmotionStage(AbstractStage):
         if bad:
             raise ZmotionError(f"{axis.name}: axis status after move: {', '.join(bad)} (axisstatus={status})")
         reached = self.link.query_float(f"?MPOS({axis.channel})")
-        if abs(reached - counts) > MOVE_TOLERANCE_COUNTS:
+        if abs(reached - counts) > MOVE_TOLERANCE_COUNTS[axis.name]:
             raise ZmotionError(
                 f"{axis.name}: move ended {reached / axis.res:.4f} mm instead of {counts / axis.res:.4f} mm "
                 f"({abs(reached - counts):.0f} counts off)"
