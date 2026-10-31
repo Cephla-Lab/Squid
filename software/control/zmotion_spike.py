@@ -193,6 +193,9 @@ class _SimLink:
             "pLen": 0,
             "pBLV": 10,
             "pFLCS": 0,
+            "pPosLen": 0,
+            "pMoveLen": 0,
+            "pHomeR": 1,
         }
         self.axes = {"x": (0, 2519.69, 80.0, 30.0), "y": (1, 2519.69, 120.0, 30.0), "z": (2, 10000.0, 6.0, 3.0)}
         self.mpos = {0: 0.0, 1: 0.0, 2: 0.0}
@@ -258,6 +261,13 @@ class _SimLink:
                 if name == f"sp{a}":
                     return
             if name == "ctrlbl":
+                return
+            if name == "movelen":
+                self.vars["pLen"] = self.vars["pPosLen"]
+                return
+            if name == "homer":
+                self.vars["pHomeR"] = 1
+                self.vars["pLen"] = 0
                 return
         raise ZmotionError(f"sim: unsupported task command {cmd!r}")
 
@@ -655,6 +665,10 @@ class ZmotionMcuShim:
         self._blv: Optional[int] = None  # slider %, None = never set (light left as found)
         self._blv_sent: Optional[int] = None  # last pBLV written
         self._light_wanted = True  # turn_off_illumination() -> False
+        # Bench run 11: per-frame light switching in a software-triggered acquisition added ~6 s to a
+        # 2-4 s run. MultiPointWorker brackets a run with enable_joystick(False/True), so the shim keeps
+        # the light on for the whole run and switches only outside acquisitions (live start/stop).
+        self._acquiring = False
         self._laser_on = False
         self._warned = set()
 
@@ -730,6 +744,8 @@ class ZmotionMcuShim:
     def turn_off_illumination(self):
         # Real on this unit: pBLV=0 through CtrlBL switches the light off and it stays off. Called at
         # stop_live and between software-triggered frames; in hardware mode only at stop_live.
+        if self._acquiring:
+            return  # light stays on for the whole acquisition
         self._light_wanted = False
         if self._blv_sent != 0:
             self._run_ctrlbl_once()
@@ -762,7 +778,7 @@ class ZmotionMcuShim:
     # ---- no-ops -----------------------------------------------------------------------------
 
     def enable_joystick(self, enabled: bool):
-        pass
+        self._acquiring = not enabled
 
     def add_joystick_button_listener(self, fn):
         pass
@@ -818,6 +834,140 @@ class ZmotionMcuShim:
 
 
 # ----------------------------------------------------------------------------------------------
+# Objective turret (controller task MoveLen on slot 4; bench: 4 slots, slot 1 = 90 deg, 1.15 s/change)
+# ----------------------------------------------------------------------------------------------
+
+
+class ZmotionObjectiveChanger:
+    """Stands in for ObjectiveTurret4PosController(**turret_kwargs): same public surface as the GUI
+    and Microscope use (home, move_to_objective, reset, enable, clear_alarm, current_objective,
+    is_open, close). Objective names map to slots through the ini's objective_turret_positions
+    (1-based there; the controller's pPosLen is 0-based). Z is retracted before every rotation and
+    restored afterwards, as the real turret does, through the same module helpers."""
+
+    HOME_TIMEOUT_S = 60.0
+    MOVE_TIMEOUT_S = 30.0
+
+    def __init__(self, link: ZmotionLink, positions: dict, stage=None, **_ignored):
+        self.link = link
+        self._positions = dict(positions)
+        self._stage = stage
+        self._is_open = True
+        self._current_objective: Optional[str] = self._name_for_slot(self._read_slot())
+        _log.info(
+            f"Zmotion turret: slots {self._positions}, currently {self._current_objective!r} (pLen={self._read_slot()})"
+        )
+
+    def _read_slot(self) -> int:
+        return self.link.query_int("?pLen")
+
+    def _name_for_slot(self, slot: int) -> Optional[str]:
+        for name, pos in self._positions.items():
+            if pos - 1 == slot:
+                return name
+        return None
+
+    def _slot_for(self, objective_name: str) -> int:
+        from control.objective_turret_controller import _resolve_position
+
+        return _resolve_position(objective_name, self._positions) - 1
+
+    def _retract_z(self) -> Optional[float]:
+        from control.objective_turret_controller import _retract_z_if_possible
+
+        return _retract_z_if_possible(self._stage)
+
+    def _restore_z(self, captured_z: Optional[float]) -> None:
+        from control.objective_turret_controller import _restore_z_if_captured
+
+        _restore_z_if_captured(self._stage, captured_z)
+
+    def _wait_flag(self, flag: str, done_value: int, timeout_s: float, what: str) -> None:
+        t0 = time.monotonic()
+        seen_running = False
+        while True:
+            v = self.link.query_int(flag)
+            if v != done_value:
+                seen_running = True
+            elif seen_running or time.monotonic() - t0 > 1.0:
+                return
+            if time.monotonic() - t0 > timeout_s:
+                self.link.stop_task(4)
+                raise ZmotionError(f"turret: {what} did not finish within {timeout_s:.0f} s")
+            time.sleep(0.005)
+
+    def _check_err(self, what: str) -> None:
+        err = self.link.query_int("?pErr")
+        if err != 0:
+            raise ZmotionError(
+                f"turret: controller error {err} after {what} (1053 = R move failed, 1107 = R homing failed)"
+            )
+
+    def home(self, timeout_s: float = HOME_TIMEOUT_S) -> None:
+        self._retract_z()  # Z stays retracted, as for the real turret
+        with self.link.lock:
+            self.link.stop_task(4)
+            self.link.run_task(4, "HomeR")
+            self._wait_flag("?pHomeR", 1, timeout_s, "HomeR")
+            self._check_err("HomeR")
+            self._current_objective = self._name_for_slot(self._read_slot())
+        _log.info(f"Zmotion turret homed; at {self._current_objective!r}")
+
+    def move_to_objective(self, objective_name: str, timeout_s: float = MOVE_TIMEOUT_S, restore_z: bool = True) -> None:
+        from control.objective_turret_controller import _is_alias_for_current
+
+        if _is_alias_for_current(self._current_objective, objective_name, self._positions):
+            self._current_objective = objective_name
+            return
+        slot = self._slot_for(objective_name)
+        captured_z = self._retract_z()
+        try:
+            with self.link.lock:
+                if self.link.query_int("?pMoveLen") != 0:
+                    raise ZmotionError("turret: MoveLen still running")
+                self.link.set_var("pPosLen", int(slot))
+                self.link.run_task(4, "MoveLen")
+                self._wait_flag("?pMoveLen", 0, timeout_s, f"MoveLen -> slot {slot}")
+                self._check_err(f"MoveLen -> slot {slot}")
+                reached = self._read_slot()
+                if reached != slot:
+                    raise ZmotionError(
+                        f"turret: asked for slot {slot} ({objective_name}), controller reports pLen={reached}"
+                    )
+            self._current_objective = objective_name
+            _log.info(f"Zmotion turret: {objective_name} (slot {slot})")
+        finally:
+            if restore_z:
+                self._restore_z(captured_z)
+
+    def reset(self, objective_name: Optional[str] = None, timeout_s: float = HOME_TIMEOUT_S) -> None:
+        captured_z = self._retract_z()
+        try:
+            self.link.stop_task(4)
+            self.home(timeout_s)
+            if objective_name:
+                self.move_to_objective(objective_name, restore_z=False)
+        finally:
+            self._restore_z(captured_z)
+
+    def enable(self) -> None:
+        pass
+
+    def clear_alarm(self) -> None:
+        pass
+
+    def current_objective(self) -> Optional[str]:
+        return self._current_objective
+
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+    def close(self) -> None:
+        self._is_open = False
+
+
+# ----------------------------------------------------------------------------------------------
 # Install
 # ----------------------------------------------------------------------------------------------
 
@@ -841,5 +991,16 @@ def install(ip: str = "10.0.0.100", lib_path: Optional[str] = None, simulate: bo
     control.microcontroller.get_microcontroller_serial_device = _no_serial
     control.microcontroller.Microcontroller = _make_shim
     control.microscope.CephlaStage = _make_stage
+
+    import control._def as _def
+
+    if _def.USE_OBJECTIVE_TURRET:
+
+        def _make_turret(**turret_kwargs):
+            return ZmotionObjectiveChanger(link, **turret_kwargs)
+
+        control.microscope.ObjectiveTurret4PosController = _make_turret
+        control.microscope.ObjectiveTurret4PosControllerSimulation = _make_turret
+        _log.warning("Zmotion spike: objective turret routed to the controller's MoveLen task")
     _log.warning("Zmotion spike installed: fake microcontroller + ZmotionStage (THROWAWAY, not the product path)")
     return link
