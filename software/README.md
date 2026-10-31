@@ -6,6 +6,13 @@ chmod +x setup_22.04.sh
 ./setup_22.04.sh
 ```
 
+On Ubuntu 24.04, use `setup_24.04.sh` instead:
+```
+wget https://raw.githubusercontent.com/Cephla-Lab/Squid/master/software/setup_24.04.sh
+chmod +x setup_24.04.sh
+./setup_24.04.sh
+```
+
 Reboot the computer to finish the installation.
 
 ## Optional or Hardware-specific dependencies

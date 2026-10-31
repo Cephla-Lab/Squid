@@ -15,6 +15,7 @@ Organization:
 - Cache Management: cache control
 """
 
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 
@@ -142,6 +143,24 @@ class ConfigRepository:
     # ═══════════════════════════════════════════════════════════════════════════
     # INTERNAL HELPERS
     # ═══════════════════════════════════════════════════════════════════════════
+
+    def _seed_from_example(self, path: Path) -> None:
+        """
+        Copy <path>.example to <path> if <path> is missing.
+
+        Machine configs are gitignored (PR #546), so a fresh clone only has the
+        .example templates. Seeding keeps a new install from starting with no
+        channels. Never overwrites an existing file.
+        """
+        example = path.with_name(path.name + ".example")
+        if path.exists() or not example.exists():
+            return
+        try:
+            shutil.copyfile(example, path)
+        except OSError as e:
+            logger.error(f"Failed to create {path} from {example.name}: {e}")
+            return
+        logger.warning(f"Created {path} from {example.name}; edit it to match this machine's hardware.")
 
     def _load_yaml(self, path: Path, model_class: Type[T]) -> Optional[T]:
         """
@@ -384,6 +403,7 @@ class ConfigRepository:
         cache_key = "illumination"
         if cache_key not in self._machine_cache:
             path = self.machine_configs_path / "illumination_channel_config.yaml"
+            self._seed_from_example(path)
             self._machine_cache[cache_key] = self._load_yaml(path, IlluminationChannelConfig)
         config = self._machine_cache[cache_key]
         if for_edit and config is not None:
