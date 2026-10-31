@@ -940,10 +940,6 @@ class TestZarrWriterMultipleFrames:
                     test_image = np.ones((32, 32), dtype=np.uint16) * (t * 100 + c * 10 + z)
                     writer.write_frame(test_image, t=t, c=c, z=z)
 
-        # Wait for all writes
-        completed = writer.wait_for_pending()
-        assert completed >= 0
-
         writer.finalize()
         assert writer.is_finalized
 
@@ -967,7 +963,6 @@ class TestZarrWriterMultipleFrames:
         # Write a known pattern
         test_image = np.arange(32 * 32, dtype=np.uint16).reshape((32, 32))
         writer.write_frame(test_image, t=0, c=0, z=0)
-        writer.wait_for_pending()
         writer.finalize()
 
         # Read back and verify
@@ -1141,7 +1136,6 @@ class TestSixDimensionalSupport:
             test_image = np.ones((32, 32), dtype=np.uint16) * (fov + 1) * 100
             writer.write_frame(test_image, t=0, c=0, z=0, fov=fov)
 
-        writer.wait_for_pending()
         writer.finalize()
         assert writer.is_finalized
 
@@ -1170,7 +1164,6 @@ class TestSixDimensionalSupport:
             test_images.append(test_image)
             writer.write_frame(test_image, t=0, c=0, z=0, fov=fov)
 
-        writer.wait_for_pending()
         writer.finalize()
 
         # Read back and verify each FOV - 6D indexing: [fov, t, c, z, y, x]
@@ -1430,7 +1423,6 @@ class TestZarrWriterDtypeAutoConversion:
         # Write image with different dtype
         image = np.ones((32, 32), dtype=source_dtype) * 100
         writer.write_frame(image, t=0, c=0, z=0)
-        writer.wait_for_pending()
         writer.finalize()
 
         # Read back and verify dtype
@@ -1705,8 +1697,8 @@ class TestHCSWorkflowIntegration:
         # Well metadata should be written exactly once (even with 3 FOVs)
         # The tracking set should have exactly one entry for this well
         assert (
-            len(SaveZarrJob._hcs_wells_written) == 1
-        ), f"Well metadata should be tracked once, got {len(SaveZarrJob._hcs_wells_written)}"
+            len(SaveZarrJob.default_registry.wells_written) == 1
+        ), f"Well metadata should be tracked once, got {len(SaveZarrJob.default_registry.wells_written)}"
 
         # Verify the actual file exists
         plate_path = os.path.join(temp_dir, "plate.ome.zarr")
@@ -2082,3 +2074,201 @@ def test_save_zarr_job_uses_the_settings_it_carries(tmp_path, monkeypatch):
         written = json.load(f)["attributes"]["_squid"]
     assert written["chunk_mode"] == ZarrChunkMode.TILED_256.value
     assert written["compression"] == ZarrCompression.BEST.value
+
+
+class TestZarrWriterRegistry:
+    def test_registry_is_per_instance(self, tmp_path):
+        """Two registries never see each other's writers or HCS bookkeeping."""
+        from control.core.job_processing import ZarrWriterRegistry
+
+        a, b = ZarrWriterRegistry(), ZarrWriterRegistry()
+        a.plates_written.add("/plate")
+        assert "/plate" not in b.plates_written
+        assert a.writers is not b.writers
+
+    def test_job_writes_through_its_registry(self, tmp_path):
+        from control.core.job_processing import ZarrWriterRegistry
+
+        registry = ZarrWriterRegistry()
+        info = ZarrWriterInfo(base_path=str(tmp_path / "acq"), t_size=1, c_size=1, z_size=1)
+        job = SaveZarrJob(
+            capture_info=make_test_capture_info(region_id="A1", fov=0),
+            capture_image=JobImage(image_array=np.full((16, 16), 3, dtype=np.uint16)),
+            zarr_writer_info=info,
+            registry=registry,
+        )
+        job.run()
+        assert list(registry.writers) == [info.get_output_path("A1", 0)]
+        assert SaveZarrJob.default_registry.writers == {}
+        assert registry.finalize_all() is True
+        import tensorstore as ts
+
+        written = ts.open(
+            {"driver": "zarr3", "kvstore": {"driver": "file", "path": info.get_output_path("A1", 0)}}
+        ).result()
+        assert np.array_equal(written[0, 0, 0].read().result(), np.full((16, 16), 3, dtype=np.uint16))
+
+    def test_abort_all_seals_open_stores_incomplete(self, tmp_path):
+        import json
+        from control.core.job_processing import ZarrWriterRegistry
+
+        registry = ZarrWriterRegistry()
+        info = ZarrWriterInfo(base_path=str(tmp_path / "acq"), t_size=2, c_size=1, z_size=1)
+        job = SaveZarrJob(
+            capture_info=make_test_capture_info(region_id="A1", fov=0),
+            capture_image=JobImage(image_array=np.zeros((16, 16), dtype=np.uint16)),
+            zarr_writer_info=info,
+            registry=registry,
+        )
+        job.run()
+        registry.abort_all()
+        # The OME group metadata lives in the group above the "0" array (see _get_metadata_zarr_json_path).
+        group_json = os.path.join(os.path.dirname(info.get_output_path("A1", 0)), "zarr.json")
+        with open(group_json) as f:
+            attrs = json.load(f)["attributes"]["_squid"]
+        assert attrs["acquisition_complete"] is False and attrs["aborted"] is True
+        assert registry.writers == {}
+
+
+class TestZarrWriterSubmitFrame:
+    def _writer(self, tmp_path):
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        config = ZarrAcquisitionConfig(
+            output_path=str(tmp_path / "store.zarr"), shape=(1, 1, 2, 16, 16), dtype=np.uint16, pixel_size_um=1.0
+        )
+        writer = ZarrWriter(config)
+        writer.initialize()
+        return writer
+
+    def test_submit_frame_returns_the_write_future(self, tmp_path):
+        writer = self._writer(tmp_path)
+        future = writer.submit_frame(np.full((16, 16), 9, dtype=np.uint16), t=0, c=0, z=1)
+        assert future is not None
+        future.result()
+        writer.finalize()
+        import tensorstore as ts
+
+        written = ts.open(
+            {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(tmp_path / "store.zarr")}}
+        ).result()
+        assert int(written[0, 0, 1, 0, 0].read().result()) == 9
+
+    def test_submit_frame_validates_like_write_frame(self, tmp_path):
+        writer = self._writer(tmp_path)
+        with pytest.raises(ValueError):
+            writer.submit_frame(np.zeros((16, 16), dtype=np.uint16), t=0, c=0, z=2)
+        writer.finalize()
+        with pytest.raises(RuntimeError):
+            writer.submit_frame(np.zeros((16, 16), dtype=np.uint16), t=0, c=0, z=0)
+
+
+class TestSaveZarrJobSubmit:
+    def _job(self, tmp_path, value):
+        from control.core.job_processing import ZarrWriterRegistry
+
+        info = ZarrWriterInfo(
+            base_path=str(tmp_path / "acq"), t_size=1, c_size=1, z_size=2, channel_names=["BF"], pixel_size_um=1.0
+        )
+        return (
+            SaveZarrJob(
+                capture_info=make_test_capture_info(region_id="A1", fov=0, z_index=value),
+                capture_image=JobImage(image_array=np.full((16, 16), value + 1, dtype=np.uint16)),
+                zarr_writer_info=info,
+                registry=ZarrWriterRegistry(),
+            ),
+            info,
+        )
+
+    def test_submit_returns_a_future_and_the_result_to_report(self, tmp_path):
+        job, info = self._job(tmp_path, 0)
+        future, result = job.submit()
+        assert isinstance(result, ZarrWriteResult) and result.z_index == 0
+        future.result()  # the write completes without run() ever waiting for it
+        import tensorstore as ts
+
+        written = ts.open(
+            {"driver": "zarr3", "kvstore": {"driver": "file", "path": info.get_output_path("A1", 0)}}
+        ).result()
+        assert int(written[0, 0, 0, 0, 0].read().result()) == 1
+
+    def test_run_is_submit_then_wait(self, tmp_path, monkeypatch):
+        job, _ = self._job(tmp_path, 1)
+        waited = []
+
+        class _Future:
+            def result(self):
+                waited.append(True)
+
+        expected = ZarrWriteResult(fov=0, time_point=0, z_index=1, channel_name="c", region_idx=0)
+        monkeypatch.setattr(job, "submit", lambda: (_Future(), expected))
+        result = job.run()
+        assert waited == [True] and result.z_index == 1
+
+    def test_submit_in_simulated_io_mode_returns_no_future(self, tmp_path, monkeypatch):
+        import control._def
+
+        monkeypatch.setattr(control._def, "SIMULATED_DISK_IO_ENABLED", True)
+        job, _ = self._job(tmp_path, 0)
+        future, result = job.submit()
+        assert future is None and isinstance(result, ZarrWriteResult)
+
+
+class TestZarrWriterAcrossThreads:
+    """A camera's frame callback thread outlives an acquisition: the writer must not leave per-thread state behind."""
+
+    def test_initialize_on_persistent_thread_after_finalize_elsewhere(self, tmp_path):
+        import queue
+        import threading
+
+        import tensorstore as ts
+
+        from control.core.zarr_writer import ZarrAcquisitionConfig, ZarrWriter
+
+        requests: "queue.Queue" = queue.Queue()
+
+        def _camera_thread():
+            while True:
+                item = requests.get()
+                if item is None:
+                    return
+                work, reply = item
+                try:
+                    reply.put((work(), None))
+                except BaseException as e:  # hand the failure to the main thread
+                    reply.put((None, e))
+
+        thread = threading.Thread(target=_camera_thread, name="camera-callback", daemon=True)
+        thread.start()
+
+        def _on_camera_thread(work):
+            reply: "queue.Queue" = queue.Queue()
+            requests.put((work, reply))
+            value, error = reply.get(timeout=60)
+            if error is not None:
+                raise error
+            return value
+
+        def _open_and_write(path, value):
+            config = ZarrAcquisitionConfig(
+                output_path=path, shape=(1, 1, 1, 16, 16), dtype=np.uint16, pixel_size_um=1.0
+            )
+            writer = ZarrWriter(config)
+            writer.initialize()
+            writer.write_frame(np.full((16, 16), value, dtype=np.uint16), t=0, c=0, z=0)
+            return writer
+
+        try:
+            paths = [str(tmp_path / "run1.zarr"), str(tmp_path / "run2.zarr")]
+            for value, path in enumerate(paths, start=1):
+                writer = _on_camera_thread(lambda: _open_and_write(path, value))
+                writer.finalize()  # end of the run: finalized on another thread
+        finally:
+            requests.put(None)
+            thread.join(timeout=60)
+
+        for value, path in enumerate(paths, start=1):
+            with open(os.path.join(path, "zarr.json")) as f:
+                assert json.load(f)["attributes"]["_squid"]["acquisition_complete"] is True
+            written = ts.open({"driver": "zarr3", "kvstore": {"driver": "file", "path": path}}).result()
+            assert int(written[0, 0, 0, 0, 0].read().result()) == value

@@ -11,7 +11,6 @@ Key features:
 - Blosc compression with LZ4/Zstd codecs
 """
 
-import asyncio
 import json
 import os
 from dataclasses import dataclass, field
@@ -341,8 +340,8 @@ def write_well_metadata(
 class ZarrWriter:
     """Zarr v3 writer for use in job processing.
 
-    Directly uses TensorStore without asyncio overhead for write operations.
-    Only uses asyncio for initialization and finalization where it's unavoidable.
+    Uses TensorStore futures directly and needs no event loop, so a store can be
+    initialized on one thread (e.g. the camera frame callback) and finalized on another.
     """
 
     def __init__(self, config: ZarrAcquisitionConfig):
@@ -353,121 +352,93 @@ class ZarrWriter:
         """
         self._config = config
         self._dataset = None
-        self._pending_futures: List[Any] = []
         self._initialized = False
         self._finalized = False
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._owns_loop = False  # True if we created the loop ourselves
-
-    def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """Get or create the event loop (only used for init/finalize)."""
-        if self._loop is None or self._loop.is_closed():
-            try:
-                self._loop = asyncio.get_event_loop()
-                self._owns_loop = False  # Using existing loop
-            except RuntimeError:
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-                self._owns_loop = True  # We created this loop
-        return self._loop
 
     def initialize(self) -> None:
-        """Initialize the zarr dataset (blocking).
-
-        Uses asyncio only for TensorStore's async open operation.
-        """
+        """Initialize the zarr dataset (blocking)."""
         if self._initialized:
             log.warning("Writer already initialized")
             return
 
-        try:
-            ts = _get_tensorstore()
-            config = self._config
+        ts = _get_tensorstore()
+        config = self._config
 
-            # Build TensorStore spec
-            os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
+        # Build TensorStore spec
+        os.makedirs(os.path.dirname(config.output_path), exist_ok=True)
 
-            chunk_shape = _get_chunk_shape(config)
-            shard_shape = _get_shard_shape(config)
-            compression_codec = _get_compression_codec(config.compression)
+        chunk_shape = _get_chunk_shape(config)
+        shard_shape = _get_shard_shape(config)
+        compression_codec = _get_compression_codec(config.compression)
 
-            # Dimension names and transpose order depend on 5D vs 6D
-            if config.ndim == 5:
-                transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
-            else:
-                transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
+        # Dimension names and transpose order depend on 5D vs 6D
+        if config.ndim == 5:
+            transpose_order = [4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
+        else:
+            transpose_order = [5, 4, 3, 2, 1, 0]  # Reverse order for C-contiguous layout
 
-            # Determine if we need sharding (when chunk != shard)
-            use_sharding = chunk_shape != shard_shape
+        # Determine if we need sharding (when chunk != shard)
+        use_sharding = chunk_shape != shard_shape
 
-            # Build inner codec chain (with or without compression)
-            inner_codecs = [
-                {"name": "transpose", "configuration": {"order": transpose_order}},
-                {"name": "bytes", "configuration": {"endian": "little"}},
+        # Build inner codec chain (with or without compression)
+        inner_codecs = [
+            {"name": "transpose", "configuration": {"order": transpose_order}},
+            {"name": "bytes", "configuration": {"endian": "little"}},
+        ]
+        if compression_codec is not None:
+            inner_codecs.append(compression_codec)
+
+        if use_sharding:
+            codecs = [
+                {
+                    "name": "sharding_indexed",
+                    "configuration": {
+                        "chunk_shape": list(chunk_shape),
+                        "codecs": inner_codecs,
+                        "index_codecs": [
+                            {"name": "bytes", "configuration": {"endian": "little"}},
+                            {"name": "crc32c"},
+                        ],
+                    },
+                }
             ]
-            if compression_codec is not None:
-                inner_codecs.append(compression_codec)
+            chunk_config = list(shard_shape)
+        else:
+            codecs = inner_codecs
+            chunk_config = list(chunk_shape)
 
-            if use_sharding:
-                codecs = [
-                    {
-                        "name": "sharding_indexed",
-                        "configuration": {
-                            "chunk_shape": list(chunk_shape),
-                            "codecs": inner_codecs,
-                            "index_codecs": [
-                                {"name": "bytes", "configuration": {"endian": "little"}},
-                                {"name": "crc32c"},
-                            ],
-                        },
-                    }
-                ]
-                chunk_config = list(shard_shape)
-            else:
-                codecs = inner_codecs
-                chunk_config = list(chunk_shape)
+        spec = {
+            "driver": "zarr3",
+            "kvstore": {"driver": "file", "path": config.output_path},
+            "metadata": {
+                "shape": list(config.shape),
+                "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_config}},
+                "chunk_key_encoding": {"name": "default"},
+                "data_type": _dtype_to_zarr(config.dtype),
+                "codecs": codecs,
+                "fill_value": 0,
+            },
+        }
 
-            spec = {
-                "driver": "zarr3",
-                "kvstore": {"driver": "file", "path": config.output_path},
-                "metadata": {
-                    "shape": list(config.shape),
-                    "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_config}},
-                    "chunk_key_encoding": {"name": "default"},
-                    "data_type": _dtype_to_zarr(config.dtype),
-                    "codecs": codecs,
-                    "fill_value": 0,
-                },
-            }
+        log.info(
+            f"Initializing Zarr v3 dataset: {config.output_path}, "
+            f"shape={config.shape}, chunks={chunk_shape}, shards={shard_shape}, "
+            f"compression={config.compression.value}"
+        )
 
-            log.info(
-                f"Initializing Zarr v3 dataset: {config.output_path}, "
-                f"shape={config.shape}, chunks={chunk_shape}, shards={shard_shape}, "
-                f"compression={config.compression.value}"
+        # Warn if overwriting existing data
+        if os.path.exists(config.output_path):
+            log.warning(
+                "Zarr v3 dataset path already exists and will be overwritten: %s",
+                config.output_path,
             )
 
-            # Warn if overwriting existing data
-            if os.path.exists(config.output_path):
-                log.warning(
-                    "Zarr v3 dataset path already exists and will be overwritten: %s",
-                    config.output_path,
-                )
+        self._dataset = ts.open(spec, create=True, delete_existing=True).result()
+        self._initialized = True
+        log.info("Zarr v3 dataset initialized successfully")
 
-            # Use asyncio only for the TensorStore open operation
-            async def _open():
-                return await ts.open(spec, create=True, delete_existing=True)
-
-            loop = self._get_loop()
-            self._dataset = loop.run_until_complete(_open())
-            self._initialized = True
-            log.info("Zarr v3 dataset initialized successfully")
-
-            # Write metadata synchronously (just file I/O)
-            self._write_zarr_metadata()
-        except Exception:
-            # Clean up event loop if we created it during failed initialization
-            self._cleanup_event_loop()
-            raise
+        # Write metadata synchronously (just file I/O)
+        self._write_zarr_metadata()
 
     def _is_ome_ngff_array_path(self) -> bool:
         """Check if output_path is an OME-NGFF array path (needs group-level metadata).
@@ -651,17 +622,13 @@ class ZarrWriter:
                 log.error(f"Failed to write zarr metadata to {zarr_json_path}: {e}")
                 raise RuntimeError(f"Failed to write zarr metadata: {e}") from e
 
-    def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
-        """Write a single frame and block until the TensorStore write completes.
+    def submit_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None):
+        """Submit a single frame write and return its TensorStore future WITHOUT waiting.
 
-        This method submits an asynchronous write via TensorStore's write API and
-        then waits on the resulting future (via future.result()) before returning.
-        This blocks the calling thread until the write has finished. The underlying
-        disk I/O is handled asynchronously by TensorStore; this method synchronously
-        waits for that async operation to complete.
-
-        This ensures data is visible to other processes reading the same zarr store
-        before this method returns.
+        The returned object's ``.result()`` blocks until the write is committed (and raises if it
+        failed). TensorStore copies the source array as part of the write, so ``image`` may be
+        released once the future completes. Keeping several submissions in flight lets TensorStore
+        overlap encode, file creation, write and fsync of consecutive frames.
 
         Args:
             image: 2D image array (Y, X)
@@ -695,54 +662,15 @@ class ZarrWriter:
         if image.dtype != config.dtype:
             image = image.astype(config.dtype)
 
-        # Write using TensorStore and wait for completion
-        # This ensures data is flushed before we notify the viewer
         if config.ndim == 5:
-            future = self._dataset[t, c, z, :, :].write(image)
             log.debug(f"Writing frame t={t}, c={c}, z={z}")
-        else:
-            future = self._dataset[fov, t, c, z, :, :].write(image)
-            log.debug(f"Writing frame fov={fov}, t={t}, c={c}, z={z}")
+            return self._dataset[t, c, z, :, :].write(image)
+        log.debug(f"Writing frame fov={fov}, t={t}, c={c}, z={z}")
+        return self._dataset[fov, t, c, z, :, :].write(image)
 
-        # Wait for write to complete (blocking)
-        # TensorStore futures have a .result() method that blocks until complete
-        future.result()
-        if config.ndim == 5:
-            log.debug(f"Write complete for frame t={t}, c={c}, z={z}")
-        else:
-            log.debug(f"Write complete for frame fov={fov}, t={t}, c={c}, z={z}")
-
-    def wait_for_pending(self, timeout_s: Optional[float] = None) -> int:
-        """Wait for pending writes (blocking).
-
-        Args:
-            timeout_s: Optional timeout in seconds (not currently enforced)
-
-        Returns:
-            Number of writes completed
-        """
-        if not self._pending_futures:
-            return 0
-
-        count = len(self._pending_futures)
-        log.debug(f"Waiting for {count} pending writes...")
-
-        # Wait for all TensorStore futures in parallel using asyncio.gather
-        # This is more efficient than waiting sequentially
-        async def _wait_all():
-            await asyncio.gather(*self._pending_futures)
-
-        loop = self._get_loop()
-        loop.run_until_complete(_wait_all())
-
-        self._pending_futures.clear()
-        log.debug(f"Completed {count} pending writes")
-        return count
-
-    @property
-    def pending_write_count(self) -> int:
-        """Number of writes currently pending."""
-        return len(self._pending_futures)
+    def write_frame(self, image: np.ndarray, t: int, c: int, z: int, fov: Optional[int] = None) -> None:
+        """submit_frame() and wait for it, so the data is on disk for other readers once this returns."""
+        self.submit_frame(image, t, c, z, fov).result()
 
     def finalize(self) -> None:
         """Finalize the dataset (blocking)."""
@@ -751,9 +679,6 @@ class ZarrWriter:
             return
 
         log.info("Finalizing Zarr v3 dataset...")
-
-        # Wait for all pending writes
-        self.wait_for_pending()
 
         # Update metadata with completion status (in zarr.json attributes)
         zarr_json_path = self._get_metadata_zarr_json_path()
@@ -772,7 +697,6 @@ class ZarrWriter:
             # Don't raise - data is already written, just log the metadata issue
 
         self._finalized = True
-        self._cleanup_event_loop()
         log.info(f"Zarr v3 dataset finalized: {self._config.output_path}")
 
     def abort(self) -> None:
@@ -784,8 +708,6 @@ class ZarrWriter:
         log.warning("Aborting Zarr writer...")
 
         try:
-            # Clear pending futures (don't wait for them)
-            self._pending_futures.clear()
 
             # Mark as incomplete in metadata (in zarr.json attributes)
             zarr_json_path = self._get_metadata_zarr_json_path()
@@ -805,22 +727,7 @@ class ZarrWriter:
         finally:
             # Always mark as finalized and cleanup resources
             self._finalized = True
-            self._cleanup_event_loop()
             log.warning(f"Zarr writer aborted: {self._config.output_path}")
-
-    def _cleanup_event_loop(self) -> None:
-        """Clean up the event loop to prevent resource leaks.
-
-        Only closes the loop if we created it ourselves (via new_event_loop).
-        Loops obtained from get_event_loop() are shared and should not be closed.
-        """
-        if self._loop is not None and self._owns_loop and not self._loop.is_closed():
-            try:
-                self._loop.close()
-            except Exception as e:
-                log.warning(f"Error closing event loop: {e}")
-        self._loop = None
-        self._owns_loop = False
 
     @property
     def is_initialized(self) -> bool:
