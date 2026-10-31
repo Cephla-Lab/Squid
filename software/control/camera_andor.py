@@ -12,7 +12,7 @@ from pyAndorSDK3 import AndorSDK3
 
 import control.utils
 import squid.logging
-from control._def import ANDOR_AUX_OUTPUT_SOURCE
+from control._def import USE_ANDOR_ACTIVE_BLANKING
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
@@ -135,9 +135,9 @@ class AndorCamera(AbstractCamera):
         self.set_exposure_time(self._exposure_time_ms)
         self.set_pixel_format(self._config.default_pixel_format)
         self.set_binning(*self._config.default_binning)
-        if ANDOR_AUX_OUTPUT_SOURCE:
-            # e.g. "FireAll": high only while every row exposes, to blank a laser during readout
-            self._camera.AuxiliaryOutSource = ANDOR_AUX_OUTPUT_SOURCE
+        if USE_ANDOR_ACTIVE_BLANKING:
+            # AUX OUT high only while every row is exposing, so the laser is blanked during readout
+            self._camera.AuxiliaryOutSource = "FireAll"
 
     def close(self):
         self._cleanup_read_thread()

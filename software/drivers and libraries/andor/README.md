@@ -27,6 +27,6 @@ that folder exists; an SDK installed system-wide is found without it.
 
 In the `.ini`: `camera_type = Andor`, `main_camera_model = ZYLA-4.2P-USB3-C` (see
 `AndorCameraModel` in `squid/config.py`), and the usual `[CAMERA_CONFIG]` section. Resolutions and
-pixel size are read from the camera. `andor_aux_output_source = "FireAll"` drives the camera's
-AUX OUT pin from the exposure window (high only while every row is exposing) for laser blanking;
-leave it unset to keep the camera's own setting.
+pixel size are read from the camera. `use_andor_active_blanking = True` makes the camera's AUX OUT
+pin follow the "all rows exposing" window (SDK3 `FireAll`) to gate the laser engine during readout;
+it is off by default and only makes sense with AUX OUT wired to the laser.

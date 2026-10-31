@@ -1098,6 +1098,10 @@ USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
+# Active blanking with an Andor SDK3 camera and Andor laser engine: the camera's AUX OUT pin follows the
+# "all rows exposing" window (SDK3 AuxiliaryOutSource "FireAll") and gates the laser, so nothing is emitted
+# during readout. Off by default; needs the AUX OUT wired to the laser engine.
+USE_ANDOR_ACTIVE_BLANKING = False
 # Vortran Stradus VersaLase over USB HID. VORTRAN_SHUTTER_CONTROL_MODE is "TTL" (TTL lines gate
 # the light) or "Software" (emission toggled over USB - slow, heads with the 5 s emission delay
 # take 5 s to turn on). With TTL, VORTRAN_TTL_INPUT is the VersaLase input the TTL lines are wired
@@ -1347,9 +1351,6 @@ DISPLAY_TOUPCAMER_BLACKLEVEL_SETTINGS = False
 # for just the exposure (see ToupcamCamera._set_global_reset for why).  Needs a camera that supports the option
 # (eg: the ITR10CMOS26000KMA); on other cameras it is ignored.
 ENABLE_TOUPCAM_GLOBAL_RESET = False
-# Andor SDK3 cameras: what the camera's AUX OUT pin signals, e.g. "FireAll" (high only while every row is
-# exposing) to blank a laser engine during readout. None leaves the camera's own setting untouched.
-ANDOR_AUX_OUTPUT_SOURCE = None
 
 
 class HardwareTriggerMode:
