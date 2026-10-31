@@ -338,6 +338,13 @@ class _Axis:
         ) = AXIS[ctrl_name]
         self.channel = link.query_int(chq)
         self.res = link.query_float(resq)
+        # Bench run 2: both XY axes (open-loop steppers, no encoder) hit their forward limit sensors at
+        # ~52.5 % of the program's nominal travel, so the program's counts/mm is suspect. Until a ruler
+        # test settles it, ZMOTION_<X|Y|Z>_COUNTS_PER_MM in the environment overrides the value read.
+        override = os.environ.get(f"ZMOTION_{ctrl_name.upper()}_COUNTS_PER_MM")
+        if override:
+            _log.warning(f"Zmotion axis {name}: counts/mm overridden {self.res:g} -> {float(override):g} (environment)")
+            self.res = float(override)
         self.travel = link.query_float(traq)
         self.max_speed = link.query_float(spdq)
         if self.channel < 0 or self.res <= 0:
