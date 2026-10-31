@@ -12,7 +12,7 @@ from pyAndorSDK3 import AndorSDK3
 
 import control.utils
 import squid.logging
-from control._def import USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA
+from control._def import USE_ANDOR_ACTIVE_BLANKING
 from squid.abc import AbstractCamera, CameraError
 from squid.config import CameraConfig, CameraPixelFormat
 from squid.abc import CameraFrame, CameraFrameFormat, CameraGainRange, CameraAcquisitionMode
@@ -145,8 +145,9 @@ class AndorCamera(AbstractCamera):
         roi = self._config.default_roi
         if roi and all(value is not None for value in roi):
             self.set_region_of_interest(*roi)
-        if USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA:
-            # AUX OUT high only while every row is exposing, so the laser is blanked during readout
+        if USE_ANDOR_ACTIVE_BLANKING:
+            # AUX OUT high only while every row is exposing, so the laser is blanked during readout. The camera
+            # half of active blanking: needed with two Andor cameras on the Dragonfly, harmless with one.
             self._camera.AuxiliaryOutSource = "FireAll"
 
     def close(self):

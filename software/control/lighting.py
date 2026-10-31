@@ -32,6 +32,28 @@ _DEFAULT_CHANNEL_MAPPINGS_TTL = {
 }
 
 
+# Channel groups shared by the software-controlled light sources (VersaLase, Andor HLE, ...): every
+# Squid channel in a group is served by the same laser line.
+CHANNEL_GROUPS = [
+    [405],
+    [470, 488],
+    [545, 550, 555, 561],
+    [638, 640],
+    [730, 735, 750],
+]
+# A line serves a group when its nominal wavelength is this close to one of the group's
+# wavelengths (e.g. a 639 nm line serves the 638/640 channels).
+WAVELENGTH_MATCH_TOLERANCE_NM = 5
+
+
+def channel_group_for(wavelength_nm: float) -> Optional[List[int]]:
+    """The channel group a laser line of this wavelength serves, or None if it matches none."""
+    return next(
+        (g for g in CHANNEL_GROUPS if any(abs(wavelength_nm - wl) <= WAVELENGTH_MATCH_TOLERANCE_NM for wl in g)),
+        None,
+    )
+
+
 class LightSourceType(Enum):
     SquidLED = 0
     SquidLaser = 1
@@ -260,6 +282,11 @@ class IlluminationController:
             self.intensity_settings[channel] = -1
         if self.intensity_control_mode == IntensityControlMode.Software:
             line = self.channel_mappings_software[channel]
+            # Every time, not only when the power changes below: which line is armed is not part of the power cache.
+            # Optional on the light source, like use(): duck-typed sources (and test fakes) need not have it.
+            select = getattr(self.light_source, "select", None)
+            if select is not None:
+                select(line)
             # A light source whose channel map follows the port map (laser engine v2) moves a channel to another line
             # when the port map is edited, and that line has not had this channel's intensity yet.
             moved = line != self._intensity_lines.get(channel, line)

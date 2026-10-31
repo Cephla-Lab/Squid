@@ -33,11 +33,12 @@ In the `.ini`, under `[GENERAL]`:
 ```ini
 camera_type = Andor
 main_camera_model = ZYLA-4.2P-USB3-C   ; see AndorCameraModel in squid/config.py
-use_andor_active_blanking_two_camera = False   ; True: AUX OUT follows the "all rows exposing" window
+use_andor_active_blanking = False       ; True: AUX OUT follows the "all rows exposing" window
 ```
 
 plus the usual `[CAMERA_CONFIG]` section (pixel format, binning, crop, ROI defaults). Resolutions
-and pixel size are read from the camera. `use_andor_active_blanking_two_camera = True` is for active
-blanking with two Andor cameras on the Dragonfly: it sets the camera's AUX OUT source to SDK3
-`FireAll` so the laser engine is blanked during readout. A single camera using active blanking does
-not need it; it is off by default.
+and pixel size are read from the camera. `use_andor_active_blanking = True` switches on both halves of
+active blanking: the laser engine (`illumination_andor.py`) keeps only the selected line's shutter open,
+and the camera sets its AUX OUT source to SDK3 `FireAll` so the engine wired to that pin is blanked
+during readout. The camera half is what a Dragonfly with two Andor cameras needs; with one camera it
+does no harm. Off by default.

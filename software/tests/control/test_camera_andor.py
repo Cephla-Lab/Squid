@@ -262,7 +262,7 @@ def test_pixel_size_comes_from_the_camera(monkeypatch):
 
 
 def test_auxiliary_output_is_left_alone_without_active_blanking(sdk_camera, monkeypatch):
-    monkeypatch.setattr(camera_andor, "USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA", False)
+    monkeypatch.setattr(camera_andor, "USE_ANDOR_ACTIVE_BLANKING", False)
     cam = make_camera(sdk_camera, monkeypatch)
 
     assert sdk_camera.AuxiliaryOutSource == "FireRow1"
@@ -270,7 +270,7 @@ def test_auxiliary_output_is_left_alone_without_active_blanking(sdk_camera, monk
 
 
 def test_active_blanking_drives_aux_out_from_the_all_rows_exposing_window(sdk_camera, monkeypatch):
-    monkeypatch.setattr(camera_andor, "USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA", True)
+    monkeypatch.setattr(camera_andor, "USE_ANDOR_ACTIVE_BLANKING", True)
     cam = make_camera(sdk_camera, monkeypatch)
 
     assert sdk_camera.AuxiliaryOutSource == "FireAll"

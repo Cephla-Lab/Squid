@@ -30,7 +30,7 @@ from typing import Dict, List, Optional
 import hid
 
 import control.versalase_guard
-from control.lighting import IntensityControlMode, ShutterControlMode
+from control.lighting import CHANNEL_GROUPS, IntensityControlMode, ShutterControlMode, channel_group_for
 from control.vortran_hid import (  # noqa: F401 - the transport's names stay importable from here
     COMMAND_TIMEOUT_S,
     OP_ACK,
@@ -49,19 +49,6 @@ from squid.abc import LightSource
 import squid.logging
 
 log = squid.logging.get_logger(__name__)
-
-# Channel groups shared with the other software-controlled light sources - every
-# Squid channel in a group is served by the same laser line.
-CHANNEL_GROUPS = [
-    [405],
-    [470, 488],
-    [545, 550, 555, 561],
-    [638, 640],
-    [730, 735, 750],
-]
-# A head is assigned to a group when its nominal wavelength is this close to one of
-# the group's wavelengths (e.g. a 639 nm head serves the 638/640 channels).
-WAVELENGTH_MATCH_TOLERANCE_NM = 5
 
 # Fault codes at or above this value block emission (see "?FC" in the VersaLase manual).
 # Lower values are laser state (0 active, 1 standby, 2 warmup) or syntax errors.
@@ -161,14 +148,7 @@ class VersaLase(LightSource):
 
     def _map_channels(self):
         for head in self.heads:
-            group = next(
-                (
-                    g
-                    for g in CHANNEL_GROUPS
-                    if any(abs(head.wavelength - wl) <= WAVELENGTH_MATCH_TOLERANCE_NM for wl in g)
-                ),
-                None,
-            )
+            group = channel_group_for(head.wavelength)
             if group is None:
                 log.error(f"Vortran head {head.describe()} does not match any Squid channel")
                 continue

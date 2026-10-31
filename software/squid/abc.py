@@ -191,6 +191,12 @@ class LightSource(ABC):
         """The mechanical shutter on this channel's line, if it has one."""
         return None
 
+    def select(self, channel) -> None:
+        """This channel (a channel_mappings value, None when the light source has no line for it) is the one about
+        to be exposed. Called on every channel change, whether or not the power changes. A light source that must
+        arm one line at a time acts on it (the Andor HLE with active blanking); by default nothing happens."""
+        return None
+
     @abstractmethod
     def __init__(self):
         """Initialize the light source and establish communication."""

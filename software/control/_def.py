@@ -1098,10 +1098,12 @@ USE_CELESTA_ETHERNET_CONTROL = False
 USE_ANDOR_LASER_CONTROL = False
 ANDOR_LASER_VID = 0x1BDB
 ANDOR_LASER_PID = 0x0300
-# Active blanking with TWO Andor SDK3 cameras on the Dragonfly: the camera's AUX OUT pin follows the "all
-# rows exposing" window (SDK3 AuxiliaryOutSource "FireAll") so the laser engine is blanked during readout.
-# A single camera using active blanking does not need this. Off by default.
-USE_ANDOR_ACTIVE_BLANKING_TWO_CAMERA = False
+# Active blanking with an Andor SDK3 camera and Andor laser engine; one switch for both halves.
+# Laser: when a channel is selected, only its line's shutter is open (every other line on every unit is
+# closed), so the camera's exposure signal gates the one active line. Camera: the AUX OUT pin follows the
+# "all rows exposing" window (SDK3 AuxiliaryOutSource "FireAll"); this half is what a Dragonfly with TWO
+# Andor cameras needs, and does no harm with one. Off by default; needs AUX OUT wired to the engine.
+USE_ANDOR_ACTIVE_BLANKING = False
 # Vortran Stradus VersaLase over USB HID. VORTRAN_SHUTTER_CONTROL_MODE is "TTL" (TTL lines gate
 # the light) or "Software" (emission toggled over USB - slow, heads with the 5 s emission delay
 # take 5 s to turn on). With TTL, VORTRAN_TTL_INPUT is the VersaLase input the TTL lines are wired
