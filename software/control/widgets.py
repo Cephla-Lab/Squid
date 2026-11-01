@@ -3177,6 +3177,22 @@ class PreferencesDialog(QDialog):
             # If save failed, dialog stays open (error already shown)
 
 
+def _queued_slot(receiver: QObject, slot_name: str):
+    """A threaded_operation_helper callback that delivers (success, error_msg) to a slot of receiver, on the GUI
+    thread: the operation's own thread must not touch widgets, live view or dialogs."""
+
+    def on_finished(success, error_msg):
+        QMetaObject.invokeMethod(
+            receiver,
+            slot_name,
+            Qt.QueuedConnection,
+            Q_ARG(bool, success),
+            Q_ARG(str, error_msg or ""),
+        )
+
+    return on_finished
+
+
 class StageUtils(QDialog):
     """Dialog containing microscope utility functions like homing, zeroing, and slide positioning."""
 
@@ -3350,14 +3366,14 @@ class StageUtils(QDialog):
             move_to_loading_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_loading_position_reached,
+                callback=_queued_slot(self, "_callback_loading_position_reached"),
                 is_wellplate=self.is_wellplate,
             )
         else:
             move_to_scanning_position(
                 self.stage,
                 blocking=False,
-                callback=self._callback_scanning_position_reached,
+                callback=_queued_slot(self, "_callback_scanning_position_reached"),
                 is_wellplate=self.is_wellplate,
                 restore_z=restore_z,
             )
@@ -3380,20 +3396,22 @@ class StageUtils(QDialog):
             return None
         return reply == QMessageBox.Ok
 
-    def _callback_loading_position_reached(self, success: bool, error_message: Optional[str]):
-        """Handle slide loading position reached signal."""
+    @Slot(bool, str)
+    def _callback_loading_position_reached(self, success: bool, error_message: str):
+        """The move to the loading position ended (on the GUI thread, from _queued_slot)."""
         self.slide_position = "loading"
         self.btn_load_slide.setStyleSheet("background-color: #C2FFC2")
         self.btn_load_slide.setText("Move to Scanning Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live and not self.keep_live_off_at_loading:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_loading_position_reached.emit()
 
-    def _callback_scanning_position_reached(self, success: bool, error_message: Optional[str]):
-        """Handle slide scanning position reached signal."""
+    @Slot(bool, str)
+    def _callback_scanning_position_reached(self, success: bool, error_message: str):
+        """The move back to the scanning position ended (on the GUI thread, from _queued_slot)."""
         if not success:
             # The stage may not have left the loading position: it is still treated as there (a lift system keeps
             # everything locked), and the button offers the move back to scanning again.
@@ -3406,10 +3424,18 @@ class StageUtils(QDialog):
         self.btn_load_slide.setText("Move to Loading Position")
         self.btn_load_slide.setEnabled(True)
         if self._was_live:
-            self.live_controller.start_live()
+            self._restart_live()
         if not success:
             QMessageBox.warning(self, "Error", error_message)
         self.signal_scanning_position_reached.emit()
+
+    def _restart_live(self):
+        """Live view back on after a move. A camera that will not restart must not stop the move ending: the reached
+        signals that follow release the Z lift guard and the GUI's stage lock."""
+        try:
+            self.live_controller.start_live()
+        except Exception:
+            self.log.exception("Could not restart live view after the loading position move")
 
 
 # Where a z stack sits relative to each FOV's z, as offered in the acquisition tabs: (label, controller name).
@@ -4521,24 +4547,10 @@ class ObjectivesWidget(QWidget):
             self.signal_swap_active.emit(True)
         utils.threaded_operation_helper(
             self._lower_lift_then,
-            self._queued_slot("_on_objective_move_finished"),
+            _queued_slot(self, "_on_objective_move_finished"),
             move=self.objective_changer.move_to_objective,
             objective_name=objective_name,
         )
-
-    def _queued_slot(self, slot_name):
-        """A threaded_operation_helper callback that delivers (success, error_msg) to a slot on the GUI thread."""
-
-        def on_finished(success, error_msg):
-            QMetaObject.invokeMethod(
-                self,
-                slot_name,
-                Qt.QueuedConnection,
-                Q_ARG(bool, success),
-                Q_ARG(str, error_msg or ""),
-            )
-
-        return on_finished
 
     @Slot(bool, str)
     def _on_objective_move_finished(self, success, error_msg):
@@ -4594,7 +4606,7 @@ class ObjectivesWidget(QWidget):
         self._swap_target = objective_name
         self._swap_z_before_mm = None
         self._swap_retracted = False
-        utils.threaded_operation_helper(self._retract_z_and_release_servo, self._queued_slot("_on_servo_released"))
+        utils.threaded_operation_helper(self._retract_z_and_release_servo, _queued_slot(self, "_on_servo_released"))
 
     def _retract_z_and_release_servo(self):
         self._swap_z_before_mm = self.focus_servo.get_pos().z_mm
@@ -4653,7 +4665,7 @@ class ObjectivesWidget(QWidget):
         self._swap_servo_on = False
         self._swap_lift_raised = False
         self._swap_z_cleared = False
-        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, self._queued_slot("_on_servo_reengaged"))
+        utils.threaded_operation_helper(self._reengage_servo_and_restore_z, _queued_slot(self, "_on_servo_reengaged"))
 
     def _profile_frozen(self) -> bool:
         is_frozen = getattr(self.focus_servo, "is_profile_frozen", None)
