@@ -23,6 +23,9 @@ class FakeProScan:
         self.y = 0
         self.busy_polls = 0
         self.commands = []
+        # X and Y encoders, as a ProScan has them after power-up: detected and switched on
+        self.encoders_fitted = 3
+        self.encoder_axes = 3
         self.sms = None
         self.sas = None
 
@@ -66,6 +69,11 @@ class FakeProScan:
         if cmd == "STAGE":
             lines = ["STAGE = H117(1MM)4", "TYPE = 25", "SIZE_X = 114 MM", "SIZE_Y = 75 MM", "END"]
             return b"".join(f"{line}\r".encode() for line in lines)
+        if cmd == "ENCODER":
+            return f"{self.encoder_axes}\r".encode()
+        if cmd in ("SENCODER,0", "SENCODER,1"):
+            self.encoder_axes = self.encoders_fitted if cmd.endswith("1") else 0
+            return b"0\r"
         if cmd == "$,S":
             if self.busy_polls > 0:
                 self.busy_polls -= 1
@@ -181,6 +189,44 @@ def test_checks_ftdi_latency_timer_of_its_port(fake, monkeypatch):
     )
     make_stage(fake)
     assert checks == [("COM_FAKE", "Prior stage")]
+
+
+def test_encoders_are_left_as_the_controller_has_them_by_default(fake):
+    stage, ser = make_stage(fake)
+    assert not [c for c in ser.commands if c.startswith("SENCODER")]
+    assert stage.encoder_axes == 3
+
+
+@pytest.mark.parametrize("use_encoders, command, axes", [(False, "SENCODER,0", 0), (True, "SENCODER,1", 3)])
+def test_encoders_are_switched_as_configured(fake, use_encoders, command, axes):
+    stage, ser = make_stage(fake, use_encoders=use_encoders)
+    assert command in ser.commands
+    assert stage.encoder_axes == axes
+    assert stage.get_encoder_axes() == axes
+
+
+def test_a_controller_refusing_sencoder_does_not_stop_start_up(fake, monkeypatch):
+    normal = FakeProScan._reply
+    monkeypatch.setattr(
+        FakeProScan, "_reply", lambda self, cmd: b"E,1\r" if cmd.startswith("SENCODER") else normal(self, cmd)
+    )
+    stage, ser = make_stage(fake, use_encoders=False)
+    assert stage.encoder_axes == 3  # still on, and logged as a warning
+
+
+def test_microscope_build_passes_the_ini_encoder_setting(fake, monkeypatch):
+    import control._def
+    import control.microscope
+
+    monkeypatch.setattr(control._def, "USE_PRIOR_STAGE", True)
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_SN", "FAKE_SN")
+    monkeypatch.setattr(control._def, "PRIOR_STAGE_USE_ENCODERS", False)
+    scope = control.microscope.Microscope.build_from_global_config(simulated=True)
+    try:
+        assert "SENCODER,0" in fake["fake"].commands
+        assert scope.stage.encoder_axes == 0
+    finally:
+        scope.close()
 
 
 def test_microscope_build_passes_ini_speed_to_prior_stage(fake, monkeypatch):
